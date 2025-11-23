@@ -38,6 +38,13 @@ cd infra && docker-compose up --build
 ```
 Сервисы: FastAPI (`http://localhost:8000`), PostgreSQL (`localhost:5432`), Redis (`localhost:6379`). После запуска API healthcheck: `curl http://localhost:8000/health`.
 
+### Переменные окружения
+- App: `APP_PORT`, `ENVIRONMENT`, `LOG_LEVEL`
+- DB: `POSTGRES_*`, `DATABASE_URL`
+- Redis: `REDIS_URL`
+- LLM/матчинг: `OPENAI_API_KEY` (и при необходимости `OPENAI_API_BASE`, `OPENAI_MODEL`)
+- Telegram: `TELEGRAM_BOT_TOKEN` (при использовании бота), `TELEGRAM_WEBHOOK_URL` (если нужен webhook)
+
 ## CI
 GitHub Actions (`.github/workflows/ci.yml`) гоняет ruff, black --check и pytest на push/PR в main.
 

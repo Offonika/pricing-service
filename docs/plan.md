@@ -33,7 +33,7 @@ Recommended Agent: pricing-backend
 
 - [x] S1.1 — Создать каркас приложения FastAPI  
   Структура каталогов, точка входа, эндпоинт `/health`, Pydantic Settings.
-- [ ] S1.2 — Определить базовые модели БД  
+- [x] S1.2 — Определить базовые модели БД  
   Product, Competitor, CompetitorPrice, связи relationship.
 - [ ] S1.3 — Настроить Alembic и первую миграцию  
   Инициализация Alembic, миграция для базовых таблиц.

@@ -21,3 +21,6 @@ class Product(Base):
     stock: Mapped[Optional["ProductStock"]] = relationship(
         "ProductStock", back_populates="product", cascade="all, delete-orphan", uselist=False
     )
+    matches: Mapped[List["ProductMatch"]] = relationship(
+        "ProductMatch", back_populates="product", cascade="all, delete-orphan"
+    )

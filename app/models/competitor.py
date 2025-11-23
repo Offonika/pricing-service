@@ -14,3 +14,6 @@ class Competitor(Base):
     prices: Mapped[List["CompetitorPrice"]] = relationship(
         back_populates="competitor", cascade="all, delete-orphan"
     )
+    matches: Mapped[List["ProductMatch"]] = relationship(
+        "ProductMatch", back_populates="competitor", cascade="all, delete-orphan"
+    )

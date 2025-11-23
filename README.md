@@ -40,3 +40,9 @@ cd infra && docker-compose up --build
 
 ## CI
 GitHub Actions (`.github/workflows/ci.yml`) гоняет ruff, black --check и pytest на push/PR в main.
+
+## Миграции (Alembic)
+- Генерация новой миграции:  
+  `DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/pricing alembic revision --autogenerate -m "message"`
+- Применение миграций:  
+  `DATABASE_URL=... alembic upgrade head`

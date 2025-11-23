@@ -35,7 +35,7 @@ Recommended Agent: pricing-backend
   Структура каталогов, точка входа, эндпоинт `/health`, Pydantic Settings.
 - [x] S1.2 — Определить базовые модели БД  
   Product, Competitor, CompetitorPrice, связи relationship.
-- [ ] S1.3 — Настроить Alembic и первую миграцию  
+- [x] S1.3 — Настроить Alembic и первую миграцию  
   Инициализация Alembic, миграция для базовых таблиц.
 - [ ] S1.4 — Добавить базовый модуль логирования  
   Единый логгер, middleware для запросов/ошибок.

@@ -71,7 +71,7 @@ Recommended Agent: pricing-backend
   Товары с изменениями, позиции для ручного решения, агрегаты.
 - [x] S3.3 — Реализовать Telegram-бот (MVP)  
   Команды `/today`, `/alerts`, только чтение из backend.
-- [ ] S3.4 — Поддержать сценарий ручного подтверждения цен через Telegram  
+- [x] S3.4 — Поддержать сценарий ручного подтверждения цен через Telegram  
   UX «Принять/Отклонить», backend API, логирование действий.
 - [ ] S3.5 — Финальный проход по документации и DoD  
   Сверка с `docs/PRD.md`, `docs/constitution.md`, `docs/architecture.md`, `docs/price-strategies.md`, `docs/RELEASE_NOTES.md` для MVP.

@@ -5,6 +5,7 @@
 - High-level архитектура: `docs/architecture.md`
 - План задач: `docs/plan.md`
 - Стратегии ценообразования (MVP): `docs/price-strategies.md`
+- Release Notes (MVP): `docs/RELEASE_NOTES.md`
 
 Разработка ведётся по правилам `docs/constitution.md`, задачи детализируются в `tasks/`.
 
@@ -36,7 +37,7 @@ uvicorn app.main:app --reload
 cp .env.example .env
 cd infra && docker-compose up --build
 ```
-Сервисы: FastAPI (`http://localhost:8000`), PostgreSQL (`localhost:5432`), Redis (`localhost:6379`). После запуска API healthcheck: `curl http://localhost:8000/health`.
+Сервисы: FastAPI (`http://localhost:${APP_PORT:-18080}`), PostgreSQL (`localhost:${POSTGRES_PORT:-55432}`), Redis (`localhost:${REDIS_PORT:-16379}`). При конфликте портов можно поменять значения в `.env`. После запуска API healthcheck: `curl http://localhost:${APP_PORT:-18080}/health`.
 
 ### Переменные окружения
 - App: `APP_PORT`, `ENVIRONMENT`, `LOG_LEVEL`

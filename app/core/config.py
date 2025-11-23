@@ -8,11 +8,14 @@ class Settings(BaseSettings):
     environment: str = "development"
     debug: bool = True
     app_port: int = 8000
+    log_level: str = "INFO"
 
     database_url: str = "postgresql+psycopg2://postgres:postgres@localhost:5432/pricing"
     redis_url: str = "redis://localhost:6379/0"
 
-    model_config = SettingsConfigDict(env_file=".env", env_prefix="", env_nested_delimiter="__")
+    model_config = SettingsConfigDict(
+        env_file=".env", env_prefix="", env_nested_delimiter="__", extra="ignore"
+    )
 
 
 @lru_cache(maxsize=1)

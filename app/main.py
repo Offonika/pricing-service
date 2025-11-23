@@ -5,8 +5,10 @@ from typing import Callable
 from fastapi import FastAPI, Request, Response
 
 from app.api.health import router as health_router
+from app.api.bi import router as bi_router
 from app.api.recommendations import router as recommendations_router
 from app.api.reports import router as reports_router
+from app.api.telegram import router as telegram_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 
@@ -46,3 +48,5 @@ async def log_requests(request: Request, call_next: Callable[[Request], Response
 app.include_router(health_router)
 app.include_router(recommendations_router, prefix="/api")
 app.include_router(reports_router, prefix="/api/reports")
+app.include_router(bi_router, prefix="/api/bi")
+app.include_router(telegram_router, prefix="/api/telegram")

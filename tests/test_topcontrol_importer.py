@@ -6,7 +6,11 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.models import Base, Product
-from app.services.importers.topcontrol import ImportResult, import_products_from_csv
+from app.services.importers.topcontrol import (
+    ImportResult,
+    import_products,
+    import_products_from_csv,
+)
 
 
 def write_csv(tmp_path: Path, rows: List[Dict]) -> Path:
@@ -82,3 +86,33 @@ def test_import_products_from_csv_updates_existing(tmp_path) -> None:
         assert result.created == 0
         assert result.updated == 1
         assert product.name == "Product 1 updated"
+
+
+def test_import_products_from_dbf(tmp_path) -> None:
+    try:
+        import dbf  # type: ignore
+    except ImportError:
+        pytest.skip("dbf package not installed")
+
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    table_path = tmp_path / "topcontrol.dbf"
+    table = dbf.Table(
+        table_path.as_posix(),
+        "KODTOV C(20); TOVAR C(50); BRAND C(30); GRUPPA C(30); QUANTITY N(10,0); PURCHASE N(12,2)",
+    )
+    table.open(mode=dbf.READ_WRITE)
+    table.append(
+        ("DBF-1", "DBF Product", "DBrand", "DGroup", 7, 15.75),
+    )
+    table.close()
+
+    with Session(engine) as session:
+        result = import_products(table_path, session)
+        product = session.query(Product).filter_by(sku="DBF-1").one()
+
+        assert result.created == 1
+        assert result.errors == 0
+        assert product.stock.quantity == 7
+        assert str(product.stock.purchase_price) == "15.75"

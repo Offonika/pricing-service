@@ -50,3 +50,4 @@ GitHub Actions (`.github/workflows/ci.yml`) гоняет ruff, black --check и 
 ## Тесты
 - Запуск всех тестов: `pytest`
 - Базовые интеграционные проверки: `/health` и операции с БД на SQLite (см. `tests/`).
+- Импорт TopControl: поддерживаются CSV и DBF выгрузки (см. `app/services/importers/topcontrol.py` и тесты).

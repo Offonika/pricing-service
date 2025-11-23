@@ -46,3 +46,7 @@ GitHub Actions (`.github/workflows/ci.yml`) гоняет ruff, black --check и 
   `DATABASE_URL=postgresql+psycopg2://postgres:postgres@localhost:5432/pricing alembic revision --autogenerate -m "message"`
 - Применение миграций:  
   `DATABASE_URL=... alembic upgrade head`
+
+## Тесты
+- Запуск всех тестов: `pytest`
+- Базовые интеграционные проверки: `/health` и операции с БД на SQLite (см. `tests/`).

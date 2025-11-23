@@ -31,7 +31,7 @@ Recommended Agent: pricing-backend
 ## S1. Базовая архитектура сервиса и модели данных
 Фокус: каркас FastAPI-сервиса, схема БД, базовый healthcheck.
 
-- [ ] S1.1 — Создать каркас приложения FastAPI  
+- [x] S1.1 — Создать каркас приложения FastAPI  
   Структура каталогов, точка входа, эндпоинт `/health`, Pydantic Settings.
 - [ ] S1.2 — Определить базовые модели БД  
   Product, Competitor, CompetitorPrice, связи relationship.

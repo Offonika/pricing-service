@@ -29,6 +29,7 @@ pytest
 ```bash
 uvicorn app.main:app --reload
 ```
+Конфигурация берётся из переменных окружения (см. `.env.example`), Pydantic Settings.
 
 ## Docker Compose (dev)
 ```bash

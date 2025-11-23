@@ -47,7 +47,7 @@ Recommended Agent: pricing-backend
 ## S2. Импорт данных и ядро ценообразования
 Фокус: импорт TopControl и конкурентов, матчинги, базовые стратегии.
 
-- [ ] S2.1 — Импорт товаров и остатков из TopControl  
+- [x] S2.1 — Импорт товаров и остатков из TopControl  
   Чтение DBF/CSV/Excel, маппинг в Product и связанные таблицы.
 - [ ] S2.2 — Импорт цен конкурентов  
   Чтение CSV/Excel из парсера, Competitor/CompetitorPrice, логирование.

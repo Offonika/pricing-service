@@ -18,3 +18,6 @@ class Product(Base):
     competitor_prices: Mapped[List["CompetitorPrice"]] = relationship(
         back_populates="product", cascade="all, delete-orphan"
     )
+    stock: Mapped[Optional["ProductStock"]] = relationship(
+        "ProductStock", back_populates="product", cascade="all, delete-orphan", uselist=False
+    )

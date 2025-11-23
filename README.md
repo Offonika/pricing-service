@@ -29,3 +29,10 @@ pytest
 ```bash
 uvicorn app.main:app --reload
 ```
+
+## Docker Compose (dev)
+```bash
+cp .env.example .env
+cd infra && docker-compose up --build
+```
+Сервисы: FastAPI (`http://localhost:8000`), PostgreSQL (`localhost:5432`), Redis (`localhost:6379`). После запуска API healthcheck: `curl http://localhost:8000/health`.

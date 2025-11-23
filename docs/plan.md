@@ -37,7 +37,7 @@ Recommended Agent: pricing-backend
   Product, Competitor, CompetitorPrice, связи relationship.
 - [x] S1.3 — Настроить Alembic и первую миграцию  
   Инициализация Alembic, миграция для базовых таблиц.
-- [ ] S1.4 — Добавить базовый модуль логирования  
+- [x] S1.4 — Добавить базовый модуль логирования  
   Единый логгер, middleware для запросов/ошибок.
 - [ ] S1.5 — Описать архитектуру на уровне high-level  
   Актуализация `docs/architecture.md`, потоки данных, очередь задач.

@@ -21,7 +21,7 @@ Recommended Agent: pricing-backend
 
 - [x] S0.1 — Инициализировать репозиторий проекта  
   Git-репозиторий, `.gitignore`, минимальный `README.md`.
-- [ ] S0.2 — Настроить базовое окружение разработки  
+- [x] S0.2 — Настроить базовое окружение разработки  
   Зависимости (FastAPI, Uvicorn, SQLAlchemy, Alembic, Pydantic, pytest), линтер/форматтер.
 - [ ] S0.3 — Настроить Docker для dev-среды  
   `infra/docker-compose.yml`, `Dockerfile`, `.env.example`.

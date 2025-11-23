@@ -25,7 +25,7 @@ Recommended Agent: pricing-backend
   Зависимости (FastAPI, Uvicorn, SQLAlchemy, Alembic, Pydantic, pytest), линтер/форматтер.
 - [x] S0.3 — Настроить Docker для dev-среды  
   `infra/docker-compose.yml`, `Dockerfile`, `.env.example`.
-- [ ] S0.4 — Настроить минимальный CI  
+- [x] S0.4 — Настроить минимальный CI  
   Workflow с установкой зависимостей, линтером и тестами.
 
 ## S1. Базовая архитектура сервиса и модели данных

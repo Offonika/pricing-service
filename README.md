@@ -36,3 +36,6 @@ cp .env.example .env
 cd infra && docker-compose up --build
 ```
 Сервисы: FastAPI (`http://localhost:8000`), PostgreSQL (`localhost:5432`), Redis (`localhost:6379`). После запуска API healthcheck: `curl http://localhost:8000/health`.
+
+## CI
+GitHub Actions (`.github/workflows/ci.yml`) гоняет ruff, black --check и pytest на push/PR в main.

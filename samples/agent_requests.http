@@ -1,0 +1,36 @@
+# Sample requests for agent integration (localhost, adjust APP_PORT if needed)
+
+### Upsert phone model
+POST http://localhost:8000/api/agents/devices/models
+Content-Type: application/json
+
+{
+  "brand": "Samsung",
+  "model_name": "Galaxy S26",
+  "variant": "Ultra",
+  "announce_date": "2026-02-10",
+  "release_date": "2026-03-01",
+  "screen": {
+    "size_inch": 6.8,
+    "technology": "AMOLED",
+    "refresh_rate_hz": 120
+  }
+}
+
+### Generate keywords inside backend (replace ID)
+POST http://localhost:8000/api/agents/keywords/generate?phone_model_id=1
+
+### Bulk save ready-made keywords (replace ID)
+POST http://localhost:8000/api/agents/keywords/bulk
+Content-Type: application/json
+
+{
+  "phone_model_id": 1,
+  "phrases": [
+    "дисплей galaxy s26 ultra",
+    "экран galaxy s26 ultra купить",
+    "замена дисплея galaxy s26 ultra"
+  ],
+  "language": "ru",
+  "category": "display"
+}

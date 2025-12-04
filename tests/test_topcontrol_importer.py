@@ -2,6 +2,8 @@ import csv
 from pathlib import Path
 from typing import Dict, List
 
+import pytest
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -116,3 +118,71 @@ def test_import_products_from_dbf(tmp_path) -> None:
         assert result.errors == 0
         assert product.stock.quantity == 7
         assert str(product.stock.purchase_price) == "15.75"
+
+
+def test_import_skips_duplicate_display_names(tmp_path) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    initial = [
+        {"KODTOV": "SKU-1", "TOVAR": "Дисплей iPhone 11 Pro черный"},
+    ]
+    csv_path = write_csv(tmp_path, initial)
+    with Session(engine) as session:
+        import_products_from_csv(csv_path, session)
+
+    duplicate = [
+        {"KODTOV": "SKU-2", "TOVAR": "Дисплей iPhone 11 Pro черный"},
+    ]
+    csv_path2 = write_csv(tmp_path, duplicate)
+    with Session(engine) as session:
+        result: ImportResult = import_products_from_csv(csv_path2, session)
+        products = session.query(Product).order_by(Product.sku).all()
+
+        assert result.created == 0
+        assert result.updated == 0
+        assert result.skipped_duplicates == 1
+        assert len(products) == 1
+        assert products[0].sku == "SKU-1"
+
+
+def test_import_skips_marked_duplicates(tmp_path) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    rows = [
+        {"KODTOV": "SKU-1", "TOVAR": "! дубликат ! Дисплей iPhone 11 Pro черный"},
+        {"KODTOV": "SKU-2", "TOVAR": "!!! ДУБЛИКАТ!!! дисплей iphone 5s"},
+    ]
+    csv_path = write_csv(tmp_path, rows)
+
+    with Session(engine) as session:
+        result: ImportResult = import_products_from_csv(csv_path, session)
+        products = session.query(Product).all()
+
+        assert result.created == 0
+        assert result.skipped_marked_duplicates == 2
+        assert len(products) == 0
+
+
+def test_import_marks_existing_duplicate_inactive(tmp_path) -> None:
+    engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(engine)
+
+    base_rows = [
+        {"KODTOV": "SKU-1", "TOVAR": "Оригинальный дисплей iPhone 11 Pro"},
+    ]
+    csv_path = write_csv(tmp_path, base_rows)
+    with Session(engine) as session:
+        import_products_from_csv(csv_path, session)
+
+    dup_rows = [
+        {"KODTOV": "SKU-1", "TOVAR": "!!! ДУБЛИКАТ!!! дисплей iphone 11 pro"},
+    ]
+    csv_path_dup = write_csv(tmp_path, dup_rows)
+    with Session(engine) as session:
+        result: ImportResult = import_products_from_csv(csv_path_dup, session)
+        product = session.query(Product).filter_by(sku="SKU-1").one()
+
+        assert result.skipped_marked_duplicates == 1
+        assert product.is_active is False

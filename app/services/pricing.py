@@ -16,6 +16,7 @@ def calculate_recommendation(
     product: Product,
     competitor_min_price: Optional[Decimal],
     min_margin_pct: Decimal = Decimal("0.1"),
+    demand_score: Optional[float] = None,
 ) -> PricingResult:
     stock: Optional[ProductStock] = product.stock
     purchase = stock.purchase_price if stock and stock.purchase_price else Decimal("0")
@@ -23,6 +24,7 @@ def calculate_recommendation(
         purchase_price=purchase,
         min_margin_pct=min_margin_pct,
         competitor_min_price=competitor_min_price,
+        demand_score=demand_score,
     )
     return calculate_base_price(context)
 

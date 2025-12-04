@@ -1,0 +1,5 @@
+# m h dom mon dow user command
+10 3 * * * root /opt/pricing-service/infra/cron/update_smartphone_releases.sh
+
+
+

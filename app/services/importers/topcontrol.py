@@ -1,5 +1,6 @@
 import csv
 import logging
+import re
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
@@ -20,6 +21,8 @@ class ImportResult:
     updated: int = 0
     stock_updated: int = 0
     errors: int = 0
+    skipped_duplicates: int = 0
+    skipped_marked_duplicates: int = 0
 
 
 def _parse_decimal(value: Optional[str]) -> Optional[Decimal]:
@@ -40,6 +43,16 @@ def _parse_int(value: Optional[str]) -> Optional[int]:
         return None
 
 
+def _normalize_display_name(name: str) -> str:
+    # простой нормалайзер для поиска дублей дисплеев
+    return " ".join(str(name).strip().lower().split())
+
+
+def _has_duplicate_marker(name: str) -> bool:
+    lower = re.sub(r"[^\w\s]+", " ", str(name).lower())
+    return "дубл" in lower or "дублик" in lower or "duplicate" in lower or "dupl" in lower
+
+
 def _rows_from_csv(csv_path: Path) -> Iterable[dict]:
     with csv_path.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
@@ -55,6 +68,10 @@ def _rows_from_dbf(dbf_path: Path) -> Iterable[dict]:
 
 def _import_rows(rows: Iterable[dict], session: Session) -> ImportResult:
     result = ImportResult()
+    existing_display_names = set()
+    for p in session.execute(select(Product)).scalars():
+        if p.name and "дисплей" in p.name.lower():
+            existing_display_names.add(_normalize_display_name(p.name))
     for row in rows:
         try:
             sku = row.get("KODTOV") or row.get("kodtov") or row.get("sku")
@@ -66,6 +83,23 @@ def _import_rows(rows: Iterable[dict], session: Session) -> ImportResult:
 
             product = session.execute(select(Product).where(Product.sku == sku)).scalar_one_or_none()
             is_new = product is None
+
+            if _has_duplicate_marker(name):
+                result.skipped_marked_duplicates += 1
+                logger.info("skip row marked as duplicate: %s", name)
+                if product:
+                    product.is_active = False
+                continue
+
+            is_display = "дисплей" in str(name).lower()
+            if is_new and is_display:
+                norm_name = _normalize_display_name(name)
+                if norm_name in existing_display_names:
+                    result.skipped_duplicates += 1
+                    logger.info("skip duplicate display name for sku=%s: %s", sku, name)
+                    continue
+                existing_display_names.add(norm_name)
+
             if is_new:
                 product = Product(sku=sku, name=name)
                 session.add(product)

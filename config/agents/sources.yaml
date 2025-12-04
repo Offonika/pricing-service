@@ -1,0 +1,17 @@
+# Пример конфигурации источников для агента новинок
+sources:
+  - brand: "Apple"
+    urls:
+      - "https://www.apple.com/newsroom/archive/"
+      - "https://www.apple.com/iphone/"
+  - brand: "Samsung"
+    urls:
+      - "https://news.samsung.com/global/category/products/mobile"
+      - "https://www.samsung.com/global/galaxy/"
+  - brand: "Xiaomi"
+    urls:
+      - "https://www.mi.com/global/news"
+criteria:
+  require_date: true
+  require_brand_in_title: true
+  min_confidence: 0.6

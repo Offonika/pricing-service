@@ -9,6 +9,8 @@ from app.api.bi import router as bi_router
 from app.api.recommendations import router as recommendations_router
 from app.api.reports import router as reports_router
 from app.api.telegram import router as telegram_router
+from app.api.agents import router as agents_router
+from app.api.analytics import router as analytics_router
 from app.core.config import get_settings
 from app.core.logging import configure_logging
 
@@ -50,3 +52,5 @@ app.include_router(recommendations_router, prefix="/api")
 app.include_router(reports_router, prefix="/api/reports")
 app.include_router(bi_router, prefix="/api/bi")
 app.include_router(telegram_router, prefix="/api/telegram")
+app.include_router(agents_router, prefix="/api")
+app.include_router(analytics_router, prefix="/api")

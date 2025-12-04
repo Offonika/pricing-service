@@ -17,6 +17,7 @@
 1. **Импортирует данные**:
    - наши товары, закупочные цены, остатки из TopControl;
    - цены и наличие у конкурентов из парсера (ZennoPoster и др.).
+   - сигналы по рынку смартфонов: новые модели из пресс-релизов брендов, ключевые фразы по запчастям и спрос по ним из Яндекс.Директ.
 
 2. **Хранит и обрабатывает данные** в БД (PostgreSQL):
    - товары (`Product`);
@@ -68,6 +69,14 @@
   - конкуренты (название, сайт, активность).
 - `CompetitorPrice`
   - цены конкурентов по товарам (product_id, competitor_id, цена, наличие, дата сбора).
+- `PhoneModel` (или аналогичная сущность)
+  - новые модели смартфонов с брендом/моделью/вариантом/датами анонса и продаж, опциональными параметрами экрана; источник — агент по пресс-релизам.
+- `SmartphoneRelease`
+  - факты анонсов смартфонов из внешних новостных источников: brand/model/full_name, announcement_date, release_status (rumor/announced/released), источник (name/url/type), summary, raw_payload, is_active, timestamps; используется для аналитики и сигналов стратегиям.
+- `Keyword`
+  - ключевые фразы под запчасти (дисплей/экран/тач/стекло <brand> <model>), привязка к модели телефона.
+- `DemandStat`
+  - спрос по фразам из Яндекс.Директ (показы/клики/регион/дата), хранит историю запросов.
 - `ProductMatch` (или аналог)
   - результаты матчинга наших товаров с карточками конкурентов.
 - `PricingStrategy`
@@ -112,9 +121,36 @@
 - Источник:
   - CSV/Excel с ценами и наличием по конкурентам.
 - Текущие целевые конкуренты пилота: moba.ru, green-spark.ru, ultra-details.ru, memstech.ru.
+- Режимы:
+  - `COMPETITOR_SOURCE_MODE=zenno` — ждём файлы от внешнего парсера (ZennoPoster).
+  - `COMPETITOR_SOURCE_MODE=internal` — встроенный парсер, запросы идут через Proxy API (`PROXY_API_URL`, `PROXY_API_TOKEN`), объём ограничивает `COMPETITOR_PARSE_LIMIT` (дефолтно 10 для отладки).
 - Способ интеграции:
   - скрипт/бот парсинга складывает файлы в подготовленную директорию или отдаёт по API;
   - модуль импорта читает файл и заполняет `Competitor`, `CompetitorPrice`, обновляет `ProductMatch`.
+  - Для FTP-выгрузок конкурентов (poiskzip-moba, poiskzip-liberti) используется поток `FTP → XLSX → job import_competitor_ftp`. Источники задаются через `COMPETITOR_FTP_SOURCES` (`name:directory:pattern`, где pattern содержит `{date}`, напр. `moba-{date}.xlsx`). Job подключается к FTP (`COMPETITOR_FTP_HOST`/`PORT`/`USER`/`PASSWORD`, `COMPETITOR_FTP_TLS`, `COMPETITOR_FTP_TIMEOUT_SEC`), ищет датированные файлы, валидирует обязательные колонки (`group, sku, name, price_opt, price_roz, link, time`, опционально `amount`/`stock`), приводит `time` к MSK ISO8601, сверяет дату имени и содержимого, и пишет данные в `competitor_ftp_file` (метаданные), `competitor_ftp_raw_row` (сырьё, ошибки) и `competitor_ftp_record` (нормализованные строки). Дедуп по `(source, file_date)`, при повторной заливке файл перезаписывается. Цепочка ZenLogs (HTTP) и каталог `competitor_item`/`competitor_item_snapshot` удалены, используем только FTP-поток.
+  - Матчинг цен: job `python -m tasks.match_competitor_ftp` берёт `competitor_ftp_record`, нормализует SKU и сопоставляет с `product.sku`, создаёт `CompetitorPrice` (price = `price_roz` или `price_opt`, in_stock из файла, collected_at = `observed_at`) и `ProductMatch` (confidence=1.0). unmatched/ambiguous логируются, много-матч по SKU не записывается.
+
+#### Агент по рынку смартфонов (пресс-релизы/новости)
+
+- Назначение:
+  - автоматический ресёрч официальных анонсов производителей (Apple, Samsung, Xiaomi и др.).
+- Способ интеграции:
+  - агент (ChatGPT/Codex) регулярно обходит конфигурируемый список URL;
+  - извлекает бренд/модель/вариант, даты анонса/старта продаж, параметры экрана (если есть);
+  - вызывает backend-эндпоинт вида `POST /devices/models` и пишет нормализованные данные в `PhoneModel` (без собственного хранения).
+- Запуск:
+  - планировщик/cron; список брендов и источников задаётся в конфиге проекта.
+
+#### Генерация ключевых фраз и Яндекс.Директ
+
+- Генерация фраз:
+  - на вход — новые модели из `PhoneModel`;
+  - backend-процедура или отдельный агент формирует фразы по шаблонам «дисплей/экран/тач/стекло <brand> <model> купить/замена/...», сохраняет в `Keyword`.
+- Интеграция с Яндекс.Директ:
+  - используется официальный API Директа (не прямой Wordstat) через сервис `yandex_integration_service`;
+  - сервис хранит токен/креды, принимает список фраз и регион, возвращает агрегаты (прогноз показов/кликов, при наличии — ставки/конкуренцию);
+  - результаты сохраняются в `DemandStat` с привязкой к фразе, дате, региону;
+  - внешний интерфейс — абстрактный метод `get_yandex_stats(phrases[], region) → [{phrase, impressions, clicks, date, ...}]`.
 
 #### 1С
 
@@ -141,12 +177,64 @@
   - `/api/bi/recommendations` — последние рекомендации с версией стратегии и причинами;
   - `/api/bi/competitor-prices` — последние цены конкурентов.
 - Доступ предполагается через авторизованный backend (без прямого доступа к БД).
+- Дополнительные витрины по спросу для моделей телефонов:
+  - представления `vw_bi_model_demand_daily` и `vw_bi_model_demand_30d` (см. миграцию `1a4fb0e69e78...`);
+  - HTTP-эндпоинты `/api/analytics/model-demand/top` и `/api/analytics/model-demand/{id}/timeseries` для простых дашбордов/админок;
+  - подробнее — `docs/BI.ModelDemand.md`.
+
+---
+
+### 2.5. Подсистема Market Research / Demand
+
+**Назначение:** получать новые модели смартфонов, генерировать поисковые фразы по запчастям и собирать спрос через Яндекс.Директ как отдельный источник данных для pricing-engine.
+
+**Состав и границы:**
+- `DeviceModelService` — приём и хранение моделей телефонов от агента пресс-релизов.
+- `KeywordGenerationService` — генерация фраз по шаблонам для дисплеев/экранов/тач/стекло.
+- `DemandService` — фасад для вызова `YandexDirectClient`, сохранение агрегатов спроса.
+- `YandexDirectClient` — тонкий клиент поверх официального API (токен/лимиты/ретраи внутри).
+- API-слой `/api/agents/*` — HTTP-инструменты, через которые агенты отдают модели и фразы.
+
+**Модель данных (основные поля):**
+- `PhoneModel`:
+  - `brand`, `model_name`, `variant?`, `announce_date?`, `release_date?`;
+  - параметры экрана (опционально): `screen_size_inch?`, `screen_technology?`, `screen_refresh_rate_hz?`;
+  - служебные: `created_at`, `updated_at`, `is_active`.
+- `Keyword`:
+  - `phrase`, `language?`, `category` (например, `display`);
+  - `phone_model_id` (FK), `source` (agent/backend), `is_active`, `created_at`, `updated_at`.
+- `DemandStat`:
+  - `keyword_id` (FK), `date`, `region`;
+  - метрики: `impressions`, `clicks?`, `ctr?`, `bid_metrics?` (расширяемый набор под ответ Директа);
+  - служебные: `source="yandex_direct"`, `received_at`.
+
+**Поток:** агент → `/api/agents/devices/models` → `PhoneModel` → генерация фраз → `/api/agents/keywords/bulk` (если фразы сгенерированы агентом) или `KeywordGenerationService` → `Keyword` → `DemandService` → Яндекс.Директ → `DemandStat` → pricing-engine.
+
+---
+
+### 2.6. Мониторинг новинок смартфонов (News API + LLM)
+
+- **Назначение:** фиксировать анонсы смартфонов в единой таблице `smartphone_releases`, чтобы видеть новые модели раньше и кормить downstream-анализ (спрос/ассортимент/стратегии цен).
+- **Компоненты:**
+  - `SmartphoneNewsClient` — HTTP-клиент к внешнему новостному API (конфиг `.env`: `SMARTPHONE_NEWS_API_BASE_URL`, `SMARTPHONE_NEWS_API_KEY`, `SMARTPHONE_NEWS_LANGUAGE`, `SMARTPHONE_NEWS_QUERY`, `SMARTPHONE_NEWS_DAYS_BACK`, `SMARTPHONE_NEWS_PAGE_SIZE`).
+  - `SmartphoneReleaseNormalizer` — LLM-промпт к OpenAI (использует `OPENAI_API_KEY`), возвращает `is_phone_announcement`, `brand`, `model`, `announcement_date`, `release_status (rumor/announced/released)`.
+  - `SmartphoneReleaseService` — фасад, который делает dedup/upsert в `smartphone_releases` по `brand+model+announcement_date` и `source_name+source_url`.
+  - фоновая job `python -m tasks.update_smartphone_releases` (Cron/Codex), включается фича-флагом `SMARTPHONE_RELEASES_ENABLED`.
+- **Поток данных:** внешнее News API → нормализация через OpenAI → upsert в `smartphone_releases` (brand/model/full_name/announcement_date/release_status/source/summary/raw_payload/is_active) → сигнал для аналитики/спроса/стратегий.
+- **Ограничения MVP:** один источник, опрос раз в сутки (или реже), отсутствие прямого влияния на pricing-engine (пока только сигнал «модель появилась»).
 
 ---
 
 ## 3. Потоки данных (high-level)
 
-1. **Импорт наших данных (TopControl)**
+1. **Сбор рынка смартфонов и спроса (агентный контур)**
+   - Планировщик вызывает агента пресс-релизов, который обходит источники брендов и отправляет структурированные модели в backend (`PhoneModel`).
+   - Отдельная фоновая таска мониторинга новостей (News API + LLM) пишет анонсы в `smartphone_releases`, чтобы фиксировать появление моделей, даже если агент по пресс-релизам не нашёл их.
+   - Генератор ключевых фраз (процедура или агент) формирует шаблонные запросы по запчастям и сохраняет их в `Keyword`.
+   - Сервис `yandex_integration_service` принимает набор фраз и регион, обращается к API Яндекс.Директ и пишет агрегаты спроса в `DemandStat`.
+   - Полученные признаки (новые модели, спрос по фразам) используются в стратегиях ценообразования и приоритизации ассортимента.
+
+2. **Импорт наших данных (TopControl)**
    - TopControl формирует выгрузку (DBF/CSV/Excel).
    - Файл поступает в сервис ценообразования.
    - Фоновая задача `import_topcontrol_dump`:
@@ -154,25 +242,26 @@
      - обновляет таблицы `Product` (и, при необходимости, таблицы остатков/закупок);
      - логирует количество обработанных/пропущенных записей.
 
-2. **Импорт цен конкурентов**
+3. **Импорт цен конкурентов**
    - Парсер конкурентов выдаёт CSV/Excel с ценами и наличием.
    - Фоновая задача `import_competitor_prices`:
      - обновляет `Competitor` и `CompetitorPrice`;
      - при необходимости обновляет/создаёт связи в `ProductMatch`.
+  - В режиме `COMPETITOR_SOURCE_MODE=zenno` используется job `python -m tasks.import_zenlogs_competitors`, которая проходит по всем источникам из `ZENLOGS_SOURCES`, скачивает XLSX ZenLogs (`group`, `sku`, `name`, `price_opt`, `link`, `stock`) и пишет данные в `competitor_item` + `competitor_item_snapshot`, фиксируя историю цен/наличия без привязки к нашим SKU. Для FTP-прайсов есть отдельная job `python -m tasks.import_competitor_ftp`, которая выкачивает датированные XLSX по маске, валидирует и сохраняет в `competitor_ftp_*` таблицы с дедупликацией по дате файла.
 
-3. **Матчинг товаров и карточек конкурентов**
+4. **Матчинг товаров и карточек конкурентов**
    - Запускается по расписанию или после импорта.
    - Использует правила (по SKU, названию, бренду и т.д.).
    - Результат сохраняется в `ProductMatch` с флагами надёжности матча.
 
-4. **Расчёт рекомендованных цен**
+5. **Расчёт рекомендованных цен**
    - Фоновая задача `recalculate_all_prices`:
      - выбирает активные товары и связанные данные;
      - применяет стратегии (`PricingStrategy` и бизнес-правила из PRD);
      - сохраняет результат в `PriceRecommendation` с объяснением (поля «почему так»).
    - Возможен выбор стратегий по группам товаров, брендам, статусам и т.д.
 
-5. **Выгрузка и отчёты**
+6. **Выгрузка и отчёты**
    - Фоновые/ручные задачи для формирования:
      - файлов для 1С (по рекомендуемым ценам);
      - отчётов для коммерческого директора (API/витрины).
@@ -194,6 +283,7 @@
   - `services/`
     - `importers/` — импорт TopControl, парсер конкурентов
     - `pricing_strategies/` — логика стратегий
+    - `market_research/` (новые модули) — модели телефонов, генерация ключей, спрос через Яндекс.Директ
     - другие сервисы
   - `workers/` — фоновые задачи (Celery/RQ)
 - `tests/` — unit и интеграционные тесты

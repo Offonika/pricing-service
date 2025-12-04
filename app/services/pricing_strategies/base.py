@@ -10,6 +10,7 @@ class PricingContext:
     purchase_price: Decimal
     min_margin_pct: Decimal = Decimal("0.1")  # 10% по умолчанию
     competitor_min_price: Optional[Decimal] = None
+    demand_score: Optional[float] = None  # средний спрос (impressions) по модели, если доступно
 
 
 @dataclass
@@ -23,6 +24,8 @@ def calculate_base_price(context: PricingContext) -> PricingResult:
     reasons: list[str] = []
     floor_price = context.purchase_price * (Decimal("1.0") + context.min_margin_pct)
     reasons.append(f"floor = purchase * (1 + min_margin_pct) = {floor_price}")
+    if context.demand_score is not None:
+        reasons.append(f"demand_score={context.demand_score} (логируем, без изменения формулы)")
 
     market_price = context.competitor_min_price
     if market_price is None:

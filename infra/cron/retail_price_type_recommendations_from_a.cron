@@ -1,0 +1,1 @@
+20 10,12,15 1 * * OPENCLAW_ENV_FILE=/home/deploy/.openclaw/.env /home/deploy/.openclaw/workspace/scripts/retail_price_type_recommendations_from_a.sh >> /home/deploy/.openclaw/logs/retail_price_type_recommendations_from_a.log 2>&1

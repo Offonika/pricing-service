@@ -1,0 +1,11 @@
+[Unit]
+Description=Run pricing-expertise-sync watchdog every 5 minutes
+
+[Timer]
+OnCalendar=*:0/5
+Persistent=true
+AccuracySec=1m
+Unit=pricing-expertise-sync-watchdog.service
+
+[Install]
+WantedBy=timers.target

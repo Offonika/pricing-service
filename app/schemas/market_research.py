@@ -1,60 +1,62 @@
-from datetime import date, datetime
-from typing import List, Optional
+from __future__ import annotations
 
-from pydantic import BaseModel, Field, ConfigDict
+from datetime import date, datetime
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class ScreenInfo(BaseModel):
-    size_inch: Optional[float] = Field(default=None, description="Диагональ экрана в дюймах")
-    technology: Optional[str] = Field(default=None, description="Тип матрицы (AMOLED/OLED/LCD)")
-    refresh_rate_hz: Optional[int] = Field(default=None, description="Частота обновления экрана")
+    size_inch: float | None = Field(default=None, description="Диагональ экрана в дюймах")
+    technology: str | None = Field(default=None, description="Тип матрицы (AMOLED/OLED/LCD)")
+    refresh_rate_hz: int | None = Field(default=None, description="Частота обновления экрана")
 
 
 class DeviceModelCreate(BaseModel):
     brand: str
     model_name: str
-    variant: Optional[str] = None
-    announce_date: Optional[date] = None
-    release_date: Optional[date] = None
-    screen: Optional[ScreenInfo] = None
+    variant: str | None = None
+    source: str | None = Field(default="news_agent", description="Источник модели устройства")
+    announce_date: date | None = None
+    release_date: date | None = None
+    screen: ScreenInfo | None = None
 
 
 class DeviceModelResponse(DeviceModelCreate):
     id: int
-    screen_size_inch: Optional[float] = None
-    screen_technology: Optional[str] = None
-    screen_refresh_rate_hz: Optional[int] = None
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
+    screen_size_inch: float | None = None
+    screen_technology: str | None = None
+    screen_refresh_rate_hz: int | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class KeywordBulkCreate(BaseModel):
     phone_model_id: int
-    phrases: List[str]
-    language: Optional[str] = None
-    category: Optional[str] = Field(default="display", description="Категория запчасти")
-    source: Optional[str] = Field(default="agent", description="Источник генерации фраз")
+    phrases: list[str]
+    language: str | None = None
+    category: str | None = Field(default="display", description="Категория запчасти")
+    source: str | None = Field(default="agent", description="Источник генерации фраз")
 
 
 class KeywordResponse(BaseModel):
     id: int
     phrase: str
     phone_model_id: int
-    language: Optional[str] = None
-    category: Optional[str] = None
+    language: str | None = None
+    category: str | None = None
 
     model_config = ConfigDict(from_attributes=True)
 
 
 class KeywordDemandResponse(BaseModel):
     keyword_id: int
-    phrase: Optional[str] = None
-    region: Optional[str] = None
+    phrase: str | None = None
+    region: str | None = None
     date: date
-    impressions: Optional[int] = None
-    clicks: Optional[int] = None
-    ctr: Optional[float] = None
+    impressions: int | None = None
+    clicks: int | None = None
+    ctr: float | None = None
 
     model_config = ConfigDict(from_attributes=True)

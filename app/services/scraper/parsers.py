@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+from collections.abc import Iterable
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
-from typing import Iterable, List
+
 from bs4 import BeautifulSoup
 
 from app.services.scraper.models import CompetitorOffer
@@ -25,12 +26,14 @@ def _parse_bool(value: str) -> bool:
     return normalized in {"1", "true", "yes", "y", "in_stock", "available", "есть"}
 
 
-def parse_html_offers(content: str, competitor: str, collected_at: datetime) -> List[CompetitorOffer]:
+def parse_html_offers(
+    content: str, competitor: str, collected_at: datetime
+) -> list[CompetitorOffer]:
     """
     Простая HTML-выборка: ищем блоки с class="offer" и data-* атрибутами.
     Используется для отладки, реальные правила будут уточняться под каждую витрину.
     """
-    offers: List[CompetitorOffer] = []
+    offers: list[CompetitorOffer] = []
     pattern = re.compile(
         r'<div[^>]*class="offer"[^>]*data-sku="(?P<sku>[^"]+)"[^>]*data-price="(?P<price>[^"]+)"'
         r'[^>]*data-availability="(?P<availability>[^"]+)"[^>]*data-url="(?P<url>[^"]+)"'
@@ -55,11 +58,13 @@ def parse_html_offers(content: str, competitor: str, collected_at: datetime) -> 
     return offers
 
 
-def parse_json_offers(content: str, competitor: str, collected_at: datetime) -> List[CompetitorOffer]:
+def parse_json_offers(
+    content: str, competitor: str, collected_at: datetime
+) -> list[CompetitorOffer]:
     """
     Поддержка формата JSON-списка словарей с полями sku/name/price/availability/url/category.
     """
-    offers: List[CompetitorOffer] = []
+    offers: list[CompetitorOffer] = []
     try:
         payload = json.loads(content)
     except json.JSONDecodeError:
@@ -74,8 +79,12 @@ def parse_json_offers(content: str, competitor: str, collected_at: datetime) -> 
                     external_sku=str(item.get("sku") or item.get("id") or ""),
                     name=item.get("name") or "",
                     price_roz=_to_decimal(str(item.get("price") or item.get("price_roz") or "0")),
-                    price_opt=_to_decimal(str(item["price_opt"])) if item.get("price_opt") else None,
-                    availability=_parse_bool(item.get("availability") or item.get("in_stock") or "1"),
+                    price_opt=(
+                        _to_decimal(str(item["price_opt"])) if item.get("price_opt") else None
+                    ),
+                    availability=_parse_bool(
+                        item.get("availability") or item.get("in_stock") or "1"
+                    ),
                     url=item.get("url") or "",
                     category=item.get("category"),
                     collected_at=collected_at,
@@ -87,7 +96,7 @@ def parse_json_offers(content: str, competitor: str, collected_at: datetime) -> 
     return offers
 
 
-def parse_offers(content: str, competitor: str, collected_at: datetime) -> List[CompetitorOffer]:
+def parse_offers(content: str, competitor: str, collected_at: datetime) -> list[CompetitorOffer]:
     """
     Универсальный парсер: сначала пытается JSON, затем HTML-шаблон.
     """
@@ -99,7 +108,7 @@ def parse_offers(content: str, competitor: str, collected_at: datetime) -> List[
         return html_offers
     # Moba (Bitrix) разметка: таблица, price в .price[data-value], ссылка в .title a
     soup = BeautifulSoup(content, "html.parser")
-    results: List[CompetitorOffer] = []
+    results: list[CompetitorOffer] = []
     for row in soup.select("table.list_item tr"):  # грубо, ищем строки каталога
         title_el = row.select_one(".item-name-cell .title a")
         price_el = row.select_one(".price[data-value]")

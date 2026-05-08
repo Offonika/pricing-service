@@ -45,4 +45,3 @@ def test_date_mismatch_flag():
     assert len(rows) == 1
     assert rows[0].is_valid is True
     assert mismatch is True
-

@@ -1,10 +1,9 @@
 from __future__ import annotations
 
-import json
 import logging
 import time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from typing import Any
 
 import httpx
 
@@ -16,27 +15,29 @@ logger = logging.getLogger("app.proxy")
 @dataclass
 class ProxyConfig:
     base_url: str
-    token: Optional[str]
+    token: str | None
     timeout_seconds: float
     max_retries: int
-    rps_limit: Optional[float]
-    default_headers: Optional[Dict[str, str]] = None
+    rps_limit: float | None
+    default_headers: dict[str, str] | None = None
 
 
 class ProxyHttpClient:
     def __init__(
         self,
         config: ProxyConfig,
-        transport: Optional[httpx.BaseTransport] = None,
+        transport: httpx.BaseTransport | None = None,
     ) -> None:
         if not config.base_url:
             raise ValueError("Proxy base URL is required")
         self.base_url = config.base_url
         self.max_retries = config.max_retries
         self.rps_limit = config.rps_limit
-        self._last_request_at: Optional[float] = None
+        self._last_request_at: float | None = None
 
-        headers = {k: str(v) for k, v in (config.default_headers or {}).items() if k.lower() != "cookie"}
+        headers = {
+            k: str(v) for k, v in (config.default_headers or {}).items() if k.lower() != "cookie"
+        }
         self.proxy_mode = "api" if config.token else "http_proxy"
         self.default_cookie = None
 
@@ -73,20 +74,20 @@ class ProxyHttpClient:
         self,
         target_url: str,
         method: str = "GET",
-        params: Optional[dict[str, Any]] = None,
-        headers: Optional[dict[str, Any]] = None,
+        params: dict[str, Any] | None = None,
+        headers: dict[str, Any] | None = None,
         data: Any = None,
         json_body: Any = None,
     ) -> httpx.Response:
         if not target_url:
             raise ValueError("target_url is required")
 
-        last_exc: Optional[Exception] = None
+        last_exc: Exception | None = None
         for attempt in range(1, self.max_retries + 1):
             try:
                 self._respect_rps()
                 if self.proxy_mode == "api":
-                    payload: Dict[str, Any] = {
+                    payload: dict[str, Any] = {
                         "url": target_url,
                         "method": method.upper(),
                         "params": params,
@@ -134,7 +135,7 @@ class ProxyHttpClient:
         raise last_exc if last_exc else RuntimeError("proxy request failed")
 
 
-def get_proxy_client(transport: Optional[httpx.BaseTransport] = None) -> ProxyHttpClient:
+def get_proxy_client(transport: httpx.BaseTransport | None = None) -> ProxyHttpClient:
     settings = get_settings()
     if not settings.proxy_api_url:
         # фоллбек: прямое соединение без прокси
@@ -170,7 +171,7 @@ def get_proxy_client(transport: Optional[httpx.BaseTransport] = None) -> ProxyHt
             follow_redirects=True,
         )
         return client
-    base_headers: Dict[str, str] = {
+    base_headers: dict[str, str] = {
         "User-Agent": settings.competitor_user_agent,
         "Accept-Language": settings.competitor_accept_language,
         "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",

@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import List, Optional
 
-from sqlalchemy import DateTime, ForeignKey, JSON, Numeric, func, Index
+from sqlalchemy import JSON, DateTime, ForeignKey, Index, Numeric, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -25,6 +25,4 @@ class PriceRecommendation(Base):
     product = relationship("Product")
     strategy_version = relationship("PricingStrategyVersion")
 
-    __table_args__ = (
-        Index("ix_price_recommendation_product_created", "product_id", "created_at"),
-    )
+    __table_args__ = (Index("ix_price_recommendation_product_created", "product_id", "created_at"),)

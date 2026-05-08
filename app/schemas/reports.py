@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 from decimal import Decimal
-from typing import List
 
 from pydantic import BaseModel
 
@@ -12,8 +13,8 @@ class SummaryReport(BaseModel):
 
 
 class PriceChangeItem(BaseModel):
-    sku: str
+    article: str
     recommended_price: Decimal
     purchase_price: Decimal
     delta: Decimal
-    reasons: List[str]
+    reasons: list[str]

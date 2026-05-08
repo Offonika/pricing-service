@@ -1,0 +1,1 @@
+15 9 * * * OPENCLAW_ENV_FILE=/home/deploy/.openclaw/.env /home/deploy/.openclaw/workspace/scripts/management_tasks_from_a.sh >> /home/deploy/.openclaw/logs/management_tasks_from_a.log 2>&1

@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 from datetime import date, datetime
-from typing import Optional
 
 from pydantic import BaseModel
 
@@ -8,12 +9,12 @@ class ModelDemandItem(BaseModel):
     device_model_id: int
     brand: str
     model_name: str
-    variant: Optional[str] = None
-    region: Optional[str] = None
-    impressions: Optional[float] = None
-    clicks: Optional[float] = None
-    keywords_count: Optional[int] = None
-    last_updated_at: Optional[datetime] = None
+    variant: str | None = None
+    region: str | None = None
+    impressions: float | None = None
+    clicks: float | None = None
+    keywords_count: int | None = None
+    last_updated_at: datetime | None = None
 
 
 class ModelDemandTimeseriesItem(BaseModel):
@@ -21,9 +22,9 @@ class ModelDemandTimeseriesItem(BaseModel):
     device_model_id: int
     brand: str
     model_name: str
-    variant: Optional[str] = None
-    region: Optional[str] = None
-    impressions: Optional[float] = None
-    clicks: Optional[float] = None
-    keywords_count: Optional[int] = None
-    last_updated_at: Optional[datetime] = None
+    variant: str | None = None
+    region: str | None = None
+    impressions: float | None = None
+    clicks: float | None = None
+    keywords_count: int | None = None
+    last_updated_at: datetime | None = None

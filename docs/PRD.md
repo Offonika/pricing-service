@@ -3,6 +3,8 @@
 **Проект:** Умное ценообразование Master Mobile  
  **База:** TopControl \+ парсер конкурентов \+ OpenAI \+ 1С \+ Telegram-бот
 
+Связанный регламент по присвоению SKU: `docs/sku_policy.md`.
+
 ---
 
 ## **1\. Зачем мы это делаем**
@@ -230,7 +232,14 @@
 
 При необходимости:
 
-* свойства товаров: бренд, модель, тип дисплея, качество (FOG / ORIG / In-Cell / Hard OLED и т.п.), цвет и т.д.;
+* свойства товаров:
+  - бренд, модель;
+  - тип дисплея (матрица): LCD (IPS), LCD (TFT), OLED, AMOLED, Super AMOLED, Dynamic AMOLED, LTPS LCD, LTPO AMOLED;
+  - класс дисплея (качество замены): Original, Original Refurbished, OEM, Copy High, Copy Medium, Copy Low;
+  - конструкция: In-Cell, On-Cell, COF, COG;
+  - частота обновления (опционально): 60 / 90 / 120 / 144 Hz;
+  - цвет и т.д.;
+  - рекомендуется хранить тип/класс/конструкцию/частоту отдельными реквизитами, чтобы не смешивать признаки.
 
 * процент брака (по отчётам/регистрам), когда будет выбрано удобное место для выгрузки.
 
@@ -352,7 +361,7 @@
 
 - цель — хранить подтверждённые анонсы новых смартфонов в таблице `smartphone_releases` и давать сигнал аналитике/стратегиям;
 - вход: один внешний новостной API (конфиг через `.env`: `SMARTPHONE_NEWS_API_BASE_URL`, `SMARTPHONE_NEWS_API_KEY`, `SMARTPHONE_NEWS_LANGUAGE`, `SMARTPHONE_NEWS_QUERY`, `SMARTPHONE_NEWS_DAYS_BACK`);
-- обработка: фонова́я job по расписанию (`python -m tasks.update_smartphone_releases`) берёт свежие материалы, LLM-фильтром отделяет обзоры от анонсов, извлекает brand/model/announcement_date/status (`rumor/announced/released`);
+- обработка: фонова́я job по расписанию (`./.venv/bin/python -m tasks.update_smartphone_releases`) берёт свежие материалы, LLM-фильтром отделяет обзоры от анонсов, извлекает brand/model/announcement_date/status (`rumor/announced/released`);
 - вывод: upsert в `smartphone_releases` с полями brand/model/full_name/announcement_date/release_status/source_name/source_url/summary/raw_payload, уникальные индексы по источнику и brand+model+дате;
 - ограничения MVP: один источник, периодичность — раз в сутки или реже, пока без прямого влияния на расчёт цен (только «факт появления модели»).
 

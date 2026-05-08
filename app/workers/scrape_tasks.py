@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -29,9 +28,9 @@ def _ensure_competitor(session: Session, name: str) -> Competitor:
 
 
 def run_scrape(
-    competitors: Dict[str, List[str]],
+    competitors: dict[str, list[str]],
     limit: int,
-    database_url: Optional[str] = None,
+    database_url: str | None = None,
 ) -> dict:
     """
     competitors: {"CompName": ["url1", "url2", ...]}
@@ -54,8 +53,13 @@ def run_scrape(
                     urls=urls,
                     limit=limit,
                 )
-                # simple SKU-based link to Product if exists
-                products = {p.sku: p for p in session.query(Product).filter(Product.sku.in_([o.external_sku for o in offers]))}
+                # simple article-based link to Product if exists
+                products = {
+                    p.article: p
+                    for p in session.query(Product).filter(
+                        Product.article.in_([o.external_sku for o in offers])
+                    )
+                }
                 for offer in offers:
                     product = products.get(offer.external_sku)
                     price = CompetitorPrice(
@@ -84,13 +88,13 @@ def run_scrape(
     return stats
 
 
-def scrape_default(limit: Optional[int] = None) -> dict:
+def scrape_default(limit: int | None = None) -> dict:
     """
     Пример запуска: использует COMPETITOR_PARSE_LIMIT и несколько тестовых URL-ов (заполнить позже).
     """
     settings = get_settings()
     effective_limit = limit if limit is not None else settings.competitor_parse_limit
-    competitors: Dict[str, List[str]] = {
+    competitors: dict[str, list[str]] = {
         "moba": ["https://moba.ru/catalog/"],
         # Указываем конкретный раздел, чтобы бить в API /local/api/catalog/products
         "green-spark": [

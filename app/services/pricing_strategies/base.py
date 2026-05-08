@@ -2,15 +2,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Optional
 
 
 @dataclass
 class PricingContext:
     purchase_price: Decimal
     min_margin_pct: Decimal = Decimal("0.1")  # 10% по умолчанию
-    competitor_min_price: Optional[Decimal] = None
-    demand_score: Optional[float] = None  # средний спрос (impressions) по модели, если доступно
+    competitor_min_price: Decimal | None = None
+    demand_score: float | None = None  # средний спрос (impressions) по модели, если доступно
 
 
 @dataclass
@@ -30,7 +29,9 @@ def calculate_base_price(context: PricingContext) -> PricingResult:
     market_price = context.competitor_min_price
     if market_price is None:
         reasons.append("no competitor prices; using floor price")
-        return PricingResult(recommended_price=floor_price, floor_price=floor_price, reasons=reasons)
+        return PricingResult(
+            recommended_price=floor_price, floor_price=floor_price, reasons=reasons
+        )
 
     if floor_price > market_price:
         reasons.append("floor above market; using floor to keep margin")

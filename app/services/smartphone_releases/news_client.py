@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from datetime import datetime, timedelta
-from typing import List, Optional, Sequence
 
 import httpx
 
@@ -10,7 +10,7 @@ from app.core.config import get_settings
 from app.services.smartphone_releases.types import RawNewsItem
 
 
-def _parse_datetime(raw: Optional[str]) -> Optional[datetime]:
+def _parse_datetime(raw: str | None) -> datetime | None:
     if not raw:
         return None
     value = raw.replace("Z", "+00:00")
@@ -39,7 +39,7 @@ class SmartphoneNewsClient:
         days_back: int = 5,
         page_size: int = 20,
         max_pages: int = 1,
-        max_items: Optional[int] = None,
+        max_items: int | None = None,
         timeout: float = 10.0,
         source_name: str = "NewsAPI",
     ) -> None:
@@ -56,13 +56,13 @@ class SmartphoneNewsClient:
         self.logger = logging.getLogger("app.services.smartphone_news")
         self._client = httpx.Client(timeout=self.timeout)
 
-    def fetch_recent_news(self) -> List[RawNewsItem]:
+    def fetch_recent_news(self) -> list[RawNewsItem]:
         """Возвращает свежие новости по заданному запросу и языкам."""
         if not self.base_url or not self.api_key:
             self.logger.warning("smartphone news client is not configured; skipping fetch")
             return []
 
-        items: List[RawNewsItem] = []
+        items: list[RawNewsItem] = []
         since_date = (datetime.utcnow() - timedelta(days=self.days_back)).date().isoformat()
         params_base = {
             "q": self.query,
@@ -93,7 +93,10 @@ class SmartphoneNewsClient:
                 try:
                     data = response.json()
                 except ValueError:
-                    self.logger.warning("smartphone news returned invalid JSON", extra={"language": lang, "page": page})
+                    self.logger.warning(
+                        "smartphone news returned invalid JSON",
+                        extra={"language": lang, "page": page},
+                    )
                     break
 
                 articles = data.get("articles") or data.get("data") or []
@@ -111,7 +114,9 @@ class SmartphoneNewsClient:
                             title=title.strip(),
                             description=(article.get("description") or article.get("content")),
                             url=url,
-                            published_at=_parse_datetime(article.get("publishedAt") or article.get("published_at")),
+                            published_at=_parse_datetime(
+                                article.get("publishedAt") or article.get("published_at")
+                            ),
                             source_name=article.get("source", {}).get("name") or self.source_name,
                             raw=article,
                         )

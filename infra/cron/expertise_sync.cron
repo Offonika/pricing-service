@@ -1,0 +1,2 @@
+CRON_TZ=Europe/Moscow
+2,12,22,32,42,52 * * * * /opt/MM/pricing-service/infra/cron/expertise_sync.sh >> /var/log/pricing/expertise_sync.log 2>&1

@@ -102,10 +102,16 @@ class CompetitorFtpRecord(Base):
     link: Mapped[Optional[str]] = mapped_column(String(1024))
     in_stock: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     amount: Mapped[Optional[int]] = mapped_column(Integer)
+    parsed_device_brand: Mapped[Optional[str]] = mapped_column(
+        String(128), nullable=True, index=True
+    )
+    parsed_device_model: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    parsed_device_variant: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
+    parse_confidence: Mapped[Optional[float]] = mapped_column(Numeric(4, 3), nullable=True)
+    parse_notes: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     observed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, index=True
     )
 
     raw_row = relationship("CompetitorFtpRawRow", back_populates="record")
     file = relationship("CompetitorFtpFile", back_populates="records")
-

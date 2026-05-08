@@ -1,0 +1,19 @@
+[Unit]
+Description=Pricing Service Logistics Telegram Bot
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/MM/pricing-service
+EnvironmentFile=/opt/MM/pricing-service/.env
+ExecStart=/opt/MM/pricing-service/infra/cron/logistics_bot.sh
+Restart=always
+RestartSec=5
+TimeoutStartSec=30
+StandardOutput=append:/var/log/pricing/logistics_bot.log
+StandardError=append:/var/log/pricing/logistics_bot.log
+
+[Install]
+WantedBy=multi-user.target

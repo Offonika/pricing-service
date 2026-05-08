@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-from typing import Optional
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -18,7 +17,7 @@ def get_engine():
     return create_engine(settings.database_url)
 
 
-def match_products_to_phone_models(limit: Optional[int] = None):
+def match_products_to_phone_models(limit: int | None = None):
     """
     Простая пакетная сверка Product ↔ PhoneModel на основе бренда/подстроки модели.
     Результаты пока логируются; сохранение в таблицу сопоставлений при необходимости можно добавить отдельно.

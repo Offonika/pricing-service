@@ -11,14 +11,16 @@ dependencies = [
     "fastapi>=0.110.0",
     "uvicorn[standard]>=0.27.0",
     "sqlalchemy>=2.0.29",
+    "sqlalchemy-pytds>=1.0.2",
     "alembic>=1.13.1",
     "pydantic>=2.7.0",
     "pydantic-settings>=2.2.1",
     "psycopg2-binary>=2.9.9",
-    "dbfread>=2.0.7",
     "httpx>=0.27.0",
     "openai>=1.51.0",
     "openpyxl>=3.1.5",
+    "pillow>=11.0.0",
+    "numpy>=1.26.0",
 ]
 
 [project.optional-dependencies]
@@ -27,12 +29,19 @@ dev = [
     "httpx>=0.27.0",
     "ruff>=0.4.4",
     "black>=24.4.0",
-    "dbf>=0.99.9",
+    "PyYAML>=6.0",
 ]
 
 [tool.black]
 line-length = 100
 target-version = ["py312"]
+extend-exclude = '''
+/(
+  \.venv
+  | \.venv\.bak_[^/]+
+  | ui/dist
+)/
+'''
 
 [tool.setuptools.packages.find]
 include = ["app"]
@@ -41,7 +50,12 @@ exclude = ["tests", "alembic", "infra", "docs", "tasks"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+extend-exclude = [".venv", ".venv.bak_*", "ui/dist"]
+
+[tool.ruff.lint]
 select = ["E", "F", "B", "UP", "I"]
+ignore = ["E501", "UP006", "UP017", "UP035", "UP038", "UP045"]
+per-file-ignores = { "app/api/*.py" = ["B008"] }
 
 [tool.ruff.format]
 quote-style = "double"

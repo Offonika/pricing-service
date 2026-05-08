@@ -14,7 +14,7 @@ def test_get_recommendation(tmp_path):
     engine = create_engine(f"sqlite:///{db_path}")
     Base.metadata.create_all(engine)
     with Session(engine) as session:
-        product = Product(sku="SKU-API", name="API Product")
+        product = Product(article="SKU-API", name="API Product")
         product.stock = ProductStock(purchase_price=Decimal("100"))
         session.add(product)
         session.commit()
@@ -33,7 +33,7 @@ def test_get_recommendation(tmp_path):
 
     assert response.status_code == 200
     data = response.json()
-    assert data["sku"] == "SKU-API"
+    assert data["article"] == "SKU-API"
     assert Decimal(str(data["recommended_price"])) == Decimal("120")
     assert Decimal(str(data["floor_price"])) == Decimal("120")
 

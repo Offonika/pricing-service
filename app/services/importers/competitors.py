@@ -1,10 +1,12 @@
+from __future__ import annotations
+
 import csv
 import logging
+from collections.abc import Iterable
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Iterable, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -22,7 +24,7 @@ class ImportResult:
     errors: int = 0
 
 
-def _parse_decimal(value: Optional[str]) -> Optional[Decimal]:
+def _parse_decimal(value: str | None) -> Decimal | None:
     if value is None or value == "":
         return None
     try:
@@ -31,14 +33,14 @@ def _parse_decimal(value: Optional[str]) -> Optional[Decimal]:
         return None
 
 
-def _parse_bool(value: Optional[str]) -> bool:
+def _parse_bool(value: str | None) -> bool:
     if value is None:
         return False
     str_val = str(value).strip().lower()
     return str_val in {"1", "true", "yes", "y", "да", "есть", "in_stock"}
 
 
-def _parse_datetime(value: Optional[str]) -> datetime:
+def _parse_datetime(value: str | None) -> datetime:
     if not value:
         return datetime.utcnow()
     for fmt in ("%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
@@ -55,8 +57,7 @@ def _parse_datetime(value: Optional[str]) -> datetime:
 def _rows_from_csv(csv_path: Path) -> Iterable[dict]:
     with csv_path.open(newline="", encoding="utf-8") as f:
         reader = csv.DictReader(f)
-        for row in reader:
-            yield row
+        yield from reader
 
 
 def import_competitor_prices_from_csv(csv_path: Path, session: Session) -> ImportResult:
@@ -70,19 +71,20 @@ def import_competitor_prices_from_csv(csv_path: Path, session: Session) -> Impor
             competitor_name = row.get("competitor") or row.get("COMPETITOR")
             if not sku or not competitor_name:
                 result.errors += 1
-                logger.warning("skip row: missing sku or competitor: %s", row)
+                logger.warning("skip row: missing article or competitor: %s", row)
                 continue
 
-            product = session.execute(select(Product).where(Product.sku == sku)).scalar_one_or_none()
+            product = session.execute(
+                select(Product).where(Product.article == sku)
+            ).scalar_one_or_none()
             if not product:
                 result.errors += 1
-                logger.warning("skip row: product not found for sku=%s", sku)
+                logger.warning("skip row: product not found for article=%s", sku)
                 continue
 
-            competitor = (
-                session.execute(select(Competitor).where(Competitor.name == competitor_name))
-                .scalar_one_or_none()
-            )
+            competitor = session.execute(
+                select(Competitor).where(Competitor.name == competitor_name)
+            ).scalar_one_or_none()
             if competitor is None:
                 competitor = Competitor(name=competitor_name, website=row.get("url"))
                 session.add(competitor)

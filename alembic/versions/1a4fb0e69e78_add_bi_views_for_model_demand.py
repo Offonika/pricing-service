@@ -20,8 +20,7 @@ def upgrade() -> None:
     op.execute("DROP VIEW IF EXISTS vw_bi_model_demand_30d;")
 
     if is_sqlite:
-        op.execute(
-            """
+        op.execute("""
             CREATE VIEW vw_bi_model_demand_daily AS
             SELECT
                 kd.date AS date,
@@ -41,10 +40,8 @@ def upgrade() -> None:
               AND pm.is_active = 1
               AND kw.category = 'display'
             GROUP BY kd.date, pm.brand, pm.model_name, pm.variant, pm.id, kd.region;
-            """
-        )
-        op.execute(
-            """
+            """)
+        op.execute("""
             CREATE VIEW vw_bi_model_demand_30d AS
             SELECT
                 pm.brand,
@@ -66,11 +63,9 @@ def upgrade() -> None:
               AND kw.category = 'display'
               AND kd.date >= DATE('now', '-30 day')
             GROUP BY pm.brand, pm.model_name, pm.variant, pm.id, kd.region;
-            """
-        )
+            """)
     else:
-        op.execute(
-            """
+        op.execute("""
             CREATE VIEW vw_bi_model_demand_daily AS
             SELECT
                 kd.date AS date,
@@ -90,10 +85,8 @@ def upgrade() -> None:
               AND pm.is_active = TRUE
               AND kw.category = 'display'
             GROUP BY kd.date, pm.brand, pm.model_name, pm.variant, pm.id, kd.region;
-            """
-        )
-        op.execute(
-            """
+            """)
+        op.execute("""
             CREATE VIEW vw_bi_model_demand_30d AS
             SELECT
                 pm.brand,
@@ -115,8 +108,7 @@ def upgrade() -> None:
               AND kw.category = 'display'
               AND kd.date >= CURRENT_DATE - INTERVAL '30 days'
             GROUP BY pm.brand, pm.model_name, pm.variant, pm.id, kd.region;
-            """
-        )
+            """)
 
 
 def downgrade() -> None:

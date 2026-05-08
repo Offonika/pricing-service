@@ -2,6 +2,29 @@
 Generated 2025-11-23T18:34:31Z from 77.39.29.183:1433 db TopControl.
 Total tables: 201
 
+## Practical Mapping For Pricing Import
+
+- Товар / номенклатура: `_Reference62`
+- Артикул: `_Reference62._Fld836`
+- Код 1С: `_Reference62._Code`
+- Код инфосистемы: `_Reference62._Fld9175`
+- Родительская группа товара: `_Reference62._ParentIDRRef -> _Reference62._Description`
+- `Вид номенклатуры`:
+  - хранится в ссылочном поле `_Reference62._Fld857RRef`
+  - текст значения берётся из `_Reference26._Description`
+  - пример: `_Reference62._Fld857RRef -> _Reference26._Description = 'Дисплеи/сенсор/стекло'`
+- `Предмет`:
+  - для актуальной конфигурации хранится не в `_InfoRg8928`, а в typed-регистре `_InfoRg6309`
+  - связь с товаром: `_InfoRg6309._Fld6310_RRRef -> _Reference62._IDRRef`
+  - имя свойства: `_InfoRg6309._Fld6311RRef -> _Chrc401._IDRRef`
+  - свойство `Предмет` определяется по `_Chrc401._Description = 'Предмет'`
+  - значение свойства обычно хранится как ссылка `_InfoRg6309._Fld6312_RRRef -> _Reference42._Description`
+  - если ссылочного значения нет, текст может лежать в `_InfoRg6309._Fld6312_S`
+  - пример: артикул `056537` имеет `Предмет = 'аккумулятор'` через `_InfoRg6309 -> _Reference42`
+- `_InfoRg8928`:
+  - продолжает использоваться для части доп. свойств, например `Категория`, `Качество`, `Емкость`, `Совместим с моделью`
+  - не следует считать его полным источником для `Предмет` и `Вида номенклатуры`
+
 ## dbo.currency
 - id | int | not null | PK
 - naim_long | varchar(15) | null | default (NULL)

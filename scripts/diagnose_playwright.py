@@ -5,7 +5,7 @@ import asyncio
 import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List
+from typing import Any
 from urllib.parse import urlparse
 
 from playwright.async_api import async_playwright
@@ -26,15 +26,15 @@ def _proxy_options(proxy_url: str | None):
     }
 
 
-async def diagnose(urls: List[str], output: Path) -> Dict[str, Any]:
+async def diagnose(urls: list[str], output: Path) -> dict[str, Any]:
     """
     Загружает URL-ы в headless Chromium, логирует запросы/ответы, set-cookie, статусы.
     """
     settings = get_settings()
     proxy = _proxy_options(settings.proxy_api_url)
     output.mkdir(parents=True, exist_ok=True)
-    responses: List[Dict[str, Any]] = []
-    cookies_snapshots: List[Dict[str, Any]] = []
+    responses: list[dict[str, Any]] = []
+    cookies_snapshots: list[dict[str, Any]] = []
 
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True, proxy=proxy)
@@ -52,7 +52,12 @@ async def diagnose(urls: List[str], output: Path) -> Dict[str, Any]:
                     continue
                 name, value = item.split("=", 1)
                 cookies.append(
-                    {"name": name.strip(), "value": value.strip(), "domain": ".green-spark.ru", "path": "/"}
+                    {
+                        "name": name.strip(),
+                        "value": value.strip(),
+                        "domain": ".green-spark.ru",
+                        "path": "/",
+                    }
                 )
             if cookies:
                 await context.add_cookies(cookies)
@@ -100,7 +105,9 @@ async def diagnose(urls: List[str], output: Path) -> Dict[str, Any]:
         "responses": responses,
         "cookies": cookies_snapshots,
     }
-    (output / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    (output / "report.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     return report
 
 

@@ -1,0 +1,2 @@
+CRON_TZ=Europe/Moscow
+5,20,35,50 * * * * /opt/MM/pricing-service/infra/cron/card_balance_reconciliation_sync.sh >> /var/log/pricing/card_balance_reconciliation_sync.log 2>&1

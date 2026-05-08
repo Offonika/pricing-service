@@ -1,14 +1,16 @@
 from __future__ import annotations
 
+import os
 from logging.config import fileConfig
 
-import os
-
-from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from alembic import context
 from app.core.config import get_settings
-from app.models import Base
+
+os.environ.setdefault("ALEMBIC_SKIP_MODEL_IMPORT", "1")
+
+from app.models.base import Base
 
 config = context.config
 
@@ -19,6 +21,8 @@ settings = get_settings()
 database_url = os.getenv("DATABASE_URL", settings.database_url)
 config.set_main_option("sqlalchemy.url", database_url)
 
+# NOTE: Avoid importing app.models here. Some model annotations use PEP 604 unions
+# which SQLAlchemy tries to eval under Python 3.8 when running Alembic.
 target_metadata = Base.metadata
 
 

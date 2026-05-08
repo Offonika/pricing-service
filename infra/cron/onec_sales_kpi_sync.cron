@@ -1,0 +1,2 @@
+CRON_TZ=Europe/Moscow
+20 3 * * * /opt/MM/pricing-service/infra/cron/onec_sales_kpi_sync.sh >> /var/log/pricing/onec_sales_kpi_sync.log 2>&1

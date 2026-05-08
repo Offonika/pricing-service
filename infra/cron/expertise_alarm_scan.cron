@@ -1,0 +1,2 @@
+CRON_TZ=Europe/Moscow
+*/15 * * * * /opt/MM/pricing-service/infra/cron/expertise_alarm_scan.sh >> /var/log/pricing/expertise_alarm_scan.log 2>&1

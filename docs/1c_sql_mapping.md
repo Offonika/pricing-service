@@ -1,0 +1,630 @@
+<!-- File: docs/1c_sql_mapping.md -->
+
+# Карта соответствий 1С и SQL
+
+Документ нужен как рабочая карта между метаданными конфигурации 1С и физическими таблицами/полями MSSQL, которые использует сервис.
+
+Сюда выносим только полезную выжимку из выгрузки конфигурации и живой SQL-схемы. Сами архивы и распакованные файлы храним локально в:
+
+- `/opt/pricing-service/.local/1c-config/raw/`
+- `/opt/pricing-service/.local/1c-config/unpacked/`
+
+Связанные документы:
+
+- [architecture.md](/opt/pricing-service/docs/architecture.md)
+- [topcontrol_schema.md](/opt/pricing-service/docs/topcontrol_schema.md)
+- [PRD.md](/opt/pricing-service/docs/PRD.md)
+
+## 1. Как использовать документ
+
+1. Найти объект в конфигурации 1С.
+2. Подтвердить его физическое представление в MSSQL.
+3. Зафиксировать таблицу, поля, связи и пример запроса.
+4. Отметить, где это уже используется в коде сервиса.
+
+## 2. Статус разбора
+
+| Область | Статус | Комментарий |
+| --- | --- | --- |
+| Номенклатура | В работе | |
+| Свойства номенклатуры | В работе | |
+| Регистры цен | В работе | |
+| Остатки | В работе | |
+| Документы установки цен | В работе | |
+| Возвратная схема | Частично подтверждена | Подтверждены документы, строки, тип цен, магазин, номенклатура и реквизит `Ответственный` |
+
+## 3. Основные соответствия
+
+| Объект 1С | Тип метаданных | SQL-таблица | Ключевые поля | Примечание |
+| --- | --- | --- | --- | --- |
+| Номенклатура | Справочник | `_Reference62` | `_IDRRef`, `_Code`, `_Description`, `_Fld836` | Базовая карточка товара |
+| Вид номенклатуры | Справочник | `_Reference26` | `_IDRRef`, `_Description` | Связь через `_Reference62._Fld857RRef` |
+| Предмет | Справочник/свойство | `_Reference42`, `_InfoRg6309`, `_Chrc401` | `_Fld6310_RRRef`, `_Fld6311RRef`, `_Fld6312_RRRef`, `_Fld6312_S` | Для текущей конфигурации не полагаться только на `_InfoRg8928` |
+| Контрагенты | Справочник | `_Reference54` | `_IDRRef`, `_Code`, `_Description` | Подтверждено по живой БД: код `РБ...`, реальные названия контрагентов и кредитные реквизиты на карточке |
+| Типы цен номенклатуры | Справочник | `_Reference87` | `_IDRRef`, `_Code`, `_Description` | Содержит `Розница`, `2.Бронзовый`, `3.Серебряный` и др. |
+
+## 4. Детализация по сущностям
+
+### 4.1. Номенклатура
+
+| Что ищем | Где найдено | Как подтверждено | Комментарий |
+| --- | --- | --- | --- |
+| Карточка товара | `_Reference62` | `docs/topcontrol_schema.md` | |
+| Артикул | `_Reference62._Fld836` | `docs/topcontrol_schema.md` | |
+| Код 1С | `_Reference62._Code` | `docs/topcontrol_schema.md` | |
+| Код инфосистемы | `_Reference62._Fld9175` | `docs/topcontrol_schema.md` | |
+
+Пример SQL:
+
+```sql
+SELECT TOP 100
+    t._IDRRef,
+    t._Code,
+    t._Description,
+    t._Fld836,
+    t._Fld9175
+FROM _Reference62 AS t;
+```
+
+### 4.2. Свойства и дополнительные реквизиты
+
+| Бизнес-поле | SQL-источник | Связь | Надёжность | Комментарий |
+| --- | --- | --- | --- | --- |
+| Вид номенклатуры | `_Reference62._Fld857RRef -> _Reference26._IDRRef` | Ссылочное поле | Высокая | |
+| Предмет | `_InfoRg6309 -> _Chrc401 -> _Reference42` | Typed-регистр | Высокая | Основной источник для текущей конфигурации |
+| Категория | `_InfoRg8928` | Требует проверки | Средняя | Проверять по живым данным |
+| Качество | `_InfoRg8928` | Требует проверки | Средняя | Проверять по живым данным |
+| Ёмкость | `_InfoRg8928` | Требует проверки | Средняя | Проверять по живым данным |
+| Совместим с моделью | `_InfoRg8928` | Требует проверки | Средняя | Проверять по живым данным |
+
+Пример SQL для свойства `Предмет`:
+
+```sql
+SELECT TOP 100
+    n._Code AS product_code,
+    n._Description AS product_name,
+    p._Description AS property_name,
+    subj._Description AS subject_ref_value,
+    r._Fld6312_S AS subject_text_value
+FROM _InfoRg6309 AS r
+JOIN _Reference62 AS n
+    ON r._Fld6310_RRRef = n._IDRRef
+JOIN _Chrc401 AS p
+    ON r._Fld6311RRef = p._IDRRef
+LEFT JOIN _Reference42 AS subj
+    ON r._Fld6312_RRRef = subj._IDRRef
+WHERE p._Description = N'Предмет';
+```
+
+### 4.3. Возвратная схема `Розница -> Возврат -> Не розница`
+
+| Бизнес-поле | SQL-источник | Связь | Надёжность | Комментарий |
+| --- | --- | --- | --- | --- |
+| Реализация товаров и услуг | `_Document203` | Заголовок документа | Высокая | Документ `РеализацияТоваровУслуг` |
+| Строки реализации | `_Document203_VT4966` | `_Document203_VT4966._Document203_IDRRef -> _Document203._IDRRef` | Высокая | Табличная часть `Товары` |
+| Возврат товаров от покупателя | `_Document109` | Заголовок документа | Высокая | Документ `ВозвратТоваровОтПокупателя` |
+| Строки возврата | `_Document109_VT1698` | `_Document109_VT1698._Document109_IDRRef -> _Document109._IDRRef` | Высокая | Табличная часть `Товары` |
+| Номенклатура в реализации | `_Document203_VT4966._Fld4974RRef` | `-> _Reference62._IDRRef` | Высокая | |
+| Номенклатура в возврате | `_Document109_VT1698._Fld1700RRef` | `-> _Reference62._IDRRef` | Высокая | |
+| Магазин/склад в реализации | `_Document203_VT4966._Fld4983RRef` | `-> _Reference80._IDRRef` | Высокая | Магазин берётся на уровне строки |
+| Магазин/склад в возврате | `_Document109_VT1698._Fld1716RRef` | `-> _Reference80._IDRRef` | Высокая | Магазин берётся на уровне строки |
+| Количество в реализации | `_Document203_VT4966._Fld4971` | Число | Высокая | |
+| Сумма в реализации | `_Document203_VT4966._Fld4982` | Число | Высокая | |
+| Количество в возврате | `_Document109_VT1698._Fld1701` | Число | Высокая | |
+| Сумма в возврате | `_Document109_VT1698._Fld1707` | Число | Высокая | |
+| Тип цен реализации | `_Document203._Fld4943RRef` | `-> _Reference87._IDRRef` | Высокая | На живой базе содержит `Розница` и оптовые типы цен |
+| Ответственный реализации | `_Document203._Fld4942RRef` | `-> _Reference54._IDRRef` | Высокая | Подтверждено по выгрузке конфигурации и выборке живой БД |
+| Ответственный возврата | `_Document109._Fld1682RRef` | `-> _Reference54._IDRRef` | Высокая | Подтверждено по выборке живой БД |
+
+Подтверждение по выгрузке конфигурации:
+
+- `Document.РеализацияТоваровУслуг.Attribute.Ответственный`
+- `Document.ВозвратТоваровОтПокупателя.Attribute.Ответственный`
+- в правилах обмена оба реквизита имеют тип `СправочникСсылка.Пользователи`
+
+Практическая проверка по живой MSSQL-базе:
+
+- `_Reference54` в текущей базе `Ekama` содержит человекочитаемые значения контрагентов;
+- `_Reference87` содержит описания типов цен, включая `Розница`;
+- у последних документов реализации осмысленные значения сотрудников приходят из `_Document203._Fld4942RRef`;
+- у последних документов возврата осмысленные значения сотрудников приходят из `_Document109._Fld1682RRef`.
+
+Важно:
+
+- по каталогу `Пользователи` физический `_ReferenceNN` ещё нужно переподтвердить отдельно;
+- использовать правило `_Reference54 = Пользователи` как универсальное больше нельзя;
+- для `return_scheme` текущий join на `_Reference54` остаётся рабочей практикой, но его физическое соответствие надо проверить отдельно от дебиторского контура.
+
+Пример SQL для нормализованной выборки:
+
+```sql
+SELECT TOP 100
+    sale._Number AS sale_number,
+    sale._Date_Time AS sale_datetime,
+    sale_actor._Description AS sale_employee,
+    price_type._Description AS sale_price_type,
+    sale_line._Fld4974RRef AS product_ref,
+    product._Description AS product_name,
+    sale_line._Fld4983RRef AS store_ref,
+    store_ref._Description AS store_name,
+    sale_line._Fld4971 AS quantity,
+    sale_line._Fld4982 AS amount
+FROM _Document203 AS sale
+JOIN _Document203_VT4966 AS sale_line
+    ON sale_line._Document203_IDRRef = sale._IDRRef
+LEFT JOIN _Reference54 AS sale_actor
+    ON sale_actor._IDRRef = sale._Fld4942RRef
+LEFT JOIN _Reference87 AS price_type
+    ON price_type._IDRRef = sale._Fld4943RRef
+LEFT JOIN _Reference62 AS product
+    ON product._IDRRef = sale_line._Fld4974RRef
+LEFT JOIN _Reference80 AS store_ref
+    ON store_ref._IDRRef = sale_line._Fld4983RRef
+WHERE sale._Marked = 0x00
+  AND sale._Posted = 0x01;
+```
+
+### 4.4. Контрагенты и кредитные реквизиты
+
+Живая проверка по карточке контрагента `РБ025160 / 187-Евгений Кириллович` и выборкам по
+`_Reference54` подтвердила, что кредитные реквизиты лежат прямо в каталоге
+`Справочник.Контрагенты`.
+
+Подтверждённые поля:
+
+| Бизнес-поле | SQL-источник | Как подтверждено | Комментарий |
+| --- | --- | --- | --- |
+| Контрагент | `_Reference54` | Живая БД: код `РБ...`, реальные имена контрагентов | Каталог `Контрагенты` |
+| Срок исполнения | `_Reference54._Fld9516` | В форме карточки поле отображается как дата; в БД `1031` строк с датой `> 1753-01-01` | Использовать как `planned_payment_date` / согласованный срок оплаты |
+| Глубина кредита | `_Reference54._Fld9865` | В БД найдены реальные значения `1`, `7`, `14`; в форме поле `осиГлубинаКредита` | Использовать как fallback `credit_depth_days` |
+| Запрет отгрузки | `_Reference54._Fld9866` | В БД найдены строки с флагом `0x01`; кейс `Галкин Александр Николаевич !!! запрет на продажи` имеет `_Fld9866 = 0x01` | Булевый флаг stop-shipment |
+| Лимит кредита | `InformationRegister.осиКредитныеПараметрыКонтрагентов.Resource.СуммаЛимита` | Форма карточки пишет лимит через менеджер записи регистра | Лимит не хранится в `_Reference54` |
+| Дата пересчёта лимита | `InformationRegister.осиКредитныеПараметрыКонтрагентов.Dimension.ДатаПересчета` | Форма карточки читает поле из регистра | Нужна для audit/freshness, но не для due date |
+
+Наблюдения по живой БД:
+
+- `_Fld9865` заполнен только у `5` активных контрагентов, поэтому строить просрочку только по нему нельзя;
+- `_Fld9516` заполнен у `1031` активных контрагентов, поэтому это должен быть основной источник срока оплаты;
+- `_Fld9866 = 0x01` встретился у `2` активных контрагентов;
+- employee-контрагенты лежат в иерархии `_Reference54` под группами `... (сотрудники)` и корневой группой `СОТРУДНИКИ`;
+- в `_Reference54` папки сотруднических веток имеют `_Folder = 0x00`, а сами контрагенты сотрудников `_Folder = 0x01`; для employee debt нужно брать именно элементы, а не папки;
+- для определения employee debt нужно использовать не имя, а иерархию `_ParentIDRRef` / `_Folder` в `_Reference54`;
+- `_Fld9575` по текущей выборке всегда `0`, назначение пока не подтверждено;
+- `_Fld9837` встречается редко (`12` строк с `0x01`), назначение пока не подтверждено.
+
+Рекомендуемая логика для дебиторки:
+
+1. Основной источник срока просрочки: `_Reference54._Fld9516` (`planned_payment_date`).
+2. Fallback, если дата не заполнена: `origin_document_date + _Reference54._Fld9865` дней.
+3. Если оба поля пусты/нулевые, кейс считать `missing_term` и выносить в отдельный список качества данных.
+
+Пример SQL для чтения кредитных параметров контрагента:
+
+```sql
+SELECT
+    c._IDRRef AS counterparty_ref,
+    c._Code AS counterparty_code,
+    c._Description AS counterparty_name,
+    NULLIF(c._Fld9516, CAST('1753-01-01' AS datetime)) AS planned_payment_date,
+    CAST(c._Fld9865 AS int) AS credit_depth_days,
+    CASE WHEN c._Fld9866 = 0x01 THEN 1 ELSE 0 END AS shipment_ban
+FROM _Reference54 AS c
+WHERE c._Marked = 0x00;
+```
+
+Пример SQL для определения employee-контрагентов по иерархии папок:
+
+```sql
+WITH tree AS (
+    SELECT
+        c._IDRRef,
+        c._ParentIDRRef,
+        c._Description,
+        c._Folder,
+        CAST(
+            CASE
+                WHEN LOWER(COALESCE(c._Description, N'')) LIKE N'%сотрудн%' THEN 1
+                ELSE 0
+            END AS int
+        ) AS is_employee_branch
+    FROM _Reference54 AS c
+    WHERE c._ParentIDRRef = 0x00000000000000000000000000000000
+
+    UNION ALL
+
+    SELECT
+        child._IDRRef,
+        child._ParentIDRRef,
+        child._Description,
+        child._Folder,
+        CAST(
+            CASE
+                WHEN parent.is_employee_branch = 1 THEN 1
+                WHEN LOWER(COALESCE(child._Description, N'')) LIKE N'%сотрудн%' THEN 1
+                ELSE 0
+            END AS int
+        ) AS is_employee_branch
+    FROM _Reference54 AS child
+    JOIN tree AS parent
+        ON child._ParentIDRRef = parent._IDRRef
+)
+SELECT DISTINCT master.dbo.fn_varbintohexstr(_IDRRef) AS counterparty_ref
+FROM tree
+WHERE _Folder = 0x01
+  AND is_employee_branch = 1;
+```
+
+### 4.5. Физические лица сотрудников и статус увольнения
+
+Живая схема подтвердила, что справочник `ФизическиеЛица` физически лежит в `_Reference94`.
+
+Подтверждённые поля:
+
+| Бизнес-поле | SQL-источник | Как подтверждено | Комментарий |
+| --- | --- | --- | --- |
+| Физическое лицо | `_Reference94` | По живым данным: `326` элементов с ФИО и иерархией по подразделениям | Это не `Пользователи`, а отдельный справочник |
+| Дата рождения | `_Reference94._Fld1126` | Значения похожи на реальные даты рождения `1953-2014` | Не использовать как статус занятости |
+| Контрагент сотрудника | `_Reference94._Fld9270RRef -> _Reference54._IDRRef` | У `93` физлиц есть осмысленная ссылка на контрагента в `_Reference54` | Это рабочая связка `физлицо -> контрагент` |
+| Признак увольнения | Иерархия `_Reference94` | Физлица в ветке `Уволенные` стабильно попадают под общий корень `Сотрудники` | Это основной источник `employment_status = fired` |
+| Дополнительная дата кадрового события | `_Reference94._Fld9507` | Есть реальные даты до `2026-02-19`, но поле встречается и у активных сотрудников | Использовать только как вспомогательную дату для fired-ветки; физический смысл ещё не зафиксирован окончательно |
+
+Практическая логика для management-контура:
+
+1. Идём по иерархии `_Reference94` от корня `Сотрудники`.
+2. Для элементов `_Folder = 0x01` определяем `employment_status`:
+   - `fired`, если физлицо находится в ветке `Уволенные` или в имени есть маркер `бывш/уволен`;
+   - иначе `active`.
+3. Если у физлица заполнен `_Fld9270RRef`, связываем его с employee-контрагентом из `_Reference54`.
+4. Для `fired_manager` используем именно этот кадровый источник, а не только текстовые признаки в имени контрагента.
+
+Пример SQL для live-выборки кадрового справочника:
+
+```sql
+WITH tree AS (
+    SELECT
+        p._IDRRef,
+        p._ParentIDRRef,
+        p._Description,
+        p._Folder,
+        p._Fld9270RRef,
+        p._Fld9507,
+        CAST(
+            CASE
+                WHEN LOWER(COALESCE(p._Description, N'')) LIKE N'%сотрудник%' THEN 1
+                ELSE 0
+            END AS int
+        ) AS is_staff_branch,
+        CAST(
+            CASE
+                WHEN LOWER(COALESCE(p._Description, N'')) LIKE N'%уволен%' THEN 1
+                ELSE 0
+            END AS int
+        ) AS is_fired_branch
+    FROM _Reference94 AS p
+    WHERE p._ParentIDRRef = 0x00000000000000000000000000000000
+
+    UNION ALL
+
+    SELECT
+        child._IDRRef,
+        child._ParentIDRRef,
+        child._Description,
+        child._Folder,
+        child._Fld9270RRef,
+        child._Fld9507,
+        CAST(
+            CASE
+                WHEN parent.is_staff_branch = 1 THEN 1
+                WHEN LOWER(COALESCE(child._Description, N'')) LIKE N'%сотрудник%' THEN 1
+                ELSE 0
+            END AS int
+        ) AS is_staff_branch,
+        CAST(
+            CASE
+                WHEN parent.is_fired_branch = 1 THEN 1
+                WHEN LOWER(COALESCE(child._Description, N'')) LIKE N'%уволен%' THEN 1
+                ELSE 0
+            END AS int
+        ) AS is_fired_branch
+    FROM _Reference94 AS child
+    JOIN tree AS parent
+        ON child._ParentIDRRef = parent._IDRRef
+)
+SELECT
+    master.dbo.fn_varbintohexstr(tree._IDRRef) AS physical_person_ref,
+    tree._Description AS full_name,
+    parent._Description AS department_name,
+    master.dbo.fn_varbintohexstr(tree._Fld9270RRef) AS counterparty_ref,
+    counterparty._Description AS counterparty_name,
+    CASE
+        WHEN tree.is_fired_branch = 1 THEN N'fired'
+        ELSE N'active'
+    END AS employment_status
+FROM tree
+LEFT JOIN _Reference94 AS parent
+    ON parent._IDRRef = tree._ParentIDRRef
+LEFT JOIN _Reference54 AS counterparty
+    ON counterparty._IDRRef = tree._Fld9270RRef
+WHERE tree._Folder = 0x01
+  AND tree.is_staff_branch = 1;
+```
+
+## 5. Использование в коде сервиса
+
+| Назначение | Файл | Что использует |
+| --- | --- | --- |
+| Архитектурная карта | [architecture.md](/opt/pricing-service/docs/architecture.md) | Зафиксированные таблицы и связи |
+| Практическая схема TopControl | [topcontrol_schema.md](/opt/pricing-service/docs/topcontrol_schema.md) | Подтверждённые поля для импорта |
+| Мониторинг возвратной схемы | [return_scheme.py](/opt/pricing-service/app/services/return_scheme.py) | `_Document203/_Document109`, строки документов, `_Reference54`, `_Reference62`, `_Reference80`, `_Reference87` |
+| Foundation дебиторки | [receivables.py](/opt/pricing-service/app/services/receivables.py) | Нормализованный SQL contract для ledger-событий взаиморасчётов |
+
+## 5.1. Foundation дебиторки `S6.1`
+
+Для первой волны дебиторки в код заложен нормализованный SQL contract, а не жёстко прибитый к одной таблице extractor.
+
+Extractor ожидает SQL с колонками:
+
+| Нормализованное поле | Тип | Комментарий |
+| --- | --- | --- |
+| `source` | string | Обычно `onec` |
+| `event_type` | string | `sale`, `payment`, `return`, `debt_adjustment`, `settlement`, `manager_reassignment` |
+| `external_document_ref` | string | Устойчивый ref исходного документа |
+| `external_document_number` | string/null | Человекочитаемый номер |
+| `external_document_date` | datetime | Дата документа |
+| `counterparty_ref` | string | Контрагент |
+| `counterparty_name` | string/null | Название контрагента |
+| `manager_ref` | string/null | Ответственный менеджер |
+| `manager_name` | string/null | Имя ответственного |
+| `store_ref` | string/null | Магазин/подразделение, если есть |
+| `store_name` | string/null | Человекочитаемое имя магазина |
+| `line_no` | int/null | Номер строки/субсобытия для business key |
+| `amount_delta` | decimal | Изменение дебиторского баланса: продажа `+`, оплата/возврат/взаимозачёт `-` |
+
+План расширения SQL contract для overdue-логики `v2`:
+
+| Дополнительное поле | Тип | Источник |
+| --- | --- | --- |
+| `planned_payment_date` | datetime/null | `_Reference54._Fld9516` |
+| `credit_depth_days` | int/null | `_Reference54._Fld9865` |
+| `shipment_ban` | bool/null | `_Reference54._Fld9866 = 0x01` |
+
+Текущее состояние:
+
+- код foundation и CLI sync уже готовы;
+- физический SQL-mapping для реальной ведомости взаиморасчётов 1С ещё нужно подтвердить по живой конфигурации;
+- до подтверждения mapping'а production extractor должен запускаться только с явно переданным `--sql-file`.
+
+### 5.1.1. Подтверждённый partial projector для controlled backfill
+
+Для controlled backfill уже подтверждён безопасный partial-mapping по регистру
+`_AccumRg7550` (`ВзаиморасчетыСКонтрагентамиПоДокументамРасчетов`) только для
+активных движений (`_Active = 0x01`) и документов:
+
+- `_Document203` → `sale`
+- `_Document109` → `return`
+
+Отдельно по живой ведомости взаиморасчётов подтверждены два потока погашения:
+
+- `_Document196` → `payment`
+- `_Document201` → `settlement`
+
+Подтверждённые физические поля:
+
+| Назначение | SQL-источник | Комментарий |
+| --- | --- | --- |
+| Ref документа | `_AccumRg7550._RecorderRRef` | Совпадает с `_Document203/_Document109._IDRRef` |
+| Тип документа | `_AccumRg7550._RecorderTRef` | `0x000000CB` = `_Document203`, `0x0000006D` = `_Document109` |
+| Договор | `_AccumRg7550._Fld7554RRef -> _Reference37._IDRRef` | Подтверждено по live sample |
+| Контрагент | `_AccumRg7550._Fld7559RRef -> _Reference54._IDRRef` | Совпадает с `owner` договора |
+| Организация | `_AccumRg7550._Fld7558RRef -> _Reference66._IDRRef` | Для first backfill не используется как store |
+| Активность движения | `_AccumRg7550._Active` | В partial projector нужно брать только `_Active = 0x01`, иначе попадает шум и старые неактуальные движения |
+| Сумма события | `_AccumRg7550._Fld7562` | Для активного регистра это рабочий amount по документу; возвраты уже приходят с отрицательным знаком |
+
+Важно:
+
+- это ещё не полный ledger взаиморасчётов;
+- bank payments, корректировки долга, взаимозачёты и часть legacy-форм погашения в этот projector пока не включены;
+- cash payments через `_Document196` уже включены и идут как `payment` с отрицательной дельтой;
+- `_Document201` уже включён как дополнительный `settlement` с отрицательной дельтой;
+- по контрольному кейсу `Пальщиков Олег Дмитриевич` эти два потока заметно снижают разрыв, но полностью его ещё не закрывают.
+
+#### `_Document196` как `payment`
+
+По live-сверке с ведомостью контрагента `Пальщиков Олег Дмитриевич` подтверждено:
+
+| Назначение | SQL-источник | Комментарий |
+| --- | --- | --- |
+| Документ оплаты | `_Document196` | Номер `РБГУ0166761` из ведомости найден в `_Document196` на `2025-06-10 14:11:18` |
+| Контрагент | `_Document196._Fld4684_RRRef -> _Reference54._IDRRef` | При `_Fld4684_RTRef = 0x00000036` это ссылка на контрагента |
+| Сумма оплаты | `_Document196._Fld4688` | В ledger должна идти как отрицательная дельта |
+| Основание оплаты | `_Document196._Fld4697_RTRef/_Fld4697_RRRef` | Для customer payments часто указывает на `_Document203` |
+| Менеджер оплаты | `_Document196 -> _Document203._Fld4942RRef` | Для partial projector допустимо брать менеджера из базовой реализации |
+
+Наблюдения:
+
+- по `Пальщикову` в `_Document196` есть десятки customer payments на сотни тысяч рублей;
+- sales/returns-only projector завышает долг именно потому, что эти оплаты не попадали в ledger;
+- после включения `_Document196` controlled backfill должен сильно приблизить текущий баланс к ведомости 1С, хотя до полной бухгалтерской точности ещё останутся bank payments и корректировки.
+
+#### `_Document201` как `settlement`
+
+По live-сверке с тем же кейсом `Пальщиков Олег Дмитриевич` подтверждено:
+
+| Назначение | SQL-источник | Комментарий |
+| --- | --- | --- |
+| Документ урегулирования | `_Document201` | По контрагенту найдены документы `РБГУ0006729`, `РБГУ0017046`, `РБГУ0020520`, `РБГУ0031761`, `РБГУ0037132`, `РБГУ0039847` и более старые |
+| Контрагент | `_Document201._Fld4848_RRRef -> _Reference54._IDRRef` | При `_Fld4848_RTRef = 0x00000036` это ссылка на контрагента |
+| Сумма урегулирования | `_Document201._Fld4852` | В partial ledger должна идти как отрицательная дельта |
+| Дата документа | `_Document201._Date_Time` | Используется как дата settlement-события |
+| Основание | `_Document201._Fld4862_RTRef/_Fld4862_RRRef` | Есть ссылка на базовый документ, но для partial projector пока не используется |
+
+Наблюдения:
+
+- по `Пальщикову` сумма `_Document201` даёт ещё `26 894,80 ₽` в сторону погашения долга;
+- после добавления `_Document201` разрыв с ведомостью сокращается ещё сильнее, но остаётся хвост, который указывает на ещё один неразобранный поток оплат/корректировок;
+- для controlled backfill `_Document201` разумно трактовать как `settlement`, чтобы отделять его от cash receipt `_Document196`.
+
+SQL-файл для первого наполнения:
+
+- [samples/onec_receivables_sales_returns_partial.sql](/opt/pricing-service/samples/onec_receivables_sales_returns_partial.sql)
+
+Рекомендуемый первый запуск:
+
+```bash
+./.venv/bin/python -m tasks.sync_receivable_ledger \
+  --sql-file samples/onec_receivables_sales_returns_partial.sql \
+  --window-start 2026-03-01T00:00:00 \
+  --snapshot-date 2026-03-20
+```
+
+### 5.1.2. Hybrid backfill: opening layer + detail since date
+
+Чтобы не replay'ить 10 лет документов, для дебиторки подтверждён рабочий гибридный путь:
+
+1. `opening balance` брать из monthly totals слоя `_AccumRgTn7571`;
+2. после опорной даты тянуть только detail-события из `_AccumRg7550`, `_Document196`, `_Document201`.
+
+Что уже подтверждено по `_AccumRgTn7571`:
+
+| Назначение | SQL-источник | Комментарий |
+| --- | --- | --- |
+| Monthly totals / opening layer | `_AccumRgTn7571` | Содержит те же измерения, что и `_AccumRg7550` |
+| Договор | `_AccumRgTn7571._Fld7554RRef` | Совпадает по структуре с регистром движений |
+| Организация | `_AccumRgTn7571._Fld7558RRef` | Совпадает по структуре с регистром движений |
+| Контрагент | `_AccumRgTn7571._Fld7559RRef` | Можно агрегировать opening по контрагенту |
+| Сумма | `_AccumRgTn7571._Fld7562` | Подходит как monthly turnover layer до опорной даты |
+
+Важно:
+
+- `_AccumRgTn7571` не стоит трактовать как готовый остаток “на сегодня”;
+- это monthly/opening слой, который нужен именно для seeded backfill;
+- opening нужно брать не суммой всех месяцев до даты, а по последнему доступному периоду `< opening_balance_date`;
+- origin-point для долгов до опорной даты при таком подходе не восстанавливается, поэтому такие кейсы нужно считать `origin_before_backfill`.
+
+SQL-файл для гибридного режима:
+
+- [samples/onec_receivables_hybrid_opening_plus_detail.sql](/opt/pricing-service/samples/onec_receivables_hybrid_opening_plus_detail.sql)
+
+Рекомендуемый первый production-like запуск:
+
+```bash
+./.venv/bin/python -m tasks.sync_receivable_ledger \
+  --sql-file samples/onec_receivables_hybrid_opening_plus_detail.sql \
+  --opening-balance-date 2025-01-01 \
+  --window-start 2025-01-01T00:00:00 \
+  --snapshot-date 2026-03-21 \
+  --replace-ledger
+```
+
+Рекомендуемый период для пилота:
+
+- `opening_balance_date = 2025-01-01`;
+- detail replay с `2025-01-01` по текущую дату;
+- если по контрольным кейсам останется значимый хвост, опорную дату двигать на `2024-01-01`, а не сразу на 10 лет назад.
+
+Контрольный кейс:
+
+- для `Пальщиков Олег Дмитриевич` naive-сумма всех monthly rows до `2025-01-01` давала ложный opening и нерабочий результат;
+- после переключения на `MAX(_Period) < opening_balance_date` hybrid-оценка дала `44 853,03 ₽` против `49 953,63 ₽` в ведомости 1С;
+- это уже достаточно близко, чтобы считать hybrid-подход рабочим кандидатом для пилота, а оставшийся хвост разбирать отдельно.
+
+### 5.1.3. Второй opening-слой для сводной ведомости по сотрудникам
+
+При расследовании кейсов сотрудников подтверждено, что `_AccumRgTn7571`
+нельзя считать единственным opening-источником для сводной ведомости.
+
+Что найдено:
+
+- сводный отчет `ВедомостьРасчетыСКонтрагентами` в конфигурации 1С строится по логическому регистру `РасчетыСКонтрагентами`;
+- в живой MSSQL-базе для этого контура найден отдельный физический слой:
+  - движения: `_AccumRg7614`
+  - opening/totals: `_AccumRgT7622`
+
+Это вывод не только по имени, но и по фактическому совпадению измерений и цифр:
+
+- в `_AccumRg7614` / `_AccumRgT7622` декодированы те же ключевые измерения:
+  - `_Fld7615RRef -> _Reference37` = `ДоговорКонтрагента`
+  - `_Fld7618RRef -> _Reference66` = `Организация`
+  - `_Fld7619RRef -> _Reference54` = `Контрагент`
+- `_Fld7620` и `_Fld7621` выступают денежными ресурсами и для проверенных строк совпадают между собой;
+- дополнительное typed-поле `_Fld7616_*` и `_Fld7617RRef` пока не зафиксированы окончательно, но на разбор контрольного кейса не влияют.
+
+Контрольный кейс: `ММ переклейка`
+
+- контрагент: `0xa4e40025901e48ee11ed2b5936e54ab0`
+- организация: `MASTER MOBILE`
+- в `_AccumRgT7622` на `2025-01-01 00:00:00` найдены opening-строки:
+  - `Закупка материалов = 5 868 593.26`
+  - `Поступления товаров = -5 937 181.68`
+  - `Пересорт договор реализации = 0`
+- в сумме это дает:
+  - `5 868 593.26 - 5 937 181.68 = -68 588.42`
+
+Это точно совпадает со сверкой по ведомостям:
+
+- `С покупателем = 5 868 593.26`
+- `С поставщиком = -5 937 181.68`
+- `Сводная = -68 588.42`
+
+Практический вывод:
+
+- для обычного receivables-контура рабочим остается `customer-side` слой `_AccumRgTn7571` / `_AccumRg7550`;
+- для `employee summary` правильный источник — не `UNION` двух opening-слоев, а переключение employee-контрагентов на `counterparty summary` слой `_AccumRgT7622` / `_AccumRg7614`;
+- это подтверждено контрольными контрагентами:
+  - `Аннамурадов Владислав`: `_AccumRgTn7571 = 827`, `_AccumRgT7622 = 90 827`, и сводная ведомость показывает `90 827`;
+  - `Копьев Михаил Андреевич`: оба слоя дают `7 160`;
+  - `ММ переклейка`: `_AccumRgTn7571 = 645 089.80`, `_AccumRgT7622 = -68 588.42`, и сводная ведомость показывает `-68 588.42`.
+- сравнение employee summary только с `_AccumRgTn7571` методологически неверно и системно искажает баланс по контрагентам, у которых смешаны договоры покупателя и поставщика.
+
+Дополнительная проверка после первого rollout:
+
+- гипотеза `latest period per physical key` для `_AccumRgT7622` оказалась неверной;
+- если брать не один глобальный monthly slice, а `MAX(_Period)` по каждой комбинации `ДоговорКонтрагента + Сделка + РасчетыВозврат + Организация + Контрагент`, начинают подниматься stale-сделки из старых периодов, которых уже нет в ведомости на `2025-01-01`;
+- значит для текущего регистра отсутствие строки в позднем monthly layer нельзя автоматически трактовать как перенос старого ненулевого остатка вперед;
+- безопасная рабочая модель пока остается такой:
+  - `_AccumRgTn7571`: `MAX(_Period) < opening_balance_date`
+  - `_AccumRgT7622`: `MAX(_Period) <= opening_balance_date`
+
+Что это меняет в расследовании:
+
+- remaining mismatches по сотрудникам сидят уже не в выборе `period`, а в семантике скрытых измерений регистра `РасчетыСКонтрагентами`;
+- `_Fld7616_*` с высокой вероятностью соответствует измерению `Сделка`;
+- `_Fld7617RRef` соответствует измерению `РасчетыВозврат`;
+- следующий кандидат на разбор — связь итогов ведомости с настройкой `ДоговорКонтрагента.ВедениеВзаиморасчетов` (`По договору в целом` / `По заказам` / `По счетам`).
+
+Дополнительный live-результат:
+
+- signed-сумма движений `_AccumRg7614` по проблемным buyer-контрактам совпадает с `_AccumRgT7622`;
+- значит расхождение с ведомостью не сводится к неверному чтению totals-таблицы;
+- `ДоговорКонтрагента.ВидДоговора` физически читается из `_Reference37._Fld515RRef`, и на живой базе по employee-кейсам уже видны три устойчивых ref-значения:
+  - `0x9363c6f0a10557bf4822a55db4862286` = buyer (`С покупателем`)
+  - `0x95db9a602e142ed645d7ccf13094909f` = supplier (`С поставщиком`)
+  - `0xa49b7e34b5f2cbb643d8f36270f8009f` = other (`Прочее`)
+- это подтверждается контрольными договорами:
+  - `Зеленский / Основной договор` и `Карданов / 5.Платиновый` попадают в buyer ref;
+  - `Бочаров / Закупка Бочаров Омар` и `ММ переклейка / Поступления товаров` — в supplier ref;
+  - `Бочаров / Договор Займа` — в other ref;
+- в выгрузках `Ведомость с сотрудникамиПокупат/Поставщ/Прочее.txt` явный отбор стоит именно по `ДоговорКонтрагента.Вид договора`; явного фильтра по `РасчетыВозврат` в шапке нет;
+- `_Fld7617RRef` при этом дает два стабильных enum-like значения (`0xa6fc...` и `0xaf8b...`), что хорошо похоже на `Расчеты` и `Возврат`;
+- supplier-кейсы вроде `ММ переклейка / Поступления товаров` сходятся именно на сумме обеих корзин `_Fld7617RRef`, так что missing quality по buyer-кейсам уже не объясняется одной только темой `Возврат`;
+- для `Зеленский Андрей Владимирович / Основной договор` самые крупные отрицательные строки в измерении `Сделка` (`_Fld7616_RTRef = 0x84`) джойнятся в `_Document132`, и часть этих документов находится в состоянии `marked = 1`, `posted = 0`;
+- если временно исключать такие `deleted/unposted` ссылки `_Document132`, opening по этому кейсу меняется с `-120 324.40` до `52 831.00`, что уже близко к ведомости `48 974.00`.
+
+Осторожность:
+
+- это еще не универсальное правило для всех сотрудников;
+- на части договоров, например `Бочаров Омар / Cебестоимость изменил на платину`, такой фильтр не нужен и ломает совпадение;
+- значит нужен разбор типов `Сделка` и состояния связанных документов по классам договоров, а не единый грубый `WHERE`.
+
+Следующий технический шаг:
+
+1. Зафиксировать, как именно нормализовать знак для `_AccumRg7614/_AccumRgT7622` в едином ledger/opening contract.
+2. В `hybrid` SQL-мэппинге маршрутизировать employee-контрагентов на `_AccumRgT7622/_AccumRg7614`, оставив не-сотрудников на `_AccumRgTn7571/_AccumRg7550`.
+3. Отдельно решить, нужен ли `РасчетыСКонтрагентами` за пределами employee-summary, или его надо держать только для этого сегмента.
+
+## 6. Открытые вопросы
+
+- Где именно лежат опорные типы цен для расчёта рекомендованной цены вне документов продажи.
+- Какие регистры в этой конфигурации являются надёжным источником остатков.
+- Какие таблицы используются для выгрузки и последующего чтения документа установки цен.
+- Нужен ли отдельный маппинг для разных версий конфигурации 1С/TopControl.

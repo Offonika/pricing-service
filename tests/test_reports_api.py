@@ -13,9 +13,9 @@ def setup_db(path):
     engine = create_engine(f"sqlite:///{path}")
     Base.metadata.create_all(engine)
     with Session(engine) as session:
-        p1 = Product(sku="SKU-R1", name="Report 1")
+        p1 = Product(article="SKU-R1", name="Report 1")
         p1.stock = ProductStock(purchase_price=Decimal("50"))
-        p2 = Product(sku="SKU-R2", name="Report 2")
+        p2 = Product(article="SKU-R2", name="Report 2")
         p2.stock = ProductStock(purchase_price=Decimal("80"))
         session.add_all([p1, p2])
         session.commit()
@@ -43,6 +43,6 @@ def test_summary_and_price_changes(tmp_path):
     assert changes.status_code == 200
     data = changes.json()
     assert len(data) == 1
-    assert data[0]["sku"] in {"SKU-R1", "SKU-R2"}
+    assert data[0]["article"] in {"SKU-R1", "SKU-R2"}
 
     app.dependency_overrides = {}

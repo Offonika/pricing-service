@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional
-
 from ftplib import FTP, FTP_TLS
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -12,7 +11,6 @@ from app.core.config import get_settings
 from app.services.importers.competitor_ftp import (
     CompetitorFtpImportError,
     FtpFileInfo,
-    FtpSourceConfig,
     download_file,
     ingest_ftp_file,
     list_matching_files,
@@ -49,15 +47,15 @@ def _connect_ftp(settings) -> FTP:
 
 
 def _select_files(
-    files: List[FtpFileInfo],
+    files: list[FtpFileInfo],
     limit: int,
-) -> List[FtpFileInfo]:
+) -> list[FtpFileInfo]:
     if limit <= 0:
         return []
     return files[:limit]
 
 
-def run_competitor_ftp_import(session: Optional[Session] = None) -> dict:
+def run_competitor_ftp_import(session: Session | None = None) -> dict:
     settings = get_settings()
     if not settings.competitor_ftp_import_enabled:
         logger.info("ftp import skipped: feature disabled")
@@ -74,20 +72,27 @@ def run_competitor_ftp_import(session: Optional[Session] = None) -> dict:
         session = Session(engine)
 
     totals = ImportResult()
-    details: List[dict] = []
-    ftp: Optional[FTP] = None
+    details: list[dict] = []
+    ftp: FTP | None = None
 
     try:
         ftp = _connect_ftp(settings)
         for source in sources:
-            entry: dict = {"name": source.name, "directory": source.directory, "pattern": source.pattern}
+            entry: dict = {
+                "name": source.name,
+                "directory": source.directory,
+                "pattern": source.pattern,
+            }
             try:
                 candidates = list_matching_files(ftp, source)
             except CompetitorFtpImportError as exc:
                 entry["error"] = str(exc)
                 totals.errors += 1
                 details.append(entry)
-                logger.warning("ftp import failed to list files", extra={"source": source.name, "error": str(exc)})
+                logger.warning(
+                    "ftp import failed to list files",
+                    extra={"source": source.name, "error": str(exc)},
+                )
                 continue
 
             if not candidates:
@@ -114,7 +119,11 @@ def run_competitor_ftp_import(session: Optional[Session] = None) -> dict:
                     entry["files"].append({"file": file_info.filename, "error": str(exc)})
                     logger.warning(
                         "ftp import failed for file",
-                        extra={"source": source.name, "file": file_info.filename, "error": str(exc)},
+                        extra={
+                            "source": source.name,
+                            "file": file_info.filename,
+                            "error": str(exc),
+                        },
                     )
                 except Exception:
                     if session:
@@ -144,4 +153,3 @@ def run_competitor_ftp_import(session: Optional[Session] = None) -> dict:
         "errors": totals.errors,
         "sources": details,
     }
-

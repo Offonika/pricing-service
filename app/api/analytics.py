@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import List, Optional
+from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
@@ -17,20 +17,22 @@ router = APIRouter(prefix="/analytics", tags=["analytics"])
 def get_top_model_demand(
     days: int = Query(default=30, ge=1, le=180),
     limit: int = Query(default=50, ge=1, le=500),
-    brand: Optional[str] = None,
-    region: Optional[str] = None,
+    brand: str | None = None,
+    region: str | None = None,
     db: Session = Depends(get_db),
 ):
     service = ModelDemandService(db)
     return service.get_top_models(days=days, limit=limit, brand=brand, region=region)
 
 
-@router.get("/model-demand/{device_model_id}/timeseries", response_model=List[ModelDemandTimeseriesItem])
+@router.get(
+    "/model-demand/{device_model_id}/timeseries", response_model=List[ModelDemandTimeseriesItem]
+)
 def get_model_demand_timeseries(
     device_model_id: int,
-    date_from: Optional[date] = None,
-    date_to: Optional[date] = None,
-    region: Optional[str] = None,
+    date_from: date | None = None,
+    date_to: date | None = None,
+    region: str | None = None,
     db: Session = Depends(get_db),
 ):
     if date_to is None:

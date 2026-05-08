@@ -1,19 +1,19 @@
 from __future__ import annotations
 
 import logging
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.models import Product
+from app.services.market_research import MarketDemandProvider
 from app.services.pricing import (
     calculate_recommendation,
     get_or_create_strategy_version,
     record_recommendation,
 )
-from app.services.market_research import MarketDemandProvider
 
 logger = logging.getLogger("app.workers.pricing")
 
@@ -23,7 +23,7 @@ def get_engine():
     return create_engine(settings.database_url)
 
 
-def recalculate_all_prices(product_skus: Optional[Iterable[str]] = None) -> dict:
+def recalculate_all_prices(product_articles: Iterable[str] | None = None) -> dict:
     """
     Простая заглушка фона: перебирает продукты и считает рекомендации.
     В реальном Celery таске engine/session будут создаваться на воркере.
@@ -34,14 +34,14 @@ def recalculate_all_prices(product_skus: Optional[Iterable[str]] = None) -> dict
     with Session(engine) as session:
         strategy_version = get_or_create_strategy_version(session)
         session.commit()
-        demand_provider: Optional[MarketDemandProvider] = None
+        demand_provider: MarketDemandProvider | None = None
         if settings.feature_yandex_demand_enabled:
             demand_provider = MarketDemandProvider(
                 session, days_window=settings.yandex_demand_days_window
             )
         query = session.query(Product)
-        if product_skus:
-            query = query.filter(Product.sku.in_(product_skus))
+        if product_articles:
+            query = query.filter(Product.article.in_(product_articles))
         for product in query.all():
             try:
                 demand_score = None
@@ -53,7 +53,7 @@ def recalculate_all_prices(product_skus: Optional[Iterable[str]] = None) -> dict
                         logger.info(
                             "demand signal fetched",
                             extra={
-                                "sku": product.sku,
+                                "article": product.article,
                                 "brand": product.brand,
                                 "model_name": product.name,
                                 "avg_impressions": demand_score,
@@ -71,11 +71,11 @@ def recalculate_all_prices(product_skus: Optional[Iterable[str]] = None) -> dict
                 )
                 logger.info(
                     "price recalculated",
-                    extra={"sku": product.sku, "recommended": str(rec.recommended_price)},
+                    extra={"article": product.article, "recommended": str(rec.recommended_price)},
                 )
                 results["processed"] += 1
             except Exception:
-                logger.exception("failed to recalc price", extra={"sku": product.sku})
+                logger.exception("failed to recalc price", extra={"article": product.article})
                 session.rollback()
                 results["errors"] += 1
             else:

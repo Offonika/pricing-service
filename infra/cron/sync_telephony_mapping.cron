@@ -1,0 +1,2 @@
+# Daily telephony source-of-truth refresh on server A.
+35 8 * * * /opt/MM/pricing-service/infra/cron/sync_telephony_mapping.sh >> /var/log/pricing/telephony_mapping_sync.log 2>&1

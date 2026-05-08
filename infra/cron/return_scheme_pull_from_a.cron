@@ -1,0 +1,1 @@
+10 9 * * * /home/deploy/.openclaw/workspace/scripts/return_scheme_pull_from_a.sh >> /tmp/return-scheme-pull.log 2>&1

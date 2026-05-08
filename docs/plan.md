@@ -17,6 +17,11 @@ Recommended Agent: pricing-backend
 
 ---
 
+## P1. Приоритетный добор до боевого режима
+
+- [x] S4.14a — Довести контур контроля схемы `Розница -> Возврат -> Не розница` до боевого режима  
+  Миграции применены, outbox/API включены на сервере `A`, доставка переведена на сервер `B`, cron включён (`A` в `09:00`, `B` в `09:10` MSK). Первый боевой batch `#1` успешно доставлен и подтверждён (`58` инцидентов, `8` B24-эскалаций). Текущий маршрут: Telegram-канал `Уведомления` (`-1003442325420`), B24 responsible `6759` (Арсен Сагиян); дальнейшее переключение канала делается только env-настройкой на `B`.
+
 ## S0. Подготовка и базовая инфраструктура
 
 - [x] S0.1 — Инициализировать репозиторий проекта  
@@ -101,6 +106,10 @@ Recommended Agent: pricing-backend
   Документ с полями TopControl (tovar/ostatki), правилами нормализации SKU/код инфсистемы, ручными оверрайдами, целевой записью в competitor_price.
 - [x] S4.13 — Реализовать матчинг FTP-цен конкурентов к товарам TopControl  
   Правила по артикулам/альткодам, оверрайды, лог unmatched/ambiguous, запись в competitor_price, CLI/таска для прогона по новым файлам.
+- [x] S4.14 — Ежедневный контроль схемы `Розница -> Возврат -> Не розница`  
+  Детекция по окну 7 дней из SQL 1С, дедуп инцидентов, XLSX-отчёт, Telegram-уведомление и cron-обвязка. Боевой ввод и операционное включение вынесены в `S4.14a`.
+- [ ] S4.X — UI для ручного сопоставления товаров с конкурентами  
+  SPA (React + TS + Vite, AG Grid Community) + бэкенд-эндпоинты по `docs/TechDesign.CompetitorMatchingUI.md`, статусы матчинга, принятие/снятие/отклонение кандидатов, серверные фильтры/пагинация.
 
 ## S5. Агентный контур рынка смартфонов и спроса (DeviceModel → Keywords → Яндекс.Директ)
 Фокус: полный цикл новых моделей телефонов, ключей под запчасти и метрик спроса.
@@ -135,7 +144,41 @@ Recommended Agent: pricing-backend
   - Отправка в backend: `POST /api/agents/devices/models` (и опционально `/keywords/bulk`).  
   - Планировщик (cron/systemd) и базовое логирование/ретраи.
 - [x] S5.14 — Модуль мониторинга новинок смартфонов (News API + LLM)  
-  Таблица `smartphone_releases`, коннектор к новостному API, LLM-нормализация, dedup/upsert, job `python -m tasks.update_smartphone_releases`, документация в PRD/архитектуре.
+  Таблица `smartphone_releases`, коннектор к новостному API, LLM-нормализация, dedup/upsert, job `./.venv/bin/python -m tasks.update_smartphone_releases`, документация в PRD/архитектуре.
+
+## S6. Management Control Tower (A/B: backend-витрины + Openclaw/B24 orchestration)
+Фокус: управленческие KPI, дебиторка, staffing и интеграция между сервером `A` (`pricing-service`) и сервером `B` (`Openclaw` + `Bitrix24` + Telegram + ASR).
+
+### S6.A. Сервер A — данные, витрины, API
+
+- [x] S6.1 — Модель данных и загрузка истории взаиморасчётов для дебиторки  
+  Нормализованный ledger `receivable_ledger_event`, история ответственности `counterparty_manager_assignment`, snapshots `receivable_balance_snapshot`, worker/CLI sync и базовые тесты реализованы. Дополнительно подтверждён и зафиксирован partial live projector `samples/onec_receivables_sales_returns_partial.sql` для `_Document203/_Document109` через `_AccumRg7550`; выполнен controlled backfill за март 2026 (`39_671` events, `3_760` snapshots, `47` кейсов `new_daily`).
+- [x] S6.2 — Реализовать витрины и кейсы дебиторской задолженности  
+  Реализованы persisted cases `receivable_case`: текущий баланс, origin-point долга, aged buckets, activity segment и сегменты `new_daily` / `inactive` / `employee` / `fired_manager` / `adjustment_candidates`, включая chain документов.
+- [x] S6.3 — Реализовать staffing snapshots и периодические витрины укомплектованности  
+  Реализованы модели staffing-контура, sync нормализованных данных сотрудников/смен, daily snapshots `staffing_snapshot`, period summary и forecast дефицита на `3/7/14` дней с тестами на некомплект и смену статуса сотрудника.
+- [x] S6.4 — Поднять приватный API Management Control Tower для сервера B  
+  Подняты private read-only endpoint'ы `/api/receivables/*` и `/api/staffing/*`, bearer auth для service-to-service, унифицированные envelopes `as_of/freshness_status/source_status/payload` и интеграционные тесты.
+- [x] S6.5 — Реализовать rules engine для управленческих задач и эскалаций  
+  Реализован вычисляемый rules engine и endpoint `/api/management/task-payloads` для payload'ов `Bitrix24/Openclaw`: просрочка, уволенный ответственный, кандидаты на корректировку и некомплект смены, включая дедуп-ключи и дедлайны реакции. Сегмент `new_daily` сохранён в read-only витринах и утреннем digest, а доставку для него перенесено в Telegram-вложение через сервер `B`.
+- [x] S6.6 — Наблюдаемость и SLA свежести management-витрин  
+  Добавлен endpoint `/api/management/health` с покомпонентной диагностикой `receivables/staffing/task_payloads`, SLA thresholds по lag в днях, статусы `fresh/stale/missing` и `ready/partial/empty`, плюс тесты на свежий и деградированный контур.
+- [x] S6.11 — Добавить BI-витрину недельных продаж и выручки по менеджерам и подразделениям  
+  Добавлены weekly KPI на базе `receivable_ledger_event`: DB view `vw_bi_sales_weekly_kpi`, API `/api/bi/sales-weekly-kpi`, фильтры по периоду/менеджеру/подразделению и тесты на недельную агрегацию выручки и количества продаж.
+- [x] S6.12 — Добавить daily-витрину продаж как базовый слой для weekly/monthly KPI  
+  Добавлены DB view `vw_bi_sales_daily_kpi` и API `/api/bi/sales-daily-kpi`; weekly/monthly отчёты теперь можно строить поверх ежедневного зерна в момент отправки в чат или BI.
+
+### S6.B. Сервер B — Openclaw / Bitrix24 / Telegram
+
+- [x] S6.7 — Интеграционный adapter в Openclaw для чтения management API сервера A  
+  Pull готовых JSON-витрин с `A`, тайм-ауты/ретраи, объединение с текущими утренними отчётами по звонкам, задачам и чатам.
+  Статус: `management_digest_from_a.py` реализован и задеплоен на `B`, prompt builder `sync_morning_call_reports.py` и `morning_call_reports.yaml` на `B` обновлены. На `A` management-миграции применены до `f4d5e6f7a8b9`, live `/api/management/*` отвечает `200`, smoke-check на `B` выполнен для `ceo` и `coo`, а `plan-only` показывает `noop` для runtime job'ов `cco`/`coo`.
+- [x] S6.8 — Автопостановка задач в Bitrix24 по payload'ам с сервера A  
+  На `B` добавлен consumer `management_tasks_from_a.py` с маппингом `owner_code/watcher_codes -> Bitrix24 user id` через `team.yaml` и env overrides, локальным state/dedupe по `dedupe_key` и shell/cron-обвязкой. Выполнен rollout на `B`: заданы `MANAGEMENT_B24_DEFAULT_RESPONSIBLE_ID=10105` и owner overrides (`finance/finance_pool/sales_manager -> 10105`, `retail_supervisor -> 21`), первый боевой прогон за `2026-03-20` создал `46` задач и синхронизировал уже созданную первую задачу `#10135`, повторный `dry-run` дал `47 noop`, state содержит `47` payload'ов.
+- [x] S6.9 — Интегрировать AI-результаты встреч сервера B в управленческий контур  
+  Добавлен B-side digest `meeting_action_digest.py` поверх `calls/transcripts/call_analysis`: публикует новые follow-up кейсы за вчера и зависшие open-кейсы по AI/ASR, с темами/owner groups/next step. Скрипт задеплоен на `B`, live-прогон за `2026-03-20` показал `47` новых и `264` overdue AI-кейса; `meeting_action_script` подключён в `morning_call_reports.yaml` для ролей `cco`, `coo`, `ceo`, `plan-only` на `B` показал обновление `payload`, а `apply/verify` через managed bridge запущены отдельно.
+- [x] S6.10 — Провести пилотный E2E-контур утреннего отчёта для 2–3 ролей  
+  Пилот проведён для `ceo` / `cco` / `coo`: подтверждено подключение `management_script` и `meeting_action_script` в role config на `B`, живые source digests отдают данные (`meeting_action_digest.py` на `2026-03-20`: `47` новых и `264` overdue AI-кейса), а вывод по содержательности/шуму/SLA зафиксирован в `docs/management_morning_pilot_2026-03-20.md`. Ограничение пилота: `management`-блок всё ещё `degraded` из-за отсутствующего staffing, а managed control plane (`apply/verify`) отвечает медленно и требует отдельного operational переподтверждения.
 
 ---
 

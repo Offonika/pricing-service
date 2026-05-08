@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from datetime import datetime, timezone
 
 import requests
-from datetime import datetime, timezone
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
@@ -15,37 +14,39 @@ from app.services.importers.zenlogs_moba import CompetitorCatalogRecord, parse_z
 
 logger = logging.getLogger("app.workers.zenlogs")
 
+UTC = timezone.utc
+
 
 def load_zenlogs_catalog(
     competitor: str,
     url: str,
     timeout: float,
     verify_ssl: bool = True,
-) -> List[CompetitorCatalogRecord]:
+) -> list[CompetitorCatalogRecord]:
     resp = requests.get(url, timeout=timeout, verify=verify_ssl)
     resp.raise_for_status()
     content = resp.content
     return parse_zenlogs_xlsx(
         content,
         competitor=competitor,
-        scraped_at=datetime.now(timezone.utc),
+        scraped_at=datetime.now(UTC),
     )
 
 
 @dataclass
 class ZenlogsRunResult:
     processed: int = 0
-    sources: List[Tuple[str, int]] = None
+    sources: list[tuple[str, int]] = None
     skipped: bool = False
-    reason: Optional[str] = None
+    reason: str | None = None
 
 
-def run_zenlogs_moba_import(session: Optional[Session] = None) -> dict:
+def run_zenlogs_moba_import(session: Session | None = None) -> dict:
     settings = get_settings()
     if settings.competitor_source_mode != "zenno" or not settings.zenlogs_import_enabled:
         return {"skipped": True, "reason": "disabled_or_internal"}
 
-    sources: List[Tuple[str, str]] = []
+    sources: list[tuple[str, str]] = []
     if settings.zenlogs_sources:
         for part in settings.zenlogs_sources.split(","):
             if not part:
@@ -64,7 +65,7 @@ def run_zenlogs_moba_import(session: Optional[Session] = None) -> dict:
         created_session = True
 
     total_processed = 0
-    source_results: List[dict] = []
+    source_results: list[dict] = []
     for name, url in sources:
         try:
             records = load_zenlogs_catalog(
@@ -75,7 +76,9 @@ def run_zenlogs_moba_import(session: Optional[Session] = None) -> dict:
             )
             stats = upsert_catalog_records(session, records)
             total_processed += len(records)
-            source_results.append({"source": name, "records": len(records), "items_created": stats.items_created})
+            source_results.append(
+                {"source": name, "records": len(records), "items_created": stats.items_created}
+            )
         except Exception as exc:
             logger.exception("zenlogs import failed for %s: %s", name, exc)
             source_results.append({"source": name, "error": str(exc)})

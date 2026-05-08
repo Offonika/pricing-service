@@ -1,6 +1,6 @@
 name: CI
 
-on:
+"on":
   push:
     branches: [main]
   pull_request:
@@ -28,6 +28,9 @@ jobs:
 
       - name: Format check (black)
         run: black --check .
+
+      - name: OpenAPI contract check
+        run: python scripts/export_openapi.py --check
 
       - name: Tests (pytest)
         run: pytest

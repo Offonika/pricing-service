@@ -5,16 +5,20 @@ Revises: 1d2b9d39720a
 Create Date: 2025-11-30 12:00:00
 
 """
-from typing import Sequence, Union
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+import sqlalchemy as sa
 
 from alembic import op
-import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "a3f6a9f4d2b1"
-down_revision: Union[str, None] = "1d2b9d39720a"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "1d2b9d39720a"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -173,4 +177,3 @@ def downgrade() -> None:
     op.drop_index(op.f("ix_competitor_ftp_file_source"), table_name="competitor_ftp_file")
     op.drop_index(op.f("ix_competitor_ftp_file_file_date"), table_name="competitor_ftp_file")
     op.drop_table("competitor_ftp_file")
-

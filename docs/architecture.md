@@ -5,6 +5,7 @@
 Документ описывает high-level архитектуру сервиса ценообразования, основные компоненты, потоки данных и схемы интеграций.
 
 Исходные бизнес-требования и сценарии см. в `docs/PRD.md`.  
+Правила присвоения коммерческих SKU и структура кодов описаны в `docs/sku_policy.md`.  
 Общие правила разработки и работы Codex — в `docs/constitution.md`.  
 План задач — в `docs/plan.md`.
 
@@ -92,14 +93,14 @@
 
 Используется для:
 
-- импорта больших файлов (TopControl, парсер конкурентов);
+- синхронизации с внешними источниками (парсер конкурентов, экспорт в 1С);
 - пакетного пересчёта цен по многим товарам;
 - формирования выгрузок для 1С по расписанию.
 
 Типовые задачи:
 
-- `import_topcontrol_dump(file_path)`
 - `import_competitor_prices(file_path)`
+- `sync_topcontrol_catalog()`
 - `recalculate_all_prices(strategy_set_id=...)`
 - `generate_price_export_for_1c(date=...)`
 
@@ -110,11 +111,24 @@
 #### TopControl
 
 - Источник:
-  - выгрузки DBF/CSV/Excel с номенклатурой, остатками, закупочными ценами.
+  - прямая реплика SQL 1С (Ekama / TopControl) с доступом только на чтение (`TOPCONTROL_DATABASE_URL` / `ONEC_DATABASE_URL`).
 - Способ интеграции:
-  - вручную/по расписанию формируются файлы из TopControl;
-  - файлы передаются сервису ценообразования (через папку/HTTP-API/интерфейс админки — определяется отдельной задачей);
-  - модуль импорта читает файл, маппит данные в `Product` и связанные сущности.
+  - сервис подключается к MSSQL через pytds/SQLAlchemy;
+  - фоновая задача `sync_topcontrol_catalog` выполняет SELECT по таблицам `tovar`, `ostatki`, закупочным ценам и маппит данные в `Product` и связанные сущности;
+  - обновления идут инкрементально по `dt_status_*`/`updated_at` полям, без промежуточных файлов/FTP.
+- Практическая карта полей 1С для классификации номенклатуры:
+  - карточка товара: `_Reference62`;
+  - артикул: `_Reference62._Fld836`;
+  - код 1С: `_Reference62._Code`;
+  - код инфосистемы: `_Reference62._Fld9175`;
+  - родительская группа: `_Reference62._ParentIDRRef -> _Reference62._Description`;
+  - `Вид номенклатуры` хранится не в `_InfoRg8928`, а в `_Reference62._Fld857RRef -> _Reference26._Description`;
+  - `Предмет` для актуальных карточек хранится не в `_InfoRg8928`, а в typed-регистре `_InfoRg6309`:
+    `_InfoRg6309._Fld6310_RRRef -> _Reference62._IDRRef` связывает запись с товаром,
+    `_InfoRg6309._Fld6311RRef -> _Chrc401._IDRRef` задаёт имя свойства,
+    для свойства с `_Chrc401._Description = 'Предмет'` значение берётся из `_InfoRg6309._Fld6312_RRRef -> _Reference42._Description`,
+    а если ссылка пустая, fallback-значение лежит в `_InfoRg6309._Fld6312_S`;
+  - `_InfoRg8928` остаётся источником для части доп. свойств (`Категория`, `Качество`, `Емкость`, `Совместим с моделью` и т.д.), но не должен считаться надёжным источником для `Предмет` и `Вида номенклатуры` без проверки.
 
 #### Парсер конкурентов (ZennoPoster и др.)
 
@@ -128,7 +142,7 @@
   - скрипт/бот парсинга складывает файлы в подготовленную директорию или отдаёт по API;
   - модуль импорта читает файл и заполняет `Competitor`, `CompetitorPrice`, обновляет `ProductMatch`.
   - Для FTP-выгрузок конкурентов (poiskzip-moba, poiskzip-liberti) используется поток `FTP → XLSX → job import_competitor_ftp`. Источники задаются через `COMPETITOR_FTP_SOURCES` (`name:directory:pattern`, где pattern содержит `{date}`, напр. `moba-{date}.xlsx`). Job подключается к FTP (`COMPETITOR_FTP_HOST`/`PORT`/`USER`/`PASSWORD`, `COMPETITOR_FTP_TLS`, `COMPETITOR_FTP_TIMEOUT_SEC`), ищет датированные файлы, валидирует обязательные колонки (`group, sku, name, price_opt, price_roz, link, time`, опционально `amount`/`stock`), приводит `time` к MSK ISO8601, сверяет дату имени и содержимого, и пишет данные в `competitor_ftp_file` (метаданные), `competitor_ftp_raw_row` (сырьё, ошибки) и `competitor_ftp_record` (нормализованные строки). Дедуп по `(source, file_date)`, при повторной заливке файл перезаписывается. Цепочка ZenLogs (HTTP) и каталог `competitor_item`/`competitor_item_snapshot` удалены, используем только FTP-поток.
-  - Матчинг цен: job `python -m tasks.match_competitor_ftp` берёт `competitor_ftp_record`, нормализует SKU и сопоставляет с `product.sku`, создаёт `CompetitorPrice` (price = `price_roz` или `price_opt`, in_stock из файла, collected_at = `observed_at`) и `ProductMatch` (confidence=1.0). unmatched/ambiguous логируются, много-матч по SKU не записывается.
+  - Матчинг цен: job `./.venv/bin/python -m tasks.match_competitor_ftp` берёт `competitor_ftp_record`, нормализует SKU и сопоставляет с `product.article`, создаёт `CompetitorPrice` (price = `price_roz` или `price_opt`, in_stock из файла, collected_at = `observed_at`) и `ProductMatch` (confidence=1.0). unmatched/ambiguous логируются, много-матч по SKU не записывается.
 
 #### Агент по рынку смартфонов (пресс-релизы/новости)
 
@@ -161,6 +175,134 @@
   - 1С забирает файл из указанной директории или по HTTP-эндпоинту;
   - формат и правила считывания фиксируются в отдельной спецификации.
 
+#### Мониторинг схемы возвратов
+
+- Назначение:
+  - ежедневный контроль подозрительной последовательности `Реализация (Розница) -> Возврат от покупателя -> Реализация (не Розница)` по одной номенклатуре и одному магазину/складу.
+- Способ интеграции:
+  - backend запускает отдельный job `./.venv/bin/python -m tasks.detect_return_scheme`;
+  - extractor читает прямой SQL по `_Document203/_Document203_VT4966` и `_Document109/_Document109_VT1698` в read-only базе 1С (`ONEC_DATABASE_URL`);
+  - сотрудник документа читается из реквизита `Ответственный`: `_Document203._Fld4942RRef -> _Reference54` для реализации и `_Document109._Fld1682RRef -> _Reference54` для возврата;
+  - строки приводятся к типу `OperationEvent` с полями документа, номенклатуры, магазина, сотрудника, типа цены, количества и суммы;
+  - детектор применяет FIFO-матчинг по количеству в окне `RETURN_SCHEME_WINDOW_DAYS` (по умолчанию 7 дней);
+  - новые/неуведомлённые инциденты пишутся в таблицу `return_scheme_incident`, группируются в outbox-пакет `return_scheme_alert_batch` и выгружаются в `XLSX`;
+  - сервер `A` публикует internal API:
+    - `GET /api/internal/alerts/return-scheme/pending`
+    - `GET /api/internal/alerts/return-scheme/{batch_id}/report`
+    - `POST /api/internal/alerts/return-scheme/{batch_id}/ack`
+  - сервер `B` (`Openclaw`) забирает pending batch'и по service token, отправляет отчёт в отдельный Telegram-чат по возвратам и создаёт задачи в `Bitrix24` для повторных/критичных кейсов;
+  - описания Bitrix24-задач должны следовать workspace-правилу `docs/runbooks/bitrix-task-writing-rules.md`: объяснять, что это сигнал на ручную проверку, а не доказанное нарушение; для `RETURN_SCHEME_ESC` счетчик всегда расшифровывается как количество строк товаров, потому что несколько строк одного возврата являются одним операционным эпизодом;
+  - прямой скрипт `infra/cron/return_scheme_alert.py` на сервере `A` остаётся только как временный fallback и управляется `RETURN_SCHEME_DIRECT_TELEGRAM_ENABLED`.
+- Операционный контур:
+  - shell-обвязка `infra/cron/return_scheme_monitoring.sh`;
+  - сервер `B` может использовать pull-скрипт `infra/cron/return_scheme_pull_from_a.py`;
+  - конфиг через `RETURN_SCHEME_ENABLED`, `RETURN_SCHEME_RETAIL_PRICE_TYPES`, `RETURN_SCHEME_OUTPUT_DIR`, `RETURN_SCHEME_INTERNAL_API_TOKEN`, `RETURN_SCHEME_ALERT_TELEGRAM_*`.
+
+#### Foundation дебиторки
+
+- Назначение:
+  - нормализованный ledger взаиморасчётов на сервере `A` как фундамент для витрин и кейсов дебиторки.
+- Способ интеграции:
+  - backend запускает sync `./.venv/bin/python -m tasks.sync_receivable_ledger --sql-file ...`;
+  - extractor читает read-only SQL из 1С через `ONEC_DATABASE_URL`, но ожидает уже нормализованную проекцию ledger-событий;
+  - финансовые события пишутся в `receivable_ledger_event`;
+  - история ответственных менеджеров восстанавливается в `counterparty_manager_assignment`;
+  - ежедневный срез открытой дебиторки пишется в `receivable_balance_snapshot`.
+  - поверх snapshot'ов собираются кейсы `receivable_case` c сегментами `new_daily`, `inactive`, `employee`, `fired_manager`, `adjustment_candidates`;
+  - chain документов для кейса хранится в JSON и восстанавливается из ledger от origin-документа долга.
+
+#### Foundation staffing
+
+- Назначение:
+  - нормализованный staffing-контур на сервере `A` для daily snapshots и period summary по укомплектованности.
+- Способ интеграции:
+  - backend запускает sync `./.venv/bin/python -m tasks.sync_staffing --staff-file ... --plan-file ... --fact-file ...`;
+  - входом служат нормализованные JSON-проекции сотрудников, планов смен и фактов выхода из `Bitrix24`/HR;
+  - сотрудники пишутся в `staff_member`, план смен в `store_shift_plan`, факт выхода в `store_shift_fact`;
+  - management API `GET /api/management/task-payloads?date=YYYY-MM-DD` публикует индивидуальные payload'ы задач для `Bitrix24/Openclaw`;
+  - сервер `B` использует pull-скрипт `infra/cron/management_tasks_from_a.py`, который:
+    - читает payload'ы по service token;
+    - мапит `owner_code`/`watcher_codes` в `Bitrix24 user id` через `team.yaml` и env overrides;
+    - идемпотентно создаёт или обновляет задачи в `Bitrix24` по `dedupe_key`;
+    - хранит локальный state в `.data/management-tasks/state.json`;
+    - может запускаться в `dry-run` для безопасной диагностики до включения по cron.
+  - daily snapshots пишутся в `staffing_snapshot` с полями `planned / assigned / confirmed / no_show / deficit / criticality`;
+  - period summary и forecast на `3/7/14` дней считаются из исторических `staffing_snapshot`, а не из live-данных.
+
+#### Management API
+
+- Назначение:
+  - приватные read-only endpoint'ы для сервера `B` поверх готовых витрин дебиторки и staffing.
+- Текущие endpoint'ы:
+  - `GET /api/receivables/new-daily?date=YYYY-MM-DD`
+  - `GET /api/receivables/cases?date=YYYY-MM-DD&segment=...`
+  - `GET /api/receivables/employee-cases?date=YYYY-MM-DD`
+  - `GET /api/receivables/manager-summary?date=YYYY-MM-DD`
+  - `GET /api/staffing/daily?date=YYYY-MM-DD`
+  - `GET /api/staffing/period-summary?date_from=YYYY-MM-DD&date_to=YYYY-MM-DD`
+- Доступ:
+  - bearer token через `MANAGEMENT_INTERNAL_API_TOKEN` с fallback на `RETURN_SCHEME_INTERNAL_API_TOKEN`;
+  - ответы унифицированы по полям `as_of`, `freshness_status`, `source_status`, `payload`.
+
+#### Management Rules Engine
+
+- Назначение:
+  - вычислять task payload'ы для `Bitrix24/Openclaw` на сервере `A` из готовых витрин, без повторного пересчёта на сервере `B`.
+- Текущие правила:
+  - `receivable_overdue`
+  - `receivable_fired_manager`
+  - `receivable_adjustment_candidate`
+  - `staffing_shift_deficit`
+- Контракт:
+  - `GET /api/management/task-payloads?date=YYYY-MM-DD`
+  - каждый payload содержит `rule_code`, `severity`, `owner_code`, `watcher_codes`, `reaction_deadline_at`, `due_at`, `dedupe_key`, `metrics`, `references`;
+  - сервер `B` отвечает за маппинг `owner_code/watcher_codes` в реальные `Bitrix24` user ids и за дедупликацию side effects.
+
+#### Management Health / Freshness
+
+- Назначение:
+  - контроль SLA свежести и полноты management-витрин до того, как их начнёт забирать сервер `B`.
+- Контракт:
+  - `GET /api/management/health?date=YYYY-MM-DD`
+  - ответ содержит общий `status`, а также покомпонентную диагностику по `receivables`, `staffing`, `task_payloads`.
+- Что проверяется:
+  - latest snapshot date;
+  - lag в днях относительно запрошенной даты;
+  - source status (`ready` / `partial` / `empty`);
+  - freshness status (`fresh` / `stale` / `missing`);
+  - базовые counts по snapshot'ам и payload'ам.
+- SLA-пороги:
+  - `MANAGEMENT_RECEIVABLES_MAX_LAG_DAYS`
+  - `MANAGEMENT_STAFFING_MAX_LAG_DAYS`
+  - `MANAGEMENT_TASK_PAYLOADS_MAX_LAG_DAYS`
+
+#### Openclaw Management Adapter (сервер B)
+
+- Назначение:
+  - read-only adapter на сервере `B`, который подтягивает management snapshots с `A` и подмешивает их в prompt утренних отчётов `Openclaw`.
+- Реализация:
+  - скрипт `infra/cron/management_digest_from_a.py`;
+  - поддерживает endpoint'ы:
+    - `GET /api/management/health`
+    - `GET /api/receivables/new-daily`
+    - `GET /api/receivables/cases?segment=inactive|fired_manager|adjustment_candidates`
+    - `GET /api/receivables/employee-cases`
+    - `GET /api/receivables/manager-summary`
+    - `GET /api/staffing/daily`
+    - `GET /api/management/task-payloads`
+  - при ошибке `A` не падает целиком: возвращает деградированный digest с явным списком недоступных компонентов;
+  - повторный запуск не создаёт side effects, потому что adapter только читает API и печатает summary/json.
+- Конфиг на `B`:
+  - `MANAGEMENT_SOURCE_URL` с fallback на `RETURN_SCHEME_SOURCE_URL`;
+  - `MANAGEMENT_SOURCE_TOKEN` с fallback на `RETURN_SCHEME_SOURCE_TOKEN`;
+  - `MANAGEMENT_ADAPTER_TIMEOUT_SECONDS`;
+  - `MANAGEMENT_ADAPTER_RETRIES`;
+  - `MANAGEMENT_ADAPTER_RETRY_DELAY_SECONDS`.
+- Интеграция в prompt builder:
+  - `Openclaw`-конфиг утренних отчётов должен передавать `management_script` для ролей, которым нужен управленческий блок;
+  - builder обязан явно просить модель отразить статус свежести/degradation, дебиторку, staffing и, при наличии отдельного источника, AI action items по встречам;
+  - B-side digest `infra/cron/meeting_action_digest.py` читает `calls/transcripts/call_analysis`, формирует новые follow-up кейсы за вчера и зависшие open-кейсы (`pending_review/callback/support`) старше SLA, после чего подключается в `morning_call_reports.yaml` через `meeting_action_script`.
+
 #### Telegram-бот
 
 - Использует backend-API для:
@@ -176,7 +318,15 @@
   - `/api/bi/products` — справочник товаров с ABC/XYZ и закупкой;
   - `/api/bi/recommendations` — последние рекомендации с версией стратегии и причинами;
   - `/api/bi/competitor-prices` — последние цены конкурентов.
+  - `/api/bi/receivables-current?date=YYYY-MM-DD` — плоская таблица текущих остатков по контрагентам на дату;
+  - `/api/bi/receivable-cases?date=YYYY-MM-DD&segment=...` — сегменты дебиторки (`new_daily`, `employee`, `fired_manager`, `inactive`, `adjustment_candidates`);
+  - `/api/bi/receivables-manager-summary?date=YYYY-MM-DD` — агрегат по текущим менеджерам: портфель, новые долги, кейсы на корректировку и т.д.
 - Доступ предполагается через авторизованный backend (без прямого доступа к БД).
+- Готовые Power Query M-запросы для дебиторки — в `docs/BI.Receivables.md`.
+- Если BI подключается напрямую к БД (Power BI / Metabase), используем read-only витрины (views) с понятными русскими полями:
+  - `vw_competitor_item_catalog_ru` — каталог конкурентов: **«Бренд товара»** (аксессуар/запчасть) vs **«Бренд устройства (parsed)»** (бренд телефона).
+  - `vw_competitor_item_compatibility_ru` — совместимости: **«Бренд устройства (совм.)»** / модель / вариант (для какого устройства подходит).
+  - `vw_competitor_display_ru` — витрина по дисплеям с русскими атрибутами (тип/качество/рамка/тач/цвет).
 - Дополнительные витрины по спросу для моделей телефонов:
   - представления `vw_bi_model_demand_daily` и `vw_bi_model_demand_30d` (см. миграцию `1a4fb0e69e78...`);
   - HTTP-эндпоинты `/api/analytics/model-demand/top` и `/api/analytics/model-demand/{id}/timeseries` для простых дашбордов/админок;
@@ -219,9 +369,19 @@
   - `SmartphoneNewsClient` — HTTP-клиент к внешнему новостному API (конфиг `.env`: `SMARTPHONE_NEWS_API_BASE_URL`, `SMARTPHONE_NEWS_API_KEY`, `SMARTPHONE_NEWS_LANGUAGE`, `SMARTPHONE_NEWS_QUERY`, `SMARTPHONE_NEWS_DAYS_BACK`, `SMARTPHONE_NEWS_PAGE_SIZE`).
   - `SmartphoneReleaseNormalizer` — LLM-промпт к OpenAI (использует `OPENAI_API_KEY`), возвращает `is_phone_announcement`, `brand`, `model`, `announcement_date`, `release_status (rumor/announced/released)`.
   - `SmartphoneReleaseService` — фасад, который делает dedup/upsert в `smartphone_releases` по `brand+model+announcement_date` и `source_name+source_url`.
-  - фоновая job `python -m tasks.update_smartphone_releases` (Cron/Codex), включается фича-флагом `SMARTPHONE_RELEASES_ENABLED`.
+  - фоновая job `./.venv/bin/python -m tasks.update_smartphone_releases` (Cron/Codex), включается фича-флагом `SMARTPHONE_RELEASES_ENABLED`.
 - **Поток данных:** внешнее News API → нормализация через OpenAI → upsert в `smartphone_releases` (brand/model/full_name/announcement_date/release_status/source/summary/raw_payload/is_active) → сигнал для аналитики/спроса/стратегий.
 - **Ограничения MVP:** один источник, опрос раз в сутки (или реже), отсутствие прямого влияния на pricing-engine (пока только сигнал «модель появилась»).
+
+### 2.7. Еженедельный digest новинок для закупщиков
+
+- **Назначение:** собрать короткий обзор новинок смартфонов за неделю для отдела закупок Master Mobile.
+- **Компоненты:**
+  - таблица `weekly_smartphone_digest` (уникальная по `week_start+week_end`, хранит Markdown-обзор, модель LLM, ids релизов и мету);
+  - сервис `WeeklyBuyerDigestService` (берёт `smartphone_releases` за 7 дней по `announcement_date/market_release_date`, фильтрует `announced/released`, формирует промпт и вызывает LLM или fallback);
+  - воркер `run_weekly_buyer_digest_job` + CLI `./.venv/bin/python -m tasks.generate_weekly_buyer_digest`, фича-флаг `WEEKLY_BUYER_DIGEST_ENABLED`, модель `WEEKLY_BUYER_DIGEST_MODEL`.
+- **Поток данных:** `smartphone_releases` (нормализованные анонсы) → агрегатор за неделю → LLM-подготовленный Markdown → `weekly_smartphone_digest` → опциональное сообщение в Telegram (`infra/cron/weekly_buyer_digest_alert.py`, отдельное от ежедневного алерта).
+- **Расписание:** шаблон cron `infra/cron/weekly_buyer_digest.cron` запускает `infra/cron/weekly_buyer_digest.sh` раз в неделю; при отсутствии релизов создаётся короткий "пустой" обзор без вызова LLM.
 
 ---
 
@@ -234,12 +394,11 @@
    - Сервис `yandex_integration_service` принимает набор фраз и регион, обращается к API Яндекс.Директ и пишет агрегаты спроса в `DemandStat`.
    - Полученные признаки (новые модели, спрос по фразам) используются в стратегиях ценообразования и приоритизации ассортимента.
 
-2. **Импорт наших данных (TopControl)**
-   - TopControl формирует выгрузку (DBF/CSV/Excel).
-   - Файл поступает в сервис ценообразования.
-   - Фоновая задача `import_topcontrol_dump`:
-     - разбирает файл;
-     - обновляет таблицы `Product` (и, при необходимости, таблицы остатков/закупок);
+2. **Синхронизация наших данных (TopControl SQL)**
+   - сервис подключается напрямую к базе TopControl/1С (режим read-only).
+   - Фоновая задача `sync_topcontrol_catalog`:
+     - считывает новые/изменённые записи по временным меткам;
+     - обновляет таблицы `Product` и остатки/закупки;
      - логирует количество обработанных/пропущенных записей.
 
 3. **Импорт цен конкурентов**
@@ -247,7 +406,7 @@
    - Фоновая задача `import_competitor_prices`:
      - обновляет `Competitor` и `CompetitorPrice`;
      - при необходимости обновляет/создаёт связи в `ProductMatch`.
-  - В режиме `COMPETITOR_SOURCE_MODE=zenno` используется job `python -m tasks.import_zenlogs_competitors`, которая проходит по всем источникам из `ZENLOGS_SOURCES`, скачивает XLSX ZenLogs (`group`, `sku`, `name`, `price_opt`, `link`, `stock`) и пишет данные в `competitor_item` + `competitor_item_snapshot`, фиксируя историю цен/наличия без привязки к нашим SKU. Для FTP-прайсов есть отдельная job `python -m tasks.import_competitor_ftp`, которая выкачивает датированные XLSX по маске, валидирует и сохраняет в `competitor_ftp_*` таблицы с дедупликацией по дате файла.
+  - В режиме `COMPETITOR_SOURCE_MODE=zenno` используется job `./.venv/bin/python -m tasks.import_zenlogs_competitors`, которая проходит по всем источникам из `ZENLOGS_SOURCES`, скачивает XLSX ZenLogs (`group`, `sku`, `name`, `price_opt`, `link`, `stock`) и пишет данные в `competitor_item` + `competitor_item_snapshot`, фиксируя историю цен/наличия без привязки к нашим SKU. Для FTP-прайсов есть отдельная job `./.venv/bin/python -m tasks.import_competitor_ftp`, которая выкачивает датированные XLSX по маске, валидирует и сохраняет в `competitor_ftp_*` таблицы с дедупликацией по дате файла.
 
 4. **Матчинг товаров и карточек конкурентов**
    - Запускается по расписанию или после импорта.
@@ -281,7 +440,7 @@
   - `models/` — SQLAlchemy-модели
   - `schemas/` — Pydantic-схемы
   - `services/`
-    - `importers/` — импорт TopControl, парсер конкурентов
+    - `importers/` — интеграции с парсером конкурентов и прочими внешними источниками (TopControl синхронизируем напрямую из SQL)
     - `pricing_strategies/` — логика стратегий
     - `market_research/` (новые модули) — модели телефонов, генерация ключей, спрос через Яндекс.Директ
     - другие сервисы
@@ -296,7 +455,7 @@
   - `architecture.md`
   - `plan.md`
   - `price-strategies.md`
-  - `agents.md`
+  - `AGENTS.md`
 - `tasks/` — детальные ТЗ по задачам из `plan.md`
 - `scripts/` — вспомогательные скрипты (миграции, импорты, dev-utils)
 

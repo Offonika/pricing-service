@@ -39,3 +39,6 @@ Thumbs.db
 # Local sqlite files
 *.db
 data/
+
+# Local research artifacts
+.local/1c-config/

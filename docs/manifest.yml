@@ -1,0 +1,403 @@
+version: 1
+project: pricing-service
+documents:
+  - path: README.md
+    title: Pricing Service README
+    doc_type: readme
+    domain: workspace
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/, tasks/, infra/]
+    related_tests: [tests/]
+    keywords: [pricing-service, quickstart, operations]
+  - path: AGENTS.md
+    title: Pricing Service Agents
+    doc_type: agent_rules
+    domain: governance
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/, tasks/]
+    related_tests: [tests/]
+    keywords: [agents, workflow, codex]
+  - path: openapi.yaml
+    title: Pricing Service OpenAPI
+    doc_type: openapi
+    domain: api
+    status: active
+    owner: api
+    source_of_truth: true
+    related_code: [app/api/, app/schemas/, scripts/export_openapi.py]
+    related_tests: [tests/]
+    keywords: [openapi, fastapi, api-contract]
+  - path: docs/index.md
+    title: Pricing Service Docs Index
+    doc_type: index
+    domain: documentation
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: []
+    related_tests: []
+    keywords: [docs, index, navigation]
+  - path: docs/specs/README.md
+    title: Pricing Service Spec Lifecycle
+    doc_type: spec_index
+    domain: documentation
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: []
+    related_tests: []
+    keywords: [specs, lifecycle, planning]
+  - path: docs/specs/dhl-europe-logistics-contour.md
+    title: DHL Europe Logistics Contour
+    doc_type: spec
+    domain: logistics
+    status: draft
+    owner: product
+    source_of_truth: false
+    related_code: []
+    related_tests: []
+    keywords: [dhl, europe, logistics, customs, procurement, spare-parts]
+  - path: docs/specs/receivables-smart-process-workflow.md
+    title: Receivables Smart Process Workflow
+    doc_type: spec
+    domain: receivables
+    status: draft
+    owner: product
+    source_of_truth: false
+    related_code: [app/api/receivables.py, app/api/management.py, app/models/receivable_case.py, app/services/receivables.py, app/services/management_rules.py, infra/cron/new_daily_receivables_from_a.py]
+    related_tests: [tests/test_receivables.py, tests/test_management_rules.py, tests/test_management_tasks_api.py, tests/test_new_daily_receivables_from_a.py]
+    keywords: [receivables, bitrix24, smart-process, debt, sms]
+  - path: docs/Onepage.DHLEuropeLogisticsContour.md
+    title: DHL Europe Logistics Onepage
+    doc_type: onepager
+    domain: logistics
+    status: draft
+    owner: product
+    source_of_truth: false
+    related_code: []
+    related_tests: []
+    keywords: [dhl, europe, logistics, onepager, spare-parts]
+  - path: docs/PRD.md
+    title: Pricing Service PRD
+    doc_type: prd
+    domain: pricing
+    status: active
+    owner: product
+    source_of_truth: true
+    related_code: [app/]
+    related_tests: [tests/]
+    keywords: [pricing, topcontrol, competitors]
+  - path: docs/architecture.md
+    title: Pricing Service Architecture
+    doc_type: architecture
+    domain: architecture
+    status: active
+    owner: architecture
+    source_of_truth: true
+    related_code: [app/, infra/]
+    related_tests: [tests/]
+    keywords: [architecture, fastapi, postgres]
+  - path: docs/plan.md
+    title: Pricing Service Plan
+    doc_type: plan
+    domain: planning
+    status: active
+    owner: product
+    source_of_truth: true
+    related_code: [tasks/]
+    related_tests: []
+    keywords: [plan, tasks, roadmap]
+  - path: docs/price-strategies.md
+    title: Price Strategies
+    doc_type: rules
+    domain: pricing
+    status: active
+    owner: product
+    source_of_truth: true
+    related_code: [app/services/pricing_strategies/]
+    related_tests: [tests/]
+    keywords: [pricing, strategy, margin]
+  - path: docs/TechDesign.CompetitorMatching.md
+    title: Competitor Matching Tech Design
+    doc_type: tech_design
+    domain: matching
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/services/competitor_matching.py, app/api/matching.py]
+    related_tests: [tests/]
+    keywords: [matching, competitors, sku]
+  - path: docs/specs/competitor-matching-ui-v1.md
+    title: Competitor Matching UI V1
+    doc_type: spec
+    domain: matching
+    status: accepted
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/api/matching.py, app/schemas/matching.py, ui/]
+    related_tests: [tests/test_matching_api.py, tests/test_embedding_matching.py]
+    keywords: [matching, competitors, ui, competitor-item]
+  - path: docs/specs/competitor-matching-bitrix-app-v1.md
+    title: Competitor Matching Bitrix24 App V1
+    doc_type: spec
+    domain: matching
+    status: accepted
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/api/bitrix_matching.py, app/services/bitrix_matching_auth.py, ui/]
+    related_tests: [tests/test_matching_api.py]
+    keywords: [matching, competitors, ui, bitrix24]
+  - path: docs/specs/competitor-matching-property-mapping-v1.md
+    title: Competitor Matching Property Mapping V1
+    doc_type: spec
+    domain: matching
+    status: accepted
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/api/matching.py, app/services/matching_attributes.py, app/services/matching_property_mapping.py, app/models/matching_property_mapping.py, ui/]
+    related_tests: [tests/test_matching_api.py, tests/test_embedding_matching.py, tests/test_display_normalization.py, tests/test_display_quality_raw_mapping.py, tests/test_product_display_modification.py]
+    keywords: [matching, competitors, ui, properties, mapping]
+  - path: docs/competitor_matching.md
+    title: Competitor Matching Run Context
+    doc_type: runbook
+    domain: matching
+    status: active
+    owner: engineering
+    source_of_truth: false
+    related_code: [tasks/]
+    related_tests: [tests/]
+    keywords: [llm, embeddings, matching]
+  - path: docs/competitor-matching-nightly-audit-2026-05-02.md
+    title: Competitor Matching Nightly Audit 2026-05-02
+    doc_type: audit
+    domain: matching
+    status: active
+    owner: engineering
+    source_of_truth: false
+    related_code: [infra/cron/competitor_matching_nightly.sh, tasks/match_competitor_items_embeddings.py]
+    related_tests: [tests/test_matching_api.py, tests/test_embedding_matching.py]
+    keywords: [competitors, ftp, nightly, matching, embeddings, audit]
+  - path: docs/TechDesign.CompetitorFTPImport.md
+    title: Competitor FTP Import Tech Design
+    doc_type: tech_design
+    domain: import
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/services/importers/competitor_ftp.py, app/workers/competitor_ftp.py]
+    related_tests: [tests/]
+    keywords: [ftp, competitors, import]
+  - path: docs/TechDesign.AgentsMarketDemand.md
+    title: Agents Market Demand Tech Design
+    doc_type: tech_design
+    domain: market_research
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [agents/, app/services/market_research/]
+    related_tests: [tests/]
+    keywords: [agents, demand, yandex-direct]
+  - path: docs/agents-market-research.md
+    title: Market Research Agents
+    doc_type: runbook
+    domain: market_research
+    status: active
+    owner: engineering
+    source_of_truth: false
+    related_code: [agents/, config/agents/]
+    related_tests: [tests/]
+    keywords: [agents, smartphone, llm]
+  - path: docs/TechDesign.ManagementControlTower.md
+    title: Management Control Tower Tech Design
+    doc_type: tech_design
+    domain: management
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/api/management.py, app/services/management_rules.py]
+    related_tests: [tests/]
+    keywords: [management, control-tower, api]
+  - path: docs/BI.Receivables.md
+    title: Receivables BI
+    doc_type: bi
+    domain: receivables
+    status: active
+    owner: analytics
+    source_of_truth: true
+    related_code: [app/api/receivables.py, app/services/receivables.py]
+    related_tests: [tests/]
+    keywords: [receivables, bi, debt]
+  - path: docs/Onepage.ReceivablesWorkProcess.md
+    title: Receivables Work Process Onepage
+    doc_type: onepager
+    domain: receivables
+    status: draft
+    owner: product
+    source_of_truth: false
+    related_code: [app/api/receivables.py, app/services/receivables.py, app/services/management_rules.py]
+    related_tests: [tests/test_receivables.py, tests/test_management_rules.py]
+    keywords: [receivables, bitrix24, smart-process, debt, sms, onepager]
+  - path: docs/BI.ModelDemand.md
+    title: Model Demand BI
+    doc_type: bi
+    domain: demand
+    status: active
+    owner: analytics
+    source_of_truth: true
+    related_code: [app/api/analytics.py, app/services/analytics.py]
+    related_tests: [tests/]
+    keywords: [demand, bi, phone-models]
+  - path: docs/TechDesign.LogisticsTelegramMVP.md
+    title: Logistics Telegram MVP Tech Design
+    doc_type: tech_design
+    domain: logistics
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/api/logistics.py, app/telegram/logistics_bot.py]
+    related_tests: [tests/]
+    keywords: [logistics, telegram, transfer]
+  - path: docs/IntegrationContract.Logistics1C.md
+    title: Logistics 1C Integration Contract
+    doc_type: integration_contract
+    domain: logistics
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/services/logistics.py]
+    related_tests: [tests/]
+    keywords: [logistics, 1c, contract]
+  - path: docs/Onepage.LogisticsTelegramMVP.md
+    title: Logistics Telegram Onepage
+    doc_type: onepager
+    domain: logistics
+    status: active
+    owner: product
+    source_of_truth: false
+    related_code: [app/api/logistics.py]
+    related_tests: [tests/]
+    keywords: [logistics, telegram, onepager]
+  - path: docs/Onepage.ExpertiseCaseMVP.md
+    title: Expertise Case MVP Onepage
+    doc_type: onepager
+    domain: expertise
+    status: active
+    owner: product
+    source_of_truth: true
+    related_code: [app/api/expertise.py, app/services/expertise.py]
+    related_tests: [tests/]
+    keywords: [expertise, mvp, bitrix24]
+  - path: docs/TechDesign.ExpertiseCaseMVP.md
+    title: Expertise Case MVP Tech Design
+    doc_type: tech_design
+    domain: expertise
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/api/expertise.py, app/services/expertise.py]
+    related_tests: [tests/]
+    keywords: [expertise, 1c, bitrix24]
+  - path: docs/IntegrationContract.Expertise1C.md
+    title: Expertise 1C Integration Contract
+    doc_type: integration_contract
+    domain: expertise
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/services/expertise_onec.py]
+    related_tests: [tests/]
+    keywords: [expertise, 1c, contract]
+  - path: docs/Runbook.ExpertiseWave1.md
+    title: Expertise Wave 1 Runbook
+    doc_type: runbook
+    domain: expertise
+    status: active
+    owner: engineering
+    source_of_truth: false
+    related_code: [tasks/, infra/cron/]
+    related_tests: [tests/]
+    keywords: [expertise, runbook, wave1]
+  - path: docs/order_flow/README.md
+    title: Order Flow Context Index
+    doc_type: index
+    domain: order_flow
+    status: active
+    owner: product
+    source_of_truth: true
+    related_code: [app/]
+    related_tests: []
+    keywords: [orders, returns, order-flow]
+  - path: docs/order_flow/site-order-rtu-process-context-2026-05-03.md
+    title: Site Order RTU Process Context 2026-05-03
+    doc_type: context
+    domain: order_flow
+    status: active
+    owner: product
+    source_of_truth: false
+    related_code: []
+    related_tests: []
+    keywords: [orders, site-orders, rtu, onec, bitrix24, delivery]
+  - path: docs/order_flow/site-order-1c-process-tz-2026-05-03.md
+    title: Site Order 1C Process TZ 2026-05-03
+    doc_type: tech_design
+    domain: order_flow
+    status: draft
+    owner: product
+    source_of_truth: false
+    related_code: []
+    related_tests: []
+    keywords: [orders, site-orders, onec, bitrix, commerce-ml, rtu, delivery, status]
+  - path: docs/order_flow/onec-site-order-process-tz-2026-05-03.md
+    title: 1C Site Order Process TZ 2026-05-03
+    doc_type: tech_design
+    domain: order_flow
+    status: draft
+    owner: product
+    source_of_truth: false
+    related_code: []
+    related_tests: []
+    keywords: [orders, site-orders, onec, commerce-ml, rtu, delivery, status, tasks, sms]
+  - path: docs/order_flow/onec-site-order-wave1-tz-2026-05-03.md
+    title: 1C Site Order Wave 1 TZ 2026-05-03
+    doc_type: tech_design
+    domain: order_flow
+    status: accepted
+    owner: product
+    source_of_truth: false
+    related_code: []
+    related_tests: []
+    keywords: [orders, site-orders, onec, wave1, commerce-ml, rtu, delivery, status]
+  - path: docs/order_flow/ut103-site-order-wave1-module-sync-diagnostic-2026-05-06.md
+    title: UT 10.3 Site Order Wave 1 Module Sync Diagnostic 2026-05-06
+    doc_type: diagnostic
+    domain: order_flow
+    status: active
+    owner: engineering
+    source_of_truth: false
+    related_code: [.local/1c-config/, scripts/with_onec_test.sh]
+    related_tests: []
+    keywords: [orders, site-orders, onec, wave1, rtu, module-sync, diagnostics]
+  - path: docs/1c_sql_mapping.md
+    title: 1C SQL Mapping
+    doc_type: mapping
+    domain: onec
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/services/]
+    related_tests: [tests/]
+    keywords: [1c, sql, mapping]
+  - path: docs/sku_policy.md
+    title: SKU Policy
+    doc_type: policy
+    domain: sku
+    status: active
+    owner: product
+    source_of_truth: true
+    related_code: [app/services/sku.py]
+    related_tests: [tests/]
+    keywords: [sku, policy, nomenclature]

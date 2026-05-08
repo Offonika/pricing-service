@@ -5,17 +5,20 @@ Revises: 1c55b203f5c4
 Create Date: 2024-11-29 00:00:00
 
 """
-from typing import Sequence, Union
 
-from alembic import op
+from __future__ import annotations
+
+from collections.abc import Sequence
+
 import sqlalchemy as sa
 
+from alembic import op
 
 # revision identifiers, used by Alembic.
 revision: str = "5bcd1a7a2c3e"
-down_revision: Union[str, None] = "1c55b203f5c4"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "1c55b203f5c4"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:

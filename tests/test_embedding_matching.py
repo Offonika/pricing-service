@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from datetime import date
+from decimal import Decimal
 from pathlib import Path
 
 import numpy as np
@@ -58,6 +59,7 @@ from tasks.match_competitor_items_embeddings import (
     _extract_device_model_keys,
     _flex_button_control_conflict,
     _flex_fingerprint_conflict,
+    _json_report_default,
     _phone_sim_tray_model_or_code_conflict,
     _product_display_matrix_tags,
     _product_display_matrix_vendor_tags,
@@ -72,6 +74,17 @@ from tasks.match_competitor_items_embeddings import (
     _safe_stencil_suggest,
     match_items,
 )
+
+
+def test_json_report_default_serializes_decimal_and_dates():
+    payload = {
+        "score": Decimal("0.8179"),
+        "seen_at": date(2026, 5, 10),
+    }
+
+    dumped = json.dumps(payload, default=_json_report_default)
+
+    assert json.loads(dumped) == {"score": 0.8179, "seen_at": "2026-05-10"}
 
 
 def test_basic_guardrails_reject_usb_flash_against_cable():

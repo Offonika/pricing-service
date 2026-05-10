@@ -8,6 +8,7 @@ import json
 import logging
 import re
 from datetime import date, datetime, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -74,6 +75,15 @@ ITEM_TYPES = {
     "other",
 }
 MODEL_GUARDRAIL_ITEM_TYPES = ITEM_TYPES - {"other", "cable"}
+
+
+def _json_report_default(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return float(value)
+    if isinstance(value, datetime | date):
+        return value.isoformat()
+    raise TypeError(f"Object of type {value.__class__.__name__} is not JSON serializable")
+
 
 TYPE_TOKENS = {
     "display": [
@@ -6339,11 +6349,11 @@ def match_items(
     if samples_file:
         payload = {"stats": stats, "samples": samples}
         with open(samples_file, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            json.dump(payload, handle, ensure_ascii=False, indent=2, default=_json_report_default)
     if report_file:
         payload = {"stats": stats, "items": report_rows}
         with open(report_file, "w", encoding="utf-8") as handle:
-            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            json.dump(payload, handle, ensure_ascii=False, indent=2, default=_json_report_default)
     if report_csv_file:
         report_csv_file = Path(report_csv_file)
         report_csv_file.parent.mkdir(parents=True, exist_ok=True)
@@ -6387,7 +6397,11 @@ def match_items(
                 writer.writerow(
                     {
                         **row,
-                        "candidates": json.dumps(row.get("candidates", []), ensure_ascii=False),
+                        "candidates": json.dumps(
+                            row.get("candidates", []),
+                            ensure_ascii=False,
+                            default=_json_report_default,
+                        ),
                     }
                 )
     return stats

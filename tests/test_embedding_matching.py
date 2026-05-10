@@ -368,6 +368,63 @@ def test_basic_guardrails_reject_ic_against_spudger_set():
     assert result.reason == "catalog_family_conflict"
 
 
+def test_basic_guardrails_reject_buzzer_against_middle_frame():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BUZ-TCN-CMN-40-PR-4G-CP",
+        name="Звонок (buzzer) для Tecno Camon 40 Pro 4G/5G (CM6/CM7) в сборе",
+        normalized_title="Звонок buzzer Tecno Camon 40 Pro 4G 5G CM6 CM7 в сборе",
+        item_type="other",
+    )
+    product = Product(
+        name="Средняя часть для Tecno Camon 40 Pro 5G (CM7) (черный)",
+        article="070492",
+    )
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
+def test_basic_guardrails_reject_ic_against_display_backlight():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="IC-343S00480",
+        name="Микросхема 343S00480 (Контроллер зарядки для iPad Pro 12.9 2021)",
+        normalized_title="Микросхема 343S00480 Контроллер зарядки iPad Pro 12.9 2021",
+        item_type="board",
+    )
+    product = Product(
+        name="Подсветка дисплея для Apple iPad Pro 12.9 (2018)",
+        article="067697",
+    )
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
+def test_basic_guardrails_reject_keyboard_backlight_against_keyboard():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BKL-KPD-LP-MB-PR-M1-13-A2338-B",
+        name='Подсветка клавиатуры для ноутбука MacBook Pro M1 13"/M2 13" A2338 Черный',
+        normalized_title="Подсветка клавиатуры MacBook Pro M1 13 M2 13 A2338 Черный",
+        item_type="other",
+    )
+    product = Product(
+        name="Клавиатура для Apple MacBook Pro 13 M1 Retina A2338 (вертикальный Enter / русская раскладка)",
+        article="065445",
+    )
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
 def test_safe_battery_verification_suggest_accepts_diagnosable_typo():
     item = CompetitorItem(
         competitor="moba",

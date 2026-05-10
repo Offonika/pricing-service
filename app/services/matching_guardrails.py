@@ -540,6 +540,8 @@ def catalog_family(text: str | None) -> str | None:
         return "phone_camera_glass"
     if any(token in value for token in ("сеточка динамика", "сетка динамика", "speaker mesh")):
         return "phone_speaker_mesh"
+    if any(token in value for token in ("звонок", "buzzer", "динамик", "speaker")):
+        return "phone_speaker"
     if any(
         token in value
         for token in (
@@ -583,6 +585,8 @@ def catalog_family(text: str | None) -> str | None:
         return "adhesive"
     if any(token in value for token in ("средняя часть", "middle frame")):
         return "middle_frame"
+    if any(token in value for token in ("подсветка дисплея", "display backlight", "lcd backlight")):
+        return "display_backlight"
     if any(token in value for token in ("защитное стекло", "tempered glass", "screen protector")):
         return "screen_protector"
     if any(
@@ -610,6 +614,15 @@ def catalog_family(text: str | None) -> str | None:
         )
     ):
         return "tool"
+    if any(
+        token in value
+        for token in (
+            "подсветка клавиатуры",
+            "подсветка клавиатур",
+            "keyboard backlight",
+        )
+    ):
+        return "laptop_keyboard_backlight"
     if any(token in value for token in ("клавиатур", "keyboard")):
         return "laptop_keyboard"
     if any(token in value for token in ("вентилятор портативный", "портативный вентилятор")):
@@ -715,6 +728,7 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "laptop_connector",
         "laptop_flex",
         "laptop_fan",
+        "laptop_keyboard_backlight",
         "laptop_cover",
         "laptop_part",
         "console_part",
@@ -785,9 +799,11 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "stencil",
         "ic",
         "adhesive",
+        "display_backlight",
         "middle_frame",
         "phone_camera_glass",
         "phone_camera_gasket",
+        "phone_speaker",
         "phone_speaker_mesh",
         "phone_sim_tray",
         "phone_screws",
@@ -795,6 +811,7 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "laptop_flex",
         "laptop_fan",
         "laptop_keyboard",
+        "laptop_keyboard_backlight",
         "laptop_cover",
         "laptop_part",
         "console_part",

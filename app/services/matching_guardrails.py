@@ -262,11 +262,11 @@ def iphone_model_keys(text: str | None) -> set[str]:
     if re.search(r"\biphone\s+air\b", value):
         keys.add("iphone_air")
     for match in re.finditer(
-        r"\biphone\s+(\d{1,2}|x|xs|xr)(?:\s*(pro\s+max|pro|max|plus|mini|air|e))?\b",
+        r"\biphone\s+(\d{1,2}|x|xs|xr)(s|c|e)?" r"(?:\s*(pro\s+max|pro|max|plus|mini|air))?\b",
         value,
     ):
-        model, variant = match.groups()
-        base = f"iphone_{model}"
+        model, suffix, variant = match.groups()
+        base = f"iphone_{model}{suffix or ''}"
         if variant:
             base = f"{base}_{variant.replace(' ', '_')}"
         keys.add(base)

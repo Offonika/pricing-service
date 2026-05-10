@@ -4989,6 +4989,9 @@ def _extract_device_model_keys(text: str | None) -> set[str]:
             base = f"{base}_{variant.replace(' ', '_')}"
         keys.add(base)
 
+    if re.search(r"\biphone\s+air\b", normalized):
+        keys.add("iphone_air")
+
     for match in re.finditer(
         r"\biphone\s+(x|xr|xs)(?:\s+(pro\s+max|max|plus|pro|mini))?\b",
         normalized,

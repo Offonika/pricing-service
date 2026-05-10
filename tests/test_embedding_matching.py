@@ -17,7 +17,11 @@ from app.models.competitor_item_match import (
 )
 from app.models.device_model import PhoneModel
 from app.models.product_phone_model import ProductPhoneModel
-from app.services.matching_guardrails import basic_candidate_guardrails, device_group_conflict
+from app.services.matching_guardrails import (
+    basic_candidate_guardrails,
+    device_group_conflict,
+    iphone_model_keys,
+)
 from tasks.match_competitor_items_embeddings import (
     _auto_accept_display_construction_matches,
     _auto_accept_display_matrix_tag_matches,
@@ -86,6 +90,12 @@ def test_json_report_default_serializes_decimal_and_dates():
     dumped = json.dumps(payload, default=_json_report_default)
 
     assert json.loads(dumped) == {"score": 0.8179, "seen_at": "2026-05-10"}
+
+
+def test_iphone_model_keys_include_letter_suffixes_and_air():
+    assert iphone_model_keys("Динамик для Apple iPhone 6s") == {"iphone_6s"}
+    assert iphone_model_keys("Динамик для iPhone Air") == {"iphone_air"}
+    assert _extract_device_model_keys("Аккумулятор для iPhone Air") == {"iphone_air"}
 
 
 def test_basic_guardrails_reject_usb_flash_against_cable():
@@ -437,6 +447,22 @@ def test_basic_guardrails_reject_keyboard_backlight_against_keyboard():
 
     assert result.allowed is False
     assert result.reason == "catalog_family_conflict"
+
+
+def test_basic_guardrails_reject_iphone_air_speaker_against_iphone_6s():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="SPK-PMI-AIR",
+        name="Динамик (speaker) для iPhone Air",
+        normalized_title="Динамик speaker iPhone Air",
+        item_type="other",
+    )
+    product = Product(name="Динамик (слуховой) для Apple iPhone 6s")
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "strict_model_conflict"
 
 
 def test_safe_battery_verification_suggest_accepts_diagnosable_typo():

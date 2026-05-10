@@ -56,11 +56,15 @@ from tasks.match_competitor_items_embeddings import (
     _explicit_model_conflict_reason,
     _extract_device_codes,
     _extract_device_model_keys,
+    _flex_button_control_conflict,
+    _flex_fingerprint_conflict,
     _product_display_matrix_tags,
     _product_display_matrix_vendor_tags,
     _product_display_quality,
     _safe_battery_verification_suggest,
     _safe_disposable_battery_suggest,
+    _safe_flex_suggest,
+    _safe_housing_part_suggest,
     _safe_phone_camera_glass_suggest,
     _safe_phone_sim_tray_suggest,
     match_items,
@@ -377,6 +381,77 @@ def test_safe_phone_sim_tray_suggest_requires_model_or_code_and_color_match():
 
     assert _safe_phone_sim_tray_suggest(item, product, score=0.89)
     assert not _safe_phone_sim_tray_suggest(item, wrong_color, score=0.89)
+
+
+def test_safe_housing_part_suggest_requires_kind_model_or_code_and_color_match():
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="BC-SAM-SM-S921-Y",
+        name="Задняя крышка для Samsung Galaxy S24 SM-S921 (желтый), премиум",
+        normalized_title="Задняя крышка Samsung Galaxy S24 SM-S921 желтый премиум",
+        item_type="housing",
+    )
+    product = Product(name="Задняя крышка для Samsung S921 Galaxy S24 (желтый)")
+    wrong_color = Product(name="Задняя крышка для Samsung S921 Galaxy S24 (фиолетовый)")
+    original = Product(
+        name="Задняя крышка для Samsung S921 Galaxy S24 (желтый) (ORIG100)",
+        quality="Original",
+    )
+
+    assert _safe_housing_part_suggest(item, product, score=0.81)
+    assert not _safe_housing_part_suggest(item, wrong_color, score=0.81)
+    assert not _safe_housing_part_suggest(item, original, score=0.81)
+
+
+def test_safe_flex_suggest_rejects_extra_fingerprint_component():
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="456858",
+        name="Шлейф/FLC Xiaomi Poco F3 на кнопки громкости/включения",
+        normalized_title="Шлейф Xiaomi Poco F3 кнопки громкости включения",
+        item_type="flex",
+    )
+    product = Product(
+        name=(
+            "Шлейф для Xiaomi Poco F3 (M2012K11AG) с комп. + сканер отпечатка пальца "
+            "(кнопка включения) (черный)"
+        )
+    )
+
+    assert _flex_fingerprint_conflict(item, product)
+    assert not _safe_flex_suggest(item, product, score=0.82)
+
+
+def test_safe_flex_suggest_rejects_partial_button_controls():
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="447033",
+        name="Шлейф/FLC Xiaomi Poco F3 на кнопки громкости/включения",
+        normalized_title="Шлейф Xiaomi Poco F3 кнопки громкости включения",
+        item_type="flex",
+    )
+    product = Product(name="Шлейф для Xiaomi Poco F3 (M2012K11AG) с комп. (на кнопки громкости)")
+
+    assert _flex_button_control_conflict(item, product)
+    assert not _safe_flex_suggest(item, product, score=0.82)
+
+
+def test_safe_flex_suggest_accepts_buttons_model_and_color_match():
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="FLC-XIA-REDMI-A5-B",
+        name="Шлейф/FLC Xiaomi Redmi A5/Poco C71 на кнопки громкости/включения",
+        normalized_title="Шлейф Xiaomi Redmi A5 Poco C71 кнопки громкости включения",
+        item_type="flex",
+    )
+    product = Product(
+        name=(
+            "Шлейф для Xiaomi Redmi A5 (25028RN03A) / Poco C71 (25028PC03G) "
+            "с комп. (на кнопку включения и кнопки громкости)"
+        )
+    )
+
+    assert _safe_flex_suggest(item, product, score=0.81)
 
 
 def test_basic_guardrails_reject_expanded_phone_brand_conflict():

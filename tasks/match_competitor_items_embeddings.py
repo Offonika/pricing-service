@@ -998,6 +998,41 @@ def _safe_phone_sim_tray_suggest(
     return bool(item_colors and product_colors and not item_colors.isdisjoint(product_colors))
 
 
+def _safe_housing_part_suggest(
+    item: CompetitorItem,
+    product: Product,
+    *,
+    score: float,
+) -> bool:
+    if score < 0.80:
+        return False
+    competitor_kind = _competitor_housing_part_kind(item)
+    product_kind = _product_housing_part_kind(product)
+    if not competitor_kind or competitor_kind != product_kind:
+        return False
+    if _part_assembly_conflict_reason(item, product):
+        return False
+    competitor_quality = _competitor_part_quality_tier(item)
+    if _part_quality_conflict(product, competitor_quality):
+        return False
+    product_quality = _product_part_quality_tier(product)
+    if product_quality == "original" and competitor_quality != "original":
+        return False
+    item_text = " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
+    product_text = product.name or ""
+    item_codes = _extract_device_codes(item_text)
+    product_codes = _extract_device_codes(product_text)
+    item_keys = _extract_device_model_keys(item_text)
+    product_keys = _extract_device_model_keys(product_text)
+    has_code_overlap = bool(item_codes and product_codes and item_codes & product_codes)
+    has_model_overlap = _device_model_keys_overlap(item_keys, product_keys)
+    if not (has_code_overlap or has_model_overlap):
+        return False
+    item_colors = _first_color_values(item.name, item.normalized_title)
+    product_colors = _first_color_values(product.name, product.color)
+    return bool(item_colors and product_colors and not item_colors.isdisjoint(product_colors))
+
+
 def _display_type_conflict(item_text: str, product_text: str, attrs: dict[str, Any] | None) -> bool:
     attr_type = None
     if attrs and attrs.get("type"):
@@ -1238,6 +1273,70 @@ def _product_flex_role(product: Product) -> str | None:
 def _flex_role_conflict(product: Product, competitor_role: str | None) -> bool:
     product_role = _product_flex_role(product)
     return bool(competitor_role and product_role and competitor_role != product_role)
+
+
+def _flex_has_fingerprint(text: str | None) -> bool:
+    normalized = (text or "").lower().replace("ё", "е")
+    return bool(
+        re.search(r"сканер\w*\s+отпечатк\w*|отпечатк\w*\s+пальц\w*|fingerprint", normalized)
+    )
+
+
+def _flex_fingerprint_conflict(item: CompetitorItem, product: Product) -> bool:
+    item_text = " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
+    product_text = product.name or ""
+    return _flex_has_fingerprint(item_text) != _flex_has_fingerprint(product_text)
+
+
+def _flex_button_controls(text: str | None) -> set[str]:
+    normalized = (text or "").lower().replace("ё", "е")
+    controls: set[str] = set()
+    if re.search(r"\b(volume)\b|громкост", normalized):
+        controls.add("volume")
+    if re.search(r"power\s+button|кнопк\w*\s+включен\w*|включен\w*|блокировк", normalized):
+        controls.add("power")
+    return controls
+
+
+def _flex_button_control_conflict(item: CompetitorItem, product: Product) -> bool:
+    if _competitor_flex_role(item) != "buttons" or _product_flex_role(product) != "buttons":
+        return False
+    item_controls = _flex_button_controls(
+        " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
+    )
+    product_controls = _flex_button_controls(product.name)
+    return bool(item_controls and product_controls and item_controls != product_controls)
+
+
+def _safe_flex_suggest(
+    item: CompetitorItem,
+    product: Product,
+    *,
+    score: float,
+) -> bool:
+    if score < 0.80:
+        return False
+    competitor_role = _competitor_flex_role(item)
+    product_role = _product_flex_role(product)
+    if not competitor_role or competitor_role != product_role:
+        return False
+    item_text = " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
+    product_text = product.name or ""
+    if _flex_fingerprint_conflict(item, product):
+        return False
+    if _flex_button_control_conflict(item, product):
+        return False
+    item_codes = _extract_device_codes(item_text)
+    product_codes = _extract_device_codes(product_text)
+    item_keys = _extract_device_model_keys(item_text)
+    product_keys = _extract_device_model_keys(product_text)
+    has_code_overlap = bool(item_codes and product_codes and item_codes & product_codes)
+    has_model_overlap = _device_model_keys_overlap(item_keys, product_keys)
+    if not (has_code_overlap or has_model_overlap):
+        return False
+    item_colors = _first_color_values(item.name, item.normalized_title)
+    product_colors = _first_color_values(product.name, product.color)
+    return not (item_colors and product_colors and item_colors.isdisjoint(product_colors))
 
 
 QUALITY_GRADE_ALIASES = {
@@ -5433,6 +5532,10 @@ def match_items(
                 continue
             if item_type == "flex" and _flex_role_conflict(prod, competitor_flex_role):
                 continue
+            if item_type == "flex" and _flex_fingerprint_conflict(item, prod):
+                continue
+            if item_type == "flex" and _flex_button_control_conflict(item, prod):
+                continue
             if item_type in {"connector", "cable"} and _port_type_conflict(
                 item.normalized_title or item.name or "",
                 prod.name or "",
@@ -5472,6 +5575,8 @@ def match_items(
         disposable_battery_suggest = False
         phone_camera_glass_suggest = False
         phone_sim_tray_suggest = False
+        housing_part_suggest = False
+        flex_suggest = False
         if best_score < min_embed_score:
             status = CompetitorItemMatchStatus.NEEDS_REVIEW
         elif not item_type:
@@ -5564,6 +5669,40 @@ def match_items(
             ):
                 status = CompetitorItemMatchStatus.SUGGESTED
                 phone_sim_tray_suggest = True
+
+        if (
+            status
+            in {
+                CompetitorItemMatchStatus.AMBIGUOUS,
+                CompetitorItemMatchStatus.NEEDS_REVIEW,
+            }
+            and item_type == "housing"
+        ):
+            best_product = products.get(best_pid)
+            if best_product and _safe_housing_part_suggest(
+                item,
+                best_product,
+                score=best_score,
+            ):
+                status = CompetitorItemMatchStatus.SUGGESTED
+                housing_part_suggest = True
+
+        if (
+            status
+            in {
+                CompetitorItemMatchStatus.AMBIGUOUS,
+                CompetitorItemMatchStatus.NEEDS_REVIEW,
+            }
+            and item_type == "flex"
+        ):
+            best_product = products.get(best_pid)
+            if best_product and _safe_flex_suggest(
+                item,
+                best_product,
+                score=best_score,
+            ):
+                status = CompetitorItemMatchStatus.SUGGESTED
+                flex_suggest = True
 
         method = CompetitorItemMatchMethod.EMBEDDING_AUTO
         llm_confidence = None
@@ -5678,6 +5817,58 @@ def match_items(
                     if best_product
                     else set()
                 ),
+            }
+        if housing_part_suggest:
+            best_product = products.get(best_pid)
+            item_text = " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
+            product_text = best_product.name if best_product else None
+            rationale["housing_part_suggest"] = {
+                "reason": "housing_family_model_or_code_color_kind_match",
+                "kind": _competitor_housing_part_kind(item),
+                "product_kind": _product_housing_part_kind(best_product) if best_product else None,
+                "overlap_model_keys": sorted(
+                    _extract_device_model_keys(item_text).intersection(
+                        _extract_device_model_keys(product_text)
+                    )
+                ),
+                "overlap_codes": sorted(
+                    _extract_device_codes(item_text).intersection(
+                        _extract_device_codes(product_text)
+                    )
+                ),
+                "competitor_colors": sorted(_first_color_values(item.name, item.normalized_title)),
+                "product_colors": sorted(
+                    _first_color_values(best_product.name, best_product.color)
+                    if best_product
+                    else set()
+                ),
+            }
+        if flex_suggest:
+            best_product = products.get(best_pid)
+            item_text = " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
+            product_text = best_product.name if best_product else None
+            rationale["flex_suggest"] = {
+                "reason": "flex_role_model_or_code_color_match",
+                "role": _competitor_flex_role(item),
+                "product_role": _product_flex_role(best_product) if best_product else None,
+                "overlap_model_keys": sorted(
+                    _extract_device_model_keys(item_text).intersection(
+                        _extract_device_model_keys(product_text)
+                    )
+                ),
+                "overlap_codes": sorted(
+                    _extract_device_codes(item_text).intersection(
+                        _extract_device_codes(product_text)
+                    )
+                ),
+                "competitor_colors": sorted(_first_color_values(item.name, item.normalized_title)),
+                "product_colors": sorted(
+                    _first_color_values(best_product.name, best_product.color)
+                    if best_product
+                    else set()
+                ),
+                "fingerprint": _flex_has_fingerprint(item_text),
+                "product_fingerprint": _flex_has_fingerprint(product_text),
             }
         if not item_type:
             rationale["item_type_review"] = {

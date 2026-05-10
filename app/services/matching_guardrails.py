@@ -594,6 +594,8 @@ def catalog_family(text: str | None) -> str | None:
         return "ic"
     if any(token in value for token in ("колодка теста", "isocket", "тест платы")):
         return "test_socket"
+    if any(token in value for token in ("плата активации", "активации и зарядки акб")):
+        return "battery_activation_board"
     if any(token in value for token in ("скотч", "dst030", "tape")):
         return "tape"
     if any(token in value for token in ("струна для", "cutting wire", "separation wire")):
@@ -775,6 +777,7 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "network_connector",
         "network_cable",
         "component_connector",
+        "battery_activation_board",
         "tape",
         "cutting_wire",
         "solder",
@@ -836,6 +839,7 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "network_connector",
         "network_cable",
         "component_connector",
+        "battery_activation_board",
         "tape",
         "cutting_wire",
         "solder",

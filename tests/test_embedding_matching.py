@@ -513,6 +513,22 @@ def test_basic_guardrails_reject_tape_against_other_consumables():
     assert basic_candidate_guardrails(item, wire).reason == "catalog_family_conflict"
 
 
+def test_basic_guardrails_reject_battery_activation_board_against_battery():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="EQP-BTTACT-W209PR-V11-PMI-PS",
+        name="Плата активации и зарядки АКБ OSS Team W209 Pro V11 для iPhone (все модели) + Android",
+        normalized_title="Плата активации зарядки АКБ OSS Team W209 Pro V11 iPhone Android",
+        item_type="battery",
+    )
+    product = Product(name="Аккумулятор для Apple iPhone 11 Pro (Premium)")
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
 def test_safe_battery_verification_suggest_accepts_diagnosable_typo():
     item = CompetitorItem(
         competitor="moba",

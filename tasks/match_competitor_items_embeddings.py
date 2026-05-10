@@ -806,7 +806,16 @@ def _safe_battery_verification_suggest(
 
 def _battery_part_codes_from_text(text: str | None) -> set[str]:
     normalized = (text or "").lower()
-    return {match.group(0).lower() for match in re.finditer(r"\bli[0-9][a-z0-9]{8,}\b", normalized)}
+    codes: set[str] = set()
+    patterns = (
+        r"\bli[0-9][a-z0-9]{8,}\b",
+        r"\bblp[0-9]{3,5}\b",
+        r"\bhb[0-9][a-z0-9]{7,}\b",
+        r"\bbp[0-9]{2,5}\b",
+    )
+    for pattern in patterns:
+        codes.update(match.group(0).lower() for match in re.finditer(pattern, normalized))
+    return codes
 
 
 def _competitor_battery_part_codes(item: CompetitorItem) -> set[str]:
@@ -835,14 +844,27 @@ def _safe_battery_part_code_model_suggest(
     filtered_count: int,
     score: float,
 ) -> bool:
-    if filtered_count != 1 or score < 0.80:
+    if score < 0.68:
         return False
     competitor_codes = _competitor_battery_part_codes(item)
-    if not competitor_codes or _battery_part_code_conflict(product, competitor_codes):
+    product_codes = _product_battery_part_codes(product)
+    if not competitor_codes:
+        return False
+    if product_codes and competitor_codes.isdisjoint(product_codes):
+        return False
+    if not product_codes and (filtered_count != 1 or score < 0.80):
         return False
     competitor_keys = _extract_device_model_keys(_competitor_device_model_text(item))
     product_keys = _extract_device_model_keys(product.name)
-    return _device_model_keys_overlap(competitor_keys, product_keys)
+    if not _device_model_keys_overlap(competitor_keys, product_keys):
+        return False
+    if _capacity_conflict(
+        " ".join(filter(None, [item.name, item.normalized_title])),
+        product.name or "",
+        item.attrs_json,
+    ):
+        return False
+    return True
 
 
 DISPOSABLE_BATTERY_BRANDS = {
@@ -5631,6 +5653,24 @@ def match_items(
                 status = CompetitorItemMatchStatus.SUGGESTED
                 battery_verification_suggest = True
 
+        if (
+            status
+            in {
+                CompetitorItemMatchStatus.AMBIGUOUS,
+                CompetitorItemMatchStatus.NEEDS_REVIEW,
+            }
+            and item_type == "battery"
+        ):
+            best_product = products.get(best_pid)
+            if best_product and _safe_battery_part_code_model_suggest(
+                item,
+                best_product,
+                filtered_count=len(filtered),
+                score=best_score,
+            ):
+                status = CompetitorItemMatchStatus.SUGGESTED
+                battery_part_code_model_suggest = True
+
         if status in {
             CompetitorItemMatchStatus.AMBIGUOUS,
             CompetitorItemMatchStatus.NEEDS_REVIEW,
@@ -5744,8 +5784,9 @@ def match_items(
         if battery_part_code_model_suggest:
             best_product = products.get(best_pid)
             rationale["battery_part_code_model_suggest"] = {
-                "reason": "unique_battery_candidate_with_part_code_and_model_overlap",
+                "reason": "battery_candidate_with_part_code_and_model_overlap",
                 "competitor_codes": sorted(_competitor_battery_part_codes(item)),
+                "product_codes": sorted(_product_battery_part_codes(best_product or Product())),
                 "overlap_model_keys": sorted(
                     _extract_device_model_keys(_competitor_device_model_text(item)).intersection(
                         _extract_device_model_keys(best_product.name if best_product else None)

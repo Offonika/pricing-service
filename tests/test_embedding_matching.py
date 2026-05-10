@@ -61,6 +61,7 @@ from tasks.match_competitor_items_embeddings import (
     _product_display_matrix_tags,
     _product_display_matrix_vendor_tags,
     _product_display_quality,
+    _safe_battery_part_code_model_suggest,
     _safe_battery_verification_suggest,
     _safe_disposable_battery_suggest,
     _safe_flex_suggest,
@@ -298,6 +299,41 @@ def test_safe_battery_verification_suggest_accepts_diagnosable_typo():
     )
 
     assert _safe_battery_verification_suggest(item, product, score=0.73)
+
+
+def test_safe_battery_part_code_model_suggest_allows_close_alternatives():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BTT-ONE-BLP761",
+        name="Аккумулятор для OnePlus 8 (BLP761) - Battery Collection",
+        normalized_title="Аккумулятор OnePlus 8 BLP761 Battery Collection",
+        item_type="battery",
+    )
+    product = Product(
+        name="Аккумулятор для OnePlus 8 (BLP761)",
+        article="055805",
+        category="battery",
+        subject="аккумулятор",
+    )
+    wrong_code = Product(
+        name="Аккумулятор для OnePlus 8 Pro (BLP759)",
+        article="047312",
+        category="battery",
+        subject="аккумулятор",
+    )
+
+    assert _safe_battery_part_code_model_suggest(
+        item,
+        product,
+        filtered_count=2,
+        score=0.70,
+    )
+    assert not _safe_battery_part_code_model_suggest(
+        item,
+        wrong_code,
+        filtered_count=2,
+        score=0.90,
+    )
 
 
 def test_safe_disposable_battery_suggest_requires_brand_size_and_pack_count():

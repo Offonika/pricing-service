@@ -68,6 +68,7 @@ from tasks.match_competitor_items_embeddings import (
     _safe_housing_part_suggest,
     _safe_phone_camera_glass_suggest,
     _safe_phone_sim_tray_suggest,
+    _safe_stencil_suggest,
     match_items,
 )
 
@@ -400,6 +401,48 @@ def test_safe_disposable_battery_suggest_requires_brand_size_and_pack_count():
 
     assert _safe_disposable_battery_suggest(item, product, score=0.81)
     assert not _safe_disposable_battery_suggest(item, wrong_brand, score=0.81)
+
+
+def test_safe_stencil_suggest_requires_chipset_or_series_overlap():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="TLS-BGA-XZZ-SDN-662",
+        name="BGA трафарет XZZ Snapdragon 662 для Xiaomi Redmi Note 9 4G/Note 9 Pro",
+        normalized_title="BGA трафарет XZZ Snapdragon 662 Xiaomi Redmi Note 9 4G Note 9 Pro",
+        item_type="other",
+    )
+    product = Product(
+        name="Трафарет BGA XZZ Snapdragon 662 для Xiaomi Redmi Note 9 4G / Note 9 Pro",
+        article="077332",
+    )
+    wrong_chipset = Product(
+        name="Трафарет BGA XZZ Snapdragon 665 для Xiaomi Redmi Note 10 / 10 Pro",
+        article="077333",
+    )
+
+    assert _safe_stencil_suggest(item, product, score=0.90)
+    assert not _safe_stencil_suggest(item, wrong_chipset, score=0.95)
+
+
+def test_safe_stencil_suggest_allows_low_score_iphone_series_overlap():
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="474050",
+        name="Трафареты для реболлинга Mijing Z20 Pro iPhone 16 серии (16-16 Plus/16 Pro-16 Pro Max/16E)",
+        normalized_title="Трафареты реболлинг Mijing Z20 Pro iPhone 16 серии 16 16 Plus 16 Pro 16 Pro Max 16E",
+        item_type="other",
+    )
+    product = Product(
+        name="Трафарет BGA XZZ для Apple iPhone 16 / 16 Plus / 16 Pro / 16 Pro Max",
+        article="077308",
+    )
+    wrong_series = Product(
+        name="Трафарет BGA XZZ для Apple iPhone 15 / 15 Plus / 15 Pro / 15 Pro Max",
+        article="077309",
+    )
+
+    assert _safe_stencil_suggest(item, product, score=0.69)
+    assert not _safe_stencil_suggest(item, wrong_series, score=0.90)
 
 
 def test_basic_guardrails_reject_disposable_battery_size_conflict():

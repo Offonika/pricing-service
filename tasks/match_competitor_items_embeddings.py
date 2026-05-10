@@ -951,6 +951,80 @@ def _safe_disposable_battery_suggest(
     return bool(item_count and item_count == product_count)
 
 
+STENCIL_GENERIC_TOKENS = {
+    "bga",
+    "xzz",
+    "mijing",
+    "relife",
+    "rl",
+    "трафарет",
+    "трафареты",
+    "для",
+    "серии",
+    "series",
+    "pro",
+    "plus",
+    "max",
+}
+STENCIL_CHIPSET_TOKENS = {
+    "snapdragon",
+    "sdm",
+    "msm",
+    "exynos",
+    "kirin",
+    "hisilicon",
+    "hi36c0",
+    "dimensity",
+    "mediatek",
+    "emcp",
+    "emmc",
+    "cpu",
+}
+
+
+def _stencil_signature_tokens(text: str | None) -> set[str]:
+    normalized = (text or "").lower().replace("ё", "е")
+    normalized = normalized.replace("hi-silicon", "hisilicon")
+    return {
+        token
+        for token in re.findall(r"[a-zа-я0-9]+", normalized)
+        if token not in STENCIL_GENERIC_TOKENS and len(token) > 1
+    }
+
+
+def _safe_stencil_suggest(
+    item: CompetitorItem,
+    product: Product,
+    *,
+    score: float,
+) -> bool:
+    if score < 0.68:
+        return False
+    item_text = " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
+    product_text = product.name or ""
+    if catalog_family(item_text) != "stencil" or catalog_family(product_text) != "stencil":
+        return False
+
+    item_tokens = _stencil_signature_tokens(item_text)
+    product_tokens = _stencil_signature_tokens(product_text)
+    overlap = item_tokens & product_tokens
+    if len(overlap) < 2:
+        return False
+
+    chipset_overlap = overlap & STENCIL_CHIPSET_TOKENS
+    numeric_overlap = {token for token in overlap if token.isdigit() or re.search(r"\d", token)}
+    if chipset_overlap and numeric_overlap:
+        return score >= 0.80
+
+    if {"iphone", "macbook"} & overlap and numeric_overlap:
+        return True
+
+    if "универсальный" in overlap or "universal" in overlap:
+        return score >= 0.88
+
+    return False
+
+
 def _camera_glass_frame_state(text: str | None) -> str | None:
     normalized = (text or "").lower().replace("ё", "е")
     if re.search(r"\b(без\s+рамк\w*|without\s+frame)\b", normalized):
@@ -5599,6 +5673,7 @@ def match_items(
         phone_sim_tray_suggest = False
         housing_part_suggest = False
         flex_suggest = False
+        stencil_suggest = False
         if best_score < min_embed_score:
             status = CompetitorItemMatchStatus.NEEDS_REVIEW
         elif not item_type:
@@ -5743,6 +5818,19 @@ def match_items(
             ):
                 status = CompetitorItemMatchStatus.SUGGESTED
                 flex_suggest = True
+
+        if status in {
+            CompetitorItemMatchStatus.AMBIGUOUS,
+            CompetitorItemMatchStatus.NEEDS_REVIEW,
+        }:
+            best_product = products.get(best_pid)
+            if best_product and _safe_stencil_suggest(
+                item,
+                best_product,
+                score=best_score,
+            ):
+                status = CompetitorItemMatchStatus.SUGGESTED
+                stencil_suggest = True
 
         method = CompetitorItemMatchMethod.EMBEDDING_AUTO
         llm_confidence = None
@@ -5910,6 +5998,18 @@ def match_items(
                 ),
                 "fingerprint": _flex_has_fingerprint(item_text),
                 "product_fingerprint": _flex_has_fingerprint(product_text),
+            }
+        if stencil_suggest:
+            best_product = products.get(best_pid)
+            item_text = " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
+            product_text = best_product.name if best_product else None
+            rationale["stencil_suggest"] = {
+                "reason": "stencil_family_chipset_or_series_overlap",
+                "overlap_tokens": sorted(
+                    _stencil_signature_tokens(item_text).intersection(
+                        _stencil_signature_tokens(product_text)
+                    )
+                ),
             }
         if not item_type:
             rationale["item_type_review"] = {

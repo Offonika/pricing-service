@@ -465,6 +465,37 @@ def test_basic_guardrails_reject_iphone_air_speaker_against_iphone_6s():
     assert result.reason == "strict_model_conflict"
 
 
+def test_basic_guardrails_reject_tape_dimension_conflict():
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="473999",
+        name="Скотч двусторонний Amaoe DST030 (0.30 мм*3 мм*10 м)",
+        normalized_title="Скотч двусторонний Amaoe DST030 0.30 мм 3 мм 10 м",
+        item_type="other",
+    )
+    product = Product(name="Скотч 3М двусторонний 50 м x 5 мм (черный)")
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "tape_dimension_conflict"
+
+
+def test_basic_guardrails_reject_tape_against_other_consumables():
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="473999",
+        name="Скотч двусторонний Amaoe DST030 (0.30 мм*3 мм*10 м)",
+        normalized_title="Скотч двусторонний Amaoe DST030 0.30 мм 3 мм 10 м",
+        item_type="other",
+    )
+    sticker = Product(name="Наклейки для защиты камер 2UUL DA30 (7 мм, 12 мм) 1000 шт.")
+    wire = Product(name="Струна для разборки сенсорных модулей (0.4 мм x 200 м)")
+
+    assert basic_candidate_guardrails(item, sticker).reason == "catalog_family_conflict"
+    assert basic_candidate_guardrails(item, wire).reason == "catalog_family_conflict"
+
+
 def test_safe_battery_verification_suggest_accepts_diagnosable_typo():
     item = CompetitorItem(
         competitor="moba",

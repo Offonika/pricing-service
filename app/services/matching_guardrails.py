@@ -525,6 +525,34 @@ def display_module_component_conflict(candidate: str | None, product: str | None
     )
 
 
+def _is_tape_text(text: str | None) -> bool:
+    value = _text(text)
+    return any(token in value for token in ("скотч", "tape", "dst"))
+
+
+def _dimension_values(text: str | None, unit_pattern: str) -> set[float]:
+    value = _text(text).replace(",", ".")
+    values: set[float] = set()
+    for match in re.finditer(rf"\b(\d+(?:\.\d+)?)\s*{unit_pattern}\b", value):
+        try:
+            values.add(round(float(match.group(1)), 2))
+        except ValueError:
+            continue
+    return values
+
+
+def tape_dimension_conflict(left: str | None, right: str | None) -> bool:
+    if not _is_tape_text(left) or not _is_tape_text(right):
+        return False
+    left_mm = _dimension_values(left, r"(?:мм|mm)")
+    right_mm = _dimension_values(right, r"(?:мм|mm)")
+    if left_mm and right_mm and left_mm.isdisjoint(right_mm):
+        return True
+    left_m = _dimension_values(left, r"(?:м|m)")
+    right_m = _dimension_values(right, r"(?:м|m)")
+    return bool(left_m and right_m and left_m.isdisjoint(right_m))
+
+
 def catalog_family(text: str | None) -> str | None:
     value = _text(text)
     if not value:
@@ -566,6 +594,16 @@ def catalog_family(text: str | None) -> str | None:
         return "ic"
     if any(token in value for token in ("колодка теста", "isocket", "тест платы")):
         return "test_socket"
+    if any(token in value for token in ("скотч", "dst030", "tape")):
+        return "tape"
+    if any(token in value for token in ("струна для", "cutting wire", "separation wire")):
+        return "cutting_wire"
+    if any(token in value for token in ("припой", "solder")):
+        return "solder"
+    if any(token in value for token in ("термопрокладка", "thermal pad")):
+        return "thermal_pad"
+    if "наклейк" in value and "камер" in value:
+        return "camera_sticker"
     if any(
         token in value
         for token in (
@@ -735,6 +773,11 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "network_connector",
         "network_cable",
         "component_connector",
+        "tape",
+        "cutting_wire",
+        "solder",
+        "thermal_pad",
+        "camera_sticker",
         "power_bank",
         "external_storage",
         "portable_fan",
@@ -791,6 +834,11 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "network_connector",
         "network_cable",
         "component_connector",
+        "tape",
+        "cutting_wire",
+        "solder",
+        "thermal_pad",
+        "camera_sticker",
         "power_bank",
         "external_storage",
         "portable_fan",
@@ -962,6 +1010,8 @@ def basic_candidate_guardrails(item: CompetitorItem, product: Product) -> Candid
         return CandidateGuardrailResult(False, "brand_group_conflict")
     if candidate_model_conflict(item_title_text, prod_title_text, item_text, prod_text):
         return CandidateGuardrailResult(False, "strict_model_conflict")
+    if tape_dimension_conflict(item_title_text, prod_title_text):
+        return CandidateGuardrailResult(False, "tape_dimension_conflict")
     if external_internal_display_conflict(item_text, prod_text):
         return CandidateGuardrailResult(False, "external_internal_display_conflict")
     if display_module_component_conflict(item_title_text, prod_title_text):

@@ -181,6 +181,22 @@ def test_basic_guardrails_reject_battery_coin_form_factor_conflict():
     assert result.reason == "catalog_family_conflict"
 
 
+def test_basic_guardrails_reject_9v_battery_against_23a_battery():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BAT-GP-6LR61-CR",
+        name='Батарейка "Крона" 6LR61 GP Super Alkaline 9V',
+        normalized_title='Батарейка "Крона" 6LR61 GP Super Alkaline 9V',
+        item_type="battery",
+    )
+    product = Product(name="Батарейки GP Super 23A 5 шт.", article="069943")
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
 def test_basic_guardrails_reject_laptop_power_supply_against_console_power_supply():
     item = CompetitorItem(
         competitor="moba",
@@ -208,6 +224,25 @@ def test_basic_guardrails_reject_laptop_power_supply_against_phone_charger():
     product = Product(
         name="Сетевое зарядное устройство Baseus Palm TypeC + USB 20W (черный)",
         article="075455",
+    )
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
+def test_basic_guardrails_reject_laptop_power_supply_against_laptop_fan():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="PWS-MC-202V43A87W-TPC",
+        name="Блок питания (сетевой адаптер) для ноутбука Apple 20,2V, 4,3A, 87W (Type-C)",
+        normalized_title="Блок питания сетевой адаптер для ноутбука Apple 20.2V 4.3A 87W Type-C",
+        item_type="other",
+    )
+    product = Product(
+        name="Вентилятор (кулер) для Apple MacBook Air 13 M1 Retina A2337 (LATE 2020)",
+        article="058430",
     )
 
     result = basic_candidate_guardrails(item, product)
@@ -281,6 +316,22 @@ def test_basic_guardrails_reject_iphone_battery_against_airpods_battery():
 
     assert result.allowed is False
     assert result.reason == "device_group_conflict"
+
+
+def test_basic_guardrails_reject_headset_against_wifi_antenna():
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="244539",
+        name="Bluetooth беспроводная гарнитура Samsung Level U (черная/коробка)",
+        normalized_title="Bluetooth беспроводная гарнитура Samsung Level U черная коробка",
+        item_type="other",
+    )
+    product = Product(name="Антена Wi-Fi Hoco HI37 USB (черный)", article="079629")
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
 
 
 def test_safe_battery_verification_suggest_accepts_diagnosable_typo():

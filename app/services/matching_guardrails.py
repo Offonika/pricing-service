@@ -587,6 +587,10 @@ def catalog_family(text: str | None) -> str | None:
         token in value for token in ("airpods", "наушник", "гарнитур", "tws", "bluetooth headset")
     ):
         return "headphones"
+    if re.search(r"\bwi[-\s]?fi\b|\bwifi\b", value) and any(
+        token in value for token in ("антенн", "антен", "antenna")
+    ):
+        return "wifi_antenna"
     if any(
         token in value
         for token in ("микроскоп", "тепловизор", "паяльник", "станция", "отвертка", "screwdriver")
@@ -614,6 +618,8 @@ def catalog_family(text: str | None) -> str | None:
         return "adapter"
     if re.search(r"\b(6f22|6lr61|крона|9v1?)\b", value):
         return "battery_9v"
+    if re.search(r"\b(23a|a23|mn21)\b", value):
+        return "battery_23a"
     if re.search(r"\b(lr20|d)\b", value):
         return "battery_d"
     if re.search(r"\b27a\b", value):
@@ -661,6 +667,8 @@ def catalog_family(text: str | None) -> str | None:
         return "laptop_connector"
     if group == "notebook" and "шлейф" in value:
         return "laptop_flex"
+    if group == "notebook" and any(token in value for token in ("вентилятор", "кулер", "fan")):
+        return "laptop_fan"
     if group == "notebook" and any(token in value for token in ("крышка матрицы", "матрицы")):
         return "laptop_cover"
     if group == "notebook" and any(
@@ -692,6 +700,7 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "tool_battery_charger",
         "laptop_connector",
         "laptop_flex",
+        "laptop_fan",
         "laptop_cover",
         "laptop_part",
         "console_part",
@@ -701,6 +710,7 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "power_bank",
         "external_storage",
         "portable_fan",
+        "wifi_antenna",
     }
     if not left_family or not right_family:
         return bool(
@@ -711,6 +721,7 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
 
     battery_families = {
         "battery_9v",
+        "battery_23a",
         "battery_d",
         "battery_27a",
         "battery_coin",
@@ -754,6 +765,7 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "power_bank",
         "external_storage",
         "portable_fan",
+        "wifi_antenna",
         "stencil",
         "ic",
         "adhesive",
@@ -765,6 +777,7 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "phone_screws",
         "laptop_connector",
         "laptop_flex",
+        "laptop_fan",
         "laptop_keyboard",
         "laptop_cover",
         "laptop_part",

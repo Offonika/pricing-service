@@ -811,6 +811,27 @@ def test_basic_guardrails_reject_speaker_mesh_against_camera_gasket():
     assert result.reason == "catalog_family_conflict"
 
 
+def test_basic_guardrails_reject_phone_charger_against_portable_fan():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="CHG-REALME-80W-W",
+        name="Сетевое зарядное устройство Realme SUPERVOOC 80W Power Adapter White (белое)",
+        normalized_title="Сетевое зарядное устройство Realme SUPERVOOC 80W Power Adapter White белое",
+        item_type="other",
+    )
+    product = Product(
+        name="Вентилятор портативный Hoco HX63 (белый)",
+        article="076348",
+        category="Аксессуары",
+        subject="вентилятор",
+    )
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
 def _write_embeddings(dir_path: Path, prefix: str, matrix: np.ndarray, id_order: list[int]) -> None:
     matrix_file = f"{prefix}_test_{matrix.shape[1]}.npy"
     np.save(dir_path / matrix_file, matrix)

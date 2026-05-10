@@ -594,6 +594,8 @@ def catalog_family(text: str | None) -> str | None:
         return "tool"
     if any(token in value for token in ("клавиатур", "keyboard")):
         return "laptop_keyboard"
+    if any(token in value for token in ("вентилятор портативный", "портативный вентилятор")):
+        return "portable_fan"
     if any(
         token in value for token in ("проверочного аппарата", "dl400", "тестер", "test fixture")
     ):
@@ -698,6 +700,7 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "component_connector",
         "power_bank",
         "external_storage",
+        "portable_fan",
     }
     if not left_family or not right_family:
         return bool(
@@ -750,6 +753,7 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "component_connector",
         "power_bank",
         "external_storage",
+        "portable_fan",
         "stencil",
         "ic",
         "adhesive",

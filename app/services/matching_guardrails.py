@@ -596,7 +596,9 @@ def catalog_family(text: str | None) -> str | None:
         return "test_socket"
     if any(token in value for token in ("плата активации", "активации и зарядки акб")):
         return "battery_activation_board"
-    if any(token in value for token in ("скотч", "dst030", "tape")):
+    if any(token in value for token in ("скотч", "dst030", "tape")) and not any(
+        token in value for token in ("аккумулятор", "акб", "battery")
+    ):
         return "tape"
     if any(token in value for token in ("струна для", "cutting wire", "separation wire")):
         return "cutting_wire"

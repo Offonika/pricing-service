@@ -530,6 +530,24 @@ def test_basic_guardrails_reject_battery_activation_board_against_battery():
     assert result.reason == "catalog_family_conflict"
 
 
+def test_basic_guardrails_allow_battery_with_included_tape():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BTT-PMIPRM140-VRF-HC-NEW",
+        name='Аккумулятор для iPhone 14 Pro Max с верификацией "Новая запчасть" - усиленная 4750 mAh',
+        normalized_title="Аккумулятор iPhone 14 Pro Max верификация Новая запчасть усиленная 4750 mAh",
+        item_type="battery",
+    )
+    product = Product(
+        name=(
+            "Аккумулятор для Apple iPhone 14 Pro Max (F5ENERGY) (усиленный) "
+            "(4770 мАч) (SPECIAL EDITION) (SYSTEM DIAGNOSABLE) + двухсторонний скотч"
+        )
+    )
+
+    assert basic_candidate_guardrails(item, product).allowed is True
+
+
 def test_safe_battery_verification_suggest_accepts_diagnosable_typo():
     item = CompetitorItem(
         competitor="moba",

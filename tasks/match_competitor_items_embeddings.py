@@ -1123,6 +1123,33 @@ def _safe_phone_camera_glass_suggest(
     return True
 
 
+def _safe_screen_protector_suggest(
+    item: CompetitorItem,
+    product: Product,
+    *,
+    score: float,
+) -> bool:
+    if score < 0.80:
+        return False
+    item_text = " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
+    product_text = product.name or ""
+    if catalog_family(item_text) != "screen_protector":
+        return False
+    if catalog_family(product_text) != "screen_protector":
+        return False
+    item_keys = _extract_device_model_keys(item_text)
+    product_keys = _extract_device_model_keys(product_text)
+    item_codes = _extract_device_codes(item_text)
+    product_codes = _extract_device_codes(product_text)
+    has_model_overlap = _device_model_keys_overlap(item_keys, product_keys)
+    has_code_overlap = bool(item_codes and product_codes and item_codes & product_codes)
+    if not (has_model_overlap or has_code_overlap):
+        return False
+    item_colors = _first_color_values(item.name, item.normalized_title)
+    product_colors = _first_color_values(product.name, product.color)
+    return not (item_colors and product_colors and item_colors.isdisjoint(product_colors))
+
+
 def _safe_phone_sim_tray_suggest(
     item: CompetitorItem,
     product: Product,
@@ -5790,6 +5817,7 @@ def match_items(
         iphone_battery_model_capacity_suggest = False
         disposable_battery_suggest = False
         phone_camera_glass_suggest = False
+        screen_protector_suggest = False
         phone_sim_tray_suggest = False
         network_cable_suggest = False
         housing_part_suggest = False
@@ -5909,6 +5937,19 @@ def match_items(
             ):
                 status = CompetitorItemMatchStatus.SUGGESTED
                 phone_camera_glass_suggest = True
+
+        if status in {
+            CompetitorItemMatchStatus.AMBIGUOUS,
+            CompetitorItemMatchStatus.NEEDS_REVIEW,
+        }:
+            best_product = products.get(best_pid)
+            if best_product and _safe_screen_protector_suggest(
+                item,
+                best_product,
+                score=best_score,
+            ):
+                status = CompetitorItemMatchStatus.SUGGESTED
+                screen_protector_suggest = True
 
         if status in {
             CompetitorItemMatchStatus.AMBIGUOUS,
@@ -6088,6 +6129,29 @@ def match_items(
                 ),
                 "competitor_frame": _camera_glass_frame_state(item_text),
                 "product_frame": _camera_glass_frame_state(product_text),
+            }
+        if screen_protector_suggest:
+            best_product = products.get(best_pid)
+            item_text = " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
+            product_text = best_product.name if best_product else None
+            rationale["screen_protector_suggest"] = {
+                "reason": "screen_protector_family_model_or_code_color_match",
+                "overlap_model_keys": sorted(
+                    _extract_device_model_keys(item_text).intersection(
+                        _extract_device_model_keys(product_text)
+                    )
+                ),
+                "overlap_codes": sorted(
+                    _extract_device_codes(item_text).intersection(
+                        _extract_device_codes(product_text)
+                    )
+                ),
+                "competitor_colors": sorted(_first_color_values(item.name, item.normalized_title)),
+                "product_colors": sorted(
+                    _first_color_values(best_product.name, best_product.color)
+                    if best_product
+                    else set()
+                ),
             }
         if phone_sim_tray_suggest:
             best_product = products.get(best_pid)

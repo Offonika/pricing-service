@@ -77,6 +77,7 @@ from tasks.match_competitor_items_embeddings import (
     _safe_network_cable_suggest,
     _safe_phone_camera_glass_suggest,
     _safe_phone_sim_tray_suggest,
+    _safe_screen_protector_suggest,
     _safe_stencil_suggest,
     match_items,
 )
@@ -634,6 +635,24 @@ def test_safe_network_cable_suggest_requires_model_and_length():
 
     assert _safe_network_cable_suggest(item, product, score=0.73)
     assert not _safe_network_cable_suggest(item, wrong_length, score=0.90)
+
+
+def test_safe_screen_protector_suggest_requires_family_model_and_score():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="TP-PRM-XMI-17-B",
+        name='Защитное стекло "Премиум" для Xiaomi 17/17 Pro Черный',
+        normalized_title="Защитное стекло Премиум Xiaomi 17 17 Pro Черный",
+        item_type="other",
+    )
+    product = Product(
+        name="Защитное стекло OG Glass (3 в 1) для Xiaomi 17 (25113PN0EC) / 17 Pro (25098PN5AC) (черный)"
+    )
+    wrong_model = Product(name="Защитное стекло UV тех. пак. для TCL 10 Pro (T799B)")
+
+    assert _safe_screen_protector_suggest(item, product, score=0.82)
+    assert not _safe_screen_protector_suggest(item, product, score=0.79)
+    assert not _safe_screen_protector_suggest(item, wrong_model, score=0.95)
 
 
 def test_safe_stencil_suggest_requires_chipset_or_series_overlap():

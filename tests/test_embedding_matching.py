@@ -62,6 +62,7 @@ from tasks.match_competitor_items_embeddings import (
     _safe_battery_verification_suggest,
     _safe_disposable_battery_suggest,
     _safe_phone_camera_glass_suggest,
+    _safe_phone_sim_tray_suggest,
     match_items,
 )
 
@@ -361,6 +362,21 @@ def test_safe_phone_camera_glass_suggest_requires_model_color_and_frame_match():
 
     assert _safe_phone_camera_glass_suggest(item, product, score=0.91)
     assert not _safe_phone_camera_glass_suggest(item, wrong_frame, score=0.91)
+
+
+def test_safe_phone_sim_tray_suggest_requires_model_or_code_and_color_match():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="SIM-XIA-25118PC98G-B",
+        name="Держатель SIM для Xiaomi Poco M8 5G (25118PC98G) Черный",
+        normalized_title="Держатель SIM Xiaomi Poco M8 5G 25118PC98G черный",
+        item_type="other",
+    )
+    product = Product(name="Держатель сим-карты для Xiaomi Poco M8 5G (25118PC98G) (черный)")
+    wrong_color = Product(name="Держатель сим-карты для Xiaomi Poco M8 5G (25118PC98G) (зеленый)")
+
+    assert _safe_phone_sim_tray_suggest(item, product, score=0.89)
+    assert not _safe_phone_sim_tray_suggest(item, wrong_color, score=0.89)
 
 
 def test_basic_guardrails_reject_expanded_phone_brand_conflict():

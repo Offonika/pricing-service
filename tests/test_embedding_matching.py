@@ -61,6 +61,7 @@ from tasks.match_competitor_items_embeddings import (
     _product_display_quality,
     _safe_battery_verification_suggest,
     _safe_disposable_battery_suggest,
+    _safe_phone_camera_glass_suggest,
     match_items,
 )
 
@@ -323,6 +324,43 @@ def test_basic_guardrails_reject_disposable_battery_size_conflict():
 
     assert result.allowed is False
     assert result.reason == "catalog_family_conflict"
+
+
+def test_basic_guardrails_reject_power_bank_against_external_storage():
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="PB-XIAOMI-20000-PB2033-B",
+        name="Внешний аккумулятор Xiaomi Mi 20000 33W встроенный кабель USB-C PB2033 (черный)",
+        normalized_title="Внешний аккумулятор Xiaomi Mi 20000 33W встроенный кабель USB-C PB2033 черный",
+        item_type="battery",
+    )
+    product = Product(
+        name="Внешний накопитель Baseus Amblight 26800 mAh с кабелем TypeC - TypeC 100W (черный)"
+    )
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
+def test_safe_phone_camera_glass_suggest_requires_model_color_and_frame_match():
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="CAM-GLASS-RMX3286-B",
+        name="Стекло задней камеры для Realme Narzo 50 (RMX3286) (без рамки) (черный)",
+        normalized_title="Стекло задней камеры Realme Narzo 50 RMX3286 без рамки черный",
+        item_type="other",
+    )
+    product = Product(
+        name="Стекло задней камеры для Realme Narzo 50 4G (RMX3286) (без рамки) (черный)"
+    )
+    wrong_frame = Product(
+        name="Стекло задней камеры для Realme Narzo 50 4G (RMX3286) (в рамке) (черный)"
+    )
+
+    assert _safe_phone_camera_glass_suggest(item, product, score=0.91)
+    assert not _safe_phone_camera_glass_suggest(item, wrong_frame, score=0.91)
 
 
 def test_basic_guardrails_reject_expanded_phone_brand_conflict():

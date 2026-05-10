@@ -532,6 +532,10 @@ def catalog_family(text: str | None) -> str | None:
 
     if re.search(r"\b(usb[-\s]*флеш|флешк|flash\s*drive|usb\s*flash)\b", value):
         return "usb_storage"
+    if any(token in value for token in ("внешний аккумулятор", "power bank", "powerbank")):
+        return "power_bank"
+    if any(token in value for token in ("внешний накопитель", "external storage")):
+        return "external_storage"
     if any(token in value for token in ("стекло камеры", "стекло задней камеры", "camera glass")):
         return "phone_camera_glass"
     if any(token in value for token in ("сеточка динамика", "сетка динамика", "speaker mesh")):
@@ -692,6 +696,8 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "network_connector",
         "network_cable",
         "component_connector",
+        "power_bank",
+        "external_storage",
     }
     if not left_family or not right_family:
         return bool(
@@ -742,6 +748,8 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "network_connector",
         "network_cable",
         "component_connector",
+        "power_bank",
+        "external_storage",
         "stencil",
         "ic",
         "adhesive",

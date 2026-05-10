@@ -430,6 +430,22 @@ def test_basic_guardrails_reject_ic_against_display_backlight():
     assert result.reason == "catalog_family_conflict"
 
 
+def test_basic_guardrails_reject_ic_against_separator_machine():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="IC-TVS2200",
+        name="Микросхема TVS2200",
+        normalized_title="Микросхема TVS2200",
+        item_type="board",
+    )
+    product = Product(name="Станок для разборки дисплейных модулей 250W A-988")
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
 def test_basic_guardrails_reject_keyboard_backlight_against_keyboard():
     item = CompetitorItem(
         competitor="moba",

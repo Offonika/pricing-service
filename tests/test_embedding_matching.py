@@ -335,6 +335,38 @@ def test_basic_guardrails_reject_headset_against_wifi_antenna():
     assert result.reason == "catalog_family_conflict"
 
 
+def test_basic_guardrails_reject_ic_against_wifi_router():
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="263138",
+        name="Микросхема Hi1101 (Wi-Fi модуль для Huawei)",
+        normalized_title="Микросхема Hi1101 Wi-Fi модуль Huawei",
+        item_type="board",
+    )
+    product = Product(name="Роутер Wi-Fi Hoco HI36 2.4 Гц (белый)", article="079630")
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
+def test_basic_guardrails_reject_ic_against_spudger_set():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="IC-74AVC1T45",
+        name="Микросхема 74AVC1T45 (двунаправленный преобразователь уровней логики, 1-бит)",
+        normalized_title="Микросхема 74AVC1T45 двунаправленный преобразователь уровней логики 1 бит",
+        item_type="board",
+    )
+    product = Product(name="Набор лопаток для снятия микросхем 10 в 1", article="055997")
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
 def test_safe_battery_verification_suggest_accepts_diagnosable_typo():
     item = CompetitorItem(
         competitor="moba",

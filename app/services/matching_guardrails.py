@@ -556,6 +556,8 @@ def catalog_family(text: str | None) -> str | None:
         return "phone_screws"
     if any(token in value for token in ("трафарет", "bga")):
         return "stencil"
+    if any(token in value for token in ("лопат",)):
+        return "tool"
     if any(
         token in value for token in ("микросхема", "аудио-контроллер", "контроллер", "pmic", "ic ")
     ):
@@ -591,9 +593,21 @@ def catalog_family(text: str | None) -> str | None:
         token in value for token in ("антенн", "антен", "antenna")
     ):
         return "wifi_antenna"
+    if re.search(r"\bwi[-\s]?fi\b|\bwifi\b", value) and any(
+        token in value for token in ("роутер", "router")
+    ):
+        return "wifi_router"
     if any(
         token in value
-        for token in ("микроскоп", "тепловизор", "паяльник", "станция", "отвертка", "screwdriver")
+        for token in (
+            "микроскоп",
+            "тепловизор",
+            "паяльник",
+            "станция",
+            "отвертка",
+            "screwdriver",
+            "лопат",
+        )
     ):
         return "tool"
     if any(token in value for token in ("клавиатур", "keyboard")):
@@ -711,6 +725,7 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "external_storage",
         "portable_fan",
         "wifi_antenna",
+        "wifi_router",
     }
     if not left_family or not right_family:
         return bool(
@@ -766,6 +781,7 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "external_storage",
         "portable_fan",
         "wifi_antenna",
+        "wifi_router",
         "stencil",
         "ic",
         "adhesive",

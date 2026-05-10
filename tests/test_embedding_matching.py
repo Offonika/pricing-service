@@ -58,6 +58,7 @@ from tasks.match_competitor_items_embeddings import (
     _extract_device_model_keys,
     _flex_button_control_conflict,
     _flex_fingerprint_conflict,
+    _phone_sim_tray_model_or_code_conflict,
     _product_display_matrix_tags,
     _product_display_matrix_vendor_tags,
     _product_display_quality,
@@ -530,6 +531,19 @@ def test_safe_phone_camera_glass_suggest_requires_model_color_and_frame_match():
     assert not _safe_phone_camera_glass_suggest(item, wrong_frame, score=0.91)
 
 
+def test_safe_phone_camera_glass_suggest_rejects_pack_count_mismatch():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="GLS-CAM-SSG-S936B-3PCS-B",
+        name="Стекло камеры для Samsung Galaxy S25+ (S936B) (комплект 3 шт.) Черный",
+        normalized_title="Стекло камеры Samsung Galaxy S25 Plus S936B комплект 3 шт Черный",
+        item_type="other",
+    )
+    product = Product(name="Стекло задней камеры для Samsung S936 Galaxy S25+ (без рамки) (черный)")
+
+    assert not _safe_phone_camera_glass_suggest(item, product, score=0.90)
+
+
 def test_safe_phone_sim_tray_suggest_requires_model_or_code_and_color_match():
     item = CompetitorItem(
         competitor="moba",
@@ -543,6 +557,38 @@ def test_safe_phone_sim_tray_suggest_requires_model_or_code_and_color_match():
 
     assert _safe_phone_sim_tray_suggest(item, product, score=0.89)
     assert not _safe_phone_sim_tray_suggest(item, wrong_color, score=0.89)
+
+
+def test_safe_phone_sim_tray_suggest_allows_lower_score_with_exact_model_and_color():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="HLD-SIM-PMI-17-B",
+        name="Держатель SIM для iPhone 17 (1 Sim) (A3520) Черный",
+        normalized_title="Держатель SIM iPhone 17 1 Sim A3520 Черный",
+        item_type="other",
+    )
+    product = Product(
+        name="Держатель сим-карты для Apple iPhone 17 (SIM + eSIM) (черный)",
+        article="071778",
+    )
+
+    assert _safe_phone_sim_tray_suggest(item, product, score=0.83)
+
+
+def test_phone_sim_tray_model_or_code_conflict_rejects_old_iphone_candidate():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="HLD-SIM-PMI-16-PN",
+        name="Держатель SIM для iPhone 16/16 Plus (1 Sim) (A3287/A3286/A3290/A3289) Розовый",
+        normalized_title="Держатель SIM iPhone 16 16 Plus 1 Sim A3287 A3286 A3290 A3289 Розовый",
+        item_type="other",
+    )
+    product = Product(
+        name="Держатель сим-карты для Apple iPhone 6s Plus (розовый)",
+        article="050720",
+    )
+
+    assert _phone_sim_tray_model_or_code_conflict(item, product)
 
 
 def test_safe_housing_part_suggest_requires_kind_model_or_code_and_color_match():

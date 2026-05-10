@@ -1034,13 +1034,24 @@ def _camera_glass_frame_state(text: str | None) -> str | None:
     return None
 
 
+def _explicit_piece_pack_count(text: str | None) -> int | None:
+    normalized = (text or "").lower().replace("ё", "е")
+    match = re.search(r"\b(?:комплект\s+)?(\d{1,2})\s*(?:шт|pcs|pieces)\b", normalized)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
 def _safe_phone_camera_glass_suggest(
     item: CompetitorItem,
     product: Product,
     *,
     score: float,
 ) -> bool:
-    if score < 0.85:
+    if score < 0.845:
         return False
     item_text = " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
     product_text = product.name or ""
@@ -1064,6 +1075,12 @@ def _safe_phone_camera_glass_suggest(
     product_frame = _camera_glass_frame_state(product_text)
     if item_frame and product_frame and item_frame != product_frame:
         return False
+    item_count = _explicit_piece_pack_count(item_text)
+    product_count = _explicit_piece_pack_count(product_text)
+    if item_count and item_count > 1 and item_count != product_count:
+        return False
+    if product_count and product_count > 1 and product_count != item_count:
+        return False
     return True
 
 
@@ -1073,7 +1090,7 @@ def _safe_phone_sim_tray_suggest(
     *,
     score: float,
 ) -> bool:
-    if score < 0.85:
+    if score < 0.82:
         return False
     item_text = " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
     product_text = product.name or ""
@@ -1092,6 +1109,24 @@ def _safe_phone_sim_tray_suggest(
     item_colors = _first_color_values(item.name, item.normalized_title)
     product_colors = _first_color_values(product.name, product.color)
     return bool(item_colors and product_colors and not item_colors.isdisjoint(product_colors))
+
+
+def _phone_sim_tray_model_or_code_conflict(item: CompetitorItem, product: Product) -> bool:
+    item_text = " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
+    product_text = product.name or ""
+    if catalog_family(item_text) != "phone_sim_tray":
+        return False
+    if catalog_family(product_text) != "phone_sim_tray":
+        return False
+    item_codes = _extract_device_codes(item_text)
+    product_codes = _extract_device_codes(product_text)
+    if item_codes and product_codes and item_codes.isdisjoint(product_codes):
+        return True
+    item_keys = _extract_device_model_keys(item_text)
+    product_keys = _extract_device_model_keys(product_text)
+    return bool(
+        item_keys and product_keys and not _device_model_keys_overlap(item_keys, product_keys)
+    )
 
 
 def _safe_housing_part_suggest(
@@ -5506,6 +5541,8 @@ def match_items(
             if _device_conflict(item.normalized_title or item.name or "", prod.name or ""):
                 continue
             if item_type in MODEL_GUARDRAIL_ITEM_TYPES and _text_model_conflict(item, prod):
+                continue
+            if _phone_sim_tray_model_or_code_conflict(item, prod):
                 continue
             if item_type == "display" and _display_model_code_blocks(item, prod):
                 continue

@@ -74,6 +74,7 @@ from tasks.match_competitor_items_embeddings import (
     _safe_flex_suggest,
     _safe_housing_part_suggest,
     _safe_iphone_battery_model_capacity_suggest,
+    _safe_network_cable_suggest,
     _safe_phone_camera_glass_suggest,
     _safe_phone_sim_tray_suggest,
     _safe_stencil_suggest,
@@ -602,6 +603,21 @@ def test_safe_disposable_battery_suggest_requires_brand_size_and_pack_count():
 
     assert _safe_disposable_battery_suggest(item, product, score=0.81)
     assert not _safe_disposable_battery_suggest(item, wrong_brand, score=0.81)
+
+
+def test_safe_network_cable_suggest_requires_model_and_length():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="PTCH-CRD-HCO-US07-5M",
+        name="Интернет кабель (патч-корд) Hoco US07, cat 6 (5 м)",
+        normalized_title="Интернет кабель патч-корд Hoco US07 cat 6 5 м",
+        item_type="cable",
+    )
+    product = Product(name="Патч-корд Hoco US07 5 м (черный)")
+    wrong_length = Product(name="Патч-корд Hoco US07 20 м (черный)")
+
+    assert _safe_network_cable_suggest(item, product, score=0.73)
+    assert not _safe_network_cable_suggest(item, wrong_length, score=0.90)
 
 
 def test_safe_stencil_suggest_requires_chipset_or_series_overlap():

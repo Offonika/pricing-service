@@ -1150,6 +1150,46 @@ def _safe_phone_sim_tray_suggest(
     return bool(item_colors and product_colors and not item_colors.isdisjoint(product_colors))
 
 
+def _network_cable_model(text: str | None) -> str | None:
+    normalized = (text or "").lower().replace("ё", "е")
+    match = re.search(r"\b([a-z]{2,5}\d{1,4})\b", normalized)
+    return match.group(1) if match else None
+
+
+def _cable_length_meters(text: str | None) -> float | None:
+    normalized = (text or "").lower().replace("ё", "е").replace(",", ".")
+    match = re.search(r"\b(\d+(?:\.\d+)?)\s*(?:м|m)\b", normalized)
+    if not match:
+        return None
+    try:
+        return float(match.group(1))
+    except ValueError:
+        return None
+
+
+def _safe_network_cable_suggest(
+    item: CompetitorItem,
+    product: Product,
+    *,
+    score: float,
+) -> bool:
+    if score < 0.72:
+        return False
+    item_text = " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
+    product_text = product.name or ""
+    if catalog_family(item_text) != "network_cable":
+        return False
+    if catalog_family(product_text) != "network_cable":
+        return False
+    item_model = _network_cable_model(item_text)
+    product_model = _network_cable_model(product_text)
+    if not item_model or item_model != product_model:
+        return False
+    item_length = _cable_length_meters(item_text)
+    product_length = _cable_length_meters(product_text)
+    return bool(item_length and product_length and item_length == product_length)
+
+
 def _phone_sim_tray_model_or_code_conflict(item: CompetitorItem, product: Product) -> bool:
     item_text = " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
     product_text = product.name or ""
@@ -5751,6 +5791,7 @@ def match_items(
         disposable_battery_suggest = False
         phone_camera_glass_suggest = False
         phone_sim_tray_suggest = False
+        network_cable_suggest = False
         housing_part_suggest = False
         flex_suggest = False
         stencil_suggest = False
@@ -5881,6 +5922,19 @@ def match_items(
             ):
                 status = CompetitorItemMatchStatus.SUGGESTED
                 phone_sim_tray_suggest = True
+
+        if status in {
+            CompetitorItemMatchStatus.AMBIGUOUS,
+            CompetitorItemMatchStatus.NEEDS_REVIEW,
+        }:
+            best_product = products.get(best_pid)
+            if best_product and _safe_network_cable_suggest(
+                item,
+                best_product,
+                score=best_score,
+            ):
+                status = CompetitorItemMatchStatus.SUGGESTED
+                network_cable_suggest = True
 
         if (
             status
@@ -6057,6 +6111,17 @@ def match_items(
                     if best_product
                     else set()
                 ),
+            }
+        if network_cable_suggest:
+            best_product = products.get(best_pid)
+            item_text = " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
+            product_text = best_product.name if best_product else None
+            rationale["network_cable_suggest"] = {
+                "reason": "network_cable_model_and_length_match",
+                "competitor_model": _network_cable_model(item_text),
+                "product_model": _network_cable_model(product_text),
+                "competitor_length_m": _cable_length_meters(item_text),
+                "product_length_m": _cable_length_meters(product_text),
             }
         if housing_part_suggest:
             best_product = products.get(best_pid)

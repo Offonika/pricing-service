@@ -6,16 +6,14 @@ import argparse
 import csv
 import json
 import logging
-import os
 import re
 from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import httpx
 import numpy as np
 from sqlalchemy import create_engine, exists, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import get_settings
 from app.models import CompetitorItem, Product
@@ -46,8 +44,10 @@ from app.services.display_quality_raw_mapping import (
 )
 from app.services.embedding_utils import compose_competitor_text
 from app.services.embeddings import EmbeddingClient
+from app.services.llm_fallback import FallbackChatClient
 from app.services.matching_guardrails import (
     basic_candidate_guardrails,
+    catalog_family,
     device_group,
     device_group_conflict,
 )
@@ -208,8 +208,22 @@ BRAND_SYNONYMS = {
     "vivo": "vivo",
     "oneplus": "oneplus",
     "tcl": "tcl",
+    "itel": "itel",
+    "infinix": "infinix",
+    "tecno": "tecno",
+    "meizu": "meizu",
+    "sony": "sony",
+    "nokia": "nokia",
+    "zte": "zte",
+    "nubia": "zte",
     "lenovo": "lenovo",
     "xiaoxin": "lenovo",
+    "motorola": "motorola",
+    "moto": "motorola",
+    "asus": "asus",
+    "rog": "asus",
+    "google": "google",
+    "pixel": "google",
 }
 MODEL_KEY_BRANDS = {
     *BRAND_SYNONYMS.keys(),
@@ -235,6 +249,7 @@ COLOR_ALIASES = {
     "white": {"white", "белый", "белая"},
     "red": {"red", "красный", "красная"},
     "orange": {"orange", "оранжевый", "оранжевая"},
+    "coral": {"coral", "коралл", "коралловый", "коралловая"},
     "yellow": {"yellow", "желтый", "желтая", "жёлтый", "жёлтая"},
     "blue": {"blue", "синий", "синяя"},
     "lightblue": {"голубой", "голубая"},
@@ -252,6 +267,8 @@ COLOR_ALIASES = {
     },
     "gray": {"gray", "grey", "серый", "серая"},
     "silver": {"silver", "серебристый", "серебристая", "серебро"},
+    "beige": {"beige", "бежевый", "бежевая"},
+    "graphite": {"graphite", "графит", "графитовый", "графитовая"},
     "brown": {"brown", "коричневый", "коричневая"},
     "purple": {
         "purple",
@@ -265,6 +282,7 @@ COLOR_ALIASES = {
     "bronze": {"bronze", "бронзовый", "бронзовая"},
     "titanium": {"titanium", "титановый", "титановая", "титан"},
 }
+COLOR_SENSITIVE_ITEM_TYPES = {"housing", "flex"}
 
 CYRILLIC_CODE_CHARS = str.maketrans(
     {
@@ -391,6 +409,10 @@ def _strong_non_display_type(text: str | None) -> str | None:
         return None
     lower = text.lower()
     normalized = re.sub(r"[\s/_-]+", " ", lower).strip()
+    if _is_battery_adhesive(normalized):
+        return "other"
+    if _is_non_phone_battery_accessory(normalized):
+        return "other"
     if re.match(
         r"^\s*((задн\w*\s+)?крышк\w*|корпус\w*|панел\w*|back\s+cover|housing)\b",
         normalized,
@@ -446,6 +468,35 @@ def _strong_non_display_type(text: str | None) -> str | None:
     return None
 
 
+def _is_battery_adhesive(text: str | None) -> bool:
+    normalized = (text or "").lower().replace("ё", "е")
+    if not normalized:
+        return False
+    return bool(
+        re.search(r"\bскотч\w*\s+(?:акб|аккумулятор\w*)\b", normalized)
+        or re.search(r"\b(?:акб|аккумулятор\w*)\s+скотч\w*\b", normalized)
+        or re.search(r"\bbattery\s+(?:adhesive|sticker|tape)\b", normalized)
+        or re.search(r"\b(?:adhesive|sticker|tape)\s+(?:for\s+)?battery\b", normalized)
+    )
+
+
+def _is_non_phone_battery_accessory(text: str | None) -> bool:
+    normalized = (text or "").lower().replace("ё", "е")
+    if not normalized:
+        return False
+    return bool(
+        re.search(r"аккумулятор\w*\s+для\s+электроинструмент\w*", normalized)
+        or re.search(
+            r"(?:сетев\w*\s+)?зарядн\w*\s+устройств\w*\s+для\s+аккумулятор\w*",
+            normalized,
+        )
+        or (
+            re.search(r"\b(?:makita|hitachi|greenworks|bosch)\b", normalized)
+            and re.search(r"\b(?:12v|14,?4|18v|21v|24v|ni-cd|li-ion)\b", normalized)
+        )
+    )
+
+
 def _display_word_is_feature(text: str | None) -> bool:
     if not text:
         return False
@@ -475,6 +526,10 @@ def _effective_item_type(item: CompetitorItem) -> str | None:
         for value in (item.name, item.normalized_title, item.category, item.category_group)
         if value
     )
+    if _is_battery_adhesive(text):
+        return "other"
+    if item_type == "battery" and _is_non_phone_battery_accessory(text):
+        return "other"
     strong_type = _strong_non_display_type(text)
     if strong_type == "housing":
         return strong_type
@@ -562,6 +617,18 @@ def _extract_capacity(text: str | None) -> int | None:
 
 OLED_DISPLAY_TYPES = {"OLED", "AMOLED", "Super AMOLED", "Dynamic AMOLED", "LTPO AMOLED"}
 LCD_PIXEL_CONSTRUCTIONS = {"In-Cell", "On-Cell"}
+DISPLAY_MATRIX_VENDOR_TAG_PATTERNS: dict[str, re.Pattern[str]] = {
+    "ALG": re.compile(r"\balg\b", re.IGNORECASE),
+    "DD": re.compile(r"\bdd\b", re.IGNORECASE),
+    "F5ENERGY": re.compile(r"\bf5\s*energy\b|\bf5energy\b", re.IGNORECASE),
+    "FOG": re.compile(r"\bfog\b", re.IGNORECASE),
+    "GX": re.compile(r"\bgx\b", re.IGNORECASE),
+    "JCID": re.compile(r"\bjcid\b", re.IGNORECASE),
+    "JK": re.compile(r"\bjk\b", re.IGNORECASE),
+    "MNK": re.compile(r"\bmnk\b", re.IGNORECASE),
+    "SL": re.compile(r"\bsl\b", re.IGNORECASE),
+    "ZY": re.compile(r"\bzy\b", re.IGNORECASE),
+}
 
 
 def _normalize_display_type_guard(value: str | ScreenMatrixType | None) -> str | None:
@@ -606,14 +673,31 @@ def _product_display_type(product: Product) -> str | None:
 
 
 def _normalize_color_value(value: str | None) -> str | None:
+    colors = _extract_color_values(value)
+    for canonical in COLOR_ALIASES:
+        if canonical in colors:
+            return canonical
+    return None
+
+
+def _extract_color_values(value: str | None) -> set[str]:
     if not value:
-        return None
+        return set()
     tokens = set(re.findall(r"[a-zа-яё]+", value.lower().replace("ё", "е")))
+    colors: set[str] = set()
     for canonical, aliases in COLOR_ALIASES.items():
         normalized_aliases = {alias.replace("ё", "е") for alias in aliases}
         if tokens & normalized_aliases:
-            return canonical
-    return None
+            colors.add(canonical)
+    return colors
+
+
+def _first_color_values(*values: str | None) -> set[str]:
+    for value in values:
+        colors = _extract_color_values(value)
+        if colors:
+            return colors
+    return set()
 
 
 def _competitor_display_color(item: CompetitorItem) -> str | None:
@@ -637,6 +721,19 @@ def _competitor_display_color(item: CompetitorItem) -> str | None:
 
 def _product_display_color(product: Product) -> str | None:
     return _normalize_color_value(product.name) or _normalize_color_value(product.color)
+
+
+def _competitor_part_colors(item: CompetitorItem) -> set[str]:
+    return _first_color_values(
+        item.name,
+        item.normalized_title,
+        item.color,
+        item.attrs_color,
+    )
+
+
+def _product_part_colors(product: Product) -> set[str]:
+    return _first_color_values(product.name, product.color)
 
 
 def _extract_port_type(text: str | None) -> str | None:
@@ -673,6 +770,166 @@ def _capacity_conflict(item_text: str, product_text: str, attrs: dict[str, Any] 
     return False
 
 
+def _battery_verification_signal(text: str | None) -> bool:
+    normalized = (text or "").lower().replace("ё", "е")
+    return bool(
+        "system diagnosable" in normalized
+        or "system daignosable" in normalized
+        or "верификац" in normalized
+        or "новая запчаст" in normalized
+    )
+
+
+def _safe_battery_verification_suggest(
+    item: CompetitorItem,
+    product: Product,
+    *,
+    score: float,
+) -> bool:
+    if score < 0.70:
+        return False
+    item_text = " ".join(filter(None, [item.name, item.normalized_title]))
+    product_text = product.name or ""
+    if not _battery_verification_signal(item_text):
+        return False
+    normalized_product_text = product_text.lower()
+    if (
+        "system diagnosable" not in normalized_product_text
+        and "system daignosable" not in normalized_product_text
+    ):
+        return False
+    if _capacity_conflict(item_text, product_text, item.attrs_json):
+        return False
+    competitor_keys = _extract_device_model_keys(_competitor_device_model_text(item))
+    product_keys = _extract_device_model_keys(product.name)
+    return _device_model_keys_overlap(competitor_keys, product_keys)
+
+
+def _battery_part_codes_from_text(text: str | None) -> set[str]:
+    normalized = (text or "").lower()
+    return {match.group(0).lower() for match in re.finditer(r"\bli[0-9][a-z0-9]{8,}\b", normalized)}
+
+
+def _competitor_battery_part_codes(item: CompetitorItem) -> set[str]:
+    return set().union(
+        *(
+            _battery_part_codes_from_text(value)
+            for value in (item.name, item.normalized_title, item.external_id)
+            if value
+        )
+    )
+
+
+def _product_battery_part_codes(product: Product) -> set[str]:
+    return _battery_part_codes_from_text(product.name)
+
+
+def _battery_part_code_conflict(product: Product, competitor_codes: set[str]) -> bool:
+    product_codes = _product_battery_part_codes(product)
+    return bool(competitor_codes and product_codes and competitor_codes.isdisjoint(product_codes))
+
+
+def _safe_battery_part_code_model_suggest(
+    item: CompetitorItem,
+    product: Product,
+    *,
+    filtered_count: int,
+    score: float,
+) -> bool:
+    if filtered_count != 1 or score < 0.80:
+        return False
+    competitor_codes = _competitor_battery_part_codes(item)
+    if not competitor_codes or _battery_part_code_conflict(product, competitor_codes):
+        return False
+    competitor_keys = _extract_device_model_keys(_competitor_device_model_text(item))
+    product_keys = _extract_device_model_keys(product.name)
+    return _device_model_keys_overlap(competitor_keys, product_keys)
+
+
+DISPOSABLE_BATTERY_BRANDS = {
+    "duracell",
+    "energizer",
+    "gp",
+    "gopower",
+    "hoco",
+    "kodak",
+    "panasonic",
+    "renata",
+    "varta",
+}
+
+
+def _disposable_battery_brand(text: str | None) -> str | None:
+    normalized = (text or "").lower()
+    for token in re.findall(r"[a-z0-9]+", normalized):
+        if token in DISPOSABLE_BATTERY_BRANDS:
+            return token
+    return None
+
+
+def _disposable_battery_size(text: str | None) -> str | None:
+    normalized = (text or "").lower()
+    for pattern, size in (
+        (r"\b(?:lr03|aaa)\b", "aaa"),
+        (r"\b(?:lr6|lr06|aa)\b", "aa"),
+        (r"\b(?:6f22|6lr61|крона|9v1?)\b", "9v"),
+        (r"\b(?:lr20|d)\b", "d"),
+        (r"\b27a\b", "27a"),
+        (r"\b(cr20\d{2}|cr16\d{2}|cr12\d{2}|ag13|lr44h?|357a)\b", None),
+    ):
+        match = re.search(pattern, normalized)
+        if match:
+            return size or match.group(1)
+    return None
+
+
+def _disposable_battery_pack_count(text: str | None) -> int | None:
+    normalized = (text or "").lower()
+    match = re.search(r"\b(\d{1,2})\s*(?:шт|pcs|pieces|pack|упак)", normalized)
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except ValueError:
+        return None
+
+
+def _safe_disposable_battery_suggest(
+    item: CompetitorItem,
+    product: Product,
+    *,
+    score: float,
+) -> bool:
+    if score < 0.75:
+        return False
+    item_text = " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
+    product_text = product.name or ""
+    item_family = catalog_family(item_text)
+    product_family = catalog_family(product_text)
+    if item_family not in {
+        "battery_aa",
+        "battery_aaa",
+        "battery_9v",
+        "battery_d",
+        "battery_27a",
+        "battery_coin",
+    }:
+        return False
+    if product_family != item_family:
+        return False
+    item_brand = _disposable_battery_brand(item_text)
+    product_brand = _disposable_battery_brand(product_text)
+    if not item_brand or item_brand != product_brand:
+        return False
+    item_size = _disposable_battery_size(item_text)
+    product_size = _disposable_battery_size(product_text)
+    if not item_size or item_size != product_size:
+        return False
+    item_count = _disposable_battery_pack_count(item_text)
+    product_count = _disposable_battery_pack_count(product_text)
+    return bool(item_count and item_count == product_count)
+
+
 def _display_type_conflict(item_text: str, product_text: str, attrs: dict[str, Any] | None) -> bool:
     attr_type = None
     if attrs and attrs.get("type"):
@@ -706,6 +963,213 @@ def _display_color_conflict(
     if competitor_color and product_color:
         return competitor_color != product_color
     return False
+
+
+def _part_color_conflict(product: Product, competitor_colors: set[str]) -> bool:
+    product_colors = _product_part_colors(product)
+    if competitor_colors and product_colors:
+        return competitor_colors.isdisjoint(product_colors)
+    return False
+
+
+def _part_quality_tier_from_text(text: str | None) -> str | None:
+    normalized = (text or "").lower().replace("ё", "е")
+    if not normalized:
+        return None
+    if re.search(r"\b(premium)\b|\bпремиум\b", normalized):
+        return "premium"
+    if re.search(
+        r"\b(orig|orig100|or100|original|genuine)\b|ориг|снятый|с\s+разбора",
+        normalized,
+    ):
+        return "original"
+    return None
+
+
+def _competitor_part_quality_tier(item: CompetitorItem) -> str | None:
+    return _part_quality_tier_from_text(" ".join(filter(None, [item.name, item.normalized_title])))
+
+
+def _product_part_quality_tier(product: Product) -> str | None:
+    return _part_quality_tier_from_text(
+        " ".join(
+            str(value)
+            for value in (
+                product.name,
+                product.quality,
+                product.quality_raw,
+            )
+            if value
+        )
+    )
+
+
+def _part_quality_conflict(product: Product, competitor_quality: str | None) -> bool:
+    product_quality = _product_part_quality_tier(product)
+    return bool(
+        competitor_quality
+        and product_quality
+        and {competitor_quality, product_quality} == {"premium", "original"}
+    )
+
+
+def _part_has_camera_glass(text: str | None) -> bool:
+    normalized = (text or "").lower().replace("ё", "е")
+    return bool(
+        re.search(r"в\s+сборе\s+со\s+стекл\w*\s+камер\w*", normalized)
+        or re.search(r"\bсо\s+стекл\w*\s+камер\w*", normalized)
+        or re.search(r"\bcamera\s+glass\b", normalized)
+    )
+
+
+def _part_has_flex_assembly(text: str | None) -> bool:
+    normalized = (text or "").lower().replace("ё", "е")
+    return bool(
+        re.search(r"в\s+сборе\s+со\s+шлейф\w*", normalized)
+        or re.search(r"\bсо\s+шлейф\w*", normalized)
+        or re.search(r"\bи\s+шлейф\w*", normalized)
+        or re.search(r"\bшлейф\w*\s+magsafe\b", normalized)
+    )
+
+
+def _part_assembly_conflict_reason(item: CompetitorItem, product: Product) -> str | None:
+    competitor_text = " ".join(filter(None, [item.name, item.normalized_title]))
+    product_text = product.name or ""
+    if _part_has_camera_glass(competitor_text) and not _part_has_camera_glass(product_text):
+        return "part_camera_glass_missing_on_product"
+    if _part_has_camera_glass(product_text) and not _part_has_camera_glass(competitor_text):
+        return "part_camera_glass_extra_on_product"
+    if _part_has_flex_assembly(competitor_text) and not _part_has_flex_assembly(product_text):
+        return "part_flex_assembly_missing_on_product"
+    if _part_has_flex_assembly(product_text) and not _part_has_flex_assembly(competitor_text):
+        return "part_flex_assembly_extra_on_product"
+    return None
+
+
+def _housing_device_code_conflict(item: CompetitorItem, product: Product) -> bool:
+    competitor_codes = _extract_device_codes(_competitor_device_code_text(item))
+    product_codes = _extract_device_codes(product.name)
+    return bool(competitor_codes and product_codes and competitor_codes.isdisjoint(product_codes))
+
+
+def _housing_part_kind_from_text(text: str | None) -> str | None:
+    normalized = (text or "").lower().replace("ё", "е")
+    if not normalized:
+        return None
+    if re.search(r"держател\w*\s+(?:sim|сим)|sim\s*tray", normalized):
+        return "sim_tray"
+    if re.search(r"рамк\w*\s+диспле\w*|display\s+frame", normalized):
+        return "display_frame"
+    if re.search(r"средн\w*\s+част\w*|middle\s+frame", normalized):
+        return "middle_frame"
+    if re.search(r"(?:задн\w*\s+)?крышк\w*|back\s+cover", normalized):
+        return "back_cover"
+    if re.search(r"\bкорпус\w*\b|\bhousing\b", normalized):
+        return "housing"
+    return None
+
+
+def _competitor_housing_part_kind(item: CompetitorItem) -> str | None:
+    return _housing_part_kind_from_text(
+        " ".join(
+            value
+            for value in (item.name, item.normalized_title, item.category, item.category_group)
+            if value
+        )
+    )
+
+
+def _product_housing_part_kind(product: Product) -> str | None:
+    return _housing_part_kind_from_text(
+        " ".join(
+            str(value)
+            for value in (
+                product.name,
+                product.subject,
+                product.subject_1c,
+                product.subject_generated,
+                product.category,
+            )
+            if value
+        )
+    )
+
+
+def _housing_part_kind_conflict(product: Product, competitor_kind: str | None) -> bool:
+    product_kind = _product_housing_part_kind(product)
+    return bool(competitor_kind and product_kind and competitor_kind != product_kind)
+
+
+def _camera_position_from_text(text: str | None) -> str | None:
+    normalized = (text or "").lower().replace("ё", "е")
+    if not normalized:
+        return None
+    if re.search(r"\b(передн\w*|front|selfie)\b", normalized):
+        return "front"
+    if re.search(r"\b(задн\w*|основн\w*|rear|back|main)\b", normalized):
+        return "rear"
+    return None
+
+
+def _competitor_camera_position(item: CompetitorItem) -> str | None:
+    return _camera_position_from_text(" ".join(filter(None, [item.name, item.normalized_title])))
+
+
+def _product_camera_position(product: Product) -> str | None:
+    return _camera_position_from_text(product.name)
+
+
+def _camera_position_conflict(product: Product, competitor_position: str | None) -> bool:
+    product_position = _product_camera_position(product)
+    return bool(
+        competitor_position and product_position and competitor_position != product_position
+    )
+
+
+def _flex_role_from_text(text: str | None) -> str | None:
+    normalized = (text or "").lower().replace("ё", "е")
+    if not normalized:
+        return None
+    if re.search(r"\b(button|buttons|volume|power\s+button)\b", normalized) or re.search(
+        r"\b(кнопк\w*|кнопк\w*\s+включен\w*|громкост\w*|блокировк\w*)\b",
+        normalized,
+    ):
+        return "buttons"
+    if re.search(r"\b(fingerprint|touch\s+id)\b", normalized) or re.search(
+        r"сканер\w*\s+отпечатк\w*|отпечатк\w*\s+пальц\w*",
+        normalized,
+    ):
+        return "fingerprint"
+    if re.search(
+        r"для\s+тестирован\w*\s+работ\w*\s+диспле\w*|на\s+диспле\w*|"
+        r"display\s+test|display\s+flex",
+        normalized,
+    ):
+        return "display"
+    if re.search(r"\b(межплатн\w*|interconnect|main\s+board\s+flex)\b", normalized):
+        return "interboard"
+    if re.search(
+        r"системн\w*\s+разъ[еe]м\w*|разъ[еe]м\w*\s+зарядк\w*|зарядк\w*|"
+        r"charging\s+(?:port|connector)|dock\s+connector|микрофон\w*",
+        normalized,
+    ):
+        return "charge_mic"
+    if re.search(r"\b(sensor|сенсор\w*)\b", normalized):
+        return "sensor"
+    return None
+
+
+def _competitor_flex_role(item: CompetitorItem) -> str | None:
+    return _flex_role_from_text(" ".join(filter(None, [item.name, item.normalized_title])))
+
+
+def _product_flex_role(product: Product) -> str | None:
+    return _flex_role_from_text(product.name)
+
+
+def _flex_role_conflict(product: Product, competitor_role: str | None) -> bool:
+    product_role = _product_flex_role(product)
+    return bool(competitor_role and product_role and competitor_role != product_role)
 
 
 QUALITY_GRADE_ALIASES = {
@@ -933,11 +1397,20 @@ def _normalize_matrix_tags(tags: list[str] | tuple[str, ...] | None) -> set[str]
     return {str(tag).strip().upper() for tag in tags if str(tag).strip()}
 
 
+def _display_matrix_vendor_tags_from_text(text: str | None) -> set[str]:
+    if not text:
+        return set()
+    return {
+        tag for tag, pattern in DISPLAY_MATRIX_VENDOR_TAG_PATTERNS.items() if pattern.search(text)
+    }
+
+
 def _competitor_display_matrix_tags(item: CompetitorItem) -> set[str]:
     tags: set[str] = set()
     for text in (item.name, item.normalized_title):
-        if text:
-            tags |= _normalize_matrix_tags(parse_display_attributes(text).matrix_tags)
+        if not text:
+            continue
+        tags |= _normalize_matrix_tags(parse_display_attributes(text).matrix_tags)
     tags |= _normalize_matrix_tags(item.matrix_tags)
     return tags
 
@@ -946,6 +1419,19 @@ def _product_display_matrix_tags(product: Product) -> set[str]:
     tags = _normalize_matrix_tags(parse_display_attributes(product.name or "").matrix_tags)
     tags |= _normalize_matrix_tags(product.display_matrix_tags)
     return tags
+
+
+def _competitor_display_matrix_vendor_tags(item: CompetitorItem) -> set[str]:
+    tags = _competitor_display_matrix_tags(item)
+    for text in (item.name, item.normalized_title, item.external_id):
+        tags |= _display_matrix_vendor_tags_from_text(text)
+    return tags
+
+
+def _product_display_matrix_vendor_tags(product: Product) -> set[str]:
+    return _product_display_matrix_tags(product) | _display_matrix_vendor_tags_from_text(
+        product.name
+    )
 
 
 def _display_matrix_tags_conflict(product: Product, competitor_tags: set[str]) -> bool:
@@ -1097,6 +1583,8 @@ def _extract_device_codes(text: str | None) -> set[str]:
         _add_xiaomi_m_code(codes, match.group(0))
     for match in re.finditer(r"\b\d{6,}[A-Z]{1,4}\b", normalized):
         codes.add(match.group(0))
+    for match in re.finditer(r"\b\d{5,}[A-Z]{2,8}\b", normalized):
+        codes.add(match.group(0))
     for match in re.finditer(r"\b\d{4,}[A-Z]{1,4}\d[A-Z0-9]*\b", normalized):
         codes.add(match.group(0))
 
@@ -1146,6 +1634,26 @@ def _extract_device_codes(text: str | None) -> set[str]:
     for match in re.finditer(r"\b(?:RMX|CPH)[-\s]?\d{3,6}\b", normalized):
         codes.add(re.sub(r"[-\s]", "", match.group(0)))
 
+    if re.search(r"\b(?:TECNO|INFINIX|ITEL)\b", normalized):
+        for match in re.finditer(r"\b[A-Z]{2,4}\d[A-Z0-9]{0,3}\b", normalized):
+            code = match.group(0)
+            if code not in {
+                "AMOLED",
+                "FHD",
+                "FPC",
+                "HD",
+                "INCL",
+                "LCD",
+                "OLED",
+                "OR100",
+                "USB",
+            }:
+                codes.add(code)
+
+    if re.search(r"\b(?:ASUS|ZENFONE|ROG\s+PHONE)\b", normalized):
+        for match in re.finditer(r"\b(?:AI|ZS|ZC)\d{3,5}[A-Z0-9]{0,4}\b", normalized):
+            codes.add(match.group(0))
+
     for match in re.finditer(r"\bA\d{4}\b", normalized):
         codes.add(match.group(0))
 
@@ -1181,6 +1689,2147 @@ def _display_model_code_overlap(item: CompetitorItem, product: Product) -> bool:
     )
 
 
+def _display_model_code_overlap_details(
+    item: CompetitorItem, product: Product
+) -> dict[str, list[str]]:
+    competitor_codes = _extract_device_codes(_competitor_device_code_text(item))
+    product_codes = _extract_device_codes(product.name)
+    return {
+        "competitor_codes": sorted(competitor_codes),
+        "product_codes": sorted(product_codes),
+        "overlap_codes": sorted(competitor_codes.intersection(product_codes)),
+    }
+
+
+def _combined_item_text(item: CompetitorItem) -> str:
+    return " ".join(
+        value
+        for value in (item.name, item.normalized_title, item.category, item.category_group)
+        if value
+    )
+
+
+def _combined_product_text(product: Product) -> str:
+    return " ".join(
+        value
+        for value in (product.name, product.category, product.subject, product.subject_1c)
+        if value
+    )
+
+
+def _normalized_rule_text(text: str | None) -> str:
+    normalized = (text or "").lower().replace("ё", "е")
+    normalized = re.sub(r"[^a-z0-9а-я.,]+", " ", normalized)
+    return " ".join(normalized.split())
+
+
+def _has_redmi_pad_se_87(text: str) -> bool:
+    return "redmi pad se" in text and bool(re.search(r"\b8[.,]7\b", text))
+
+
+def _extract_screen_inches(text: str) -> set[str]:
+    return {
+        match.group(1).replace(",", ".")
+        for match in re.finditer(
+            r"\b(\d{1,2}(?:[.,]\d)?)\s*(?:\"|дюйм|дюйма|inch|inches)\b",
+            text,
+        )
+    }
+
+
+def _explicit_model_conflict_reason(item: CompetitorItem, product: Product) -> str | None:
+    item_text = _normalized_rule_text(_combined_item_text(item))
+    product_text = _normalized_rule_text(_combined_product_text(product))
+    if not _is_screen_or_touch_part(item_text) or not _is_screen_or_touch_part(product_text):
+        return None
+
+    item_has_mix_flip = "mix flip" in item_text
+    product_has_mix_flip = "mix flip" in product_text
+    item_has_mi_mix = "mi mix" in item_text and not item_has_mix_flip
+    product_has_mi_mix = "mi mix" in product_text and not product_has_mix_flip
+    if (item_has_mi_mix and product_has_mix_flip) or (product_has_mi_mix and item_has_mix_flip):
+        return "xiaomi_mi_mix_vs_mix_flip"
+
+    item_has_redmi_go = "redmi go" in item_text
+    product_has_redmi_go = "redmi go" in product_text
+    item_redmi_number = re.search(r"\bredmi\s+(?:note\s+)?\d{1,2}[a-z]?\b", item_text)
+    product_redmi_number = re.search(r"\bredmi\s+(?:note\s+)?\d{1,2}[a-z]?\b", product_text)
+    if (item_has_redmi_go and product_redmi_number) or (product_has_redmi_go and item_redmi_number):
+        return "xiaomi_redmi_go_vs_numbered_redmi"
+
+    if "redmi pad se" in item_text and "redmi pad se" in product_text:
+        item_inches = _extract_screen_inches(item_text)
+        product_inches = _extract_screen_inches(product_text)
+        if item_inches and product_inches and item_inches.isdisjoint(product_inches):
+            return "xiaomi_redmi_pad_se_size_conflict"
+        if _has_redmi_pad_se_87(item_text) != _has_redmi_pad_se_87(product_text):
+            return "xiaomi_redmi_pad_se_87_conflict"
+
+    return None
+
+
+def _extract_xiaomi_regional_model_label(text: str | None) -> str | None:
+    normalized = _normalized_rule_text(text)
+    match = re.search(r"\bxiaomi\s+(\d{1,2}t(?:\s+(?:pro|ultra))?)\b", normalized)
+    if not match:
+        return None
+    return f"xiaomi {match.group(1)}"
+
+
+def _safe_xiaomi_regional_model_auto_accept(
+    item: CompetitorItem,
+    product: Product,
+    *,
+    item_type: str | None,
+    score: float,
+    min_score: float,
+) -> str | None:
+    if score < min_score:
+        return None
+    if item_type not in {"display", "other"}:
+        return None
+    item_text = _combined_item_text(item)
+    product_text = _combined_product_text(product)
+    if not _is_screen_or_touch_part(item_text) or not _is_screen_or_touch_part(product_text):
+        return None
+    if _explicit_model_conflict_reason(item, product):
+        return None
+    item_label = _extract_xiaomi_regional_model_label(item_text)
+    product_label = _extract_xiaomi_regional_model_label(product_text)
+    if item_label and product_label and item_label == product_label:
+        return item_label
+    return None
+
+
+COPY_DISPLAY_CONSTRUCTIONS = {
+    "In-Cell",
+    "On-Cell",
+    "COF",
+    "COG",
+    "HARD_OLED",
+    "SOFT_OLED",
+    "Hard OLED",
+    "Soft OLED",
+}
+COPY_DISPLAY_QUALITIES = {"Copy High", "Copy Medium", "Copy Low"}
+DISPLAY_EXACT_MODEL_GUARDRAIL_OVERRIDE_REASONS = {
+    "compatibility_model_conflict",
+    "compatibility_phone_model_conflict",
+}
+
+
+def _display_text_has_original_refurb_signal(text: str | None) -> bool:
+    normalized = (text or "").lower().replace("ё", "е")
+    return bool(
+        "биток" in normalized
+        or "переклей" in normalized
+        or "change glass" in normalized
+        or "replaced glass" in normalized
+        or "refurb" in normalized
+        or re.search(r"замен\w*(?:\s+\w+){0,3}\s+стекл\w*", normalized)
+    )
+
+
+def _display_text_has_original_signal(text: str | None) -> bool:
+    normalized = (text or "").lower().replace("ё", "е")
+    return bool(
+        _display_text_has_original_refurb_signal(normalized)
+        or re.search(r"\b(orig|orig100|original|or100|100%\s*or|or\s*100%)\b", normalized)
+        or "ориг" in normalized
+    )
+
+
+def _display_text_has_copy_signal(text: str | None) -> bool:
+    normalized = (text or "").lower().replace("ё", "е")
+    return bool(
+        "mecanico" in normalized
+        or re.search(r"\bamp\b", normalized)
+        or re.search(r"\b(copy|копия|analog|аналог)\b", normalized)
+    )
+
+
+def _display_item_has_aftermarket_signal(item: CompetitorItem) -> bool:
+    item_text = _combined_item_text(item)
+    if _display_text_has_original_signal(item_text):
+        return False
+    normalized = (item_text or "").lower().replace("ё", "е")
+    return bool(
+        _display_text_has_copy_signal(item_text)
+        or _competitor_display_type(item)
+        or _competitor_display_construction(item)
+        or _competitor_display_matrix_tags(item)
+        or re.search(r"\blcd\s+диспле", normalized)
+    )
+
+
+def _display_text_has_size_modifier(text: str | None) -> bool:
+    normalized = (text or "").lower().replace("ё", "е")
+    return bool(
+        "small size" in normalized
+        or "big size" in normalized
+        or "large size" in normalized
+        or "mini size" in normalized
+    )
+
+
+def _is_laptop_matrix_flex(text: str | None) -> bool:
+    normalized = (text or "").lower().replace("ё", "е")
+    if not normalized:
+        return False
+    if re.search(r"\bfpc[-\s_/]*mtx[-\s_/]*lp\b", normalized):
+        return True
+    has_matrix_flex = bool(
+        re.search(r"\bшлейф\w*\s+матриц\w*\b", normalized)
+        or re.search(r"\bmatrix\s+(?:cable|flex)\b", normalized)
+    )
+    has_laptop_context = bool(
+        re.search(
+            r"\b(ноутбук\w*|laptop|macbook|vaio|thinkpad|ideapad|pavilion|inspiron)\b",
+            normalized,
+        )
+    )
+    return has_matrix_flex and has_laptop_context
+
+
+def _long_device_codes(codes: set[str]) -> set[str]:
+    return {code for code in codes if len(re.sub(r"[^A-Z0-9]", "", code.upper())) >= 8}
+
+
+def _extract_accessory_model_codes(text: str | None) -> set[str]:
+    if not text:
+        return set()
+    normalized = _normalize_code_text(text)
+    codes = set(_extract_device_codes(normalized))
+    for match in re.finditer(
+        r"\b(?:[A-Z]{1,6}-\d{2,5}[A-Z]*|[A-Z]{1,4}\d{1,5}[A-Z]*|\d{3,4}[A-Z]{1,4})\b", normalized
+    ):
+        codes.add(match.group(0))
+    filtered: set[str] = set()
+    for code in codes:
+        compact = re.sub(r"[^A-Z0-9]", "", code.upper())
+        if not compact:
+            continue
+        if len(compact) < 3:
+            continue
+        if re.fullmatch(r"ORIG\d{0,3}|OR\d{0,3}", compact):
+            continue
+        if compact.endswith("MAH"):
+            continue
+        if compact.endswith("CC") and compact[:-2].isdigit():
+            continue
+        if re.fullmatch(r"\d{3,4}P|\d{3,4}X\d{3,4}", compact):
+            continue
+        if re.fullmatch(r"(?:PD|QC)\d{1,3}W?", compact):
+            continue
+        if re.fullmatch(r"\d{2,5}(?:W|V|C)", compact):
+            continue
+        if re.fullmatch(r"\d{4}", compact):
+            continue
+        if compact in {"USB", "QC30", "QC3", "PD20W", "PD20", "LIION", "LIPOL"}:
+            continue
+        if not (re.search(r"[A-Z]", compact) and re.search(r"\d", compact)):
+            continue
+        filtered.add(compact)
+    return filtered
+
+
+def _explicit_display_attribute_conflict_reason(
+    item: CompetitorItem,
+    product: Product,
+    competitor_quality: str | None = None,
+) -> str | None:
+    item_text = _combined_item_text(item)
+    product_text = _combined_product_text(product)
+    if not _is_screen_or_touch_part(item_text) or not _is_screen_or_touch_part(product_text):
+        return None
+
+    product_quality = _product_display_quality(product)
+    competitor_quality = competitor_quality or _competitor_display_quality(item)
+    competitor_construction = _competitor_display_construction(item)
+
+    if product_quality == "Original Refurbished" and competitor_quality != ("Original Refurbished"):
+        if competitor_quality in {"Original", *COPY_DISPLAY_QUALITIES}:
+            return "display_original_refurb_vs_regular_competitor"
+        if _display_text_has_copy_signal(item_text):
+            return "display_original_refurb_vs_regular_competitor"
+        if (
+            competitor_construction in COPY_DISPLAY_CONSTRUCTIONS
+            and not _display_text_has_original_refurb_signal(item_text)
+        ):
+            return "display_original_refurb_vs_regular_competitor"
+
+    if (
+        product_quality == "Original"
+        and competitor_quality is None
+        and competitor_construction in COPY_DISPLAY_CONSTRUCTIONS
+        and not _display_text_has_original_signal(item_text)
+    ):
+        return "display_original_vs_copy_construction"
+    if (
+        product_quality == "Original"
+        and competitor_quality is None
+        and _display_text_has_copy_signal(item_text)
+        and not _display_text_has_original_signal(item_text)
+    ):
+        return "display_original_vs_copy_signal"
+    if (
+        product_quality == "Original"
+        and competitor_quality is None
+        and _display_text_has_original_signal(product_text)
+        and _display_item_has_aftermarket_signal(item)
+    ):
+        return "display_original_vs_aftermarket_competitor"
+
+    return None
+
+
+def _explicit_display_subject_conflict_reason(
+    item: CompetitorItem,
+    product: Product,
+    *,
+    item_type: str | None = None,
+) -> str | None:
+    if item_type and item_type != "display":
+        return None
+    item_text = _combined_item_text(item)
+    product_text = _combined_product_text(product)
+    if _is_screen_or_touch_part(item_text) and not _is_screen_or_touch_part(product_text):
+        return "display_candidate_vs_non_display_product"
+    return None
+
+
+def _display_exact_model_evidence_details(
+    item: CompetitorItem, product: Product
+) -> dict[str, list[str]]:
+    competitor_codes = _extract_device_codes(_competitor_device_code_text(item))
+    product_codes = _extract_device_codes(product.name)
+    competitor_keys = _extract_device_model_keys(_competitor_device_model_text(item))
+    product_keys = _extract_device_model_keys(product.name)
+    return {
+        "competitor_codes": sorted(competitor_codes),
+        "product_codes": sorted(product_codes),
+        "overlap_codes": sorted(competitor_codes.intersection(product_codes)),
+        "competitor_model_keys": sorted(competitor_keys),
+        "product_model_keys": sorted(product_keys),
+        "overlap_model_keys": sorted(competitor_keys.intersection(product_keys)),
+    }
+
+
+def _has_safe_display_exact_model_evidence(item: CompetitorItem, product: Product) -> bool:
+    details = _display_exact_model_evidence_details(item, product)
+    if details["competitor_codes"] and details["product_codes"]:
+        return bool(details["overlap_codes"])
+    return bool(details["overlap_codes"] or details["overlap_model_keys"])
+
+
+def _basic_or_display_exact_model_guardrails_allowed(
+    item: CompetitorItem,
+    product: Product,
+    *,
+    item_type: str | None,
+) -> bool:
+    guardrails = basic_candidate_guardrails(item, product)
+    if guardrails.allowed:
+        return True
+    if item_type != "display":
+        return False
+    if guardrails.reason not in DISPLAY_EXACT_MODEL_GUARDRAIL_OVERRIDE_REASONS:
+        return False
+    if _explicit_model_conflict_reason(item, product):
+        return False
+    if _display_text_model_conflict(item, product):
+        return False
+    if _display_model_code_conflict(item, product):
+        return False
+    return _has_safe_display_exact_model_evidence(item, product)
+
+
+def _safe_display_original_quality_auto_accept(
+    item: CompetitorItem,
+    product: Product,
+    *,
+    item_type: str | None,
+    score: float,
+    min_score: float,
+) -> str | None:
+    if score < min_score:
+        return None
+    if item_type != "display":
+        return None
+    if _explicit_display_subject_conflict_reason(item, product, item_type=item_type):
+        return None
+    if not _basic_or_display_exact_model_guardrails_allowed(
+        item,
+        product,
+        item_type=item_type,
+    ):
+        return None
+    item_text = _combined_item_text(item)
+    product_text = _combined_product_text(product)
+    if not _is_screen_or_touch_part(item_text) or not _is_screen_or_touch_part(product_text):
+        return None
+    if _explicit_model_conflict_reason(item, product):
+        return None
+    if _display_text_model_conflict(item, product):
+        return None
+    if _display_model_code_conflict(item, product):
+        return None
+    if not _has_safe_display_exact_model_evidence(item, product):
+        return None
+    competitor_quality = _competitor_display_quality(item)
+    product_quality = _product_display_quality(product)
+    if _explicit_display_attribute_conflict_reason(item, product, competitor_quality):
+        return None
+    if _display_quality_conflict(product, competitor_quality):
+        return None
+    if competitor_quality == "Original" and product_quality == "Original":
+        reason = "display_original_quality_exact_model"
+    elif competitor_quality == "Original Refurbished" and product_quality == "Original Refurbished":
+        reason = "display_original_refurb_quality_exact_model"
+    else:
+        return None
+
+    competitor_has_frame = _competitor_display_has_frame(item)
+    if display_frame_conflict(product, competitor_has_frame):
+        return None
+    if _display_touch_conflict(product, _competitor_display_has_touch(item)):
+        return None
+    if _display_backlight_conflict(product, _competitor_display_backlight(item)):
+        return None
+    if _display_matrix_tags_conflict(product, _competitor_display_matrix_tags(item)):
+        return None
+    competitor_construction = _competitor_display_construction(item)
+    if _display_construction_conflict(product, competitor_construction):
+        return None
+    if _display_matrix_family_conflict(
+        product,
+        _competitor_display_type(item),
+        competitor_construction,
+    ):
+        return None
+    if _display_refresh_rate_conflict(product, _competitor_display_refresh_rate_hz(item)):
+        return None
+    if _display_color_conflict(product, _competitor_display_color(item)):
+        return None
+    return reason
+
+
+def _safe_display_copy_construction_auto_accept(
+    item: CompetitorItem,
+    product: Product,
+    *,
+    item_type: str | None,
+    score: float,
+    min_score: float,
+) -> str | None:
+    if score < min_score:
+        return None
+    if item_type != "display":
+        return None
+    if _explicit_display_subject_conflict_reason(item, product, item_type=item_type):
+        return None
+    if not _basic_or_display_exact_model_guardrails_allowed(
+        item,
+        product,
+        item_type=item_type,
+    ):
+        return None
+    item_text = _combined_item_text(item)
+    product_text = _combined_product_text(product)
+    if not _is_screen_or_touch_part(item_text) or not _is_screen_or_touch_part(product_text):
+        return None
+    if _explicit_model_conflict_reason(item, product):
+        return None
+    if _display_text_model_conflict(item, product):
+        return None
+    if _display_model_code_conflict(item, product):
+        return None
+    if not _has_safe_display_exact_model_evidence(item, product):
+        return None
+    if _competitor_display_matrix_tags(item) or _product_display_matrix_tags(product):
+        return None
+    competitor_quality = _competitor_display_quality(item)
+    product_quality = _product_display_quality(product)
+    if competitor_quality is not None or product_quality not in COPY_DISPLAY_QUALITIES:
+        return None
+    competitor_construction = _competitor_display_construction(item)
+    product_construction = _product_display_construction(product)
+    if (
+        not competitor_construction
+        or not product_construction
+        or competitor_construction != product_construction
+        or competitor_construction not in LCD_PIXEL_CONSTRUCTIONS
+    ):
+        return None
+    if display_frame_conflict(product, _competitor_display_has_frame(item)):
+        return None
+    if _display_touch_conflict(product, _competitor_display_has_touch(item)):
+        return None
+    if _display_backlight_conflict(product, _competitor_display_backlight(item)):
+        return None
+    if _display_matrix_family_conflict(
+        product,
+        _competitor_display_type(item),
+        competitor_construction,
+    ):
+        return None
+    if _display_refresh_rate_conflict(product, _competitor_display_refresh_rate_hz(item)):
+        return None
+    if _display_color_conflict(product, _competitor_display_color(item)):
+        return None
+    return "display_copy_construction_exact_model"
+
+
+def _safe_display_matrix_tag_auto_accept(
+    item: CompetitorItem,
+    product: Product,
+    *,
+    item_type: str | None,
+    score: float,
+    min_score: float,
+) -> str | None:
+    if score < min_score:
+        return None
+    if item_type != "display":
+        return None
+    if _explicit_display_subject_conflict_reason(item, product, item_type=item_type):
+        return None
+    if not _basic_or_display_exact_model_guardrails_allowed(
+        item,
+        product,
+        item_type=item_type,
+    ):
+        return None
+    if _explicit_model_conflict_reason(item, product):
+        return None
+    if _display_text_model_conflict(item, product):
+        return None
+    if _display_model_code_conflict(item, product):
+        return None
+    if not _has_safe_display_exact_model_evidence(item, product):
+        return None
+    competitor_tags = _competitor_display_matrix_tags(item)
+    product_tags = _product_display_matrix_tags(product)
+    overlap_tags = competitor_tags.intersection(product_tags)
+    if not overlap_tags:
+        return None
+    competitor_quality = _competitor_display_quality(item)
+    if _explicit_display_attribute_conflict_reason(item, product, competitor_quality):
+        return None
+    if _display_quality_conflict(product, competitor_quality):
+        return None
+    if display_frame_conflict(product, _competitor_display_has_frame(item)):
+        return None
+    if _display_touch_conflict(product, _competitor_display_has_touch(item)):
+        return None
+    if _display_backlight_conflict(product, _competitor_display_backlight(item)):
+        return None
+    competitor_construction = _competitor_display_construction(item)
+    if _display_construction_conflict(product, competitor_construction):
+        return None
+    if _display_matrix_family_conflict(
+        product,
+        _competitor_display_type(item),
+        competitor_construction,
+    ):
+        return None
+    if _display_refresh_rate_conflict(product, _competitor_display_refresh_rate_hz(item)):
+        return None
+    if _display_color_conflict(product, _competitor_display_color(item)):
+        return None
+    return "display_same_matrix_tag_exact_model"
+
+
+def _safe_display_copy_matrix_type_auto_accept(
+    item: CompetitorItem,
+    product: Product,
+    *,
+    item_type: str | None,
+    score: float,
+    min_score: float,
+) -> str | None:
+    if score < min_score:
+        return None
+    if item_type != "display":
+        return None
+    if _explicit_display_subject_conflict_reason(item, product, item_type=item_type):
+        return None
+    if not _basic_or_display_exact_model_guardrails_allowed(
+        item,
+        product,
+        item_type=item_type,
+    ):
+        return None
+    item_text = _combined_item_text(item)
+    product_text = _combined_product_text(product)
+    if not _is_screen_or_touch_part(item_text) or not _is_screen_or_touch_part(product_text):
+        return None
+    if _explicit_model_conflict_reason(item, product):
+        return None
+    if _display_text_model_conflict(item, product):
+        return None
+    if _display_model_code_conflict(item, product):
+        return None
+    if not _has_safe_display_exact_model_evidence(item, product):
+        return None
+    if _display_text_has_original_signal(item_text):
+        return None
+    if _display_text_has_size_modifier(item_text) or _display_text_has_size_modifier(product_text):
+        return None
+    if _competitor_display_matrix_tags(item) or _product_display_matrix_tags(product):
+        return None
+    competitor_quality = _competitor_display_quality(item)
+    product_quality = _product_display_quality(product)
+    if competitor_quality is not None or product_quality not in COPY_DISPLAY_QUALITIES:
+        return None
+    if _explicit_display_attribute_conflict_reason(item, product, competitor_quality):
+        return None
+    if _display_quality_conflict(product, competitor_quality):
+        return None
+    competitor_type = _competitor_display_type(item)
+    product_type = _product_display_type(product)
+    if (
+        not competitor_type
+        or not product_type
+        or competitor_type != product_type
+        or competitor_type not in OLED_DISPLAY_TYPES
+    ):
+        return None
+    competitor_construction = _competitor_display_construction(item)
+    if competitor_construction:
+        return None
+    if display_frame_conflict(product, _competitor_display_has_frame(item)):
+        return None
+    if _display_touch_conflict(product, _competitor_display_has_touch(item)):
+        return None
+    if _display_backlight_conflict(product, _competitor_display_backlight(item)):
+        return None
+    if _display_matrix_family_conflict(product, competitor_type, competitor_construction):
+        return None
+    if _display_refresh_rate_conflict(product, _competitor_display_refresh_rate_hz(item)):
+        return None
+    if _display_color_conflict(product, _competitor_display_color(item)):
+        return None
+    return "display_copy_matrix_type_exact_model"
+
+
+def _is_screen_or_touch_part(text: str | None) -> bool:
+    normalized = (text or "").lower().replace("ё", "е")
+    if not normalized:
+        return False
+    component_only_tokens = (
+        "защитное стекло",
+        "стекло камеры",
+        "стекло задней камеры",
+        "стекло для переклейки",
+        "стекло модуля",
+        "oca",
+        "осa",
+        "пленка",
+        "плёнка",
+        "film",
+        "camera glass",
+        "screen protector",
+    )
+    if any(token in normalized for token in component_only_tokens):
+        return False
+    screen_tokens = (
+        "дисплей",
+        "экран",
+        "тачскрин",
+        "сенсорное стекло",
+        "lcd",
+        "oled",
+        "amoled",
+        "touchscreen",
+        "digitizer",
+    )
+    return any(token in normalized for token in screen_tokens)
+
+
+def _safe_explicit_code_overlap_auto_accept(
+    item: CompetitorItem,
+    product: Product,
+    *,
+    item_type: str | None,
+    score: float,
+    min_score: float,
+) -> bool:
+    if score < min_score:
+        return False
+    if item_type not in {"display", "other"}:
+        return False
+    item_text = _combined_item_text(item)
+    product_text = _combined_product_text(product)
+    if not _is_screen_or_touch_part(item_text) or not _is_screen_or_touch_part(product_text):
+        return False
+    if _explicit_model_conflict_reason(item, product):
+        return False
+    details = _display_model_code_overlap_details(item, product)
+    return bool(details["overlap_codes"])
+
+
+def _code_overlap_compatibility_brand(item: CompetitorItem, product: Product) -> str:
+    brand = (
+        _normalize_brand(item.parsed_device_brand)
+        or _extract_brand_from_text(_combined_item_text(item))
+        or _normalize_brand(product.brand)
+        or _extract_brand_from_text(_combined_product_text(product))
+    )
+    return brand or "unknown"
+
+
+def _ensure_code_overlap_compatibilities(
+    session: Session,
+    item: CompetitorItem,
+    product: Product,
+    details: dict[str, list[str]],
+) -> int:
+    overlap_codes = details.get("overlap_codes") or []
+    if not overlap_codes:
+        return 0
+    brand = _code_overlap_compatibility_brand(item, product)
+    created = 0
+    for code in overlap_codes:
+        normalized_code = code.strip().lower()
+        if not normalized_code:
+            continue
+        exists_query = select(CompetitorItemCompatibility.id).where(
+            CompetitorItemCompatibility.competitor_item_id == item.id,
+            func.lower(CompetitorItemCompatibility.device_brand) == brand.lower(),
+            func.lower(CompetitorItemCompatibility.device_model) == normalized_code,
+            CompetitorItemCompatibility.device_variant.is_(None),
+        )
+        if session.scalar(exists_query):
+            continue
+        session.add(
+            CompetitorItemCompatibility(
+                competitor_item_id=item.id,
+                device_brand=brand,
+                device_model=normalized_code,
+                device_variant=None,
+                source="auto_code_overlap",
+                notes=f"auto-accepted by shared device code for product {product.article or product.id}",
+            )
+        )
+        created += 1
+    return created
+
+
+def _ensure_model_text_compatibility(
+    session: Session,
+    item: CompetitorItem,
+    product: Product,
+    model_label: str,
+) -> int:
+    parts = model_label.split(maxsplit=1)
+    brand = parts[0] if parts else _code_overlap_compatibility_brand(item, product)
+    model = parts[1] if len(parts) > 1 else model_label
+    exists_query = select(CompetitorItemCompatibility.id).where(
+        CompetitorItemCompatibility.competitor_item_id == item.id,
+        func.lower(CompetitorItemCompatibility.device_brand) == brand.lower(),
+        func.lower(CompetitorItemCompatibility.device_model) == model.lower(),
+        CompetitorItemCompatibility.device_variant.is_(None),
+    )
+    if session.scalar(exists_query):
+        return 0
+    session.add(
+        CompetitorItemCompatibility(
+            competitor_item_id=item.id,
+            device_brand=brand,
+            device_model=model,
+            device_variant=None,
+            source="auto_model_text",
+            notes=f"auto-accepted by explicit model text for product {product.article or product.id}",
+        )
+    )
+    return 1
+
+
+def _ensure_display_model_key_compatibilities(
+    session: Session,
+    item: CompetitorItem,
+    product: Product,
+    details: dict[str, list[str]],
+) -> int:
+    overlap_model_keys = details.get("overlap_model_keys") or []
+    if not overlap_model_keys:
+        return 0
+    brand = _code_overlap_compatibility_brand(item, product)
+    created = 0
+    for model_key in overlap_model_keys:
+        normalized_model = model_key.strip().lower()
+        if not normalized_model:
+            continue
+        exists_query = select(CompetitorItemCompatibility.id).where(
+            CompetitorItemCompatibility.competitor_item_id == item.id,
+            func.lower(CompetitorItemCompatibility.device_brand) == brand.lower(),
+            func.lower(CompetitorItemCompatibility.device_model) == normalized_model,
+            CompetitorItemCompatibility.device_variant.is_(None),
+        )
+        if session.scalar(exists_query):
+            continue
+        session.add(
+            CompetitorItemCompatibility(
+                competitor_item_id=item.id,
+                device_brand=brand,
+                device_model=normalized_model,
+                device_variant=None,
+                source="auto_model_key",
+                notes=f"auto-accepted by shared model key for product {product.article or product.id}",
+            )
+        )
+        created += 1
+    return created
+
+
+def _auto_reject_explicit_model_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product:
+            continue
+        reason = _explicit_model_conflict_reason(item, product)
+        if not reason:
+            continue
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_explicit_model_conflict"] = {
+            "reason": reason,
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_reject_display_subject_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product:
+            continue
+        item_type = _effective_item_type(item)
+        reason = _explicit_display_subject_conflict_reason(
+            item,
+            product,
+            item_type=item_type,
+        )
+        if not reason:
+            continue
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_display_subject_conflict"] = {
+            "reason": reason,
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_reject_display_frame_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product or _effective_item_type(item) != "display":
+            continue
+        competitor_has_frame = _competitor_display_has_frame(item)
+        if not display_frame_conflict(product, competitor_has_frame):
+            continue
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_display_frame_conflict"] = {
+            "reason": "display_frame_conflict",
+            "competitor_has_frame": competitor_has_frame,
+            "product_display_has_frame": product.display_has_frame,
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_reject_display_color_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product or _effective_item_type(item) != "display":
+            continue
+        competitor_color = _competitor_display_color(item)
+        if not _display_color_conflict(product, competitor_color):
+            continue
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_display_color_conflict"] = {
+            "reason": "display_color_conflict",
+            "competitor_color": competitor_color,
+            "product_color": _product_display_color(product),
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_reject_part_color_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product:
+            continue
+        item_type = _effective_item_type(item)
+        if item_type not in COLOR_SENSITIVE_ITEM_TYPES:
+            continue
+        competitor_colors = _competitor_part_colors(item)
+        if not _part_color_conflict(product, competitor_colors):
+            continue
+        product_colors = _product_part_colors(product)
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_part_color_conflict"] = {
+            "reason": "part_color_conflict",
+            "item_type": item_type,
+            "competitor_colors": sorted(competitor_colors),
+            "product_colors": sorted(product_colors),
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_reject_part_quality_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product:
+            continue
+        item_type = _effective_item_type(item)
+        if item_type not in COLOR_SENSITIVE_ITEM_TYPES:
+            continue
+        competitor_quality = _competitor_part_quality_tier(item)
+        if not _part_quality_conflict(product, competitor_quality):
+            continue
+        product_quality = _product_part_quality_tier(product)
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_part_quality_conflict"] = {
+            "reason": "part_quality_conflict",
+            "item_type": item_type,
+            "competitor_quality": competitor_quality,
+            "product_quality": product_quality,
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_reject_part_assembly_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product or _effective_item_type(item) != "housing":
+            continue
+        reason = _part_assembly_conflict_reason(item, product)
+        if not reason:
+            continue
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_part_assembly_conflict"] = {
+            "reason": reason,
+            "item_type": "housing",
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_reject_housing_part_kind_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product or _effective_item_type(item) != "housing":
+            continue
+        competitor_kind = _competitor_housing_part_kind(item)
+        if not _housing_part_kind_conflict(product, competitor_kind):
+            continue
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_housing_part_kind_conflict"] = {
+            "reason": "housing_part_kind_conflict",
+            "competitor_kind": competitor_kind,
+            "product_kind": _product_housing_part_kind(product),
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_reject_housing_device_code_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product or _effective_item_type(item) != "housing":
+            continue
+        if not _housing_device_code_conflict(item, product):
+            continue
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_housing_device_code_conflict"] = {
+            "reason": "housing_device_code_conflict",
+            "competitor_codes": sorted(_extract_device_codes(_competitor_device_code_text(item))),
+            "product_codes": sorted(_extract_device_codes(product.name)),
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_reject_camera_position_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product or _effective_item_type(item) != "camera":
+            continue
+        competitor_position = _competitor_camera_position(item)
+        if not _camera_position_conflict(product, competitor_position):
+            continue
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_camera_position_conflict"] = {
+            "reason": "camera_position_conflict",
+            "competitor_position": competitor_position,
+            "product_position": _product_camera_position(product),
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_reject_flex_role_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product or _effective_item_type(item) != "flex":
+            continue
+        competitor_role = _competitor_flex_role(item)
+        if not _flex_role_conflict(product, competitor_role):
+            continue
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_flex_role_conflict"] = {
+            "reason": "flex_role_conflict",
+            "competitor_role": competitor_role,
+            "product_role": _product_flex_role(product),
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_reject_battery_part_code_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product or _effective_item_type(item) != "battery":
+            continue
+        competitor_codes = _competitor_battery_part_codes(item)
+        if not _battery_part_code_conflict(product, competitor_codes):
+            continue
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_battery_part_code_conflict"] = {
+            "reason": "battery_part_code_conflict",
+            "competitor_codes": sorted(competitor_codes),
+            "product_codes": sorted(_product_battery_part_codes(product)),
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_reject_display_long_model_code_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product or _effective_item_type(item) != "display":
+            continue
+        competitor_codes = _long_device_codes(
+            _extract_device_codes(_competitor_device_code_text(item))
+        )
+        product_codes = _long_device_codes(_extract_device_codes(product.name))
+        if (
+            not competitor_codes
+            or not product_codes
+            or not competitor_codes.isdisjoint(product_codes)
+        ):
+            continue
+        if not _display_model_code_blocks(item, product):
+            continue
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_display_long_model_code_conflict"] = {
+            "reason": "display_long_model_code_conflict",
+            "competitor_codes": sorted(competitor_codes),
+            "product_codes": sorted(product_codes),
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_reject_display_text_model_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product or _effective_item_type(item) != "display":
+            continue
+        if not _display_text_model_conflict(item, product):
+            continue
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_display_text_model_conflict"] = {
+            "reason": "display_text_model_conflict",
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_reject_display_module_component_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product:
+            continue
+        guardrail = basic_candidate_guardrails(item, product)
+        if guardrail.allowed or guardrail.reason != "display_module_component_conflict":
+            continue
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_display_module_component_conflict"] = {
+            "reason": guardrail.reason,
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_reject_laptop_matrix_flex_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product:
+            continue
+        item_text = _combined_item_text(item)
+        product_text = _combined_product_text(product)
+        if not _is_laptop_matrix_flex(item_text) or _is_laptop_matrix_flex(product_text):
+            continue
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_laptop_matrix_flex_conflict"] = {
+            "reason": "laptop_matrix_flex_vs_other_product",
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_reject_display_matrix_tag_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product or _effective_item_type(item) != "display":
+            continue
+        competitor_tags = _competitor_display_matrix_vendor_tags(item)
+        product_tags = _product_display_matrix_vendor_tags(product)
+        if not competitor_tags or not product_tags or not competitor_tags.isdisjoint(product_tags):
+            continue
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_display_matrix_tag_conflict"] = {
+            "reason": "display_matrix_tag_conflict",
+            "competitor_matrix_tags": sorted(competitor_tags),
+            "product_matrix_tags": sorted(product_tags),
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_reject_non_display_model_code_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product:
+            continue
+        item_type = _effective_item_type(item)
+        if item_type == "display":
+            continue
+        competitor_codes = _extract_accessory_model_codes(_combined_item_text(item))
+        product_codes = _extract_accessory_model_codes(_combined_product_text(product))
+        if not competitor_codes or not product_codes:
+            continue
+        if not competitor_codes.isdisjoint(product_codes):
+            continue
+        competitor_keys = _extract_device_model_keys(_combined_item_text(item))
+        product_keys = _extract_device_model_keys(_combined_product_text(product))
+        if _device_model_keys_overlap(competitor_keys, product_keys):
+            continue
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_non_display_model_code_conflict"] = {
+            "reason": "non_display_model_code_conflict",
+            "competitor_codes": sorted(competitor_codes),
+            "product_codes": sorted(product_codes),
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_reject_guardrail_device_group_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product:
+            continue
+        guardrail = basic_candidate_guardrails(item, product)
+        if guardrail.allowed or guardrail.reason != "device_group_conflict":
+            continue
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_guardrail_conflict"] = {
+            "reason": guardrail.reason,
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_reject_display_attribute_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product:
+            continue
+        reason = _explicit_display_attribute_conflict_reason(item, product)
+        if not reason:
+            continue
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_display_attribute_conflict"] = {
+            "reason": reason,
+            "competitor_quality": _competitor_display_quality(item),
+            "competitor_construction": _competitor_display_construction(item),
+            "product_quality": _product_display_quality(product),
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
+def _auto_accept_explicit_model_text_matches(session: Session, *, min_score: float) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+                CompetitorItemMatch.final_score >= min_score,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    accepted = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product:
+            continue
+        item_type = _effective_item_type(item)
+        model_label = _safe_xiaomi_regional_model_auto_accept(
+            item,
+            product,
+            item_type=item_type,
+            score=float(match.final_score or 0),
+            min_score=min_score,
+        )
+        if not model_label:
+            continue
+        _ensure_model_text_compatibility(session, item, product, model_label)
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_accept_explicit_model_text"] = {
+            "reason": "same_xiaomi_model_with_regional_codes",
+            "model": model_label,
+            "min_score": min_score,
+            "accepted_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.ACCEPTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        accepted += 1
+    return accepted
+
+
+def _auto_accept_display_original_quality_matches(session: Session, *, min_score: float) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+                CompetitorItemMatch.final_score >= min_score,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    accepted = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product:
+            continue
+        item_type = _effective_item_type(item)
+        reason = _safe_display_original_quality_auto_accept(
+            item,
+            product,
+            item_type=item_type,
+            score=float(match.final_score or 0),
+            min_score=min_score,
+        )
+        if not reason:
+            continue
+        details = _display_exact_model_evidence_details(item, product)
+        _ensure_code_overlap_compatibilities(session, item, product, details)
+        _ensure_display_model_key_compatibilities(session, item, product, details)
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_accept_display_original_quality"] = {
+            "reason": reason,
+            "competitor_quality": _competitor_display_quality(item),
+            "product_quality": _product_display_quality(product),
+            "min_score": min_score,
+            "accepted_at": now.isoformat(),
+            **details,
+        }
+        match.status = CompetitorItemMatchStatus.ACCEPTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        accepted += 1
+    return accepted
+
+
+def _auto_accept_display_construction_matches(session: Session, *, min_score: float) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+                CompetitorItemMatch.final_score >= min_score,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    accepted = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product:
+            continue
+        item_type = _effective_item_type(item)
+        reason = _safe_display_copy_construction_auto_accept(
+            item,
+            product,
+            item_type=item_type,
+            score=float(match.final_score or 0),
+            min_score=min_score,
+        )
+        if not reason:
+            continue
+        details = _display_exact_model_evidence_details(item, product)
+        _ensure_code_overlap_compatibilities(session, item, product, details)
+        _ensure_display_model_key_compatibilities(session, item, product, details)
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_accept_display_construction"] = {
+            "reason": reason,
+            "competitor_construction": _competitor_display_construction(item),
+            "product_construction": _product_display_construction(product),
+            "product_quality": _product_display_quality(product),
+            "min_score": min_score,
+            "accepted_at": now.isoformat(),
+            **details,
+        }
+        match.status = CompetitorItemMatchStatus.ACCEPTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        accepted += 1
+    return accepted
+
+
+def _auto_accept_display_matrix_tag_matches(session: Session, *, min_score: float) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+                CompetitorItemMatch.final_score >= min_score,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    accepted = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product:
+            continue
+        item_type = _effective_item_type(item)
+        reason = _safe_display_matrix_tag_auto_accept(
+            item,
+            product,
+            item_type=item_type,
+            score=float(match.final_score or 0),
+            min_score=min_score,
+        )
+        if not reason:
+            continue
+        details = _display_exact_model_evidence_details(item, product)
+        _ensure_code_overlap_compatibilities(session, item, product, details)
+        _ensure_display_model_key_compatibilities(session, item, product, details)
+        competitor_tags = sorted(_competitor_display_matrix_tags(item))
+        product_tags = sorted(_product_display_matrix_tags(product))
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_accept_display_matrix_tag"] = {
+            "reason": reason,
+            "competitor_matrix_tags": competitor_tags,
+            "product_matrix_tags": product_tags,
+            "overlap_matrix_tags": sorted(set(competitor_tags).intersection(product_tags)),
+            "min_score": min_score,
+            "accepted_at": now.isoformat(),
+            **details,
+        }
+        match.status = CompetitorItemMatchStatus.ACCEPTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        accepted += 1
+    return accepted
+
+
+def _auto_accept_display_matrix_type_matches(session: Session, *, min_score: float) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+                CompetitorItemMatch.final_score >= min_score,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    accepted = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product:
+            continue
+        item_type = _effective_item_type(item)
+        reason = _safe_display_copy_matrix_type_auto_accept(
+            item,
+            product,
+            item_type=item_type,
+            score=float(match.final_score or 0),
+            min_score=min_score,
+        )
+        if not reason:
+            continue
+        details = _display_exact_model_evidence_details(item, product)
+        _ensure_code_overlap_compatibilities(session, item, product, details)
+        _ensure_display_model_key_compatibilities(session, item, product, details)
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_accept_display_matrix_type"] = {
+            "reason": reason,
+            "competitor_display_type": _competitor_display_type(item),
+            "product_display_type": _product_display_type(product),
+            "product_quality": _product_display_quality(product),
+            "min_score": min_score,
+            "accepted_at": now.isoformat(),
+            **details,
+        }
+        match.status = CompetitorItemMatchStatus.ACCEPTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        accepted += 1
+    return accepted
+
+
+def _auto_accept_explicit_code_overlap_matches(session: Session, *, min_score: float) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+                CompetitorItemMatch.final_score >= min_score,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    accepted = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product:
+            continue
+        item_type = _effective_item_type(item)
+        if not _safe_explicit_code_overlap_auto_accept(
+            item,
+            product,
+            item_type=item_type,
+            score=float(match.final_score or 0),
+            min_score=min_score,
+        ):
+            continue
+        details = _display_model_code_overlap_details(item, product)
+        _ensure_code_overlap_compatibilities(session, item, product, details)
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_accept_explicit_model_code_overlap"] = {
+            "reason": "screen_or_touch_part_with_shared_device_code",
+            "min_score": min_score,
+            "accepted_at": now.isoformat(),
+            **details,
+        }
+        match.status = CompetitorItemMatchStatus.ACCEPTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        accepted += 1
+    return accepted
+
+
+def _backfill_explicit_code_overlap_compatibilities(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status == CompetitorItemMatchStatus.ACCEPTED,
+                CompetitorItemMatch.rationale_json[
+                    "auto_accept_explicit_model_code_overlap"
+                ].is_not(None),
+            )
+        )
+        .scalars()
+        .all()
+    )
+    created = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product:
+            continue
+        details = _display_model_code_overlap_details(item, product)
+        created += _ensure_code_overlap_compatibilities(session, item, product, details)
+    return created
+
+
 def _display_model_text_overlap(item: CompetitorItem, product: Product) -> bool:
     competitor_keys = _extract_device_model_keys(_competitor_device_model_text(item))
     product_keys = _extract_device_model_keys(product.name)
@@ -1203,6 +3852,7 @@ def _normalize_model_text(text: str | None) -> str:
     if not text:
         return ""
     normalized = text.lower().replace("ё", "е")
+    normalized = re.sub(r"(?<=\w)\+(?=\s|$)", " plus", normalized)
     normalized = re.sub(r"\bteco\b", "tecno", normalized)
     normalized = re.sub(r"(?<=\d)а\b", "a", normalized)
     normalized = re.sub(r"(?<=\d)к\b", "k", normalized)
@@ -1559,13 +4209,15 @@ def _extract_device_model_keys(text: str | None) -> set[str]:
 
     for line in ("spark", "pova", "camon", "pop"):
         for match in re.finditer(
-            rf"\btecno\s+{line}\s+(\d{{1,2}}[a-z]?)(?:\s+(lite|pro|max|plus|premier))?(?:\s+(4g|5g))?\b",
+            rf"\btecno\s+{line}\s+(\d{{1,2}}[a-z]?)"
+            rf"(?:\s+(lite|pro(?:\s+plus)?|max|plus|premier|neo))?"
+            rf"(?:\s+(4g|5g))?\b",
             normalized,
         ):
             model, variant, network = match.groups()
             base = f"tecno_{line}_{model}"
             if variant:
-                base = f"{base}_{variant}"
+                base = f"{base}_{variant.replace(' ', '_')}"
             _add_key_with_optional_network(keys, base, network)
 
     for match in re.finditer(
@@ -1655,6 +4307,17 @@ def _extract_device_model_keys(text: str | None) -> set[str]:
             base = f"{base}_{variant}"
         _add_key_with_optional_network(keys, base, network)
 
+    for match in re.finditer(
+        r"\b(?:zte\s+)?(?:nubia\s+)?red\s+magic\s+(\d{1,2}s?)"
+        r"(?:\s+(lite|pro|max|plus|ultra))?(?:\s+(4g|5g))?\b",
+        normalized,
+    ):
+        model, variant, network = match.groups()
+        base = f"zte_nubia_red_magic_{model}"
+        if variant:
+            base = f"{base}_{variant}"
+        _add_key_with_optional_network(keys, base, network)
+
     for match in re.finditer(r"\balcatel\s+ot\s+(\d{3,5}[a-z]?)\b", normalized):
         keys.add(f"alcatel_ot_{match.group(1)}")
 
@@ -1689,13 +4352,13 @@ def _extract_device_model_keys(text: str | None) -> set[str]:
         keys.add(base)
 
     for match in re.finditer(
-        r"\bgoogle\s+pixel\s+(\d{1,2}[a-z]?)(?:\s+(lite|pro|max|plus|xl|fold))?\b",
+        r"\bgoogle\s+pixel\s+(\d{1,2}[a-z]?)(?:\s+(pro\s+xl|lite|pro|max|plus|xl|fold))?\b",
         normalized,
     ):
         model, variant = match.groups()
         base = f"google_pixel_{model}"
         if variant:
-            base = f"{base}_{variant}"
+            base = f"{base}_{variant.replace(' ', '_')}"
         keys.add(base)
 
     for match in re.finditer(
@@ -1929,17 +4592,28 @@ def _extract_device_model_keys(text: str | None) -> set[str]:
         keys.add(base)
 
     for match in re.finditer(
-        r"\boneplus\s+([a-z]?\d{1,2}[a-z]?|x)(?:\s+(lite|pro|max|plus|t))?\b",
+        r"\boneplus\s+(?!(?:nord|ace)\b)([a-z]?\d{1,2}[a-z]?|x)([rt])?(?:\s+(lite|pro|max|plus|ultra))?\b",
         normalized,
     ):
-        model, variant = match.groups()
-        base = f"oneplus_{model}"
+        model, suffix, variant = match.groups()
+        base = f"oneplus_{model}{suffix or ''}"
         if variant:
             base = f"{base}_{variant}"
         keys.add(base)
 
     for match in re.finditer(
-        r"\bmotorola\s+(?:moto\s+)?([cw]\d{1,3}|x\s+play)(?:\s+(lite|pro|max|plus))?\b",
+        r"\boneplus\s+nord\s+(?:ce\s*)?(\d{1,2})([rt])?(?:\s+(lite|pro|max|plus|ultra))?\b",
+        normalized,
+    ):
+        model, suffix, variant = match.groups()
+        prefix = "oneplus_nord_ce" if "nord ce" in match.group(0) else "oneplus_nord"
+        base = f"{prefix}_{model}{suffix or ''}"
+        if variant:
+            base = f"{base}_{variant}"
+        keys.add(base)
+
+    for match in re.finditer(
+        r"\bmotorola\s+(?:moto\s+)?([cegw]\d{1,3}|x\s+play)(?:\s+(lite|pro|max|plus))?\b",
         normalized,
     ):
         model, variant = match.groups()
@@ -2250,6 +4924,14 @@ def _arbiter_prompt(item: CompetitorItem, candidates: list[Product]) -> str:
     return "\n".join(lines)
 
 
+def _json_has_product_id(content: str) -> bool:
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(parsed, dict) and "product_id" in parsed
+
+
 def match_items(
     session: Session,
     *,
@@ -2272,8 +4954,11 @@ def match_items(
     sources: list[str] | None = None,
     first_seen_after: date | None = None,
     last_seen_after: date | None = None,
+    competitor_item_ids: list[int] | None = None,
     auto_accept_unique: bool = False,
+    auto_accept_code_overlap: bool = True,
     auto_accept_min_score: float = 0.80,
+    live_embed_missing: bool = True,
 ) -> dict[str, int]:
     product_matrix, product_index = _load_embeddings("our_catalog", embeddings_dir)
     if not product_index.get("meta", {}).get("normalized", False):
@@ -2332,6 +5017,8 @@ def match_items(
         )
 
     query = select(CompetitorItem)
+    if competitor_item_ids:
+        query = query.where(CompetitorItem.id.in_(competitor_item_ids))
     if sources:
         query = query.where(CompetitorItem.competitor.in_(sources))
     if first_seen_after:
@@ -2378,15 +5065,14 @@ def match_items(
                 )
             )
 
-    llm_client = None
-    base_url = os.environ.get("LOCAL_LLM_BASE_URL")
-    model = os.environ.get("LOCAL_LLM_CHAT_MODEL")
+    llm_client: FallbackChatClient | None = None
     if use_llm_arbiter:
-        if not base_url or not model:
-            raise RuntimeError(
-                "LOCAL_LLM_BASE_URL и LOCAL_LLM_CHAT_MODEL должны быть заданы для LLM арбитра"
-            )
-        llm_client = httpx.Client(timeout=30.0)
+        llm_client = FallbackChatClient.from_env(timeout=30.0)
+        if not llm_client.has_providers:
+            logging.warning("LLM arbiter requested but no local/OpenAI providers are configured")
+            llm_client = None
+        else:
+            logging.info("LLM arbiter fallback enabled: providers=%s", llm_client.provider_names)
 
     stats = {
         "processed": 0,
@@ -2436,6 +5122,9 @@ def match_items(
             item_vec = None
 
         if item_vec is None:
+            if not live_embed_missing:
+                stats["skipped_no_embedding"] += 1
+                continue
             client = EmbeddingClient(model=product_index.get("meta", {}).get("model"))
             embeddings = client.embed_texts([text])
             if not embeddings:
@@ -2473,6 +5162,22 @@ def match_items(
         competitor_display_color = (
             _competitor_display_color(item) if item_type == "display" else None
         )
+        competitor_part_colors = (
+            _competitor_part_colors(item) if item_type in COLOR_SENSITIVE_ITEM_TYPES else set()
+        )
+        competitor_part_quality = (
+            _competitor_part_quality_tier(item) if item_type in COLOR_SENSITIVE_ITEM_TYPES else None
+        )
+        competitor_housing_part_kind = (
+            _competitor_housing_part_kind(item) if item_type == "housing" else None
+        )
+        competitor_camera_position = (
+            _competitor_camera_position(item) if item_type == "camera" else None
+        )
+        competitor_flex_role = _competitor_flex_role(item) if item_type == "flex" else None
+        competitor_battery_part_codes = (
+            _competitor_battery_part_codes(item) if item_type == "battery" else set()
+        )
         competitor_display_type = _competitor_display_type(item) if item_type == "display" else None
         competitor_display_quality = (
             _competitor_display_quality(item) if item_type == "display" else None
@@ -2501,7 +5206,11 @@ def match_items(
                 prod = products.get(pid)
                 if not prod:
                     continue
-                if not basic_candidate_guardrails(item, prod).allowed:
+                if not _basic_or_display_exact_model_guardrails_allowed(
+                    item,
+                    prod,
+                    item_type=item_type,
+                ):
                     continue
                 prod_type = product_item_type.get(pid)
                 if item_type and prod_type and item_type != prod_type:
@@ -2518,7 +5227,11 @@ def match_items(
             prod = products.get(pid)
             if not prod:
                 continue
-            if not basic_candidate_guardrails(item, prod).allowed:
+            if not _basic_or_display_exact_model_guardrails_allowed(
+                item,
+                prod,
+                item_type=item_type,
+            ):
                 continue
             prod_type = product_item_type.get(pid)
             if item_type and prod_type and item_type != prod_type:
@@ -2552,6 +5265,18 @@ def match_items(
             ):
                 continue
             if item_type == "display" and _display_text_model_conflict(item, prod):
+                continue
+            if item_type == "display" and _explicit_display_subject_conflict_reason(
+                item,
+                prod,
+                item_type=item_type,
+            ):
+                continue
+            if item_type == "display" and _explicit_display_attribute_conflict_reason(
+                item,
+                prod,
+                competitor_display_quality,
+            ):
                 continue
             if item_type == "display" and _display_quality_conflict(
                 prod, competitor_display_quality
@@ -2593,6 +5318,11 @@ def match_items(
                 item.attrs_json,
             ):
                 continue
+            if item_type == "battery" and _battery_part_code_conflict(
+                prod,
+                competitor_battery_part_codes,
+            ):
+                continue
             if item_type == "display" and _display_type_conflict(
                 item.normalized_title or item.name or "",
                 prod.name or "",
@@ -2608,6 +5338,32 @@ def match_items(
             ):
                 frame_review_product_ids.add(pid)
             if item_type == "display" and _display_color_conflict(prod, competitor_display_color):
+                continue
+            if item_type in COLOR_SENSITIVE_ITEM_TYPES and _part_color_conflict(
+                prod,
+                competitor_part_colors,
+            ):
+                continue
+            if item_type in COLOR_SENSITIVE_ITEM_TYPES and _part_quality_conflict(
+                prod,
+                competitor_part_quality,
+            ):
+                continue
+            if item_type == "housing" and _part_assembly_conflict_reason(item, prod):
+                continue
+            if item_type == "housing" and _housing_part_kind_conflict(
+                prod,
+                competitor_housing_part_kind,
+            ):
+                continue
+            if item_type == "housing" and _housing_device_code_conflict(item, prod):
+                continue
+            if item_type == "camera" and _camera_position_conflict(
+                prod,
+                competitor_camera_position,
+            ):
+                continue
+            if item_type == "flex" and _flex_role_conflict(prod, competitor_flex_role):
                 continue
             if item_type in {"connector", "cable"} and _port_type_conflict(
                 item.normalized_title or item.name or "",
@@ -2642,7 +5398,13 @@ def match_items(
         gap = best_score - second_score if second_score is not None else best_score
 
         status = CompetitorItemMatchStatus.SUGGESTED
+        code_overlap_auto_accept = False
+        battery_part_code_model_suggest = False
+        battery_verification_suggest = False
+        disposable_battery_suggest = False
         if best_score < min_embed_score:
+            status = CompetitorItemMatchStatus.NEEDS_REVIEW
+        elif not item_type:
             status = CompetitorItemMatchStatus.NEEDS_REVIEW
         elif gap < min_gap:
             status = CompetitorItemMatchStatus.AMBIGUOUS
@@ -2655,7 +5417,57 @@ def match_items(
         elif (_as_date(item.first_seen_at) or date.min) >= UNSAFE_AUTO_ACCEPT_CUTOFF and (
             item.attrs_json is None or item.id not in competitor_item_ids_with_compat
         ):
-            status = CompetitorItemMatchStatus.NEEDS_REVIEW
+            best_product = products.get(best_pid)
+            if (
+                auto_accept_code_overlap
+                and best_product
+                and _safe_explicit_code_overlap_auto_accept(
+                    item,
+                    best_product,
+                    item_type=item_type,
+                    score=best_score,
+                    min_score=auto_accept_min_score,
+                )
+            ):
+                status = CompetitorItemMatchStatus.ACCEPTED
+                code_overlap_auto_accept = True
+            elif (
+                item_type == "battery"
+                and best_product
+                and _safe_battery_part_code_model_suggest(
+                    item,
+                    best_product,
+                    filtered_count=len(filtered),
+                    score=best_score,
+                )
+            ):
+                status = CompetitorItemMatchStatus.SUGGESTED
+                battery_part_code_model_suggest = True
+            else:
+                status = CompetitorItemMatchStatus.NEEDS_REVIEW
+
+        if status == CompetitorItemMatchStatus.AMBIGUOUS and item_type == "battery":
+            best_product = products.get(best_pid)
+            if best_product and _safe_battery_verification_suggest(
+                item,
+                best_product,
+                score=best_score,
+            ):
+                status = CompetitorItemMatchStatus.SUGGESTED
+                battery_verification_suggest = True
+
+        if status in {
+            CompetitorItemMatchStatus.AMBIGUOUS,
+            CompetitorItemMatchStatus.NEEDS_REVIEW,
+        }:
+            best_product = products.get(best_pid)
+            if best_product and _safe_disposable_battery_suggest(
+                item,
+                best_product,
+                score=best_score,
+            ):
+                status = CompetitorItemMatchStatus.SUGGESTED
+                disposable_battery_suggest = True
 
         method = CompetitorItemMatchMethod.EMBEDDING_AUTO
         llm_confidence = None
@@ -2679,6 +5491,59 @@ def match_items(
             "gap": gap,
             "filtered_candidates": candidate_rows,
         }
+        if code_overlap_auto_accept:
+            best_product = products.get(best_pid)
+            rationale["auto_accept_explicit_model_code_overlap"] = {
+                "reason": "screen_or_touch_part_with_shared_device_code",
+                "min_score": auto_accept_min_score,
+                **(
+                    _display_model_code_overlap_details(item, best_product)
+                    if best_product
+                    else {
+                        "competitor_codes": [],
+                        "product_codes": [],
+                        "overlap_codes": [],
+                    }
+                ),
+            }
+        if battery_part_code_model_suggest:
+            best_product = products.get(best_pid)
+            rationale["battery_part_code_model_suggest"] = {
+                "reason": "unique_battery_candidate_with_part_code_and_model_overlap",
+                "competitor_codes": sorted(_competitor_battery_part_codes(item)),
+                "overlap_model_keys": sorted(
+                    _extract_device_model_keys(_competitor_device_model_text(item)).intersection(
+                        _extract_device_model_keys(best_product.name if best_product else None)
+                    )
+                ),
+            }
+        if battery_verification_suggest:
+            best_product = products.get(best_pid)
+            rationale["battery_verification_suggest"] = {
+                "reason": "battery_verification_signal_with_system_diagnosable_model_overlap",
+                "overlap_model_keys": sorted(
+                    _extract_device_model_keys(_competitor_device_model_text(item)).intersection(
+                        _extract_device_model_keys(best_product.name if best_product else None)
+                    )
+                ),
+            }
+        if disposable_battery_suggest:
+            best_product = products.get(best_pid)
+            item_text = " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
+            product_text = best_product.name if best_product else None
+            rationale["disposable_battery_suggest"] = {
+                "reason": "disposable_battery_brand_size_pack_count_match",
+                "brand": _disposable_battery_brand(item_text),
+                "size": _disposable_battery_size(item_text),
+                "pack_count": _disposable_battery_pack_count(item_text),
+                "product_brand": _disposable_battery_brand(product_text),
+                "product_size": _disposable_battery_size(product_text),
+                "product_pack_count": _disposable_battery_pack_count(product_text),
+            }
+        if not item_type:
+            rationale["item_type_review"] = {
+                "reason": "competitor_item_type_missing",
+            }
         if best_pid in frame_review_product_ids:
             best_product = products.get(best_pid)
             rationale["display_frame_review"] = {
@@ -2729,23 +5594,23 @@ def match_items(
                 products[pid] for pid, _ in filtered[:top_k_llm] if pid in products
             ]
             prompt = get_llm_match_arbiter_prompt()
-            payload = {
-                "model": model,
-                "messages": [
-                    {"role": "system", "content": prompt},
-                    {"role": "user", "content": _arbiter_prompt(item, candidates_for_llm)},
-                ],
-                "temperature": 0.0,
-                "max_tokens": 200,
-            }
             try:
-                resp = llm_client.post(f"{base_url}/v1/chat/completions", json=payload)
-                resp.raise_for_status()
-                content = resp.json()["choices"][0]["message"]["content"]
+                result = llm_client.chat_completion(
+                    messages=[
+                        {"role": "system", "content": prompt},
+                        {"role": "user", "content": _arbiter_prompt(item, candidates_for_llm)},
+                    ],
+                    temperature=0.0,
+                    max_tokens=200,
+                    response_validator=lambda content: _json_has_product_id(content),
+                )
+                content = result.content
                 parsed = json.loads(content)
                 selected_id = parsed.get("product_id")
                 llm_confidence = parsed.get("confidence")
                 rationale["llm"] = parsed
+                rationale["llm_provider"] = result.provider
+                rationale["llm_model"] = result.model
                 if selected_id in {pid for pid, _ in filtered}:
                     best_pid = selected_id
                     for pid, score in filtered:
@@ -2843,7 +5708,10 @@ def match_items(
             competitor_item_id=item.id,
             product_id=best_pid,
         )
+        best_product = products.get(best_pid)
         match.product_id = best_pid
+        if best_product is not None:
+            match.product = best_product
         match.status = status
         match.method = method
         match.score_embed_best = best_score
@@ -2857,11 +5725,103 @@ def match_items(
         match.topk_used = top_k
         match.updated_at = datetime.now(UTC)
         session.add(match)
+        if code_overlap_auto_accept:
+            best_product = products.get(best_pid)
+            if best_product:
+                _ensure_code_overlap_compatibilities(
+                    session,
+                    item,
+                    best_product,
+                    _display_model_code_overlap_details(item, best_product),
+                )
 
+    if auto_accept_code_overlap and not dry_run:
+        stats["auto_rejected_model_conflict"] = _auto_reject_explicit_model_conflicts(session)
+        stats["auto_rejected_display_subject_conflict"] = _auto_reject_display_subject_conflicts(
+            session
+        )
+        stats["auto_rejected_display_frame_conflict"] = _auto_reject_display_frame_conflicts(
+            session
+        )
+        stats["auto_rejected_display_color_conflict"] = _auto_reject_display_color_conflicts(
+            session
+        )
+        stats["auto_rejected_part_color_conflict"] = _auto_reject_part_color_conflicts(session)
+        stats["auto_rejected_part_quality_conflict"] = _auto_reject_part_quality_conflicts(session)
+        stats["auto_rejected_part_assembly_conflict"] = _auto_reject_part_assembly_conflicts(
+            session
+        )
+        stats["auto_rejected_housing_part_kind_conflict"] = (
+            _auto_reject_housing_part_kind_conflicts(session)
+        )
+        stats["auto_rejected_housing_device_code_conflict"] = (
+            _auto_reject_housing_device_code_conflicts(session)
+        )
+        stats["auto_rejected_camera_position_conflict"] = _auto_reject_camera_position_conflicts(
+            session
+        )
+        stats["auto_rejected_flex_role_conflict"] = _auto_reject_flex_role_conflicts(session)
+        stats["auto_rejected_battery_part_code_conflict"] = (
+            _auto_reject_battery_part_code_conflicts(session)
+        )
+        stats["auto_rejected_display_long_model_code_conflict"] = (
+            _auto_reject_display_long_model_code_conflicts(session)
+        )
+        stats["auto_rejected_display_text_model_conflict"] = (
+            _auto_reject_display_text_model_conflicts(session)
+        )
+        stats["auto_rejected_display_module_component_conflict"] = (
+            _auto_reject_display_module_component_conflicts(session)
+        )
+        stats["auto_rejected_laptop_matrix_flex_conflict"] = (
+            _auto_reject_laptop_matrix_flex_conflicts(session)
+        )
+        stats["auto_rejected_display_matrix_tag_conflict"] = (
+            _auto_reject_display_matrix_tag_conflicts(session)
+        )
+        stats["auto_rejected_non_display_model_code_conflict"] = (
+            _auto_reject_non_display_model_code_conflicts(session)
+        )
+        stats["auto_rejected_guardrail_device_group_conflict"] = (
+            _auto_reject_guardrail_device_group_conflicts(session)
+        )
+        stats["auto_rejected_display_attribute_conflict"] = (
+            _auto_reject_display_attribute_conflicts(session)
+        )
     if auto_accept_unique and not dry_run:
         stats["auto_accepted_unique"] = _auto_accept_unique_suggested_matches(
             session,
             min_score=auto_accept_min_score,
+        )
+    if auto_accept_code_overlap and not dry_run:
+        stats["auto_accepted_code_overlap"] = _auto_accept_explicit_code_overlap_matches(
+            session,
+            min_score=auto_accept_min_score,
+        )
+        stats["auto_accepted_model_text"] = _auto_accept_explicit_model_text_matches(
+            session,
+            min_score=auto_accept_min_score,
+        )
+        stats["auto_accepted_display_original_quality"] = (
+            _auto_accept_display_original_quality_matches(
+                session,
+                min_score=auto_accept_min_score,
+            )
+        )
+        stats["auto_accepted_display_construction"] = _auto_accept_display_construction_matches(
+            session,
+            min_score=auto_accept_min_score,
+        )
+        stats["auto_accepted_display_matrix_tag"] = _auto_accept_display_matrix_tag_matches(
+            session,
+            min_score=auto_accept_min_score,
+        )
+        stats["auto_accepted_display_matrix_type"] = _auto_accept_display_matrix_type_matches(
+            session,
+            min_score=auto_accept_min_score,
+        )
+        stats["auto_code_overlap_compatibilities_created"] = (
+            _backfill_explicit_code_overlap_compatibilities(session)
         )
 
     if not dry_run:
@@ -2948,6 +5908,13 @@ def main() -> None:
     parser.add_argument("--dry-run", action="store_true", help="Do not write to DB")
     parser.add_argument("--source", action="append", help="Filter by competitor source")
     parser.add_argument(
+        "--competitor-item-id",
+        type=int,
+        action="append",
+        dest="competitor_item_ids",
+        help="Process only specific competitor item id; can be passed multiple times",
+    )
+    parser.add_argument(
         "--first-seen-after",
         help="Process competitor items with first_seen_at date >= YYYY-MM-DD",
     )
@@ -2967,10 +5934,22 @@ def main() -> None:
         help="Auto-accept unique suggested item per product and competitor",
     )
     parser.add_argument(
+        "--auto-accept-code-overlap",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Auto-accept screen/touch matches with explicit overlapping device codes",
+    )
+    parser.add_argument(
         "--auto-accept-min-score",
         type=float,
         default=0.80,
-        help="Min score for unique suggested auto-accept",
+        help="Min score for safe auto-accept rules",
+    )
+    parser.add_argument(
+        "--live-embed-missing",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Compute missing competitor embeddings during matching",
     )
     args = parser.parse_args()
 
@@ -3014,8 +5993,11 @@ def main() -> None:
             sources=args.source,
             first_seen_after=first_seen_after,
             last_seen_after=last_seen_after,
+            competitor_item_ids=args.competitor_item_ids,
             auto_accept_unique=args.auto_accept_unique,
+            auto_accept_code_overlap=args.auto_accept_code_overlap,
             auto_accept_min_score=args.auto_accept_min_score,
+            live_embed_missing=args.live_embed_missing,
         )
     print(json.dumps(stats, ensure_ascii=False, indent=2))
     logging.info("match_competitor_items_embeddings done: %s", stats)

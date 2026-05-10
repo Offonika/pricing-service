@@ -16,15 +16,51 @@ from app.models.competitor_item_match import (
 )
 from app.models.device_model import PhoneModel
 from app.models.product_phone_model import ProductPhoneModel
-from app.services.matching_guardrails import basic_candidate_guardrails
+from app.services.matching_guardrails import basic_candidate_guardrails, device_group_conflict
 from tasks.match_competitor_items_embeddings import (
+    _auto_accept_display_construction_matches,
+    _auto_accept_display_matrix_tag_matches,
+    _auto_accept_display_matrix_type_matches,
+    _auto_accept_display_original_quality_matches,
+    _auto_accept_explicit_code_overlap_matches,
+    _auto_accept_explicit_model_text_matches,
+    _auto_reject_battery_part_code_conflicts,
+    _auto_reject_camera_position_conflicts,
+    _auto_reject_display_attribute_conflicts,
+    _auto_reject_display_color_conflicts,
+    _auto_reject_display_frame_conflicts,
+    _auto_reject_display_long_model_code_conflicts,
+    _auto_reject_display_matrix_tag_conflicts,
+    _auto_reject_display_module_component_conflicts,
+    _auto_reject_display_subject_conflicts,
+    _auto_reject_display_text_model_conflicts,
+    _auto_reject_explicit_model_conflicts,
+    _auto_reject_flex_role_conflicts,
+    _auto_reject_guardrail_device_group_conflicts,
+    _auto_reject_housing_device_code_conflicts,
+    _auto_reject_housing_part_kind_conflicts,
+    _auto_reject_laptop_matrix_flex_conflicts,
+    _auto_reject_non_display_model_code_conflicts,
+    _auto_reject_part_assembly_conflicts,
+    _auto_reject_part_color_conflicts,
+    _auto_reject_part_quality_conflicts,
     _competitor_display_has_frame,
     _competitor_display_mapped_1c_quality_raw,
+    _competitor_display_matrix_tags,
+    _competitor_display_matrix_vendor_tags,
     _competitor_display_quality,
     _competitor_display_quality_raw,
     _effective_item_type,
+    _explicit_display_attribute_conflict_reason,
+    _explicit_display_subject_conflict_reason,
+    _explicit_model_conflict_reason,
+    _extract_device_codes,
     _extract_device_model_keys,
+    _product_display_matrix_tags,
+    _product_display_matrix_vendor_tags,
     _product_display_quality,
+    _safe_battery_verification_suggest,
+    _safe_disposable_battery_suggest,
     match_items,
 )
 
@@ -46,6 +82,21 @@ def test_basic_guardrails_reject_usb_flash_against_cable():
 
     assert result.allowed is False
     assert result.reason == "catalog_family_conflict"
+
+
+def test_device_group_conflict_handles_notebook_vs_phone_tokens():
+    assert device_group_conflict(
+        "Крышка матрицы для ноутбука Lenovo IdeaPad 3-15IML05 Серебро",
+        "Задняя крышка для Lenovo IdeaPhone S850 (белый)",
+    )
+    assert device_group_conflict(
+        "Аккумулятор Samsung S25+/S25 FE (S936B/S731B)",
+        "Аккумулятор для Samsung NP300E / NP300V / NP305E (AA-PB9NC6B)",
+    )
+    assert device_group_conflict(
+        "Шлейф/FLC Tecno PHANTOM V FOLD на системный разъём/микрофон",
+        "Шлейф для Meta Quest 3S VR (на микрофон и динамики)",
+    )
 
 
 def test_basic_guardrails_reject_oca_touchscreen_against_display_repair_product():
@@ -150,6 +201,179 @@ def test_basic_guardrails_reject_laptop_power_supply_against_phone_charger():
     product = Product(
         name="Сетевое зарядное устройство Baseus Palm TypeC + USB 20W (черный)",
         article="075455",
+    )
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
+def test_basic_guardrails_reject_tool_battery_charger_against_phone_charger():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="SZU-BTT-14418V35А-MKT",
+        name="Сетевое зарядное устройство для аккумуляторов 14,4-18V, 3,5А (Makita тип)",
+        normalized_title="Сетевое зарядное устройство для аккумуляторов 14,4-18V 3,5А Makita тип",
+        item_type="other",
+    )
+    product = Product(
+        name="Сетевое зарядное устройство Baseus Palm TypeC + USB 20W (черный)",
+        article="075455",
+    )
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
+def test_basic_guardrails_reject_usb_a_solder_connector_against_phone_charge_port():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="CC-USBA-20F",
+        name="Разъем USB-A 2.0 (F) под пайку",
+        normalized_title="Разъем USB-A 2.0 F под пайку",
+        item_type="connector",
+    )
+    product = Product(name="Разъем зарядки Huawei P20 Lite", article="041498")
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
+def test_basic_guardrails_reject_rj45_connector_against_patch_cord():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="CON-RJ45-CAT6-10PCS",
+        name="Сквозной коннектор для витой пары RJ-45, CAT6 (10 шт)",
+        normalized_title="Сквозной коннектор для витой пары RJ-45 CAT6",
+        item_type="connector",
+    )
+    product = Product(name="Патч-корд Baseus RJ45 1,5 м (1 гБит) (черный)", article="075440")
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
+def test_basic_guardrails_reject_iphone_battery_against_airpods_battery():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BTT-PMI120-VRF-HC-NEW",
+        name='Аккумулятор для iPhone 12/12 Pro с верификацией "Новая запчасть" - усиленная 3310 mAh',
+        normalized_title="Аккумулятор iPhone 12 12 Pro усиленная 3310 mAh",
+        item_type="battery",
+    )
+    product = Product(name="Аккумулятор для Apple AirPods Pro (A2083/A2084) (в кейс)")
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "device_group_conflict"
+
+
+def test_safe_battery_verification_suggest_accepts_diagnosable_typo():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BTT-PMI130-MINI-VRF-HC-NEW",
+        name='Аккумулятор для iPhone 13 mini с верификацией "Новая запчасть" - усиленная 2550 mAh',
+        normalized_title="Аккумулятор iPhone 13 mini верификация Новая запчасть усиленная 2550 mAh",
+        item_type="battery",
+    )
+    product = Product(
+        name=(
+            "Аккумулятор для Apple iPhone 13 mini (F5ENERGY) (усиленный) "
+            "(2560 мАч) (SPECIAL EDITION) (SYSTEM DAIGNOSABLE) + двухсторонний скотч"
+        )
+    )
+
+    assert _safe_battery_verification_suggest(item, product, score=0.73)
+
+
+def test_safe_disposable_battery_suggest_requires_brand_size_and_pack_count():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BAT-VRT-LR6-AA-4PCS",
+        name="Батарейка AA LR6 Varta ENERGY 1.5V (4 шт. в блистере)",
+        normalized_title="Батарейка AA LR6 Varta ENERGY 1.5V 4 шт",
+        item_type="other",
+    )
+    product = Product(name="Батарейки Varta LR6 AA 4 шт.")
+    wrong_brand = Product(name="Батарейки Energizer LR6 AA 4 шт.")
+
+    assert _safe_disposable_battery_suggest(item, product, score=0.81)
+    assert not _safe_disposable_battery_suggest(item, wrong_brand, score=0.81)
+
+
+def test_basic_guardrails_reject_disposable_battery_size_conflict():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BAT-GP-6LR61-9V",
+        name='Батарейка "Крона" 6LR61 GP Super Alkaline 9V',
+        normalized_title="Батарейка Крона 6LR61 GP Super Alkaline 9V",
+        item_type="other",
+    )
+    product = Product(name="Батарейки GP Super LR20 D 2 шт.")
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
+def test_basic_guardrails_reject_expanded_phone_brand_conflict():
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="458537",
+        name="Шлейф/FLC Tecno SPARK 20 Pro+ на кнопки громкости/включения",
+        normalized_title="Шлейф FLC Tecno SPARK 20 Pro+ на кнопки громкости включения",
+        item_type="flex",
+    )
+    product = Product(
+        name="Шлейф для Meizu MX4 Pro с комп. (на кнопки громкости)",
+        article="041272",
+    )
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "brand_group_conflict"
+
+
+def test_basic_guardrails_reject_laptop_cover_against_phone_cover():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="SC-CVR-LP-ACR-SP31451-SL",
+        name="Крышка матрицы для ноутбука Acer Spin 3 SP314-51/SP314-52 Серебро",
+        normalized_title="Крышка матрицы для ноутбука Acer Spin 3 SP314-51 SP314-52 Серебро",
+        item_type="housing",
+    )
+    product = Product(
+        name="Задняя крышка для Meizu M5 Note (серебристый)",
+        article="039316",
+    )
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "device_group_conflict"
+
+
+def test_basic_guardrails_reject_car_holder_against_magnetic_ring():
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="470106",
+        name="Держатель в автомобиль BOROFONE BH14 Journey магнитный, на панель (черный/красный)",
+        normalized_title="Держатель в автомобиль BOROFONE BH14 Journey магнитный на панель",
+        item_type="housing",
+    )
+    product = Product(
+        name="Металлическое кольцо для магнитного держателя",
+        article="065504",
     )
 
     result = basic_candidate_guardrails(item, product)
@@ -374,6 +598,50 @@ def test_basic_guardrails_reject_infinix_flex_model_conflict():
     assert result.reason == "strict_model_conflict"
 
 
+def test_basic_guardrails_reject_oneplus_nord_ce5_against_oneplus_5():
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="472505",
+        name="LCD дисплей для OnePlus Nord CE5 в сборе с тачскрином (черный)OR 100%",
+        normalized_title="LCD дисплей OnePlus Nord CE5 тачскрин черный OR 100%",
+        item_type="display",
+        category_group="display",
+    )
+    product = Product(
+        name="Дисплей для OnePlus 5 + тачскрин (черный) (OLED)",
+        article="039882",
+        category="Дисплеи для телефонов",
+        subject="дисплей",
+    )
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "strict_model_conflict"
+
+
+def test_basic_guardrails_reject_oppo_a18_against_oppo_a78():
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="460996",
+        name="LCD дисплей для Oppo A18/A38 (CPH2591/CPH2579) с тачскрином (черный) 100% OR",
+        normalized_title="LCD дисплей Oppo A18 A38 CPH2591 CPH2579 тачскрин черный 100% OR",
+        item_type="display",
+        category_group="display",
+    )
+    product = Product(
+        name="Дисплей для OPPO A78 4G (CPH2565) + тачскрин (черный) (In-Cell)",
+        article="062490",
+        category="Дисплеи для телефонов",
+        subject="дисплей",
+    )
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "strict_model_conflict"
+
+
 def test_basic_guardrails_reject_test_socket_against_camera_gasket():
     item = CompetitorItem(
         competitor="moba",
@@ -482,6 +750,70 @@ def test_match_items_suggested(db_session, tmp_path):
     ).scalar_one()
     assert match.status == CompetitorItemMatchStatus.SUGGESTED
     assert match.product_id == prod1.id
+
+
+def test_match_items_can_process_specific_competitor_item_ids(db_session, tmp_path):
+    prod1 = Product(name="Дисплей iPhone 12", brand="Apple", category="display", article="A1T")
+    prod2 = Product(name="Дисплей iPhone 13", brand="Apple", category="display", article="A2T")
+    db_session.add_all([prod1, prod2])
+    db_session.flush()
+
+    item1 = CompetitorItem(
+        competitor="moba",
+        external_id="SKU-T1",
+        name="Дисплей iPhone 12",
+        normalized_title="Дисплей iPhone 12",
+        item_type="display",
+        parsed_device_brand="apple",
+    )
+    item2 = CompetitorItem(
+        competitor="moba",
+        external_id="SKU-T2",
+        name="Дисплей iPhone 13",
+        normalized_title="Дисплей iPhone 13",
+        item_type="display",
+        parsed_device_brand="apple",
+    )
+    db_session.add_all([item1, item2])
+    db_session.flush()
+
+    product_matrix = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+    competitor_matrix = np.array([[1.0, 0.0], [0.0, 1.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [prod1.id, prod2.id])
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item1.id, item2.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=2,
+        top_k_llm=1,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+        competitor_item_ids=[item2.id],
+    )
+
+    assert stats["processed"] == 1
+    assert (
+        db_session.scalar(
+            select(CompetitorItemMatch.id).where(CompetitorItemMatch.competitor_item_id == item1.id)
+        )
+        is None
+    )
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item2.id)
+    ).scalar_one()
+    assert match.product_id == prod2.id
 
 
 def test_match_items_ignores_inactive_product_candidates(db_session, tmp_path):
@@ -923,6 +1255,1002 @@ def test_match_items_display_color_text_overrides_stale_columns(db_session, tmp_
     assert db_session.query(CompetitorItemMatch).count() == 0
 
 
+def test_match_items_rejects_housing_color_conflict(db_session, tmp_path):
+    product = Product(
+        name="Задняя крышка для Apple iPhone 17 (черный) (Premium)",
+        brand="Apple",
+        category="Корпуса и крышки",
+        subject="крышка",
+        article="HOU-B",
+        color="черный",
+    )
+    db_session.add(product)
+    db_session.flush()
+
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BTC-PMI-17-WH-OR",
+        name="Задняя крышка для iPhone 17 Белый - Премиум",
+        normalized_title="Задняя крышка iPhone 17 Белый Премиум",
+        item_type="housing",
+        parsed_device_brand="apple",
+        color="черный",
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    product_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [product.id])
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=1,
+        top_k_llm=1,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+    )
+
+    assert stats["skipped_no_candidates"] == 1
+    assert db_session.query(CompetitorItemMatch).count() == 0
+
+
+def test_match_items_rejects_premium_housing_against_orig_product(db_session, tmp_path):
+    product = Product(
+        name="Задняя крышка для Apple iPhone 17 (черный) (ORIG100) (Снятый)",
+        brand="Apple",
+        category="Корпуса и крышки",
+        subject="крышка",
+        article="HOU-ORIG",
+        color="черный",
+    )
+    db_session.add(product)
+    db_session.flush()
+
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BTC-PMI-17-B-OR",
+        name="Задняя крышка для iPhone 17 Черный - Премиум",
+        normalized_title="Задняя крышка iPhone 17 Черный Премиум",
+        item_type="housing",
+        parsed_device_brand="apple",
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    product_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [product.id])
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=1,
+        top_k_llm=1,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+    )
+
+    assert stats["skipped_no_candidates"] == 1
+    assert db_session.query(CompetitorItemMatch).count() == 0
+
+
+def test_match_items_rejects_housing_camera_glass_assembly_conflict(db_session, tmp_path):
+    product = Product(
+        name="Задняя крышка для Xiaomi Poco X7 (24095PCADG) (черный)",
+        brand="Xiaomi",
+        category="Корпуса и крышки",
+        subject="крышка",
+        article="HOU-X7",
+        color="черный",
+    )
+    db_session.add(product)
+    db_session.flush()
+
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="471581",
+        name="Задняя крышка для Xiaomi Poco X7 (24095PCADG) со стеклом камеры (черный)",
+        normalized_title="Задняя крышка Xiaomi Poco X7 24095PCADG со стеклом камеры черный",
+        item_type="housing",
+        parsed_device_brand="xiaomi",
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    product_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [product.id])
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=1,
+        top_k_llm=1,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+    )
+
+    assert stats["skipped_no_candidates"] == 1
+    assert db_session.query(CompetitorItemMatch).count() == 0
+
+
+def test_match_items_rejects_extra_product_camera_glass_assembly(db_session, tmp_path):
+    wrong = Product(
+        name="Задняя крышка для Samsung S911 Galaxy S23 (зеленый) (в сборе со стеклом камеры)",
+        brand="Samsung",
+        category="Корпуса и крышки",
+        subject="крышка",
+        article="S23-CAM-GLASS",
+        color="зеленый",
+    )
+    right = Product(
+        name="Задняя крышка для Samsung S911 Galaxy S23 (зеленый)",
+        brand="Samsung",
+        category="Корпуса и крышки",
+        subject="крышка",
+        article="S23-PLAIN",
+        color="зеленый",
+    )
+    db_session.add_all([wrong, right])
+    db_session.flush()
+
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="473185",
+        name="Задняя крышка для Samsung Galaxy S23 SM-S911 (зеленый), премиум",
+        normalized_title="Задняя крышка Samsung Galaxy S23 SM-S911 зеленый премиум",
+        item_type="housing",
+        parsed_device_brand="samsung",
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    product_matrix = np.array([[1.0, 0.0], [0.99, 0.01]], dtype=np.float32)
+    product_matrix = product_matrix / np.linalg.norm(product_matrix, axis=1, keepdims=True)
+    competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [wrong.id, right.id])
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=2,
+        top_k_llm=2,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+    )
+
+    assert stats["matched"] == 1
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.product_id == right.id
+
+
+def test_match_items_rejects_extra_product_flex_assembly(db_session, tmp_path):
+    wrong = Product(
+        name=(
+            "Задняя крышка для Apple iPhone 17 Pro Max (SIM + eSIM) / "
+            "iPhone 17 Pro Max (eSIM) (оранжевый) (в сборе со шлейфом) (Premium)"
+        ),
+        brand="Apple",
+        category="Корпуса и крышки",
+        subject="крышка",
+        article="17PM-FLEX",
+        color="оранжевый",
+    )
+    right = Product(
+        name=(
+            "Задняя крышка для Apple iPhone 17 Pro Max (SIM + eSIM) / "
+            "iPhone 17 Pro Max (eSIM) (оранжевый) (Premium)"
+        ),
+        brand="Apple",
+        category="Корпуса и крышки",
+        subject="крышка",
+        article="17PM-PLAIN",
+        color="оранжевый",
+    )
+    db_session.add_all([wrong, right])
+    db_session.flush()
+
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="474239",
+        name="Задняя крышка для iPhone 17 Pro Max (оранжевый) MagSafe",
+        normalized_title="Задняя крышка iPhone 17 Pro Max оранжевый MagSafe",
+        item_type="housing",
+        parsed_device_brand="apple",
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    product_matrix = np.array([[1.0, 0.0], [0.99, 0.01]], dtype=np.float32)
+    product_matrix = product_matrix / np.linalg.norm(product_matrix, axis=1, keepdims=True)
+    competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [wrong.id, right.id])
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=2,
+        top_k_llm=2,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+    )
+
+    assert stats["matched"] == 1
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.product_id == right.id
+
+
+def test_match_items_rejects_missing_product_flex_assembly_with_magsafe_wording(
+    db_session,
+    tmp_path,
+):
+    product = Product(
+        name=(
+            "Задняя крышка для Apple iPhone 17 (SIM + eSIM) / iPhone 17 (eSIM) "
+            "(синий) (в сборе со стеклом камеры) (Premium)"
+        ),
+        brand="Apple",
+        category="Корпуса и крышки",
+        subject="крышка",
+        article="17-CAM-ONLY",
+        color="синий",
+    )
+    db_session.add(product)
+    db_session.flush()
+
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="474255",
+        name="Задняя крышка для iPhone 17 (синий) в сборе со стеклом камеры и шлейфом MagSafe",
+        normalized_title="Задняя крышка iPhone 17 синий в сборе со стеклом камеры и шлейфом MagSafe",
+        item_type="housing",
+        parsed_device_brand="apple",
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    product_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [product.id])
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=1,
+        top_k_llm=1,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+    )
+
+    assert stats["skipped_no_candidates"] == 1
+    assert db_session.query(CompetitorItemMatch).count() == 0
+
+
+def test_match_items_rejects_housing_device_code_conflict(db_session, tmp_path):
+    wrong = Product(
+        name="Задняя крышка для Huawei Honor 400 Pro China (DNP-AN00) (черный)",
+        brand="Huawei",
+        category="Корпуса и крышки",
+        subject="крышка",
+        article="HONOR-400-CHINA",
+        color="черный",
+    )
+    right = Product(
+        name="Задняя крышка для Huawei Honor 400 Pro (DNP-NX9) (черный)",
+        brand="Huawei",
+        category="Корпуса и крышки",
+        subject="крышка",
+        article="HONOR-400-GLOBAL",
+        color="черный",
+    )
+    db_session.add_all([wrong, right])
+    db_session.flush()
+
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BTC-HUW-HNR-400-PR-B-OR",
+        name="Задняя крышка для Huawei Honor 400 Pro (DNP-NX9) Черный - Премиум",
+        normalized_title="Задняя крышка Huawei Honor 400 Pro DNP-NX9 Черный Премиум",
+        item_type="housing",
+        parsed_device_brand="huawei",
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    product_matrix = np.array([[1.0, 0.0], [0.99, 0.01]], dtype=np.float32)
+    product_matrix = product_matrix / np.linalg.norm(product_matrix, axis=1, keepdims=True)
+    competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [wrong.id, right.id])
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=2,
+        top_k_llm=2,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+    )
+
+    assert stats["matched"] == 1
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.product_id == right.id
+
+
+def test_match_items_rejects_housing_part_kind_conflict(db_session, tmp_path):
+    product = Product(
+        name="Держатель сим-карты для Apple iPhone 16 / iPhone 16 Plus (черный)",
+        brand="Apple",
+        category="Держатели сим-карт",
+        subject="держатель сим-карты",
+        article="SIM-16",
+        color="черный",
+    )
+    db_session.add(product)
+    db_session.flush()
+
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="HOU-PMI-16-PLS-B-OR",
+        name="Корпус для iPhone 16 Plus (A3290) (1 Sim) Черный - Премиум",
+        normalized_title="Корпус iPhone 16 Plus A3290 1 Sim Черный Премиум",
+        item_type="housing",
+        parsed_device_brand="apple",
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    product_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [product.id])
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=1,
+        top_k_llm=1,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+    )
+
+    assert stats["skipped_no_candidates"] == 1
+    assert db_session.query(CompetitorItemMatch).count() == 0
+
+
+def test_match_items_rejects_camera_position_conflict(db_session, tmp_path):
+    product = Product(
+        name="Камера передняя для Apple iPhone 16E, ориг",
+        brand="Apple",
+        category="Камеры",
+        subject="камера",
+        article="CAM-FRONT",
+    )
+    db_session.add(product)
+    db_session.flush()
+
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="467000",
+        name="Камера основная Apple iPhone 16E, ориг",
+        normalized_title="Камера основная Apple iPhone 16E ориг",
+        item_type="camera",
+        parsed_device_brand="apple",
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    product_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [product.id])
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=1,
+        top_k_llm=1,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+    )
+
+    assert stats["skipped_no_candidates"] == 1
+    assert db_session.query(CompetitorItemMatch).count() == 0
+
+
+def test_match_items_reclassifies_battery_adhesive_as_other(db_session, tmp_path):
+    product = Product(
+        name="Аккумулятор для Apple iPhone 16 Pro (GENUINE)",
+        brand="Apple",
+        category="Аккумуляторы",
+        subject="аккумулятор",
+        article="BTT-16P",
+    )
+    db_session.add(product)
+    db_session.flush()
+
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="ADT-BTT-PMI-16-PR",
+        name="Скотч Аккумулятора для iPhone 16 Pro (A3293)",
+        normalized_title="Скотч Аккумулятора iPhone 16 Pro A3293",
+        item_type="battery",
+        parsed_device_brand="apple",
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    assert _effective_item_type(item) == "other"
+
+    product_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [product.id])
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=1,
+        top_k_llm=1,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+    )
+
+    assert stats["skipped_no_candidates"] == 1
+    assert db_session.query(CompetitorItemMatch).count() == 0
+
+
+def test_match_items_reclassifies_power_tool_battery_as_other(db_session, tmp_path):
+    product = Product(
+        name="Аккумулятор для Nokia 1202 / 1203 / 1661 и др. (BL-4C)",
+        brand="Nokia",
+        category="Аккумуляторы",
+        subject="аккумулятор",
+        article="BTT-NOKIA",
+    )
+    db_session.add(product)
+    db_session.flush()
+
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BTT-PSR-1200-12V-2K-HT",
+        name="Аккумулятор для электроинструмента PSR 1200 12V 2000 mAh Ni-Cd (Hitachi тип)",
+        normalized_title="Аккумулятор для электроинструмента PSR 1200 12V 2000 mAh Ni-Cd Hitachi тип",
+        item_type="battery",
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    assert _effective_item_type(item) == "other"
+
+    product_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [product.id])
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=1,
+        top_k_llm=1,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+    )
+
+    assert stats["skipped_no_candidates"] == 1
+    assert db_session.query(CompetitorItemMatch).count() == 0
+
+
+def test_match_items_rejects_battery_part_code_conflict(db_session, tmp_path):
+    wrong = Product(
+        name="Аккумулятор для ZTE Nubia Red Magic 11 Pro (Li3874T90Ph596788) (Premium)",
+        brand="ZTE",
+        category="battery",
+        subject="аккумулятор",
+        article="077720",
+    )
+    right = Product(
+        name="Аккумулятор для ZTE Nubia Red Magic 10 Pro (NX789J) (Premium)",
+        brand="ZTE",
+        category="battery",
+        subject="аккумулятор",
+        article="075190",
+    )
+    db_session.add_all([wrong, right])
+    db_session.flush()
+
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BTT-ZT-LI3934T90P8H623486",
+        name="Аккумулятор для ZTE Nubia Red Magic 10 Pro (Li3934T90P8h623486)",
+        normalized_title="Аккумулятор ZTE Nubia Red Magic 10 Pro Li3934T90P8h623486",
+        item_type="battery",
+        parsed_device_brand="zte",
+        first_seen_at=date(2026, 5, 2),
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    product_matrix = np.array([[1.0, 0.0], [0.97, 0.03]], dtype=np.float32)
+    product_matrix = product_matrix / np.linalg.norm(product_matrix, axis=1, keepdims=True)
+    competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [wrong.id, right.id])
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=2,
+        top_k_llm=2,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+    )
+
+    assert stats["matched"] == 1
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.product_id == right.id
+
+
+def test_match_items_suggests_battery_verification_system_diagnosable(
+    db_session,
+    tmp_path,
+):
+    best = Product(
+        name=(
+            "Аккумулятор для Apple iPhone 14 Pro Max (F5ENERGY) (усиленный) "
+            "(4770 мАч) (SPECIAL EDITION) (SYSTEM DIAGNOSABLE) + двухсторонний скотч"
+        ),
+        brand="Apple",
+        category="battery",
+        subject="аккумулятор",
+        article="070903",
+    )
+    alternative = Product(
+        name=(
+            "Аккумулятор для Apple iPhone 14 Pro Max (F5ENERGY) (усиленный) "
+            "(4770 мАч) (SPECIAL EDITION) + двухсторонний скотч"
+        ),
+        brand="Apple",
+        category="battery",
+        subject="аккумулятор",
+        article="063976",
+    )
+    db_session.add_all([best, alternative])
+    db_session.flush()
+
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BTT-PMIPRM140-VRF-HC-NEW",
+        name=(
+            "Аккумулятор для iPhone 14 Pro Max - Battery Collection с верификацией "
+            '"Новая запчасть" - усиленная 4750 mAh'
+        ),
+        normalized_title="Аккумулятор iPhone 14 Pro Max верификация Новая запчасть усиленная 4750 mAh",
+        item_type="battery",
+        parsed_device_brand="apple",
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    product_matrix = np.array([[1.0, 0.0], [0.995, 0.005]], dtype=np.float32)
+    product_matrix = product_matrix / np.linalg.norm(product_matrix, axis=1, keepdims=True)
+    competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [best.id, alternative.id])
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.02,
+        top_k=2,
+        top_k_llm=2,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+    )
+
+    assert stats["matched"] == 1
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.SUGGESTED
+    assert match.product_id == best.id
+    assert match.rationale_json["battery_verification_suggest"]["reason"] == (
+        "battery_verification_signal_with_system_diagnosable_model_overlap"
+    )
+
+
+def test_match_items_rejects_flex_role_conflict(db_session, tmp_path):
+    product = Product(
+        name="Шлейф Xiaomi Mi 5 на разъем зарядки и микрофон (Черный)",
+        brand="Xiaomi",
+        category="Шлейфы",
+        subject="шлейф",
+        article="FPC-CHARGE",
+    )
+    db_session.add(product)
+    db_session.flush()
+
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="247843",
+        name="Шлейф/FLC Xiaomi Mi 5 на кнопки громкости/включения",
+        normalized_title="Шлейф FLC Xiaomi Mi 5 на кнопки громкости включения",
+        item_type="flex",
+        parsed_device_brand="xiaomi",
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    product_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [product.id])
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=1,
+        top_k_llm=1,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+    )
+
+    assert stats["skipped_no_candidates"] == 1
+    assert db_session.query(CompetitorItemMatch).count() == 0
+
+
+def test_match_items_rejects_flex_sensor_role_conflict(db_session, tmp_path):
+    product = Product(
+        name="Шлейф для Xiaomi 14 Ultra (24030PN60G) с комп. + сенсор",
+        brand="Xiaomi",
+        category="Шлейфы",
+        subject="шлейф",
+        article="FPC-SENSOR",
+    )
+    db_session.add(product)
+    db_session.flush()
+
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="458849",
+        name="Шлейф/FLC Xiaomi 14 Ultra на системный разъём/микрофон",
+        normalized_title="Шлейф FLC Xiaomi 14 Ultra на системный разъем микрофон",
+        item_type="flex",
+        parsed_device_brand="xiaomi",
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    product_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [product.id])
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=1,
+        top_k_llm=1,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+    )
+
+    assert stats["skipped_no_candidates"] == 1
+    assert db_session.query(CompetitorItemMatch).count() == 0
+
+
+def test_match_items_updates_product_relationship_before_color_sweeper(db_session, tmp_path):
+    wrong_product = Product(
+        name="Задняя крышка для Apple iPhone 17 (белый) (Premium)",
+        brand="Apple",
+        category="Корпуса и крышки",
+        subject="крышка",
+        article="HOU-WRONG",
+        color="белый",
+    )
+    correct_product = Product(
+        name="Задняя крышка для Apple iPhone 17 (синий) (Premium)",
+        brand="Apple",
+        category="Корпуса и крышки",
+        subject="крышка",
+        article="HOU-BLUE",
+        color="синий",
+    )
+    db_session.add_all([wrong_product, correct_product])
+    db_session.flush()
+
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="474247",
+        name="Задняя крышка для iPhone 17 (синий) MagSafe",
+        normalized_title="Задняя крышка iPhone 17 синий MagSafe",
+        item_type="housing",
+        parsed_device_brand="apple",
+    )
+    db_session.add(item)
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=wrong_product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.74,
+        )
+    )
+    db_session.flush()
+
+    product_matrix = np.array([[0.9, 0.1], [1.0, 0.0]], dtype=np.float32)
+    product_matrix = product_matrix / np.linalg.norm(product_matrix, axis=1, keepdims=True)
+    competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(
+        tmp_path,
+        "our_catalog",
+        product_matrix,
+        [wrong_product.id, correct_product.id],
+    )
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=2,
+        top_k_llm=1,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=False,
+        include_status=[CompetitorItemMatchStatus.AMBIGUOUS.value],
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+        competitor_item_ids=[item.id],
+    )
+
+    assert stats["matched"] == 1
+    assert stats["auto_rejected_part_color_conflict"] == 0
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.SUGGESTED
+    assert match.product_id == correct_product.id
+
+
+def test_match_items_can_skip_missing_competitor_embedding_without_live_api(db_session, tmp_path):
+    product = Product(
+        name="Задняя крышка для Apple iPhone 17 (черный) (Premium)",
+        brand="Apple",
+        category="Корпуса и крышки",
+        subject="крышка",
+        article="HOU-B2",
+    )
+    db_session.add(product)
+    db_session.flush()
+
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BTC-PMI-17-B-OR",
+        name="Задняя крышка для iPhone 17 Черный - Премиум",
+        normalized_title="Задняя крышка iPhone 17 Черный Премиум",
+        item_type="housing",
+        parsed_device_brand="apple",
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    product_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [product.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=1,
+        top_k_llm=1,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+        live_embed_missing=False,
+    )
+
+    assert stats["skipped_no_embedding"] == 1
+    assert db_session.query(CompetitorItemMatch).count() == 0
+
+
 def test_match_items_rejects_explicit_display_touch_conflict(db_session, tmp_path):
     product = Product(
         name="Дисплей iPhone 12 без тачскрина черный",
@@ -1228,6 +2556,60 @@ def test_match_items_reviews_display_quality_unknown_on_one_side(db_session, tmp
     assert match.rationale_json["display_quality_review"]["reason"] == (
         "display_quality_unknown_on_one_side"
     )
+
+
+def test_match_items_filters_original_refurb_against_copy_display_construction(
+    db_session, tmp_path
+):
+    product = Product(
+        name="Дисплей для Apple iPhone 15 Pro Max (черный) (биток) (ORIG)",
+        brand="Apple",
+        category="display",
+        article="C4C4R",
+    )
+    db_session.add(product)
+    db_session.flush()
+
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-PMI-15-PR-MAX-CP-B-INCL-HD-PLS",
+        name=(
+            "Дисплей для iPhone 15 Pro Max (A3106) в сборе с тачскрином " "Черный - (In-Cell, HD+)"
+        ),
+        normalized_title="Дисплей для iPhone 15 Pro Max A3106 Черный In-Cell HD+",
+        item_type="display",
+        parsed_device_brand="apple",
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    product_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [product.id])
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=1,
+        top_k_llm=1,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+    )
+
+    assert stats["skipped_no_candidates"] == 1
+    assert db_session.query(CompetitorItemMatch).count() == 0
 
 
 def test_match_items_display_quality_text_overrides_stale_columns(db_session, tmp_path):
@@ -1999,6 +3381,8 @@ def test_extract_device_model_keys_common_display_families():
     assert {"xiaomi_mi_9t", "xiaomi_mi_9t_pro", "redmi_k20_pro"}.issubset(keys)
     assert "tecno_spark_10_pro" in _extract_device_model_keys("Tecno Spark 10 Pro")
     assert "zte_nubia_v70_max" in _extract_device_model_keys("ZTE Nubia V70 Max")
+    assert "zte_nubia_red_magic_10_pro" in _extract_device_model_keys("ZTE Nubia Red Magic 10 Pro")
+    assert "zte_nubia_red_magic_10s_pro" in _extract_device_model_keys("Nubia Red Magic 10S Pro")
     assert "oppo_a5i_pro_4g" in _extract_device_model_keys("OPPO A5i Pro 4G")
     assert "nova_11i" in _extract_device_model_keys("Huawei Nova 11i")
     assert "nova_base" not in _extract_device_model_keys("Huawei Nova 11i")
@@ -2016,6 +3400,9 @@ def test_extract_device_model_keys_common_display_families():
     assert "iphone_12_pro_max" in _extract_device_model_keys("Apple iPhone 12 Pro Max")
     assert "iphone_xs_max" in _extract_device_model_keys("Apple iPhone XS Max")
     assert "iphone_16e" in _extract_device_model_keys("Apple iPhone 16e")
+    assert "google_pixel_9_pro_xl" in _extract_device_model_keys("Google Pixel 9 Pro XL")
+    assert "google_pixel_9_pro" in _extract_device_model_keys("Google Pixel 9 Pro")
+    assert "motorola_g85" in _extract_device_model_keys("Motorola Moto G85")
     assert "tecno_pop_7_pro" in _extract_device_model_keys("Tecno Pop 7 Pro")
     assert "meizu_note_22_4g" in _extract_device_model_keys("Meizu Note 22 4G")
     assert "umidigi_g9c" in _extract_device_model_keys("Umidigi G9C")
@@ -2057,6 +3444,7 @@ def test_extract_device_model_keys_common_display_families():
     assert "oppo_reno_4_pro" in _extract_device_model_keys("OPPO Reno 4 Pro")
     assert "oppo_k7" in _extract_device_model_keys("OPPO K7")
     assert "oppo_find_x7" in _extract_device_model_keys("OPPO Find X7")
+    assert "oppo_a78_4g" in _extract_device_model_keys("OPPO A78 4G")
     assert "google_pixel_4_xl" in _extract_device_model_keys("Google Pixel 4 XL")
     assert "huawei_mate_10" in _extract_device_model_keys("Huawei Mate 10")
     assert "huawei_p_smart_2019" in _extract_device_model_keys("Huawei P Smart 2019")
@@ -2065,6 +3453,10 @@ def test_extract_device_model_keys_common_display_families():
     assert "lg_kg800" in _extract_device_model_keys("LG KG800")
     assert "nintendo_3ds_xl" in _extract_device_model_keys("Nintendo 3DS XL")
     assert "oneplus_x" in _extract_device_model_keys("OnePlus X")
+    assert "oneplus_5" in _extract_device_model_keys("OnePlus 5")
+    assert "oneplus_5t" in _extract_device_model_keys("OnePlus 5T")
+    assert "oneplus_nord_ce_5" in _extract_device_model_keys("OnePlus Nord CE5")
+    assert "oneplus_5" not in _extract_device_model_keys("OnePlus Nord CE5")
     assert "ipad_mini" in _extract_device_model_keys("Apple iPad mini")
 
 
@@ -2189,7 +3581,8 @@ def test_match_items_prefers_display_code_overlap_over_higher_score_conflict(db_
         select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
     ).scalar_one()
     assert match.product_id == correct_product.id
-    assert match.status == CompetitorItemMatchStatus.SUGGESTED
+    assert match.status == CompetitorItemMatchStatus.ACCEPTED
+    assert "auto_accept_explicit_model_code_overlap" in match.rationale_json
 
 
 def test_match_items_rejects_display_phone_model_compatibility_conflict(
@@ -2337,6 +3730,91 @@ def test_match_items_allows_display_phone_model_compatibility_overlap(db_session
         select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
     ).scalar_one()
     assert match.product_id == product.id
+
+
+def test_match_items_allows_display_exact_text_when_phone_model_links_are_stale(
+    db_session,
+    tmp_path,
+):
+    pixel_9_pro = PhoneModel(brand="google", model_name="pixel 9 pro")
+    stale_pixel_9_pro_xl = PhoneModel(brand="google", model_name="pixel 9 pro xl")
+    db_session.add_all([pixel_9_pro, stale_pixel_9_pro_xl])
+    db_session.flush()
+
+    product = Product(
+        name="Дисплей для Google Pixel 9 Pro (GR83Y/GEC77/GWVK6) + тачскрин (черный) (ORIG)",
+        brand="Google",
+        category="display",
+        article="PIX9PRO",
+        subject="дисплей",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-GGL-PXL-9-PR-CP-B-OR",
+        name="Дисплей для Google Pixel 9 Pro (GR83Y) в сборе с тачскрином Черный - OR",
+        normalized_title="Дисплей Google Pixel 9 Pro GR83Y тачскрин Черный OR",
+        item_type="display",
+        parsed_device_brand="google",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add_all(
+        [
+            ProductPhoneModel(
+                product_id=product.id,
+                phone_model_id=stale_pixel_9_pro_xl.id,
+                source="onec",
+                raw_value="pixel 9 pro xl",
+                confidence=0.95,
+            ),
+            CompetitorItemCompatibility(
+                competitor_item_id=item.id,
+                phone_model_id=pixel_9_pro.id,
+                device_brand="google",
+                device_model="pixel 9 pro",
+                source="parser",
+            ),
+        ]
+    )
+    db_session.flush()
+
+    assert basic_candidate_guardrails(item, product).allowed is False
+
+    product_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [product.id])
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=1,
+        top_k_llm=1,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+    )
+
+    assert stats["needs_review"] == 1
+    assert stats["auto_accepted_display_original_quality"] == 1
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.product_id == product.id
+    assert match.status == CompetitorItemMatchStatus.ACCEPTED
+    assert match.rationale_json["auto_accept_display_original_quality"]["reason"] == (
+        "display_original_quality_exact_model"
+    )
 
 
 def test_match_items_allows_redmi_pro_prime_text_model_synonyms(db_session, tmp_path):
@@ -2697,7 +4175,8 @@ def test_match_items_allows_display_model_code_overlap(db_session, tmp_path):
     match = db_session.execute(
         select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
     ).scalar_one()
-    assert match.status == CompetitorItemMatchStatus.SUGGESTED
+    assert match.status == CompetitorItemMatchStatus.ACCEPTED
+    assert "auto_accept_explicit_model_code_overlap" in match.rationale_json
     assert match.product_id == product.id
 
 
@@ -2801,7 +4280,8 @@ def test_match_items_allows_xiaomi_display_regional_code_overlap(db_session, tmp
     match = db_session.execute(
         select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
     ).scalar_one()
-    assert match.status == CompetitorItemMatchStatus.SUGGESTED
+    assert match.status == CompetitorItemMatchStatus.ACCEPTED
+    assert "auto_accept_explicit_model_code_overlap" in match.rationale_json
     assert match.product_id == product.id
 
 
@@ -3551,6 +5031,1861 @@ def test_match_items_new_item_without_attrs_or_compat_needs_review(db_session, t
     )
 
     assert stats["needs_review"] == 1
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.NEEDS_REVIEW
+
+
+def test_match_items_auto_accepts_touchscreen_with_shared_device_codes(db_session, tmp_path):
+    product = Product(
+        name="Тачскрин для Samsung T530/T531/T535 Galaxy Tab 4 10.1 (черный)",
+        brand="Samsung",
+        category="touchscreen",
+        article="037531",
+    )
+    db_session.add(product)
+    db_session.flush()
+
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="219617",
+        name="Тачскрин для Samsung Galaxy Tab 4 10.1 SM-T531/T530 (черный)",
+        normalized_title="Тачскрин для Samsung Galaxy Tab 4 10.1 SM-T531/T530 черный",
+        item_type="display",
+        parsed_device_brand="samsung",
+        first_seen_at=date(2026, 5, 2),
+    )
+    db_session.add(item)
+    db_session.flush()
+
+    product_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
+    _write_embeddings(tmp_path, "our_catalog", product_matrix, [product.id])
+    _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+
+    stats = match_items(
+        db_session,
+        embeddings_dir=tmp_path,
+        min_embed_score=0.1,
+        min_gap=0.01,
+        top_k=1,
+        top_k_llm=1,
+        use_llm_arbiter=False,
+        limit=None,
+        only_null=True,
+        include_status=None,
+        force=False,
+        dry_run=False,
+        sample_limit=0,
+        samples_file=None,
+        report_file=None,
+        report_limit=0,
+        report_csv_file=None,
+        auto_accept_min_score=0.8,
+    )
+
+    assert stats["matched"] == 1
+    assert stats["needs_review"] == 0
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.ACCEPTED
+    assert match.rationale_json["auto_accept_explicit_model_code_overlap"]["overlap_codes"] == [
+        "T530",
+        "T531",
+    ]
+    compatibilities = db_session.execute(
+        select(CompetitorItemCompatibility).where(
+            CompetitorItemCompatibility.competitor_item_id == item.id
+        )
+    ).scalars()
+    assert {(row.device_brand, row.device_model) for row in compatibilities} == {
+        ("samsung", "t530"),
+        ("samsung", "t531"),
+    }
+
+
+def test_code_overlap_sweeper_accepts_suggested_and_creates_compatibility(db_session):
+    product = Product(
+        name="Тачскрин для Samsung T210/T211 Galaxy Tab 3 7.0 (черный)",
+        brand="Samsung",
+        category="touchscreen",
+        article="033570",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="232552",
+        name="Тачскрин для Samsung Galaxy Tab 3 7.0 SM-T211 (черный)",
+        normalized_title="Тачскрин для Samsung Galaxy Tab 3 7.0 SM-T211 черный",
+        item_type="display",
+        parsed_device_brand="samsung",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.SUGGESTED,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.8568,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_accept_explicit_code_overlap_matches(db_session, min_score=0.80) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.ACCEPTED
+    compatibilities = db_session.execute(
+        select(CompetitorItemCompatibility).where(
+            CompetitorItemCompatibility.competitor_item_id == item.id
+        )
+    ).scalars()
+    assert {(row.device_brand, row.device_model) for row in compatibilities} == {
+        ("samsung", "t211")
+    }
+
+
+def test_short_tecno_codes_are_extracted_for_code_overlap():
+    assert "LI6" in _extract_device_codes("Дисплей для Tecno Pova 6 Neo (LI6)")
+    assert "24116RACCG" in _extract_device_codes(
+        "Дисплей для Xiaomi Redmi Note 14 Pro 4G (24116RACCG)"
+    )
+    assert "AI2302" in _extract_device_codes("Дисплей для Asus ZenFone 10 (AI2302)")
+
+
+def test_model_text_sweeper_accepts_xiaomi_regional_model_codes(db_session):
+    product = Product(
+        name="Дисплей для Xiaomi 14T Pro (MZB0HH9RU) + тачскрин (черный)",
+        brand="Xiaomi",
+        article="070131",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-XMI-14T-PR-FR-B-OR-SP",
+        name="Дисплей для Xiaomi 14T Pro (2407FPN8EG) модуль с рамкой Черный - OR (SP)",
+        normalized_title="Дисплей для Xiaomi 14T Pro 2407FPN8EG модуль с рамкой Черный",
+        item_type="display",
+        parsed_device_brand="xiaomi",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.SUGGESTED,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.8267,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_accept_explicit_model_text_matches(db_session, min_score=0.80) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.ACCEPTED
+    assert match.rationale_json["auto_accept_explicit_model_text"]["model"] == "xiaomi 14t pro"
+    compatibility = db_session.execute(
+        select(CompetitorItemCompatibility).where(
+            CompetitorItemCompatibility.competitor_item_id == item.id
+        )
+    ).scalar_one()
+    assert (compatibility.device_brand, compatibility.device_model) == ("xiaomi", "14t pro")
+
+
+def test_explicit_model_conflict_rules_cover_known_false_positives():
+    assert (
+        _explicit_model_conflict_reason(
+            CompetitorItem(
+                name="LCD дисплей для Xiaomi Mi Mix с тачскрином (черный)",
+                item_type="display",
+            ),
+            Product(
+                name=(
+                    "Дисплей для Xiaomi Mix Flip (2405CPX3DG) + тачскрин " "(внутренний) (черный)"
+                )
+            ),
+        )
+        == "xiaomi_mi_mix_vs_mix_flip"
+    )
+    assert (
+        _explicit_model_conflict_reason(
+            CompetitorItem(
+                name="LCD дисплей для Xiaomi Redmi Go с тачскрином в рамке (черный)",
+                item_type="display",
+            ),
+            Product(name="Дисплей для Xiaomi Redmi 10 (21061119DG) + тачскрин (черный)"),
+        )
+        == "xiaomi_redmi_go_vs_numbered_redmi"
+    )
+    assert (
+        _explicit_model_conflict_reason(
+            CompetitorItem(
+                name='Дисплей для Xiaomi Redmi Pad SE 8.7" (24075RP89G) Черный',
+                item_type="display",
+            ),
+            Product(name="Дисплей для Xiaomi Redmi Pad SE (23073RPBFG) + тачскрин (черный)"),
+        )
+        == "xiaomi_redmi_pad_se_87_conflict"
+    )
+    assert (
+        _explicit_model_conflict_reason(
+            CompetitorItem(
+                name="Дисплей для Xiaomi 14T Pro (2407FPN8EG) модуль с рамкой Черный",
+                item_type="display",
+            ),
+            Product(name="Дисплей для Xiaomi 14T Pro (MZB0HH9RU) + тачскрин (черный)"),
+        )
+        is None
+    )
+
+
+def test_model_conflict_sweeper_rejects_obvious_false_positive(db_session):
+    product = Product(
+        name="Дисплей для Xiaomi Redmi 10 (21061119DG) + тачскрин (черный)",
+        brand="Xiaomi",
+        article="063542",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="324982",
+        name="LCD дисплей для Xiaomi Redmi Go с тачскрином в рамке (черный) 100% OR",
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.NEEDS_REVIEW,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.805,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_explicit_model_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    assert match.rationale_json["auto_reject_explicit_model_conflict"]["reason"] == (
+        "xiaomi_redmi_go_vs_numbered_redmi"
+    )
+
+
+def test_guardrail_sweeper_rejects_notebook_vs_phone_false_positive(db_session):
+    product = Product(
+        name="Задняя крышка для Lenovo IdeaPhone S850 (белый)",
+        brand="Lenovo",
+        article="037502",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="SC-CVR-LP-LNV-315IML05-SL",
+        name="Крышка матрицы для ноутбука Lenovo IdeaPad 3-15IML05 Серебро",
+        item_type="housing",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.NEEDS_REVIEW,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.6177,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_guardrail_device_group_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    assert match.rationale_json["auto_reject_guardrail_conflict"]["reason"] == (
+        "device_group_conflict"
+    )
+
+
+def test_display_attribute_conflict_rules_cover_original_vs_copy_construction():
+    assert (
+        _explicit_display_attribute_conflict_reason(
+            CompetitorItem(
+                name=(
+                    "Дисплей для iPhone 15 Pro Max (A3106) в сборе с тачскрином "
+                    "Черный - (In-Cell, HD+)"
+                ),
+                normalized_title="Дисплей для iPhone 15 Pro Max A3106 Черный In-Cell HD+",
+                item_type="display",
+            ),
+            Product(
+                name="Дисплей для Apple iPhone 15 Pro Max (черный) (биток) (ORIG)",
+            ),
+        )
+        == "display_original_refurb_vs_regular_competitor"
+    )
+    assert (
+        _explicit_display_attribute_conflict_reason(
+            CompetitorItem(
+                name=(
+                    "Дисплей для iPhone 15 Pro (A3102) в сборе с тачскрином "
+                    "Черный - DD (Soft OLED, Full HD)"
+                ),
+                normalized_title="Дисплей для iPhone 15 Pro A3102 Черный DD Soft OLED",
+                item_type="display",
+            ),
+            Product(name="Дисплей для Apple iPhone 15 Pro + тачскрин (черный) (FOG) (ORIG)"),
+        )
+        == "display_original_vs_copy_construction"
+    )
+    assert (
+        _explicit_display_attribute_conflict_reason(
+            CompetitorItem(
+                name=(
+                    "Дисплей для Samsung Galaxy A23 (A235F) в сборе с тачскрином "
+                    "Черный Mecanico - AMP"
+                ),
+                normalized_title="Дисплей Samsung Galaxy A23 A235F Черный Mecanico AMP",
+                item_type="display",
+            ),
+            Product(
+                name=("Дисплей для Samsung A235 Galaxy A23 + тачскрин " "(черный) (ORIG100) (SP)"),
+            ),
+        )
+        == "display_original_vs_copy_signal"
+    )
+    assert (
+        _explicit_display_attribute_conflict_reason(
+            CompetitorItem(
+                name=(
+                    "Дисплей для iPhone 13 (A2635) в сборе с тачскрином Черный - "
+                    "OR (Снятый, заменено ТОЛЬКО стекло)"
+                ),
+                normalized_title="Дисплей для iPhone 13 Черный OR заменено стекло",
+                item_type="display",
+            ),
+            Product(
+                name="Дисплей для Apple iPhone 13 (черный) (биток) (ORIG)",
+            ),
+        )
+        is None
+    )
+    assert (
+        _explicit_display_attribute_conflict_reason(
+            CompetitorItem(
+                name=(
+                    "LCD дисплей для Samsung Galaxy S24+ SM-S926 "
+                    "в сборе в рамке OLED Full Size (черный)"
+                ),
+                normalized_title="LCD дисплей Samsung Galaxy S24+ SM-S926 OLED Full Size черный",
+                item_type="display",
+            ),
+            Product(
+                name=(
+                    "Дисплей для Samsung S926 Galaxy S24+ + тачскрин "
+                    "(черный) (в рамке) (ORIG100) (SP)"
+                ),
+            ),
+        )
+        == "display_original_vs_aftermarket_competitor"
+    )
+    assert (
+        _explicit_display_attribute_conflict_reason(
+            CompetitorItem(
+                name=(
+                    "Дисплей для Google Pixel 8 (GKWS6/G9BQD/GZPFO/GPJ41) "
+                    "в сборе с тачскрином Черный - (OLED)"
+                ),
+                normalized_title="Дисплей Google Pixel 8 GKWS6 G9BQD GZPFO GPJ41 OLED",
+                item_type="display",
+            ),
+            Product(
+                name=(
+                    "Дисплей для Google Pixel 8 (GKWS6/G9BQD/GZPFO/GPJ41) "
+                    "+ тачскрин (черный) (OLED)"
+                ),
+                display_quality="Original",
+            ),
+        )
+        is None
+    )
+
+
+def test_display_attribute_sweeper_rejects_obvious_copy_vs_bitok(db_session):
+    product = Product(
+        name="Дисплей для Apple iPhone 14 Pro Max (черный) (биток) (ORIG)",
+        brand="Apple",
+        article="063557",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-PMIPRM140-CP-B-INCL-HD-PLS",
+        name=(
+            "Дисплей для iPhone 14 Pro Max (A2895) в сборе с тачскрином " "Черный - (In-Cell, HD+)"
+        ),
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.NEEDS_REVIEW,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.835,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_display_attribute_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    assert match.rationale_json["auto_reject_display_attribute_conflict"]["reason"] == (
+        "display_original_refurb_vs_regular_competitor"
+    )
+
+
+def test_display_attribute_sweeper_rejects_aftermarket_display_against_explicit_orig(
+    db_session,
+):
+    product = Product(
+        name=(
+            "Дисплей для Samsung S926 Galaxy S24+ + тачскрин " "(черный) (в рамке) (ORIG100) (SP)"
+        ),
+        brand="Samsung",
+        article="062580",
+        subject="дисплей",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="471476",
+        name="LCD дисплей для Samsung Galaxy S24+ SM-S926 в сборе в рамке OLED Full Size (черный)",
+        normalized_title="LCD дисплей Samsung Galaxy S24+ SM-S926 OLED Full Size черный",
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.8065,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_display_attribute_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    assert match.rationale_json["auto_reject_display_attribute_conflict"]["reason"] == (
+        "display_original_vs_aftermarket_competitor"
+    )
+
+
+def test_display_matrix_vendor_tags_are_extracted_from_names():
+    item = CompetitorItem(
+        name=(
+            "Дисплей для iPhone 14 Pro (A2891) в сборе с тачскрином "
+            "Черный - DD (Soft OLED, Full HD)"
+        ),
+        normalized_title="Дисплей iPhone 14 Pro A2891 DD Soft OLED",
+        item_type="display",
+    )
+    product = Product(
+        name="Дисплей для Apple iPhone 14 Pro + тачскрин (черный) (JCID) (Soft Oled)",
+    )
+
+    assert _competitor_display_matrix_tags(item) == set()
+    assert _product_display_matrix_tags(product) == {"JCID"}
+    assert _competitor_display_matrix_vendor_tags(item) == {"DD"}
+    assert _product_display_matrix_vendor_tags(product) == {"JCID"}
+
+
+def test_display_matrix_tag_sweeper_rejects_vendor_tag_conflict(db_session):
+    product = Product(
+        name="Дисплей для Apple iPhone 14 Pro + тачскрин (черный) (JCID) (Soft Oled)",
+        brand="Apple",
+        article="070917",
+        subject="дисплей",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-PMIPR140-CP-B-DD-SOD-VRF",
+        name=(
+            "Дисплей для iPhone 14 Pro (A2891) в сборе с тачскрином "
+            "Черный - DD (Soft OLED, Full HD, 120 Гц)"
+        ),
+        normalized_title="Дисплей iPhone 14 Pro A2891 DD Soft OLED 120 Гц",
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.8619,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_display_matrix_tag_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    assert match.rationale_json["auto_reject_display_matrix_tag_conflict"]["reason"] == (
+        "display_matrix_tag_conflict"
+    )
+    assert match.rationale_json["auto_reject_display_matrix_tag_conflict"][
+        "competitor_matrix_tags"
+    ] == ["DD"]
+    assert match.rationale_json["auto_reject_display_matrix_tag_conflict"][
+        "product_matrix_tags"
+    ] == ["JCID"]
+
+
+def test_display_subject_sweeper_rejects_display_against_non_display_product(db_session):
+    product = Product(
+        name="Антенный блок Nokia 6700 (со звонком) Taiwan с качелькой",
+        brand="Nokia",
+        article="023915",
+        subject="антенный блок",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="216328",
+        name="LCD дисплей для Nokia 6700 Slide 1-я категория",
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.5351,
+        )
+    )
+    db_session.flush()
+
+    assert (
+        _explicit_display_subject_conflict_reason(item, product, item_type="display")
+        == "display_candidate_vs_non_display_product"
+    )
+    assert _auto_reject_display_subject_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    assert match.rationale_json["auto_reject_display_subject_conflict"]["reason"] == (
+        "display_candidate_vs_non_display_product"
+    )
+
+
+def test_display_original_quality_sweeper_accepts_or_against_orig_exact_model(db_session):
+    product = Product(
+        name="Дисплей для Xiaomi Poco F5 Pro (23013PC75G) + тачскрин (черный) (ORIG)",
+        brand="Xiaomi",
+        article="059639",
+        subject="дисплей",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="451448",
+        name="LCD дисплей для Xiaomi POCO F5 Pro с тачскрином (черный) 100% OR",
+        normalized_title="LCD дисплей Xiaomi POCO F5 Pro тачскрин черный 100% OR",
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.NEEDS_REVIEW,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.8528,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_accept_display_original_quality_matches(db_session, min_score=0.80) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.ACCEPTED
+    assert match.rationale_json["auto_accept_display_original_quality"]["reason"] == (
+        "display_original_quality_exact_model"
+    )
+    compatibility = db_session.execute(
+        select(CompetitorItemCompatibility).where(
+            CompetitorItemCompatibility.competitor_item_id == item.id
+        )
+    ).scalar_one()
+    assert compatibility.source == "auto_model_key"
+    assert compatibility.device_model == "poco_f5_pro"
+
+
+def test_display_original_quality_sweeper_accepts_change_glass_perekleyka(db_session):
+    product = Product(
+        name="Дисплей для Apple iPhone 15 Pro + тачскрин (черный) (ORIG) (Переклейка)",
+        brand="Apple",
+        article="063266",
+        subject="дисплей",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="474552",
+        name="LCD дисплей для Apple iPhone 15 Pro (черный) original (change glass) без ошибки + шлейф",
+        normalized_title="LCD дисплей Apple iPhone 15 Pro черный original change glass без ошибки шлейф",
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.NEEDS_REVIEW,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.8376,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_accept_display_original_quality_matches(db_session, min_score=0.80) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.ACCEPTED
+    assert match.rationale_json["auto_accept_display_original_quality"]["reason"] == (
+        "display_original_refurb_quality_exact_model"
+    )
+
+
+def test_display_frame_sweeper_rejects_explicit_frame_conflict(db_session):
+    product = Product(
+        name="Дисплей для Google Pixel 6 Pro + тачскрин (черный) (в рамке) (ORIG)",
+        brand="Google",
+        article="061160",
+        subject="дисплей",
+        display_has_frame=True,
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-GGL-PXL-6-PR-CP-B-OR",
+        name="Дисплей для Google Pixel 6 Pro в сборе с тачскрином Черный - (OR)",
+        normalized_title="Дисплей Google Pixel 6 Pro тачскрин Черный OR",
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.NEEDS_REVIEW,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.84,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_display_frame_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    assert match.rationale_json["auto_reject_display_frame_conflict"]["reason"] == (
+        "display_frame_conflict"
+    )
+
+
+def test_display_color_sweeper_rejects_beige_against_silver(db_session):
+    product = Product(
+        name="Дисплей для Samsung S918 Galaxy S23 Ultra + тачскрин (серебристый) (в рамке) (ORIG100) (SP)",
+        brand="Samsung",
+        article="079035",
+        subject="дисплей",
+        display_has_frame=True,
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-SSG-S918B-FR-BG-OR-S",
+        name="Дисплей для Samsung Galaxy S23 Ultra (S918B) модуль с рамкой Бежевый - Сервисный Оригинал",
+        normalized_title="Дисплей Samsung Galaxy S23 Ultra S918B модуль с рамкой Бежевый Сервисный Оригинал",
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.821,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_display_color_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    assert match.rationale_json["auto_reject_display_color_conflict"]["reason"] == (
+        "display_color_conflict"
+    )
+    assert match.rationale_json["auto_reject_display_color_conflict"]["competitor_color"] == (
+        "beige"
+    )
+
+
+def test_part_color_sweeper_rejects_housing_color_conflict(db_session):
+    product = Product(
+        name="Задняя крышка для Apple iPhone 17 (белый) (Premium)",
+        brand="Apple",
+        article="HOU-W",
+        subject="крышка",
+        color="белый",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="474247",
+        name="Задняя крышка для iPhone 17 (синий) MagSafe",
+        normalized_title="Задняя крышка iPhone 17 синий MagSafe",
+        item_type="housing",
+        color="белый",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.744,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_part_color_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    details = match.rationale_json["auto_reject_part_color_conflict"]
+    assert details["reason"] == "part_color_conflict"
+    assert details["item_type"] == "housing"
+    assert details["competitor_colors"] == ["blue"]
+    assert details["product_colors"] == ["white"]
+
+
+def test_part_color_sweeper_rejects_coral_against_gray(db_session):
+    product = Product(
+        name="Задняя крышка для Samsung S931 Galaxy S25 (коралловый)",
+        brand="Samsung",
+        article="HOU-CORAL",
+        subject="крышка",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="473165",
+        name="Задняя крышка для Samsung Galaxy S25 SM-S931 (серый), премиум",
+        normalized_title="Задняя крышка Samsung Galaxy S25 SM-S931 серый премиум",
+        item_type="housing",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.SUGGESTED,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.79,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_part_color_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    details = match.rationale_json["auto_reject_part_color_conflict"]
+    assert details["competitor_colors"] == ["gray"]
+    assert details["product_colors"] == ["coral"]
+
+
+def test_part_quality_sweeper_rejects_premium_against_orig(db_session):
+    product = Product(
+        name="Шлейф для Apple iPhone 17E с комп. + разъем зарядки (черный) (ORIG100)",
+        brand="Apple",
+        article="FPC-ORIG",
+        subject="шлейф",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="FPC-PMI-17E-CC-B-OR",
+        name="Шлейф для iPhone 17e на системный разъем/микрофон Черный - Премиум",
+        normalized_title="Шлейф iPhone 17e системный разъем микрофон Черный Премиум",
+        item_type="flex",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.74,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_part_quality_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    details = match.rationale_json["auto_reject_part_quality_conflict"]
+    assert details["reason"] == "part_quality_conflict"
+    assert details["item_type"] == "flex"
+    assert details["competitor_quality"] == "premium"
+    assert details["product_quality"] == "original"
+
+
+def test_part_assembly_sweeper_rejects_missing_camera_glass(db_session):
+    product = Product(
+        name="Задняя крышка для Xiaomi Poco X7 (24095PCADG) (черный)",
+        brand="Xiaomi",
+        article="HOU-X7",
+        subject="крышка",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="471581",
+        name="Задняя крышка для Xiaomi Poco X7 (24095PCADG) со стеклом камеры (черный)",
+        normalized_title="Задняя крышка Xiaomi Poco X7 24095PCADG со стеклом камеры черный",
+        item_type="housing",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.76,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_part_assembly_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    details = match.rationale_json["auto_reject_part_assembly_conflict"]
+    assert details["reason"] == "part_camera_glass_missing_on_product"
+    assert details["item_type"] == "housing"
+
+
+def test_part_assembly_sweeper_rejects_extra_product_camera_glass(db_session):
+    product = Product(
+        name="Задняя крышка для Samsung S911 Galaxy S23 (зеленый) (в сборе со стеклом камеры)",
+        brand="Samsung",
+        article="S23-CAM-GLASS",
+        subject="крышка",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="473185",
+        name="Задняя крышка для Samsung Galaxy S23 SM-S911 (зеленый), премиум",
+        normalized_title="Задняя крышка Samsung Galaxy S23 SM-S911 зеленый премиум",
+        item_type="housing",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.79,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_part_assembly_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    details = match.rationale_json["auto_reject_part_assembly_conflict"]
+    assert details["reason"] == "part_camera_glass_extra_on_product"
+    assert details["item_type"] == "housing"
+
+
+def test_part_assembly_sweeper_rejects_extra_product_flex_assembly(db_session):
+    product = Product(
+        name=(
+            "Задняя крышка для Apple iPhone 17 Pro Max (SIM + eSIM) / "
+            "iPhone 17 Pro Max (eSIM) (оранжевый) (в сборе со шлейфом) (Premium)"
+        ),
+        brand="Apple",
+        article="17PM-FLEX",
+        subject="крышка",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="474239",
+        name="Задняя крышка для iPhone 17 Pro Max (оранжевый) MagSafe",
+        normalized_title="Задняя крышка iPhone 17 Pro Max оранжевый MagSafe",
+        item_type="housing",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.77,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_part_assembly_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    details = match.rationale_json["auto_reject_part_assembly_conflict"]
+    assert details["reason"] == "part_flex_assembly_extra_on_product"
+    assert details["item_type"] == "housing"
+
+
+def test_part_assembly_sweeper_rejects_missing_product_flex_assembly_with_magsafe_wording(
+    db_session,
+):
+    product = Product(
+        name=(
+            "Задняя крышка для Apple iPhone 17 (SIM + eSIM) / iPhone 17 (eSIM) "
+            "(синий) (в сборе со стеклом камеры) (Premium)"
+        ),
+        brand="Apple",
+        article="17-CAM-ONLY",
+        subject="крышка",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="474255",
+        name="Задняя крышка для iPhone 17 (синий) в сборе со стеклом камеры и шлейфом MagSafe",
+        normalized_title="Задняя крышка iPhone 17 синий в сборе со стеклом камеры и шлейфом MagSafe",
+        item_type="housing",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.77,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_part_assembly_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    details = match.rationale_json["auto_reject_part_assembly_conflict"]
+    assert details["reason"] == "part_flex_assembly_missing_on_product"
+    assert details["item_type"] == "housing"
+
+
+def test_housing_device_code_sweeper_rejects_same_model_different_code(db_session):
+    product = Product(
+        name="Задняя крышка для Huawei Honor 400 Pro China (DNP-AN00) (черный)",
+        brand="Huawei",
+        article="HONOR-400-CHINA",
+        subject="крышка",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BTC-HUW-HNR-400-PR-B-OR",
+        name="Задняя крышка для Huawei Honor 400 Pro (DNP-NX9) Черный - Премиум",
+        normalized_title="Задняя крышка Huawei Honor 400 Pro DNP-NX9 Черный Премиум",
+        item_type="housing",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.SUGGESTED,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.83,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_housing_device_code_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    details = match.rationale_json["auto_reject_housing_device_code_conflict"]
+    assert details["reason"] == "housing_device_code_conflict"
+    assert details["competitor_codes"] == ["DNP-NX9"]
+    assert details["product_codes"] == ["DNP-AN00"]
+
+
+def test_housing_part_kind_sweeper_rejects_housing_against_sim_tray(db_session):
+    product = Product(
+        name="Держатель сим-карты для Apple iPhone 16 / iPhone 16 Plus (черный)",
+        brand="Apple",
+        article="SIM-16",
+        subject="держатель сим-карты",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="HOU-PMI-16-PLS-B-OR",
+        name="Корпус для iPhone 16 Plus (A3290) (1 Sim) Черный - Премиум",
+        normalized_title="Корпус iPhone 16 Plus A3290 1 Sim Черный Премиум",
+        item_type="housing",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.77,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_housing_part_kind_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    details = match.rationale_json["auto_reject_housing_part_kind_conflict"]
+    assert details["reason"] == "housing_part_kind_conflict"
+    assert details["competitor_kind"] == "housing"
+    assert details["product_kind"] == "sim_tray"
+
+
+def test_camera_position_sweeper_rejects_front_against_main(db_session):
+    product = Product(
+        name="Камера передняя для Apple iPhone 16E, ориг",
+        brand="Apple",
+        article="CAM-FRONT",
+        subject="камера",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="467000",
+        name="Камера основная Apple iPhone 16E, ориг",
+        normalized_title="Камера основная Apple iPhone 16E ориг",
+        item_type="camera",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.81,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_camera_position_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    details = match.rationale_json["auto_reject_camera_position_conflict"]
+    assert details["reason"] == "camera_position_conflict"
+    assert details["competitor_position"] == "rear"
+    assert details["product_position"] == "front"
+
+
+def test_battery_part_code_sweeper_rejects_different_li_code(db_session):
+    product = Product(
+        name="Аккумулятор для ZTE Nubia Red Magic 11 Pro (Li3874T90Ph596788) (Premium)",
+        brand="ZTE",
+        article="077720",
+        subject="аккумулятор",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BTT-ZT-LI3934T90P8H623486",
+        name="Аккумулятор для ZTE Nubia Red Magic 10 Pro (Li3934T90P8h623486)",
+        normalized_title="Аккумулятор ZTE Nubia Red Magic 10 Pro Li3934T90P8h623486",
+        item_type="battery",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.84,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_battery_part_code_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    details = match.rationale_json["auto_reject_battery_part_code_conflict"]
+    assert details["reason"] == "battery_part_code_conflict"
+    assert details["competitor_codes"] == ["li3934t90p8h623486"]
+    assert details["product_codes"] == ["li3874t90ph596788"]
+
+
+def test_flex_role_sweeper_rejects_buttons_against_charge_mic(db_session):
+    product = Product(
+        name="Шлейф Xiaomi Mi 5 на разъем зарядки и микрофон (Черный)",
+        brand="Xiaomi",
+        article="FPC-CHARGE",
+        subject="шлейф",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="247843",
+        name="Шлейф/FLC Xiaomi Mi 5 на кнопки громкости/включения",
+        normalized_title="Шлейф FLC Xiaomi Mi 5 на кнопки громкости включения",
+        item_type="flex",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.79,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_flex_role_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    details = match.rationale_json["auto_reject_flex_role_conflict"]
+    assert details["reason"] == "flex_role_conflict"
+    assert details["competitor_role"] == "buttons"
+    assert details["product_role"] == "charge_mic"
+
+
+def test_flex_role_sweeper_rejects_charge_mic_against_sensor(db_session):
+    product = Product(
+        name="Шлейф для Xiaomi 14 Ultra (24030PN60G) с комп. + сенсор",
+        brand="Xiaomi",
+        article="FPC-SENSOR",
+        subject="шлейф",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="458849",
+        name="Шлейф/FLC Xiaomi 14 Ultra на системный разъём/микрофон",
+        normalized_title="Шлейф FLC Xiaomi 14 Ultra на системный разъем микрофон",
+        item_type="flex",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.79,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_flex_role_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    details = match.rationale_json["auto_reject_flex_role_conflict"]
+    assert details["reason"] == "flex_role_conflict"
+    assert details["competitor_role"] == "charge_mic"
+    assert details["product_role"] == "sensor"
+
+
+def test_display_original_quality_sweeper_accepts_ambiguous_service_original(db_session):
+    product = Product(
+        name="Дисплей для Samsung S918 Galaxy S23 Ultra + тачскрин (зеленый) (в рамке) (ORIG100) (SP)",
+        brand="Samsung",
+        article="079038",
+        subject="дисплей",
+        display_has_frame=True,
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-SSG-S918B-FR-GN-OR-S",
+        name="Дисплей для Samsung Galaxy S23 Ultra (S918B) модуль с рамкой Зеленый - Сервисный Оригинал",
+        normalized_title="Дисплей Samsung Galaxy S23 Ultra S918B модуль с рамкой Зеленый Сервисный Оригинал",
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.8484,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_accept_display_original_quality_matches(db_session, min_score=0.80) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.ACCEPTED
+    assert match.rationale_json["auto_accept_display_original_quality"]["reason"] == (
+        "display_original_quality_exact_model"
+    )
+
+
+def test_display_text_model_sweeper_rejects_pro_xl_against_pro(db_session):
+    product = Product(
+        name="Дисплей для Google Pixel 9 Pro (GR83Y/GEC77/GWVK6) + тачскрин (черный) (ORIG)",
+        brand="Google",
+        article="066262",
+        subject="дисплей",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-GGL-PXL-9-PR-XL-CP-B-OR",
+        name="Дисплей для Google Pixel 9 Pro XL (GGX8B) в сборе с тачскрином Черный - OR",
+        normalized_title="Дисплей Google Pixel 9 Pro XL GGX8B тачскрин Черный OR",
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.SUGGESTED,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.8494,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_display_text_model_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    assert match.rationale_json["auto_reject_display_text_model_conflict"]["reason"] == (
+        "display_text_model_conflict"
+    )
+
+
+def test_display_text_model_sweeper_rejects_tecno_pro_plus_against_pro(db_session):
+    product = Product(
+        name="Дисплей для Tecno Spark 20 Pro (KJ6) + тачскрин (черный) (в рамке) (ORIG)",
+        brand="Tecno",
+        article="071335",
+        subject="дисплей",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-TCN-SPR-20-PR-PLS-FR-B-OR",
+        name="Дисплей для Tecno Spark 20 Pro+ (KJ7) модуль с рамкой Черный - OR",
+        normalized_title="Дисплей Tecno Spark 20 Pro+ KJ7 модуль с рамкой Черный OR",
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.SUGGESTED,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.8639,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_display_text_model_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    assert match.rationale_json["auto_reject_display_text_model_conflict"]["reason"] == (
+        "display_text_model_conflict"
+    )
+
+
+def test_display_text_model_sweeper_rejects_tecno_camon_19_against_neo(db_session):
+    product = Product(
+        name="Дисплей для Tecno Camon 19 Neo (CH6i) / Camon 17P (CG7N) + тачскрин (черный) (ORIG)",
+        brand="Tecno",
+        article="064211",
+        subject="дисплей",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-TCN-CMN-19-CP-B-OR",
+        name="Дисплей для Tecno Camon 19 (CI6n) в сборе с тачскрином Черный - OR",
+        normalized_title="Дисплей Tecno Camon 19 CI6n тачскрин Черный OR",
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.SUGGESTED,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.8317,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_display_text_model_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    assert match.rationale_json["auto_reject_display_text_model_conflict"]["reason"] == (
+        "display_text_model_conflict"
+    )
+
+
+def test_display_long_model_code_sweeper_rejects_xiaomi_pad_6s_against_pad_6(
+    db_session,
+):
+    product = Product(
+        name="Дисплей для Xiaomi Pad 6 (23043RP34G) / Pad 6 Pro (23046RP50C) + тачскрин (черный)",
+        brand="Xiaomi",
+        article="061386",
+        subject="дисплей",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="468534",
+        name='LCD дисплей для Xiaomi Pad 6S Pro 12.4" (24018RPACG) в сборе с тачскрином (черный)',
+        normalized_title='LCD дисплей Xiaomi Pad 6S Pro 12.4" 24018RPACG тачскрин черный',
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.NEEDS_REVIEW,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.8453,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_display_long_model_code_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    assert match.rationale_json["auto_reject_display_long_model_code_conflict"]["reason"] == (
+        "display_long_model_code_conflict"
+    )
+    assert match.rationale_json["auto_reject_display_long_model_code_conflict"][
+        "competitor_codes"
+    ] == ["24018RPACG"]
+
+
+def test_display_module_component_sweeper_rejects_touchscreen_against_display_module(
+    db_session,
+):
+    product = Product(
+        name="Дисплей совместим с iPad Pro 12.9 / A1584 / A1652 (2015) с тачскрином (Черный) Оригинал новый",
+        brand="Apple",
+        article="046052",
+        subject="дисплей",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="TSN-PDIP129-2015-B-OR-FGT",
+        name='Тачскрин для iPad Pro 12.9" 2015 (A1584/A1652) Черный - OR (Feaglet)',
+        normalized_title='Тачскрин iPad Pro 12.9" 2015 A1584 A1652 Черный OR Feaglet',
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.SUGGESTED,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.785,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_display_module_component_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    assert match.rationale_json["auto_reject_display_module_component_conflict"]["reason"] == (
+        "display_module_component_conflict"
+    )
+
+
+def test_laptop_matrix_flex_sweeper_rejects_against_console_display_flex(db_session):
+    product = Product(
+        name="Шлейф для Sony PSP GO (на дисплей)",
+        brand="Sony",
+        article="079396",
+        subject="шлейф",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="FPC-MTX-LP-SNY-VPCEE-LCD",
+        name="Шлейф матрицы для ноутбука Sony Vaio VPC-EE (LCD)",
+        normalized_title="Шлейф матрицы ноутбука Sony Vaio VPC-EE LCD",
+        item_type="flex",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.5429,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_laptop_matrix_flex_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    assert match.rationale_json["auto_reject_laptop_matrix_flex_conflict"]["reason"] == (
+        "laptop_matrix_flex_vs_other_product"
+    )
+
+
+def test_non_display_model_code_sweeper_rejects_powerbank_model_conflict(db_session):
+    product = Product(
+        name="Внешний накопитель Hoco J100A 20000 mAh (черный)",
+        brand="Hoco",
+        article="075469",
+        subject="внешний накопитель",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="472447",
+        name=(
+            "Внешний АКБ HOCO J150 Stream 20000 mAh, 1xUSB, 1xUSB-C, 3А, "
+            "PD20W, 22.5W, LED дисплей, фонарь, Li-Pol (черный)"
+        ),
+        normalized_title="Внешний АКБ HOCO J150 Stream 20000 mAh LED дисплей черный",
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.7319,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_non_display_model_code_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    assert match.rationale_json["auto_reject_non_display_model_code_conflict"]["reason"] == (
+        "non_display_model_code_conflict"
+    )
+    assert match.rationale_json["auto_reject_non_display_model_code_conflict"][
+        "competitor_codes"
+    ] == ["J150"]
+
+
+def test_non_display_model_code_sweeper_rejects_trackpad_model_conflict(db_session):
+    product = Product(
+        name="Тачпад для Apple MacBook Pro 13 Retina A1502 (LATE 2013 - MID 2014) (серебристый)",
+        brand="Apple",
+        article="065432",
+        subject="тачпад",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="TPD-MB-PR-15-A1398-2015-SL",
+        name='Трекпад (тачпад) для MacBook Pro 15" A1398 (2015) Серебро',
+        normalized_title='Трекпад тачпад MacBook Pro 15" A1398 2015 Серебро',
+        item_type="other",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.6782,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_non_display_model_code_conflicts(db_session) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    assert match.rationale_json["auto_reject_non_display_model_code_conflict"]["product_codes"] == [
+        "A1502"
+    ]
+
+
+def test_non_display_model_code_sweeper_ignores_quality_code_without_product_model_code(
+    db_session,
+):
+    product = Product(
+        name="Шлейф для Apple iPhone 16 с комп. + сенсор (ORIG100)",
+        brand="Apple",
+        article="065999",
+        subject="шлейф",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="FPC-APL-IP16-SNS-PRM",
+        name="Шлейф для iPhone 16 (A3287) на сенсор - Премиум",
+        normalized_title="Шлейф iPhone 16 A3287 сенсор Премиум",
+        item_type="flex",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.8124,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_non_display_model_code_conflicts(db_session) == 0
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.AMBIGUOUS
+
+
+def test_non_display_model_code_sweeper_keeps_same_text_model_regional_codes_for_review(
+    db_session,
+):
+    product = Product(
+        name="Шлейф для Huawei Honor 200 (ELI-NX9) системный",
+        brand="Huawei",
+        article="066123",
+        subject="шлейф",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="FPC-HNR-200-ELI-AN00-SUB",
+        name="Шлейф для Huawei Honor 200 (ELI-AN00) системный",
+        normalized_title="Шлейф Huawei Honor 200 ELI-AN00 системный",
+        item_type="flex",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.NEEDS_REVIEW,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.7018,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_non_display_model_code_conflicts(db_session) == 0
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.NEEDS_REVIEW
+
+
+def test_display_construction_sweeper_accepts_generic_incell_copy_exact_model(db_session):
+    product = Product(
+        name=("Дисплей для Apple iPhone 16 Pro Max + тачскрин (черный) " "(MNK) (In-Cell)"),
+        brand="Apple",
+        article="065280",
+        subject="дисплей",
+        display_quality="Copy Low",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-APL-IP16PM-CP-B-INCELL",
+        name=(
+            "Дисплей для iPhone 16 Pro Max (A3296) в сборе с тачскрином "
+            "Черный - (In-Cell, Full HD, 120 Гц)"
+        ),
+        normalized_title=("Дисплей iPhone 16 Pro Max A3296 тачскрин Черный In-Cell Full HD 120 Гц"),
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.8582,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_accept_display_construction_matches(db_session, min_score=0.80) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.ACCEPTED
+    assert match.rationale_json["auto_accept_display_construction"]["reason"] == (
+        "display_copy_construction_exact_model"
+    )
+    compatibility = db_session.execute(
+        select(CompetitorItemCompatibility).where(
+            CompetitorItemCompatibility.competitor_item_id == item.id
+        )
+    ).scalar_one()
+    assert compatibility.source == "auto_model_key"
+    assert compatibility.device_model == "iphone_16_pro_max"
+
+
+def test_display_matrix_tag_sweeper_accepts_same_jcid_exact_model(db_session):
+    product = Product(
+        name=(
+            "Дисплей для Apple iPhone 14 Pro + тачскрин (черный) "
+            "(JCID) (Soft Oled) (SYSTEM DIAGNOSABLE)"
+        ),
+        brand="Apple",
+        article="065146",
+        subject="дисплей",
+        display_quality="Copy High",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="489245",
+        name=(
+            "LCD дисплей для Apple iPhone 14 Pro (черный) "
+            "SOFT OLED JCID (привязка без пайки) 120Hz"
+        ),
+        normalized_title=(
+            "LCD дисплей Apple iPhone 14 Pro черный SOFT OLED JCID привязка без пайки 120Hz"
+        ),
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.NEEDS_REVIEW,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.873,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_accept_display_matrix_tag_matches(db_session, min_score=0.80) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.ACCEPTED
+    assert match.rationale_json["auto_accept_display_matrix_tag"]["reason"] == (
+        "display_same_matrix_tag_exact_model"
+    )
+    assert match.rationale_json["auto_accept_display_matrix_tag"]["overlap_matrix_tags"] == ["JCID"]
+
+
+def test_display_matrix_type_sweeper_accepts_copy_oled_exact_model(db_session):
+    product = Product(
+        name="Дисплей для OnePlus 5 + тачскрин (черный) (OLED)",
+        brand="OnePlus",
+        article="039882",
+        subject="дисплей",
+        display_quality="Copy High",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-OPL-5-CP-B-LED",
+        name="Дисплей для OnePlus 5 (A5000) в сборе с тачскрином Черный - (OLED)",
+        normalized_title="Дисплей OnePlus 5 A5000 тачскрин Черный OLED",
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.NEEDS_REVIEW,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.8276,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_accept_display_matrix_type_matches(db_session, min_score=0.80) == 1
+
+    match = db_session.execute(
+        select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
+    ).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.ACCEPTED
+    assert match.rationale_json["auto_accept_display_matrix_type"]["reason"] == (
+        "display_copy_matrix_type_exact_model"
+    )
+    assert match.rationale_json["auto_accept_display_matrix_type"]["product_display_type"] == (
+        "OLED"
+    )
+
+
+def test_display_matrix_type_sweeper_keeps_small_size_for_review(db_session):
+    product = Product(
+        name="Дисплей для OnePlus 7T + тачскрин (черный) (OLED) (Small Size)",
+        brand="OnePlus",
+        article="049461",
+        subject="дисплей",
+        display_quality="Copy High",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-OPL-7T-CP-B-LED",
+        name="Дисплей для OnePlus 7T (HD1900) в сборе с тачскрином Черный - (OLED)",
+        normalized_title="Дисплей OnePlus 7T HD1900 тачскрин Черный OLED",
+        item_type="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.NEEDS_REVIEW,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.8445,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_accept_display_matrix_type_matches(db_session, min_score=0.80) == 0
+
     match = db_session.execute(
         select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id == item.id)
     ).scalar_one()

@@ -814,6 +814,35 @@ def _safe_battery_verification_suggest(
     return _device_model_keys_overlap(competitor_keys, product_keys)
 
 
+def _safe_iphone_battery_model_capacity_suggest(
+    item: CompetitorItem,
+    product: Product,
+    *,
+    score: float,
+) -> bool:
+    if score < 0.68:
+        return False
+    item_text = " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
+    product_text = product.name or ""
+    normalized_item = item_text.lower().replace("ё", "е")
+    normalized_product = product_text.lower().replace("ё", "е")
+    if "аккумулятор" not in normalized_item or "iphone" not in normalized_item:
+        return False
+    if "аккумулятор" not in normalized_product or "iphone" not in normalized_product:
+        return False
+    if not (
+        "battery collection" in normalized_item
+        or "верификац" in normalized_item
+        or "новая запчаст" in normalized_item
+    ):
+        return False
+    competitor_keys = _extract_device_model_keys(_competitor_device_model_text(item))
+    product_keys = _extract_device_model_keys(product.name)
+    if not _device_model_keys_overlap(competitor_keys, product_keys):
+        return False
+    return not _capacity_conflict(item_text, product_text, item.attrs_json)
+
+
 def _battery_part_codes_from_text(text: str | None) -> set[str]:
     normalized = (text or "").lower()
     codes: set[str] = set()
@@ -5715,6 +5744,7 @@ def match_items(
         code_overlap_auto_accept = False
         battery_part_code_model_suggest = False
         battery_verification_suggest = False
+        iphone_battery_model_capacity_suggest = False
         disposable_battery_suggest = False
         phone_camera_glass_suggest = False
         phone_sim_tray_suggest = False
@@ -5792,6 +5822,23 @@ def match_items(
             ):
                 status = CompetitorItemMatchStatus.SUGGESTED
                 battery_part_code_model_suggest = True
+
+        if (
+            status
+            in {
+                CompetitorItemMatchStatus.AMBIGUOUS,
+                CompetitorItemMatchStatus.NEEDS_REVIEW,
+            }
+            and item_type == "battery"
+        ):
+            best_product = products.get(best_pid)
+            if best_product and _safe_iphone_battery_model_capacity_suggest(
+                item,
+                best_product,
+                score=best_score,
+            ):
+                status = CompetitorItemMatchStatus.SUGGESTED
+                iphone_battery_model_capacity_suggest = True
 
         if status in {
             CompetitorItemMatchStatus.AMBIGUOUS,
@@ -5935,6 +5982,20 @@ def match_items(
                 "overlap_model_keys": sorted(
                     _extract_device_model_keys(_competitor_device_model_text(item)).intersection(
                         _extract_device_model_keys(best_product.name if best_product else None)
+                    )
+                ),
+            }
+        if iphone_battery_model_capacity_suggest:
+            best_product = products.get(best_pid)
+            item_text = " ".join(filter(None, [item.name, item.normalized_title, item.external_id]))
+            product_text = best_product.name if best_product else None
+            rationale["iphone_battery_model_capacity_suggest"] = {
+                "reason": "iphone_battery_model_overlap_without_capacity_conflict",
+                "competitor_capacity": _extract_capacity(item_text),
+                "product_capacity": _extract_capacity(product_text),
+                "overlap_model_keys": sorted(
+                    _extract_device_model_keys(_competitor_device_model_text(item)).intersection(
+                        _extract_device_model_keys(product_text)
                     )
                 ),
             }

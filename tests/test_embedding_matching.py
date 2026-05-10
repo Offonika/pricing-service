@@ -69,6 +69,7 @@ from tasks.match_competitor_items_embeddings import (
     _safe_disposable_battery_suggest,
     _safe_flex_suggest,
     _safe_housing_part_suggest,
+    _safe_iphone_battery_model_capacity_suggest,
     _safe_phone_camera_glass_suggest,
     _safe_phone_sim_tray_suggest,
     _safe_stencil_suggest,
@@ -454,6 +455,30 @@ def test_safe_battery_verification_suggest_accepts_diagnosable_typo():
     )
 
     assert _safe_battery_verification_suggest(item, product, score=0.73)
+
+
+def test_safe_iphone_battery_model_capacity_suggest_accepts_battery_collection():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BTT-PMI140-PLS-HC",
+        name="Аккумулятор для iPhone 14 Plus - Battery Collection - усиленная 4810 mAh",
+        normalized_title="Аккумулятор iPhone 14 Plus Battery Collection усиленная 4810 mAh",
+        item_type="battery",
+    )
+    product = Product(
+        name=(
+            "Аккумулятор для Apple iPhone 14 Plus (F5ENERGY) (усиленный) "
+            "(4850 мАч) (SPECIAL EDITION) (SYSTEM DIAGNOSABLE) + двухсторонний скотч"
+        )
+    )
+    wrong_capacity = Product(name="Аккумулятор для Apple iPhone 14 Plus (усиленный) (5200 мАч)")
+
+    assert _safe_iphone_battery_model_capacity_suggest(item, product, score=0.70)
+    assert not _safe_iphone_battery_model_capacity_suggest(
+        item,
+        wrong_capacity,
+        score=0.90,
+    )
 
 
 def test_safe_battery_part_code_model_suggest_allows_close_alternatives():

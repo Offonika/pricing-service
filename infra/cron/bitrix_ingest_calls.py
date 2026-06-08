@@ -150,13 +150,33 @@ def resolve_run_settings(env):
     }
 
 
+def resolve_bitrix_ingest_base(env):
+    contour = (env.get("BITRIX_INGEST_CONTOUR") or "").strip().lower()
+    if contour == "box":
+        base = (env.get("BITRIX24_BOX_WEBHOOK_URL") or "").rstrip("/")
+        if not base:
+            raise ValueError("missing env: BITRIX24_BOX_WEBHOOK_URL for BITRIX_INGEST_CONTOUR=box")
+        return base
+    if contour and contour not in {"cloud", "legacy"}:
+        raise ValueError("BITRIX_INGEST_CONTOUR must be one of: box, cloud, legacy")
+
+    base = (env.get("BITRIX_INGEST_WEBHOOK_URL") or env.get("BITRIX24_WEBHOOK_URL") or "").rstrip(
+        "/"
+    )
+    if not base:
+        raise ValueError("missing env: BITRIX_INGEST_WEBHOOK_URL or BITRIX24_WEBHOOK_URL")
+    return base
+
+
 def build_plan(env):
     settings = resolve_run_settings(env)
-    missing = []
-    if not (env.get("BITRIX_INGEST_WEBHOOK_URL") or env.get("BITRIX24_WEBHOOK_URL")):
-        missing.append("BITRIX_INGEST_WEBHOOK_URL or BITRIX24_WEBHOOK_URL")
+    errors = []
+    try:
+        resolve_bitrix_ingest_base(env)
+    except ValueError as exc:
+        errors.append(str(exc))
     if not env.get("DATABASE_URL"):
-        missing.append("DATABASE_URL")
+        errors.append("missing env: DATABASE_URL")
     state_path = settings["state_path"]
     progress_data = load_progress(state_path)
     stale_progress = bool(
@@ -166,7 +186,6 @@ def build_plan(env):
             or progress_data.get("to") != settings["to"]
         )
     )
-    errors = [f"missing env: {name}" for name in missing]
     return {
         "status": "blocked" if errors else "ready",
         "side_effects": False,
@@ -380,20 +399,15 @@ def main():
             )
         return
 
-    for k in ["BITRIX24_WEBHOOK_URL", "DATABASE_URL"]:
-        if k == "BITRIX24_WEBHOOK_URL":
-            if not (env.get("BITRIX_INGEST_WEBHOOK_URL") or env.get("BITRIX24_WEBHOOK_URL")):
-                raise SystemExit(
-                    "Missing required env: BITRIX_INGEST_WEBHOOK_URL or BITRIX24_WEBHOOK_URL"
-                )
-            continue
-        if not env.get(k):
-            raise SystemExit(f"Missing required env: {k}")
+    try:
+        base = resolve_bitrix_ingest_base(env)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if not env.get("DATABASE_URL"):
+        raise SystemExit("Missing required env: DATABASE_URL")
 
     ensure_calls_schema(env)
     ensure_resolution_schema(env)
-
-    base = (env.get("BITRIX_INGEST_WEBHOOK_URL") or env["BITRIX24_WEBHOOK_URL"]).rstrip("/")
 
     # Берём последние 2 дня по МСК и обязательно выбираем все страницы (pagination)
     def on_signal(signum, _frame):

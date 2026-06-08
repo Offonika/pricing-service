@@ -44,12 +44,34 @@ def test_parse_samsung_s23_ultra():
     assert parsed.confidence >= 0.8
 
 
+def test_parse_samsung_a30s_keeps_suffix_and_code_out_of_model():
+    parsed = parse_model_name("Шлейф/FLC Samsung Galaxy A30s (A307F) сканер отпечатка пальцев")
+    assert parsed.brand == "samsung"
+    assert parsed.model == "a 30s"
+    assert parsed.ambiguous is False
+    assert parsed.confidence >= 0.8
+
+
 def test_parse_xiaomi_redmi_note():
     parsed = parse_model_name("Дисплей для Xiaomi Redmi Note 11 Pro 5G")
     assert parsed.brand == "xiaomi"
     assert "redmi note 11" in parsed.model
     assert parsed.ambiguous is False
     assert parsed.confidence >= 0.75
+
+
+def test_parse_xiaomi_redmi_7a_ignores_long_device_code():
+    parsed = parse_model_name("Шлейф для Xiaomi Redmi 7A (M1903C3EE) на кнопки громкости")
+    assert parsed.brand == "xiaomi"
+    assert parsed.model == "redmi 7a"
+    assert parsed.ambiguous is False
+
+
+def test_parse_huawei_p50_combined_series_token():
+    parsed = parse_model_name("Шлейф для Huawei P50 (ABR-LX9) плата на системный разъем")
+    assert parsed.brand == "huawei"
+    assert parsed.model == "p 50"
+    assert parsed.ambiguous is False
 
 
 def test_parse_slash_multi_models_for_competitor_compatibility():
@@ -182,6 +204,22 @@ def test_parse_vivo_x_series():
     assert parsed.confidence >= 0.7
 
 
+def test_parse_vivo_y_suffix_model() -> None:
+    parsed = parse_model_name("Аккумулятор для Vivo Y33s 4G (B-S2)")
+    assert parsed.brand == "vivo"
+    assert parsed.model == "y 33s 4g"
+    assert parsed.ambiguous is False
+    assert parsed.confidence >= 0.7
+
+
+def test_parse_oppo_a_series_with_variant_and_network() -> None:
+    parsed = parse_model_name("Задняя крышка для OPPO A5 Pro 4G (CPH2711)")
+    assert parsed.brand == "oppo"
+    assert parsed.model == "a 5 pro 4g"
+    assert parsed.ambiguous is False
+    assert parsed.confidence >= 0.7
+
+
 def test_parse_oneplus_11r():
     parsed = parse_model_name("Дисплей для OnePlus 11R AMOLED")
     assert parsed.brand == "oneplus"
@@ -211,6 +249,24 @@ def test_parse_apple_iphone_17e() -> None:
     parsed = parse_model_name("Дисплей для iPhone 17e (A3521) в сборе")
     assert parsed.brand == "apple"
     assert parsed.model in {"17e", "iphone 17e"}
+    assert parsed.ambiguous is False
+    assert parsed.confidence >= 0.6
+
+
+def test_parse_apple_iphone_esim_is_not_17e() -> None:
+    parsed = parse_model_name("Материнская плата для iPhone 17 (A3520) E-Sim 256Gb (iCloud locked)")
+    assert parsed.brand == "apple"
+    assert parsed.model == "iphone 17"
+    assert parsed.ambiguous is False
+    assert parsed.confidence >= 0.6
+
+
+def test_parse_apple_iphone_board_keyword() -> None:
+    parsed = parse_model_name(
+        "Материнская плата для iPhone 17 Pro Max (A3526) E-Sim 256Gb (iCloud locked)"
+    )
+    assert parsed.brand == "apple"
+    assert parsed.model == "iphone 17 pro max"
     assert parsed.ambiguous is False
     assert parsed.confidence >= 0.6
 

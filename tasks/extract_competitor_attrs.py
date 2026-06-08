@@ -6,7 +6,6 @@ import argparse
 import hashlib
 import json
 import logging
-import os
 from datetime import date, datetime, timezone
 from typing import Any
 
@@ -29,6 +28,7 @@ from app.services.display_parser import (
     SCREEN_QUALITY_RU,
     parse_display_attributes,
 )
+from app.services.llm_fallback import FallbackChatClient
 from app.services.prompts import get_llm_competitor_attrs_prompt
 from tasks.normalize_competitor_item_type import rule_classify
 
@@ -96,6 +96,25 @@ def _llm_request(
     resp = client.post(f"{base_url}/v1/chat/completions", json=payload, timeout=30.0)
     resp.raise_for_status()
     return _extract_content(resp.json())
+
+
+def _llm_request_with_fallback(
+    client: FallbackChatClient,
+    prompt: str,
+    content: str,
+    *,
+    max_tokens: int = 400,
+) -> tuple[str, str]:
+    result = client.chat_completion(
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": content},
+        ],
+        temperature=0.0,
+        max_tokens=max_tokens,
+        response_validator=lambda raw: _parse_json(raw) is not None,
+    )
+    return result.content, result.model
 
 
 def _normalize_attrs(attrs: Any, uncertain_fields: Any) -> dict[str, Any]:
@@ -344,15 +363,15 @@ def extract_attrs(
             session.commit()
         return stats
 
-    base_url = os.environ.get("LOCAL_LLM_BASE_URL")
-    model = os.environ.get("LOCAL_LLM_CHAT_MODEL")
-    if not base_url or not model:
-        raise RuntimeError("LOCAL_LLM_BASE_URL и LOCAL_LLM_CHAT_MODEL должны быть заданы")
+    llm_client = FallbackChatClient.from_env(timeout=llm_timeout)
+    if not llm_client.has_providers:
+        raise RuntimeError("No local/OpenAI LLM providers are configured")
+    logging.info("LLM attrs fallback enabled: providers=%s", llm_client.provider_names)
 
     prompt = get_llm_competitor_attrs_prompt()
     prompt_hash = _prompt_hash(prompt)
 
-    with httpx.Client(timeout=llm_timeout) as client:
+    with llm_client as client:
         for item in items:
             if not item.name:
                 continue
@@ -363,22 +382,16 @@ def extract_attrs(
             error_message = None
 
             content = f"Source: {item.competitor} SKU: {item.external_id}\nName: {item.name}"
+            model = None
             try:
-                raw_response = _llm_request(client, base_url, model, prompt, content)
+                raw_response, model = _llm_request_with_fallback(client, prompt, content)
                 parsed = _parse_json(raw_response)
                 if parsed is None and repair_attempts > 0:
-                    repair_payload = {
-                        "model": model,
-                        "messages": [
-                            {"role": "system", "content": REPAIR_PROMPT},
-                            {"role": "user", "content": raw_response},
-                        ],
-                        "temperature": 0.0,
-                        "max_tokens": 400,
-                    }
-                    resp = client.post(f"{base_url}/v1/chat/completions", json=repair_payload)
-                    resp.raise_for_status()
-                    raw_response = _extract_content(resp.json())
+                    raw_response, model = _llm_request_with_fallback(
+                        client,
+                        REPAIR_PROMPT,
+                        raw_response,
+                    )
                     parsed = _parse_json(raw_response)
             except httpx.TimeoutException as exc:
                 error_status = CompetitorItemParseStatus.TIMEOUT

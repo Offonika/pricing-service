@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchProducts } from "../api/matching";
-import type { ProductFacets } from "../api/types";
+import type { ProductFacets, ProductRow, ProductSort } from "../api/types";
 import { useSelectedProduct } from "../store/useSelectionStore";
 
 interface Props {
@@ -10,10 +10,12 @@ interface Props {
   category: string;
   compatibilityBrand: string;
   subject: string;
+  sort: ProductSort;
   page: number;
   pageSize: number;
   onTotalChange?: (total: number) => void;
   onFacetsChange?: (facets: ProductFacets | null) => void;
+  onProductRowsChange?: (items: ProductRow[], page: number) => void;
 }
 
 const STATUS_LABEL: Record<string, string> = {
@@ -34,22 +36,36 @@ export function ProductsGrid({
   category,
   compatibilityBrand,
   subject,
+  sort,
   page,
   pageSize,
   onTotalChange,
   onFacetsChange,
+  onProductRowsChange,
 }: Props) {
-  const { selectedProductId, setSelectedProduct, openPicker } = useSelectedProduct();
+  const { selectedProductId, setSelectedProduct, openPicker, isPickerOpen } = useSelectedProduct();
   const hasProductFilters = Boolean(search || status || category || compatibilityBrand || subject);
   const includeLiveCounts = !hasProductFilters;
   const { data, isError, isLoading } = useQuery({
-    queryKey: ["products", search, status, category, compatibilityBrand, subject, includeLiveCounts, page, pageSize],
+    queryKey: [
+      "products",
+      search,
+      status,
+      category,
+      compatibilityBrand,
+      subject,
+      sort,
+      includeLiveCounts,
+      page,
+      pageSize,
+    ],
     queryFn: () =>
       fetchProducts({
         page,
         page_size: pageSize,
         search: search || undefined,
         status: status || undefined,
+        sort,
         category: category || undefined,
         compatibility_brand: compatibilityBrand || undefined,
         subject: subject || undefined,
@@ -72,6 +88,15 @@ export function ProductsGrid({
   }, [data?.facets, onFacetsChange]);
 
   useEffect(() => {
+    if (data && onProductRowsChange) {
+      onProductRowsChange(data.items, page);
+    }
+  }, [data, onProductRowsChange, page]);
+
+  useEffect(() => {
+    if (isPickerOpen) {
+      return;
+    }
     if (!data?.items?.length) {
       setSelectedProduct(null);
       return;
@@ -80,7 +105,7 @@ export function ProductsGrid({
     if (!exists) {
       setSelectedProduct(data.items[0]);
     }
-  }, [data, selectedProductId, setSelectedProduct]);
+  }, [data, isPickerOpen, selectedProductId, setSelectedProduct]);
 
   const products = data?.items ?? [];
 
@@ -121,7 +146,15 @@ export function ProductsGrid({
               }}
             >
               <span className="mono">{product.article || "-"}</span>
-              <strong>{product.name}</strong>
+              <strong className="product-title-cell">
+                <span>{product.name}</span>
+                {product.compatibility_models?.length ? (
+                  <em title={product.compatibility_models.join(", ")}>
+                    1С: {product.compatibility_models.slice(0, 3).join(", ")}
+                    {product.compatibility_models.length > 3 ? ` +${product.compatibility_models.length - 3}` : ""}
+                  </em>
+                ) : null}
+              </strong>
               <span>{product.brand || "-"}</span>
               <span>{product.category || "-"}</span>
               <span>{product.subject || "-"}</span>

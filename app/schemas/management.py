@@ -61,6 +61,8 @@ class ReceivableCaseItem(BaseModel):
     origin_manager_name: str | None = None
     current_manager_ref: str | None = None
     current_manager_name: str | None = None
+    department_ref: str | None = None
+    department_name: str | None = None
     planned_payment_date: datetime | None = None
     credit_depth_days: int | None = None
     shipment_ban: bool | None = None
@@ -73,6 +75,40 @@ class ReceivableCaseItem(BaseModel):
 
 class ReceivablesCaseListResponse(ManagementEnvelope):
     payload: list[ReceivableCaseItem]
+
+
+class CounterpartyFolderRecommendationItem(BaseModel):
+    snapshot_date: date
+    counterparty_ref: str
+    counterparty_name: str | None = None
+    current_balance: Decimal
+    current_folder_ref: str | None = None
+    current_folder_name: str | None = None
+    recommended_folder_ref: str | None = None
+    recommended_folder_name: str | None = None
+    debt_department_ref: str | None = None
+    debt_department_name: str | None = None
+    origin_document_ref: str | None = None
+    origin_document_number: str | None = None
+    origin_document_date: datetime | None = None
+    origin_manager_ref: str | None = None
+    origin_manager_name: str | None = None
+    current_manager_ref: str | None = None
+    current_manager_name: str | None = None
+    planned_payment_date: datetime | None = None
+    credit_depth_days: int | None = None
+    payment_term_source: str | None = None
+    due_date: datetime | None = None
+    overdue_days: int | None = None
+    is_overdue: bool
+    status: str
+    review_reason: str | None = None
+
+
+class CounterpartyFolderRecommendationResponse(ManagementEnvelope):
+    report_revision: str
+    summary: dict[str, Any]
+    payload: list[CounterpartyFolderRecommendationItem]
 
 
 class ReceivablesManagerSummaryItem(BaseModel):

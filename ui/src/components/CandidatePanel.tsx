@@ -1,6 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AxiosError } from "axios";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import {
   acceptItemMatch,
@@ -16,6 +16,16 @@ import { useSelectedProduct } from "../store/useSelectionStore";
 interface SearchState {
   productId: number | null;
   value: string;
+}
+
+interface SelectedCandidateState {
+  productId: number | null;
+  value: number | null;
+}
+
+interface CandidatePageState {
+  productId: number | null;
+  value: number;
 }
 
 type CompareTab = "summary" | "properties" | "history";
@@ -60,6 +70,72 @@ const CANDIDATE_STATUS_OPTIONS = [
   { value: "rejected", label: "Отклоненные" },
 ];
 
+const CANDIDATE_FILTER_PREFS_KEY = "pricing.matching.candidate-filters.v1";
+
+interface CandidateFilterPrefs {
+  onlyInStock: boolean;
+  includeRejected: boolean;
+  source: string;
+  itemType: string;
+  categoryGroup: string;
+  brand: string;
+  quality: string;
+  color: string;
+  candidateStatus: string;
+  isWideList: boolean;
+}
+
+const DEFAULT_CANDIDATE_FILTER_PREFS: CandidateFilterPrefs = {
+  onlyInStock: false,
+  includeRejected: false,
+  source: "",
+  itemType: "",
+  categoryGroup: "",
+  brand: "",
+  quality: "",
+  color: "",
+  candidateStatus: "",
+  isWideList: false,
+};
+
+function stringPref(data: Record<string, unknown>, key: string) {
+  const value = data[key];
+  return typeof value === "string" ? value : "";
+}
+
+function booleanPref(data: Record<string, unknown>, key: string) {
+  return data[key] === true;
+}
+
+function readCandidateFilterPrefs(): CandidateFilterPrefs {
+  if (typeof window === "undefined") return DEFAULT_CANDIDATE_FILTER_PREFS;
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(CANDIDATE_FILTER_PREFS_KEY) || "{}") as Record<string, unknown>;
+    return {
+      onlyInStock: booleanPref(parsed, "onlyInStock"),
+      includeRejected: booleanPref(parsed, "includeRejected"),
+      source: stringPref(parsed, "source"),
+      itemType: stringPref(parsed, "itemType"),
+      categoryGroup: stringPref(parsed, "categoryGroup"),
+      brand: stringPref(parsed, "brand"),
+      quality: stringPref(parsed, "quality"),
+      color: stringPref(parsed, "color"),
+      candidateStatus: stringPref(parsed, "candidateStatus"),
+      isWideList: booleanPref(parsed, "isWideList"),
+    };
+  } catch {
+    return DEFAULT_CANDIDATE_FILTER_PREFS;
+  }
+}
+
+function writeCandidateFilterPrefs(prefs: CandidateFilterPrefs) {
+  try {
+    window.localStorage.setItem(CANDIDATE_FILTER_PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    // localStorage может быть недоступен; фильтры просто не будут запоминаться.
+  }
+}
+
 function numberFilter(value: string) {
   const trimmed = value.trim();
   if (!trimmed) return undefined;
@@ -73,6 +149,34 @@ function valueText(value: string | number | boolean | null | undefined) {
   return String(value);
 }
 
+function compatibilityHint(candidate: Candidate | undefined) {
+  return candidate?.compatibility_hint;
+}
+
+function shouldShowCompatibilityBadge(candidate: Candidate) {
+  const hint = compatibilityHint(candidate);
+  return Boolean(hint && hint.status !== "not_required");
+}
+
+function compatibilityTitle(candidate: Candidate) {
+  const hint = compatibilityHint(candidate);
+  if (!hint) return "";
+  const values = hint.matched_values?.length ? `: ${hint.matched_values.join(", ")}` : "";
+  return `${hint.detail || hint.label}${values}`;
+}
+
+function compatibilitySummary(candidate: Candidate | undefined) {
+  const hint = compatibilityHint(candidate);
+  if (!hint || hint.status === "not_required") return "Не требуется";
+  const values = hint.matched_values?.length ? `: ${hint.matched_values.join(", ")}` : "";
+  return `${hint.label}${values}`;
+}
+
+function isAutoCompatibilityHint(candidate: Candidate | undefined) {
+  const status = compatibilityHint(candidate)?.status;
+  return status === "inferred_model" || status === "inferred_code";
+}
+
 interface MatchingApiError {
   detail?: string | { error?: string; reason?: string };
 }
@@ -83,7 +187,7 @@ function matchingErrorMessage(error: unknown, fallback: string) {
   if (typeof detail === "string") return detail;
   if (!detail?.error) return fallback;
   if (detail.error === "compatibility_required") {
-    return "Не принято: у нового товара конкурента не указана совместимость с моделью";
+    return "Не принято: не нашли общую модель или код. Отклоните этот вариант или передайте его на разбор совместимости.";
   }
   if (detail.error === "candidate_guardrail_blocked") {
     return `Не принято: конфликт проверки${detail.reason ? ` (${detail.reason})` : ""}`;
@@ -94,32 +198,60 @@ function matchingErrorMessage(error: unknown, fallback: string) {
   return detail.reason || fallback;
 }
 
-export function CandidatePanel() {
+function canAcceptCandidate(candidate: Candidate | undefined) {
+  if (!candidate?.competitor_item_id) return false;
+  return !["accepted", "current", "locked", "rejected"].includes(candidate.status || "");
+}
+
+interface CandidatePanelProps {
+  onNextProduct?: () => void;
+  onAfterDecision?: () => void;
+}
+
+export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePanelProps) {
   const queryClient = useQueryClient();
   const { selectedProduct, selectedProductId, selectedProductName, selectedProductArticle, isPickerOpen, closePicker } =
     useSelectedProduct();
+  const savedCandidatePrefs = useMemo(() => readCandidateFilterPrefs(), []);
   const [searchState, setSearchState] = useState<SearchState>({ productId: null, value: "" });
   const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [selectedCandidateId, setSelectedCandidateId] = useState<number | null>(null);
-  const [page, setPage] = useState(1);
-  const [onlyInStock, setOnlyInStock] = useState(false);
-  const [includeRejected, setIncludeRejected] = useState(false);
-  const [source, setSource] = useState("");
-  const [itemType, setItemType] = useState("");
-  const [categoryGroup, setCategoryGroup] = useState("");
-  const [brand, setBrand] = useState("");
-  const [quality, setQuality] = useState("");
-  const [color, setColor] = useState("");
+  const [selectedCandidateState, setSelectedCandidateState] = useState<SelectedCandidateState>({
+    productId: null,
+    value: null,
+  });
+  const [pageState, setPageState] = useState<CandidatePageState>({ productId: null, value: 1 });
+  const [onlyInStock, setOnlyInStock] = useState(savedCandidatePrefs.onlyInStock);
+  const [includeRejected, setIncludeRejected] = useState(savedCandidatePrefs.includeRejected);
+  const [source, setSource] = useState(savedCandidatePrefs.source);
+  const [itemType, setItemType] = useState(savedCandidatePrefs.itemType);
+  const [categoryGroup, setCategoryGroup] = useState(savedCandidatePrefs.categoryGroup);
+  const [brand, setBrand] = useState(savedCandidatePrefs.brand);
+  const [quality, setQuality] = useState(savedCandidatePrefs.quality);
+  const [color, setColor] = useState(savedCandidatePrefs.color);
   const [model, setModel] = useState("");
   const [priceMin, setPriceMin] = useState("");
   const [priceMax, setPriceMax] = useState("");
-  const [candidateStatus, setCandidateStatus] = useState("");
-  const [isWideList, setIsWideList] = useState(false);
+  const [candidateStatus, setCandidateStatus] = useState(savedCandidatePrefs.candidateStatus);
+  const [isWideList, setIsWideList] = useState(savedCandidatePrefs.isWideList);
   const [compareTab, setCompareTab] = useState<CompareTab>("summary");
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pageSize = 25;
 
   const search = searchState.productId === selectedProductId ? searchState.value : "";
+  const selectedCandidateId = selectedCandidateState.productId === selectedProductId ? selectedCandidateState.value : null;
+  const page = pageState.productId === selectedProductId ? pageState.value : 1;
+  const setSelectedCandidateId = useCallback((candidateId: number | null) => {
+    setSelectedCandidateState({ productId: selectedProductId, value: candidateId });
+  }, [selectedProductId]);
+  const setPage = useCallback((value: number | ((previous: number) => number)) => {
+    setPageState((state) => {
+      const previous = state.productId === selectedProductId ? state.value : 1;
+      return {
+        productId: selectedProductId,
+        value: typeof value === "function" ? value(previous) : value,
+      };
+    });
+  }, [selectedProductId]);
 
   useEffect(() => {
     if (searchDebounceRef.current) {
@@ -135,7 +267,33 @@ export function CandidatePanel() {
         searchDebounceRef.current = null;
       }
     };
-  }, [search]);
+  }, [search, setPage]);
+
+  useEffect(() => {
+    writeCandidateFilterPrefs({
+      onlyInStock,
+      includeRejected,
+      source,
+      itemType,
+      categoryGroup,
+      brand,
+      quality,
+      color,
+      candidateStatus,
+      isWideList,
+    });
+  }, [
+    brand,
+    candidateStatus,
+    categoryGroup,
+    color,
+    includeRejected,
+    isWideList,
+    itemType,
+    onlyInStock,
+    quality,
+    source,
+  ]);
 
   const { data, isError, isLoading } = useQuery({
     queryKey: [
@@ -193,9 +351,7 @@ export function CandidatePanel() {
   );
   const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const canAcceptSelected = Boolean(
-    selectedCandidate?.competitor_item_id && selectedCandidate.status !== "locked" && !selectedCandidate.needs_compat_review
-  );
+  const canAcceptSelected = canAcceptCandidate(selectedCandidate);
   const selectedCandidateItemId = selectedCandidate?.competitor_item_id;
   const {
     data: propertyData,
@@ -236,8 +392,10 @@ export function CandidatePanel() {
   const acceptMutation = useMutation({
     mutationFn: (candidate: Candidate) => acceptItemMatch(selectedProductId!, candidate.competitor_item_id!),
     onSuccess: () => {
+      setSelectedCandidateId(null);
       invalidateMatching();
       toast.success("Сопоставление принято");
+      onAfterDecision?.();
     },
     onError: (error) => toast.error(matchingErrorMessage(error, "Не удалось принять сопоставление")),
   });
@@ -245,8 +403,10 @@ export function CandidatePanel() {
   const rejectMutation = useMutation({
     mutationFn: (candidate: Candidate) => rejectItemMatch(selectedProductId!, candidate.competitor_item_id!),
     onSuccess: () => {
+      setSelectedCandidateId(null);
       invalidateMatching();
       toast.success("Кандидат отклонен");
+      onAfterDecision?.();
     },
     onError: (error) => toast.error(matchingErrorMessage(error, "Не удалось отклонить кандидата")),
   });
@@ -268,6 +428,11 @@ export function CandidatePanel() {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
         e.preventDefault();
         document.getElementById("candidate-search")?.focus();
+        return;
+      }
+      if (!isTyping && e.key.toLowerCase() === "n") {
+        e.preventDefault();
+        onNextProduct?.();
         return;
       }
       if (isTyping || !items.length) return;
@@ -294,7 +459,16 @@ export function CandidatePanel() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [acceptMutation, canAcceptSelected, closePicker, isPickerOpen, items, selectedCandidate]);
+  }, [
+    acceptMutation,
+    canAcceptSelected,
+    closePicker,
+    isPickerOpen,
+    items,
+    onNextProduct,
+    selectedCandidate,
+    setSelectedCandidateId,
+  ]);
 
   if (!isPickerOpen || !selectedProductId) return null;
 
@@ -352,6 +526,9 @@ export function CandidatePanel() {
           <h2>{selectedProductName}</h2>
         </div>
         <div className="picker__topbar-actions">
+          <button className="btn btn--ghost" onClick={onNextProduct} title="Следующий товар (N)">
+            Следующий
+          </button>
           <button className="btn btn--ghost" onClick={() => setIsWideList((value) => !value)} aria-pressed={isWideList}>
             {isWideList ? "Показать сравнение" : "Шире список"}
           </button>
@@ -379,6 +556,14 @@ export function CandidatePanel() {
         <div className="kv">
           <span>Предмет</span>
           <strong>{selectedProduct?.subject || "-"}</strong>
+        </div>
+        <div className="kv">
+          <span>Совм. 1С</span>
+          <strong title={selectedProduct?.compatibility_models?.join(", ") || undefined}>
+            {selectedProduct?.compatibility_models?.length
+              ? selectedProduct.compatibility_models.join(", ")
+              : "-"}
+          </strong>
         </div>
         <div className="kv">
           <span>Статус</span>
@@ -589,9 +774,12 @@ export function CandidatePanel() {
                   <span className={`badge badge--${candidate.status || "none"}`}>
                     {STATUS_TEXT[candidate.status || "available"] || candidate.status}
                   </span>
-                  {candidate.needs_compat_review && (
-                    <span className="badge badge--compat-review" title="Нет разобранной совместимости">
-                      Совместимость
+                  {shouldShowCompatibilityBadge(candidate) && (
+                    <span
+                      className={`badge badge--compat-${candidate.compatibility_hint?.status}`}
+                      title={compatibilityTitle(candidate)}
+                    >
+                      {candidate.compatibility_hint?.label}
                     </span>
                   )}
                   {candidate.property_summary && (
@@ -686,8 +874,22 @@ export function CandidatePanel() {
                     <span>Свойства</span>
                     <strong>{selectedCandidate.property_summary?.label || "-"}</strong>
                   </div>
-                  {selectedCandidate.needs_compat_review && (
-                    <p className="picker__note">Нужно разобрать совместимость перед принятием сопоставления.</p>
+                  <div className="kv">
+                    <span>Совместимость</span>
+                    <strong title={selectedCandidate.compatibility_hint?.detail || undefined}>
+                      {compatibilitySummary(selectedCandidate)}
+                    </strong>
+                  </div>
+                  {selectedCandidate.compatibility_hint?.status === "required" && (
+                    <p className="picker__note">
+                      {selectedCandidate.compatibility_hint.detail ||
+                        "Совместимость не заведена. Если модель или код в названии/SKU совпадает с нашим товаром, нажмите «Принять». Если не совпадает или система не принимает, нажмите «Отклонить»."}
+                    </p>
+                  )}
+                  {isAutoCompatibilityHint(selectedCandidate) && (
+                    <p className="picker__note picker__note--ok">
+                      {selectedCandidate.compatibility_hint?.detail}
+                    </p>
                   )}
                   {selectedCandidate.reason && <p className="picker__note">{selectedCandidate.reason}</p>}
                   {selectedCandidate.url && (

@@ -510,3 +510,58 @@ def test_catalog_upsert_uses_newest_record_and_snapshots_are_idempotent():
         result = match_competitor_ftp_records(session, days_back=3)
         assert result["catalog_snapshots"] == 0
         assert session.query(CompetitorItemSnapshot).count() == 2
+
+
+def test_match_latest_only_processes_freshest_record_per_competitor_sku():
+    engine = setup_db()
+    with Session(engine) as session:
+        product = Product(article="LCD-IP18", name="Дисплей для Apple iPhone 18")
+        session.add(product)
+        session.flush()
+        newest_file_date = date.today()
+        oldest_file_date = newest_file_date - timedelta(days=1)
+
+        old_record = CompetitorFtpRecord(
+            raw_row_id=1,
+            file_id=1,
+            source="moba",
+            file_date=oldest_file_date,
+            group_name="Дисплеи",
+            sku="LCD-IP18",
+            name="Дисплей для iPhone 18",
+            price_opt=None,
+            price_roz=100,
+            link="http://old",
+            in_stock=False,
+            amount=0,
+            observed_at=datetime.combine(oldest_file_date, datetime.min.time(), tzinfo=UTC),
+        )
+        new_record = CompetitorFtpRecord(
+            raw_row_id=2,
+            file_id=2,
+            source="moba",
+            file_date=newest_file_date,
+            group_name="Дисплеи",
+            sku="LCD-IP18",
+            name="Дисплей для iPhone 18",
+            price_opt=None,
+            price_roz=300,
+            link="http://new",
+            in_stock=True,
+            amount=3,
+            observed_at=datetime.combine(newest_file_date, datetime.min.time(), tzinfo=UTC),
+        )
+        session.add_all([old_record, new_record])
+        session.commit()
+
+        result = match_competitor_ftp_records(session, days_back=3, latest_only=True)
+
+        assert result["latest_only"] is True
+        assert result["records_before_latest_only"] == 2
+        assert result["processed"] == 1
+        assert result["catalog_snapshots"] == 1
+        item = (
+            session.query(CompetitorItem).filter_by(competitor="moba", external_id="LCD-IP18").one()
+        )
+        assert item.scraped_at == new_record.observed_at
+        assert item.price_roz == 300

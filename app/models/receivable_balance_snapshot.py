@@ -41,6 +41,8 @@ class ReceivableBalanceSnapshot(Base):
     origin_manager_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     current_manager_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     current_manager_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    department_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    department_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     last_sale_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_payment_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     planned_payment_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

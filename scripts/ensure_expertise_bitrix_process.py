@@ -287,6 +287,8 @@ CUSTOM_FIELD_SPECS = [
 COMPATIBLE_BITRIX_TYPES = {
     "string": {"string", "crm"},
     "text": {"text", "string"},
+    "double": {"double", "integer"},
+    "enumeration": {"enumeration"},
     "integer": {"integer", "double"},
     "boolean": {"boolean", "char"},
     "datetime": {"datetime", "date"},
@@ -680,6 +682,10 @@ def _field_config_for_spec(spec: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         return "string", {"DEFAULT_VALUE": "", "SIZE": 20, "ROWS": 1}
     if field_type == "text":
         return "string", {"DEFAULT_VALUE": "", "SIZE": 50, "ROWS": 5}
+    if field_type == "double":
+        return "double", {"SIZE": 20, "PRECISION": 2, "DEFAULT_VALUE": None}
+    if field_type == "enumeration":
+        return "enumeration", {"DISPLAY": "LIST", "LIST_HEIGHT": 1, "SHOW_NO_VALUE": "Y"}
     if field_type == "integer":
         return "integer", {"SIZE": 20, "MIN_VALUE": 0, "MAX_VALUE": 0, "DEFAULT_VALUE": None}
     if field_type == "boolean":
@@ -718,6 +724,40 @@ def _spec_show_filter(spec: dict[str, Any]) -> str:
     return "E" if _spec_searchable(spec) else "N"
 
 
+def _enum_options_for_spec(spec: dict[str, Any]) -> list[dict[str, Any]]:
+    options = spec.get("enum") or []
+    result: list[dict[str, Any]] = []
+    for index, option in enumerate(options, start=1):
+        if isinstance(option, str):
+            value = option
+            xml_id = _slug_suffix(option)
+            is_default = False
+        else:
+            value = str(option["value"])
+            xml_id = str(option.get("xml_id") or option.get("xmlId") or _slug_suffix(value))
+            is_default = bool(option.get("default", False))
+        result.append(
+            {
+                "value": value,
+                "xmlId": xml_id,
+                "def": "Y" if is_default else "N",
+                "sort": 100 + index * 100,
+            }
+        )
+    return result
+
+
+def _enum_map_from_field(field: dict[str, Any]) -> dict[str, str]:
+    enum_items = field.get("enum") or []
+    result: dict[str, str] = {}
+    for item in enum_items:
+        xml_id = str(item.get("xmlId") or item.get("XML_ID") or "").strip()
+        enum_id = str(item.get("id") or item.get("ID") or "").strip()
+        if xml_id and enum_id:
+            result[xml_id] = enum_id
+    return result
+
+
 def ensure_custom_fields(
     webhook_base: str,
     *,
@@ -753,6 +793,8 @@ def ensure_custom_fields(
                 "sort": 100 + index * 10,
                 "settings": settings,
             }
+            if user_type_id == "enumeration":
+                field["enum"] = _enum_options_for_spec(spec)
             response = bitrix_call(
                 webhook_base,
                 "userfieldconfig.add",
@@ -770,6 +812,7 @@ def ensure_custom_fields(
                 "moduleId": "crm",
                 "id": current["id"],
                 "field": {
+                    "userTypeId": user_type_id,
                     "languageId": "ru",
                     "xmlId": xml_id,
                     "showFilter": _spec_show_filter(spec),
@@ -781,6 +824,25 @@ def ensure_custom_fields(
                 },
             },
         )
+        if user_type_id == "enumeration":
+            bitrix_call(
+                webhook_base,
+                "userfieldconfig.update",
+                {
+                    "moduleId": "crm",
+                    "id": current["id"],
+                    "field": {
+                        "userTypeId": "enumeration",
+                        "enum": _enum_options_for_spec(spec),
+                    },
+                },
+            )
+            refreshed_response = bitrix_call(
+                webhook_base,
+                "userfieldconfig.get",
+                {"moduleId": "crm", "id": current["id"]},
+            )
+            current = (refreshed_response.get("result") or {}).get("field") or current
         sync_rows.append(
             {
                 "logical_key": spec["logical_key"],
@@ -788,6 +850,7 @@ def ensure_custom_fields(
                 "field_name": current.get("fieldName") or field_name,
                 "field_id": current.get("id"),
                 "xml_id": xml_id,
+                "enum_map": _enum_map_from_field(current),
                 "action": sync_action,
             }
         )

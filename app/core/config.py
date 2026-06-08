@@ -57,6 +57,7 @@ class Settings(BaseSettings):
     # LLM / OpenAI
     openai_api_key: str | None = None
     openai_api_base: str | None = None
+    openai_http_proxy: str | None = None
     openai_model: str = "gpt-4o-mini"
     local_llm_base_url: str | None = None
     local_llm_chat_model: str | None = None
@@ -111,7 +112,7 @@ class Settings(BaseSettings):
         }
     )
     expertise_alarm_review_warning_hours: int = 24
-    expertise_alarm_notify_warning_hours: int = 24
+    expertise_alarm_notify_warning_hours: int = 48
     expertise_alarm_notify_escalation_hours: int = 48
     expertise_alarm_review_primary_days_map: dict[str, int] = Field(
         default_factory=lambda: {
@@ -145,13 +146,63 @@ class Settings(BaseSettings):
     card_balance_bitrix_field_map: dict[str, str] = Field(default_factory=dict)
     card_balance_bitrix_employee_overrides: dict[str, str] = Field(default_factory=dict)
     card_balance_auto_create_daily: bool = False
+    card_balance_pilot_cashbox_codes: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    card_balance_require_workday: bool = True
     card_balance_tolerance_rub: float = 0.0
     card_balance_max_stale_days: int = 1
     card_balance_ocr_enabled: bool = True
+    card_balance_ocr_required: bool = False
     card_balance_ocr_model: str = "gpt-4o-mini"
     card_balance_ocr_min_confidence: float = 0.75
     card_balance_ocr_timeout_seconds: float = 60.0
     card_balance_ocr_max_image_bytes: int = 10 * 1024 * 1024
+    order_fulfillment_internal_api_token: str | None = None
+    order_fulfillment_bitrix_webhook_url: str | None = None
+    order_fulfillment_artifact_dir: str = ".local/order-fulfillment-pilot"
+    order_fulfillment_site_chat_dialog_id: str = "chat733"
+    order_fulfillment_spb_courier_chat_dialog_id: str = "chat727"
+    order_fulfillment_ocr_enabled: bool = True
+    order_fulfillment_ocr_model: str | None = None
+    order_fulfillment_ocr_min_confidence: float = 0.75
+    order_fulfillment_ocr_timeout_seconds: float = 60.0
+    order_fulfillment_ocr_max_image_bytes: int = 10 * 1024 * 1024
+    order_fulfillment_notify_enabled: bool = False
+    order_fulfillment_notify_business_user_ids: list[int] = Field(default_factory=list)
+    order_fulfillment_notify_tech_user_ids: list[int] = Field(default_factory=list)
+    order_fulfillment_notify_method: str = "im.notify.system.add"
+    order_fulfillment_notify_site_dialog_id: str | None = None
+    order_fulfillment_notify_site_dialog_method: str = "im.message.add"
+    order_fulfillment_notify_state_path: str = (
+        ".local/order-fulfillment-pilot/order-fulfillment-notify-state.json"
+    )
+    order_fulfillment_known_raw_deliveries: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: [
+            "Самовывоз",
+            "СДЭК (Самовывоз)",
+            "Доставка курьером",
+            "Почта России (Доставка в отделение)",
+        ]
+    )
+    bank_payments_internal_api_token: str | None = None
+    bank_payments_artifact_dir: str = ".local/bank-payments"
+    bank_payments_own_accounts: Annotated[list[str], NoDecode] = Field(default_factory=list)
+    bank_payments_acquiring_contract_code: str = "РБ0022772"
+    bank_payments_salary_person_name: str = "Зарплата"
+    bank_payments_b24_webhook_url: str | None = None
+    bank_payments_b24_input_folder_id: int | None = None
+    bank_payments_b24_ready_folder_id: int | None = None
+    bank_payments_b24_error_folder_id: int | None = None
+    bank_payments_b24_poll_limit: int = 50
+    bank_payments_b24_max_file_bytes: int = 10 * 1024 * 1024
+    bank_payments_b24_state_file: str = ".local/bank-payments/bitrix-state.json"
+    bank_payments_source_database_url: str | None = None
+    bank_payments_source_schema: str = "finance"
+    bank_payments_own_name: str = ""
+    bank_payments_own_inn: str = ""
+    bank_payments_own_kpp: str = ""
+    bank_payments_own_bank_name: str = ""
+    bank_payments_own_bank_bic: str = ""
+    bank_payments_own_bank_correspondent_account: str = ""
     receivable_ledger_window_chunk_days: int = 1
     receivable_workflow_enabled: bool = False
     receivable_bitrix_webhook_url: str | None = None
@@ -159,10 +210,17 @@ class Settings(BaseSettings):
     receivable_bitrix_category_id: int | None = None
     receivable_bitrix_stage_map: dict[str, str] = Field(default_factory=dict)
     receivable_bitrix_field_map: dict[str, str] = Field(default_factory=dict)
+    receivable_bitrix_enum_map: dict[str, dict[str, str]] = Field(default_factory=dict)
     receivable_sms_mode: str = "dry_run"
     receivable_task_payloads_enabled: bool = True
     receivable_retail_network_head_user_id: int | None = None
     receivable_department_manager_map: dict[str, int] = Field(default_factory=dict)
+    receivable_workflow_department_refs: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    receivable_workflow_department_names: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
     management_receivables_max_lag_days: int = 1
     management_staffing_max_lag_days: int = 1
     management_task_payloads_max_lag_days: int = 1
@@ -176,6 +234,8 @@ class Settings(BaseSettings):
     logistics_bot_poll_timeout_seconds: int = 30
     logistics_bot_webhook_secret: str | None = None
     logistics_bot_webhook_url: str | None = None
+    logistics_web_session_secret: str | None = None
+    logistics_web_session_ttl_seconds: int = 8 * 60 * 60
 
     # Embeddings / matching pipeline
     embeddings_model: str = "text-embedding-3-small"
@@ -289,7 +349,37 @@ class Settings(BaseSettings):
             return {str(key): str(item) for key, item in parsed.items() if item is not None}
         raise ValueError("unsupported mapping value")
 
-    @field_validator("telephony_review_line_ids", mode="before")
+    @field_validator("receivable_bitrix_enum_map", mode="before")
+    @classmethod
+    def _parse_nested_string_mapping(cls, value: Any) -> dict[str, dict[str, str]]:
+        if value in (None, ""):
+            return {}
+        if isinstance(value, str):
+            parsed = json.loads(value)
+        else:
+            parsed = value
+        if not isinstance(parsed, dict):
+            raise ValueError("expected JSON object")
+        result: dict[str, dict[str, str]] = {}
+        for key, nested in parsed.items():
+            if not isinstance(nested, dict):
+                continue
+            result[str(key)] = {
+                str(nested_key): str(nested_value)
+                for nested_key, nested_value in nested.items()
+                if nested_value is not None
+            }
+        return result
+
+    @field_validator(
+        "telephony_review_line_ids",
+        "bank_payments_own_accounts",
+        "card_balance_pilot_cashbox_codes",
+        "order_fulfillment_known_raw_deliveries",
+        "receivable_workflow_department_refs",
+        "receivable_workflow_department_names",
+        mode="before",
+    )
     @classmethod
     def _parse_string_list(cls, value: Any) -> list[str]:
         if value in (None, ""):
@@ -346,6 +436,8 @@ class Settings(BaseSettings):
         "expertise_alarm_review_primary_user_ids",
         "expertise_alarm_review_escalation_user_ids",
         "expertise_alarm_review_top_escalation_user_ids",
+        "order_fulfillment_notify_business_user_ids",
+        "order_fulfillment_notify_tech_user_ids",
         mode="before",
     )
     @classmethod

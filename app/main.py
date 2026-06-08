@@ -7,6 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.agents import router as agents_router
 from app.api.analytics import router as analytics_router
+from app.api.bank_payments import router as bank_payments_router
 from app.api.bi import router as bi_router
 from app.api.bitrix_matching import page_router as bitrix_matching_page_router
 from app.api.bitrix_matching import router as bitrix_matching_router
@@ -17,8 +18,11 @@ from app.api.health import router as health_router
 from app.api.internal_alerts import router as internal_alerts_router
 from app.api.logistics import router as logistics_router
 from app.api.logistics_bot import router as logistics_bot_router
+from app.api.logistics_web import page_router as logistics_web_page_router
+from app.api.logistics_web import router as logistics_web_router
 from app.api.management import router as management_router
 from app.api.matching import router as matching_router
+from app.api.order_fulfillment import router as order_fulfillment_router
 from app.api.receivables import router as receivables_router
 from app.api.recommendations import router as recommendations_router
 from app.api.reports import router as reports_router
@@ -82,12 +86,14 @@ async def log_requests(request: Request, call_next: Callable[[Request], Response
 
 app.include_router(health_router)
 app.include_router(bitrix_matching_page_router)
+app.include_router(logistics_web_page_router)
 app.include_router(recommendations_router, prefix="/api")
 app.include_router(reports_router, prefix="/api/reports")
 app.include_router(bi_router, prefix="/api/bi")
 app.include_router(telegram_router, prefix="/api/telegram")
 app.include_router(agents_router, prefix="/api")
 app.include_router(analytics_router, prefix="/api")
+app.include_router(bank_payments_router, prefix="/api")
 app.include_router(matching_router, prefix="/api")
 app.include_router(bitrix_matching_router, prefix="/api")
 app.include_router(management_router, prefix="/api/management")
@@ -99,3 +105,5 @@ app.include_router(expertise_router, prefix="/api/expertise")
 app.include_router(card_balance_reconciliation_router, prefix="/api/card-balance-reconciliation")
 app.include_router(logistics_router, prefix="/api/logistics")
 app.include_router(logistics_bot_router, prefix="/api/logistics/bot")
+app.include_router(logistics_web_router, prefix="/api/logistics/web")
+app.include_router(order_fulfillment_router, prefix="/api/order-fulfillment")

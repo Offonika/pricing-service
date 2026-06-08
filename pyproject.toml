@@ -9,6 +9,7 @@ description = "Умное ценообразование Master Mobile (FastAPI 
 requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.110.0",
+    "python-multipart>=0.0.9",
     "uvicorn[standard]>=0.27.0",
     "sqlalchemy>=2.0.29",
     "sqlalchemy-pytds>=1.0.2",

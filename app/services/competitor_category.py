@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from app.core.config import get_settings
+from app.services.llm_fallback import FallbackChatClient
 from app.services.prompts import get_llm_competitor_category_prompt
 
 logger = logging.getLogger(__name__)
@@ -1505,6 +1505,36 @@ def llm_classify(client: httpx.Client, base_url: str, model: str, name: str) -> 
     return category
 
 
+def llm_classify_with_fallback(client: FallbackChatClient, name: str) -> str | None:
+    result = client.chat_completion(
+        messages=[
+            {"role": "system", "content": get_llm_competitor_category_prompt()},
+            {"role": "user", "content": name},
+        ],
+        temperature=0.0,
+        max_tokens=50,
+        response_validator=lambda content: _json_object_has_key(content, "category"),
+    )
+    try:
+        parsed = json.loads(result.content)
+    except json.JSONDecodeError:
+        return None
+    category = canonicalize_category(parsed.get("category"))
+    if not category:
+        return None
+    if category in ALLOWED_CATEGORIES:
+        return category
+    return category
+
+
+def _json_object_has_key(content: str, key: str) -> bool:
+    try:
+        parsed = json.loads(content)
+    except json.JSONDecodeError:
+        return False
+    return isinstance(parsed, dict) and key in parsed
+
+
 class CategoryClassifier:
     def __init__(
         self,
@@ -1516,6 +1546,7 @@ class CategoryClassifier:
         force_llm: bool = False,
         llm_limit: int = 0,
         default_category: str | None = None,
+        fallback_client: FallbackChatClient | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/") if base_url else None
         self.model = model
@@ -1528,7 +1559,17 @@ class CategoryClassifier:
         self.llm_failed = 0
         self._cache: dict[str, str | None] = {}
         self._client: httpx.Client | None = None
-        if self.use_llm and self.base_url and self.model:
+        self._fallback_client = fallback_client
+        if self.use_llm and self._fallback_client is not None:
+            if not self._fallback_client.has_providers:
+                logger.warning("LLM category classify requested but no providers are configured")
+                self._fallback_client = None
+            else:
+                logger.info(
+                    "LLM category fallback enabled: providers=%s",
+                    self._fallback_client.provider_names,
+                )
+        elif self.use_llm and self.base_url and self.model:
             self._client = httpx.Client(
                 timeout=LLM_TIMEOUT_SECONDS,
                 trust_env=not _is_localhost_url(self.base_url),
@@ -1548,7 +1589,6 @@ class CategoryClassifier:
         llm_limit: int = 0,
         default_category: str | None = None,
     ) -> CategoryClassifier:
-        settings = get_settings()
         fallback = default_category
         if fallback is None:
             fallback = os.environ.get(
@@ -1556,16 +1596,16 @@ class CategoryClassifier:
             ).strip()
             if not fallback:
                 fallback = None
-        base_url = os.environ.get("LOCAL_LLM_BASE_URL") or settings.local_llm_base_url
-        model = os.environ.get("LOCAL_LLM_CHAT_MODEL") or settings.local_llm_chat_model
+        fallback_client = FallbackChatClient.from_env(timeout=LLM_TIMEOUT_SECONDS)
         return cls(
-            base_url=base_url,
-            model=model,
+            base_url=None,
+            model=None,
             use_llm=use_llm,
             llm_only=llm_only,
             force_llm=force_llm,
             llm_limit=llm_limit,
             default_category=fallback,
+            fallback_client=fallback_client if use_llm else None,
         )
 
     def classify(self, name: str | None) -> str | None:
@@ -1579,12 +1619,17 @@ class CategoryClassifier:
         should_call_llm = self.force_llm or rule_category in {None, "дисплей"}
         if (
             should_call_llm
-            and self._client
+            and (self._fallback_client is not None or self._client is not None)
             and (self.llm_limit == 0 or self.llm_calls < self.llm_limit)
         ):
             self.llm_calls += 1
             try:
-                category = llm_classify(self._client, self.base_url or "", self.model or "", name)
+                if self._fallback_client is not None:
+                    category = llm_classify_with_fallback(self._fallback_client, name)
+                elif self._client is not None:
+                    category = llm_classify(
+                        self._client, self.base_url or "", self.model or "", name
+                    )
             except Exception:
                 self.llm_failed += 1
                 logger.exception("LLM category classify failed")
@@ -1604,6 +1649,9 @@ class CategoryClassifier:
         if self._client is not None:
             self._client.close()
             self._client = None
+        if self._fallback_client is not None:
+            self._fallback_client.close()
+            self._fallback_client = None
 
     def __enter__(self) -> CategoryClassifier:
         return self

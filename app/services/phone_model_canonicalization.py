@@ -265,19 +265,12 @@ ONEC_NON_PHONE_TEXT_PATTERNS = (
     re.compile(r"\bmagic\s*watch\b", re.IGNORECASE),
     re.compile(r"\boculus\b", re.IGNORECASE),
     re.compile(r"\bquest\b", re.IGNORECASE),
-    re.compile(r"\b(?:wi[\s-]*fi\s+)?роутер\w*\b", re.IGNORECASE),
-    re.compile(r"\brouter\b", re.IGNORECASE),
     re.compile(r"\bvostro\b", re.IGNORECASE),
     re.compile(r"\binspiron\b", re.IGNORECASE),
     re.compile(r"\bideapad\b", re.IGNORECASE),
     re.compile(r"\baspire\b", re.IGNORECASE),
     re.compile(r"\bwatch\b", re.IGNORECASE),
     re.compile(r"\bmacbook\b", re.IGNORECASE),
-    re.compile(r"\bipad(?:\s+pro|\s+air|\s+mini)?\b", re.IGNORECASE),
-    re.compile(r"\btablet\b", re.IGNORECASE),
-    re.compile(r"\bmatepad\b", re.IGNORECASE),
-    re.compile(r"\bmediapad\b", re.IGNORECASE),
-    re.compile(r"\bgalaxy\s+tab\b", re.IGNORECASE),
 )
 
 

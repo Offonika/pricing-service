@@ -51,6 +51,16 @@ documents:
     related_code: []
     related_tests: []
     keywords: [specs, lifecycle, planning]
+  - path: .github/workflows/docs-manifest.yml
+    title: Docs Manifest Workflow
+    doc_type: ci
+    domain: tooling
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [docs/manifest.yml, docs/specs/]
+    related_tests: [docs/manifest.yml, docs/specs/README.md]
+    keywords: [docs, manifest, specs, ci]
   - path: docs/specs/dhl-europe-logistics-contour.md
     title: DHL Europe Logistics Contour
     doc_type: spec
@@ -61,6 +71,36 @@ documents:
     related_code: []
     related_tests: []
     keywords: [dhl, europe, logistics, customs, procurement, spare-parts]
+  - path: docs/specs/ved-akb-import-pilot.md
+    title: VED AKB Import Pilot
+    doc_type: spec
+    domain: logistics
+    status: draft
+    owner: operations
+    source_of_truth: true
+    related_code: []
+    related_tests: []
+    keywords: [ved, akb, import, procurement, bitrix24, smart-process, warehouse-receiving]
+  - path: docs/specs/site-order-fulfillment-control-contour.md
+    title: Site Order Fulfillment Control Contour
+    doc_type: spec
+    domain: order_flow
+    status: draft
+    owner: operations
+    source_of_truth: true
+    related_code: [app/api/order_fulfillment.py, app/models/site_order_fulfillment.py, app/schemas/order_fulfillment.py, app/services/site_order_fulfillment.py, infra/cron/order_fulfillment_sync.py, scripts/apply_order_fulfillment_stage_outbox.py, scripts/build_order_fulfillment_stage_outbox.py, scripts/ensure_site_order_deal_stages.py]
+    related_tests: [tests/test_ensure_site_order_deal_stages.py, tests/test_order_fulfillment_api.py, tests/test_order_fulfillment_parser.py, tests/test_order_fulfillment_stage_apply.py, tests/test_order_fulfillment_sync.py]
+    keywords: [site-orders, order-flow, pickup, courier, bitrix-chat, bitrix24, logistics]
+  - path: docs/specs/logistics-control-contour.md
+    title: Logistics Control Contour
+    doc_type: spec
+    domain: logistics
+    status: draft
+    owner: operations
+    source_of_truth: true
+    related_code: [app/api/logistics.py, app/api/logistics_web.py, app/models/logistics.py, app/schemas/logistics.py, app/services/logistics.py, app/services/logistics_onec.py, tasks/apply_logistics_warehouse_alias_overrides.py, tasks/report_logistics_rtu_manual_review.py, tasks/sync_logistics_warehouse_aliases_from_onec.py, tasks/sync_logistics_rtu_from_onec.py, app/telegram/logistics_bot.py]
+    related_tests: [tests/test_logistics_api.py, tests/test_logistics_onec.py, tests/test_logistics_bot.py, tests/test_logistics_bot_webhook_api.py, tests/test_order_fulfillment_api.py]
+    keywords: [logistics, route-run, rtu, external-carrier, manual-review, web-fallback]
   - path: docs/specs/receivables-smart-process-workflow.md
     title: Receivables Smart Process Workflow
     doc_type: spec
@@ -71,6 +111,66 @@ documents:
     related_code: [app/api/receivables.py, app/api/management.py, app/models/receivable_case.py, app/services/receivables.py, app/services/management_rules.py, infra/cron/new_daily_receivables_from_a.py]
     related_tests: [tests/test_receivables.py, tests/test_management_rules.py, tests/test_management_tasks_api.py, tests/test_new_daily_receivables_from_a.py]
     keywords: [receivables, bitrix24, smart-process, debt, sms]
+  - path: docs/specs/counterparty-folder-recommendations.md
+    title: Counterparty Folder Recommendations
+    doc_type: spec
+    domain: receivables
+    status: implemented
+    owner: finance
+    source_of_truth: true
+    related_code: [app/api/management.py, app/services/counterparty_folder_recommendations.py, app/schemas/management.py, infra/cron/counterparty_folder_recommendations_from_a.py, infra/cron/counterparty_folder_recommendations_from_a.sh]
+    related_tests: [tests/test_counterparty_folder_recommendations.py]
+    keywords: [receivables, onec, counterparty, folder, department, overdue, management]
+  - path: docs/specs/ut103-bot-command-file-exchange.md
+    title: UT 10.3 Bot Command File Exchange
+    doc_type: spec
+    domain: receivables
+    status: draft
+    owner: finance
+    source_of_truth: true
+    related_code: [app/services/exporters/ut103_forecast.py, tasks/export_ut103_forecast.py]
+    related_tests: [tests/test_ut103_forecast_exporter.py, tests/test_export_ut103_forecast_task.py]
+    keywords: [ut103, onec, file-exchange, bot-commands, credit-depth, credit-limit, receivables]
+  - path: docs/specs/exchange-counterparty-daily-settlements.md
+    title: Exchange Counterparty Daily Settlements Report
+    doc_type: spec
+    domain: receivables
+    status: implemented
+    owner: finance
+    source_of_truth: false
+    related_code: [app/api/management.py, app/services/exchange_counterparty_settlements.py, app/services/finance_cash_position.py, infra/cron/management_digest_from_a.py]
+    related_tests: [tests/test_exchange_counterparty_settlements.py, tests/test_finance_cash_position.py, tests/test_management_digest_from_a.py]
+    keywords: [receivables, onec, counterparty, exchange, currency, cash-position, daily-report]
+  - path: docs/specs/weekly-manager-sales-online-demand.md
+    title: Weekly Manager Sales Online Demand Block
+    doc_type: spec
+    domain: management
+    status: implemented
+    owner: analytics
+    source_of_truth: true
+    related_code: [infra/cron/weekly_manager_sales_reports_from_a.py, app/services/online_demand_metrics.py, tasks/send_weekly_manager_sales_report.py]
+    related_tests: [tests/test_online_demand_metrics.py, tests/test_weekly_manager_sales_reports_from_a.py]
+    keywords: [weekly-manager-sales, metrika, online-demand, telegram, openclaw]
+  - path: docs/specs/monthly-online-demand-report.md
+    title: Monthly Online Demand Report
+    doc_type: spec
+    domain: management
+    status: implemented
+    owner: analytics
+    source_of_truth: true
+    related_code: [infra/cron/monthly_online_demand_report.py, app/services/online_demand_metrics.py]
+    related_tests: [tests/test_monthly_online_demand_report.py, tests/test_online_demand_metrics.py]
+    keywords: [monthly, metrika, online-demand, telegram, openclaw]
+  - path: docs/specs/offline-store-audio-analytics.md
+    title: Offline Store Audio Analytics
+    doc_type: spec
+    domain: speech_analytics
+    status: draft
+    owner: product
+    source_of_truth: true
+    related_code: [infra/cron/offline_audio_ingest.py, infra/cron/weekly_asr_transcription.py, infra/cron/asr_runtime.py, infra/cron/calls_unified_projection.py, infra/cron/meeting_action_digest.py]
+    related_tests: [tests/test_offline_audio_ingest.py, tests/test_weekly_asr_transcription.py]
+    keywords: [offline-audio, speech-analytics, asr, stores, windows-agent, ftps]
   - path: docs/Onepage.DHLEuropeLogisticsContour.md
     title: DHL Europe Logistics Onepage
     doc_type: onepager
@@ -81,6 +181,26 @@ documents:
     related_code: []
     related_tests: []
     keywords: [dhl, europe, logistics, onepager, spare-parts]
+  - path: docs/Onepage.OfflineStoreAudioAnalytics.md
+    title: Offline Store Audio Analytics Onepage
+    doc_type: onepager
+    domain: speech_analytics
+    status: draft
+    owner: product
+    source_of_truth: false
+    related_code: [infra/cron/offline_audio_ingest.py, infra/cron/weekly_asr_transcription.py, infra/cron/asr_runtime.py]
+    related_tests: [tests/test_offline_audio_ingest.py, tests/test_weekly_asr_transcription.py]
+    keywords: [offline-audio, speech-analytics, asr, stores, windows-agent, onepager]
+  - path: docs/imports/openclaw-b-offline-dialog-recording-onepage.md
+    title: Openclaw B Offline Dialog Recording Onepage Import
+    doc_type: imported_context
+    domain: speech_analytics
+    status: archived
+    owner: product
+    source_of_truth: false
+    related_code: []
+    related_tests: []
+    keywords: [openclaw-b, offline-audio, speech-analytics, asr, stores, import]
   - path: docs/PRD.md
     title: Pricing Service PRD
     doc_type: prd
@@ -271,6 +391,16 @@ documents:
     related_code: [app/services/logistics.py]
     related_tests: [tests/]
     keywords: [logistics, 1c, contract]
+  - path: docs/IntegrationContract.LogisticsSiteOrders1C.md
+    title: Logistics Site Orders 1C Integration Contract
+    doc_type: integration_contract
+    domain: logistics
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/services/logistics_onec.py, tasks/apply_logistics_warehouse_alias_overrides.py, tasks/report_logistics_rtu_manual_review.py, tasks/sync_logistics_warehouse_aliases_from_onec.py, tasks/sync_logistics_rtu_from_onec.py]
+    related_tests: [tests/test_logistics_onec.py]
+    keywords: [logistics, 1c, rtu, site-orders, contract]
   - path: docs/Onepage.LogisticsTelegramMVP.md
     title: Logistics Telegram Onepage
     doc_type: onepager
@@ -381,6 +511,16 @@ documents:
     related_code: [.local/1c-config/, scripts/with_onec_test.sh]
     related_tests: []
     keywords: [orders, site-orders, onec, wave1, rtu, module-sync, diagnostics]
+  - path: docs/order_flow/ut103-tzp-wave1-codex-task-2026-05-10.md
+    title: UT 10.3 TZP Wave 1 Codex Task 2026-05-10
+    doc_type: task
+    domain: order_flow
+    status: active
+    owner: engineering
+    source_of_truth: false
+    related_code: [docs/order_flow/, docs/order_flow/artifacts/site-order-exchange-2026-05-03/]
+    related_tests: []
+    keywords: [orders, site-orders, onec, wave1, tzp, rtu, picking]
   - path: docs/1c_sql_mapping.md
     title: 1C SQL Mapping
     doc_type: mapping
@@ -391,6 +531,16 @@ documents:
     related_code: [app/services/]
     related_tests: [tests/]
     keywords: [1c, sql, mapping]
+  - path: docs/bank-payment-classifier-one-pager.md
+    title: Bank Payment Classifier Onepager
+    doc_type: onepager
+    domain: onec
+    status: draft
+    owner: engineering
+    source_of_truth: false
+    related_code: [app/api/, app/services/, .local/1c-config/]
+    related_tests: [tests/]
+    keywords: [1c, bank, client-bank, payments, classifier, sbp, acquiring]
   - path: docs/sku_policy.md
     title: SKU Policy
     doc_type: policy

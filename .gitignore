@@ -54,6 +54,13 @@ docs/**/*.xls
 docs/**/*.xlsx
 docs/**/*.mxl
 docs/_*
+docs/Ведомость*.txt
+docs/Взаиморасчеты*.csv
+docs/Взаиморасчеты*.txt
+docs/ИтогиPB.csv
+docs/Хыдыров*.txt
+docs/сбер*.txt
+docs/order_flow/artifacts/
 
 # Accidental shell argument fragments
 --*

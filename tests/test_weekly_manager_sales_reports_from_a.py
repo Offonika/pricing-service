@@ -5,6 +5,11 @@ import urllib.error
 from datetime import date
 from pathlib import Path
 
+import infra.cron.weekly_manager_sales_reports_from_a as weekly_adapter
+from app.services.online_demand_metrics import (
+    OnlineDemandPeriodMetrics,
+    OnlineDemandWeeklySummary,
+)
 from infra.cron.weekly_manager_sales_reports_from_a import (
     _resolve_chat_ids_for_artifact,
     render_summary,
@@ -204,3 +209,66 @@ def test_render_summary_includes_status_line() -> None:
     assert "weekly_manager_sales_reports_from_a: ok" in rendered
     assert "sent_documents: 4" in rendered
     assert "correction=True" in rendered
+
+
+def test_append_online_demand_to_caption_adds_sales_block(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_fetch(**kwargs):
+        calls.append(kwargs)
+        return OnlineDemandWeeklySummary(
+            week_start=date(2026, 3, 30),
+            week_end=date(2026, 4, 5),
+            compare_week_start=date(2026, 3, 23),
+            compare_week_end=date(2026, 3, 29),
+            current=OnlineDemandPeriodMetrics(
+                visits=1000,
+                visitors=700,
+                purchases=25,
+                click_buy=80,
+                begin_checkout=40,
+                phone_clicks=7,
+                site_searches=120,
+                primary_source_name="Переходы из поисковых систем",
+                primary_source_visits=600,
+                primary_source_purchases=20,
+            ),
+            previous=OnlineDemandPeriodMetrics(
+                visits=900,
+                visitors=650,
+                purchases=20,
+                click_buy=70,
+                begin_checkout=35,
+                phone_clicks=5,
+                site_searches=100,
+                primary_source_name="Переходы из поисковых систем",
+                primary_source_visits=550,
+                primary_source_purchases=15,
+            ),
+        )
+
+    monkeypatch.setattr(weekly_adapter, "fetch_online_demand_weekly_summary", fake_fetch)
+
+    caption = weekly_adapter._append_online_demand_to_caption(
+        {"WEEKLY_MANAGER_SALES_METRIKA_TOKEN": "secret-token"},
+        artifact_type="sales",
+        caption="Личные продажи менеджеров",
+        manifest=_manifest(),
+    )
+
+    assert "Личные продажи менеджеров" in caption
+    assert "📊 Онлайн-спрос и конверсия" in caption
+    assert "🛒 Покупки: 25 | +25,00%" in caption
+    assert calls[0]["week_start"] == date(2026, 3, 30)
+    assert calls[0]["counter_id"] == "49993429"
+
+
+def test_append_online_demand_to_caption_skips_without_token() -> None:
+    caption = weekly_adapter._append_online_demand_to_caption(
+        {},
+        artifact_type="sales",
+        caption="Личные продажи менеджеров",
+        manifest=_manifest(),
+    )
+
+    assert caption == "Личные продажи менеджеров"

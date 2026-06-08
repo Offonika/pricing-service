@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass
@@ -29,6 +30,9 @@ STATUS_RETURNED_TO_CENTRAL_DEFECT = "returned_to_central_defect"
 STATUS_RETURNED_TO_STORE = "returned_to_store"
 STATUS_MANUAL_REVIEW = "manual_review"
 
+DECISION_APPROVED = "approved"
+DECISION_REJECTED = "rejected"
+
 REVIEW_WARNING_STATUSES = {STATUS_RECEIVED_BY_OKK, STATUS_UNDER_REVIEW, STATUS_MANUAL_REVIEW}
 TERMINAL_STATUSES = {STATUS_RETURNED_TO_CENTRAL_DEFECT, STATUS_RETURNED_TO_STORE}
 
@@ -36,6 +40,8 @@ EVENT_RECEIVED_BY_OKK = "received_by_okk"
 EVENT_MOVED_TO_REVIEW = "moved_to_review"
 EVENT_DECISION_RECORDED = "decision_recorded"
 EVENT_CLIENT_NOTIFIED = "client_notified"
+EVENT_RETURNED_TO_CENTRAL_DEFECT = "returned_to_central_defect"
+EVENT_RETURNED_TO_STORE = "returned_to_store"
 EVENT_MANUAL_REVIEW_REQUIRED = "manual_review_required"
 EVENT_REVIEW_WARNING = "review_warning"
 EVENT_REVIEW_ESCALATION = "review_escalation"
@@ -86,6 +92,11 @@ def _truncate_error(value: str | None, *, limit: int = 1000) -> str | None:
     if not normalized:
         return None
     return normalized[:limit]
+
+
+def _is_bitrix_item_not_found(error: Exception) -> bool:
+    message = str(error)
+    return "NOT_FOUND" in message or "Элемент не найден" in message
 
 
 def _build_event_key(case_id: int, event_type: str, idempotency_key: str | None) -> str | None:
@@ -186,10 +197,21 @@ def _status_anchor_at(session: Session, case_row: ExpertiseCase) -> datetime:
 def _decision_label(case_row: ExpertiseCase) -> str | None:
     if case_row.decision_label:
         return case_row.decision_label
-    if case_row.decision_code == "approved":
+    if case_row.decision_code == DECISION_APPROVED:
         return "Принято"
-    if case_row.decision_code == "rejected":
+    if case_row.decision_code == DECISION_REJECTED:
         return "Отказано"
+    return None
+
+
+def _decision_code_from_case(case_row: ExpertiseCase) -> str | None:
+    if case_row.decision_code in {DECISION_APPROVED, DECISION_REJECTED}:
+        return case_row.decision_code
+    label = (_decision_label(case_row) or "").strip().lower()
+    if label == "принято":
+        return DECISION_APPROVED
+    if label == "отказано":
+        return DECISION_REJECTED
     return None
 
 
@@ -242,6 +264,17 @@ def _is_overdue(case_row: ExpertiseCase, *, now: datetime | None = None) -> bool
         and current_time is not None
         and due_at < current_time
         and case_row.current_status not in TERMINAL_STATUSES
+    )
+
+
+def _is_due_in_current_month(case_row: ExpertiseCase, *, now: datetime | None = None) -> bool:
+    due_at = _normalize_datetime(case_row.due_at)
+    current_time = _normalize_datetime(now or utcnow())
+    return bool(
+        due_at is not None
+        and current_time is not None
+        and due_at.year == current_time.year
+        and due_at.month == current_time.month
     )
 
 
@@ -386,24 +419,52 @@ class BitrixRestClient:
     def __init__(self, webhook_url: str):
         self.webhook_url = webhook_url.rstrip("/")
 
-    def call(self, method: str, params: list[tuple[str, str]] | None = None) -> dict[str, Any]:
+    def _request(
+        self,
+        method: str,
+        *,
+        data: bytes | None,
+        content_type: str,
+    ) -> dict[str, Any]:
         url = f"{self.webhook_url}/{method}.json"
-        data = None
-        if params:
-            data = urllib.parse.urlencode(params, doseq=True).encode("utf-8")
         request = urllib.request.Request(
             url,
             data=data,
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            headers={"Content-Type": content_type},
             method="POST" if data is not None else "GET",
         )
-        with urllib.request.urlopen(request, timeout=60) as response:
-            payload = json.loads(response.read().decode("utf-8"))
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                payload = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as error:
+            body = error.read().decode("utf-8", errors="replace")
+            detail = body[:1000]
+            try:
+                payload = json.loads(body)
+                if payload.get("error"):
+                    detail = f"{payload['error']} {payload.get('error_description', '')}".strip()
+            except json.JSONDecodeError:
+                pass
+            raise RuntimeError(f"Bitrix24 {method}: HTTP {error.code} {detail}") from error
         if payload.get("error"):
             raise RuntimeError(
                 f"Bitrix24 {method}: {payload['error']} {payload.get('error_description', '')}"
             )
         return payload
+
+    def call(self, method: str, params: list[tuple[str, str]] | None = None) -> dict[str, Any]:
+        data = None
+        if params:
+            data = urllib.parse.urlencode(params, doseq=True).encode("utf-8")
+        return self._request(
+            method,
+            data=data,
+            content_type="application/x-www-form-urlencoded",
+        )
+
+    def call_json(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+        data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        return self._request(method, data=data, content_type="application/json")
 
     def list_items_by_ref(
         self,
@@ -560,6 +621,7 @@ class BitrixRestClient:
         *,
         title: str,
         description: str,
+        created_by_id: int | None,
         responsible_id: int,
         deadline: datetime | None,
         accomplice_ids: list[int],
@@ -570,6 +632,8 @@ class BitrixRestClient:
             ("fields[DESCRIPTION]", description),
             ("fields[RESPONSIBLE_ID]", str(responsible_id)),
         ]
+        if created_by_id is not None:
+            params.append(("fields[CREATED_BY]", str(created_by_id)))
         deadline_value = _format_datetime(deadline)
         if deadline_value:
             params.append(("fields[DEADLINE]", deadline_value))
@@ -597,22 +661,27 @@ class BitrixRestClient:
         accomplice_ids: list[int],
         auditor_ids: list[int],
     ) -> None:
-        params: list[tuple[str, str]] = [("taskId", str(task_id))]
-        params.extend(
-            [
-                ("fields[TITLE]", title),
-                ("fields[DESCRIPTION]", description),
-                ("fields[RESPONSIBLE_ID]", str(responsible_id)),
-            ]
-        )
+        fields: dict[str, Any] = {
+            "TITLE": title,
+            "DESCRIPTION": description,
+            "RESPONSIBLE_ID": responsible_id,
+            "ACCOMPLICES": accomplice_ids,
+            "AUDITORS": auditor_ids,
+        }
         deadline_value = _format_datetime(deadline)
         if deadline_value:
-            params.append(("fields[DEADLINE]", deadline_value))
-        for user_id in accomplice_ids:
-            params.append(("fields[ACCOMPLICES][]", str(user_id)))
-        for user_id in auditor_ids:
-            params.append(("fields[AUDITORS][]", str(user_id)))
-        self.call("tasks.task.update", params)
+            fields["DEADLINE"] = deadline_value
+        self.call_json("tasks.task.update", {"taskId": str(task_id), "fields": fields})
+
+    def get_task(self, *, task_id: str) -> dict[str, Any]:
+        response = self.call("tasks.task.get", [("taskId", str(task_id))])
+        result = response.get("result")
+        if isinstance(result, dict):
+            task = result.get("task")
+            if isinstance(task, dict):
+                return task
+            return result
+        return {}
 
     def complete_task(self, *, task_id: str) -> None:
         self.call("tasks.task.complete", [("taskId", str(task_id))])
@@ -863,10 +932,24 @@ def _resolve_task_participants(
     user_ids = client.list_department_user_ids(department_id=department_id)
     if not user_ids:
         return head_user_id, [], f"bitrix department={department_id} has no active users"
-    accomplice_ids = [user_id for user_id in user_ids if user_id != head_user_id]
     if head_user_id is not None:
+        accomplice_ids = [user_id for user_id in user_ids if user_id != head_user_id]
         return head_user_id, accomplice_ids, None
-    return None, accomplice_ids, f"bitrix department={department_id} has no assigned head"
+    fallback_responsible_user_id = user_ids[0]
+    accomplice_ids = [user_id for user_id in user_ids if user_id != fallback_responsible_user_id]
+    return (
+        fallback_responsible_user_id,
+        accomplice_ids,
+        f"bitrix department={department_id} has no assigned head",
+    )
+
+
+def _notify_task_auditor_ids(config: ExpertiseBitrixConfig) -> list[int]:
+    return _dedupe_user_ids(
+        user_id
+        for user_id in config.notify_auditor_user_ids
+        if user_id != config.notify_responsible_user_id
+    )
 
 
 def _ensure_error_event(
@@ -892,6 +975,182 @@ def _ensure_error_event(
         meta=meta,
         idempotency_key=error_key,
     )
+
+
+def _parse_bitrix_datetime(value: Any) -> datetime | None:
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    try:
+        return _normalize_datetime(datetime.fromisoformat(normalized.replace("Z", "+00:00")))
+    except ValueError:
+        return None
+
+
+def _task_closed_at(task: dict[str, Any]) -> datetime | None:
+    for key in ("closedDate", "CLOSED_DATE", "closed_date"):
+        parsed = _parse_bitrix_datetime(task.get(key))
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _task_is_closed(task: dict[str, Any]) -> bool:
+    status = task.get("status") or task.get("STATUS")
+    if status is not None:
+        normalized = str(status).strip().lower()
+        if normalized in {"5", "completed", "closed"}:
+            return True
+    return _task_closed_at(task) is not None
+
+
+def _completion_status_for_decision(case_row: ExpertiseCase) -> str | None:
+    decision_code = _decision_code_from_case(case_row)
+    if decision_code == DECISION_APPROVED:
+        return STATUS_RETURNED_TO_CENTRAL_DEFECT
+    if decision_code == DECISION_REJECTED:
+        return STATUS_RETURNED_TO_STORE
+    return None
+
+
+def _completion_event_type(status: str) -> str | None:
+    if status == STATUS_RETURNED_TO_CENTRAL_DEFECT:
+        return EVENT_RETURNED_TO_CENTRAL_DEFECT
+    if status == STATUS_RETURNED_TO_STORE:
+        return EVENT_RETURNED_TO_STORE
+    return None
+
+
+def _ensure_bitrix_event(
+    session: Session,
+    *,
+    case_row: ExpertiseCase,
+    event_type: str,
+    idempotency_key: str,
+    comment: str,
+    meta: dict[str, Any],
+    event_at: datetime,
+) -> bool:
+    if _get_event_by_key(
+        session,
+        case_id=case_row.id,
+        event_type=event_type,
+        idempotency_key=idempotency_key,
+    ):
+        return False
+    _append_event(
+        session,
+        case_row=case_row,
+        event_type=event_type,
+        comment=comment,
+        meta=meta,
+        idempotency_key=idempotency_key,
+        source="bitrix",
+        event_at=event_at,
+    )
+    return True
+
+
+def _apply_closed_notify_task(
+    session: Session,
+    *,
+    case_row: ExpertiseCase,
+    client: BitrixRestClient,
+    now: datetime,
+) -> bool:
+    if case_row.current_status != STATUS_DECISION_READY:
+        return False
+    if case_row.client_notified or not case_row.bitrix_notify_task_id:
+        return False
+
+    task_id = str(case_row.bitrix_notify_task_id)
+    task = client.get_task(task_id=task_id)
+    if not _task_is_closed(task):
+        return False
+
+    event_at = _task_closed_at(task) or now
+    previous_status = case_row.current_status
+    final_status = _completion_status_for_decision(case_row)
+
+    case_row.client_notified = True
+    case_row.current_status = final_status or STATUS_CLIENT_NOTIFIED
+    case_row.due_at = None
+
+    common_meta = {
+        "bitrix_notify_task_id": task_id,
+        "bitrix_task_status": task.get("status") or task.get("STATUS"),
+        "decision_code": _decision_code_from_case(case_row),
+        "decision_label": _decision_label(case_row),
+    }
+    _ensure_bitrix_event(
+        session,
+        case_row=case_row,
+        event_type=EVENT_CLIENT_NOTIFIED,
+        idempotency_key=f"notify-task-closed:{task_id}",
+        comment="Задача уведомления клиента закрыта в Bitrix",
+        meta={
+            **common_meta,
+            "from_status": previous_status,
+            "to_status": STATUS_CLIENT_NOTIFIED,
+            "client_notified": True,
+        },
+        event_at=event_at,
+    )
+
+    if final_status is None:
+        _ensure_error_event(
+            session,
+            case_row=case_row,
+            error_key=f"notify-task-closed-no-decision:{task_id}",
+            comment="Notify-task closed, but expertise decision is missing",
+            meta=common_meta,
+        )
+        return True
+
+    event_type = _completion_event_type(final_status)
+    if event_type is not None:
+        _ensure_bitrix_event(
+            session,
+            case_row=case_row,
+            event_type=event_type,
+            idempotency_key=f"notify-task-final:{task_id}:{final_status}",
+            comment="Карточка завершена после закрытия задачи уведомления в Bitrix",
+            meta={
+                **common_meta,
+                "from_status": STATUS_CLIENT_NOTIFIED,
+                "to_status": final_status,
+                "completion_outcome": final_status,
+            },
+            event_at=event_at,
+        )
+    return True
+
+
+def _complete_terminal_notify_task_best_effort(
+    session: Session,
+    *,
+    case_row: ExpertiseCase,
+    client: BitrixRestClient,
+) -> None:
+    if not case_row.bitrix_notify_task_id:
+        return
+    task_id = str(case_row.bitrix_notify_task_id)
+    try:
+        task = client.get_task(task_id=task_id)
+    except Exception as error:
+        _ensure_error_event(
+            session,
+            case_row=case_row,
+            error_key=f"terminal-notify-task-readback:{task_id}",
+            comment=f"Terminal notify-task readback failed: {_truncate_error(str(error), limit=500)}",
+            meta={"bitrix_notify_task_id": task_id, "status": case_row.current_status},
+        )
+        return
+    if _task_is_closed(task):
+        return
+    client.complete_task(task_id=task_id)
 
 
 def sync_case_to_bitrix(
@@ -945,6 +1204,13 @@ def sync_case_to_bitrix(
         if folder_url:
             case_row.bitrix_disk_folder_url = folder_url
 
+    notify_task_closed = _apply_closed_notify_task(
+        session,
+        case_row=case_row,
+        client=client,
+        now=current_time,
+    )
+
     fields = _smart_process_fields(
         session=session,
         case_row=case_row,
@@ -969,12 +1235,32 @@ def sync_case_to_bitrix(
                 case_row.bitrix_entity_id = str(matched_id)
 
     if case_row.bitrix_entity_id:
-        client.update_smart_process_item(
-            entity_type_id=config.entity_type_id or 0,
-            item_id=case_row.bitrix_entity_id,
-            fields=fields,
-        )
-    else:
+        try:
+            client.update_smart_process_item(
+                entity_type_id=config.entity_type_id or 0,
+                item_id=case_row.bitrix_entity_id,
+                fields=fields,
+            )
+        except RuntimeError as error:
+            if not _is_bitrix_item_not_found(error):
+                raise
+            case_row.bitrix_entity_id = None
+            if case_row.onec_expertise_ref and config.field_map.get("expertise_ref"):
+                matches = client.list_items_by_ref(
+                    entity_type_id=config.entity_type_id or 0,
+                    ref_field=config.field_map["expertise_ref"],
+                    ref_value=case_row.onec_expertise_ref,
+                )
+                if matches:
+                    matched_id = matches[0].get("id")
+                    if matched_id:
+                        case_row.bitrix_entity_id = str(matched_id)
+                        client.update_smart_process_item(
+                            entity_type_id=config.entity_type_id or 0,
+                            item_id=case_row.bitrix_entity_id,
+                            fields=fields,
+                        )
+    if not case_row.bitrix_entity_id:
         item_id, _ = client.add_smart_process_item(
             entity_type_id=config.entity_type_id or 0,
             fields=fields,
@@ -1004,6 +1290,7 @@ def sync_case_to_bitrix(
             case_row,
             notify_warning_hours=config.notify_warning_hours,
         )
+        auditor_ids = _notify_task_auditor_ids(config)
         if case_row.bitrix_notify_task_id:
             client.update_task(
                 task_id=case_row.bitrix_notify_task_id,
@@ -1012,24 +1299,29 @@ def sync_case_to_bitrix(
                 responsible_id=responsible_id,
                 deadline=deadline,
                 accomplice_ids=accomplice_ids,
-                auditor_ids=config.notify_auditor_user_ids,
+                auditor_ids=auditor_ids,
             )
         else:
             case_row.bitrix_notify_task_id = client.add_task(
                 title=_task_title(case_row),
                 description=_task_description(session=session, case_row=case_row, config=config),
+                created_by_id=config.notify_responsible_user_id,
                 responsible_id=responsible_id,
                 deadline=deadline,
                 accomplice_ids=accomplice_ids,
-                auditor_ids=config.notify_auditor_user_ids,
+                auditor_ids=auditor_ids,
             )
     elif case_row.current_status in {
         STATUS_CLIENT_NOTIFIED,
         STATUS_RETURNED_TO_CENTRAL_DEFECT,
         STATUS_RETURNED_TO_STORE,
     }:
-        if case_row.bitrix_notify_task_id:
-            client.complete_task(task_id=case_row.bitrix_notify_task_id)
+        if not notify_task_closed:
+            _complete_terminal_notify_task_best_effort(
+                session,
+                case_row=case_row,
+                client=client,
+            )
 
     case_row.bitrix_last_sync_at = current_time
     case_row.bitrix_last_error = None
@@ -1100,6 +1392,10 @@ def scan_alarm_cases(
         if not _is_operational_case(row):
             continue
         if row.current_status in TERMINAL_STATUSES:
+            continue
+        if _is_overdue(row, now=current_time) and not _is_due_in_current_month(
+            row, now=current_time
+        ):
             continue
 
         changed = False

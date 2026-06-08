@@ -215,6 +215,9 @@ class OneCExpertiseExtractor:
                 "Expertise extractor SQL is not configured. "
                 "Pass sql explicitly or configure EXPERTISE_ONEC_SQL / EXPERTISE_ONEC_SQL_FILE."
             )
-        with self.onec_engine.connect() as conn:
-            rows = conn.execute(text(self.sql)).mappings().all()
+        try:
+            with self.onec_engine.connect() as conn:
+                rows = conn.execute(text(self.sql)).mappings().all()
+        finally:
+            self.onec_engine.dispose()
         return build_expertise_sync_payloads(rows)

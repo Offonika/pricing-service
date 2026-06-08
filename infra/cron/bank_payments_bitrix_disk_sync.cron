@@ -1,0 +1,6 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+CRON_TZ=Europe/Moscow
+
+# Bitrix Disk "Входящие" -> pricing-service normalization -> Bitrix Disk "Готово/Ошибки".
+*/10 * * * * root /opt/MM/pricing-service/infra/cron/bank_payments_bitrix_disk_sync.sh >> /var/log/pricing/bank_payments_bitrix_disk_sync.cron.log 2>&1

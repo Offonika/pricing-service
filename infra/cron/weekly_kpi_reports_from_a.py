@@ -225,6 +225,16 @@ def _normalize_target(value: str | None) -> str:
     return BITRIX_TARGET_AUTO
 
 
+def _resolve_webhook_url(env: dict[str, str]) -> str | None:
+    return (
+        env.get("WEEKLY_KPI_B24_WEBHOOK_URL")
+        or env.get("MANAGEMENT_B24_BOX_WEBHOOK_URL")
+        or env.get("MANAGEMENT_B24_WEBHOOK_URL")
+        or env.get("BITRIX24_BOX_WEBHOOK_URL")
+        or env.get("BITRIX24_WEBHOOK_URL")
+    )
+
+
 def _resolve_target_user_id(manifest: dict[str, Any], *, target_mode: str) -> int | None:
     employee = manifest.get("employee") or {}
     cloud_id = _coerce_int(employee.get("bitrix_user_id"))
@@ -796,15 +806,11 @@ def main() -> None:
         retry_delay=retry_delay,
     )
 
-    webhook_url = (
-        env.get("WEEKLY_KPI_B24_WEBHOOK_URL")
-        or env.get("MANAGEMENT_B24_BOX_WEBHOOK_URL")
-        or env.get("MANAGEMENT_B24_WEBHOOK_URL")
-    )
+    webhook_url = _resolve_webhook_url(env)
     if not args.dry_run and not webhook_url:
         raise SystemExit(
             "Missing required env: WEEKLY_KPI_B24_WEBHOOK_URL|MANAGEMENT_B24_BOX_WEBHOOK_URL|"
-            "MANAGEMENT_B24_WEBHOOK_URL"
+            "MANAGEMENT_B24_WEBHOOK_URL|BITRIX24_BOX_WEBHOOK_URL|BITRIX24_WEBHOOK_URL"
         )
 
     disk_folder_id = _coerce_int(env.get("WEEKLY_KPI_B24_DISK_FOLDER_ID"))

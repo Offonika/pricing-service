@@ -14,12 +14,16 @@ from app.main import app
 from app.models import (
     Base,
     LogisticsDriver,
+    LogisticsManualReview,
     LogisticsTransfer,
     LogisticsTransferEvent,
     LogisticsTransferState,
     LogisticsUser,
     LogisticsWarehouse,
+    SiteOrderExecutionCase,
+    SiteOrderExecutionEvent,
 )
+from app.services import logistics
 
 
 def setup_db():
@@ -387,6 +391,395 @@ def test_logistics_monitor_is_read_only_for_virtual_state(monkeypatch) -> None:
 
     with Session(engine) as session:
         assert session.query(LogisticsTransferState).count() == 0
+
+    app.dependency_overrides = {}
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    engine.dispose()
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def test_logistics_route_run_lookup_and_external_carrier(monkeypatch) -> None:
+    engine, path = setup_db()
+    headers = _configure_logistics_auth(monkeypatch)
+    app.dependency_overrides = {get_db: override_db(engine)}
+    client = TestClient(app)
+
+    _seed_reference_data(client, headers)
+    ids = _id_maps(engine)
+
+    lookup = client.get(
+        "/api/logistics/units/lookup",
+        params={"code": "BC-0001"},
+        headers=headers,
+    )
+    assert lookup.status_code == 200
+    assert lookup.json()["source_document_type"] == "transfer"
+
+    route = client.post(
+        "/api/logistics/route-runs",
+        json={
+            "external_id": "route-1",
+            "route_name": "Утренний рейс",
+            "driver_id": ids["drivers"]["Иван Водитель"],
+            "items": [
+                {
+                    "lookup_code": "BC-0001",
+                    "dropoff_warehouse_id": ids["warehouses"]["central"],
+                    "leg_sequence": 1,
+                }
+            ],
+        },
+        headers=headers,
+    )
+    assert route.status_code == 200
+    route_id = route.json()["id"]
+    assert route.json()["items"][0]["status"] == "planned"
+
+    handoff_draft = client.post(
+        "/api/logistics/handoffs/draft",
+        json={
+            "actor_user_id": ids["users"]["Отправитель"],
+            "warehouse_id": ids["warehouses"]["store-1"],
+            "driver_id": ids["drivers"]["Иван Водитель"],
+            "route_run_id": route_id,
+            "default_dropoff_warehouse_id": ids["warehouses"]["central"],
+        },
+        headers=headers,
+    )
+    assert handoff_draft.status_code == 200
+    draft_id = handoff_draft.json()["id"]
+    scan = client.post(
+        f"/api/logistics/handoffs/draft/{draft_id}/scan",
+        json={"actor_user_id": ids["users"]["Отправитель"], "lookup_code": "BC-0001"},
+        headers=headers,
+    )
+    assert scan.status_code == 200
+    confirm = client.post(
+        f"/api/logistics/handoffs/draft/{draft_id}/confirm",
+        json={"actor_user_id": ids["users"]["Отправитель"]},
+        headers=headers,
+    )
+    assert confirm.status_code == 200
+
+    route_after_handoff = client.get("/api/logistics/route-runs", headers=headers)
+    assert route_after_handoff.status_code == 200
+    assert route_after_handoff.json()[0]["items"][0]["status"] == "in_transit"
+
+    external_handoff = client.post(
+        f"/api/logistics/transfers/{ids['transfer_id']}/external-carrier/handoff",
+        json={
+            "actor_user_id": ids["users"]["Логист"],
+            "carrier_name": "СДЭК",
+            "tracking_number": "CDEK-1",
+        },
+        headers=headers,
+    )
+    assert external_handoff.status_code == 200
+
+    monitor = client.get(
+        "/api/logistics/monitor",
+        params={"with_external_carrier": True},
+        headers=headers,
+    )
+    assert monitor.status_code == 200
+    assert monitor.json()[0]["status"] == "with_external_carrier"
+    assert monitor.json()[0]["route_run_id"] == route_id
+
+    external_accept = client.post(
+        f"/api/logistics/transfers/{ids['transfer_id']}/external-carrier/accept",
+        json={
+            "actor_user_id": ids["users"]["Логист"],
+            "warehouse_id": ids["warehouses"]["central"],
+        },
+        headers=headers,
+    )
+    assert external_accept.status_code == 200
+
+    route_after_accept = client.get("/api/logistics/route-runs", headers=headers)
+    assert route_after_accept.json()[0]["items"][0]["status"] == "completed"
+
+    app.dependency_overrides = {}
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    engine.dispose()
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def test_logistics_rtu_receipt_bridges_to_order_fulfillment(monkeypatch) -> None:
+    engine, path = setup_db()
+    headers = _configure_logistics_auth(monkeypatch)
+    app.dependency_overrides = {get_db: override_db(engine)}
+    client = TestClient(app)
+
+    _seed_reference_data(client, headers)
+    ids = _id_maps(engine)
+
+    rtu_sync = client.post(
+        "/api/logistics/sync/units",
+        json=[
+            {
+                "source_document_type": "rtu",
+                "external_id": "rtu-1",
+                "document_number": "РТУ-000001",
+                "document_date": "2026-03-28T11:00:00Z",
+                "source_warehouse_external_id": "store-1",
+                "target_warehouse_external_id": "central",
+                "document_target_warehouse_external_id": "central",
+                "final_recipient_name": "Заказ 216951",
+                "barcode": "RTU-BC-1",
+                "lookup_code": "MMLOG1|rtu|rtu-1|216951",
+                "origin_order_external_id": "order-1c-1",
+                "site_order_number": "216951",
+                "status": "posted",
+            }
+        ],
+        headers=headers,
+    )
+    assert rtu_sync.status_code == 200
+
+    handoff_draft = client.post(
+        "/api/logistics/handoffs/draft",
+        json={
+            "actor_user_id": ids["users"]["Отправитель"],
+            "warehouse_id": ids["warehouses"]["store-1"],
+            "driver_id": ids["drivers"]["Иван Водитель"],
+            "default_dropoff_warehouse_id": ids["warehouses"]["central"],
+        },
+        headers=headers,
+    )
+    assert handoff_draft.status_code == 200
+    draft_id = handoff_draft.json()["id"]
+    assert (
+        client.post(
+            f"/api/logistics/handoffs/draft/{draft_id}/scan",
+            json={
+                "actor_user_id": ids["users"]["Отправитель"],
+                "lookup_code": "MMLOG1|rtu|rtu-1|216951",
+            },
+            headers=headers,
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            f"/api/logistics/handoffs/draft/{draft_id}/confirm",
+            json={"actor_user_id": ids["users"]["Отправитель"]},
+            headers=headers,
+        ).status_code
+        == 200
+    )
+
+    receipt_draft = client.post(
+        "/api/logistics/receipts/draft",
+        json={
+            "actor_user_id": ids["users"]["Получатель"],
+            "warehouse_id": ids["warehouses"]["central"],
+        },
+        headers=headers,
+    )
+    assert receipt_draft.status_code == 200
+    receipt_id = receipt_draft.json()["id"]
+    assert (
+        client.post(
+            f"/api/logistics/receipts/draft/{receipt_id}/scan",
+            json={
+                "actor_user_id": ids["users"]["Получатель"],
+                "lookup_code": "MMLOG1|rtu|rtu-1|216951",
+            },
+            headers=headers,
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            f"/api/logistics/receipts/draft/{receipt_id}/confirm",
+            json={"actor_user_id": ids["users"]["Получатель"]},
+            headers=headers,
+        ).status_code
+        == 200
+    )
+
+    with Session(engine) as session:
+        case = session.scalar(select(SiteOrderExecutionCase))
+        assert case is not None
+        assert case.site_order_number == "216951"
+        assert case.current_derived_status == "pickup_stored_at_point"
+        assert case.current_crm_stage == "PICKUP_WAITING"
+        event = session.scalar(select(SiteOrderExecutionEvent))
+        assert event is not None
+        assert event.source == "logistics"
+        assert event.event_type != "pickup_client_received"
+
+    app.dependency_overrides = {}
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    engine.dispose()
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def test_external_carrier_rtu_accept_does_not_create_pickup_storage(monkeypatch) -> None:
+    engine, path = setup_db()
+    headers = _configure_logistics_auth(monkeypatch)
+    app.dependency_overrides = {get_db: override_db(engine)}
+    client = TestClient(app)
+
+    _seed_reference_data(client, headers)
+    ids = _id_maps(engine)
+
+    rtu_sync = client.post(
+        "/api/logistics/sync/units",
+        json=[
+            {
+                "source_document_type": "rtu",
+                "external_id": "rtu-carrier-1",
+                "document_number": "РТУ-EXT-1",
+                "document_date": "2026-03-28T11:00:00Z",
+                "source_warehouse_external_id": "store-1",
+                "target_warehouse_external_id": "central",
+                "document_target_warehouse_external_id": "central",
+                "final_recipient_name": "Заказ 216952",
+                "barcode": "MMLOG1|rtu|rtu-carrier-1|216952",
+                "lookup_code": "MMLOG1|rtu|rtu-carrier-1|216952",
+                "origin_order_external_id": "order-1c-2",
+                "site_order_number": "216952",
+                "status": "posted",
+                "payload": {"external_carrier_flow": True},
+            }
+        ],
+        headers=headers,
+    )
+    assert rtu_sync.status_code == 200
+
+    with Session(engine) as session:
+        transfer = session.scalar(
+            select(LogisticsTransfer).where(LogisticsTransfer.external_id == "rtu-carrier-1")
+        )
+        assert transfer is not None
+        result = logistics.handoff_to_external_carrier_from_sync(
+            session,
+            transfer_id=transfer.id,
+            carrier_name="СДЭК",
+            idempotency_key="test-carrier-1",
+        )
+        assert result["status"] == "created"
+        transfer_id = transfer.id
+
+    external_accept = client.post(
+        f"/api/logistics/transfers/{transfer_id}/external-carrier/accept",
+        json={
+            "actor_user_id": ids["users"]["Логист"],
+            "warehouse_id": ids["warehouses"]["central"],
+        },
+        headers=headers,
+    )
+    assert external_accept.status_code == 200
+
+    with Session(engine) as session:
+        assert session.scalar(select(SiteOrderExecutionEvent)) is None
+        state = session.get(LogisticsTransferState, transfer_id)
+        assert state is not None
+        assert state.status == "at_warehouse"
+
+    app.dependency_overrides = {}
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    engine.dispose()
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def test_logistics_manual_override_and_review_security(monkeypatch) -> None:
+    engine, path = setup_db()
+    headers = _configure_logistics_auth(monkeypatch)
+    app.dependency_overrides = {get_db: override_db(engine)}
+    client = TestClient(app)
+
+    _seed_reference_data(client, headers)
+    ids = _id_maps(engine)
+
+    forbidden = client.post(
+        "/api/logistics/manual-ready-overrides",
+        json={
+            "actor_user_id": ids["users"]["Отправитель"],
+            "source_document_type": "transfer",
+            "external_id": "transfer-1",
+            "warehouse_id": ids["warehouses"]["central"],
+            "reason": "Тест",
+        },
+        headers=headers,
+    )
+    assert forbidden.status_code == 403
+
+    override = client.post(
+        "/api/logistics/manual-ready-overrides",
+        json={
+            "actor_user_id": ids["users"]["Логист"],
+            "source_document_type": "transfer",
+            "external_id": "transfer-1",
+            "warehouse_id": ids["warehouses"]["central"],
+            "reason": "Ручное подтверждение готовности",
+        },
+        headers=headers,
+    )
+    assert override.status_code == 200
+
+    reviews = client.get("/api/logistics/manual-review", headers=headers)
+    assert reviews.status_code == 200
+    assert reviews.json()[0]["review_type"] == "manual_ready_override"
+
+    with Session(engine) as session:
+        assert session.query(LogisticsManualReview).count() == 1
+        event = session.scalar(
+            select(LogisticsTransferEvent).where(
+                LogisticsTransferEvent.event_type == "manual_ready_override"
+            )
+        )
+        assert event is not None
+        state = session.get(LogisticsTransferState, ids["transfer_id"])
+        assert state.current_warehouse_id == ids["warehouses"]["central"]
+
+    app.dependency_overrides = {}
+    get_settings.cache_clear()
+    get_engine.cache_clear()
+    engine.dispose()
+    if os.path.exists(path):
+        os.remove(path)
+
+
+def test_logistics_web_fallback_session_uses_cookie(monkeypatch) -> None:
+    engine, path = setup_db()
+    headers = _configure_logistics_auth(monkeypatch)
+    monkeypatch.setenv("LOGISTICS_WEB_SESSION_SECRET", "test-web-session-secret")
+    monkeypatch.setenv("DEBUG", "true")
+    get_settings.cache_clear()
+    app.dependency_overrides = {get_db: override_db(engine)}
+    client = TestClient(app)
+
+    _seed_reference_data(client, headers)
+    ids = _id_maps(engine)
+
+    no_cookie = client.get("/api/logistics/web/profile")
+    assert no_cookie.status_code == 401
+
+    session_response = client.post(
+        "/api/logistics/web/session",
+        json={"actor_user_id": ids["users"]["Получатель"]},
+        headers=headers,
+    )
+    assert session_response.status_code == 200
+    assert "mm_logistics_session" in client.cookies
+
+    profile = client.get("/api/logistics/web/profile")
+    assert profile.status_code == 200
+    assert profile.json()["full_name"] == "Получатель"
+
+    web_monitor = client.get("/api/logistics/web/monitor")
+    assert web_monitor.status_code == 200
+    assert isinstance(web_monitor.json(), list)
 
     app.dependency_overrides = {}
     get_settings.cache_clear()

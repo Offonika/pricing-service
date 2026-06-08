@@ -158,6 +158,11 @@ class CompetitorItem(Base):
             back_populates="item",
             cascade="all, delete-orphan",
         )
+        url_aliases = relationship(
+            "CompetitorItemUrlAlias",
+            back_populates="item",
+            cascade="all, delete-orphan",
+        )
 
 
 class CompetitorItemSnapshot(Base):

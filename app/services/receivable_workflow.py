@@ -132,13 +132,25 @@ def debt_age_days(case: ReceivableCase, *, as_of: date) -> int | None:
     return max((as_of - case.origin_document_date.date()).days, 0)
 
 
+def _due_date(case: ReceivableCase) -> date | None:
+    if case.due_date is None:
+        return None
+    return case.due_date.date()
+
+
 def needs_sms_on_date(case: ReceivableCase, *, as_of: date) -> bool:
-    return debt_age_days(case, as_of=as_of) == 6
+    due_date = _due_date(case)
+    return due_date is not None and (due_date - as_of).days == 1
 
 
 def needs_call_on_date(case: ReceivableCase, *, as_of: date) -> bool:
-    age = debt_age_days(case, as_of=as_of)
-    return age is not None and age >= 7
+    due_date = _due_date(case)
+    return due_date is not None and as_of > due_date
+
+
+def _is_workflow_card_due(case: ReceivableCase, *, as_of: date) -> bool:
+    due_date = _due_date(case)
+    return due_date is not None and as_of > due_date
 
 
 def _sms_text(case: ReceivableCase) -> str:
@@ -184,6 +196,59 @@ def _group_cases(cases: list[ReceivableCase]) -> dict[str, list[ReceivableCase]]
     for case in cases:
         grouped.setdefault(case.counterparty_ref, []).append(case)
     return grouped
+
+
+def _protect_existing_open_item(
+    session: Session,
+    *,
+    stable_key: str,
+    protected_stable_keys: set[str],
+) -> None:
+    item = session.scalar(
+        select(ReceivableWorkItem).where(ReceivableWorkItem.stable_key == stable_key)
+    )
+    if item is not None and item.status != STATUS_CLOSED:
+        protected_stable_keys.add(stable_key)
+
+
+def _normalize_department_name(value: str | None) -> str:
+    return " ".join(str(value or "").strip().casefold().split())
+
+
+def _department_scope_enabled(settings: Settings) -> bool:
+    return bool(settings.receivable_workflow_department_refs) or bool(
+        settings.receivable_workflow_department_names
+    )
+
+
+def _case_matches_department_scope(case: ReceivableCase, settings: Settings) -> bool:
+    if not _department_scope_enabled(settings):
+        return True
+    refs = {str(item).strip() for item in settings.receivable_workflow_department_refs if item}
+    names = {
+        _normalize_department_name(item)
+        for item in settings.receivable_workflow_department_names
+        if item
+    }
+    return bool(
+        (case.department_ref and str(case.department_ref).strip() in refs)
+        or (_normalize_department_name(case.department_name) in names)
+    )
+
+
+def _work_item_matches_department_scope(item: ReceivableWorkItem, settings: Settings) -> bool:
+    if not _department_scope_enabled(settings):
+        return True
+    refs = {str(value).strip() for value in settings.receivable_workflow_department_refs if value}
+    names = {
+        _normalize_department_name(value)
+        for value in settings.receivable_workflow_department_names
+        if value
+    }
+    return bool(
+        (item.department_ref and str(item.department_ref).strip() in refs)
+        or (_normalize_department_name(item.department_name) in names)
+    )
 
 
 def _append_event(
@@ -279,6 +344,8 @@ def plan_receivable_sms(
         .all()
     )
     for case in cases:
+        if not _case_matches_department_scope(case, settings):
+            continue
         if not needs_sms_on_date(case, as_of=as_of):
             continue
         debt_key = debt_key_for_case(case)
@@ -400,6 +467,13 @@ def _bitrix_value(value: Any) -> Any:
     return value
 
 
+def _bitrix_enum_value(settings: Settings, alias: str, value: Any) -> Any:
+    if value in (None, ""):
+        return value
+    enum_map = settings.receivable_bitrix_enum_map.get(alias) or {}
+    return enum_map.get(str(value), value)
+
+
 def _format_money(value: Any) -> str:
     try:
         amount = Decimal(str(value))
@@ -462,6 +536,9 @@ def _build_bitrix_fields(
         if field_name:
             fields[field_name] = _bitrix_value(value)
 
+    def put_enum(alias: str, value: Any) -> None:
+        put(alias, _bitrix_enum_value(settings, alias, value))
+
     put("title", _item_title(item))
     put("stable_key", item.stable_key)
     put("counterparty_ref", item.counterparty_ref)
@@ -472,17 +549,19 @@ def _build_bitrix_fields(
     put("due_date", item.due_date)
     put("overdue_days", item.overdue_days)
     put("age_days", item.age_days)
+    put("department_ref", item.department_ref)
+    put("department_name", item.department_name)
     put("manager_name", item.current_manager_name or item.origin_manager_name)
     put("phone", item.phone)
-    put("phone_status", item.phone_status)
+    put_enum("phone_status", item.phone_status)
     put("status", item.status)
-    put("sms_status", item.last_sms_status)
+    put_enum("sms_status", item.last_sms_status)
     put("last_sms_at", item.last_sms_at)
     put("needs_call_today", item.needs_call_today)
     put("promised_payment_date", item.promised_payment_date)
     put("next_action_date", item.next_action_date)
     put("last_contact_comment", item.last_contact_comment)
-    put("escalation_level", item.escalation_level)
+    put_enum("escalation_level", item.escalation_level)
     put("chain_documents", format_chain_documents_for_bitrix(item.chain_documents))
     put("source", "pricing-service")
 
@@ -626,6 +705,8 @@ def _update_work_item_from_case(
     item.origin_manager_name = case.origin_manager_name
     item.current_manager_ref = case.current_manager_ref
     item.current_manager_name = case.current_manager_name
+    item.department_ref = case.department_ref
+    item.department_name = case.department_name
     item.phone = phone
     item.phone_status = "present" if phone else "missing"
     item.needs_call_today = needs_call_on_date(case, as_of=as_of)
@@ -731,10 +812,26 @@ def sync_receivable_workflow(
     protected_stable_keys: set[str] = set()
     for counterparty_ref, counterparty_cases in grouped.items():
         segments = {item.segment for item in counterparty_cases}
-        if CASE_BUYERS not in segments or CASE_OVERDUE not in segments:
+        if CASE_BUYERS not in segments:
+            continue
+        stable_key = stable_key_for_counterparty(counterparty_ref)
+        if CASE_OVERDUE not in segments:
+            _protect_existing_open_item(
+                session,
+                stable_key=stable_key,
+                protected_stable_keys=protected_stable_keys,
+            )
             continue
         case = _select_current_case(counterparty_cases)
-        stable_key = stable_key_for_counterparty(counterparty_ref)
+        if not _case_matches_department_scope(case, settings):
+            continue
+        if not _is_workflow_card_due(case, as_of=as_of):
+            _protect_existing_open_item(
+                session,
+                stable_key=stable_key,
+                protected_stable_keys=protected_stable_keys,
+            )
+            continue
         if not _is_workflow_case_eligible(case):
             item = session.scalar(
                 select(ReceivableWorkItem).where(ReceivableWorkItem.stable_key == stable_key)
@@ -823,6 +920,10 @@ def sync_receivable_workflow(
     )
     for item in open_items:
         if item.stable_key in protected_stable_keys:
+            continue
+        if _department_scope_enabled(settings) and not _work_item_matches_department_scope(
+            item, settings
+        ):
             continue
         old_balance = item.current_balance
         item.status = STATUS_CLOSED

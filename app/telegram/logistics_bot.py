@@ -47,6 +47,17 @@ HELP_TEXT = """
 """.strip()
 
 
+class TelegramApiError(RuntimeError):
+    def __init__(self, api_method: str, status_code: int | None = None) -> None:
+        self.api_method = api_method
+        self.status_code = status_code
+        if status_code is None:
+            message = f"telegram {api_method} request failed"
+        else:
+            message = f"telegram {api_method} failed with HTTP {status_code}"
+        super().__init__(message)
+
+
 def _inline_keyboard(rows: list[list[tuple[str, str]]]) -> dict[str, Any]:
     return {
         "inline_keyboard": [
@@ -81,12 +92,25 @@ class TelegramBotApi:
         self._base_url = f"https://api.telegram.org/bot{token}"
         self._client = httpx.Client(timeout=40.0)
 
+    def _request(self, method: str, api_method: str, **kwargs) -> httpx.Response:
+        try:
+            response = self._client.request(
+                method,
+                f"{self._base_url}/{api_method}",
+                **kwargs,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise TelegramApiError(api_method, exc.response.status_code) from None
+        except httpx.RequestError:
+            raise TelegramApiError(api_method) from None
+        return response
+
     def get_updates(self, offset: int | None, timeout_seconds: int) -> list[dict[str, Any]]:
         payload = {"timeout": timeout_seconds}
         if offset is not None:
             payload["offset"] = offset
-        response = self._client.get(f"{self._base_url}/getUpdates", params=payload)
-        response.raise_for_status()
+        response = self._request("GET", "getUpdates", params=payload)
         data = response.json()
         if not data.get("ok"):
             raise RuntimeError(f"telegram getUpdates failed: {data}")
@@ -101,11 +125,7 @@ class TelegramBotApi:
         payload: dict[str, Any] = {"chat_id": chat_id, "text": text[:4096]}
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
-        response = self._client.post(
-            f"{self._base_url}/sendMessage",
-            json=payload,
-        )
-        response.raise_for_status()
+        response = self._request("POST", "sendMessage", json=payload)
         return response.json().get("result", {})
 
     def edit_message_text(
@@ -122,45 +142,32 @@ class TelegramBotApi:
         }
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
-        response = self._client.post(
-            f"{self._base_url}/editMessageText",
-            json=payload,
-        )
-        response.raise_for_status()
+        response = self._request("POST", "editMessageText", json=payload)
         return response.json().get("result", {})
 
     def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> None:
         payload: dict[str, Any] = {"callback_query_id": callback_query_id}
         if text:
             payload["text"] = text[:200]
-        response = self._client.post(
-            f"{self._base_url}/answerCallbackQuery",
-            json=payload,
-        )
-        response.raise_for_status()
+        self._request("POST", "answerCallbackQuery", json=payload)
 
     def set_webhook(self, url: str, secret_token: str | None = None) -> dict[str, Any]:
         payload: dict[str, Any] = {"url": url}
         if secret_token:
             payload["secret_token"] = secret_token
-        response = self._client.post(
-            f"{self._base_url}/setWebhook",
-            json=payload,
-        )
-        response.raise_for_status()
+        response = self._request("POST", "setWebhook", json=payload)
         return response.json()
 
     def get_webhook_info(self) -> dict[str, Any]:
-        response = self._client.get(f"{self._base_url}/getWebhookInfo")
-        response.raise_for_status()
+        response = self._request("GET", "getWebhookInfo")
         return response.json()
 
     def delete_webhook(self, drop_pending_updates: bool = False) -> dict[str, Any]:
-        response = self._client.post(
-            f"{self._base_url}/deleteWebhook",
+        response = self._request(
+            "POST",
+            "deleteWebhook",
             json={"drop_pending_updates": drop_pending_updates},
         )
-        response.raise_for_status()
         return response.json()
 
     def close(self) -> None:
@@ -454,8 +461,12 @@ class LogisticsTelegramBot:
                     reply_markup=reply_markup,
                 )
                 return
-            except httpx.HTTPStatusError as exc:
-                status_code = exc.response.status_code
+            except (httpx.HTTPStatusError, TelegramApiError) as exc:
+                status_code = (
+                    exc.response.status_code
+                    if isinstance(exc, httpx.HTTPStatusError)
+                    else exc.status_code
+                )
                 if status_code not in {400, 404}:
                     raise
                 logger.warning(

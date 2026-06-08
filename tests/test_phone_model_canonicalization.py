@@ -772,7 +772,7 @@ def test_screen_product_phone_compatibility_filters_garmin_text() -> None:
     assert result.filter_reason == "non_phone_text"
 
 
-def test_screen_product_phone_compatibility_filters_router_text() -> None:
+def test_screen_product_phone_compatibility_keeps_router_text() -> None:
     product = Product(
         article="p-6",
         name="Аккумулятор для Wi-Fi роутера МТС 8920 / MegaFon MR150-6 / Beeline S23",
@@ -786,8 +786,26 @@ def test_screen_product_phone_compatibility_filters_router_text() -> None:
         source="onec",
     )
 
-    assert result.eligible_for_phone_canonicalization is False
-    assert result.filter_reason == "non_phone_text"
+    assert result.eligible_for_phone_canonicalization is True
+    assert result.filter_reason is None
+
+
+def test_screen_product_phone_compatibility_keeps_tablet_text() -> None:
+    product = Product(
+        article="p-6-tablet",
+        name="Дисплей для Apple iPad Air 4 + тачскрин",
+        subject_1c="дисплей",
+        vid_nomenklatury_1c="Дисплеи/сенсор/стекло",
+    )
+
+    result = screen_product_phone_compatibility(
+        product,
+        "Apple iPad Air 4",
+        source="onec",
+    )
+
+    assert result.eligible_for_phone_canonicalization is True
+    assert result.filter_reason is None
 
 
 def test_screen_product_phone_compatibility_filters_aspire_text() -> None:

@@ -1,6 +1,6 @@
 import { ProductsGrid } from "./ProductsGrid";
 import { CandidatePanel } from "./CandidatePanel";
-import type { ProductFacets } from "../api/types";
+import type { ProductFacets, ProductRow, ProductSort } from "../api/types";
 
 interface Props {
   search: string;
@@ -8,10 +8,14 @@ interface Props {
   category: string;
   compatibilityBrand: string;
   subject: string;
+  sort: ProductSort;
   page: number;
   pageSize: number;
   onTotalChange?: (total: number) => void;
   onFacetsChange?: (facets: ProductFacets | null) => void;
+  onProductRowsChange?: (items: ProductRow[], page: number) => void;
+  onNextProduct?: () => void;
+  onAfterDecision?: () => void;
 }
 
 export function MatchingLayout({
@@ -20,10 +24,14 @@ export function MatchingLayout({
   category,
   compatibilityBrand,
   subject,
+  sort,
   page,
   pageSize,
   onTotalChange,
   onFacetsChange,
+  onProductRowsChange,
+  onNextProduct,
+  onAfterDecision,
 }: Props) {
   return (
     <>
@@ -35,14 +43,16 @@ export function MatchingLayout({
             category={category}
             compatibilityBrand={compatibilityBrand}
             subject={subject}
+            sort={sort}
             page={page}
             pageSize={pageSize}
             onTotalChange={onTotalChange}
             onFacetsChange={onFacetsChange}
+            onProductRowsChange={onProductRowsChange}
           />
         </div>
       </div>
-      <CandidatePanel />
+      <CandidatePanel onNextProduct={onNextProduct} onAfterDecision={onAfterDecision} />
     </>
   );
 }

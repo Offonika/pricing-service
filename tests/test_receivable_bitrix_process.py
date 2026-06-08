@@ -17,8 +17,32 @@ def test_receivable_detail_layout_hides_technical_fields() -> None:
     assert "chain_documents" in visible_fields
     assert "stable_key" not in visible_fields
     assert "counterparty_ref" not in visible_fields
+    assert "department_ref" not in visible_fields
     assert "status" not in visible_fields
     assert "source" not in visible_fields
+
+
+def test_receivable_choice_fields_are_enumerations() -> None:
+    specs = {item["logical_key"]: item for item in receivable_setup.CUSTOM_FIELD_SPECS}
+
+    assert specs["current_balance"]["type"] == "double"
+    assert specs["phone_status"]["type"] == "enumeration"
+    assert [item["xml_id"] for item in specs["phone_status"]["enum"]] == [
+        "present",
+        "missing",
+        "needs_check",
+    ]
+    assert specs["sms_status"]["type"] == "enumeration"
+    assert specs["contact_result"]["type"] == "enumeration"
+    assert specs["escalation_level"]["type"] == "enumeration"
+
+    visible_fields = {
+        logical_key
+        for section in receivable_setup.DETAIL_SECTION_SPECS
+        for logical_key in section["elements"]
+    }
+    assert "contact_result" in visible_fields
+    assert "last_contact_comment" in visible_fields
 
 
 def test_receivable_category_reuses_default_category(monkeypatch) -> None:

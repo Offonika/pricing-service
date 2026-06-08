@@ -98,6 +98,8 @@ class BIReceivableCurrent(BaseModel):
     origin_manager_name: str | None = None
     current_manager_ref: str | None = None
     current_manager_name: str | None = None
+    department_ref: str | None = None
+    department_name: str | None = None
     last_sale_at: datetime | None = None
     last_payment_at: datetime | None = None
 
@@ -126,6 +128,8 @@ class BIReceivableCase(BaseModel):
     origin_manager_name: str | None = None
     current_manager_ref: str | None = None
     current_manager_name: str | None = None
+    department_ref: str | None = None
+    department_name: str | None = None
 
 
 class BIReceivablesManagerSummary(BaseModel):

@@ -8,6 +8,7 @@ from pathlib import Path
 from infra.cron.weekly_kpi_reports_from_a import (
     _is_retail_director_manifest,
     _render_weekly_kpi_overview,
+    _resolve_webhook_url,
     sync_weekly_kpi_reports,
 )
 
@@ -233,3 +234,10 @@ def test_is_retail_director_manifest_accepts_retail_network_head() -> None:
     manifest["employee"]["role_code"] = "retail_network_head"
 
     assert _is_retail_director_manifest(manifest) is True
+
+
+def test_resolve_webhook_url_uses_existing_bitrix_box_env_as_fallback() -> None:
+    assert (
+        _resolve_webhook_url({"BITRIX24_BOX_WEBHOOK_URL": "https://example.test/rest"})
+        == "https://example.test/rest"
+    )

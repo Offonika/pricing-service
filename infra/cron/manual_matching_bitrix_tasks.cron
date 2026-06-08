@@ -1,0 +1,6 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+CRON_TZ=Europe/Moscow
+
+# Daily Bitrix tasks for procurement manual matching.
+10 9 * * 1-5 root /opt/MM/pricing-service/infra/cron/manual_matching_bitrix_tasks.sh >> /var/log/pricing/manual_matching_bitrix_tasks.cron.log 2>&1

@@ -12,6 +12,8 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_db, require_management_internal_token
 from app.core.config import get_settings
 from app.schemas.management import (
+    CounterpartyFolderRecommendationItem,
+    CounterpartyFolderRecommendationResponse,
     ManagementComponentHealth,
     ManagementHealthResponse,
     ManagementTaskPayload,
@@ -38,6 +40,18 @@ from app.schemas.telephony import (
     TelephonyUserLineItem,
     TelephonyUserLineMapResponse,
 )
+from app.services.counterparty_folder_recommendations import (
+    STATUS_MOVE_RECOMMENDED,
+    STATUS_NEEDS_REVIEW,
+    STATUS_NO_OVERDUE,
+    STATUS_OK,
+    build_counterparty_folder_recommendations,
+)
+from app.services.exchange_counterparty_settlements import (
+    DEFAULT_EXCHANGE_COUNTERPARTY_CODE,
+    build_exchange_counterparty_settlements,
+)
+from app.services.finance_cash_position import build_finance_cash_position
 from app.services.management_observability import build_management_health
 from app.services.management_rules import build_management_task_payloads
 from app.services.receivables import (
@@ -253,6 +267,97 @@ def get_management_health(
             ManagementComponentHealth.model_validate(item) for item in payload["components"]
         ],
     )
+
+
+@router.get(
+    "/counterparty-folder-recommendations",
+    response_model=CounterpartyFolderRecommendationResponse,
+)
+def get_counterparty_folder_recommendations(
+    date_value: date = Query(alias="date"),
+    status: str | None = Query(
+        default=None,
+        pattern=(
+            f"^({STATUS_MOVE_RECOMMENDED}|{STATUS_OK}|"
+            f"{STATUS_NO_OVERDUE}|{STATUS_NEEDS_REVIEW})$"
+        ),
+    ),
+    limit: int | None = Query(default=None, ge=1, le=10000),
+    db: Session = Depends(get_db),
+    _: str = Depends(require_management_internal_token),
+):
+    onec_engine = _build_onec_engine()
+    try:
+        report = build_counterparty_folder_recommendations(
+            db,
+            onec_engine=onec_engine,
+            snapshot_date=date_value,
+            limit=limit,
+            status=status,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except SQLAlchemyError as error:
+        raise HTTPException(status_code=503, detail="1C source is unavailable") from error
+    finally:
+        onec_engine.dispose()
+
+    payload = [
+        CounterpartyFolderRecommendationItem.model_validate(item) for item in report["payload"]
+    ]
+    source_snapshot_count = int(report["summary"].get("source_snapshot_count") or 0)
+    return CounterpartyFolderRecommendationResponse(
+        as_of=report["snapshot_date"],
+        freshness_status="fresh" if source_snapshot_count else "missing",
+        source_status="ready" if source_snapshot_count else "empty",
+        report_revision=report["report_revision"],
+        summary=report["summary"],
+        payload=payload,
+    )
+
+
+@router.get("/exchange-counterparty-settlements")
+def get_exchange_counterparty_settlements(
+    counterparty_code: str = Query(default=DEFAULT_EXCHANGE_COUNTERPARTY_CODE, max_length=32),
+    period_start: date | None = Query(default=None),
+    as_of: datetime | None = Query(default=None),
+    _: str = Depends(require_management_internal_token),
+) -> dict:
+    onec_engine = _build_onec_engine()
+    try:
+        return build_exchange_counterparty_settlements(
+            onec_engine,
+            counterparty_code=counterparty_code,
+            period_start=period_start,
+            as_of=as_of,
+        )
+    except SQLAlchemyError as error:
+        raise HTTPException(status_code=503, detail="1C source is unavailable") from error
+    finally:
+        onec_engine.dispose()
+
+
+@router.get("/cash-position")
+def get_cash_position(
+    period_start: date | None = Query(default=None),
+    as_of: datetime | None = Query(default=None),
+    include_zero: bool = Query(default=False),
+    top: int = Query(default=15, ge=0, le=100),
+    _: str = Depends(require_management_internal_token),
+) -> dict:
+    onec_engine = _build_onec_engine()
+    try:
+        return build_finance_cash_position(
+            onec_engine,
+            period_start=period_start,
+            as_of=as_of,
+            include_zero=include_zero,
+            top_limit=top,
+        )
+    except SQLAlchemyError as error:
+        raise HTTPException(status_code=503, detail="1C source is unavailable") from error
+    finally:
+        onec_engine.dispose()
 
 
 @router.get("/task-payloads", response_model=ManagementTaskPayloadListResponse)

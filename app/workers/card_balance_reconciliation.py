@@ -10,12 +10,28 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
-from app.models import CardBalanceCashbox, CardBalanceReconciliation
+from app.models import (
+    CardBalanceCashbox,
+    CardBalanceReconciliation,
+    StaffMember,
+    StoreShiftFact,
+    StoreShiftPlan,
+)
 from app.services import card_balance_bitrix
 from app.services import card_balance_reconciliation as reconciliation_service
 from app.services.card_balance_onec import OneCCardBalanceExtractor, clean_string
+from app.services.staffing import (
+    ATTENDANCE_ABSENT,
+    ATTENDANCE_ASSIGNED,
+    ATTENDANCE_CONFIRMED,
+)
 
 CARD_EMPLOYEE_STOPWORDS = {"карта", "сбер", "т", "тбанк", "т-банк", "банк"}
+WORKDAY_ATTENDANCE_STATUSES = {
+    ATTENDANCE_ASSIGNED,
+    ATTENDANCE_CONFIRMED,
+    ATTENDANCE_ABSENT,
+}
 _BITRIX_USER_SEARCH_CACHE: dict[str, list[dict[str, Any]]] = {}
 _BITRIX_USER_BY_ID_CACHE: dict[str, dict[str, Any] | None] = {}
 
@@ -60,7 +76,16 @@ def run_card_balance_bitrix_sync(
     )
     extractor = extractor or OneCCardBalanceExtractor(_get_onec_engine())
     target_business_date = business_date or reconciliation_service.utcnow().date()
-    result: dict[str, int | str] = {"processed": 0, "matched": 0, "exceptions": 0, "errors": 0}
+    result: dict[str, int | str] = {
+        "processed": 0,
+        "matched": 0,
+        "exceptions": 0,
+        "errors": 0,
+        "skipped_not_in_pilot": 0,
+        "skipped_no_workday_data": 0,
+        "skipped_unmapped_bitrix_item": 0,
+        "ocr_errors": 0,
+    }
 
     with Session(_get_app_engine()) as session:
         ensure_stats = {
@@ -68,6 +93,8 @@ def run_card_balance_bitrix_sync(
             "skipped_existing": 0,
             "skipped_manual_review": 0,
             "skipped_missing_data": 0,
+            "skipped_not_in_pilot": 0,
+            "skipped_no_workday_data": 0,
             "create_errors": 0,
             "eligible_cashboxes": 0,
         }
@@ -81,6 +108,10 @@ def run_card_balance_bitrix_sync(
             result["daily_skipped_existing"] = ensure_stats["skipped_existing"]
             result["daily_skipped_manual_review"] = ensure_stats["skipped_manual_review"]
             result["daily_skipped_missing_data"] = ensure_stats["skipped_missing_data"]
+            result["daily_skipped_not_in_pilot"] = ensure_stats["skipped_not_in_pilot"]
+            result["daily_skipped_no_workday_data"] = ensure_stats["skipped_no_workday_data"]
+            result["skipped_not_in_pilot"] = ensure_stats["skipped_not_in_pilot"]
+            result["skipped_no_workday_data"] = ensure_stats["skipped_no_workday_data"]
             result["daily_create_errors"] = ensure_stats["create_errors"]
 
         if should_auto_create or business_date is not None:
@@ -117,6 +148,10 @@ def run_card_balance_bitrix_sync(
                     result["matched"] += 1
                 elif row.status in reconciliation_service.EXCEPTION_STATUSES:
                     result["exceptions"] += 1
+                if row.status == reconciliation_service.STATUS_UNMAPPED_CARD:
+                    result["skipped_unmapped_bitrix_item"] += 1
+                if isinstance(row.payload, dict) and clean_string(row.payload.get("ocr_error")):
+                    result["ocr_errors"] += 1
             except Exception:
                 session.rollback()
                 result["errors"] += 1
@@ -254,9 +289,12 @@ def _ensure_daily_bitrix_items(
         "skipped_existing": 0,
         "skipped_manual_review": 0,
         "skipped_missing_data": 0,
+        "skipped_not_in_pilot": 0,
+        "skipped_no_workday_data": 0,
         "create_errors": 0,
         "eligible_cashboxes": 0,
     }
+    pilot_codes = _pilot_cashbox_codes(settings)
     cashboxes = session.scalars(
         select(CardBalanceCashbox)
         .where(CardBalanceCashbox.is_active.is_(True))
@@ -271,11 +309,22 @@ def _ensure_daily_bitrix_items(
         if not code or not name:
             stats["skipped_missing_data"] += 1
             continue
+        if pilot_codes and code not in pilot_codes:
+            stats["skipped_not_in_pilot"] += 1
+            continue
+        employee = _resolve_cashbox_bitrix_employee(session, cashbox, settings=settings)
+        if settings.card_balance_require_workday and not _cashbox_has_workday(
+            session,
+            cashbox=cashbox,
+            employee=employee,
+            business_date=business_date,
+        ):
+            stats["skipped_no_workday_data"] += 1
+            continue
         stats["eligible_cashboxes"] += 1
         if code in existing_codes:
             stats["skipped_existing"] += 1
             continue
-        employee = _resolve_cashbox_bitrix_employee(session, cashbox, settings=settings)
         employee_id = employee.get("bitrix_user_id") if employee else None
         employee_name = (
             employee.get("full_name")
@@ -302,6 +351,109 @@ def _ensure_daily_bitrix_items(
         existing_codes.add(code)
         stats["created"] += 1
     return stats
+
+
+def _pilot_cashbox_codes(settings: Settings) -> set[str]:
+    return {
+        code
+        for code in (clean_string(item) for item in settings.card_balance_pilot_cashbox_codes)
+        if code
+    }
+
+
+def _cashbox_has_workday(
+    session: Session,
+    *,
+    cashbox: CardBalanceCashbox,
+    employee: dict[str, str] | None,
+    business_date: date,
+) -> bool:
+    staff_refs, staff_names = _cashbox_staff_match_keys(session, cashbox, employee)
+    if not staff_refs and not staff_names:
+        return False
+
+    facts = session.scalars(
+        select(StoreShiftFact).where(StoreShiftFact.shift_date == business_date)
+    ).all()
+    for fact in facts:
+        if fact.attendance_status not in WORKDAY_ATTENDANCE_STATUSES:
+            continue
+        if _shift_staff_matches(
+            staff_ref=fact.staff_ref,
+            staff_name=fact.staff_name,
+            staff_refs=staff_refs,
+            staff_names=staff_names,
+        ):
+            return True
+
+    plans = session.scalars(
+        select(StoreShiftPlan).where(StoreShiftPlan.shift_date == business_date)
+    ).all()
+    return any(
+        _shift_staff_matches(
+            staff_ref=plan.staff_ref,
+            staff_name=plan.staff_name,
+            staff_refs=staff_refs,
+            staff_names=staff_names,
+        )
+        for plan in plans
+    )
+
+
+def _cashbox_staff_match_keys(
+    session: Session,
+    cashbox: CardBalanceCashbox,
+    employee: dict[str, str] | None,
+) -> tuple[set[str], set[str]]:
+    staff_refs = {
+        ref
+        for ref in {
+            clean_string(cashbox.employee_id),
+            clean_string(employee.get("bitrix_user_id") if employee else None),
+        }
+        if ref
+    }
+    staff_names = {
+        name
+        for name in {
+            clean_string(cashbox.employee_last_name),
+            clean_string(employee.get("full_name") if employee else None),
+        }
+        if name
+    }
+    if staff_refs:
+        members = session.scalars(
+            select(StaffMember).where(StaffMember.external_ref.in_(sorted(staff_refs)))
+        ).all()
+        staff_names.update(clean_string(member.full_name) for member in members if member.full_name)
+    return staff_refs, {name for name in staff_names if name}
+
+
+def _shift_staff_matches(
+    *,
+    staff_ref: str | None,
+    staff_name: str | None,
+    staff_refs: set[str],
+    staff_names: set[str],
+) -> bool:
+    normalized_ref = clean_string(staff_ref)
+    if normalized_ref and normalized_ref in staff_refs:
+        return True
+    normalized_shift_name = _normalize_text(staff_name)
+    if not normalized_shift_name:
+        return False
+    for candidate in staff_names:
+        normalized_candidate = _normalize_text(candidate)
+        if not normalized_candidate:
+            continue
+        if normalized_candidate == normalized_shift_name:
+            return True
+        candidate_tokens = _employee_tokens(candidate)
+        if candidate_tokens and all(
+            f" {token} " in f" {normalized_shift_name} " for token in candidate_tokens
+        ):
+            return True
+    return False
 
 
 def _resolve_cashbox_bitrix_employee(

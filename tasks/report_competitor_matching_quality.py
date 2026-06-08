@@ -68,6 +68,19 @@ def build_report(session: Session, *, first_seen_after: str | None = None) -> di
             missing_compat_reason_counts.get(metric_key, 0) + 1
         )
 
+    accepted_without_compatibility_base = (
+        select(func.count())
+        .select_from(CompetitorItemMatch)
+        .join(CompetitorItem, CompetitorItem.id == CompetitorItemMatch.competitor_item_id)
+        .where(
+            CompetitorItemMatch.status == CompetitorItemMatchStatus.ACCEPTED,
+            ~exists().where(CompetitorItemCompatibility.competitor_item_id == CompetitorItem.id),
+        )
+    )
+    code_overlap_auto_accept = CompetitorItemMatch.rationale_json[
+        "auto_accept_explicit_model_code_overlap"
+    ].is_not(None)
+
     metrics = {
         "new_items": session.scalar(select(func.count()).select_from(base_subq)) or 0,
         "new_without_attrs": session.scalar(
@@ -83,15 +96,11 @@ def build_report(session: Session, *, first_seen_after: str | None = None) -> di
         "new_without_compatibility_total": len(missing_compat_items),
         "new_without_compatibility_ignored": missing_compat_ignored,
         "accepted_without_compatibility": session.scalar(
-            select(func.count())
-            .select_from(CompetitorItemMatch)
-            .join(CompetitorItem, CompetitorItem.id == CompetitorItemMatch.competitor_item_id)
-            .where(
-                CompetitorItemMatch.status == CompetitorItemMatchStatus.ACCEPTED,
-                ~exists().where(
-                    CompetitorItemCompatibility.competitor_item_id == CompetitorItem.id
-                ),
-            )
+            accepted_without_compatibility_base.where(~code_overlap_auto_accept)
+        )
+        or 0,
+        "accepted_without_compatibility_code_overlap": session.scalar(
+            accepted_without_compatibility_base.where(code_overlap_auto_accept)
         )
         or 0,
         "duplicate_snapshot_groups": session.scalar(

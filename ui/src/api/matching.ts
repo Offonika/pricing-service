@@ -20,6 +20,7 @@ import type {
   DecisionHistoryResponse,
   PaginatedCandidates,
   PaginatedProducts,
+  ProductSort,
   PropertyComparisonResponse,
   PropertyProfile,
   PropertyRule,
@@ -34,6 +35,7 @@ export async function fetchProducts(params: {
   page_size?: number;
   search?: string;
   status?: string | string[];
+  sort?: ProductSort;
   subject?: string;
   brand?: string;
   category?: string;

@@ -25,6 +25,7 @@ class LogisticsWarehouse(Base):
     external_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
     name: Mapped[str] = mapped_column(String(255), nullable=False)
     kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default="1"
     )
@@ -80,9 +81,24 @@ class LogisticsUser(Base):
 
 class LogisticsTransfer(Base):
     __tablename__ = "logistics_transfer"
-    __table_args__ = (Index("ix_logistics_transfer_barcode", "barcode"),)
+    __table_args__ = (
+        UniqueConstraint(
+            "source_document_type",
+            "external_id",
+            name="uq_logistics_transfer_source_external",
+        ),
+        Index("ix_logistics_transfer_barcode", "barcode"),
+        Index("ix_logistics_transfer_lookup_code", "lookup_code"),
+        Index("ix_logistics_transfer_site_order_number", "site_order_number"),
+    )
 
-    external_id: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    source_document_type: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="transfer",
+        server_default="transfer",
+    )
+    external_id: Mapped[str] = mapped_column(String(64), nullable=False)
     document_number: Mapped[str] = mapped_column(String(64), nullable=False)
     document_date: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     source_warehouse_id: Mapped[int] = mapped_column(
@@ -93,8 +109,15 @@ class LogisticsTransfer(Base):
         ForeignKey("logistics_warehouse.id", ondelete="RESTRICT"),
         nullable=False,
     )
+    document_target_warehouse_id: Mapped[int | None] = mapped_column(
+        ForeignKey("logistics_warehouse.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     final_recipient_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     barcode: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    lookup_code: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    origin_order_external_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    site_order_number: Mapped[str | None] = mapped_column(String(32), nullable=True)
     onec_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
     onec_deleted: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="0"
@@ -109,7 +132,12 @@ class LogisticsTransfer(Base):
 
     source_warehouse = relationship("LogisticsWarehouse", foreign_keys=[source_warehouse_id])
     target_warehouse = relationship("LogisticsWarehouse", foreign_keys=[target_warehouse_id])
+    document_target_warehouse = relationship(
+        "LogisticsWarehouse",
+        foreign_keys=[document_target_warehouse_id],
+    )
     state = relationship("LogisticsTransferState", back_populates="transfer", uselist=False)
+    route_items = relationship("LogisticsRouteRunItem", back_populates="transfer")
 
 
 class LogisticsTransferState(Base):
@@ -253,6 +281,10 @@ class LogisticsDraft(Base):
         ForeignKey("logistics_driver.id", ondelete="SET NULL"),
         nullable=True,
     )
+    route_run_id: Mapped[int | None] = mapped_column(
+        ForeignKey("logistics_route_run.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     default_dropoff_warehouse_id: Mapped[int | None] = mapped_column(
         ForeignKey("logistics_warehouse.id", ondelete="SET NULL"),
         nullable=True,
@@ -266,6 +298,7 @@ class LogisticsDraft(Base):
     warehouse = relationship("LogisticsWarehouse", foreign_keys=[warehouse_id])
     actor_user = relationship("LogisticsUser", foreign_keys=[actor_user_id])
     driver = relationship("LogisticsDriver", foreign_keys=[driver_id])
+    route_run = relationship("LogisticsRouteRun", foreign_keys=[route_run_id])
     default_dropoff_warehouse = relationship(
         "LogisticsWarehouse",
         foreign_keys=[default_dropoff_warehouse_id],
@@ -361,3 +394,117 @@ class LogisticsBotSessionPhoto(Base):
     )
 
     session = relationship("LogisticsBotSession", back_populates="photos")
+
+
+class LogisticsRouteRun(Base):
+    __tablename__ = "logistics_route_run"
+    __table_args__ = (
+        Index("ix_logistics_route_run_status_planned", "status", "planned_at"),
+        UniqueConstraint("external_id", name="uq_logistics_route_run_external_id"),
+    )
+
+    external_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    route_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    planned_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    driver_id: Mapped[int | None] = mapped_column(
+        ForeignKey("logistics_driver.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="planned",
+        server_default="planned",
+    )
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    driver = relationship("LogisticsDriver", foreign_keys=[driver_id])
+    items = relationship(
+        "LogisticsRouteRunItem",
+        back_populates="route_run",
+        cascade="all, delete-orphan",
+    )
+
+
+class LogisticsRouteRunItem(Base):
+    __tablename__ = "logistics_route_run_item"
+    __table_args__ = (
+        UniqueConstraint("route_run_id", "transfer_id", name="uq_logistics_route_run_item_unit"),
+        Index("ix_logistics_route_run_item_transfer", "transfer_id"),
+        Index("ix_logistics_route_run_item_dropoff", "dropoff_warehouse_id"),
+    )
+
+    route_run_id: Mapped[int] = mapped_column(
+        ForeignKey("logistics_route_run.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    transfer_id: Mapped[int] = mapped_column(
+        ForeignKey("logistics_transfer.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    leg_sequence: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    dropoff_warehouse_id: Mapped[int | None] = mapped_column(
+        ForeignKey("logistics_warehouse.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="planned",
+        server_default="planned",
+    )
+    added_at: Mapped[datetime] = mapped_column(DateTime, server_default=func.now(), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+
+    route_run = relationship("LogisticsRouteRun", back_populates="items")
+    transfer = relationship("LogisticsTransfer", back_populates="route_items")
+    dropoff_warehouse = relationship("LogisticsWarehouse", foreign_keys=[dropoff_warehouse_id])
+
+
+class LogisticsManualReview(Base):
+    __tablename__ = "logistics_manual_review"
+    __table_args__ = (
+        Index("ix_logistics_manual_review_status_type", "status", "review_type"),
+        Index("ix_logistics_manual_review_transfer", "transfer_id"),
+        Index(
+            "ix_logistics_manual_review_source",
+            "source_document_type",
+            "source_external_id",
+        ),
+    )
+
+    review_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        default="open",
+        server_default="open",
+    )
+    source_document_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    source_external_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    transfer_id: Mapped[int | None] = mapped_column(
+        ForeignKey("logistics_transfer.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    reason: Mapped[str] = mapped_column(String(1000), nullable=False)
+    payload: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    resolved_by_user_id: Mapped[int | None] = mapped_column(
+        ForeignKey("logistics_user.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, server_default=func.now(), nullable=False
+    )
+
+    transfer = relationship("LogisticsTransfer")
+    resolved_by_user = relationship("LogisticsUser", foreign_keys=[resolved_by_user_id])

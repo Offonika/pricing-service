@@ -68,7 +68,10 @@ PROPERTY_MAP: dict[str, str] = {
     "Количество": "set_quantity",
 }
 PROPERTY_NAMES: tuple[str, ...] = tuple(PROPERTY_MAP.keys())
-COMPATIBILITY_NAMES: tuple[str, ...] = ("Совместим с моделью", "Совместимость с моделью")
+COMPATIBILITY_MODEL_NAMES: tuple[str, ...] = ("Совместим с моделью", "Совместимость с моделью")
+COMPATIBILITY_MODEL_CODES: tuple[str, ...] = ("РБ0000086",)
+COMPATIBILITY_BRAND_NAMES: tuple[str, ...] = ("Совместим с брендом", "Совместимость с брендом")
+COMPATIBILITY_BRAND_CODES: tuple[str, ...] = ("РБ0000085",)
 
 
 def _clean_str(value: str | None) -> str | None:
@@ -386,13 +389,151 @@ def fetch_property_values_multi(
     return values
 
 
+def _dedupe_values(values: Sequence[str]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        value = _clean_str(raw)
+        if not value:
+            continue
+        key = value.lower().replace("ё", "е")
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
+
+
+def fetch_object_property_values_multi(
+    engine_onec,
+    item_folder_value: int,
+    item_ids: Sequence[str],
+    *,
+    property_names: Sequence[str],
+    property_codes: Sequence[str] = (),
+) -> dict[str, list[str]]:
+    """Read multi-value 1C object properties from ValuesOfObjectProperties."""
+
+    if not item_ids:
+        return {}
+    allowed_ids = set(item_ids)
+    prop_names = [name.strip() for name in property_names if name.strip()]
+    prop_codes = [code.strip() for code in property_codes if code.strip()]
+    if not prop_names and not prop_codes:
+        return {}
+
+    query = text("""
+        SELECT
+            r._IDRRef AS idrref,
+            r._Fld836 AS article,
+            LTRIM(RTRIM(COALESCE(v._Description, reg._Fld6312_S))) AS prop_value
+        FROM _InfoRg6309 reg
+        JOIN _Reference62 r ON r._IDRRef = reg._Fld6310_RRRef
+        JOIN _Chrc401 ch ON ch._IDRRef = reg._Fld6311RRef
+        LEFT JOIN _Reference42 v ON v._IDRRef = reg._Fld6312_RRRef
+        WHERE r._Marked = 0
+          AND r._Folder = :folder
+          AND r._Fld836 IS NOT NULL
+          AND r._Description IS NOT NULL
+          AND (
+                LTRIM(RTRIM(ch._Description)) IN :prop_names
+                OR LTRIM(RTRIM(ch._Code)) IN :prop_codes
+          )
+          AND LTRIM(RTRIM(COALESCE(v._Description, reg._Fld6312_S))) <> ''
+        """).bindparams(
+        bindparam("prop_names", expanding=True),
+        bindparam("prop_codes", expanding=True),
+    )
+
+    with engine_onec.connect() as conn:
+        rows = [
+            dict(row._mapping)
+            for row in conn.execute(
+                query,
+                {
+                    "folder": item_folder_value,
+                    "prop_names": prop_names or ["__none__"],
+                    "prop_codes": prop_codes or ["__none__"],
+                },
+            )
+        ]
+
+    values: dict[str, list[str]] = {}
+    for row in rows:
+        article = _clean_str(row.get("article"))
+        value = _clean_str(row.get("prop_value"))
+        if row.get("idrref") not in allowed_ids:
+            continue
+        if not article or not value:
+            continue
+        values.setdefault(article, []).append(value)
+    return {article: _dedupe_values(article_values) for article, article_values in values.items()}
+
+
+def fetch_onec_compatibility_models(
+    engine_onec,
+    item_folder_value: int,
+    item_ids: Sequence[str],
+) -> dict[str, list[str]]:
+    main_values = fetch_object_property_values_multi(
+        engine_onec,
+        item_folder_value,
+        item_ids,
+        property_names=COMPATIBILITY_MODEL_NAMES,
+        property_codes=COMPATIBILITY_MODEL_CODES,
+    )
+    legacy_values = fetch_property_values_multi(
+        engine_onec,
+        item_folder_value,
+        item_ids,
+        COMPATIBILITY_MODEL_NAMES,
+    )
+    result = dict(main_values)
+    for article, values in legacy_values.items():
+        if article not in result:
+            result[article] = _dedupe_values(values)
+    return result
+
+
+def fetch_onec_compatibility_brands(
+    engine_onec,
+    item_folder_value: int,
+    item_ids: Sequence[str],
+) -> dict[str, list[str]]:
+    return fetch_object_property_values_multi(
+        engine_onec,
+        item_folder_value,
+        item_ids,
+        property_names=COMPATIBILITY_BRAND_NAMES,
+        property_codes=COMPATIBILITY_BRAND_CODES,
+    )
+
+
+def _model_values_with_brand_hints(values: Sequence[str], brand_hints: Sequence[str]) -> list[str]:
+    cleaned_values = _dedupe_values(values)
+    cleaned_brands = _dedupe_values(brand_hints)
+    if len(cleaned_brands) != 1:
+        return cleaned_values
+    brand = cleaned_brands[0]
+    brand_key = brand.lower().replace("ё", "е")
+    result: list[str] = []
+    for value in cleaned_values:
+        value_key = value.lower().replace("ё", "е")
+        if brand_key in value_key:
+            result.append(value)
+        else:
+            result.append(f"{brand} {value}")
+    return result
+
+
 def upsert_product_compatibility(
     session: Session,
     product: Product,
     values: list[str],
     source: str = "onec",
+    brand_hints: Sequence[str] = (),
 ) -> None:
-    cleaned = [v for v in (val.strip() for val in values) if v]
+    cleaned = _dedupe_values(values)
     new_values = set(cleaned)
     existing = {c.value: c for c in product.compatibilities}
     canonicalizer = PhoneModelCanonicalizer(session)
@@ -405,7 +546,8 @@ def upsert_product_compatibility(
         if val not in new_values:
             session.delete(obj)
 
-    canonicalizer.sync_product_links(product=product, source=source, raw_values=sorted(new_values))
+    link_values = _model_values_with_brand_hints(sorted(new_values), brand_hints)
+    canonicalizer.sync_product_links(product=product, source=source, raw_values=link_values)
 
 
 def import_onec_products(engine_app, engine_onec) -> dict:
@@ -418,11 +560,11 @@ def import_onec_products(engine_app, engine_onec) -> dict:
         engine_onec, folder_value, sorted(allowed_item_ids), PROPERTY_NAMES
     )
     subject_values = fetch_subject_values(engine_onec, folder_value, sorted(allowed_item_ids))
-    compat_values = fetch_property_values_multi(
-        engine_onec,
-        folder_value,
-        sorted(allowed_item_ids),
-        COMPATIBILITY_NAMES,
+    compat_values = fetch_onec_compatibility_models(
+        engine_onec, folder_value, sorted(allowed_item_ids)
+    )
+    compat_brands = fetch_onec_compatibility_brands(
+        engine_onec, folder_value, sorted(allowed_item_ids)
     )
 
     created = 0
@@ -552,7 +694,12 @@ def import_onec_products(engine_app, engine_onec) -> dict:
                 product.info_system_code = info_system_code
 
             compat_list = compat_values.get(article, [])
-            upsert_product_compatibility(session, product, compat_list)
+            upsert_product_compatibility(
+                session,
+                product,
+                compat_list,
+                brand_hints=compat_brands.get(article, []),
+            )
             sync_product_sku_status(product)
         session.commit()
 

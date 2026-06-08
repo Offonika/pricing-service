@@ -89,3 +89,31 @@ def require_card_balance_reconciliation_internal_token(
         expected,
         missing_detail="card balance reconciliation internal token not configured",
     )
+
+
+def require_bank_payments_internal_token(
+    credentials: HTTPAuthorizationCredentials = Security(security),
+) -> str:
+    settings = get_settings()
+    expected = settings.bank_payments_internal_api_token or settings.management_internal_api_token
+    return _require_bearer_token(
+        credentials,
+        expected,
+        missing_detail="bank payments internal token not configured",
+    )
+
+
+def require_order_fulfillment_internal_token(
+    credentials: HTTPAuthorizationCredentials = Security(security),
+) -> str:
+    settings = get_settings()
+    expected = (
+        settings.order_fulfillment_internal_api_token
+        or settings.logistics_internal_api_token
+        or settings.management_internal_api_token
+    )
+    return _require_bearer_token(
+        credentials,
+        expected,
+        missing_detail="order fulfillment internal token not configured",
+    )

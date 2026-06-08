@@ -43,6 +43,12 @@ REVIEW_PHASE_STATUSES = {
     STATUS_UNDER_REVIEW,
     STATUS_MANUAL_REVIEW,
 }
+SYNC_DECISION_SOURCE_STATUSES = {
+    STATUS_CREATED,
+    STATUS_RECEIVED_BY_OKK,
+    STATUS_UNDER_REVIEW,
+    STATUS_MANUAL_REVIEW,
+}
 NO_DUE_AT_STATUSES = {
     STATUS_CLIENT_NOTIFIED,
     STATUS_RETURNED_TO_CENTRAL_DEFECT,
@@ -258,6 +264,35 @@ def _decision_label_from_code(decision_code: str | None) -> str | None:
     return None
 
 
+def _decision_code_from_label(decision_label: str | None) -> str | None:
+    normalized = _coalesce_text(decision_label)
+    if normalized is None:
+        return None
+    normalized_lower = normalized.lower()
+    if normalized_lower in {"принято", DECISION_APPROVED}:
+        return DECISION_APPROVED
+    if normalized_lower in {"отказано", DECISION_REJECTED}:
+        return DECISION_REJECTED
+    return None
+
+
+def _payload_posted(payload: dict | None) -> bool | None:
+    if not isinstance(payload, dict):
+        return None
+    value = payload.get("posted")
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "t", "yes", "y"}:
+            return True
+        if normalized in {"0", "false", "f", "no", "n"}:
+            return False
+    return None
+
+
 def _validate_completion_outcome(completion_outcome: str) -> str:
     normalized = _coalesce_text(completion_outcome)
     if normalized not in COMPLETION_OUTCOMES:
@@ -355,6 +390,87 @@ def _append_event(
     )
     session.add(event)
     return event
+
+
+def _is_operational_for_synced_decision(
+    case_row: ExpertiseCase,
+    *,
+    previous_bitrix_entity_id: str | None,
+) -> bool:
+    if case_row.current_status != STATUS_CREATED:
+        return True
+    if case_row.bitrix_entity_id or previous_bitrix_entity_id:
+        return True
+    posted = _payload_posted(case_row.payload)
+    if posted is not None:
+        return not posted
+    return False
+
+
+def _synced_decision_idempotency_key(case_row: ExpertiseCase) -> str | None:
+    if case_row.decision_code not in DECISION_CODES:
+        return None
+    stable_ref = _coalesce_text(case_row.onec_expertise_ref, case_row.external_id)
+    if stable_ref is None:
+        stable_ref = str(case_row.id)
+    return f"sync-decision:{stable_ref}:{case_row.decision_code}"
+
+
+def _apply_synced_decision_transition(
+    session: Session,
+    *,
+    case_row: ExpertiseCase,
+    settings: Settings,
+    previous_bitrix_entity_id: str | None,
+    action_at: datetime,
+) -> bool:
+    if case_row.decision_code not in DECISION_CODES:
+        return False
+    if case_row.client_notified or case_row.current_status in NO_DUE_AT_STATUSES:
+        return False
+    if case_row.current_status not in SYNC_DECISION_SOURCE_STATUSES | {STATUS_DECISION_READY}:
+        return False
+    if not _is_operational_for_synced_decision(
+        case_row,
+        previous_bitrix_entity_id=previous_bitrix_entity_id,
+    ):
+        return False
+
+    if not case_row.decision_label:
+        case_row.decision_label = _decision_label_from_code(case_row.decision_code)
+
+    event_key = _synced_decision_idempotency_key(case_row)
+    existing_event = _get_existing_event_by_key(
+        session,
+        case_row.id,
+        EVENT_DECISION_RECORDED,
+        event_key,
+    )
+    previous_status = case_row.current_status
+    transitioned = False
+    if case_row.current_status in SYNC_DECISION_SOURCE_STATUSES:
+        case_row.current_status = STATUS_DECISION_READY
+        case_row.due_at = _notify_due_at(anchor_at=action_at, settings=settings)
+        transitioned = True
+
+    if existing_event is None:
+        _append_event(
+            session,
+            case_row=case_row,
+            event_type=EVENT_DECISION_RECORDED,
+            actor_external_id=None,
+            source="sync",
+            comment="Решение ОКК получено из 1С",
+            meta={
+                "from_status": previous_status,
+                "to_status": case_row.current_status,
+                "decision_code": case_row.decision_code,
+                "decision_label": case_row.decision_label,
+            },
+            idempotency_key=event_key,
+            event_at=action_at,
+        )
+    return transitioned
 
 
 def _require_transition(
@@ -571,6 +687,7 @@ def sync_cases(session: Session, items: list[dict]) -> dict:
         else:
             counters.updated += 1
 
+        previous_bitrix_entity_id = row.bitrix_entity_id
         row.external_id = item["external_id"]
         row.onec_expertise_ref = item.get("onec_expertise_ref")
         row.onec_expertise_number = item.get("onec_expertise_number")
@@ -620,9 +737,23 @@ def sync_cases(session: Session, items: list[dict]) -> dict:
             row.bitrix_last_error = item.get("bitrix_last_error")
         if "decision_code" in item:
             row.decision_code = _validate_decision_code(item.get("decision_code"))
+        elif decision_label is not None:
+            inferred_decision_code = _decision_code_from_label(decision_label)
+            if inferred_decision_code is not None:
+                row.decision_code = inferred_decision_code
+        if row.decision_code and not row.decision_label:
+            row.decision_label = _decision_label_from_code(row.decision_code)
 
         _replace_attachments(row, item.get("attachments"))
         session.flush()
+        if _apply_synced_decision_transition(
+            session,
+            case_row=row,
+            settings=settings,
+            previous_bitrix_entity_id=previous_bitrix_entity_id,
+            action_at=utcnow().replace(tzinfo=None),
+        ):
+            session.flush()
         row.due_at = _recalculate_due_at(
             session,
             case_row=row,

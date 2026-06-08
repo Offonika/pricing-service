@@ -3,7 +3,6 @@
 import argparse
 import json
 import logging
-import os
 import sys
 from datetime import date, timedelta
 
@@ -50,17 +49,27 @@ def main() -> None:
         action="store_true",
         help="Disable LLM category classification for competitor catalog updates",
     )
+    parser.add_argument(
+        "--latest-only",
+        action="store_true",
+        help="Process only the freshest FTP record per competitor SKU",
+    )
+    parser.add_argument(
+        "--progress-every",
+        type=int,
+        default=0,
+        help="Log matching progress every N processed records (default: 0 = disabled)",
+    )
     args = parser.parse_args()
 
     llm_client = None
     if args.llm or args.llm_limit:
-        base_url = os.environ.get("LOCAL_LLM_BASE_URL")
-        model = os.environ.get("LOCAL_LLM_CHAT_MODEL")
-        if not base_url or not model:
-            raise RuntimeError(
-                "LOCAL_LLM_BASE_URL and LOCAL_LLM_CHAT_MODEL must be set to use --llm"
-            )
-        llm_client = LlmParseClient(base_url, model)
+        llm_client = LlmParseClient.auto()
+        if not llm_client.has_providers:
+            logging.warning("LLM requested but no local/OpenAI providers are configured")
+            llm_client = None
+        else:
+            logging.info("LLM enabled with provider fallback: %s", llm_client.provider_names)
 
     settings = get_settings()
     engine = create_engine(settings.database_url)
@@ -76,6 +85,8 @@ def main() -> None:
             llm_threshold=args.llm_threshold,
             catalog_only_new=args.catalog_only_new,
             category_llm_enabled=not args.disable_category_llm,
+            latest_only=args.latest_only,
+            progress_every=args.progress_every,
         )
         if not args.skip_display_attrs:
             try:
@@ -108,6 +119,8 @@ def main() -> None:
             except RuntimeError as exc:
                 result["display_attrs_error"] = str(exc)
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    if llm_client is not None:
+        llm_client.close()
     exit_code = 0 if not result.get("errors") else 1
     sys.exit(exit_code)
 

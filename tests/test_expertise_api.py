@@ -260,7 +260,7 @@ def test_expertise_wave1_api_flow(monkeypatch) -> None:
         assert decision.status_code == 200
         assert decision.json()["current_status"] == "decision_ready"
         assert decision.json()["decision_code"] == "approved"
-        assert decision.json()["due_at"] == "2026-04-19T12:00:00"
+        assert decision.json()["due_at"] == "2026-04-20T12:00:00"
 
         decision_repeat = client.post(
             f"/api/expertise/cases/{ids['exp-001']}/decision",
@@ -482,6 +482,102 @@ def test_expertise_sync_update_and_sync_idempotency(monkeypatch) -> None:
                 .where(ExpertiseCaseEvent.event_type == "synced")
             )
             assert synced_events == 2
+    finally:
+        client.close()
+        app.dependency_overrides = {}
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_sync_promotes_active_decision_once_and_skips_posted_archive(monkeypatch) -> None:
+    engine, path = setup_db()
+    headers = _configure_expertise_auth(monkeypatch)
+    fixed_now = datetime(2026, 4, 18, 12, 0, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr(expertise_service, "utcnow", lambda: fixed_now)
+    app.dependency_overrides = {get_db: override_db(engine)}
+    client = TestClient(app)
+
+    active_payload = [
+        {
+            "external_id": "exp-sync-decision",
+            "onec_expertise_ref": "1c-exp-sync-decision",
+            "onec_expertise_number": "ЭКС-SYNC-DECISION",
+            "created_at_source": "2026-04-18T10:00:00Z",
+            "store_external_id": "store-1",
+            "store_name": "Магазин 1",
+            "customer_name": "Иван Иванов",
+            "owner_user_external_id": "okk-1",
+            "decision_label": "Принято",
+            "payload": {
+                "posted": False,
+                "manager_comment": "Не включается",
+                "items": [{"return_reason_name": "Неисправность подтверждена"}],
+            },
+        }
+    ]
+    archive_payload = [
+        {
+            "external_id": "exp-archive-decision",
+            "onec_expertise_ref": "1c-exp-archive-decision",
+            "onec_expertise_number": "ЭКС-ARCHIVE-DECISION",
+            "created_at_source": "2026-03-01T10:00:00Z",
+            "store_external_id": "store-1",
+            "store_name": "Магазин 1",
+            "customer_name": "Петр Петров",
+            "owner_user_external_id": "okk-1",
+            "decision_label": "Принято",
+            "payload": {
+                "posted": True,
+                "manager_comment": "Старый проведенный документ",
+                "items": [{"return_reason_name": "Архив"}],
+            },
+        }
+    ]
+
+    try:
+        created = client.post("/api/expertise/sync/cases", json=active_payload, headers=headers)
+        assert created.status_code == 200
+        assert created.json() == {"created": 1, "updated": 0}
+
+        repeated = client.post("/api/expertise/sync/cases", json=active_payload, headers=headers)
+        assert repeated.status_code == 200
+        assert repeated.json() == {"created": 0, "updated": 1}
+
+        archived = client.post("/api/expertise/sync/cases", json=archive_payload, headers=headers)
+        assert archived.status_code == 200
+        assert archived.json() == {"created": 1, "updated": 0}
+
+        ids = _case_ids(engine)
+        active = client.get(f"/api/expertise/cases/{ids['exp-sync-decision']}", headers=headers)
+        assert active.status_code == 200
+        active_body = active.json()
+        assert active_body["current_status"] == "decision_ready"
+        assert active_body["decision_code"] == "approved"
+        assert active_body["decision_label"] == "Принято"
+        assert active_body["due_at"] == "2026-04-20T12:00:00"
+
+        archive = client.get(f"/api/expertise/cases/{ids['exp-archive-decision']}", headers=headers)
+        assert archive.status_code == 200
+        assert archive.json()["current_status"] == "created"
+
+        with Session(engine) as session:
+            active_decision_events = session.scalars(
+                select(ExpertiseCaseEvent).where(
+                    ExpertiseCaseEvent.expertise_case_id == ids["exp-sync-decision"],
+                    ExpertiseCaseEvent.event_type == "decision_recorded",
+                )
+            ).all()
+            archive_decision_events = session.scalars(
+                select(ExpertiseCaseEvent).where(
+                    ExpertiseCaseEvent.expertise_case_id == ids["exp-archive-decision"],
+                    ExpertiseCaseEvent.event_type == "decision_recorded",
+                )
+            ).all()
+
+            assert len(active_decision_events) == 1
+            assert active_decision_events[0].source == "sync"
+            assert archive_decision_events == []
     finally:
         client.close()
         app.dependency_overrides = {}

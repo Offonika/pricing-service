@@ -18,6 +18,8 @@ from typing import Any, Callable
 DEFAULT_LOCAL_SOURCE_URL = "http://127.0.0.1:18080"
 DEFAULT_LOCAL_ENV_FILE = "/opt/MM/pricing-service/.env"
 DETAIL_RECEIVABLE_ROLE_CODES = {"cfo", "finance"}
+FINANCE_CONTROL_ROLE_CODES = {"cfo", "finance"}
+EXCHANGE_COUNTERPARTY_CODE = "РБ002085"
 RETAIL_DIRECTOR_MONTHLY_ROLE_CODES = {
     "ceo",
     "cco",
@@ -125,6 +127,39 @@ def _to_float(value: Any) -> float:
 
 def _format_money(value: float) -> str:
     return f"{value:,.0f} ₽".replace(",", " ")
+
+
+def _format_rub_precise(value: Any) -> str:
+    return f"{_to_float(value):,.2f} ₽".replace(",", " ").replace(".", ",")
+
+
+def _format_decimal_amount(value: Any) -> str:
+    rendered = f"{_to_float(value):,.2f}".replace(",", " ").replace(".", ",")
+    if rendered.endswith(",00"):
+        return rendered[:-3]
+    return rendered
+
+
+def _format_currency_amount(value: Any, currency: str | None) -> str:
+    label = (currency or "вал.").strip()
+    return f"{_format_decimal_amount(value)} {label}"
+
+
+def _format_rate_value(value: Any) -> str:
+    rendered = f"{_to_float(value):,.6f}".replace(",", " ").replace(".", ",")
+    return rendered.rstrip("0").rstrip(",") or "0"
+
+
+def _format_short_date(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    try:
+        return datetime.fromisoformat(text).strftime("%d.%m")
+    except ValueError:
+        if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+            return f"{text[8:10]}.{text[5:7]}"
+        return text[:10]
 
 
 def _format_qty(value: float) -> str:
@@ -243,8 +278,8 @@ def _sales_totals(items: list[dict[str, Any]]) -> dict[str, float | None]:
         gross_profit = revenue * margin_pct_value
         cost_of_sales = revenue - gross_profit
 
-    if gross_profit is not None and cost_of_sales is not None:
-        profitability_pct = _safe_ratio(gross_profit, cost_of_sales)
+    if gross_profit is not None:
+        profitability_pct = _safe_ratio(gross_profit, revenue)
     elif len(items) == 1 and has_profitability_pct:
         profitability_pct = profitability_pct_value
 
@@ -312,14 +347,44 @@ def _render_pct_metric(
 
 def _freshness_from_payload(payload: Any) -> dict[str, str]:
     if isinstance(payload, dict):
+        freshness_status = payload.get("freshness_status")
+        source_status = payload.get("source_status")
+        if freshness_status or source_status:
+            return {
+                "freshness_status": freshness_status or "unknown",
+                "source_status": source_status or "unknown",
+            }
+        if str(payload.get("status") or "").strip().lower() == "ready":
+            return {
+                "freshness_status": "fresh",
+                "source_status": "ready",
+            }
+        items = payload.get("payload")
+        if isinstance(items, list) and items:
+            return {
+                "freshness_status": "fresh",
+                "source_status": "ready",
+            }
+    if isinstance(payload, list) and payload:
         return {
-            "freshness_status": payload.get("freshness_status", "unknown"),
-            "source_status": payload.get("source_status", "unknown"),
+            "freshness_status": "fresh",
+            "source_status": "ready",
         }
     return {
         "freshness_status": "unknown",
         "source_status": "unknown",
     }
+
+
+def _section_source_status(payload_names: list[str], freshness: dict[str, dict[str, str]]) -> str:
+    statuses = [freshness.get(name, {}).get("source_status", "unknown") for name in payload_names]
+    if any(status == "error" for status in statuses):
+        return "error"
+    if any(status == "ready" for status in statuses):
+        return "ready"
+    if all(status == "empty" for status in statuses):
+        return "empty"
+    return "unknown"
 
 
 def _is_blocking_freshness_issue(
@@ -564,6 +629,135 @@ def _render_task_efficiency_lines(task_efficiency: dict[str, Any]) -> list[str]:
     return [f"Эффективность задач Bitrix: {note}."]
 
 
+def _currency_label(item: dict[str, Any], *, prefix: str = "") -> str:
+    name_key = f"{prefix}currency_name"
+    code_key = f"{prefix}currency_code"
+    name = str(item.get(name_key) or "").strip()
+    code = str(item.get(code_key) or "").strip()
+    return name or code or "вал."
+
+
+def _is_rub_currency_item(item: dict[str, Any], *, prefix: str = "") -> bool:
+    label = _currency_label(item, prefix=prefix).strip().lower()
+    code = str(item.get(f"{prefix}currency_code") or "").strip()
+    return code == "643" or label in {"руб", "rub", "rur"}
+
+
+def _render_exchange_counterparty_lines(payload: dict[str, Any]) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    if payload.get("status") != "ready":
+        note = payload.get("note") or payload.get("source_status") or "данные не готовы"
+        return [f"Обменник: {note}."]
+
+    control = payload.get("rub_control") or {}
+    if not isinstance(control, dict):
+        control = {}
+    control_status = str(
+        payload.get("control_status") or control.get("status") or "unknown"
+    ).lower()
+    status_label = "OK" if control_status == "ok" else "ВНИМАНИЕ"
+    lines = [
+        (
+            f"Обменник {payload.get('counterparty_code') or ''}: {status_label}; "
+            f"приход рублей {_format_rub_precise(control.get('rub_inflow'))}; "
+            "расход валюты в руб. эквиваленте "
+            f"{_format_rub_precise(control.get('foreign_outflow_rub'))}; "
+            f"разница {_format_rub_precise(control.get('movement_diff_rub'))}; "
+            f"рублевый хвост {_format_rub_precise(control.get('closing_balance_rub'))}."
+        )
+    ]
+
+    rate_control = payload.get("rate_mismatch_control") or {}
+    if isinstance(rate_control, dict):
+        mismatch_count = int(_to_float(rate_control.get("mismatch_count")))
+        rate_status = str(rate_control.get("status") or "unknown").lower()
+        if rate_status != "ok" and mismatch_count > 0:
+            total = rate_control.get("total_abs_diff_rub") or rate_control.get("total_diff_rub")
+            items = [
+                item
+                for item in rate_control.get("items") or []
+                if isinstance(item, dict)
+            ][:5]
+            details = []
+            for item in items:
+                currency = str(item.get("currency_name") or "вал.").strip()
+                number = str(item.get("document_number") or "без номера").strip()
+                document_date = _format_short_date(item.get("document_at"))
+                multiplicity = _to_float(item.get("document_multiplicity"))
+                rate = _format_rate_value(item.get("document_rate"))
+                if multiplicity and multiplicity != 1:
+                    rate = f"{rate}/{_format_rate_value(multiplicity)}"
+                details.append(
+                    f"{number} {document_date} {currency}: "
+                    f"{_format_currency_amount(item.get('document_amount'), currency)} x {rate} "
+                    f"-> {_format_rub_precise(item.get('expected_rub'))}, "
+                    f"регистр {_format_rub_precise(item.get('movement_rub'))}, "
+                    f"разница {_format_rub_precise(item.get('diff_rub'))}"
+                )
+            line = f"Ошибки курса Обменник: {mismatch_count} док. на {_format_rub_precise(total)}"
+            if details:
+                line = f"{line}; {'; '.join(details)}"
+            lines.append(f"{line}.")
+
+    summary = [
+        item
+        for item in payload.get("summary_by_currency") or []
+        if isinstance(item, dict)
+    ]
+    if summary:
+        summary.sort(
+            key=lambda item: (
+                _is_rub_currency_item(item, prefix="contract_"),
+                _currency_label(item, prefix="contract_"),
+            )
+        )
+        parts = []
+        for item in summary:
+            currency = _currency_label(item, prefix="contract_")
+            native = _format_currency_amount(item.get("current_balance"), currency)
+            if _is_rub_currency_item(item, prefix="contract_"):
+                parts.append(native)
+            else:
+                parts.append(f"{native} (экв. {_format_rub_precise(item.get('current_balance_rub'))})")
+        lines.append("Обменник остатки по валютам договора: " + "; ".join(parts) + ".")
+    return lines
+
+
+def _render_cash_position_lines(payload: dict[str, Any]) -> list[str]:
+    if not isinstance(payload, dict):
+        return []
+    if payload.get("status") != "ready":
+        note = payload.get("note") or payload.get("source_status") or "данные не готовы"
+        return [f"Остатки денег: {note}."]
+
+    summary = [
+        item
+        for item in payload.get("summary_by_category_currency") or []
+        if isinstance(item, dict)
+    ]
+    if not summary:
+        return ["Остатки денег: активных остатков в 1С не найдено."]
+
+    category_order = ["bank_accounts", "cashboxes", "cards", "other"]
+    category_parts = []
+    for category in category_order:
+        items = [item for item in summary if item.get("category") == category]
+        if not items:
+            continue
+        items.sort(key=lambda item: _currency_label(item))
+        category_name = str(items[0].get("category_name") or category).strip()
+        values = [
+            _format_currency_amount(item.get("current_balance"), _currency_label(item))
+            for item in items
+        ]
+        category_parts.append(f"{category_name}: {', '.join(values)}")
+
+    if not category_parts:
+        return ["Остатки денег: активных остатков в 1С не найдено."]
+    return ["Остатки денег по 1С без смешивания валют: " + "; ".join(category_parts) + "."]
+
+
 def _format_error(error: Exception) -> str:
     if isinstance(error, urllib.error.HTTPError):
         return f"HTTP {error.code}: {error.reason}"
@@ -717,6 +911,21 @@ def build_management_digest(
         ),
     ]
     normalized_role_code = str(role_code or "").strip().lower()
+    if normalized_role_code in FINANCE_CONTROL_ROLE_CODES:
+        calls.extend(
+            [
+                (
+                    "exchange_counterparty",
+                    "/api/management/exchange-counterparty-settlements",
+                    {"counterparty_code": EXCHANGE_COUNTERPARTY_CODE},
+                ),
+                (
+                    "cash_position",
+                    "/api/management/cash-position",
+                    {"top": "15"},
+                ),
+            ]
+        )
     if normalized_role_code in RETAIL_DIRECTOR_MONTHLY_ROLE_CODES:
         calls.append(
             (
@@ -957,8 +1166,40 @@ def build_management_digest(
         "top_managers": _top_managers(assigned_manager_summary),
     }
 
+    sales_payload_names = [
+        "sales_daily_current",
+        "sales_daily_previous",
+        "sales_weekly_current",
+        "sales_weekly_previous",
+        "sales_monthly_current",
+        "sales_monthly_previous",
+    ]
+    sales_source_status = _section_source_status(sales_payload_names, result["freshness"])
+    sales_current_row_count = len(sales_daily_current)
+    sales_status = (
+        "ready" if sales_source_status == "ready" and sales_current_row_count else "empty"
+    )
+    sales_note = ""
+    if sales_source_status == "error":
+        sales_status = "source_error"
+        sales_note = "источник продаж недоступен"
+    elif sales_current_row_count == 0:
+        sales_note = f"нет строк продаж за {anchor_date.isoformat()}"
+
     result["sections"]["sales"] = {
         "as_of": anchor_date.isoformat(),
+        "status": sales_status,
+        "freshness_status": "fresh" if sales_status == "ready" else "unknown",
+        "source_status": sales_source_status,
+        "note": sales_note,
+        "row_counts": {
+            "day": sales_current_row_count,
+            "day_previous": len(sales_daily_previous),
+            "week": len(sales_weekly_current),
+            "week_previous": len(sales_weekly_previous),
+            "month": len(sales_monthly_current),
+            "month_previous": len(sales_monthly_previous),
+        },
         "previous_date": date.fromordinal(anchor_date.toordinal() - 1).isoformat(),
         "day": {
             **_sales_period_section(sales_daily_current, sales_daily_previous),
@@ -1039,6 +1280,20 @@ def build_management_digest(
         "status": "not_configured",
         "note": "AI action items по встречам на сервере B пока не подключены в этот digest.",
     }
+
+    if normalized_role_code in FINANCE_CONTROL_ROLE_CODES:
+        exchange_payload = responses.get("exchange_counterparty", {})
+        result["sections"]["exchange_counterparty"] = (
+            exchange_payload
+            if isinstance(exchange_payload, dict)
+            else {"status": "source_error", "note": "неожиданный формат ответа"}
+        )
+        cash_payload = responses.get("cash_position", {})
+        result["sections"]["cash_position"] = (
+            cash_payload
+            if isinstance(cash_payload, dict)
+            else {"status": "source_error", "note": "неожиданный формат ответа"}
+        )
 
     if normalized_role_code in RETAIL_DIRECTOR_MONTHLY_ROLE_CODES:
         result["sections"]["retail_director_open_month"] = {
@@ -1141,51 +1396,62 @@ def render_management_digest(digest: dict[str, Any]) -> str:
             lines.append("Менеджеры по портфелю: " + "; ".join(receivables["top_managers"]) + ".")
 
     sales = digest["sections"]["sales"]
-    day_sales = sales["day"]
-    week_sales = sales["week"]
-    month_sales = sales["month"]
-    day_revenue_delta_sign = "+" if day_sales["revenue_delta"] >= 0 else ""
-    day_qty_delta_sign = "+" if day_sales["sales_count_delta"] >= 0 else ""
-    day_ticket_delta_sign = "+" if day_sales["avg_ticket_delta"] >= 0 else ""
-    week_revenue_delta_sign = "+" if week_sales["revenue_delta"] >= 0 else ""
-    week_qty_delta_sign = "+" if week_sales["sales_count_delta"] >= 0 else ""
-    week_ticket_delta_sign = "+" if week_sales["avg_ticket_delta"] >= 0 else ""
-    month_revenue_delta_sign = "+" if month_sales["revenue_delta"] >= 0 else ""
-    month_qty_delta_sign = "+" if month_sales["sales_count_delta"] >= 0 else ""
-    month_ticket_delta_sign = "+" if month_sales["avg_ticket_delta"] >= 0 else ""
-    lines.append(
-        "Продажи день: "
-        f"выручка {_format_money(day_sales['revenue'])} "
-        f"({day_revenue_delta_sign}{_format_money(day_sales['revenue_delta'])} д/д); "
-        f"{_render_money_metric('валовая прибыль', day_sales['gross_profit'], day_sales['gross_profit_delta'], 'д/д')}; "
-        f"{_render_pct_metric('рентабельность продаж', day_sales['profitability_pct'], day_sales['profitability_pct_delta'], 'д/д')}; "
-        f"продано {_format_qty(day_sales['sales_count'])} шт. "
-        f"({day_qty_delta_sign}{_format_qty(day_sales['sales_count_delta'])} д/д); "
-        f"ср. чек {_format_money(day_sales['avg_ticket'])} "
-        f"({day_ticket_delta_sign}{_format_money(day_sales['avg_ticket_delta'])} д/д)."
-    )
-    lines.append(
-        "Продажи неделя: "
-        f"выручка {_format_money(week_sales['revenue'])} "
-        f"({week_revenue_delta_sign}{_format_money(week_sales['revenue_delta'])} н/н); "
-        f"{_render_money_metric('валовая прибыль', week_sales['gross_profit'], week_sales['gross_profit_delta'], 'н/н')}; "
-        f"{_render_pct_metric('рентабельность продаж', week_sales['profitability_pct'], week_sales['profitability_pct_delta'], 'н/н')}; "
-        f"продано {_format_qty(week_sales['sales_count'])} шт. "
-        f"({week_qty_delta_sign}{_format_qty(week_sales['sales_count_delta'])} н/н); "
-        f"ср. чек {_format_money(week_sales['avg_ticket'])} "
-        f"({week_ticket_delta_sign}{_format_money(week_sales['avg_ticket_delta'])} н/н)."
-    )
-    lines.append(
-        "Продажи месяц: "
-        f"выручка {_format_money(month_sales['revenue'])} "
-        f"({month_revenue_delta_sign}{_format_money(month_sales['revenue_delta'])} м/м); "
-        f"{_render_money_metric('валовая прибыль', month_sales['gross_profit'], month_sales['gross_profit_delta'], 'м/м')}; "
-        f"{_render_pct_metric('рентабельность продаж', month_sales['profitability_pct'], month_sales['profitability_pct_delta'], 'м/м')}; "
-        f"продано {_format_qty(month_sales['sales_count'])} шт. "
-        f"({month_qty_delta_sign}{_format_qty(month_sales['sales_count_delta'])} м/м); "
-        f"ср. чек {_format_money(month_sales['avg_ticket'])} "
-        f"({month_ticket_delta_sign}{_format_money(month_sales['avg_ticket_delta'])} м/м)."
-    )
+    if sales.get("status") != "ready":
+        lines.append(f"Продажи: {sales.get('note') or 'данные не готовы'}.")
+    else:
+        day_sales = sales["day"]
+        week_sales = sales["week"]
+        month_sales = sales["month"]
+        day_revenue_delta_sign = "+" if day_sales["revenue_delta"] >= 0 else ""
+        day_qty_delta_sign = "+" if day_sales["sales_count_delta"] >= 0 else ""
+        day_ticket_delta_sign = "+" if day_sales["avg_ticket_delta"] >= 0 else ""
+        week_revenue_delta_sign = "+" if week_sales["revenue_delta"] >= 0 else ""
+        week_qty_delta_sign = "+" if week_sales["sales_count_delta"] >= 0 else ""
+        week_ticket_delta_sign = "+" if week_sales["avg_ticket_delta"] >= 0 else ""
+        month_revenue_delta_sign = "+" if month_sales["revenue_delta"] >= 0 else ""
+        month_qty_delta_sign = "+" if month_sales["sales_count_delta"] >= 0 else ""
+        month_ticket_delta_sign = "+" if month_sales["avg_ticket_delta"] >= 0 else ""
+        lines.append(
+            "Продажи день: "
+            f"выручка {_format_money(day_sales['revenue'])} "
+            f"({day_revenue_delta_sign}{_format_money(day_sales['revenue_delta'])} д/д); "
+            f"{_render_money_metric('валовая прибыль', day_sales['gross_profit'], day_sales['gross_profit_delta'], 'д/д')}; "
+            f"{_render_pct_metric('рентабельность продаж', day_sales['profitability_pct'], day_sales['profitability_pct_delta'], 'д/д')}; "
+            f"продано {_format_qty(day_sales['sales_count'])} шт. "
+            f"({day_qty_delta_sign}{_format_qty(day_sales['sales_count_delta'])} д/д); "
+            f"ср. чек {_format_money(day_sales['avg_ticket'])} "
+            f"({day_ticket_delta_sign}{_format_money(day_sales['avg_ticket_delta'])} д/д)."
+        )
+        lines.append(
+            "Продажи неделя: "
+            f"выручка {_format_money(week_sales['revenue'])} "
+            f"({week_revenue_delta_sign}{_format_money(week_sales['revenue_delta'])} н/н); "
+            f"{_render_money_metric('валовая прибыль', week_sales['gross_profit'], week_sales['gross_profit_delta'], 'н/н')}; "
+            f"{_render_pct_metric('рентабельность продаж', week_sales['profitability_pct'], week_sales['profitability_pct_delta'], 'н/н')}; "
+            f"продано {_format_qty(week_sales['sales_count'])} шт. "
+            f"({week_qty_delta_sign}{_format_qty(week_sales['sales_count_delta'])} н/н); "
+            f"ср. чек {_format_money(week_sales['avg_ticket'])} "
+            f"({week_ticket_delta_sign}{_format_money(week_sales['avg_ticket_delta'])} н/н)."
+        )
+        lines.append(
+            "Продажи месяц: "
+            f"выручка {_format_money(month_sales['revenue'])} "
+            f"({month_revenue_delta_sign}{_format_money(month_sales['revenue_delta'])} м/м); "
+            f"{_render_money_metric('валовая прибыль', month_sales['gross_profit'], month_sales['gross_profit_delta'], 'м/м')}; "
+            f"{_render_pct_metric('рентабельность продаж', month_sales['profitability_pct'], month_sales['profitability_pct_delta'], 'м/м')}; "
+            f"продано {_format_qty(month_sales['sales_count'])} шт. "
+            f"({month_qty_delta_sign}{_format_qty(month_sales['sales_count_delta'])} м/м); "
+            f"ср. чек {_format_money(month_sales['avg_ticket'])} "
+            f"({month_ticket_delta_sign}{_format_money(month_sales['avg_ticket_delta'])} м/м)."
+        )
+
+    if role_code in FINANCE_CONTROL_ROLE_CODES:
+        lines.extend(
+            _render_exchange_counterparty_lines(
+                digest["sections"].get("exchange_counterparty", {})
+            )
+        )
+        lines.extend(_render_cash_position_lines(digest["sections"].get("cash_position", {})))
 
     lines.extend(_render_task_efficiency_lines(digest["sections"].get("task_efficiency", {})))
 

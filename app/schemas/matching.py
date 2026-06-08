@@ -19,6 +19,11 @@ class MatchStatus(StrEnum):
     multiple = "multiple"
 
 
+class ProductSort(StrEnum):
+    default = "default"
+    name_asc = "name_asc"
+
+
 class CurrentMatch(BaseModel):
     competitor_item_id: int | None = None
     competitor_id: int | None = None
@@ -59,6 +64,7 @@ class ProductRow(BaseModel):
     suggested_count: int = 0
     review_count: int = 0
     live_candidate_count: int = 0
+    compatibility_models: list[str] = Field(default_factory=list)
 
 
 class PropertySummary(BaseModel):
@@ -73,6 +79,15 @@ class PropertySummary(BaseModel):
     block_conflict: int = 0
     review_conflict: int = 0
     hint_conflict: int = 0
+
+
+class CompatibilityHint(BaseModel):
+    status: Literal["existing", "inferred_model", "inferred_code", "required", "not_required"] = (
+        "not_required"
+    )
+    label: str = ""
+    detail: str = ""
+    matched_values: list[str] = Field(default_factory=list)
 
 
 class Candidate(BaseModel):
@@ -95,6 +110,7 @@ class Candidate(BaseModel):
     score: float | None = None
     reason: str | None = None
     needs_compat_review: bool = False
+    compatibility_hint: CompatibilityHint = Field(default_factory=CompatibilityHint)
     last_seen_at: datetime | None = None
     attrs: dict[str, Any] | None = None
     property_summary: PropertySummary | None = None

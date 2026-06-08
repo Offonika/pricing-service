@@ -7,9 +7,10 @@
 Заказ покупателя с сайта -> Реализация товаров и услуг -> сборка РТУ -> физическая доставка/выдача
 ```
 
-Этот контракт относится к следующей волне пилота после foundation-сценария
-передачи/приемки `ПеремещениеТоваров`. В текущем коде
-`source_document_type = rtu`, `manual_review` и sync РТУ еще не реализованы.
+Этот контракт относится к волне пилота после foundation-сценария
+передачи/приемки `ПеремещениеТоваров`. В `pricing-service` поток реализуется
+read-only синхронизацией РТУ из SQL `1С` через существующий `ONEC_DATABASE_URL`:
+новые секреты и отдельные подключения не нужны.
 
 Этот поток связан с документами:
 
@@ -91,24 +92,52 @@
    - `_Document132._Fld2422` (`Дополнение к адресу`), приоритетно;
    - `_Document132._Fld2395` (`Адрес доставки`), fallback;
    - `_Document203._Fld4965` / `_Document203._Fld4952`, если в заказе пусто.
-3. Ищем подразделение в `_Reference68`, у которого адрес/место расчета
-   соответствует строке адреса. Основной кандидат - `_Reference68._Fld9249`
-   (`осиМестоРасчета`).
-4. Фактический склад-получатель берем из найденного подразделения:
-   `_Reference68._Fld8919RRef -> _Reference80._IDRRef`.
+3. Ищем ровно один активный склад/точку в `logistics_warehouse`, где адрес
+   совпадает с `payload.address_aliases`, `payload.aliases`, `payload.addresses`,
+   `payload.address`, `payload.pickup_address`, названием или `external_id`.
+   `payload.address_aliases` заполняется повторяемым read-only sync из
+   `_Reference68._Fld9249 -> _Reference80`, а matching допускает не только
+   полное вхождение строки, но и уверенное совпадение адресных токенов
+   `улица/шоссе + дом + павильон`. Город, бренд и часы работы не считаются
+   достаточным совпадением; если павильон указан в обеих строках и различается,
+   документ уходит в `manual_review`.
+4. Фактический склад-получатель берем из найденной записи
+   `logistics_warehouse`.
 
 Если адрес не сопоставился однозначно, документ должен попадать в
 `manual_review`, а не в автоматическую логистическую очередь.
 
-Для способов доставки, отличных от `Самовывоз`, правила определения финального
-получателя в MVP пока не считаются подтвержденными. Такие документы должны
-попадать в `manual_review` или отдельный внешний-carrier flow после явного
-выбора логистом.
+Подтвержденное бизнес-правило для пустого адреса: если способ доставки -
+внутренний `Самовывоз`, но все адресные поля пустые, целевым складом считается
+склад РТУ (`_Document203._Fld4940RRef`). Sync пишет это решение в payload как
+`business_rule = pickup_empty_address_target_source` и
+`empty_pickup_address_target_source = true`, чтобы такие случаи можно было
+отдельно отфильтровать и проверить.
 
-В `manual_review` логист выбирает подразделение-получатель вручную. Решение
-должно сохраняться как аудит с исходной строкой адреса, выбранным
-подразделением и пользователем, чтобы последующие правила сопоставления можно
-было улучшать на фактах.
+Для способов доставки, отличных от внутреннего `Самовывоз`, правила определения
+финального получателя в MVP пока не считаются подтвержденными. По умолчанию
+`СДЭК`, `Почта России`, `Доставка курьером` и похожие способы попадают в
+`manual_review` с причиной `rtu_external_carrier_unmapped`, чтобы логист явно
+выбрал внешний carrier flow.
+
+После подтверждения такого решения sync можно запускать в явном режиме
+`--external-carriers`: сервис создает РТУ как logistics unit, ставит
+`barcode = lookup_code`, фиксирует системное событие
+`handed_to_external_carrier` с `source = 1c_sync` и переводит единицу в
+`with_external_carrier`. Трек/накладная в этой волне не подтягиваются из API
+перевозчиков; если номера появятся в подтвержденном источнике, они добавляются
+следующим расширением.
+
+В `manual_review` логист выбирает склад/точку вручную. Решение должно
+сохраняться как аудит с исходной строкой адреса, выбранной точкой и
+пользователем, чтобы последующие правила сопоставления можно было улучшать на
+фактах.
+
+Дополнительный подтверждающий источник для aliases точек выдачи - публичная
+страница `https://master-mobile.ru/contacts/`. Адреса с сайта можно применять
+как `logistics_warehouse.payload.address_aliases` через
+`tasks/apply_logistics_warehouse_alias_overrides.py`, сохраняя причину
+`official master-mobile.ru contacts page`.
 
 ## 6. Readiness Gate РТУ Для Логистики
 
@@ -152,14 +181,15 @@ SELECT
     rtu._Number AS rtu_number,
     rtu._Date_Time AS rtu_date,
     CONVERT(varchar(34), ord._IDRRef, 1) AS site_order_external_id,
-    ord._Number AS site_order_number,
+    ord._Number AS onec_order_number,
     ord._Date_Time AS site_order_date,
-    ord._Fld2425 AS site_order_number_from_site,
+    ord._Fld2425 AS site_order_number,
     ord._Fld9266 AS site_delivery_method,
     CAST(ord._Fld2422 AS nvarchar(max)) AS site_delivery_addition,
     CAST(ord._Fld2395 AS nvarchar(max)) AS site_delivery_address,
     CAST(rtu._Fld4965 AS nvarchar(max)) AS rtu_delivery_addition,
     CAST(rtu._Fld4952 AS nvarchar(max)) AS rtu_delivery_address,
+    CONVERT(varchar(34), rtu._Fld4940RRef, 1) AS source_warehouse_external_id,
     wh._Code AS rtu_warehouse_code,
     wh._Description AS rtu_warehouse_name
 FROM dbo._Document203 AS rtu WITH (NOLOCK)
@@ -192,10 +222,12 @@ WHERE rtu._Marked = 0x00
 - `external_id = _Document203._IDRRef`;
 - `origin_order_external_id = _Document132._IDRRef`;
 - `site_order_number = _Document132._Fld2425`;
+- `lookup_code = MMLOG1|rtu|<rtu_external_id>|<site_order_number>`;
+- `barcode = lookup_code` для совместимости старых scan endpoints;
 - `source_warehouse_id` берется из склада РТУ
   `_Document203._Fld4940RRef -> _Reference80`;
 - `target_warehouse_id` определяется через адрес самовывоза и карточку
-  подразделения;
+  `logistics_warehouse`;
 - сканирование выполняется по печатному штрихкоду/QR на форме РТУ; значение,
   которое возвращает сканер, должно однозначно находить одну РТУ;
 - движение дальше идет тем же state machine: передача водителю, транзит,
@@ -204,6 +236,32 @@ WHERE rtu._Marked = 0x00
 РТУ не должна двигать CRM/заказ как "выдано клиенту" только по факту создания
 или проведения. Для клиента и Bitrix24 нужен derived status, например
 `ready_for_dispatch`, пока физическая логистика не завершена.
+
+Сервисный слой:
+
+- extractor находится в `app/services/logistics_onec.py`;
+- запуск из cron/ручной проверки: `tasks/sync_logistics_rtu_from_onec.py`;
+- адресные aliases точек из `1С` подтягиваются командой
+  `tasks/sync_logistics_warehouse_aliases_from_onec.py`;
+- без `--apply` команда делает dry-run и возвращает отчет `fetched`,
+  `synced_planned`, `manual_review_planned`, `skipped`;
+- с `--apply` команда пишет изменения и возвращает `synced_created`,
+  `synced_updated`, `manual_review_created`, `manual_review_resolved`,
+  `skipped`;
+- флаг `--external-carriers` включает явную обработку `СДЭК`/`Почта`/`курьер`:
+  вместо новой `manual_review` такие РТУ получают состояние
+  `with_external_carrier`, а старые открытые `rtu_external_carrier_unmapped`
+  закрываются как `resolved`;
+- с `--apply` сервис вызывает общий `logistics.sync_units`, поэтому повторный
+  sync обновляет существующую РТУ, а не создает дубль.
+- открытый ручной разбор, который стал неактуальным после успешного sync той же
+  РТУ, закрывается автоматически со статусом `resolved`;
+- отчет для логистов:
+  `tasks/report_logistics_rtu_manual_review.py --review-type rtu_target_warehouse_unresolved`.
+- подтвержденные aliases применяются только явным JSON-файлом через
+  `tasks/apply_logistics_warehouse_alias_overrides.py`; без `--apply` команда
+  показывает dry-run, с `--apply` пишет `address_aliases` и историю
+  подтверждения в `payload.alias_override_history`.
 
 ## 9. Решения Пилота И Остаточные Проверки
 
@@ -214,10 +272,8 @@ WHERE rtu._Marked = 0x00
   `manual_review`; логист выбирает подразделение вручную.
 - Отдельный barcode для РТУ-пакета на старте не создаем, используем печатный
   штрихкод/QR с расходной накладной.
-- Перед кодом нужно один раз снять фактическое значение, которое возвращает
-  сканер по этому штрихкоду/QR, и закрепить поле lookup.
-- После выбора lookup-поля нужно проверить уникальность в актуальном окне
-  пилота; если одно значение находит несколько РТУ, документ отправлять в
-  `manual_review`.
+- QR/lookup в backend закреплен как
+  `MMLOG1|rtu|<rtu_external_id>|<site_order_number>`.
+- Если generated lookup не уникален, документ отправляется в `manual_review`.
 - Для `_InfoRg9448` по РТУ нужно подтвердить и зафиксировать RTRef документа,
   чтобы события других типов документов не попадали в gate по совпавшей ссылке.

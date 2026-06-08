@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import io
 import json
 import os
 import tempfile
+import urllib.error
 import urllib.parse
 from datetime import datetime, timedelta
 
@@ -91,7 +93,7 @@ def _configure_bitrix_env(
     )
     monkeypatch.setenv("EXPERTISE_BITRIX_ROOT_FOLDER_ID", "77")
     monkeypatch.setenv("EXPERTISE_BITRIX_NOTIFY_RESPONSIBLE_USER_ID", "900")
-    monkeypatch.setenv("EXPERTISE_BITRIX_NOTIFY_AUDITOR_USER_IDS", "[901, 902]")
+    monkeypatch.setenv("EXPERTISE_BITRIX_NOTIFY_AUDITOR_USER_IDS", "[900, 901, 902]")
     if include_store_map:
         monkeypatch.setenv(
             "EXPERTISE_BITRIX_STORE_DEPARTMENT_MAP",
@@ -244,6 +246,7 @@ def test_sync_case_to_bitrix_creates_folder_item_and_notify_task(monkeypatch) ->
         ]
         task_params = next(params for method, params in calls if method == "tasks.task.add")
         assert task_params["fields[RESPONSIBLE_ID]"] == ["1001"]
+        assert task_params["fields[CREATED_BY]"] == ["900"]
         assert task_params["fields[ACCOMPLICES][]"] == ["1002"]
         assert sorted(task_params["fields[AUDITORS][]"]) == ["901", "902"]
 
@@ -264,6 +267,7 @@ def test_sync_case_to_bitrix_updates_existing_item_and_task(monkeypatch) -> None
     engine, path = _setup_db()
     _configure_bitrix_env(monkeypatch)
     calls: list[str] = []
+    task_update_payloads: list[dict[str, object]] = []
 
     def fake_urlopen(request, timeout=60):
         method = request.full_url.rsplit("/", 1)[-1].replace(".json", "")
@@ -272,6 +276,8 @@ def test_sync_case_to_bitrix_updates_existing_item_and_task(monkeypatch) -> None
             return _FakeHTTPResponse(
                 {"result": {"ID": "701", "DETAIL_URL": "https://disk/new/701/"}}
             )
+        if method == "tasks.task.get":
+            return _FakeHTTPResponse({"result": {"task": {"id": "8801", "status": "2"}}})
         if method == "crm.item.update":
             return _FakeHTTPResponse({"result": {"item": {"id": 555}}})
         if method == "department.get":
@@ -279,6 +285,7 @@ def test_sync_case_to_bitrix_updates_existing_item_and_task(monkeypatch) -> None
         if method == "user.get":
             return _FakeHTTPResponse({"result": [{"ID": "1001"}]})
         if method == "tasks.task.update":
+            task_update_payloads.append(json.loads((request.data or b"{}").decode("utf-8")))
             return _FakeHTTPResponse({"result": True})
         raise AssertionError(f"unexpected Bitrix24 method: {method}")
 
@@ -299,10 +306,89 @@ def test_sync_case_to_bitrix_updates_existing_item_and_task(monkeypatch) -> None
             assert row.bitrix_disk_folder_url == "https://disk/new/701/"
         assert calls == [
             "disk.folder.get",
+            "tasks.task.get",
             "crm.item.update",
             "department.get",
             "user.get",
             "tasks.task.update",
+        ]
+        assert len(task_update_payloads) == 1
+        assert task_update_payloads[0]["taskId"] == "8801"
+        task_fields = task_update_payloads[0]["fields"]
+        assert task_fields["TITLE"] == "Уведомить клиента по экспертизе ЭКС-001"
+        assert task_fields["RESPONSIBLE_ID"] == 1001
+        assert task_fields["ACCOMPLICES"] == []
+        assert task_fields["AUDITORS"] == [901, 902]
+        assert "Экспертиза: ЭКС-001" in task_fields["DESCRIPTION"]
+        assert "Smart-process item ID: 555" in task_fields["DESCRIPTION"]
+        assert "Папка Bitrix Disk: https://disk/new/701/" in task_fields["DESCRIPTION"]
+        assert "DEADLINE" in task_fields
+    finally:
+        get_settings.cache_clear()
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_sync_case_to_bitrix_recreates_missing_smart_process_item(monkeypatch) -> None:
+    engine, path = _setup_db()
+    _configure_bitrix_env(monkeypatch)
+    calls: list[str] = []
+
+    def fake_urlopen(request, timeout=60):
+        method = request.full_url.rsplit("/", 1)[-1].replace(".json", "")
+        calls.append(method)
+        if method == "disk.folder.get":
+            return _FakeHTTPResponse({"result": {"ID": "701", "DETAIL_URL": "https://disk/701/"}})
+        if method == "crm.item.update":
+            payload = {
+                "error": "NOT_FOUND",
+                "error_description": "Элемент не найден",
+            }
+            raise urllib.error.HTTPError(
+                request.full_url,
+                400,
+                "Bad Request",
+                {},
+                io.BytesIO(json.dumps(payload, ensure_ascii=False).encode("utf-8")),
+            )
+        if method == "crm.item.list":
+            return _FakeHTTPResponse({"result": {"items": []}})
+        if method == "crm.item.add":
+            return _FakeHTTPResponse({"result": {"item": {"id": 777}}})
+        if method == "department.get":
+            return _FakeHTTPResponse({"result": [{"ID": "501", "UF_HEAD": "1001"}]})
+        if method == "user.get":
+            return _FakeHTTPResponse({"result": [{"ID": "1001"}]})
+        if method == "tasks.task.add":
+            return _FakeHTTPResponse({"result": {"task": {"id": "8801"}}})
+        raise AssertionError(f"unexpected Bitrix24 method: {method}")
+
+    monkeypatch.setattr(expertise_bitrix.urllib.request, "urlopen", fake_urlopen)
+
+    try:
+        with Session(engine) as session:
+            row = _make_case(
+                session,
+                bitrix_entity_id="555",
+                bitrix_disk_folder_id="701",
+                bitrix_notify_task_id=None,
+            )
+            expertise_bitrix.sync_case_to_bitrix(session, case_id=row.id)
+            session.commit()
+            session.refresh(row)
+
+            assert row.bitrix_entity_id == "777"
+            assert row.bitrix_notify_task_id == "8801"
+            assert row.bitrix_last_error is None
+        assert calls == [
+            "disk.folder.get",
+            "crm.item.update",
+            "crm.item.list",
+            "crm.item.add",
+            "department.get",
+            "user.get",
+            "tasks.task.add",
         ]
     finally:
         get_settings.cache_clear()
@@ -323,6 +409,8 @@ def test_sync_case_to_bitrix_completes_notify_task_when_client_notified(monkeypa
             return _FakeHTTPResponse({"result": {"ID": "701", "DETAIL_URL": "https://disk/701/"}})
         if method == "crm.item.update":
             return _FakeHTTPResponse({"result": {"item": {"id": 555}}})
+        if method == "tasks.task.get":
+            return _FakeHTTPResponse({"result": {"task": {"id": "8801", "status": "2"}}})
         if method == "tasks.task.complete":
             return _FakeHTTPResponse({"result": True})
         raise AssertionError(f"unexpected Bitrix24 method: {method}")
@@ -341,7 +429,233 @@ def test_sync_case_to_bitrix_completes_notify_task_when_client_notified(monkeypa
             )
             expertise_bitrix.sync_case_to_bitrix(session, case_id=row.id)
             session.commit()
-        assert calls == ["disk.folder.get", "crm.item.update", "tasks.task.complete"]
+        assert calls == [
+            "disk.folder.get",
+            "crm.item.update",
+            "tasks.task.get",
+            "tasks.task.complete",
+        ]
+    finally:
+        get_settings.cache_clear()
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_sync_case_to_bitrix_skips_complete_for_already_closed_terminal_task(
+    monkeypatch,
+) -> None:
+    engine, path = _setup_db()
+    _configure_bitrix_env(monkeypatch)
+    calls: list[str] = []
+
+    def fake_urlopen(request, timeout=60):
+        method = request.full_url.rsplit("/", 1)[-1].replace(".json", "")
+        calls.append(method)
+        if method == "disk.folder.get":
+            return _FakeHTTPResponse({"result": {"ID": "701", "DETAIL_URL": "https://disk/701/"}})
+        if method == "crm.item.update":
+            return _FakeHTTPResponse({"result": {"item": {"id": 555}}})
+        if method == "tasks.task.get":
+            return _FakeHTTPResponse({"result": {"task": {"id": "8801", "status": "5"}}})
+        raise AssertionError(f"unexpected Bitrix24 method: {method}")
+
+    monkeypatch.setattr(expertise_bitrix.urllib.request, "urlopen", fake_urlopen)
+
+    try:
+        with Session(engine) as session:
+            row = _make_case(
+                session,
+                current_status="returned_to_central_defect",
+                client_notified=True,
+                bitrix_entity_id="555",
+                bitrix_disk_folder_id="701",
+                bitrix_notify_task_id="8801",
+            )
+            expertise_bitrix.sync_case_to_bitrix(session, case_id=row.id)
+            session.commit()
+        assert calls == ["disk.folder.get", "crm.item.update", "tasks.task.get"]
+    finally:
+        get_settings.cache_clear()
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_sync_case_to_bitrix_treats_terminal_task_readback_as_best_effort(
+    monkeypatch,
+) -> None:
+    engine, path = _setup_db()
+    _configure_bitrix_env(monkeypatch)
+    calls: list[str] = []
+
+    def fake_urlopen(request, timeout=60):
+        method = request.full_url.rsplit("/", 1)[-1].replace(".json", "")
+        calls.append(method)
+        if method == "disk.folder.get":
+            return _FakeHTTPResponse({"result": {"ID": "701", "DETAIL_URL": "https://disk/701/"}})
+        if method == "crm.item.update":
+            return _FakeHTTPResponse({"result": {"item": {"id": 555}}})
+        if method == "tasks.task.get":
+            raise urllib.error.HTTPError(
+                request.full_url,
+                500,
+                "Internal Server Error",
+                {},
+                io.BytesIO(b"temporary error"),
+            )
+        raise AssertionError(f"unexpected Bitrix24 method: {method}")
+
+    monkeypatch.setattr(expertise_bitrix.urllib.request, "urlopen", fake_urlopen)
+
+    try:
+        with Session(engine) as session:
+            row = _make_case(
+                session,
+                current_status="returned_to_store",
+                decision_label="Отказано",
+                client_notified=True,
+                bitrix_entity_id="555",
+                bitrix_disk_folder_id="701",
+                bitrix_notify_task_id="8801",
+            )
+            expertise_bitrix.sync_case_to_bitrix(session, case_id=row.id)
+            session.commit()
+            session.refresh(row)
+
+            assert row.bitrix_last_error is None
+            event = session.scalar(
+                select(ExpertiseCaseEvent).where(
+                    ExpertiseCaseEvent.expertise_case_id == row.id,
+                    ExpertiseCaseEvent.event_type == "automation_error",
+                )
+            )
+            assert event is not None
+            assert "readback failed" in (event.comment or "")
+        assert calls == ["disk.folder.get", "crm.item.update", "tasks.task.get"]
+    finally:
+        get_settings.cache_clear()
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_sync_case_to_bitrix_finalizes_approved_case_when_notify_task_closed(
+    monkeypatch,
+) -> None:
+    engine, path = _setup_db()
+    _configure_bitrix_env(monkeypatch)
+    calls: list[tuple[str, dict[str, list[str]]]] = []
+
+    def fake_urlopen(request, timeout=60):
+        method = request.full_url.rsplit("/", 1)[-1].replace(".json", "")
+        params = urllib.parse.parse_qs((request.data or b"").decode("utf-8"))
+        calls.append((method, params))
+        if method == "disk.folder.get":
+            return _FakeHTTPResponse({"result": {"ID": "701", "DETAIL_URL": "https://disk/701/"}})
+        if method == "tasks.task.get":
+            return _FakeHTTPResponse(
+                {
+                    "result": {
+                        "task": {
+                            "id": "8801",
+                            "status": "5",
+                            "closedDate": "2026-04-18T12:30:00+03:00",
+                        }
+                    }
+                }
+            )
+        if method == "crm.item.update":
+            return _FakeHTTPResponse({"result": {"item": {"id": 555}}})
+        raise AssertionError(f"unexpected Bitrix24 method: {method}")
+
+    monkeypatch.setattr(expertise_bitrix.urllib.request, "urlopen", fake_urlopen)
+
+    try:
+        with Session(engine) as session:
+            row = _make_case(
+                session,
+                bitrix_entity_id="555",
+                bitrix_disk_folder_id="701",
+                bitrix_notify_task_id="8801",
+            )
+            expertise_bitrix.sync_case_to_bitrix(session, case_id=row.id)
+            session.commit()
+            session.refresh(row)
+
+            assert row.client_notified is True
+            assert row.current_status == "returned_to_central_defect"
+            assert row.due_at is None
+            events = session.scalars(
+                select(ExpertiseCaseEvent)
+                .where(ExpertiseCaseEvent.expertise_case_id == row.id)
+                .order_by(ExpertiseCaseEvent.event_type.asc())
+            ).all()
+            assert [event.event_type for event in events] == [
+                "client_notified",
+                "returned_to_central_defect",
+            ]
+            assert {event.source for event in events} == {"bitrix"}
+
+        methods = [method for method, _ in calls]
+        assert methods == ["disk.folder.get", "tasks.task.get", "crm.item.update"]
+        update_params = next(params for method, params in calls if method == "crm.item.update")
+        assert update_params["fields[stageId]"] == ["DT187_1:SUCCESS"]
+        assert update_params["fields[ufCrmExpertiseClientNotified]"] == ["1"]
+        assert "tasks.task.complete" not in methods
+    finally:
+        get_settings.cache_clear()
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_sync_case_to_bitrix_finalizes_rejected_case_when_notify_task_closed(
+    monkeypatch,
+) -> None:
+    engine, path = _setup_db()
+    _configure_bitrix_env(monkeypatch)
+    calls: list[tuple[str, dict[str, list[str]]]] = []
+
+    def fake_urlopen(request, timeout=60):
+        method = request.full_url.rsplit("/", 1)[-1].replace(".json", "")
+        params = urllib.parse.parse_qs((request.data or b"").decode("utf-8"))
+        calls.append((method, params))
+        if method == "disk.folder.get":
+            return _FakeHTTPResponse({"result": {"ID": "701", "DETAIL_URL": "https://disk/701/"}})
+        if method == "tasks.task.get":
+            return _FakeHTTPResponse({"result": {"task": {"id": "8802", "status": "5"}}})
+        if method == "crm.item.update":
+            return _FakeHTTPResponse({"result": {"item": {"id": 555}}})
+        raise AssertionError(f"unexpected Bitrix24 method: {method}")
+
+    monkeypatch.setattr(expertise_bitrix.urllib.request, "urlopen", fake_urlopen)
+
+    try:
+        with Session(engine) as session:
+            row = _make_case(
+                session,
+                decision_label="Отказано",
+                bitrix_entity_id="555",
+                bitrix_disk_folder_id="701",
+                bitrix_notify_task_id="8802",
+            )
+            expertise_bitrix.sync_case_to_bitrix(session, case_id=row.id)
+            session.commit()
+            session.refresh(row)
+
+            assert row.client_notified is True
+            assert row.current_status == "returned_to_store"
+            assert row.due_at is None
+            event_types = session.scalars(
+                select(ExpertiseCaseEvent.event_type)
+                .where(ExpertiseCaseEvent.expertise_case_id == row.id)
+                .order_by(ExpertiseCaseEvent.event_type.asc())
+            ).all()
+            assert event_types == ["client_notified", "returned_to_store"]
+
+        update_params = next(params for method, params in calls if method == "crm.item.update")
+        assert update_params["fields[stageId]"] == ["DT187_1:FAIL"]
     finally:
         get_settings.cache_clear()
         engine.dispose()
@@ -506,6 +820,7 @@ def test_sync_case_to_bitrix_falls_back_when_department_mapping_is_missing(monke
 
         task_params = next(params for method, params in calls if method == "tasks.task.add")
         assert task_params["fields[RESPONSIBLE_ID]"] == ["900"]
+        assert task_params["fields[CREATED_BY]"] == ["900"]
         assert "fields[ACCOMPLICES][]" not in task_params
     finally:
         get_settings.cache_clear()
@@ -557,8 +872,9 @@ def test_sync_case_to_bitrix_falls_back_when_department_head_is_missing(monkeypa
             assert "has no assigned head" in (events[0].comment or "")
 
         task_params = next(params for method, params in calls if method == "tasks.task.add")
-        assert task_params["fields[RESPONSIBLE_ID]"] == ["900"]
-        assert sorted(task_params["fields[ACCOMPLICES][]"]) == ["1001", "1002"]
+        assert task_params["fields[RESPONSIBLE_ID]"] == ["1001"]
+        assert task_params["fields[CREATED_BY]"] == ["900"]
+        assert task_params["fields[ACCOMPLICES][]"] == ["1002"]
     finally:
         get_settings.cache_clear()
         engine.dispose()
@@ -817,6 +1133,8 @@ def test_scan_alarm_cases_delivers_bitrix_notifications(monkeypatch) -> None:
             return _FakeHTTPResponse(
                 {"result": {"ID": "701", "DETAIL_URL": "https://disk/new/701/"}}
             )
+        if method == "tasks.task.get":
+            return _FakeHTTPResponse({"result": {"task": {"id": "8801", "status": "2"}}})
         if method == "crm.item.update":
             return _FakeHTTPResponse({"result": {"item": {"id": 555}}})
         if method == "department.get":
@@ -884,6 +1202,64 @@ def test_scan_alarm_cases_delivers_bitrix_notifications(monkeypatch) -> None:
         assert any("Напоминание: клиент еще не оповещен" in message for message in comment_messages)
         assert any("Эскалация: клиент не оповещен" in message for message in comment_messages)
         assert all("ЭКС-DECISION" in message for message in comment_messages)
+    finally:
+        get_settings.cache_clear()
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_scan_alarm_cases_syncs_only_current_month_overdue_cases(monkeypatch) -> None:
+    engine, path = _setup_db()
+    _configure_bitrix_env(monkeypatch)
+    calls: list[str] = []
+    now = datetime(2026, 5, 18, 12, 0, 0)
+
+    def fake_urlopen(request, timeout=60):
+        method = request.full_url.rsplit("/", 1)[-1].replace(".json", "")
+        calls.append(method)
+        if method == "disk.folder.get":
+            return _FakeHTTPResponse({"result": {"ID": "701", "DETAIL_URL": "https://disk/701/"}})
+        if method == "crm.item.update":
+            return _FakeHTTPResponse({"result": {"item": {"id": 555}}})
+        raise AssertionError(f"unexpected Bitrix24 method: {method}")
+
+    monkeypatch.setattr(expertise_bitrix.urllib.request, "urlopen", fake_urlopen)
+
+    try:
+        with Session(engine) as session:
+            _make_case(
+                session,
+                external_id="exp-old-overdue",
+                onec_expertise_ref="1c-exp-old-overdue",
+                onec_expertise_number="ЭКС-OLD",
+                current_status="received_by_okk",
+                decision_label=None,
+                updated_at=now - timedelta(hours=1),
+                bitrix_entity_id="554",
+                bitrix_disk_folder_id="700",
+                bitrix_disk_folder_url="https://disk/700/",
+                due_at=datetime(2026, 4, 17, 10, 0, 0),
+            )
+            _make_case(
+                session,
+                external_id="exp-fresh-overdue",
+                onec_expertise_ref="1c-exp-fresh-overdue",
+                onec_expertise_number="ЭКС-FRESH",
+                current_status="received_by_okk",
+                decision_label=None,
+                updated_at=now - timedelta(hours=1),
+                bitrix_entity_id="555",
+                bitrix_disk_folder_id="701",
+                bitrix_disk_folder_url="https://disk/701/",
+                due_at=datetime(2026, 5, 17, 10, 0, 0),
+            )
+
+            summary = expertise_bitrix.scan_alarm_cases(session, now=now)
+
+            assert summary["synced"] == 1
+            assert summary["errors"] == 0
+        assert calls == ["disk.folder.get", "crm.item.update"]
     finally:
         get_settings.cache_clear()
         engine.dispose()

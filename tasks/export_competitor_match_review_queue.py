@@ -19,12 +19,72 @@ from app.models import CompetitorItem, Product
 from app.models.competitor_item_compatibility import CompetitorItemCompatibility
 from app.models.competitor_item_match import CompetitorItemMatch, CompetitorItemMatchStatus
 from app.services.matching_guardrails import catalog_family, competitor_item_requires_compatibility
+from tasks.match_competitor_items_embeddings import _effective_item_type
 
 DEFAULT_STATUSES = (
     CompetitorItemMatchStatus.SUGGESTED,
     CompetitorItemMatchStatus.NEEDS_REVIEW,
     CompetitorItemMatchStatus.AMBIGUOUS,
 )
+
+DISPLAY_REVIEW_REASONS = {
+    "display_frame_review",
+    "display_model_code_review",
+    "display_quality_review",
+}
+
+DOMAIN_SUGGEST_RATIONALE_KEYS = {
+    "battery_part_code_model_suggest",
+    "battery_verification_suggest",
+    "disposable_battery_suggest",
+    "flex_suggest",
+    "housing_part_suggest",
+    "iphone_battery_model_capacity_suggest",
+    "network_cable_suggest",
+    "phone_camera_glass_suggest",
+    "phone_sim_tray_suggest",
+    "screen_protector_suggest",
+    "stencil_suggest",
+}
+
+
+def _has_reason_prefix(reasons: list[str], prefix: str) -> bool:
+    return any(reason.startswith(prefix) for reason in reasons)
+
+
+def _has_domain_suggest_rationale(rationale: dict[str, Any]) -> bool:
+    return bool(DOMAIN_SUGGEST_RATIONALE_KEYS.intersection(rationale))
+
+
+def _review_bucket(*, reasons: list[str], item_type: str | None) -> str:
+    reason_set = set(reasons)
+    normalized_item_type = (item_type or "").lower()
+    if "missing_compatibility" in reason_set:
+        return "compatibility_or_family"
+    if normalized_item_type in {"other", "cable"}:
+        return "other_low_priority"
+    if _has_reason_prefix(reasons, "family_mismatch:"):
+        return "compatibility_or_family"
+    if reason_set.intersection(DISPLAY_REVIEW_REASONS):
+        return "display_attributes"
+    if "small_gap" in reason_set:
+        return "candidate_tie"
+    if "multiple_close_candidates" in reason_set and "low_score" not in reason_set:
+        return "candidate_tie"
+    if "low_score" in reason_set:
+        return "low_score"
+    return "general_review"
+
+
+def _review_priority(bucket: str) -> int:
+    return {
+        "compatibility_or_family": 1,
+        "display_attributes": 2,
+        "candidate_tie": 3,
+        "low_score": 4,
+        "general_review": 5,
+        "other_low_priority": 6,
+    }.get(bucket, 9)
 
 
 def _parse_date(value: str | None) -> date | None:
@@ -101,14 +161,15 @@ def _reason_codes(
         gap = _float(rationale.get("gap"))
     if score is None:
         score = _float(rationale.get("best_score"))
+    domain_suggested = status == "suggested" and _has_domain_suggest_rationale(rationale)
 
     if score is not None and score < min_score:
         reasons.append("low_score")
-    if gap is not None and gap < min_gap:
+    if gap is not None and gap < min_gap and not domain_suggested:
         reasons.append("small_gap")
 
     candidates = rationale.get("filtered_candidates") or []
-    if len(candidates) > 1 and gap is not None and gap < min_gap * 2:
+    if len(candidates) > 1 and gap is not None and gap < min_gap * 2 and not domain_suggested:
         reasons.append("multiple_close_candidates")
 
     if rationale.get("display_frame_review"):
@@ -161,26 +222,32 @@ def _review_row(
         score = _float(rationale.get("best_score"))
     if gap is None:
         gap = _float(rationale.get("gap"))
+    reasons = _reason_codes(
+        item=item,
+        product=product,
+        match=match,
+        has_compatibility=has_compatibility,
+        min_score=min_score,
+        min_gap=min_gap,
+    )
+    effective_item_type = _effective_item_type(item)
+    bucket = _review_bucket(reasons=reasons, item_type=effective_item_type)
 
     return {
         "match_id": match.id,
         "status": _status_value(match.status),
         "method": match.method.value if hasattr(match.method, "value") else str(match.method),
-        "reason_codes": _reason_codes(
-            item=item,
-            product=product,
-            match=match,
-            has_compatibility=has_compatibility,
-            min_score=min_score,
-            min_gap=min_gap,
-        ),
+        "review_bucket": bucket,
+        "review_priority": _review_priority(bucket),
+        "reason_codes": reasons,
         "score": score,
         "gap": gap,
         "competitor_item_id": item.id,
         "competitor": item.competitor,
         "external_id": item.external_id,
         "competitor_name": item.name,
-        "competitor_item_type": item.item_type,
+        "competitor_item_type": effective_item_type,
+        "competitor_raw_item_type": item.item_type,
         "competitor_category": item.category,
         "competitor_category_group": item.category_group,
         "competitor_brand": item.item_brand or item.parsed_device_brand,
@@ -264,6 +331,7 @@ def build_review_queue(
     status_priority = {"needs_review": 0, "ambiguous": 1, "suggested": 2}
     rows.sort(
         key=lambda row: (
+            row["review_priority"],
             status_priority.get(str(row["status"]), 9),
             -len(row["reason_codes"]),
             -(row["score"] or 0),
@@ -276,9 +344,13 @@ def build_review_queue(
 
     reason_counts = Counter(reason for row in rows for reason in row["reason_codes"])
     status_counts = Counter(str(row["status"]) for row in rows)
+    bucket_counts = Counter(str(row["review_bucket"]) for row in rows)
+    priority_counts = Counter(str(row["review_priority"]) for row in rows)
     return {
         "total": len(rows),
         "status_counts": dict(status_counts),
+        "bucket_counts": dict(bucket_counts),
+        "priority_counts": dict(priority_counts),
         "reason_counts": dict(reason_counts),
         "items": rows,
     }
@@ -313,6 +385,8 @@ def _write_csv(path: Path, rows: list[dict[str, Any]], *, alternatives_limit: in
         "match_id",
         "status",
         "method",
+        "review_bucket",
+        "review_priority",
         "reason_codes",
         "score",
         "gap",
@@ -321,6 +395,7 @@ def _write_csv(path: Path, rows: list[dict[str, Any]], *, alternatives_limit: in
         "external_id",
         "competitor_name",
         "competitor_item_type",
+        "competitor_raw_item_type",
         "competitor_category",
         "competitor_category_group",
         "competitor_brand",

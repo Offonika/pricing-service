@@ -47,3 +47,29 @@ def test_plan_only_reports_missing_required_env() -> None:
     assert payload["side_effects"] is False
     assert "missing env: BITRIX_INGEST_WEBHOOK_URL or BITRIX24_WEBHOOK_URL" in payload["errors"]
     assert "missing env: DATABASE_URL" in payload["errors"]
+
+
+def test_box_contour_uses_box_webhook_even_when_legacy_ingest_is_set() -> None:
+    base = bitrix_ingest_calls.resolve_bitrix_ingest_base(
+        {
+            "BITRIX_INGEST_CONTOUR": "box",
+            "BITRIX_INGEST_WEBHOOK_URL": "https://legacy.example/rest/1/masked",
+            "BITRIX24_BOX_WEBHOOK_URL": "https://box.example/rest/2/masked/",
+        }
+    )
+
+    assert base == "https://box.example/rest/2/masked"
+
+
+def test_plan_only_accepts_box_contour_without_legacy_webhook(tmp_path) -> None:
+    payload = bitrix_ingest_calls.build_plan(
+        {
+            "BITRIX_INGEST_CONTOUR": "box",
+            "BITRIX24_BOX_WEBHOOK_URL": "https://box.example/rest/2/masked",
+            "DATABASE_URL": "postgresql://example/masked",
+            "BITRIX_INGEST_STATE_FILE": str(tmp_path / "progress.json"),
+        }
+    )
+
+    assert payload["status"] == "ready"
+    assert payload["errors"] == []

@@ -10,16 +10,26 @@ from app.schemas.logistics import (
     LogisticsDraftCreateRequest,
     LogisticsDraftResponse,
     LogisticsDraftScanRequest,
+    LogisticsDriverResponse,
     LogisticsDriverSyncItem,
     LogisticsEventActionRequest,
     LogisticsExpectedDeliveryResponse,
+    LogisticsExternalCarrierAcceptRequest,
+    LogisticsExternalCarrierHandoffRequest,
     LogisticsHistoryEventResponse,
+    LogisticsManualReadyOverrideRequest,
+    LogisticsManualReviewResponse,
     LogisticsMonitorResponse,
+    LogisticsRouteRunCreateRequest,
+    LogisticsRouteRunResponse,
     LogisticsSyncResponse,
     LogisticsTelegramAuthRequest,
     LogisticsTransferSyncItem,
+    LogisticsUnitLookupResponse,
+    LogisticsUnitSyncItem,
     LogisticsUserProfile,
     LogisticsUserSyncItem,
+    LogisticsWarehouseResponse,
     LogisticsWarehouseSyncItem,
 )
 from app.services import logistics as logistics_service
@@ -54,6 +64,26 @@ def sync_transfers(items: list[LogisticsTransferSyncItem], db: Session = Depends
     return logistics_service.sync_transfers(db, [item.model_dump() for item in items])
 
 
+@router.post("/sync/units", response_model=LogisticsSyncResponse)
+def sync_units(items: list[LogisticsUnitSyncItem], db: Session = Depends(get_db)):
+    return logistics_service.sync_units(db, [item.model_dump() for item in items])
+
+
+@router.get("/units/lookup", response_model=LogisticsUnitLookupResponse)
+def lookup_unit(code: str = Query(min_length=1), db: Session = Depends(get_db)):
+    return logistics_service.lookup_unit(db, code=code)
+
+
+@router.get("/warehouses", response_model=list[LogisticsWarehouseResponse])
+def list_warehouses(db: Session = Depends(get_db)):
+    return logistics_service.list_warehouses(db)
+
+
+@router.get("/drivers", response_model=list[LogisticsDriverResponse])
+def list_drivers(db: Session = Depends(get_db)):
+    return logistics_service.list_drivers(db)
+
+
 @router.post("/handoffs/draft", response_model=LogisticsDraftResponse)
 def create_handoff_draft(payload: LogisticsDraftCreateRequest, db: Session = Depends(get_db)):
     return logistics_service.create_draft(
@@ -62,6 +92,7 @@ def create_handoff_draft(payload: LogisticsDraftCreateRequest, db: Session = Dep
         actor_user_id=payload.actor_user_id,
         warehouse_id=payload.warehouse_id,
         driver_id=payload.driver_id,
+        route_run_id=payload.route_run_id,
         default_dropoff_warehouse_id=payload.default_dropoff_warehouse_id,
         comment=payload.comment,
     )
@@ -78,6 +109,7 @@ def scan_handoff_item(
         draft_id=draft_id,
         actor_user_id=payload.actor_user_id,
         barcode=payload.barcode,
+        lookup_code=payload.lookup_code,
         dropoff_warehouse_id=payload.dropoff_warehouse_id,
     )
 
@@ -106,6 +138,7 @@ def create_receipt_draft(payload: LogisticsDraftCreateRequest, db: Session = Dep
         actor_user_id=payload.actor_user_id,
         warehouse_id=payload.warehouse_id,
         driver_id=payload.driver_id,
+        route_run_id=payload.route_run_id,
         comment=payload.comment,
     )
 
@@ -121,6 +154,7 @@ def scan_receipt_item(
         draft_id=draft_id,
         actor_user_id=payload.actor_user_id,
         barcode=payload.barcode,
+        lookup_code=payload.lookup_code,
     )
 
 
@@ -159,6 +193,10 @@ def list_monitor(
     warehouse_id: int | None = Query(default=None),
     driver_id: int | None = Query(default=None),
     final_recipient: str | None = Query(default=None),
+    source_document_type: str | None = Query(default=None),
+    route_run_id: int | None = Query(default=None),
+    with_external_carrier: bool | None = Query(default=None),
+    manual_review: bool | None = Query(default=None),
     db: Session = Depends(get_db),
 ):
     return logistics_service.list_monitor(
@@ -167,6 +205,46 @@ def list_monitor(
         warehouse_id=warehouse_id,
         driver_id=driver_id,
         final_recipient=final_recipient,
+        source_document_type=source_document_type,
+        route_run_id=route_run_id,
+        with_external_carrier=with_external_carrier,
+        manual_review=manual_review,
+    )
+
+
+@router.post("/route-runs", response_model=LogisticsRouteRunResponse)
+def create_route_run(payload: LogisticsRouteRunCreateRequest, db: Session = Depends(get_db)):
+    return logistics_service.create_route_run(
+        db,
+        route_name=payload.route_name,
+        external_id=payload.external_id,
+        planned_at=payload.planned_at,
+        driver_id=payload.driver_id,
+        status=payload.status,
+        payload=payload.payload,
+        items=[item.model_dump() for item in payload.items],
+    )
+
+
+@router.get("/route-runs", response_model=list[LogisticsRouteRunResponse])
+def list_route_runs(
+    status: str | None = Query(default=None),
+    driver_id: int | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    return logistics_service.list_route_runs(db, status=status, driver_id=driver_id)
+
+
+@router.get("/manual-review", response_model=list[LogisticsManualReviewResponse])
+def list_manual_review(
+    status: str | None = Query(default="open"),
+    review_type: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+):
+    return logistics_service.list_manual_reviews(
+        db,
+        status=status,
+        review_type=review_type,
     )
 
 
@@ -210,4 +288,74 @@ def mark_returned(
         comment=payload.comment,
         idempotency_key=payload.idempotency_key,
         photos=[photo.model_dump() for photo in payload.photos],
+    )
+
+
+@router.post("/transfers/{transfer_id}/handoff-cancel")
+def cancel_handoff(
+    transfer_id: int,
+    payload: LogisticsEventActionRequest,
+    db: Session = Depends(get_db),
+):
+    return logistics_service.create_transfer_event(
+        db,
+        transfer_id=transfer_id,
+        actor_user_id=payload.actor_user_id,
+        event_type=logistics_service.EVENT_HANDOFF_CANCELLED,
+        source="api",
+        warehouse_id=payload.warehouse_id,
+        comment=payload.comment,
+        idempotency_key=payload.idempotency_key,
+        photos=[photo.model_dump() for photo in payload.photos],
+    )
+
+
+@router.post("/transfers/{transfer_id}/external-carrier/handoff")
+def external_carrier_handoff(
+    transfer_id: int,
+    payload: LogisticsExternalCarrierHandoffRequest,
+    db: Session = Depends(get_db),
+):
+    return logistics_service.handoff_to_external_carrier(
+        db,
+        transfer_id=transfer_id,
+        actor_user_id=payload.actor_user_id,
+        carrier_name=payload.carrier_name,
+        tracking_number=payload.tracking_number,
+        carrier_terminal=payload.carrier_terminal,
+        comment=payload.comment,
+        idempotency_key=payload.idempotency_key,
+    )
+
+
+@router.post("/transfers/{transfer_id}/external-carrier/accept")
+def external_carrier_accept(
+    transfer_id: int,
+    payload: LogisticsExternalCarrierAcceptRequest,
+    db: Session = Depends(get_db),
+):
+    return logistics_service.accept_from_external_carrier(
+        db,
+        transfer_id=transfer_id,
+        actor_user_id=payload.actor_user_id,
+        warehouse_id=payload.warehouse_id,
+        comment=payload.comment,
+        idempotency_key=payload.idempotency_key,
+    )
+
+
+@router.post("/manual-ready-overrides")
+def manual_ready_override(
+    payload: LogisticsManualReadyOverrideRequest,
+    db: Session = Depends(get_db),
+):
+    return logistics_service.manual_ready_override(
+        db,
+        actor_user_id=payload.actor_user_id,
+        source_document_type=payload.source_document_type,
+        external_id=payload.external_id,
+        warehouse_id=payload.warehouse_id,
+        reason=payload.reason,
+        lookup_code=payload.lookup_code,
+        site_order_number=payload.site_order_number,
     )

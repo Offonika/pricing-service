@@ -1327,6 +1327,120 @@ def test_build_receivable_snapshots_applies_current_balance_override() -> None:
         assert snapshot.current_balance == Decimal("33.00")
 
 
+def test_build_receivable_snapshots_uses_counterparty_group_as_department() -> None:
+    app_engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(app_engine)
+
+    with Session(app_engine) as session:
+        session.add(
+            ReceivableLedgerEvent(
+                source="onec",
+                business_key="sale-cp-pilot",
+                event_type="sale",
+                external_document_ref="sale-cp-pilot",
+                external_document_number="S-001",
+                external_document_date=datetime(2026, 3, 10, 10, 0, 0),
+                counterparty_ref="cp-pilot",
+                counterparty_name="Пилотный покупатель",
+                contract_ref="contract-1",
+                contract_name="Основной договор",
+                contract_kind_ref="kind-buyer",
+                contract_kind_name="С покупателем",
+                manager_ref="mgr-1",
+                manager_name="Менеджер",
+                store_ref="store-master-mobile",
+                store_name="MASTER MOBILE",
+                source_layer="regular_receivables",
+                amount_delta=Decimal("100.00"),
+            )
+        )
+
+        build_receivable_balance_snapshots(
+            session,
+            snapshot_date=date(2026, 3, 20),
+            counterparty_departments_by_ref={
+                "cp-pilot": {
+                    "department_ref": "dep-gorbushkin",
+                    "department_name": "01. Горбушкин Двор",
+                }
+            },
+        )
+        session.commit()
+
+        snapshot = session.query(ReceivableBalanceSnapshot).one()
+        assert snapshot.department_ref == "dep-gorbushkin"
+        assert snapshot.department_name == "01. Горбушкин Двор"
+
+
+def test_build_receivable_snapshots_uses_oldest_unpaid_sale_as_origin() -> None:
+    app_engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(app_engine)
+
+    with Session(app_engine) as session:
+        session.add_all(
+            [
+                ReceivableLedgerEvent(
+                    source="onec",
+                    business_key="sale-old-paid",
+                    event_type="sale",
+                    external_document_ref="sale-old-paid",
+                    external_document_number="S-OLD",
+                    external_document_date=datetime(2026, 4, 20, 10, 0, 0),
+                    counterparty_ref="cp-fifo",
+                    counterparty_name="Покупатель FIFO",
+                    amount_delta=Decimal("100.00"),
+                ),
+                ReceivableLedgerEvent(
+                    source="onec",
+                    business_key="sale-unpaid-origin",
+                    event_type="sale",
+                    external_document_ref="sale-unpaid-origin",
+                    external_document_number="S-UNPAID",
+                    external_document_date=datetime(2026, 5, 3, 12, 0, 0),
+                    counterparty_ref="cp-fifo",
+                    counterparty_name="Покупатель FIFO",
+                    amount_delta=Decimal("40.00"),
+                ),
+                ReceivableLedgerEvent(
+                    source="onec",
+                    business_key="payment-closes-old",
+                    event_type="payment",
+                    external_document_ref="payment-closes-old",
+                    external_document_number="P-001",
+                    external_document_date=datetime(2026, 5, 4, 9, 0, 0),
+                    counterparty_ref="cp-fifo",
+                    counterparty_name="Покупатель FIFO",
+                    amount_delta=Decimal("-100.00"),
+                ),
+                ReceivableLedgerEvent(
+                    source="onec",
+                    business_key="sale-new-tail",
+                    event_type="sale",
+                    external_document_ref="sale-new-tail",
+                    external_document_number="S-TAIL",
+                    external_document_date=datetime(2026, 5, 5, 12, 0, 0),
+                    counterparty_ref="cp-fifo",
+                    counterparty_name="Покупатель FIFO",
+                    amount_delta=Decimal("10.00"),
+                ),
+            ]
+        )
+
+        build_receivable_balance_snapshots(session, snapshot_date=date(2026, 5, 8))
+        build_receivable_cases(session, snapshot_date=date(2026, 5, 8))
+        session.commit()
+
+        snapshot = session.query(ReceivableBalanceSnapshot).one()
+        assert snapshot.current_balance == Decimal("50.00")
+        assert snapshot.origin_document_number == "S-UNPAID"
+
+        case = session.query(ReceivableCase).filter(ReceivableCase.segment == "buyers").one()
+        assert [item["document_number"] for item in case.chain_documents] == [
+            "S-UNPAID",
+            "S-TAIL",
+        ]
+
+
 def test_build_receivable_snapshots_keeps_negative_override_in_main_snapshot() -> None:
     app_engine = create_engine("sqlite:///:memory:")
     onec_engine = create_engine("sqlite:///:memory:")

@@ -206,6 +206,18 @@ def resolve_cashbox(
     return None, STATUS_UNMAPPED_CARD
 
 
+def _mapping_error_reason(mapping_error: str) -> str:
+    if mapping_error == STATUS_AMBIGUOUS_MAPPING:
+        return (
+            "Не удалось однозначно привязать карточку Bitrix: найдено несколько касс "
+            "с такими последними 4 цифрами карты."
+        )
+    return (
+        "Не удалось привязать карточку Bitrix к кассе 1С или сотруднику. "
+        "Заполните дату, кассу 1С либо сотрудника и последние 4 цифры карты."
+    )
+
+
 def resolve_status(
     *,
     screenshot_file_id: str | None,
@@ -328,6 +340,7 @@ def upsert_reconciliation_from_payload(
     settings: Settings | None = None,
 ) -> CardBalanceReconciliation:
     settings = settings or get_settings()
+    payload = dict(payload)
     external_id = clean_string(payload.get("external_id")) or (
         f"bitrix:{clean_string(payload.get('bitrix_item_id'))}"
     )
@@ -365,6 +378,12 @@ def upsert_reconciliation_from_payload(
             payload.get("employee_last_name") or payload.get("employee_name")
         ),
     )
+    if mapping_error:
+        reason = _mapping_error_reason(mapping_error)
+        payload.setdefault("mapping_error", mapping_error)
+        payload.setdefault("manual_review_reason", reason)
+        if not clean_string(payload.get("resolution_comment")):
+            payload["resolution_comment"] = reason
     balance_value = decimal_or_none(payload.get("recognized_balance"))
     if balance_value is None:
         balance_value = decimal_or_none(payload.get("manual_balance"))

@@ -3,8 +3,9 @@ from __future__ import annotations
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
-from app.models import Base, Product
+from app.models import Base, PhoneModel, Product, ProductCompatibility, ProductPhoneModel
 from tasks.import_topcontrol_products_db import import_onec_products
+from tasks.report_product_compatibility_sync import build_report
 
 
 def _setup_onec_schema(engine) -> None:
@@ -37,6 +38,7 @@ def _setup_onec_schema(engine) -> None:
         """
         CREATE TABLE _Chrc401 (
             _IDRRef TEXT PRIMARY KEY,
+            _Code TEXT,
             _Description TEXT
         )
         """,
@@ -82,8 +84,8 @@ def test_import_onec_products_reads_extended_properties() -> None:
                     ('kind-1', 'Питание и зарядка (розница + сервис)')
                 """))
         conn.execute(text("""
-                INSERT INTO _Chrc401 (_IDRRef, _Description) VALUES
-                    ('prop-subject', 'Предмет')
+                INSERT INTO _Chrc401 (_IDRRef, _Code, _Description) VALUES
+                    ('prop-subject', 'РБ0000100', 'Предмет')
                 """))
         conn.execute(text("""
                 INSERT INTO _Reference42 (_IDRRef, _Description) VALUES
@@ -147,8 +149,8 @@ def test_import_onec_products_keeps_raw_and_normalized_quality() -> None:
                     ('kind-1', 'Дисплеи/сенсор/стекло')
             """))
         conn.execute(text("""
-                INSERT INTO _Chrc401 (_IDRRef, _Description) VALUES
-                    ('prop-subject', 'Предмет')
+                INSERT INTO _Chrc401 (_IDRRef, _Code, _Description) VALUES
+                    ('prop-subject', 'РБ0000100', 'Предмет')
             """))
         conn.execute(text("""
                 INSERT INTO _Reference42 (_IDRRef, _Description) VALUES
@@ -179,6 +181,107 @@ def test_import_onec_products_keeps_raw_and_normalized_quality() -> None:
         assert product.display_quality_raw is None
         assert product.quality == "Copy Medium"
         assert product.display_quality == "Copy Medium"
+
+
+def test_import_onec_products_reads_multivalue_compatibility_from_object_properties() -> None:
+    app_engine = create_engine("sqlite:///:memory:")
+    onec_engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(app_engine)
+    _setup_onec_schema(onec_engine)
+
+    with onec_engine.begin() as conn:
+        conn.execute(text("""
+                INSERT INTO _Reference62 (
+                    _IDRRef, _Fld836, _Description, _ParentIDRRef, _Code, _Fld9175, _Fld857RRef, _Marked, _Folder
+                ) VALUES
+                    ('root-1', NULL, 'ОБЩИЙ КАТАЛОГ', NULL, 'ROOT', NULL, NULL, 0, 0),
+                    ('parent-1', 'CATROOT', 'Аккумуляторы', 'root-1', 'PARENT', NULL, NULL, 0, 0),
+                    ('item-1', '041567', 'Аккумулятор для Huawei Wi-Fi роутера E5573 / E5577 (HB434666RBC)', 'parent-1', 'C1', 'IS1', 'kind-1', 0, 1)
+            """))
+        conn.execute(text("""
+                INSERT INTO _Reference26 (_IDRRef, _Description) VALUES
+                    ('kind-1', 'Питание и зарядка (розница + сервис)')
+            """))
+        conn.execute(text("""
+                INSERT INTO _Chrc401 (_IDRRef, _Code, _Description) VALUES
+                    ('prop-brand', 'РБ0000085', 'Совместим с брендом'),
+                    ('prop-model', 'РБ0000086', 'Совместим с моделью')
+            """))
+        conn.execute(text("""
+                INSERT INTO _Reference42 (_IDRRef, _Description) VALUES
+                    ('brand-huawei', 'Huawei'),
+                    ('model-e5573', 'Huawei E5573'),
+                    ('model-e5577', 'Huawei E5577')
+            """))
+        conn.execute(text("""
+                INSERT INTO _InfoRg6309 (_Fld6310_RRRef, _Fld6311RRef, _Fld6312_S, _Fld6312_RRRef) VALUES
+                    ('item-1', 'prop-brand', '', 'brand-huawei'),
+                    ('item-1', 'prop-model', '', 'model-e5573'),
+                    ('item-1', 'prop-model', '', 'model-e5577')
+            """))
+        conn.execute(text("""
+                INSERT INTO _InfoRg8928 (_Fld8929RRef, _Fld8930, _Fld8934, _Fld8931) VALUES
+                    ('item-1', 'Совместим с моделью', 'Huawei E5577', '2021-12-17')
+            """))
+
+    import_onec_products(app_engine, onec_engine)
+
+    with Session(app_engine) as session:
+        product = session.query(Product).filter_by(article="041567").one()
+        raw_values = {
+            row.value
+            for row in session.query(ProductCompatibility).filter_by(product_id=product.id)
+        }
+        assert raw_values == {"Huawei E5573", "Huawei E5577"}
+        linked_models = {
+            (link.phone_model.brand, link.phone_model.model_name)
+            for link in session.query(ProductPhoneModel).filter_by(product_id=product.id)
+        }
+        assert linked_models == {("huawei", "e5573"), ("huawei", "e5577")}
+
+
+def test_import_onec_products_uses_compatibility_brand_hint_for_model_without_brand() -> None:
+    app_engine = create_engine("sqlite:///:memory:")
+    onec_engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(app_engine)
+    _setup_onec_schema(onec_engine)
+
+    with onec_engine.begin() as conn:
+        conn.execute(text("""
+                INSERT INTO _Reference62 (
+                    _IDRRef, _Fld836, _Description, _ParentIDRRef, _Code, _Fld9175, _Fld857RRef, _Marked, _Folder
+                ) VALUES
+                    ('root-1', NULL, 'ОБЩИЙ КАТАЛОГ', NULL, 'ROOT', NULL, NULL, 0, 0),
+                    ('parent-1', 'CATROOT', 'Аккумуляторы', 'root-1', 'PARENT', NULL, NULL, 0, 0),
+                    ('item-1', '041568', 'Аккумулятор для Wi-Fi роутера E5573', 'parent-1', 'C1', 'IS1', 'kind-1', 0, 1)
+            """))
+        conn.execute(text("""
+                INSERT INTO _Reference26 (_IDRRef, _Description) VALUES
+                    ('kind-1', 'Питание и зарядка (розница + сервис)')
+            """))
+        conn.execute(text("""
+                INSERT INTO _Chrc401 (_IDRRef, _Code, _Description) VALUES
+                    ('prop-brand', 'РБ0000085', 'Совместим с брендом'),
+                    ('prop-model', 'РБ0000086', 'Совместим с моделью')
+            """))
+        conn.execute(text("""
+                INSERT INTO _Reference42 (_IDRRef, _Description) VALUES
+                    ('brand-huawei', 'Huawei'),
+                    ('model-e5573', 'E5573')
+            """))
+        conn.execute(text("""
+                INSERT INTO _InfoRg6309 (_Fld6310_RRRef, _Fld6311RRef, _Fld6312_S, _Fld6312_RRRef) VALUES
+                    ('item-1', 'prop-brand', '', 'brand-huawei'),
+                    ('item-1', 'prop-model', '', 'model-e5573')
+            """))
+
+    import_onec_products(app_engine, onec_engine)
+
+    with Session(app_engine) as session:
+        product = session.query(Product).filter_by(article="041568").one()
+        assert {row.value for row in product.compatibilities} == {"E5573"}
+        model = session.query(PhoneModel).one()
+        assert (model.brand, model.model_name) == ("huawei", "e5573")
 
 
 def test_import_onec_products_filters_to_general_catalog_branch() -> None:
@@ -231,3 +334,58 @@ def test_import_onec_products_filters_to_general_catalog_branch() -> None:
         assert imported.color == "черный"
         out_of_scope = session.query(Product).filter_by(article="30002").one()
         assert out_of_scope.is_active is False
+
+
+def test_product_compatibility_sync_report_is_dry_run() -> None:
+    app_engine = create_engine("sqlite:///:memory:")
+    onec_engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(app_engine)
+    _setup_onec_schema(onec_engine)
+
+    with onec_engine.begin() as conn:
+        conn.execute(text("""
+                INSERT INTO _Reference62 (
+                    _IDRRef, _Fld836, _Description, _ParentIDRRef, _Code, _Fld9175, _Fld857RRef, _Marked, _Folder
+                ) VALUES
+                    ('root-1', NULL, 'ОБЩИЙ КАТАЛОГ', NULL, 'ROOT', NULL, NULL, 0, 0),
+                    ('parent-1', 'CATROOT', 'Аккумуляторы', 'root-1', 'PARENT', NULL, NULL, 0, 0),
+                    ('item-1', '041567', 'Аккумулятор для Huawei E5573 / E5577', 'parent-1', 'C1', 'IS1', 'kind-1', 0, 1)
+            """))
+        conn.execute(text("""
+                INSERT INTO _Chrc401 (_IDRRef, _Code, _Description) VALUES
+                    ('prop-model', 'РБ0000086', 'Совместим с моделью')
+            """))
+        conn.execute(text("""
+                INSERT INTO _Reference42 (_IDRRef, _Description) VALUES
+                    ('model-e5573', 'Huawei E5573'),
+                    ('model-e5577', 'Huawei E5577')
+            """))
+        conn.execute(text("""
+                INSERT INTO _InfoRg6309 (_Fld6310_RRRef, _Fld6311RRef, _Fld6312_S, _Fld6312_RRRef) VALUES
+                    ('item-1', 'prop-model', '', 'model-e5573'),
+                    ('item-1', 'prop-model', '', 'model-e5577')
+            """))
+
+    with Session(app_engine) as session:
+        product = Product(article="041567", name="Аккумулятор для Huawei E5577")
+        session.add(product)
+        session.flush()
+        session.add(ProductCompatibility(product=product, value="Huawei E5577", source="onec"))
+        session.commit()
+
+    rows = build_report(
+        app_engine,
+        onec_engine,
+        articles={"041567"},
+        site_values={"041567": ["Huawei E5573", "Huawei E5577"]},
+        only_mismatches=True,
+    )
+
+    assert len(rows) == 1
+    assert rows[0].article == "041567"
+    assert rows[0].missing_in_pricing == ["Huawei E5573"]
+    assert rows[0].missing_on_site == []
+    assert rows[0].status == "missing_in_pricing"
+    with Session(app_engine) as session:
+        product = session.query(Product).filter_by(article="041567").one()
+        assert {row.value for row in product.compatibilities} == {"Huawei E5577"}

@@ -21,6 +21,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     )
     from app.models.competitor_item_compatibility import CompetitorItemCompatibility
     from app.models.competitor_item_match import CompetitorItemMatch
+    from app.models.competitor_item_url_alias import CompetitorItemUrlAlias
     from app.models.competitor_manufacturer_map import CompetitorManufacturerMap
     from app.models.competitor_price import CompetitorPrice
     from app.models.counterparty_duplicate_case import CounterpartyDuplicateCase
@@ -39,6 +40,9 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         LogisticsDraftItem,
         LogisticsDriver,
         LogisticsEventPhoto,
+        LogisticsManualReview,
+        LogisticsRouteRun,
+        LogisticsRouteRunItem,
         LogisticsTransfer,
         LogisticsTransferEvent,
         LogisticsTransferState,
@@ -78,6 +82,12 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.smartphone_release import ReleaseStatus, SmartphoneRelease, SourceType
     from app.models.staff_member import StaffMember
     from app.models.staffing_snapshot import StaffingSnapshot
+    from app.models.site_order_fulfillment import (
+        BitrixChatMention,
+        BitrixChatMessage,
+        SiteOrderExecutionCase,
+        SiteOrderExecutionEvent,
+    )
     from app.models.store_shift_fact import StoreShiftFact
     from app.models.store_shift_plan import StoreShiftPlan
     from app.models.telephony import TelephonyUserLineSnapshot
@@ -129,6 +139,9 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "LogisticsEventPhoto",
         "LogisticsDraft",
         "LogisticsDraftItem",
+        "LogisticsRouteRun",
+        "LogisticsRouteRunItem",
+        "LogisticsManualReview",
         "OneCSalesDailyKpi",
         "MatchingPropertyProfile",
         "MatchingPropertyRule",
@@ -146,6 +159,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "CompetitorItemSnapshot",
         "CompetitorItemCompatibility",
         "CompetitorItemMatch",
+        "CompetitorItemUrlAlias",
         "CompetitorManufacturerMap",
         "CounterpartyManagerAssignment",
         "StaffMember",
@@ -153,6 +167,10 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "StoreShiftFact",
         "StaffingSnapshot",
         "TelephonyUserLineSnapshot",
+        "SiteOrderExecutionCase",
+        "BitrixChatMessage",
+        "BitrixChatMention",
+        "SiteOrderExecutionEvent",
         "WeeklySmartphoneDigest",
         "WeeklyKpiReportSnapshot",
         "WeeklyKpiReportMetricSnapshot",

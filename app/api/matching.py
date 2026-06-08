@@ -25,9 +25,11 @@ from app.models import (
     CompetitorItem,
     CompetitorItemCompatibility,
     CompetitorItemMatch,
+    CompetitorItemUrlAlias,
     DeviceBrand,
     PhoneModel,
     Product,
+    ProductCompatibility,
     ProductCompetitorItemDecision,
     ProductLiveCandidateCache,
     ProductMatch,
@@ -51,6 +53,7 @@ from app.schemas.matching import (
     CompatibilityBrandAliasPatch,
     CompatibilityBrandAliasRequest,
     CompatibilityBrandRequest,
+    CompatibilityHint,
     CompatibilityHistoryItem,
     CompatibilityPhoneModel,
     CompatibilityPhoneModelRequest,
@@ -68,6 +71,7 @@ from app.schemas.matching import (
     PaginatedProducts,
     ProductFacets,
     ProductRow,
+    ProductSort,
     PropertyComparisonItem,
     PropertyComparisonResponse,
     PropertyProfile,
@@ -87,9 +91,11 @@ from app.schemas.matching import (
 )
 from app.services.bitrix_matching_auth import verify_matching_session_token
 from app.services.compatibility_mapping import CompatibilityMappingService
+from app.services.competitor_url_aliases import normalize_competitor_url, parse_competitor_url
 from app.services.matching_guardrails import (
     basic_candidate_guardrails,
     competitor_item_requires_compatibility,
+    device_group,
 )
 from app.services.matching_property_mapping import (
     DuplicateValueMapError,
@@ -143,6 +149,17 @@ _SEARCH_STOPWORDS = {
     "кабель",
     "разъем",
     "разъём",
+    "сборе",
+    "комп",
+    "комплект",
+    "тачскрином",
+    "cell",
+    "incell",
+    "кнопка",
+    "кнопку",
+    "кнопки",
+    "включения",
+    "громкости",
     "galaxy",
 }
 _DEFAULT_OPTIONAL_TOKENS = {
@@ -259,10 +276,15 @@ def _product_subject(product: Product) -> str | None:
     return product.subject or product.subject_1c or product.subject_generated
 
 
+def _product_name_sort_value(product: Product) -> tuple[str, str, int]:
+    return ((product.name or "").casefold(), (product.article or "").casefold(), product.id)
+
+
 def _candidate_from_item(
     item: CompetitorItem,
     *,
     match: CompetitorItemMatch | None = None,
+    product: Product | None = None,
     product_id: int | None = None,
     rejected_ids: set[int] | None = None,
     property_summary: PropertySummary | None = None,
@@ -289,10 +311,8 @@ def _candidate_from_item(
         else:
             status = match_status or "suggested"
         score = _float(match.final_score or match.score_llm or match.score_embed_best)
-    compatibilities = getattr(item, "compatibilities", []) or []
-    needs_compat_review = (
-        not compatibilities and competitor_item_requires_compatibility(item).requires_compatibility
-    )
+    compatibility_hint = _candidate_compatibility_hint(product, item)
+    needs_compat_review = compatibility_hint.status == "required"
 
     return Candidate(
         competitor_item_id=item.id,
@@ -313,6 +333,7 @@ def _candidate_from_item(
         score=score,
         reason=reason,
         needs_compat_review=needs_compat_review,
+        compatibility_hint=compatibility_hint,
         last_seen_at=item.last_seen_at or item.scraped_at,
         attrs=item.attrs_json,
         property_summary=property_summary,
@@ -378,20 +399,26 @@ def _search_tokens(value: str | None) -> list[str]:
 
 
 def _candidate_term_condition(term: str, *, include_external_id: bool = True):
-    pattern = f"%{term}%"
+    patterns = [f"%{term}%"]
+    if any("а" <= char <= "я" or char == "ё" for char in term):
+        patterns.append(f"%{term.capitalize()}%")
     conditions = [
-        CompetitorItem.name.ilike(pattern),
-        CompetitorItem.normalized_title.ilike(pattern),
-        CompetitorItem.attrs_model.ilike(pattern),
-        CompetitorItem.item_brand.ilike(pattern),
-        CompetitorItem.parsed_device_model.ilike(pattern),
-        CompetitorItem.parsed_device_brand.ilike(pattern),
-        CompetitorItem.attrs_quality.ilike(pattern),
-        CompetitorItem.attrs_color.ilike(pattern),
-        CompetitorItem.color.ilike(pattern),
+        field.ilike(pattern)
+        for field in (
+            CompetitorItem.name,
+            CompetitorItem.normalized_title,
+            CompetitorItem.attrs_model,
+            CompetitorItem.item_brand,
+            CompetitorItem.parsed_device_model,
+            CompetitorItem.parsed_device_brand,
+            CompetitorItem.attrs_quality,
+            CompetitorItem.attrs_color,
+            CompetitorItem.color,
+        )
+        for pattern in patterns
     ]
     if include_external_id:
-        conditions.append(CompetitorItem.external_id.ilike(pattern))
+        conditions.extend(CompetitorItem.external_id.ilike(pattern) for pattern in patterns)
     return or_(*conditions)
 
 
@@ -404,6 +431,79 @@ def _candidate_terms_condition(terms: list[str], *, include_external_id: bool = 
             for term in terms
         ]
     )
+
+
+def _candidate_exact_search_condition(value: str | None):
+    if not value:
+        return None
+    cleaned = value.strip()
+    if not cleaned:
+        return None
+    conditions = [
+        CompetitorItem.external_id.ilike(cleaned),
+        CompetitorItem.external_id.ilike(f"%{cleaned}%"),
+        CompetitorItem.url.ilike(cleaned),
+        CompetitorItem.url.ilike(f"%{cleaned}%"),
+    ]
+    normalized_url = None
+    url_parts = None
+    if "://" in cleaned or "/" in cleaned or "." in cleaned:
+        normalized_url = normalize_competitor_url(cleaned)
+        url_parts = parse_competitor_url(cleaned)
+    alias_conditions = []
+    if normalized_url:
+        alias_conditions.append(CompetitorItemUrlAlias.normalized_url == normalized_url)
+    if url_parts and url_parts.catalog_id:
+        alias_conditions.append(CompetitorItemUrlAlias.catalog_id == url_parts.catalog_id)
+    if url_parts and url_parts.redirect_id:
+        alias_conditions.append(CompetitorItemUrlAlias.redirect_id == url_parts.redirect_id)
+    if alias_conditions:
+        conditions.append(
+            select(CompetitorItemUrlAlias.id)
+            .where(
+                CompetitorItemUrlAlias.competitor_item_id == CompetitorItem.id,
+                or_(*alias_conditions),
+            )
+            .exists()
+        )
+    url_match = re.search(r"/catalog/[^\s?#]+/(\d+)/?", cleaned, flags=re.IGNORECASE)
+    if url_match:
+        conditions.extend(
+            (
+                CompetitorItem.url.ilike(f"%/{url_match.group(1)}/%"),
+                CompetitorItem.url.ilike(f"%/{url_match.group(1)}"),
+                CompetitorItem.external_id.ilike(url_match.group(1)),
+            )
+        )
+    return or_(*conditions)
+
+
+def _is_moba_catalog_url(value: str | None) -> bool:
+    cleaned = (value or "").strip().lower()
+    if not cleaned:
+        return False
+    return bool(
+        re.search(
+            r"(?:https?://)?(?:www\.)?moba\.ru/catalog/[^\s?#]+/\d+/?",
+            cleaned,
+        )
+    )
+
+
+def _is_precise_candidate_query(value: str | None) -> bool:
+    cleaned = (value or "").strip()
+    if not cleaned:
+        return False
+    lowered = cleaned.lower()
+    if "://" in lowered or "/catalog/" in lowered:
+        return True
+    if re.fullmatch(r"\d{5,}", cleaned):
+        return True
+    if re.fullmatch(r"[a-z0-9][a-z0-9._/-]{3,}", lowered, flags=re.IGNORECASE):
+        return any(char.isdigit() for char in lowered) and any(
+            char in lowered for char in ("-", "_", "/")
+        )
+    return False
 
 
 def _candidate_search_score(terms: list[str], *, include_external_id: bool = True):
@@ -505,6 +605,82 @@ def _infer_product_item_type(product: Product) -> str | None:
     return None
 
 
+def _category_expected_product_item_type(category: str | None) -> str | None:
+    text = str(category or "").strip().lower()
+    if not text:
+        return None
+    if any(word in text for word in ("диспле", "экран", "lcd", "oled")):
+        return "display"
+    if any(word in text for word in ("аккумулятор", "акб", "battery")):
+        return "battery"
+    if "камер" in text:
+        return "camera"
+    if "шлейф" in text:
+        return "flex"
+    if any(word in text for word in ("разъем", "разъём", "коннектор")):
+        return "connector"
+    if "плат" in text:
+        return "board"
+    if any(word in text for word in ("крыш", "корпус", "рамк")):
+        return "housing"
+    if any(word in text for word in ("кабел", "шнур", "провод")):
+        return "cable"
+    return None
+
+
+def _category_expected_device_group(category: str | None) -> str | None:
+    text = str(category or "").strip().lower()
+    if not text:
+        return None
+    if "для телефонов" in text or "для iphone" in text:
+        return "phone"
+    if "для планшетов" in text or "для ipad" in text:
+        return "tablet"
+    if "смарт-час" in text or "для часов" in text:
+        return "watch"
+    if "для ноутбуков" in text:
+        return "notebook"
+    return None
+
+
+def _infer_product_device_group(product: Product) -> str | None:
+    return device_group(
+        " ".join(
+            str(value or "")
+            for value in (
+                product.name,
+                product.subject,
+                product.subject_1c,
+                product.subject_generated,
+            )
+        )
+    )
+
+
+def _product_category_matches(product: Product, category: str | None) -> bool:
+    if not category:
+        return True
+    if product.category != category:
+        return False
+    expected_type = _category_expected_product_item_type(category)
+    if expected_type is None:
+        return True
+    inferred_type = _infer_product_item_type(product)
+    if inferred_type is not None and inferred_type != expected_type:
+        return False
+    expected_device_group = _category_expected_device_group(category)
+    if expected_device_group is None:
+        return True
+    inferred_device_group = _infer_product_device_group(product)
+    return inferred_device_group is None or inferred_device_group == expected_device_group
+
+
+def _product_category_is_consistent(product: Product) -> bool:
+    if not product.category:
+        return False
+    return _product_category_matches(product, product.category)
+
+
 def _candidate_item_type_content_condition(item_type: str):
     if item_type != "display":
         return None
@@ -529,17 +705,32 @@ def _candidate_item_type_content_condition(item_type: str):
     return or_(*(field.ilike(f"%{marker}%") for field in fields for marker in display_markers))
 
 
-def _apply_candidate_item_type_filter(query, item_type: str | None):
+def _candidate_item_type_condition(item_type: str | None):
     if not item_type:
-        return query
-    query = query.where(CompetitorItem.item_type == item_type)
+        return None
     item_type_content_condition = _candidate_item_type_content_condition(item_type)
+    if item_type == "display" and item_type_content_condition is not None:
+        return and_(
+            item_type_content_condition,
+            or_(
+                CompetitorItem.item_type == item_type,
+                CompetitorItem.item_type.is_(None),
+                CompetitorItem.item_type == "",
+            ),
+        )
     if item_type_content_condition is not None:
-        query = query.where(item_type_content_condition)
-    return query
+        return and_(CompetitorItem.item_type == item_type, item_type_content_condition)
+    return CompetitorItem.item_type == item_type
 
 
-def _apply_default_candidate_filter(query, product: Product) -> tuple[object, list[str]]:
+def _apply_candidate_item_type_filter(query, item_type: str | None):
+    condition = _candidate_item_type_condition(item_type)
+    if condition is None:
+        return query
+    return query.where(condition)
+
+
+def _default_candidate_condition(product: Product) -> tuple[object, list[str]]:
     required_terms, rank_terms = _product_default_terms(product)
     fallback_pattern = f"%{product.article}%"
     fallback_conditions = [
@@ -568,14 +759,26 @@ def _apply_default_candidate_filter(query, product: Product) -> tuple[object, li
         fallback_conditions.append(product_condition)
     elif product.name:
         fallback_conditions.append(CompetitorItem.name.ilike(f"%{product.name[:80]}%"))
-    return query.where(or_(*fallback_conditions)), rank_terms
+    return or_(*fallback_conditions), rank_terms
+
+
+def _apply_default_candidate_filter(query, product: Product) -> tuple[object, list[str]]:
+    condition, rank_terms = _default_candidate_condition(product)
+    return query.where(condition), rank_terms
 
 
 def _live_candidate_count_for_product(db: Session, product: Product) -> int:
     rejected_ids = _rejected_item_ids_for_product(db, product.id)
     query = (
         select(CompetitorItem)
-        .options(selectinload(CompetitorItem.compatibilities))
+        .options(
+            selectinload(CompetitorItem.compatibilities).selectinload(
+                CompetitorItemCompatibility.phone_model
+            ),
+            selectinload(CompetitorItem.compatibilities).selectinload(
+                CompetitorItemCompatibility.device_brand_ref
+            ),
+        )
         .outerjoin(CompetitorItemMatch, CompetitorItemMatch.competitor_item_id == CompetitorItem.id)
         .where(CompetitorItem.is_active.is_(True))
     )
@@ -637,6 +840,10 @@ def _competitor_item_has_compatibility(db: Session, item_id: int) -> bool:
 
 
 _MODEL_TOKEN_RE = re.compile(r"[a-zа-яё0-9]+", re.IGNORECASE)
+_ACCEPT_CODE_RE = re.compile(
+    r"\b(?:[A-Z]{1,6}[- ]?\d{2,8}[A-Z0-9]{0,8}|\d{2,8}[A-Z]{1,8})\b",
+    re.IGNORECASE,
+)
 _MODEL_TOKEN_STOPWORDS = {
     "apple",
     "samsung",
@@ -660,6 +867,22 @@ _MODEL_TOKEN_STOPWORDS = {
     "iphone",
     "для",
 }
+_ACCEPT_CODE_STOPWORDS = {
+    "3G",
+    "4G",
+    "5G",
+    "LTE",
+    "LCD",
+    "OLED",
+    "TFT",
+    "USB",
+    "TYPEC",
+    "OR",
+    "OR100",
+    "ORG100",
+    "ORIG100",
+    "OEM100",
+}
 
 
 def _model_tokens_for_accept(*values: object | None) -> set[str]:
@@ -680,6 +903,205 @@ def _accept_model_tokens_match(model_tokens: set[str], item_tokens: set[str]) ->
     if len(model_tokens) == 1:
         return bool(overlap)
     return len(overlap) >= 2 and len(overlap) / len(model_tokens) >= 0.6
+
+
+def _accept_code_tokens(*values: object | None) -> set[str]:
+    text = " ".join(str(value or "") for value in values).upper()
+    text = text.replace("Ё", "Е").replace("–", "-").replace("—", "-")
+    tokens: set[str] = set()
+    for match in _ACCEPT_CODE_RE.finditer(text):
+        token = re.sub(r"[-\s]+", "", match.group(0).upper())
+        if len(token) < 5:
+            continue
+        if token in _ACCEPT_CODE_STOPWORDS:
+            continue
+        if not re.search(r"[A-Z]", token) or not re.search(r"\d", token):
+            continue
+        if re.fullmatch(r"\d+(?:G|GB|TB|MAH|WH|W|V|A|HZ)", token):
+            continue
+        if re.fullmatch(r"(?:OR|ORG|ORIG|OEM|COPY)\d{2,3}", token):
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def _shared_accept_codes(product: Product, item: CompetitorItem) -> set[str]:
+    product_codes = _accept_code_tokens(
+        product.name, product.category, product.subject, product.subject_1c
+    )
+    item_codes = _accept_code_tokens(
+        item.name,
+        item.normalized_title,
+        item.external_id,
+        item.attrs_model,
+        item.parsed_device_model,
+    )
+    return product_codes & item_codes
+
+
+def _dedupe_hint_values(values: Iterable[object | None]) -> list[str]:
+    result: list[str] = []
+    seen: set[str] = set()
+    for raw in values:
+        value = str(raw or "").strip()
+        if not value:
+            continue
+        key = value.casefold().replace("ё", "е")
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
+
+
+def _phone_model_hint_value(phone_model: PhoneModel | None, raw_value: object | None = None) -> str:
+    if phone_model is not None:
+        value = " ".join(
+            part
+            for part in (
+                phone_model.brand,
+                phone_model.model_name,
+                phone_model.variant,
+            )
+            if part
+        )
+        if value:
+            return value
+    return str(raw_value or "").strip()
+
+
+def _compatibility_row_hint_value(compatibility: CompetitorItemCompatibility) -> str:
+    phone_model = getattr(compatibility, "phone_model", None)
+    value = _phone_model_hint_value(phone_model)
+    if value:
+        return value
+    return " ".join(
+        part
+        for part in (
+            compatibility.device_brand,
+            compatibility.device_model,
+            compatibility.device_variant,
+        )
+        if part
+    )
+
+
+def _existing_compatibility_hint(
+    compatibilities: Iterable[CompetitorItemCompatibility],
+) -> CompatibilityHint:
+    values = _dedupe_hint_values(
+        _compatibility_row_hint_value(compatibility) for compatibility in compatibilities
+    )
+    return CompatibilityHint(
+        status="existing",
+        label="Совм. есть",
+        detail="У товара конкурента уже заведена совместимость.",
+        matched_values=values,
+    )
+
+
+def _matched_product_model_values(product: Product, item: CompetitorItem) -> list[str]:
+    item_tokens = _model_tokens_for_accept(
+        item.name,
+        item.normalized_title,
+        item.external_id,
+        item.attrs_model,
+        item.parsed_device_model,
+    )
+    values: list[str] = []
+    for link in getattr(product, "phone_model_links", []) or []:
+        phone_model = getattr(link, "phone_model", None)
+        if phone_model is None:
+            continue
+        model_tokens = _model_tokens_for_accept(
+            phone_model.brand,
+            phone_model.model_name,
+            phone_model.variant,
+            link.raw_value,
+        )
+        if _accept_model_tokens_match(model_tokens, item_tokens):
+            values.append(_phone_model_hint_value(phone_model, link.raw_value))
+    return _dedupe_hint_values(values)
+
+
+def _inferred_accept_compatibility_hint(
+    product: Product,
+    item: CompetitorItem,
+) -> CompatibilityHint | None:
+    model_values = _matched_product_model_values(product, item)
+    if model_values:
+        return CompatibilityHint(
+            status="inferred_model",
+            label="Модель",
+            detail=(
+                "Модель совпадает с совместимостью нашего товара. "
+                "При принятии совместимость конкурента будет создана автоматически."
+            ),
+            matched_values=model_values,
+        )
+    shared_codes = sorted(
+        _shared_accept_codes(product, item), key=lambda value: (-len(value), value)
+    )
+    if shared_codes:
+        return CompatibilityHint(
+            status="inferred_code",
+            label="Код",
+            detail=(
+                "Код из названия или SKU совпадает с нашим товаром. "
+                "При принятии совместимость конкурента будет создана автоматически."
+            ),
+            matched_values=shared_codes,
+        )
+    return None
+
+
+def _candidate_compatibility_hint(
+    product: Product | None,
+    item: CompetitorItem,
+) -> CompatibilityHint:
+    compatibilities = list(getattr(item, "compatibilities", []) or [])
+    if compatibilities:
+        return _existing_compatibility_hint(compatibilities)
+    if product is not None:
+        inferred = _inferred_accept_compatibility_hint(product, item)
+        if inferred is not None:
+            return inferred
+    target = competitor_item_requires_compatibility(item)
+    if target.requires_compatibility:
+        return CompatibilityHint(
+            status="required",
+            label="Совм. нужна",
+            detail="У товара конкурента нет совместимости, общую модель или код не нашли.",
+            matched_values=[],
+        )
+    return CompatibilityHint(
+        status="not_required",
+        label="Не требуется",
+        detail="Для этого кандидата совместимость не требуется.",
+        matched_values=[],
+    )
+
+
+def _ensure_accept_compatibility_from_shared_code(
+    db: Session,
+    product: Product,
+    item: CompetitorItem,
+) -> bool:
+    shared_codes = _shared_accept_codes(product, item)
+    if not shared_codes:
+        return False
+    code = sorted(shared_codes, key=lambda value: (-len(value), value))[0]
+    db.add(
+        CompetitorItemCompatibility(
+            competitor_item_id=item.id,
+            device_brand=item.parsed_device_brand or item.item_brand or product.brand or "unknown",
+            device_model=code,
+            source="manual_accept_code_overlap",
+            notes=f"Создано при ручном принятии: общий код {code}",
+        )
+    )
+    db.flush()
+    return True
 
 
 def _ensure_accept_compatibility_from_product(
@@ -731,7 +1153,7 @@ def _ensure_accept_compatibility_from_product(
         )
         db.flush()
         return True
-    return False
+    return _ensure_accept_compatibility_from_shared_code(db, product, item)
 
 
 def _rejected_item_ids_for_product(db: Session, product_id: int) -> set[int]:
@@ -762,16 +1184,16 @@ def _product_status(
     review_count: int,
     ambiguous_count: int,
 ) -> MatchStatus:
-    if accepted_count > 0:
-        if accepted_competitor_count and accepted_count > accepted_competitor_count:
-            return MatchStatus.multiple
-        return MatchStatus.manual if manual_count else MatchStatus.auto
     if ambiguous_count:
         return MatchStatus.ambiguous
     if review_count:
         return MatchStatus.uncertain
     if suggested_count:
         return MatchStatus.candidates
+    if accepted_count > 0:
+        if accepted_competitor_count and accepted_count > accepted_competitor_count:
+            return MatchStatus.multiple
+        return MatchStatus.manual if manual_count else MatchStatus.auto
     return MatchStatus.none
 
 
@@ -916,6 +1338,40 @@ def _compatibility_brands_by_product(
     return result, labels
 
 
+def _compatibility_models_by_product(
+    db: Session,
+    product_ids: Iterable[int],
+    *,
+    limit_per_product: int = 6,
+) -> dict[int, list[str]]:
+    ids = list(dict.fromkeys(product_ids))
+    if not ids:
+        return {}
+    rows = db.execute(
+        select(ProductCompatibility.product_id, ProductCompatibility.value)
+        .where(
+            ProductCompatibility.product_id.in_(ids),
+            ProductCompatibility.source == "onec",
+        )
+        .order_by(ProductCompatibility.product_id, ProductCompatibility.value)
+    ).all()
+    result: dict[int, list[str]] = {}
+    seen: dict[int, set[str]] = {}
+    for product_id, value in rows:
+        cleaned = str(value or "").strip()
+        if not cleaned:
+            continue
+        key = cleaned.lower().replace("ё", "е")
+        product_seen = seen.setdefault(product_id, set())
+        if key in product_seen:
+            continue
+        product_seen.add(key)
+        values = result.setdefault(product_id, [])
+        if len(values) < limit_per_product:
+            values.append(cleaned)
+    return result
+
+
 def _build_product_facets(
     rows: Iterable[tuple[Product, dict[str, int], MatchStatus]],
     compatibility_brands_by_product: dict[int, set[str]],
@@ -932,7 +1388,7 @@ def _build_product_facets(
             counters["subjects"][subject] += 1
         if product.brand:
             counters["brands"][product.brand] += 1
-        if product.category:
+        if _product_category_is_consistent(product):
             counters["categories"][product.category] += 1
         for brand in compatibility_brands_by_product.get(product.id, set()):
             counters["compatibility_brands"][brand] += 1
@@ -1640,6 +2096,10 @@ def list_products(
     compatibility_brand: str | None = Query(None, description="Filter by compatible device brand"),
     subject: str | None = Query(None, description="Filter by product subject"),
     search: str | None = Query(None, description="search in name or article"),
+    sort: ProductSort = Query(
+        ProductSort.default,
+        description="Product list sorting mode. Use name_asc for nomenclature A-Z.",
+    ),
     include_live_counts: bool = Query(
         True,
         description="Compute live candidate counts. Disable for faster product filtering when live status is not needed.",
@@ -1779,20 +2239,24 @@ def list_products(
         (product, counts, computed)
         for product, counts, computed in status_filtered
         if (not brand or product.brand == brand)
-        and (not category or product.category == category)
+        and _product_category_matches(product, category)
         and (
             not compatibility_brand_filter
             or compatibility_brand_filter in compatibility_brands_by_product.get(product.id, set())
         )
         and (not subject or _product_subject(product) == subject)
     ]
+    if sort == ProductSort.name_asc:
+        filtered.sort(key=lambda row: _product_name_sort_value(row[0]))
 
     total = len(filtered)
     page_rows = filtered[(page - 1) * page_size : page * page_size]
     product_ids = [product.id for product, _, _ in page_rows]
     matches_by_product: dict[int, CompetitorItemMatch] = {}
     candidate_previews_by_product: dict[int, list[CurrentMatch]] = {}
+    compatibility_models_by_product: dict[int, list[str]] = {}
     if product_ids:
+        compatibility_models_by_product = _compatibility_models_by_product(db, product_ids)
         live_candidate_counts_by_product.update(_live_candidate_cache_by_product(db, product_ids))
         current_matches = (
             db.execute(
@@ -1875,6 +2339,7 @@ def list_products(
             suggested_count=counts["suggested_count"],
             review_count=counts["review_count"] + counts["ambiguous_count"],
             live_candidate_count=live_candidate_counts_by_product.get(product.id, 0),
+            compatibility_models=compatibility_models_by_product.get(product.id, []),
         )
         for product, counts, computed in page_rows
     ]
@@ -1922,7 +2387,14 @@ def search_product_candidates(
     rejected_ids = _rejected_item_ids_for_product(db, product_id)
     query = (
         select(CompetitorItem, CompetitorItemMatch)
-        .options(selectinload(CompetitorItem.compatibilities))
+        .options(
+            selectinload(CompetitorItem.compatibilities).selectinload(
+                CompetitorItemCompatibility.phone_model
+            ),
+            selectinload(CompetitorItem.compatibilities).selectinload(
+                CompetitorItemCompatibility.device_brand_ref
+            ),
+        )
         .outerjoin(CompetitorItemMatch, CompetitorItemMatch.competitor_item_id == CompetitorItem.id)
         .where(CompetitorItem.is_active.is_(True))
     )
@@ -1932,8 +2404,11 @@ def search_product_candidates(
         query = query.where(CompetitorItem.availability.is_(True))
     if category_group:
         query = query.where(CompetitorItem.category_group == category_group)
-    effective_item_type = item_type or _infer_product_item_type(product)
-    query = _apply_candidate_item_type_filter(query, effective_item_type)
+    precise_query = _is_precise_candidate_query(q)
+    if item_type:
+        query = _apply_candidate_item_type_filter(query, item_type)
+    elif not precise_query:
+        query = _apply_candidate_item_type_filter(query, _infer_product_item_type(product))
     if brand:
         query = query.where(
             or_(
@@ -1971,25 +2446,64 @@ def search_product_candidates(
     rank_terms: list[str] = []
     if q:
         terms = _search_tokens(q)
+        exact_condition = _candidate_exact_search_condition(q)
+        moba_url_fallback_condition = None
+        moba_url_rank_terms: list[str] = []
+        if _is_moba_catalog_url(q):
+            moba_url_fallback_condition, moba_url_rank_terms = _default_candidate_condition(product)
+            item_type_condition = _candidate_item_type_condition(_infer_product_item_type(product))
+            if item_type_condition is not None:
+                moba_url_fallback_condition = and_(
+                    moba_url_fallback_condition,
+                    item_type_condition,
+                )
         if terms:
-            query = query.where(_candidate_terms_condition(terms))
-            rank_terms = terms
+            terms_condition = _candidate_terms_condition(terms)
+            search_conditions = [
+                condition
+                for condition in (
+                    exact_condition,
+                    terms_condition,
+                    moba_url_fallback_condition,
+                )
+                if condition is not None
+            ]
+            if search_conditions:
+                query = query.where(
+                    search_conditions[0] if len(search_conditions) == 1 else or_(*search_conditions)
+                )
+            rank_terms = moba_url_rank_terms if moba_url_rank_terms else terms
         else:
             pattern = f"%{q}%"
-            query = query.where(
-                or_(
-                    CompetitorItem.name.ilike(pattern),
-                    CompetitorItem.external_id.ilike(pattern),
-                    CompetitorItem.competitor.ilike(pattern),
-                    CompetitorItem.normalized_title.ilike(pattern),
-                )
+            fallback_condition = or_(
+                CompetitorItem.name.ilike(pattern),
+                CompetitorItem.external_id.ilike(pattern),
+                CompetitorItem.competitor.ilike(pattern),
+                CompetitorItem.normalized_title.ilike(pattern),
             )
+            search_conditions = [
+                condition
+                for condition in (
+                    exact_condition,
+                    fallback_condition,
+                    moba_url_fallback_condition,
+                )
+                if condition is not None
+            ]
+            query = query.where(
+                search_conditions[0] if len(search_conditions) == 1 else or_(*search_conditions)
+            )
+            rank_terms = moba_url_rank_terms
     else:
         query, rank_terms = _apply_default_candidate_filter(query, product)
 
     order_by = [
         case((CompetitorItemMatch.product_id == product_id, 1), else_=0).desc(),
     ]
+    if q:
+        cleaned_q = q.strip()
+        if cleaned_q:
+            order_by.append(case((CompetitorItem.external_id.ilike(cleaned_q), 1), else_=0).desc())
     item_type_hint = _infer_product_item_type(product)
     if item_type_hint:
         order_by.append(case((CompetitorItem.item_type == item_type_hint, 1), else_=0).desc())
@@ -2007,7 +2521,13 @@ def search_product_candidates(
 
     all_rows = db.execute(query.order_by(*order_by)).all()
     all_candidates = [
-        _candidate_from_item(item, match=match, product_id=product_id, rejected_ids=rejected_ids)
+        _candidate_from_item(
+            item,
+            match=match,
+            product=product,
+            product_id=product_id,
+            rejected_ids=rejected_ids,
+        )
         for item, match in all_rows
         if (include_rejected or item.id not in rejected_ids)
         and _candidate_guardrail_allowed(
@@ -2096,19 +2616,33 @@ def search_candidates(
     db: Session = Depends(get_db),
     _: str = Depends(_authorize),
 ) -> PaginatedCandidates:
-    query = select(CompetitorItem).where(CompetitorItem.is_active.is_(True))
+    query = (
+        select(CompetitorItem)
+        .options(
+            selectinload(CompetitorItem.compatibilities).selectinload(
+                CompetitorItemCompatibility.phone_model
+            ),
+            selectinload(CompetitorItem.compatibilities).selectinload(
+                CompetitorItemCompatibility.device_brand_ref
+            ),
+        )
+        .where(CompetitorItem.is_active.is_(True))
+    )
     if in_stock is True:
         query = query.where(CompetitorItem.availability.is_(True))
     if q:
         pattern = f"%{q}%"
-        query = query.where(
-            or_(
-                CompetitorItem.name.ilike(pattern),
-                CompetitorItem.external_id.ilike(pattern),
-                CompetitorItem.competitor.ilike(pattern),
-                CompetitorItem.normalized_title.ilike(pattern),
-            )
+        fallback_condition = or_(
+            CompetitorItem.name.ilike(pattern),
+            CompetitorItem.external_id.ilike(pattern),
+            CompetitorItem.competitor.ilike(pattern),
+            CompetitorItem.normalized_title.ilike(pattern),
         )
+        exact_condition = _candidate_exact_search_condition(q)
+        if exact_condition is not None:
+            query = query.where(or_(exact_condition, fallback_condition))
+        else:
+            query = query.where(fallback_condition)
     total = db.scalar(select(func.count()).select_from(query.subquery())) or 0
     items = (
         db.execute(

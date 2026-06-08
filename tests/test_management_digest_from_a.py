@@ -273,6 +273,93 @@ def test_build_management_digest_success() -> None:
             ],
         },
         ("/api/management/task-efficiency", "month=2026-03"): _task_efficiency_response("2026-03"),
+        (
+            "/api/management/exchange-counterparty-settlements",
+            "counterparty_code=РБ002085",
+        ): {
+            "status": "ready",
+            "control_status": "warning",
+            "counterparty_code": "РБ002085",
+            "counterparty_name": "Обменник",
+            "generated_at_msk": "2026-03-20T09:00:00+03:00",
+            "period_start": "2026-03-01",
+            "summary_by_currency": [
+                {
+                    "contract_currency_code": "643",
+                    "contract_currency_name": "руб",
+                    "current_balance": "1000000.00",
+                    "current_balance_rub": "1000000.00",
+                },
+                {
+                    "contract_currency_code": "840",
+                    "contract_currency_name": "USD",
+                    "current_balance": "-1000.00",
+                    "current_balance_rub": "-90000.00",
+                },
+            ],
+            "rub_control": {
+                "rub_inflow": "90000.00",
+                "foreign_outflow_rub": "90000.00",
+                "movement_diff_rub": "0.00",
+                "closing_balance_rub": "0.00",
+                "status": "ok",
+            },
+            "rate_mismatch_control": {
+                "status": "warning",
+                "check_from": "2026-01-01",
+                "check_to_msk": "2026-03-20T09:00:00+03:00",
+                "mismatch_count": 1,
+                "total_diff_rub": "3000.00",
+                "total_abs_diff_rub": "3000.00",
+                "tolerance_rub": "1.00",
+                "returned_count": 1,
+                "items": [
+                    {
+                        "document_type": "Приходный кассовый ордер",
+                        "document_ref": "0x8c36002590803daf11f0f8f20d13df97",
+                        "document_number": "РБГУ0020374",
+                        "document_at": "2026-01-24T10:56:31",
+                        "line_number": 1,
+                        "contract_name": "Основной договор (доллары США)",
+                        "currency_name": "USD",
+                        "document_amount": "5000.00",
+                        "document_rate": "77.600000",
+                        "document_multiplicity": "1.000000",
+                        "expected_rub": "388000.00",
+                        "movement_amount": "5000.00",
+                        "movement_rub": "385000.00",
+                        "diff_rub": "3000.00",
+                    }
+                ],
+            },
+        },
+        ("/api/management/cash-position", "top=15"): {
+            "status": "ready",
+            "generated_at_msk": "2026-03-20T09:00:00+03:00",
+            "summary_by_category_currency": [
+                {
+                    "category": "bank_accounts",
+                    "category_name": "счета",
+                    "currency_code": "643",
+                    "currency_name": "руб",
+                    "current_balance": "1500000.00",
+                },
+                {
+                    "category": "cashboxes",
+                    "category_name": "кассы",
+                    "currency_code": "840",
+                    "currency_name": "USD",
+                    "current_balance": "1200.00",
+                },
+                {
+                    "category": "cards",
+                    "category_name": "карты/эквайринг",
+                    "currency_code": "643",
+                    "currency_name": "руб",
+                    "current_balance": "300000.00",
+                },
+            ],
+        },
         ("/api/management/retail-director-monthly-kpi", "month=2026-02"): {
             "freshness_status": "fresh",
             "source_status": "ready",
@@ -303,7 +390,7 @@ def test_build_management_digest_success() -> None:
         109847.63
     )
     assert digest["sections"]["sales"]["day"]["gross_profit"] == pytest.approx(581273.70)
-    assert digest["sections"]["sales"]["day"]["profitability_pct"] == pytest.approx(0.29063685)
+    assert digest["sections"]["sales"]["day"]["profitability_pct"] == pytest.approx(0.22518871)
     assert digest["sections"]["receivables"]["new_daily_count"] == 2
     assert digest["sections"]["receivables"]["overdue_count"] == 2
     assert digest["sections"]["receivables"]["overdue_total_balance"] == pytest.approx(9000.0)
@@ -313,6 +400,8 @@ def test_build_management_digest_success() -> None:
     assert digest["sections"]["task_payloads"]["total_count"] == 2
     assert digest["sections"]["task_payloads"]["as_of"] == "2026-03-20"
     assert digest["sections"]["task_efficiency"]["summary"]["employee_count"] == 2
+    assert digest["sections"]["exchange_counterparty"]["control_status"] == "warning"
+    assert digest["sections"]["cash_position"]["status"] == "ready"
     assert "Точка 1/AM" in rendered
     assert "receivable_employee=1" in rendered
     assert "Payload'ы задач (2026-03-20)" in rendered
@@ -334,19 +423,102 @@ def test_build_management_digest_success() -> None:
     ) in rendered
     assert (
         "Продажи день: выручка 2 581 274 ₽ (+81 274 ₽ д/д); валовая прибыль 581 274 ₽ "
-        "(+81 274 ₽ д/д); рентабельность продаж 29,1% (+4,1 п.п. д/д); "
+        "(+81 274 ₽ д/д); рентабельность продаж 22,5% (+2,5 п.п. д/д); "
         "продано 2 753 шт. (+53 д/д); ср. чек 938 ₽ (+12 ₽ д/д)."
     ) in rendered
     assert (
         "Продажи неделя: выручка 12 000 000 ₽ (+200 000 ₽ н/н); валовая прибыль 3 000 000 ₽ "
-        "(+200 000 ₽ н/н); рентабельность продаж 33,3% (+2,2 п.п. н/н); "
+        "(+200 000 ₽ н/н); рентабельность продаж 25,0% (+1,3 п.п. н/н); "
         "продано 12 500 шт. (+100 н/н); ср. чек 960 ₽ (+8 ₽ н/н)."
     ) in rendered
     assert (
         "Продажи месяц: выручка 50 200 000 ₽ (+3 200 000 ₽ м/м); валовая прибыль 12 200 000 ₽ "
-        "(+1 200 000 ₽ м/м); рентабельность продаж 32,1% (+1,5 п.п. м/м); "
+        "(+1 200 000 ₽ м/м); рентабельность продаж 24,3% (+0,9 п.п. м/м); "
         "продано 53 000 шт. (+3 000 м/м); ср. чек 947 ₽ (+7 ₽ м/м)."
     ) in rendered
+    assert (
+        "Обменник РБ002085: ВНИМАНИЕ; приход рублей 90 000,00 ₽; "
+        "расход валюты в руб. эквиваленте 90 000,00 ₽; "
+        "разница 0,00 ₽; рублевый хвост 0,00 ₽."
+    ) in rendered
+    assert (
+        "Ошибки курса Обменник: 1 док. на 3 000,00 ₽; "
+        "РБГУ0020374 24.01 USD: 5 000 USD x 77,6 -> 388 000,00 ₽, "
+        "регистр 385 000,00 ₽, разница 3 000,00 ₽."
+    ) in rendered
+    assert (
+        "Обменник остатки по валютам договора: -1 000 USD (экв. -90 000,00 ₽); "
+        "1 000 000 руб."
+    ) in rendered
+    assert (
+        "Остатки денег по 1С без смешивания валют: счета: 1 500 000 руб; "
+        "кассы: 1 200 USD; карты/эквайринг: 300 000 руб."
+    ) in rendered
+
+
+def test_build_management_digest_marks_bare_bi_lists_ready() -> None:
+    def fetch_json(path: str, params: dict[str, str]):
+        if path == "/api/management/health":
+            return {
+                "status": "ok",
+                "freshness_status": "fresh",
+                "source_status": "ready",
+                "components": [
+                    {
+                        "component": "receivables",
+                        "freshness_status": "fresh",
+                        "source_status": "ready",
+                        "latest_snapshot_date": "2026-05-13",
+                        "metrics": {
+                            "latest_balance_snapshot_date": "2026-05-13",
+                            "buyer_case_total_balance": "100.00",
+                        },
+                    },
+                    {
+                        "component": "task_payloads",
+                        "freshness_status": "fresh",
+                        "source_status": "ready",
+                        "latest_snapshot_date": "2026-05-13",
+                    },
+                ],
+            }
+        if path == "/api/bi/receivables-contract-balances":
+            return [{"current_balance": "100.00"}]
+        if path == "/api/bi/receivables-current":
+            return [{"current_balance": "100.00", "aged_bucket": "0-7"}]
+        if path == "/api/bi/sales-daily-kpi":
+            date_from = params.get("date_from")
+            date_to = params.get("date_to")
+            if date_from == "2026-05-13" and date_to == "2026-05-13":
+                return [{"revenue": "1000.00", "sales_count": "2.000", "cost_of_sales": "700.00"}]
+            if date_from == "2026-05-12" and date_to == "2026-05-12":
+                return [{"revenue": "800.00", "sales_count": "1.000", "cost_of_sales": "500.00"}]
+            if date_from == "2026-05-01" and date_to == "2026-05-13":
+                return [{"revenue": "5000.00", "sales_count": "10.000", "cost_of_sales": "3000.00"}]
+            return [{"revenue": "4000.00", "sales_count": "8.000", "cost_of_sales": "2600.00"}]
+        if path == "/api/bi/sales-weekly-kpi":
+            if params.get("date_from") == "2026-05-11":
+                return [{"revenue": "2000.00", "sales_count": "4.000", "cost_of_sales": "1200.00"}]
+            return [{"revenue": "1500.00", "sales_count": "3.000", "cost_of_sales": "900.00"}]
+        return {"freshness_status": "fresh", "source_status": "ready", "payload": []}
+
+    digest = build_management_digest(
+        fetch_json=fetch_json,
+        anchor_date=date(2026, 5, 13),
+    )
+    rendered = render_management_digest(digest)
+
+    assert digest["freshness"]["sales_daily_current"] == {
+        "freshness_status": "fresh",
+        "source_status": "ready",
+    }
+    assert digest["freshness"]["buyers_balance_current"] == {
+        "freshness_status": "fresh",
+        "source_status": "ready",
+    }
+    assert digest["sections"]["sales"]["status"] == "ready"
+    assert digest["sections"]["sales"]["row_counts"]["day"] == 1
+    assert "Продажи день: выручка 1 000 ₽" in rendered
 
 
 def test_build_management_digest_uses_latest_task_payload_date_when_anchor_is_empty() -> None:
@@ -1070,6 +1242,6 @@ def test_build_management_digest_includes_open_month_block_for_retail_network_he
     assert (
         "Розница, открытый месяц 2026-04 (2026-04-01..2026-04-17 vs 2026-03-01..2026-03-17): "
         "выручка 10 000 000 ₽ (+500 000 ₽); валовая прибыль 3 000 000 ₽ (+300 000 ₽ к тому же периоду); "
-        "рентабельность продаж 42,9% (+3,2 п.п. к тому же периоду); продано 1 000 шт. (+50); "
+        "рентабельность продаж 30,0% (+1,6 п.п. к тому же периоду); продано 1 000 шт. (+50); "
         "ср. чек 10 000 ₽ (+0 ₽)."
     ) in rendered

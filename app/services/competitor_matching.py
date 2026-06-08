@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 
 import httpx
 from sqlalchemy import Select, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from app.models import (
     Competitor,
@@ -31,6 +31,7 @@ from app.services.competitor_category import (
     category_group,
 )
 from app.services.display_normalization import normalize_display_quality, normalize_display_type
+from app.services.llm_fallback import FallbackChatClient
 from app.services.phone_model_canonicalization import PhoneModelCanonicalizer
 from app.services.prompts import get_llm_parse_prompt
 
@@ -72,7 +73,9 @@ def _normalize_sku(value: str | None) -> str:
 
 def _load_products_by_article(session: Session) -> dict[str, list[Product]]:
     products: dict[str, list[Product]] = {}
-    for product in session.execute(select(Product)).scalars():
+    for product in session.execute(
+        select(Product).options(selectinload(Product.phone_model_links))
+    ).scalars():
         key = _normalize_sku(product.article)
         if not key:
             continue
@@ -219,6 +222,10 @@ MODEL_PARSE_KEYWORDS = (
     "рамка дисплея",
     "крышка",
     "корпус",
+    "плата",
+    "материнская плата",
+    "нижняя плата",
+    "board",
     "разъем",
     "разъём",
     "коннектор",
@@ -251,33 +258,73 @@ class ParsedModel:
 class LlmParseClient:
     """Простой клиент к совместимому с OpenAI chat completions API для парсинга модели."""
 
-    def __init__(self, base_url: str, model: str, timeout: float = 90.0):
-        self.base_url = base_url.rstrip("/")
-        self.model = model
+    def __init__(
+        self,
+        base_url: str | None = None,
+        model: str | None = None,
+        timeout: float = 90.0,
+        *,
+        fallback_client: FallbackChatClient | None = None,
+    ):
+        self.base_url = base_url.rstrip("/") if base_url else None
+        self.model = model or ""
         self.timeout = httpx.Timeout(timeout, connect=10.0)
-        host = (urlparse(self.base_url).hostname or "").lower()
+        host = (urlparse(self.base_url or "").hostname or "").lower()
         self.trust_env = host not in {"localhost", "127.0.0.1", "::1"}
+        self.fallback_client = fallback_client
+
+    @classmethod
+    def auto(cls, timeout: float = 90.0) -> LlmParseClient:
+        return cls(timeout=timeout, fallback_client=FallbackChatClient.from_env(timeout=timeout))
+
+    @property
+    def provider_names(self) -> list[str]:
+        if self.fallback_client is None:
+            return ["direct"] if self.base_url and self.model else []
+        return self.fallback_client.provider_names
+
+    @property
+    def has_providers(self) -> bool:
+        return bool(self.provider_names)
+
+    def close(self) -> None:
+        if self.fallback_client is not None:
+            self.fallback_client.close()
 
     def parse(self, source: str, sku: str, name: str) -> ParsedModel | None:
         system_prompt = get_llm_parse_prompt()
-        payload = {
-            "model": self.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": f"Source: {source} SKU: {sku}\nName: {name}"},
-            ],
-            "temperature": 0.0,
-            "max_tokens": 200,
-        }
-        resp = httpx.post(
-            f"{self.base_url}/v1/chat/completions",
-            json=payload,
-            timeout=self.timeout,
-            trust_env=self.trust_env,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        content = data["choices"][0]["message"]["content"]
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": f"Source: {source} SKU: {sku}\nName: {name}"},
+        ]
+        model_name = self.model
+        if self.fallback_client is not None:
+            result = self.fallback_client.chat_completion(
+                messages=messages,
+                temperature=0.0,
+                max_tokens=200,
+                response_validator=lambda content: _relaxed_json_loads(content) is not None,
+            )
+            content = result.content
+            model_name = result.model
+        else:
+            if not self.base_url or not self.model:
+                return None
+            payload = {
+                "model": self.model,
+                "messages": messages,
+                "temperature": 0.0,
+                "max_tokens": 200,
+            }
+            resp = httpx.post(
+                f"{self.base_url}/v1/chat/completions",
+                json=payload,
+                timeout=self.timeout,
+                trust_env=self.trust_env,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            content = data["choices"][0]["message"]["content"]
         parsed = _relaxed_json_loads(content)
         if parsed is None:
             return None
@@ -288,7 +335,7 @@ class LlmParseClient:
         parsed_model.reason = "llm"
         parsed_model.ambiguous = False
         parsed_model.llm_raw_json = json.dumps(parsed, ensure_ascii=False, sort_keys=True)
-        parsed_model.llm_model_name = self.model
+        parsed_model.llm_model_name = model_name
         parsed_model.parse_origin = "llm"
         return parsed_model
 
@@ -850,7 +897,12 @@ def _parse_apple(
             elif tok in {"x", "xs"} and idx + 1 < len(tokens) and tokens[idx + 1] == "max":
                 variant = "max"
             break
-        if re.fullmatch(r"\d{1,2}", tok) and idx + 1 < len(tokens) and tokens[idx + 1] == "e":
+        if (
+            re.fullmatch(r"\d{1,2}", tok)
+            and idx + 1 < len(tokens)
+            and tokens[idx + 1] == "e"
+            and not (idx + 2 < len(tokens) and tokens[idx + 2] == "sim")
+        ):
             gen = f"{tok}e"
             if idx + 3 < len(tokens) and tokens[idx + 2] == "pro" and tokens[idx + 3] == "max":
                 variant = "pro max"
@@ -1013,7 +1065,7 @@ def _parse_samsung(tokens: list[str]) -> ParsedModel:
         base = None
         number = None
         # Combined tokens like s23, a54, m33
-        if re.fullmatch(r"[samj]\d{1,3}", tok):
+        if re.fullmatch(r"[samj]\d{1,3}[a-z]?", tok):
             base = tok[0]
             number = tok[1:]
         # Note line
@@ -1138,9 +1190,13 @@ def _parse_xiaomi(tokens: list[str]) -> ParsedModel:
                             number = f"{nxt}{suffix}"
                         number, variant = _apply_network(number, variant, idx + 3)
                     continue
-                if re.fullmatch(r"\d{1,3}", nxt):
+                if re.fullmatch(r"\d{1,3}[a-z]?", nxt):
                     suffix = nxt
-                    if idx + 2 < len(tokens) and re.fullmatch(r"[a-z]", tokens[idx + 2]):
+                    if (
+                        idx + 2 < len(tokens)
+                        and re.fullmatch(r"[a-z]", tokens[idx + 2])
+                        and not re.search(r"[a-z]$", suffix)
+                    ):
                         suffix = f"{suffix}{tokens[idx + 2]}"
                         if idx + 3 < len(tokens) and tokens[idx + 3] in VARIANT_TOKENS:
                             variant = tokens[idx + 3]
@@ -1223,14 +1279,20 @@ def _parse_honor(tokens: list[str], brand: str) -> ParsedModel:
     for idx, tok in enumerate(tokens):
         series = None
         consume = 1
-        if tok == "p" and idx + 1 < len(tokens) and tokens[idx + 1] == "smart":
+        combined_series = re.fullmatch(r"([py])(\d{1,3}[a-z]?)", tok)
+        if combined_series:
+            series = combined_series.group(1)
+            rest = [combined_series.group(2), *tokens[idx + 1 :]]
+            consume = 1
+        elif tok == "p" and idx + 1 < len(tokens) and tokens[idx + 1] == "smart":
             series = "p smart"
             consume = 2
         elif tok in series_tokens:
             series = tok
         if not series:
             continue
-        rest = tokens[idx + consume :]
+        if not combined_series:
+            rest = tokens[idx + consume :]
         number = None
         variant = None
         extra: list[str] = []
@@ -1343,14 +1405,14 @@ def _parse_honor(tokens: list[str], brand: str) -> ParsedModel:
 
 def _parse_realme_oppo_vivo(tokens: list[str], brand: str) -> ParsedModel:
     """
-    Heuristic for Realme/Oppo/Vivo/OnePlus: supports series tokens (reno, neo, gt, x, k, nord, r, t, f, v, y)
-    + number + variant.
+    Heuristic for Realme/Oppo/Vivo/OnePlus: supports series tokens
+    (a, reno, neo, gt, x, k, nord, r, t, f, v, y) + number + variant.
     """
     number = None
     variant = None
     series = None
     network = None
-    SERIES_TOKENS = {"reno", "x", "k", "neo", "gt", "nord", "r", "t", "f", "v", "y"}
+    SERIES_TOKENS = {"a", "reno", "x", "k", "neo", "gt", "nord", "r", "t", "f", "v", "y"}
     for idx, tok in enumerate(tokens):
         nxt = tokens[idx + 1] if idx + 1 < len(tokens) else None
         nxt2 = tokens[idx + 2] if idx + 2 < len(tokens) else None
@@ -1359,7 +1421,7 @@ def _parse_realme_oppo_vivo(tokens: list[str], brand: str) -> ParsedModel:
             return ParsedModel(
                 brand=brand, model=model, variant=None, confidence=0.75, reason=brand
             )
-        combined = re.fullmatch(r"([afrxyvgtk])(\d{1,3})", tok)
+        combined = re.fullmatch(r"([afrxyvgtk])(\d{1,3}[a-z]?)", tok)
         if combined and combined.group(1) in SERIES_TOKENS:
             series = combined.group(1)
             number = combined.group(2)
@@ -1986,7 +2048,9 @@ def _extract_variant(model_tokens: list[str]) -> tuple[list[str], str | None]:
 
 def _load_products_by_brand_model(session: Session) -> dict[str, list[tuple[str, Product]]]:
     brand_map: dict[str, list[tuple[str, Product]]] = {}
-    for product in session.execute(select(Product)).scalars():
+    for product in session.execute(
+        select(Product).options(selectinload(Product.phone_model_links))
+    ).scalars():
         parsed = parse_model_name(product.name)
         if not parsed.brand or parsed.ambiguous or parsed.confidence < 0.7 or not parsed.model:
             continue
@@ -2223,6 +2287,8 @@ def match_competitor_ftp_records(
     catalog_only_new: bool = False,
     catalog_llm_new: bool = True,
     category_llm_enabled: bool = True,
+    latest_only: bool = False,
+    progress_every: int = 0,
 ) -> dict:
     """
     Сопоставляет FTP-записи конкурентов с товарами по SKU и пишет цены в competitor_price.
@@ -2244,6 +2310,10 @@ def match_competitor_ftp_records(
     records = sorted(session.execute(query).scalars(), key=_record_freshness_key)
     if not records:
         return {"skipped": True, "reason": "no_records"}
+    records_before_latest_only = len(records)
+    if latest_only:
+        latest_records = _latest_records_by_catalog_key(records)
+        records = sorted(latest_records.values(), key=_record_freshness_key)
     latest_catalog_records = _latest_records_by_catalog_key(records)
 
     products_by_sku = _load_products_by_article(session)
@@ -2272,6 +2342,15 @@ def match_competitor_ftp_records(
     try:
         for record in records:
             stats.processed += 1
+            if progress_every and stats.processed % progress_every == 0:
+                logger.info(
+                    "competitor matching progress: processed=%s matched=%s "
+                    "unmatched=%s ambiguous=%s",
+                    stats.processed,
+                    stats.matched,
+                    stats.unmatched,
+                    stats.ambiguous,
+                )
             product: Product | None = None
             phone_model: PhoneModel | None = None
             quality = None
@@ -2684,6 +2763,8 @@ def match_competitor_ftp_records(
         session.commit()
         result = {
             "skipped": False,
+            "latest_only": latest_only,
+            "records_before_latest_only": records_before_latest_only,
             **stats.as_dict(),
             "unmatched_samples": unmatched_samples,
             "ambiguous_samples": ambiguous_samples,

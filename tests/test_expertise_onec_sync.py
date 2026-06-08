@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.models import Base, ExpertiseCase
+from app.models import Base, ExpertiseCase, ExpertiseCaseEvent
 from app.services.expertise_onec import (
     build_expertise_sync_payloads,
     load_expertise_onec_sql,
@@ -137,6 +137,7 @@ def test_run_expertise_onec_sync_persists_cases(monkeypatch) -> None:
                         "decision_comment": None,
                         "decision_code": "approved",
                         "payload": {
+                            "posted": False,
                             "manager_comment": "Гаснет экран",
                             "quality_comment": "",
                             "items": [{"line_no": 1, "return_reason_name": "Нет изображения"}],
@@ -160,7 +161,15 @@ def test_run_expertise_onec_sync_persists_cases(monkeypatch) -> None:
             assert stored.problem_summary == "Гаснет экран"
             assert stored.linked_customer_order_ref == "order-ref-worker"
             assert stored.linked_customer_order_number == "ЗК-W1"
-            assert stored.current_status == "created"
+            assert stored.current_status == "decision_ready"
+            event = session.scalar(
+                select(ExpertiseCaseEvent).where(
+                    ExpertiseCaseEvent.expertise_case_id == stored.id,
+                    ExpertiseCaseEvent.event_type == "decision_recorded",
+                )
+            )
+            assert event is not None
+            assert event.source == "sync"
     finally:
         get_settings.cache_clear()
         engine.dispose()

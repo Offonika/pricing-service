@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import re
 from collections import defaultdict
-from collections.abc import Iterable, Iterator, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
 from contextlib import nullcontext
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
@@ -265,6 +265,68 @@ WHERE _Folder = 0x01
   AND is_group_branch = 1
 """
 
+COUNTERPARTY_BUYER_DEPARTMENTS_SQL = """
+WITH tree AS (
+    SELECT
+        c._IDRRef,
+        c._ParentIDRRef,
+        c._Description,
+        c._Folder,
+        CAST(
+            CASE
+                WHEN UPPER(LTRIM(RTRIM(COALESCE(c._Description, N'')))) = UPPER(:buyers_group_name)
+                    THEN 1
+                ELSE 0
+            END AS int
+        ) AS is_buyers_branch,
+        CAST(NULL AS varbinary(16)) AS department_ref,
+        CAST(NULL AS nvarchar(255)) AS department_name
+    FROM _Reference54 AS c WITH (NOLOCK)
+    WHERE c._ParentIDRRef = 0x00000000000000000000000000000000
+
+    UNION ALL
+
+    SELECT
+        child._IDRRef,
+        child._ParentIDRRef,
+        child._Description,
+        child._Folder,
+        CAST(
+            CASE
+                WHEN parent.is_buyers_branch = 1 THEN 1
+                WHEN UPPER(LTRIM(RTRIM(COALESCE(child._Description, N'')))) = UPPER(:buyers_group_name)
+                    THEN 1
+                ELSE 0
+            END AS int
+        ) AS is_buyers_branch,
+        CASE
+            WHEN parent.is_buyers_branch = 1
+                 AND parent.department_ref IS NULL
+                 AND UPPER(LTRIM(RTRIM(COALESCE(child._Description, N'')))) <> UPPER(:buyers_group_name)
+                THEN child._IDRRef
+            ELSE parent.department_ref
+        END AS department_ref,
+        CASE
+            WHEN parent.is_buyers_branch = 1
+                 AND parent.department_ref IS NULL
+                 AND UPPER(LTRIM(RTRIM(COALESCE(child._Description, N'')))) <> UPPER(:buyers_group_name)
+                THEN child._Description
+            ELSE parent.department_name
+        END AS department_name
+    FROM _Reference54 AS child WITH (NOLOCK)
+    JOIN tree AS parent
+        ON child._ParentIDRRef = parent._IDRRef
+)
+SELECT DISTINCT
+    master.dbo.fn_varbintohexstr(_IDRRef) AS counterparty_ref,
+    _Description AS counterparty_name,
+    master.dbo.fn_varbintohexstr(department_ref) AS department_ref,
+    department_name AS department_name
+FROM tree
+WHERE is_buyers_branch = 1
+  AND department_ref IS NOT NULL
+"""
+
 COUNTERPARTY_CONTACT_INFO_OWNER_TYPE_REF = "0x00000036"
 COUNTERPARTY_PHONE_KIND_PRIORITY = (
     "Телефон контрагента",
@@ -368,6 +430,68 @@ def _chunked_strings(
 
 def _quantize_amount(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+
+
+def _event_value(event: Any, key: str) -> Any:
+    if isinstance(event, Mapping):
+        return event.get(key)
+    return getattr(event, key)
+
+
+def _event_to_origin_mapping(event: Any) -> dict[str, Any]:
+    return {
+        "id": _event_value(event, "id"),
+        "external_document_ref": _event_value(event, "external_document_ref"),
+        "external_document_number": _event_value(event, "external_document_number"),
+        "external_document_date": _event_value(event, "external_document_date"),
+        "manager_ref": _event_value(event, "manager_ref"),
+        "manager_name": _event_value(event, "manager_name"),
+        "store_ref": _event_value(event, "store_ref"),
+        "store_name": _event_value(event, "store_name"),
+        "amount_delta": _event_value(event, "amount_delta"),
+    }
+
+
+def _is_debt_increase_event(event: Any) -> bool:
+    amount_delta = Decimal(_event_value(event, "amount_delta"))
+    return amount_delta > 0 and _event_value(event, "event_type") != EVENT_OPENING_BALANCE
+
+
+def _find_unpaid_origin_event(
+    events: Sequence[Any],
+    *,
+    current_balance: Decimal,
+) -> dict[str, Any] | None:
+    target_balance = _quantize_amount(current_balance)
+    if target_balance <= 0:
+        return None
+
+    accumulated = Decimal("0.00")
+    origin_event: Any | None = None
+    for event in reversed(events):
+        if not _is_debt_increase_event(event):
+            continue
+        accumulated = _quantize_amount(accumulated + Decimal(_event_value(event, "amount_delta")))
+        origin_event = event
+        if accumulated >= target_balance:
+            return _event_to_origin_mapping(event)
+    return _event_to_origin_mapping(origin_event) if origin_event is not None else None
+
+
+def _resolve_counterparty_department(
+    counterparty_departments_by_ref: (
+        Mapping[str, CounterpartyDepartmentRow | Mapping[str, Any]] | None
+    ),
+    counterparty_ref: str | None,
+) -> tuple[str | None, str | None]:
+    if not counterparty_departments_by_ref or not counterparty_ref:
+        return None, None
+    item = counterparty_departments_by_ref.get(counterparty_ref)
+    if item is None:
+        return None, None
+    if isinstance(item, CounterpartyDepartmentRow):
+        return item.department_ref, item.department_name
+    return _clean_string(item.get("department_ref")), _clean_string(item.get("department_name"))
 
 
 def _build_synthetic_receivable_ref(prefix: str, code: str) -> str:
@@ -523,6 +647,14 @@ class AuthoritativeReceivableBalanceRow:
     current_manager_ref: str | None = None
     current_manager_name: str | None = None
     source: str = "onec_authoritative_balance"
+
+
+@dataclass(slots=True, frozen=True)
+class CounterpartyDepartmentRow:
+    counterparty_ref: str
+    counterparty_name: str | None
+    department_ref: str
+    department_name: str
 
 
 class OneCReceivableLedgerExtractor:
@@ -750,6 +882,36 @@ def fetch_counterparty_code_mapping_from_onec_group(
             if counterparty_ref is None or counterparty_code is None:
                 continue
             items.setdefault(counterparty_ref.upper(), counterparty_code)
+    return items
+
+
+def fetch_counterparty_departments_from_onec_buyers_group(
+    onec_engine,
+    *,
+    buyers_group_name: str = "ПОКУПАТЕЛИ",
+) -> dict[str, CounterpartyDepartmentRow]:
+    with onec_engine.connect() as conn:
+        rows = conn.execute(
+            text(COUNTERPARTY_BUYER_DEPARTMENTS_SQL),
+            {"buyers_group_name": buyers_group_name},
+        ).mappings()
+
+        items: dict[str, CounterpartyDepartmentRow] = {}
+        for row in rows:
+            counterparty_ref = _clean_string(row.get("counterparty_ref"))
+            department_ref = _clean_string(row.get("department_ref"))
+            department_name = _clean_string(row.get("department_name"))
+            if not counterparty_ref or not department_ref or not department_name:
+                continue
+            items.setdefault(
+                counterparty_ref,
+                CounterpartyDepartmentRow(
+                    counterparty_ref=counterparty_ref,
+                    counterparty_name=_clean_string(row.get("counterparty_name")),
+                    department_ref=department_ref,
+                    department_name=department_name,
+                ),
+            )
     return items
 
 
@@ -2246,18 +2408,15 @@ def _resolve_current_assignment(
 
 def _find_origin_event(events: Sequence[ReceivableLedgerEvent]) -> ReceivableLedgerEvent | None:
     balance = Decimal("0.00")
-    origin_event: ReceivableLedgerEvent | None = None
     for event in events:
-        next_balance = _quantize_amount(balance + Decimal(event.amount_delta))
-        if (
-            balance <= 0
-            and next_balance > 0
-            and event.amount_delta > 0
-            and event.event_type != EVENT_OPENING_BALANCE
-        ):
-            origin_event = event
-        balance = next_balance
-    return origin_event if balance > 0 else None
+        balance = _quantize_amount(balance + Decimal(event.amount_delta))
+    if balance <= 0:
+        return None
+    origin_mapping = _find_unpaid_origin_event(events, current_balance=balance)
+    if origin_mapping is None:
+        return None
+    origin_id = origin_mapping["id"]
+    return next((event for event in events if event.id == origin_id), None)
 
 
 def _resolve_counterparty_credit_terms(
@@ -2346,6 +2505,9 @@ def _build_receivable_ledger_enrichment_by_counterparty(
     *,
     snapshot_date: date,
     authoritative_opening_balance_dates: Sequence[date] | None = None,
+    counterparty_departments_by_ref: (
+        Mapping[str, CounterpartyDepartmentRow | Mapping[str, Any]] | None
+    ) = None,
 ) -> dict[str, dict[str, Any]]:
     snapshot_end = datetime.combine(snapshot_date, time.min) + timedelta(days=1)
     ledger_event = ReceivableLedgerEvent.__table__
@@ -2360,6 +2522,8 @@ def _build_receivable_ledger_enrichment_by_counterparty(
             ledger_event.c.counterparty_name,
             ledger_event.c.manager_ref,
             ledger_event.c.manager_name,
+            ledger_event.c.store_ref,
+            ledger_event.c.store_name,
             ledger_event.c.planned_payment_date,
             ledger_event.c.credit_depth_days,
             ledger_event.c.shipment_ban,
@@ -2391,11 +2555,18 @@ def _build_receivable_ledger_enrichment_by_counterparty(
             "shipment_ban": None,
             "current_manager_ref": None,
             "current_manager_name": None,
+            "department_ref": None,
+            "department_name": None,
+            "debt_increase_events": [],
         }
 
     def finalize_state(state: dict[str, Any]) -> None:
         if state["counterparty_ref"] is None:
             return
+        department_ref, department_name = _resolve_counterparty_department(
+            counterparty_departments_by_ref,
+            state["counterparty_ref"],
+        )
         enrichment[state["counterparty_ref"]] = {
             "counterparty_name": state["counterparty_name"],
             "origin_event": state["origin_event"],
@@ -2406,6 +2577,9 @@ def _build_receivable_ledger_enrichment_by_counterparty(
             "shipment_ban": state["shipment_ban"],
             "current_manager_ref": state["current_manager_ref"],
             "current_manager_name": state["current_manager_name"],
+            "department_ref": department_ref,
+            "department_name": department_name,
+            "debt_increase_events": state["debt_increase_events"],
         }
 
     enrichment: dict[str, dict[str, Any]] = {}
@@ -2458,21 +2632,9 @@ def _build_receivable_ledger_enrichment_by_counterparty(
                 state["counterparty_ref"] = counterparty_ref
 
             state["counterparty_name"] = row["counterparty_name"] or state["counterparty_name"]
+            if _is_debt_increase_event(row):
+                state["debt_increase_events"].append(dict(row))
             next_balance = _quantize_amount(state["running_balance"] + amount_delta)
-            if (
-                state["running_balance"] <= 0
-                and next_balance > 0
-                and amount_delta > 0
-                and row["event_type"] != EVENT_OPENING_BALANCE
-            ):
-                state["origin_event"] = {
-                    "id": row["id"],
-                    "external_document_ref": row["external_document_ref"],
-                    "external_document_number": row["external_document_number"],
-                    "external_document_date": row["external_document_date"],
-                    "manager_ref": row["manager_ref"],
-                    "manager_name": row["manager_name"],
-                }
             state["running_balance"] = next_balance
 
             if row["event_type"] == EVENT_SALE and amount_delta > 0:
@@ -2488,7 +2650,6 @@ def _build_receivable_ledger_enrichment_by_counterparty(
             if row["manager_ref"] is not None:
                 state["current_manager_ref"] = row["manager_ref"]
                 state["current_manager_name"] = row["manager_name"]
-
     finalize_state(state)
     return enrichment
 
@@ -2507,6 +2668,9 @@ def build_receivable_balance_snapshots(
     employee_current_balance_override_names: dict[str, str] | None = None,
     employee_current_balance_override_refs: dict[str, str] | None = None,
     strict_employee_current_balance_overrides: bool = False,
+    counterparty_departments_by_ref: (
+        Mapping[str, CounterpartyDepartmentRow | Mapping[str, Any]] | None
+    ) = None,
 ) -> dict[str, int]:
     if authoritative_balance_rows is not None:
         session.execute(
@@ -2518,6 +2682,7 @@ def build_receivable_balance_snapshots(
             session,
             snapshot_date=snapshot_date,
             authoritative_opening_balance_dates=authoritative_opening_balance_dates,
+            counterparty_departments_by_ref=counterparty_departments_by_ref,
         )
         inserted = 0
         for row in authoritative_balance_rows:
@@ -2525,7 +2690,10 @@ def build_receivable_balance_snapshots(
             if current_balance == 0:
                 continue
             enrichment = enrichment_by_counterparty.get(row.counterparty_ref, {})
-            origin_event = enrichment.get("origin_event")
+            origin_event = _find_unpaid_origin_event(
+                enrichment.get("debt_increase_events", ()),
+                current_balance=current_balance,
+            )
             current_manager_ref = row.current_manager_ref or enrichment.get("current_manager_ref")
             current_manager_name = row.current_manager_name or enrichment.get(
                 "current_manager_name"
@@ -2559,6 +2727,8 @@ def build_receivable_balance_snapshots(
                     origin_manager_name=origin_event["manager_name"] if origin_event else None,
                     current_manager_ref=current_manager_ref,
                     current_manager_name=current_manager_name,
+                    department_ref=enrichment.get("department_ref"),
+                    department_name=enrichment.get("department_name"),
                     last_sale_at=enrichment.get("last_sale_at"),
                     last_payment_at=enrichment.get("last_payment_at"),
                     planned_payment_date=credit_terms["planned_payment_date"],
@@ -2609,6 +2779,8 @@ def build_receivable_balance_snapshots(
             ledger_event.c.counterparty_name,
             ledger_event.c.manager_ref,
             ledger_event.c.manager_name,
+            ledger_event.c.store_ref,
+            ledger_event.c.store_name,
             ledger_event.c.planned_payment_date,
             ledger_event.c.credit_depth_days,
             ledger_event.c.shipment_ban,
@@ -2657,6 +2829,9 @@ def build_receivable_balance_snapshots(
             "shipment_ban": None,
             "current_manager_ref": None,
             "current_manager_name": None,
+            "department_ref": None,
+            "department_name": None,
+            "debt_increase_events": [],
         }
 
     def finalize_state(state: dict[str, Any]) -> None:
@@ -2704,7 +2879,14 @@ def build_receivable_balance_snapshots(
         if effective_balance == 0:
             return
 
-        origin_event = state["origin_event"]
+        origin_event = _find_unpaid_origin_event(
+            state["debt_increase_events"],
+            current_balance=effective_balance,
+        )
+        department_ref, department_name = _resolve_counterparty_department(
+            counterparty_departments_by_ref,
+            state["counterparty_ref"],
+        )
         credit_terms = _resolve_counterparty_credit_terms_from_values(
             planned_payment_date=state["planned_payment_date"],
             credit_depth_days=state["credit_depth_days"],
@@ -2730,6 +2912,8 @@ def build_receivable_balance_snapshots(
                 origin_manager_name=origin_event["manager_name"] if origin_event else None,
                 current_manager_ref=state["current_manager_ref"],
                 current_manager_name=state["current_manager_name"],
+                department_ref=department_ref,
+                department_name=department_name,
                 last_sale_at=state["last_sale_at"],
                 last_payment_at=state["last_payment_at"],
                 planned_payment_date=credit_terms["planned_payment_date"],
@@ -2786,21 +2970,9 @@ def build_receivable_balance_snapshots(
                 state["counterparty_ref"] = counterparty_ref
 
             state["counterparty_name"] = row["counterparty_name"] or state["counterparty_name"]
+            if _is_debt_increase_event(row):
+                state["debt_increase_events"].append(dict(row))
             next_balance = _quantize_amount(state["balance"] + amount_delta)
-            if (
-                state["balance"] <= 0
-                and next_balance > 0
-                and amount_delta > 0
-                and row["event_type"] != EVENT_OPENING_BALANCE
-            ):
-                state["origin_event"] = {
-                    "id": row["id"],
-                    "external_document_ref": row["external_document_ref"],
-                    "external_document_number": row["external_document_number"],
-                    "external_document_date": row["external_document_date"],
-                    "manager_ref": row["manager_ref"],
-                    "manager_name": row["manager_name"],
-                }
             state["balance"] = next_balance
 
             if row["event_type"] == EVENT_SALE and amount_delta > 0:
@@ -2816,7 +2988,6 @@ def build_receivable_balance_snapshots(
             if row["manager_ref"] is not None:
                 state["current_manager_ref"] = row["manager_ref"]
                 state["current_manager_name"] = row["manager_name"]
-
     finalize_state(state)
 
     if strict_current_balance_overrides and current_balance_overrides:
@@ -3211,6 +3382,9 @@ def rebuild_receivable_read_models(
     employee_current_balance_override_names: dict[str, str] | None = None,
     employee_current_balance_override_refs: dict[str, str] | None = None,
     strict_employee_current_balance_overrides: bool = False,
+    counterparty_departments_by_ref: (
+        Mapping[str, CounterpartyDepartmentRow | Mapping[str, Any]] | None
+    ) = None,
     buyer_counterparty_refs: Sequence[str] = (),
     fired_manager_refs: Sequence[str] = (),
 ) -> dict[str, Any]:
@@ -3228,6 +3402,7 @@ def rebuild_receivable_read_models(
         employee_current_balance_override_names=employee_current_balance_override_names,
         employee_current_balance_override_refs=employee_current_balance_override_refs,
         strict_employee_current_balance_overrides=strict_employee_current_balance_overrides,
+        counterparty_departments_by_ref=counterparty_departments_by_ref,
     )
     reconciliation_result = build_receivable_reconciliation_snapshots(
         session,
@@ -3277,6 +3452,9 @@ def sync_receivable_ledger(
     employee_current_balance_override_names: dict[str, str] | None = None,
     employee_current_balance_override_refs: dict[str, str] | None = None,
     strict_employee_current_balance_overrides: bool = False,
+    counterparty_departments_by_ref: (
+        Mapping[str, CounterpartyDepartmentRow | Mapping[str, Any]] | None
+    ) = None,
     fired_manager_refs: Sequence[str] = (),
     replace_existing: bool = False,
     ingest_batch_size: int = DEFAULT_RECEIVABLE_SYNC_BATCH_SIZE,
@@ -3388,6 +3566,7 @@ def sync_receivable_ledger(
                 strict_employee_current_balance_overrides=(
                     strict_employee_current_balance_overrides
                 ),
+                counterparty_departments_by_ref=counterparty_departments_by_ref,
                 fired_manager_refs=fired_manager_refs,
             )
             assignment_result = {"assignments": rebuild_result["assignments"]}
@@ -3543,6 +3722,8 @@ def build_receivable_cases(
                 snapshot_table.c.origin_manager_name,
                 snapshot_table.c.current_manager_ref,
                 snapshot_table.c.current_manager_name,
+                snapshot_table.c.department_ref,
+                snapshot_table.c.department_name,
                 snapshot_table.c.planned_payment_date,
                 snapshot_table.c.credit_depth_days,
                 snapshot_table.c.shipment_ban,
@@ -3698,6 +3879,8 @@ def build_receivable_cases(
                     origin_manager_name=snapshot["origin_manager_name"],
                     current_manager_ref=snapshot["current_manager_ref"],
                     current_manager_name=snapshot["current_manager_name"],
+                    department_ref=snapshot["department_ref"],
+                    department_name=snapshot["department_name"],
                     planned_payment_date=snapshot["planned_payment_date"],
                     credit_depth_days=snapshot["credit_depth_days"],
                     shipment_ban=snapshot["shipment_ban"],

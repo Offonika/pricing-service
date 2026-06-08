@@ -5,7 +5,6 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import os
 import re
 from datetime import datetime
 
@@ -284,9 +283,10 @@ def _extract_device_codes(value: str | None) -> list[str]:
         r"\b\d{4,}[A-Z]{4,}\b",
     ]
     strict_patterns = [
+        r"\b[A-Z]{2}\d{1,4}[A-Z]\b",
         r"\b[A-Z]{3,4}\d{1,2}[A-Z0-9]?\b",
         r"\b[A-Z]{2,4}\d{3,5}[A-Z]?\b",
-        r"\bM\d{3,4}[A-Z]\d{1,2}[A-Z]?\b",
+        r"\bM\d{3,4}[A-Z]\d{1,2}[A-Z]{1,2}\b",
         r"\b[A-Z]{2,4}-[A-Z]{1,2}\d{1,2}[A-Z]?\b",
     ]
     codes: list[str] = []
@@ -498,16 +498,14 @@ def main() -> None:
 
     llm_client = None
     if args.llm or args.llm_limit or args.force_llm:
-        base_url = os.environ.get("LOCAL_LLM_BASE_URL")
-        model = os.environ.get("LOCAL_LLM_CHAT_MODEL")
-        if not base_url or not model:
-            logging.warning("LLM requested but LOCAL_LLM_BASE_URL or LOCAL_LLM_CHAT_MODEL not set")
+        llm_client = LlmParseClient.auto()
+        if not llm_client.has_providers:
+            logging.warning("LLM requested but no local/OpenAI providers are configured")
+            llm_client = None
         else:
-            llm_client = LlmParseClient(base_url, model)
             logging.info(
-                "LLM enabled: base=%s model=%s limit=%s threshold=%.2f force=%s",
-                base_url,
-                model,
+                "LLM enabled with provider fallback: providers=%s limit=%s threshold=%.2f force=%s",
+                llm_client.provider_names,
                 args.llm_limit,
                 args.llm_threshold,
                 args.force_llm,
@@ -656,7 +654,7 @@ def main() -> None:
                         llm_parsed.items = [entry for entry in llm_parsed.items if entry.model]
                     llm_parsed = _override_iphone_8_se(llm_parsed, item.name)
                     llm_parsed, llm_note = _sanitize_llm_models(llm_parsed, item_name=item.name)
-                    item.llm_model = llm_client.model
+                    item.llm_model = llm_parsed.llm_model_name or llm_client.model
                     item.llm_raw_json = llm_raw_json
                     item.parse_version = "llm_parse_v2"
                     if llm_parsed:
@@ -1049,6 +1047,9 @@ def main() -> None:
             if args.batch_size > 0 and processed % args.batch_size == 0:
                 session.commit()
         session.commit()
+
+    if llm_client is not None:
+        llm_client.close()
 
     print(
         json.dumps(

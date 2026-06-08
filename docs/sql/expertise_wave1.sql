@@ -13,8 +13,8 @@ WITH preferred_phone AS (
                 END,
                 CAST(ci._Fld6406 AS nvarchar(255)) DESC
         ) AS rn
-    FROM _InfoRg6402 AS ci
-    LEFT JOIN _Reference25 AS kind
+    FROM _InfoRg6402 AS ci WITH (NOLOCK)
+    LEFT JOIN _Reference25 AS kind WITH (NOLOCK)
         ON kind._IDRRef = ci._Fld6405_RRRef
     WHERE ci._Fld6403_RTRef = 0x00000036
       AND ci._Fld6406 IS NOT NULL
@@ -75,35 +75,35 @@ SELECT
         WHEN 1 THEN N'Отказано'
         ELSE NULL
     END AS item_decision_label
-FROM _Document9868 AS exp
-JOIN _Document9868_VT9886 AS item
+FROM _Document9868 AS exp WITH (NOLOCK)
+JOIN _Document9868_VT9886 AS item WITH (NOLOCK)
     ON item._Document9868_IDRRef = exp._IDRRef
-LEFT JOIN _Reference66 AS org
+LEFT JOIN _Reference66 AS org WITH (NOLOCK)
     ON org._IDRRef = exp._Fld9870RRef
-LEFT JOIN _Reference68 AS store
+LEFT JOIN _Reference68 AS store WITH (NOLOCK)
     ON store._IDRRef = exp._Fld9871RRef
-LEFT JOIN _Reference54 AS counterparty
+LEFT JOIN _Reference54 AS counterparty WITH (NOLOCK)
     ON counterparty._IDRRef = exp._Fld9872RRef
 LEFT JOIN preferred_phone AS phone
     ON phone.counterparty_ref = exp._Fld9872RRef
    AND phone.rn = 1
-LEFT JOIN _Reference69 AS responsible
+LEFT JOIN _Reference69 AS responsible WITH (NOLOCK)
     ON responsible._IDRRef = exp._Fld9875RRef
-LEFT JOIN _Reference37 AS contract
+LEFT JOIN _Reference37 AS contract WITH (NOLOCK)
     ON contract._IDRRef = exp._Fld9876RRef
-LEFT JOIN _Reference80 AS warehouse
+LEFT JOIN _Reference80 AS warehouse WITH (NOLOCK)
     ON warehouse._IDRRef = exp._Fld9877RRef
-LEFT JOIN _Document203 AS sale
+LEFT JOIN _Document203 AS sale WITH (NOLOCK)
     ON sale._IDRRef = exp._Fld9878RRef
-LEFT JOIN _Reference62 AS nomenclature
+LEFT JOIN _Reference62 AS nomenclature WITH (NOLOCK)
     ON nomenclature._IDRRef = item._Fld9894RRef
-LEFT JOIN _Reference48 AS quality
+LEFT JOIN _Reference48 AS quality WITH (NOLOCK)
     ON quality._IDRRef = item._Fld9890RRef
-LEFT JOIN _Reference8913 AS return_reason
+LEFT JOIN _Reference8913 AS return_reason WITH (NOLOCK)
     ON return_reason._IDRRef = item._Fld9912RRef
-LEFT JOIN _Document132 AS customer_order
+LEFT JOIN _Document132 AS customer_order WITH (NOLOCK)
     ON customer_order._IDRRef = item._Fld9909RRef
-LEFT JOIN _Enum9869 AS decision
+LEFT JOIN _Enum9869 AS decision WITH (NOLOCK)
     ON decision._IDRRef = item._Fld9911RRef
 WHERE exp._Marked = 0x00
 ORDER BY

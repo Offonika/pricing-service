@@ -4,3 +4,5 @@ CRON_TZ=Europe/Moscow
 
 # Competitor FTP prices -> competitor_item catalog -> embeddings -> Bitrix matching candidates.
 10 4 * * * root /opt/MM/pricing-service/infra/cron/competitor_matching_nightly.sh >> /var/log/pricing/competitor_matching_nightly.cron.log 2>&1
+45 4 * * * root /opt/MM/pricing-service/infra/cron/competitor_matching_nightly.sh >> /var/log/pricing/competitor_matching_nightly.cron.log 2>&1
+20 5 * * * root /opt/MM/pricing-service/infra/cron/competitor_matching_watchdog.sh >> /var/log/pricing/competitor_matching_watchdog.cron.log 2>&1

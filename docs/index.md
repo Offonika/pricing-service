@@ -19,10 +19,11 @@
 | --- | --- |
 | Pricing core | `PRD.md`, `architecture.md`, `price-strategies.md`, `TechDesign.CompetitorMatching.md` |
 | Competitors/LLM | `competitor_matching.md`, `TechDesign.CompetitorFTPImport.md`, `competitor-matching-nightly-audit-2026-05-02.md`, `agents-market-research.md`, `TechDesign.AgentsMarketDemand.md` |
-| Management/BI | `TechDesign.ManagementControlTower.md`, `BI.Receivables.md`, `Onepage.ReceivablesWorkProcess.md`, `specs/receivables-smart-process-workflow.md`, `BI.ModelDemand.md`, `receivable_authoritative_evening_runbook.md` |
-| Logistics/Telegram | `TechDesign.LogisticsTelegramMVP.md`, `IntegrationContract.Logistics1C.md`, `Onepage.LogisticsTelegramMVP.md` |
-| Expertise/order flow | `Onepage.ExpertiseCaseMVP.md`, `TechDesign.ExpertiseCaseMVP.md`, `IntegrationContract.Expertise1C.md`, `Runbook.ExpertiseWave1.md`, `order_flow/README.md` |
-| SKU/1C | `sku_policy.md`, `sku_dev_mapping.md`, `sku_dictionary_for_buyers.md`, `1c_sql_mapping.md` |
+| Management/BI | `TechDesign.ManagementControlTower.md`, `BI.Receivables.md`, `Onepage.ReceivablesWorkProcess.md`, `specs/receivables-smart-process-workflow.md`, `specs/counterparty-folder-recommendations.md`, `specs/ut103-bot-command-file-exchange.md`, `specs/exchange-counterparty-daily-settlements.md`, `BI.ModelDemand.md`, `receivable_authoritative_evening_runbook.md` |
+| Speech/Audio | `Onepage.OfflineStoreAudioAnalytics.md`, `specs/offline-store-audio-analytics.md`, `imports/openclaw-b-offline-dialog-recording-onepage.md` |
+| Logistics/Telegram | `TechDesign.LogisticsTelegramMVP.md`, `IntegrationContract.Logistics1C.md`, `IntegrationContract.LogisticsSiteOrders1C.md`, `Onepage.LogisticsTelegramMVP.md`, `specs/logistics-control-contour.md` |
+| Expertise/order flow | `Onepage.ExpertiseCaseMVP.md`, `TechDesign.ExpertiseCaseMVP.md`, `IntegrationContract.Expertise1C.md`, `Runbook.ExpertiseWave1.md`, `order_flow/README.md`, `specs/site-order-fulfillment-control-contour.md` |
+| SKU/1C | `sku_policy.md`, `sku_dev_mapping.md`, `sku_dictionary_for_buyers.md`, `1c_sql_mapping.md`, `bank-payment-classifier-one-pager.md` |
 | Specs | `specs/README.md`, новые specs в `docs/specs/` |
 
 ## Правила расширения

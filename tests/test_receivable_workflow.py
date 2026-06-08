@@ -88,6 +88,8 @@ def _settings(**overrides: Any) -> Settings:
             "no_phone": "DT187_1:NO_PHONE",
             "new_debt": "DT187_1:NEW",
         },
+        "receivable_workflow_department_refs": [],
+        "receivable_workflow_department_names": [],
     }
     data.update(overrides)
     return Settings(**data)
@@ -103,6 +105,8 @@ def _case(
     origin_date: datetime = datetime(2026, 3, 14, 10, 0),
     due_date: datetime = datetime(2026, 3, 19),
     overdue_days: int = 1,
+    department_ref: str | None = "dep-1",
+    department_name: str | None = "Продажи",
 ) -> ReceivableCase:
     return ReceivableCase(
         snapshot_date=snapshot_date,
@@ -121,6 +125,8 @@ def _case(
         origin_manager_name="Менеджер 1",
         current_manager_ref="mgr-1",
         current_manager_name="Менеджер 1",
+        department_ref=department_ref,
+        department_name=department_name,
         planned_payment_date=due_date,
         credit_depth_days=None,
         shipment_ban=False,
@@ -175,7 +181,11 @@ def test_chain_documents_are_formatted_for_bitrix_without_technical_values() -> 
 
 def test_sms_outbox_is_deduplicated_per_debt_day(db_session: Session) -> None:
     as_of = date(2026, 3, 20)
-    buyer_case = _case(snapshot_date=as_of, segment=CASE_BUYERS)
+    buyer_case = _case(
+        snapshot_date=as_of,
+        segment=CASE_BUYERS,
+        due_date=datetime(2026, 3, 21),
+    )
     db_session.add(buyer_case)
 
     first = sync_receivable_workflow(
@@ -203,7 +213,13 @@ def test_sms_outbox_is_deduplicated_per_debt_day(db_session: Session) -> None:
 
 def test_sms_without_phone_is_logged_as_skipped(db_session: Session) -> None:
     as_of = date(2026, 3, 20)
-    db_session.add(_case(snapshot_date=as_of, segment=CASE_BUYERS))
+    db_session.add(
+        _case(
+            snapshot_date=as_of,
+            segment=CASE_BUYERS,
+            due_date=datetime(2026, 3, 21),
+        )
+    )
 
     summary = sync_receivable_workflow(
         db_session,
@@ -217,6 +233,35 @@ def test_sms_without_phone_is_logged_as_skipped(db_session: Session) -> None:
     assert log.status == SMS_SKIPPED_NO_PHONE
     assert log.error == "Нет телефона"
     assert summary.sms_skipped_no_phone == 1
+
+
+def test_work_item_is_not_created_before_payment_due_date(db_session: Session) -> None:
+    as_of = date(2026, 3, 18)
+    db_session.add_all(
+        [
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_BUYERS,
+                due_date=datetime(2026, 3, 19),
+            ),
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_OVERDUE,
+                due_date=datetime(2026, 3, 19),
+            ),
+        ]
+    )
+
+    summary = sync_receivable_workflow(
+        db_session,
+        as_of=as_of,
+        phone_by_counterparty={"cp-a": "+79990000000"},
+        settings=_settings(),
+        dry_run_bitrix=True,
+    )
+
+    assert db_session.scalar(select(ReceivableWorkItem)) is None
+    assert summary.work_items_created == 0
 
 
 def test_worker_enriches_phone_from_onec_before_sync(
@@ -306,6 +351,8 @@ def test_overdue_buyer_gets_one_work_item_and_bitrix_item(db_session: Session) -
     assert item.status == STATUS_CALLING
     assert item.needs_call_today is True
     assert item.current_balance == Decimal("15000")
+    assert item.department_ref == "dep-1"
+    assert item.department_name == "Продажи"
     assert len(item.chain_documents or []) == 2
     assert item.bitrix_item_id == 101
     assert summary.work_items_created == 1
@@ -347,6 +394,169 @@ def test_existing_bitrix_item_is_reused_by_stable_key(db_session: Session) -> No
     assert summary.bitrix_updated == 1
     assert bitrix.added == []
     assert bitrix.updated[0][0] == "555"
+
+
+def test_department_scope_limits_workflow_to_one_department(db_session: Session) -> None:
+    as_of = date(2026, 3, 21)
+    db_session.add_all(
+        [
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_BUYERS,
+                counterparty_ref="cp-a",
+                department_ref="dep-1",
+                department_name="Пилот",
+            ),
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_OVERDUE,
+                counterparty_ref="cp-a",
+                department_ref="dep-1",
+                department_name="Пилот",
+            ),
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_BUYERS,
+                counterparty_ref="cp-b",
+                department_ref="dep-2",
+                department_name="Не пилот",
+            ),
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_OVERDUE,
+                counterparty_ref="cp-b",
+                department_ref="dep-2",
+                department_name="Не пилот",
+            ),
+        ]
+    )
+    bitrix = FakeBitrixClient()
+
+    summary = sync_receivable_workflow(
+        db_session,
+        as_of=as_of,
+        settings=_settings(receivable_workflow_department_refs=["dep-1"]),
+        bitrix_client=bitrix,
+    )
+
+    items = db_session.scalars(select(ReceivableWorkItem)).all()
+    assert [item.counterparty_ref for item in items] == ["cp-a"]
+    assert summary.work_items_created == 1
+    assert summary.bitrix_created == 1
+
+
+def test_department_scope_does_not_close_out_of_scope_items(db_session: Session) -> None:
+    as_of = date(2026, 3, 21)
+    db_session.add(
+        ReceivableWorkItem(
+            stable_key=stable_key_for_counterparty("cp-b"),
+            counterparty_ref="cp-b",
+            status=STATUS_CALLING,
+            current_balance=Decimal("1000"),
+            department_ref="dep-2",
+            department_name="Не пилот",
+        )
+    )
+    db_session.add_all(
+        [
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_BUYERS,
+                counterparty_ref="cp-a",
+                department_ref="dep-1",
+                department_name="Пилот",
+            ),
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_OVERDUE,
+                counterparty_ref="cp-a",
+                department_ref="dep-1",
+                department_name="Пилот",
+            ),
+        ]
+    )
+
+    summary = sync_receivable_workflow(
+        db_session,
+        as_of=as_of,
+        settings=_settings(receivable_workflow_department_names=["пилот"]),
+        dry_run_bitrix=True,
+    )
+
+    out_of_scope = db_session.scalar(
+        select(ReceivableWorkItem).where(ReceivableWorkItem.counterparty_ref == "cp-b")
+    )
+    assert out_of_scope is not None
+    assert out_of_scope.status == STATUS_CALLING
+    assert summary.work_items_closed == 0
+
+
+def test_bitrix_enum_fields_are_sent_as_enum_ids_when_mapping_exists(
+    db_session: Session,
+) -> None:
+    sms_as_of = date(2026, 3, 18)
+    as_of = date(2026, 3, 20)
+    db_session.add_all(
+        [
+            _case(
+                snapshot_date=sms_as_of,
+                segment=CASE_BUYERS,
+                origin_date=datetime(2026, 3, 15),
+                due_date=datetime(2026, 3, 19),
+            ),
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_BUYERS,
+                origin_date=datetime(2026, 3, 15),
+                due_date=datetime(2026, 3, 19),
+            ),
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_OVERDUE,
+                origin_date=datetime(2026, 3, 15),
+                due_date=datetime(2026, 3, 19),
+            ),
+        ]
+    )
+    bitrix = FakeBitrixClient()
+    settings = _settings(
+        receivable_bitrix_field_map={
+            "title": "TITLE",
+            "stable_key": "UF_CRM_RECEIVABLE_STABLE_KEY",
+            "counterparty_ref": "UF_CRM_RECEIVABLE_COUNTERPARTY_REF",
+            "phone_status": "UF_CRM_RECEIVABLE_PHONE_STATUS",
+            "sms_status": "UF_CRM_RECEIVABLE_SMS_STATUS",
+            "escalation_level": "UF_CRM_RECEIVABLE_ESCALATION_LEVEL",
+        },
+        receivable_bitrix_enum_map={
+            "phone_status": {"present": "11", "missing": "12"},
+            "sms_status": {"dry_run": "21", "sent": "22"},
+            "escalation_level": {"retail_network_head": "31"},
+        },
+    )
+
+    sync_receivable_workflow(
+        db_session,
+        as_of=sms_as_of,
+        phone_by_counterparty={"cp-a": "+79990000000"},
+        settings=settings,
+        dry_run_bitrix=True,
+    )
+    sync_receivable_workflow(
+        db_session,
+        as_of=as_of,
+        phone_by_counterparty={"cp-a": "+79990000000"},
+        settings=settings,
+        bitrix_client=bitrix,
+    )
+
+    fields = bitrix.added[0]["fields"]
+    assert fields["UF_CRM_RECEIVABLE_PHONE_STATUS"] == "11"
+    assert fields["UF_CRM_RECEIVABLE_SMS_STATUS"] == "21"
+    assert (
+        "UF_CRM_RECEIVABLE_ESCALATION_LEVEL" not in fields
+        or fields["UF_CRM_RECEIVABLE_ESCALATION_LEVEL"] is None
+    )
 
 
 def test_duplicate_bitrix_items_by_stable_key_are_reported(db_session: Session) -> None:

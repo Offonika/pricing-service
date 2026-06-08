@@ -1,10 +1,12 @@
 import "./App.css";
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import toast from "react-hot-toast";
 import { CompatibilityMappingSettings } from "./components/CompatibilityMappingSettings";
 import { MatchingLayout } from "./components/MatchingLayout";
 import { PropertyMappingSettings } from "./components/PropertyMappingSettings";
 import { initializeBitrixMatchingSession, isBitrixMatchingRoute } from "./api/bitrix";
-import type { ProductFacets } from "./api/types";
+import type { ProductFacets, ProductRow, ProductSort } from "./api/types";
+import { useSelectedProduct } from "./store/useSelectionStore";
 
 const STATUS_OPTIONS = [
   { value: "", label: "Все статусы" },
@@ -19,30 +21,400 @@ const STATUS_OPTIONS = [
   { value: "multiple", label: "Несколько связей" },
 ];
 
-function App() {
+const PRODUCT_SORT_OPTIONS: Array<{ value: ProductSort; label: string }> = [
+  { value: "default", label: "Обычная очередь" },
+  { value: "name_asc", label: "Название A-Z" },
+];
+
+const PRODUCT_LIST_PREFS_KEY = "pricing.matching.product-list.v1";
+const PRODUCT_PAGE_SIZES = [25, 50, 100, 200];
+
+interface ProductListPrefs {
+  search: string;
+  status: string;
+  category: string;
+  compatibilityBrand: string;
+  subject: string;
+  productSort: ProductSort;
+  pageSize: number;
+}
+
+const DEFAULT_PRODUCT_LIST_PREFS: ProductListPrefs = {
+  search: "",
+  status: "",
+  category: "",
+  compatibilityBrand: "",
+  subject: "",
+  productSort: "default",
+  pageSize: 50,
+};
+
+function stringPref(data: Record<string, unknown>, key: string) {
+  const value = data[key];
+  return typeof value === "string" ? value : "";
+}
+
+function isProductSort(value: unknown): value is ProductSort {
+  return value === "default" || value === "name_asc";
+}
+
+function readProductListPrefs(): ProductListPrefs {
+  if (typeof window === "undefined") return DEFAULT_PRODUCT_LIST_PREFS;
+  try {
+    const parsed = JSON.parse(window.localStorage.getItem(PRODUCT_LIST_PREFS_KEY) || "{}") as Record<string, unknown>;
+    const pageSize = typeof parsed.pageSize === "number" && PRODUCT_PAGE_SIZES.includes(parsed.pageSize)
+      ? parsed.pageSize
+      : DEFAULT_PRODUCT_LIST_PREFS.pageSize;
+    return {
+      search: stringPref(parsed, "search"),
+      status: stringPref(parsed, "status"),
+      category: stringPref(parsed, "category"),
+      compatibilityBrand: stringPref(parsed, "compatibilityBrand"),
+      subject: stringPref(parsed, "subject"),
+      productSort: isProductSort(parsed.productSort) ? parsed.productSort : DEFAULT_PRODUCT_LIST_PREFS.productSort,
+      pageSize,
+    };
+  } catch {
+    return DEFAULT_PRODUCT_LIST_PREFS;
+  }
+}
+
+function writeProductListPrefs(prefs: ProductListPrefs) {
+  try {
+    window.localStorage.setItem(PRODUCT_LIST_PREFS_KEY, JSON.stringify(prefs));
+  } catch {
+    // localStorage может быть недоступен в приватном режиме; интерфейс продолжит работать без памяти.
+  }
+}
+
+const isLogisticsFallbackRoute = () => window.location.pathname.startsWith("/logistics/fallback");
+
+type LogisticsProfile = {
+  id: number;
+  full_name: string;
+  role: string;
+  default_warehouse_id: number | null;
+  default_warehouse_name: string | null;
+};
+
+type LogisticsWarehouse = {
+  id: number;
+  name: string;
+  kind: string;
+};
+
+type LogisticsDriver = {
+  id: number;
+  full_name: string;
+};
+
+type LogisticsDraft = {
+  id: number;
+  draft_type: string;
+  status: string;
+  item_count: number;
+  items: Array<{
+    id: number;
+    barcode: string;
+    lookup_code?: string | null;
+    document_number: string;
+    dropoff_warehouse_name?: string | null;
+  }>;
+};
+
+type LogisticsMonitorItem = {
+  transfer_id: number;
+  source_document_type: string;
+  document_number: string;
+  lookup_code?: string | null;
+  status: string;
+  current_warehouse_name?: string | null;
+  dropoff_warehouse_name?: string | null;
+  driver_name?: string | null;
+  route_name?: string | null;
+  manual_review_count: number;
+};
+
+async function logisticsFetch<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const response = await fetch(`/api/logistics/web${path}`, {
+    ...options,
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...(options.headers || {}),
+    },
+  });
+  if (!response.ok) {
+    let message = `HTTP ${response.status}`;
+    try {
+      const data = await response.json();
+      message = typeof data.detail === "string" ? data.detail : message;
+    } catch {
+      // keep status message
+    }
+    throw new Error(message);
+  }
+  return response.json();
+}
+
+function LogisticsFallbackApp() {
+  const [profile, setProfile] = useState<LogisticsProfile | null>(null);
+  const [warehouses, setWarehouses] = useState<LogisticsWarehouse[]>([]);
+  const [drivers, setDrivers] = useState<LogisticsDriver[]>([]);
+  const [mode, setMode] = useState<"handoff" | "receipt">("receipt");
+  const [warehouseId, setWarehouseId] = useState("");
+  const [driverId, setDriverId] = useState("");
+  const [dropoffWarehouseId, setDropoffWarehouseId] = useState("");
+  const [scanCode, setScanCode] = useState("");
+  const [comment, setComment] = useState("");
+  const [draft, setDraft] = useState<LogisticsDraft | null>(null);
+  const [monitor, setMonitor] = useState<LogisticsMonitorItem[]>([]);
+  const [message, setMessage] = useState("Загрузка...");
+
+  const refreshMonitor = async (effectiveWarehouseId?: string) => {
+    const params = new URLSearchParams();
+    const warehouse = effectiveWarehouseId || warehouseId;
+    if (warehouse) params.set("warehouse_id", warehouse);
+    const data = await logisticsFetch<LogisticsMonitorItem[]>(`/monitor?${params.toString()}`);
+    setMonitor(data);
+  };
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.all([
+      logisticsFetch<LogisticsProfile>("/profile"),
+      logisticsFetch<LogisticsWarehouse[]>("/warehouses"),
+      logisticsFetch<LogisticsDriver[]>("/drivers"),
+    ])
+      .then(([profileData, warehouseData, driverData]) => {
+        if (cancelled) return;
+        setProfile(profileData);
+        setWarehouses(warehouseData);
+        setDrivers(driverData);
+        const defaultWarehouse = String(profileData.default_warehouse_id || warehouseData[0]?.id || "");
+        setWarehouseId(defaultWarehouse);
+        setDropoffWarehouseId(defaultWarehouse);
+        setDriverId(String(driverData[0]?.id || ""));
+        setMessage("");
+        return refreshMonitor(defaultWarehouse);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setMessage(error instanceof Error ? error.message : "Нет web-сессии");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const createDraft = async () => {
+    try {
+      const path = mode === "handoff" ? "/handoffs/draft" : "/receipts/draft";
+      const payload =
+        mode === "handoff"
+          ? {
+              warehouse_id: Number(warehouseId),
+              driver_id: driverId ? Number(driverId) : null,
+              default_dropoff_warehouse_id: dropoffWarehouseId ? Number(dropoffWarehouseId) : null,
+              comment,
+            }
+          : { warehouse_id: Number(warehouseId), comment };
+      const data = await logisticsFetch<LogisticsDraft>(path, {
+        method: "POST",
+        body: JSON.stringify(payload),
+      });
+      setDraft(data);
+      setMessage(`Черновик #${data.id}`);
+    } catch (error: unknown) {
+      setMessage(error instanceof Error ? error.message : "Ошибка черновика");
+    }
+  };
+
+  const scanDraft = async () => {
+    if (!draft || !scanCode.trim()) return;
+    try {
+      const base = mode === "handoff" ? "/handoffs" : "/receipts";
+      const data = await logisticsFetch<LogisticsDraft>(`${base}/draft/${draft.id}/scan`, {
+        method: "POST",
+        body: JSON.stringify({
+          lookup_code: scanCode.trim(),
+          dropoff_warehouse_id: mode === "handoff" && dropoffWarehouseId ? Number(dropoffWarehouseId) : null,
+        }),
+      });
+      setDraft(data);
+      setScanCode("");
+      setMessage("Скан принят");
+    } catch (error: unknown) {
+      setMessage(error instanceof Error ? error.message : "Ошибка скана");
+    }
+  };
+
+  const confirmDraft = async () => {
+    if (!draft) return;
+    try {
+      const base = mode === "handoff" ? "/handoffs" : "/receipts";
+      const data = await logisticsFetch<{ processed_count: number }>(`${base}/draft/${draft.id}/confirm`, {
+        method: "POST",
+        body: JSON.stringify({ comment }),
+      });
+      setDraft(null);
+      setMessage(`Подтверждено: ${data.processed_count}`);
+      await refreshMonitor();
+    } catch (error: unknown) {
+      setMessage(error instanceof Error ? error.message : "Ошибка подтверждения");
+    }
+  };
+
+  return (
+    <div className="app logistics">
+      <header className="app__header">
+        <h1>Логистика</h1>
+        {profile && <span className="app__user">{profile.full_name}</span>}
+        <button className="btn btn--ghost" onClick={() => refreshMonitor()}>
+          Обновить
+        </button>
+      </header>
+      <main className="logistics__grid">
+        <section className="logistics__panel">
+          <div className="logistics__tabs">
+            <button className={mode === "receipt" ? "btn" : "btn btn--ghost"} onClick={() => setMode("receipt")}>
+              Приемка
+            </button>
+            <button className={mode === "handoff" ? "btn" : "btn btn--ghost"} onClick={() => setMode("handoff")}>
+              Передача
+            </button>
+          </div>
+          <select className="app__select" value={warehouseId} onChange={(e) => setWarehouseId(e.target.value)}>
+            {warehouses.map((warehouse) => (
+              <option key={warehouse.id} value={warehouse.id}>
+                {warehouse.name}
+              </option>
+            ))}
+          </select>
+          {mode === "handoff" && (
+            <>
+              <select className="app__select" value={driverId} onChange={(e) => setDriverId(e.target.value)}>
+                {drivers.map((driver) => (
+                  <option key={driver.id} value={driver.id}>
+                    {driver.full_name}
+                  </option>
+                ))}
+              </select>
+              <select
+                className="app__select"
+                value={dropoffWarehouseId}
+                onChange={(e) => setDropoffWarehouseId(e.target.value)}
+              >
+                {warehouses.map((warehouse) => (
+                  <option key={warehouse.id} value={warehouse.id}>
+                    {warehouse.name}
+                  </option>
+                ))}
+              </select>
+            </>
+          )}
+          <input className="app__search" value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Комментарий" />
+          <button className="btn" onClick={createDraft}>
+            Открыть
+          </button>
+          {draft && (
+            <div className="logistics__draft">
+              <strong>#{draft.id}</strong>
+              <input
+                className="app__search"
+                value={scanCode}
+                onChange={(e) => setScanCode(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") scanDraft();
+                }}
+                placeholder="QR или штрихкод"
+              />
+              <div className="logistics__actions">
+                <button className="btn" onClick={scanDraft}>
+                  Скан
+                </button>
+                <button className="btn btn--ghost" onClick={confirmDraft}>
+                  Подтвердить
+                </button>
+              </div>
+              <ul>
+                {draft.items.map((item) => (
+                  <li key={item.id}>
+                    {item.document_number} · {item.lookup_code || item.barcode}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {message && <p className="logistics__message">{message}</p>}
+        </section>
+        <section className="logistics__panel logistics__monitor">
+          <table>
+            <thead>
+              <tr>
+                <th>Документ</th>
+                <th>Статус</th>
+                <th>Куда</th>
+                <th>Рейс</th>
+              </tr>
+            </thead>
+            <tbody>
+              {monitor.map((item) => (
+                <tr key={item.transfer_id}>
+                  <td>{item.document_number}</td>
+                  <td>{item.status}</td>
+                  <td>{item.dropoff_warehouse_name || item.current_warehouse_name || ""}</td>
+                  <td>{item.route_name || ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      </main>
+    </div>
+  );
+}
+
+function MatchingApp() {
   const bitrixMode = isBitrixMatchingRoute();
+  const savedProductPrefs = useMemo(() => readProductListPrefs(), []);
   const [authState, setAuthState] = useState<{
     status: "ready" | "loading" | "error";
     message?: string;
     userName?: string | null;
   }>(() => ({ status: bitrixMode ? "loading" : "ready" }));
-  const [search, setSearch] = useState("");
-  const [debouncedSearch, setDebouncedSearch] = useState("");
-  const [status, setStatus] = useState<string>("");
-  const [category, setCategory] = useState<string>("");
-  const [compatibilityBrand, setCompatibilityBrand] = useState<string>("");
-  const [subject, setSubject] = useState<string>("");
+  const [search, setSearch] = useState(savedProductPrefs.search);
+  const [debouncedSearch, setDebouncedSearch] = useState(savedProductPrefs.search);
+  const [status, setStatus] = useState<string>(savedProductPrefs.status);
+  const [category, setCategory] = useState<string>(savedProductPrefs.category);
+  const [compatibilityBrand, setCompatibilityBrand] = useState<string>(savedProductPrefs.compatibilityBrand);
+  const [subject, setSubject] = useState<string>(savedProductPrefs.subject);
+  const [productSort, setProductSort] = useState<ProductSort>(savedProductPrefs.productSort);
   const [productFacets, setProductFacets] = useState<ProductFacets | null>(null);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(50);
+  const [pageSize, setPageSize] = useState(savedProductPrefs.pageSize);
   const [total, setTotal] = useState(0);
+  const [productPage, setProductPage] = useState<{ page: number; items: ProductRow[] }>({ page: 0, items: [] });
+  const pendingOpenPageRef = useRef<number | null>(null);
   const [isPropertySettingsOpen, setIsPropertySettingsOpen] = useState(false);
   const [isCompatibilitySettingsOpen, setIsCompatibilitySettingsOpen] = useState(false);
+  const { selectedProductId, openPicker, closePicker } = useSelectedProduct();
 
   useEffect(() => {
     const timer = setTimeout(() => setDebouncedSearch(search), 300);
     return () => clearTimeout(timer);
   }, [search]);
+
+  useEffect(() => {
+    writeProductListPrefs({
+      search,
+      status,
+      category,
+      compatibilityBrand,
+      subject,
+      productSort,
+      pageSize,
+    });
+  }, [category, compatibilityBrand, pageSize, productSort, search, status, subject]);
 
   useEffect(() => {
     if (!bitrixMode) return;
@@ -65,6 +437,41 @@ function App() {
   }, [bitrixMode]);
 
   const totalPages = useMemo(() => Math.max(1, Math.ceil(total / pageSize)), [total, pageSize]);
+  const handleProductRowsChange = useCallback(
+    (items: ProductRow[], loadedPage: number) => {
+      setProductPage({ page: loadedPage, items });
+      if (pendingOpenPageRef.current !== loadedPage) return;
+      pendingOpenPageRef.current = null;
+      if (items.length) {
+        openPicker(items[0]);
+      } else {
+        closePicker();
+        toast("Очередь по текущим фильтрам закончилась");
+      }
+    },
+    [closePicker, openPicker]
+  );
+
+  const openNextProduct = useCallback(() => {
+    const rows = productPage.page === page ? productPage.items : [];
+    const currentIndex = rows.findIndex((product) => product.id === selectedProductId);
+    if (currentIndex === -1 && rows.length) {
+      openPicker(rows[0]);
+      return;
+    }
+    if (currentIndex >= 0 && currentIndex < rows.length - 1) {
+      openPicker(rows[currentIndex + 1]);
+      return;
+    }
+    if (page < totalPages) {
+      const nextPage = page + 1;
+      pendingOpenPageRef.current = nextPage;
+      setPage(nextPage);
+      return;
+    }
+    closePicker();
+    toast("Очередь по текущим фильтрам закончилась");
+  }, [closePicker, openPicker, page, productPage, selectedProductId, totalPages]);
 
   if (authState.status !== "ready") {
     return (
@@ -105,6 +512,20 @@ function App() {
           }}
         >
           {STATUS_OPTIONS.map((opt) => (
+            <option key={opt.value} value={opt.value}>
+              {opt.label}
+            </option>
+          ))}
+        </select>
+        <select
+          className="app__select"
+          value={productSort}
+          onChange={(e) => {
+            setProductSort(e.target.value as ProductSort);
+            setPage(1);
+          }}
+        >
+          {PRODUCT_SORT_OPTIONS.map((opt) => (
             <option key={opt.value} value={opt.value}>
               {opt.label}
             </option>
@@ -169,10 +590,13 @@ function App() {
         category={category}
         compatibilityBrand={compatibilityBrand}
         subject={subject}
+        sort={productSort}
         page={page}
         pageSize={pageSize}
         onTotalChange={setTotal}
         onFacetsChange={setProductFacets}
+        onProductRowsChange={handleProductRowsChange}
+        onNextProduct={openNextProduct}
       />
       <div className="app__pagination">
         <div>
@@ -193,11 +617,12 @@ function App() {
             className="app__select"
             value={pageSize}
             onChange={(e) => {
-              setPageSize(Number(e.target.value));
+              const nextPageSize = Number(e.target.value);
+              setPageSize(PRODUCT_PAGE_SIZES.includes(nextPageSize) ? nextPageSize : 50);
               setPage(1);
             }}
           >
-            {[25, 50, 100, 200].map((n) => (
+            {PRODUCT_PAGE_SIZES.map((n) => (
               <option key={n} value={n}>
                 {n} на страницу
               </option>
@@ -219,6 +644,10 @@ function App() {
       />
     </div>
   );
+}
+
+function App() {
+  return isLogisticsFallbackRoute() ? <LogisticsFallbackApp /> : <MatchingApp />;
 }
 
 export default App;

@@ -18,6 +18,7 @@ from app.services.receivables import (
     OneCReceivableLedgerExtractor,
     ReceivableLedgerRow,
     build_receivable_opening_import_events,
+    fetch_counterparty_departments_from_onec_buyers_group,
     fetch_counterparty_refs_from_onec_group,
     fetch_current_balances_from_onec,
     fetch_employee_counterparty_refs_from_onec,
@@ -291,6 +292,27 @@ def _resolve_buyer_counterparty_refs(
         if local_refs:
             return local_refs
     return ()
+
+
+def _resolve_buyer_counterparty_departments(
+    onec_engine,
+    *,
+    buyers_group_name: str = BUYERS_COUNTERPARTY_GROUP_NAME,
+) -> dict[str, Any]:
+    try:
+        return fetch_counterparty_departments_from_onec_buyers_group(
+            onec_engine,
+            buyers_group_name=buyers_group_name,
+        )
+    except Exception as exc:
+        print(
+            (
+                "[receivables] buyer department preload skipped "
+                f"buyers_group={buyers_group_name!r} error={exc}"
+            ),
+            flush=True,
+        )
+        return {}
 
 
 def _resolve_staff_rows(
@@ -995,6 +1017,10 @@ def run_receivable_read_model_rebuild(
             app_engine=resolved_app_engine,
             employee_counterparty_refs=resolved_employee_refs,
         )
+        resolved_buyer_departments = _resolve_buyer_counterparty_departments(
+            resolved_onec_engine,
+            buyers_group_name=BUYERS_COUNTERPARTY_GROUP_NAME,
+        )
         resolved_staff_rows = _resolve_staff_rows(
             resolved_onec_engine,
             app_engine=resolved_app_engine,
@@ -1005,6 +1031,7 @@ def run_receivable_read_model_rebuild(
                 "[receivables] read-model rebuild phase=staff_upsert "
                 f"employee_refs={len(resolved_employee_refs)} "
                 f"buyer_refs={len(resolved_buyer_refs)} "
+                f"buyer_departments={len(resolved_buyer_departments)} "
                 f"staff_rows={len(resolved_staff_rows)}"
             ),
             flush=True,
@@ -1045,6 +1072,7 @@ def run_receivable_read_model_rebuild(
                 authoritative_balance_rows=authoritative_balance_rows,
                 authoritative_opening_balance_dates=authoritative_meta.get("opening_balance_dates"),
                 employee_counterparty_refs=resolved_employee_refs,
+                counterparty_departments_by_ref=resolved_buyer_departments,
                 buyer_counterparty_refs=resolved_buyer_refs,
                 fired_manager_refs=fired_manager_refs,
             )
@@ -1055,6 +1083,7 @@ def run_receivable_read_model_rebuild(
         result["staff_member_payload_count"] = len(resolved_staff_rows)
         result["employee_counterparty_ref_count"] = len(resolved_employee_refs)
         result["buyer_counterparty_ref_count"] = len(resolved_buyer_refs)
+        result["buyer_counterparty_department_count"] = len(resolved_buyer_departments)
         result["sync_elapsed_seconds"] = round(monotonic() - started_at, 3)
         result.update(ledger_ready_meta)
         result.update(authoritative_meta)

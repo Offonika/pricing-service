@@ -855,6 +855,164 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/bank-payments/normalize:
+    post:
+      tags:
+      - bank-payments
+      summary: Normalize Bank Payment File
+      operationId: normalize_bank_payment_file_api_v1_bank_payments_normalize_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: source_bank
+        in: query
+        required: false
+        schema:
+          type: string
+          default: auto
+          title: Source Bank
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Body_normalize_bank_payment_file_api_v1_bank_payments_normalize_post'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BankPaymentNormalizeResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/bank-payments/normalize/{upload_id}/download:
+    get:
+      tags:
+      - bank-payments
+      summary: Download Normalized Bank Payment File
+      operationId: download_normalized_bank_payment_file_api_v1_bank_payments_normalize__upload_id__download_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: upload_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Upload Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/bank-payments/normalize/{upload_id}/report:
+    get:
+      tags:
+      - bank-payments
+      summary: Download Bank Payment Report
+      operationId: download_bank_payment_report_api_v1_bank_payments_normalize__upload_id__report_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: upload_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Upload Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/v1/bank-payments/classify:
+    post:
+      tags:
+      - bank-payments
+      summary: Classify Bank Payment Line
+      operationId: classify_bank_payment_line_api_v1_bank_payments_classify_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BankPaymentClassifyRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BankPaymentClassifyResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v1/bank-payments/sber/export:
+    post:
+      tags:
+      - bank-payments
+      summary: Export Sber Bank Payments
+      operationId: export_sber_bank_payments_api_v1_bank_payments_sber_export_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BankPaymentSberExportRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BankPaymentNormalizeResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/v1/bank-payments/bitrix/sync:
+    post:
+      tags:
+      - bank-payments
+      summary: Sync Bank Payment Files From Bitrix Disk
+      operationId: sync_bank_payment_files_from_bitrix_disk_api_v1_bank_payments_bitrix_sync_post
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BankPaymentBitrixSyncResponse'
+      security:
+      - HTTPBearer: []
   /api/matching/property-profiles:
     get:
       summary: Get Property Profiles
@@ -1775,6 +1933,14 @@ paths:
           description: search in name or article
           title: Search
         description: search in name or article
+      - name: sort
+        in: query
+        required: false
+        schema:
+          $ref: '#/components/schemas/ProductSort'
+          description: Product list sorting mode. Use name_asc for nomenclature A-Z.
+          default: default
+        description: Product list sorting mode. Use name_asc for nomenclature A-Z.
       - name: include_live_counts
         in: query
         required: false
@@ -2546,6 +2712,156 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ManagementHealthResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/counterparty-folder-recommendations:
+    get:
+      summary: Get Counterparty Folder Recommendations
+      operationId: get_counterparty_folder_recommendations_api_management_counterparty_folder_recommendations_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: Date
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^(move_recommended|ok|no_overdue|needs_review)$
+          - type: 'null'
+          title: Status
+      - name: limit
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 10000
+            minimum: 1
+          - type: 'null'
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CounterpartyFolderRecommendationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/exchange-counterparty-settlements:
+    get:
+      summary: Get Exchange Counterparty Settlements
+      operationId: get_exchange_counterparty_settlements_api_management_exchange_counterparty_settlements_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: counterparty_code
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 32
+          default: РБ002085
+          title: Counterparty Code
+      - name: period_start
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Period Start
+      - name: as_of
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Exchange Counterparty Settlements Api Management Exchange Counterparty Settlements Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/cash-position:
+    get:
+      summary: Get Cash Position
+      operationId: get_cash_position_api_management_cash_position_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: period_start
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Period Start
+      - name: as_of
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+      - name: include_zero
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Include Zero
+      - name: top
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 0
+          default: 15
+          title: Top
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Cash Position Api Management Cash Position Get
         '422':
           description: Validation Error
           content:
@@ -3916,6 +4232,93 @@ paths:
                 $ref: '#/components/schemas/HTTPValidationError'
       security:
       - HTTPBearer: []
+  /api/logistics/sync/units:
+    post:
+      summary: Sync Units
+      operationId: sync_units_api_logistics_sync_units_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              items:
+                $ref: '#/components/schemas/LogisticsUnitSyncItem'
+              type: array
+              title: Items
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsSyncResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/logistics/units/lookup:
+    get:
+      summary: Lookup Unit
+      operationId: lookup_unit_api_logistics_units_lookup_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: code
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          title: Code
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsUnitLookupResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/warehouses:
+    get:
+      summary: List Warehouses
+      operationId: list_warehouses_api_logistics_warehouses_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/LogisticsWarehouseResponse'
+                type: array
+                title: Response List Warehouses Api Logistics Warehouses Get
+      security:
+      - HTTPBearer: []
+  /api/logistics/drivers:
+    get:
+      summary: List Drivers
+      operationId: list_drivers_api_logistics_drivers_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                items:
+                  $ref: '#/components/schemas/LogisticsDriverResponse'
+                type: array
+                title: Response List Drivers Api Logistics Drivers Get
+      security:
+      - HTTPBearer: []
   /api/logistics/handoffs/draft:
     post:
       summary: Create Handoff Draft
@@ -4170,6 +4573,38 @@ paths:
           - type: string
           - type: 'null'
           title: Final Recipient
+      - name: source_document_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Document Type
+      - name: route_run_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Route Run Id
+      - name: with_external_carrier
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: With External Carrier
+      - name: manual_review
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Manual Review
       responses:
         '200':
           description: Successful Response
@@ -4180,6 +4615,109 @@ paths:
                 items:
                   $ref: '#/components/schemas/LogisticsMonitorResponse'
                 title: Response List Monitor Api Logistics Monitor Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/route-runs:
+    post:
+      summary: Create Route Run
+      operationId: create_route_run_api_logistics_route_runs_post
+      security:
+      - HTTPBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsRouteRunCreateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsRouteRunResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    get:
+      summary: List Route Runs
+      operationId: list_route_runs_api_logistics_route_runs_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      - name: driver_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Driver Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LogisticsRouteRunResponse'
+                title: Response List Route Runs Api Logistics Route Runs Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/manual-review:
+    get:
+      summary: List Manual Review
+      operationId: list_manual_review_api_logistics_manual_review_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: open
+          title: Status
+      - name: review_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Review Type
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LogisticsManualReviewResponse'
+                title: Response List Manual Review Api Logistics Manual Review Get
         '422':
           description: Validation Error
           content:
@@ -4277,6 +4815,123 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/transfers/{transfer_id}/handoff-cancel:
+    post:
+      summary: Cancel Handoff
+      operationId: cancel_handoff_api_logistics_transfers__transfer_id__handoff_cancel_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Transfer Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsEventActionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/transfers/{transfer_id}/external-carrier/handoff:
+    post:
+      summary: External Carrier Handoff
+      operationId: external_carrier_handoff_api_logistics_transfers__transfer_id__external_carrier_handoff_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Transfer Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsExternalCarrierHandoffRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/transfers/{transfer_id}/external-carrier/accept:
+    post:
+      summary: External Carrier Accept
+      operationId: external_carrier_accept_api_logistics_transfers__transfer_id__external_carrier_accept_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: transfer_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Transfer Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsExternalCarrierAcceptRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/manual-ready-overrides:
+    post:
+      summary: Manual Ready Override
+      operationId: manual_ready_override_api_logistics_manual_ready_overrides_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsManualReadyOverrideRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/logistics/bot/health:
     get:
       summary: Logistics Bot Health
@@ -4435,6 +5090,539 @@ paths:
           content:
             application/json:
               schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/web/session:
+    post:
+      summary: Create Web Session
+      operationId: create_web_session_api_logistics_web_session_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsWebSessionRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsUserProfile'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/logistics/web/profile:
+    get:
+      summary: Web Profile
+      operationId: web_profile_api_logistics_web_profile_get
+      parameters:
+      - name: mm_logistics_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Session
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsUserProfile'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/web/warehouses:
+    get:
+      summary: Web Warehouses
+      operationId: web_warehouses_api_logistics_web_warehouses_get
+      parameters:
+      - name: mm_logistics_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Session
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/web/drivers:
+    get:
+      summary: Web Drivers
+      operationId: web_drivers_api_logistics_web_drivers_get
+      parameters:
+      - name: mm_logistics_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Session
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/web/monitor:
+    get:
+      summary: Web Monitor
+      operationId: web_monitor_api_logistics_web_monitor_get
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      - name: warehouse_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Warehouse Id
+      - name: mm_logistics_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Session
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LogisticsMonitorResponse'
+                title: Response Web Monitor Api Logistics Web Monitor Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/web/handoffs/draft:
+    post:
+      summary: Web Create Handoff Draft
+      operationId: web_create_handoff_draft_api_logistics_web_handoffs_draft_post
+      parameters:
+      - name: mm_logistics_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsWebDraftCreateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/web/handoffs/draft/{draft_id}/scan:
+    post:
+      summary: Web Scan Handoff
+      operationId: web_scan_handoff_api_logistics_web_handoffs_draft__draft_id__scan_post
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      - name: mm_logistics_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsWebDraftScanRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/web/handoffs/draft/{draft_id}/confirm:
+    post:
+      summary: Web Confirm Handoff
+      operationId: web_confirm_handoff_api_logistics_web_handoffs_draft__draft_id__confirm_post
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      - name: mm_logistics_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsWebDraftConfirmRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsConfirmResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/web/receipts/draft:
+    post:
+      summary: Web Create Receipt Draft
+      operationId: web_create_receipt_draft_api_logistics_web_receipts_draft_post
+      parameters:
+      - name: mm_logistics_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsWebDraftCreateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/web/receipts/draft/{draft_id}/scan:
+    post:
+      summary: Web Scan Receipt
+      operationId: web_scan_receipt_api_logistics_web_receipts_draft__draft_id__scan_post
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      - name: mm_logistics_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsWebDraftScanRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsDraftResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/web/receipts/draft/{draft_id}/confirm:
+    post:
+      summary: Web Confirm Receipt
+      operationId: web_confirm_receipt_api_logistics_web_receipts_draft__draft_id__confirm_post
+      parameters:
+      - name: draft_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Draft Id
+      - name: mm_logistics_session
+        in: cookie
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Mm Logistics Session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/LogisticsWebDraftConfirmRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/LogisticsConfirmResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-fulfillment/bitrix/messages:
+    post:
+      summary: Ingest Bitrix Message
+      operationId: ingest_bitrix_message_api_order_fulfillment_bitrix_messages_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixChatMessageIngestRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixChatMessageIngestResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/order-fulfillment/bitrix/chats/ingest:
+    post:
+      summary: Ingest Bitrix Chat
+      operationId: ingest_bitrix_chat_api_order_fulfillment_bitrix_chats_ingest_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: chat_code
+        in: query
+        required: false
+        schema:
+          type: string
+          default: site_master_mobile
+          title: Chat Code
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: run_ocr
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: true
+          title: Run Ocr
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixChatIngestResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-fulfillment/cases/recommendations:
+    get:
+      summary: List Recommendations
+      operationId: list_recommendations_api_order_fulfillment_cases_recommendations_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 100
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderFulfillmentRecommendationsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-fulfillment/cases/review:
+    get:
+      summary: List Review Rows
+      operationId: list_review_rows_api_order_fulfillment_cases_review_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 100
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderFulfillmentReviewResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-fulfillment/delivery-methods/unknown:
+    get:
+      summary: List Unknown Delivery Methods
+      operationId: list_unknown_delivery_methods_api_order_fulfillment_delivery_methods_unknown_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date From
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryMethodReportResponse'
         '422':
           description: Validation Error
           content:
@@ -4839,6 +6027,16 @@ components:
           - type: string
           - type: 'null'
           title: Current Manager Name
+        department_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Ref
+        department_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Name
       type: object
       required:
       - snapshot_date
@@ -5003,6 +6201,16 @@ components:
           - type: string
           - type: 'null'
           title: Current Manager Name
+        department_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Ref
+        department_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Name
         last_sale_at:
           anyOf:
           - type: string
@@ -5227,6 +6435,398 @@ components:
       - cost_of_sales
       - gross_profit
       title: BIWeeklySalesKPI
+    BankPaymentBitrixSyncResponse:
+      properties:
+        processed:
+          type: integer
+          title: Processed
+          default: 0
+        ready:
+          type: integer
+          title: Ready
+          default: 0
+        errors:
+          type: integer
+          title: Errors
+          default: 0
+        skipped:
+          type: integer
+          title: Skipped
+          default: 0
+        last_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Error
+      type: object
+      title: BankPaymentBitrixSyncResponse
+    BankPaymentClassifyRequest:
+      properties:
+        direction:
+          anyOf:
+          - type: string
+            enum:
+            - incoming
+            - outgoing
+          - type: 'null'
+          title: Direction
+        document_kind:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Document Kind
+        payment_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Payment Date
+        number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Number
+        amount:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Amount
+        payer_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Payer Name
+        payer_inn:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Payer Inn
+        payer_kpp:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Payer Kpp
+        payer_account:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Payer Account
+        payer_bank:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Payer Bank
+        recipient_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recipient Name
+        recipient_inn:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recipient Inn
+        recipient_kpp:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recipient Kpp
+        recipient_account:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recipient Account
+        recipient_bank:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recipient Bank
+        purpose:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Purpose
+        payment_purpose_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Payment Purpose Code
+        priority:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Priority
+        payer_account_is_own:
+          type: boolean
+          title: Payer Account Is Own
+          default: false
+        recipient_account_is_own:
+          type: boolean
+          title: Recipient Account Is Own
+          default: false
+        existing_document_found:
+          type: boolean
+          title: Existing Document Found
+          default: false
+      type: object
+      title: BankPaymentClassifyRequest
+    BankPaymentClassifyResponse:
+      properties:
+        scenario:
+          type: string
+          title: Scenario
+        operation_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Operation Code
+        cash_flow_article_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cash Flow Article Name
+        contract_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contract Code
+        physical_person_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Physical Person Name
+        skip_auto_contract_fill:
+          type: boolean
+          title: Skip Auto Contract Fill
+          default: false
+        skip_payment_fill:
+          type: boolean
+          title: Skip Payment Fill
+          default: false
+        should_load:
+          type: boolean
+          title: Should Load
+          default: true
+        existing_document_policy:
+          type: string
+          title: Existing Document Policy
+          default: default
+        confidence:
+          type: number
+          maximum: 1.0
+          minimum: 0.0
+          title: Confidence
+        reasons:
+          items:
+            type: string
+          type: array
+          title: Reasons
+      type: object
+      required:
+      - scenario
+      - confidence
+      title: BankPaymentClassifyResponse
+    BankPaymentNormalizeCounts:
+      properties:
+        source_lines:
+          type: integer
+          title: Source Lines
+          default: 0
+        payments:
+          type: integer
+          title: Payments
+          default: 0
+        classified:
+          type: integer
+          title: Classified
+          default: 0
+        manual_review:
+          type: integer
+          title: Manual Review
+          default: 0
+        exported:
+          type: integer
+          title: Exported
+          default: 0
+      type: object
+      title: BankPaymentNormalizeCounts
+    BankPaymentNormalizeResponse:
+      properties:
+        upload_id:
+          type: string
+          title: Upload Id
+        status:
+          type: string
+          enum:
+          - ready
+          - manual_review
+          title: Status
+        detected_format:
+          type: string
+          title: Detected Format
+        counts:
+          $ref: '#/components/schemas/BankPaymentNormalizeCounts'
+        issues:
+          items:
+            type: string
+          type: array
+          title: Issues
+        download_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Download Url
+        report_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Report Url
+      type: object
+      required:
+      - upload_id
+      - status
+      - detected_format
+      - counts
+      title: BankPaymentNormalizeResponse
+    BankPaymentSberExportRequest:
+      properties:
+        date_from:
+          type: string
+          format: date
+          title: Date From
+        date_to:
+          type: string
+          format: date
+          title: Date To
+        account_numbers:
+          anyOf:
+          - items:
+              type: string
+            type: array
+          - type: 'null'
+          title: Account Numbers
+        export_mode:
+          type: string
+          const: high_confidence
+          title: Export Mode
+          default: high_confidence
+      type: object
+      required:
+      - date_from
+      - date_to
+      title: BankPaymentSberExportRequest
+    BitrixChatIngestResponse:
+      properties:
+        chat_code:
+          type: string
+          title: Chat Code
+        dialog_id:
+          type: string
+          title: Dialog Id
+        messages:
+          type: integer
+          title: Messages
+          default: 0
+        mentions:
+          type: integer
+          title: Mentions
+          default: 0
+        events:
+          type: integer
+          title: Events
+          default: 0
+        duplicates:
+          type: integer
+          title: Duplicates
+          default: 0
+        ocr_images:
+          type: integer
+          title: Ocr Images
+          default: 0
+      type: object
+      required:
+      - chat_code
+      - dialog_id
+      title: BitrixChatIngestResponse
+    BitrixChatMessageIngestRequest:
+      properties:
+        chat_code:
+          type: string
+          title: Chat Code
+        dialog_id:
+          type: string
+          title: Dialog Id
+          default: chat733
+        chat_id:
+          type: integer
+          title: Chat Id
+        message_id:
+          type: integer
+          title: Message Id
+        message_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Message At
+        author_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Author Id
+        text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Text
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+        ocr_payloads:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Ocr Payloads
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: false
+      type: object
+      required:
+      - chat_code
+      - chat_id
+      - message_id
+      title: BitrixChatMessageIngestRequest
+    BitrixChatMessageIngestResponse:
+      properties:
+        message_id:
+          type: integer
+          title: Message Id
+        parse_status:
+          type: string
+          title: Parse Status
+        duplicate_message:
+          type: boolean
+          title: Duplicate Message
+          default: false
+        mentions:
+          items:
+            $ref: '#/components/schemas/OrderFulfillmentMentionResponse'
+          type: array
+          title: Mentions
+        events_created:
+          type: integer
+          title: Events Created
+          default: 0
+      type: object
+      required:
+      - message_id
+      - parse_status
+      title: BitrixChatMessageIngestResponse
     BitrixMatchingSessionRequest:
       properties:
         access_token:
@@ -5286,6 +6886,16 @@ components:
       required:
       - user_id
       title: BitrixMatchingUser
+    Body_normalize_bank_payment_file_api_v1_bank_payments_normalize_post:
+      properties:
+        file:
+          type: string
+          contentMediaType: application/octet-stream
+          title: File
+      type: object
+      required:
+      - file
+      title: Body_normalize_bank_payment_file_api_v1_bank_payments_normalize_post
     Candidate:
       properties:
         competitor_item_id:
@@ -5382,6 +6992,8 @@ components:
           type: boolean
           title: Needs Compat Review
           default: false
+        compatibility_hint:
+          $ref: '#/components/schemas/CompatibilityHint'
         last_seen_at:
           anyOf:
           - type: string
@@ -5999,6 +7611,30 @@ components:
           type: integer
           title: Daily Skipped Missing Data
           default: 0
+        daily_skipped_not_in_pilot:
+          type: integer
+          title: Daily Skipped Not In Pilot
+          default: 0
+        daily_skipped_no_workday_data:
+          type: integer
+          title: Daily Skipped No Workday Data
+          default: 0
+        skipped_not_in_pilot:
+          type: integer
+          title: Skipped Not In Pilot
+          default: 0
+        skipped_no_workday_data:
+          type: integer
+          title: Skipped No Workday Data
+          default: 0
+        skipped_unmapped_bitrix_item:
+          type: integer
+          title: Skipped Unmapped Bitrix Item
+          default: 0
+        ocr_errors:
+          type: integer
+          title: Ocr Errors
+          default: 0
         daily_create_errors:
           type: integer
           title: Daily Create Errors
@@ -6290,6 +7926,33 @@ components:
       required:
       - code
       title: CompatibilityBrandRequest
+    CompatibilityHint:
+      properties:
+        status:
+          type: string
+          enum:
+          - existing
+          - inferred_model
+          - inferred_code
+          - required
+          - not_required
+          title: Status
+          default: not_required
+        label:
+          type: string
+          title: Label
+          default: ''
+        detail:
+          type: string
+          title: Detail
+          default: ''
+        matched_values:
+          items:
+            type: string
+          type: array
+          title: Matched Values
+      type: object
+      title: CompatibilityHint
     CompatibilityHistoryItem:
       properties:
         action:
@@ -6948,6 +8611,171 @@ components:
       required:
       - items
       title: CounterpartyDuplicatePendingResponse
+    CounterpartyFolderRecommendationItem:
+      properties:
+        snapshot_date:
+          type: string
+          format: date
+          title: Snapshot Date
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        counterparty_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Name
+        current_balance:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Current Balance
+        current_folder_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Folder Ref
+        current_folder_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Folder Name
+        recommended_folder_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Folder Ref
+        recommended_folder_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Folder Name
+        debt_department_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Debt Department Ref
+        debt_department_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Debt Department Name
+        origin_document_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Origin Document Ref
+        origin_document_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Origin Document Number
+        origin_document_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Origin Document Date
+        origin_manager_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Origin Manager Ref
+        origin_manager_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Origin Manager Name
+        current_manager_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Manager Ref
+        current_manager_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Manager Name
+        planned_payment_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Planned Payment Date
+        credit_depth_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Credit Depth Days
+        payment_term_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Payment Term Source
+        due_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Due Date
+        overdue_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Overdue Days
+        is_overdue:
+          type: boolean
+          title: Is Overdue
+        status:
+          type: string
+          title: Status
+        review_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Review Reason
+      type: object
+      required:
+      - snapshot_date
+      - counterparty_ref
+      - current_balance
+      - is_overdue
+      - status
+      title: CounterpartyFolderRecommendationItem
+    CounterpartyFolderRecommendationResponse:
+      properties:
+        as_of:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+          title: As Of
+        freshness_status:
+          type: string
+          title: Freshness Status
+        source_status:
+          type: string
+          title: Source Status
+        report_revision:
+          type: string
+          title: Report Revision
+        summary:
+          additionalProperties: true
+          type: object
+          title: Summary
+        payload:
+          items:
+            $ref: '#/components/schemas/CounterpartyFolderRecommendationItem'
+          type: array
+          title: Payload
+      type: object
+      required:
+      - as_of
+      - freshness_status
+      - source_status
+      - report_revision
+      - summary
+      - payload
+      title: CounterpartyFolderRecommendationResponse
     CurrentMatch:
       properties:
         competitor_item_id:
@@ -7078,6 +8906,37 @@ components:
       required:
       - items
       title: DecisionHistoryResponse
+    DeliveryMethodReportItem:
+      properties:
+        raw_delivery_method:
+          type: string
+          title: Raw Delivery Method
+        count:
+          type: integer
+          title: Count
+        status:
+          type: string
+          title: Status
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+      type: object
+      required:
+      - raw_delivery_method
+      - count
+      - status
+      title: DeliveryMethodReportItem
+    DeliveryMethodReportResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/DeliveryMethodReportItem'
+          type: array
+          title: Items
+      type: object
+      title: DeliveryMethodReportResponse
     DeviceModelCreate:
       properties:
         brand:
@@ -7987,6 +9846,11 @@ components:
           - type: integer
           - type: 'null'
           title: Driver Id
+        route_run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Route Run Id
         default_dropoff_warehouse_id:
           anyOf:
           - type: integer
@@ -8013,6 +9877,15 @@ components:
         barcode:
           type: string
           title: Barcode
+        lookup_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lookup Code
+        source_document_type:
+          type: string
+          title: Source Document Type
+          default: transfer
         document_number:
           type: string
           title: Document Number
@@ -8062,6 +9935,11 @@ components:
           - type: integer
           - type: 'null'
           title: Driver Id
+        route_run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Route Run Id
         default_dropoff_warehouse_id:
           anyOf:
           - type: integer
@@ -8090,8 +9968,15 @@ components:
           type: integer
           title: Actor User Id
         barcode:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Barcode
+        lookup_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lookup Code
         dropoff_warehouse_id:
           anyOf:
           - type: integer
@@ -8100,8 +9985,34 @@ components:
       type: object
       required:
       - actor_user_id
-      - barcode
       title: LogisticsDraftScanRequest
+    LogisticsDriverResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: External Id
+        full_name:
+          type: string
+          title: Full Name
+        phone:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Phone
+        is_active:
+          type: boolean
+          title: Is Active
+      type: object
+      required:
+      - id
+      - full_name
+      - is_active
+      title: LogisticsDriverResponse
     LogisticsDriverSyncItem:
       properties:
         external_id:
@@ -8176,12 +10087,26 @@ components:
         external_id:
           type: string
           title: External Id
+        source_document_type:
+          type: string
+          title: Source Document Type
+          default: transfer
         document_number:
           type: string
           title: Document Number
         barcode:
           type: string
           title: Barcode
+        lookup_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lookup Code
+        site_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Order Number
         source_warehouse_name:
           type: string
           title: Source Warehouse Name
@@ -8221,6 +10146,62 @@ components:
       - last_event_type
       - last_event_at
       title: LogisticsExpectedDeliveryResponse
+    LogisticsExternalCarrierAcceptRequest:
+      properties:
+        actor_user_id:
+          type: integer
+          title: Actor User Id
+        warehouse_id:
+          type: integer
+          title: Warehouse Id
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+        idempotency_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Idempotency Key
+      type: object
+      required:
+      - actor_user_id
+      - warehouse_id
+      title: LogisticsExternalCarrierAcceptRequest
+    LogisticsExternalCarrierHandoffRequest:
+      properties:
+        actor_user_id:
+          type: integer
+          title: Actor User Id
+        carrier_name:
+          type: string
+          title: Carrier Name
+        tracking_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Tracking Number
+        carrier_terminal:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Carrier Terminal
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+        idempotency_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Idempotency Key
+      type: object
+      required:
+      - actor_user_id
+      - carrier_name
+      title: LogisticsExternalCarrierHandoffRequest
     LogisticsHistoryEventResponse:
       properties:
         id:
@@ -8274,6 +10255,109 @@ components:
       - source
       - photos
       title: LogisticsHistoryEventResponse
+    LogisticsManualReadyOverrideRequest:
+      properties:
+        actor_user_id:
+          type: integer
+          title: Actor User Id
+        source_document_type:
+          type: string
+          title: Source Document Type
+        external_id:
+          type: string
+          title: External Id
+        warehouse_id:
+          type: integer
+          title: Warehouse Id
+        reason:
+          type: string
+          title: Reason
+        lookup_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lookup Code
+        site_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Order Number
+      type: object
+      required:
+      - actor_user_id
+      - source_document_type
+      - external_id
+      - warehouse_id
+      - reason
+      title: LogisticsManualReadyOverrideRequest
+    LogisticsManualReviewResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        review_type:
+          type: string
+          title: Review Type
+        status:
+          type: string
+          title: Status
+        source_document_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Document Type
+        source_external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source External Id
+        transfer_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Transfer Id
+        document_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Document Number
+        reason:
+          type: string
+          title: Reason
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+        resolved_by_user_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Resolved By User Id
+        resolved_by_user_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Resolved By User Name
+        resolved_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Resolved At
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - review_type
+      - status
+      - reason
+      - created_at
+      title: LogisticsManualReviewResponse
     LogisticsMonitorResponse:
       properties:
         transfer_id:
@@ -8282,6 +10366,10 @@ components:
         external_id:
           type: string
           title: External Id
+        source_document_type:
+          type: string
+          title: Source Document Type
+          default: transfer
         document_number:
           type: string
           title: Document Number
@@ -8292,6 +10380,16 @@ components:
         barcode:
           type: string
           title: Barcode
+        lookup_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lookup Code
+        site_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Order Number
         source_warehouse_name:
           type: string
           title: Source Warehouse Name
@@ -8333,6 +10431,20 @@ components:
           - type: string
           - type: 'null'
           title: Last User Name
+        route_run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Route Run Id
+        route_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Route Name
+        manual_review_count:
+          type: integer
+          title: Manual Review Count
+          default: 0
       type: object
       required:
       - transfer_id
@@ -8360,6 +10472,184 @@ components:
       required:
       - telegram_file_id
       title: LogisticsPhotoInput
+    LogisticsRouteRunCreateRequest:
+      properties:
+        external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: External Id
+        route_name:
+          type: string
+          title: Route Name
+        planned_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Planned At
+        driver_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Driver Id
+        status:
+          type: string
+          title: Status
+          default: planned
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+        items:
+          items:
+            $ref: '#/components/schemas/LogisticsRouteRunItemRequest'
+          type: array
+          title: Items
+      type: object
+      required:
+      - route_name
+      title: LogisticsRouteRunCreateRequest
+    LogisticsRouteRunItemRequest:
+      properties:
+        transfer_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Transfer Id
+        lookup_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lookup Code
+        dropoff_warehouse_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Dropoff Warehouse Id
+        leg_sequence:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Leg Sequence
+        status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      type: object
+      title: LogisticsRouteRunItemRequest
+    LogisticsRouteRunItemResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        transfer_id:
+          type: integer
+          title: Transfer Id
+        source_document_type:
+          type: string
+          title: Source Document Type
+        external_id:
+          type: string
+          title: External Id
+        document_number:
+          type: string
+          title: Document Number
+        barcode:
+          type: string
+          title: Barcode
+        lookup_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lookup Code
+        dropoff_warehouse_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Dropoff Warehouse Id
+        dropoff_warehouse_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Dropoff Warehouse Name
+        leg_sequence:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Leg Sequence
+        status:
+          type: string
+          title: Status
+        completed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Completed At
+      type: object
+      required:
+      - id
+      - transfer_id
+      - source_document_type
+      - external_id
+      - document_number
+      - barcode
+      - status
+      title: LogisticsRouteRunItemResponse
+    LogisticsRouteRunResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: External Id
+        route_name:
+          type: string
+          title: Route Name
+        planned_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Planned At
+        driver_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Driver Id
+        driver_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Driver Name
+        status:
+          type: string
+          title: Status
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+        items:
+          items:
+            $ref: '#/components/schemas/LogisticsRouteRunItemResponse'
+          type: array
+          title: Items
+      type: object
+      required:
+      - id
+      - route_name
+      - status
+      - items
+      title: LogisticsRouteRunResponse
     LogisticsSyncResponse:
       properties:
         created:
@@ -8389,6 +10679,10 @@ components:
       title: LogisticsTelegramAuthRequest
     LogisticsTransferSyncItem:
       properties:
+        source_document_type:
+          type: string
+          title: Source Document Type
+          default: transfer
         external_id:
           type: string
           title: External Id
@@ -8405,14 +10699,36 @@ components:
         target_warehouse_external_id:
           type: string
           title: Target Warehouse External Id
+        document_target_warehouse_external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Document Target Warehouse External Id
         final_recipient_name:
           anyOf:
           - type: string
           - type: 'null'
           title: Final Recipient Name
         barcode:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Barcode
+        lookup_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lookup Code
+        origin_order_external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Origin Order External Id
+        site_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Order Number
         status:
           anyOf:
           - type: string
@@ -8435,8 +10751,140 @@ components:
       - document_date
       - source_warehouse_external_id
       - target_warehouse_external_id
-      - barcode
       title: LogisticsTransferSyncItem
+    LogisticsUnitLookupResponse:
+      properties:
+        transfer_id:
+          type: integer
+          title: Transfer Id
+        source_document_type:
+          type: string
+          title: Source Document Type
+        external_id:
+          type: string
+          title: External Id
+        document_number:
+          type: string
+          title: Document Number
+        barcode:
+          type: string
+          title: Barcode
+        lookup_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lookup Code
+        site_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Order Number
+        status:
+          type: string
+          title: Status
+        current_warehouse_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Current Warehouse Id
+        dropoff_warehouse_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Dropoff Warehouse Id
+        target_warehouse_id:
+          type: integer
+          title: Target Warehouse Id
+        document_target_warehouse_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Document Target Warehouse Id
+      type: object
+      required:
+      - transfer_id
+      - source_document_type
+      - external_id
+      - document_number
+      - barcode
+      - status
+      - target_warehouse_id
+      title: LogisticsUnitLookupResponse
+    LogisticsUnitSyncItem:
+      properties:
+        source_document_type:
+          type: string
+          title: Source Document Type
+          default: transfer
+        external_id:
+          type: string
+          title: External Id
+        document_number:
+          type: string
+          title: Document Number
+        document_date:
+          type: string
+          format: date-time
+          title: Document Date
+        source_warehouse_external_id:
+          type: string
+          title: Source Warehouse External Id
+        target_warehouse_external_id:
+          type: string
+          title: Target Warehouse External Id
+        document_target_warehouse_external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Document Target Warehouse External Id
+        final_recipient_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Final Recipient Name
+        barcode:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Barcode
+        lookup_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lookup Code
+        origin_order_external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Origin Order External Id
+        site_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Order Number
+        status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+        onec_deleted:
+          type: boolean
+          title: Onec Deleted
+          default: false
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+      type: object
+      required:
+      - external_id
+      - document_number
+      - document_date
+      - source_warehouse_external_id
+      - target_warehouse_external_id
+      title: LogisticsUnitSyncItem
     LogisticsUserProfile:
       properties:
         id:
@@ -8516,6 +10964,37 @@ components:
       - full_name
       - role
       title: LogisticsUserSyncItem
+    LogisticsWarehouseResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        external_id:
+          type: string
+          title: External Id
+        name:
+          type: string
+          title: Name
+        kind:
+          type: string
+          title: Kind
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+        is_active:
+          type: boolean
+          title: Is Active
+      type: object
+      required:
+      - id
+      - external_id
+      - name
+      - kind
+      - is_active
+      title: LogisticsWarehouseResponse
     LogisticsWarehouseSyncItem:
       properties:
         external_id:
@@ -8528,6 +11007,12 @@ components:
           type: string
           title: Kind
           default: store
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
         is_active:
           type: boolean
           title: Is Active
@@ -8537,6 +11022,86 @@ components:
       - external_id
       - name
       title: LogisticsWarehouseSyncItem
+    LogisticsWebDraftConfirmRequest:
+      properties:
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+        idempotency_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Idempotency Key
+        photos:
+          items:
+            additionalProperties:
+              anyOf:
+              - type: string
+              - type: 'null'
+            type: object
+          type: array
+          title: Photos
+      type: object
+      title: LogisticsWebDraftConfirmRequest
+    LogisticsWebDraftCreateRequest:
+      properties:
+        warehouse_id:
+          type: integer
+          title: Warehouse Id
+        driver_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Driver Id
+        route_run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Route Run Id
+        default_dropoff_warehouse_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Default Dropoff Warehouse Id
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+      type: object
+      required:
+      - warehouse_id
+      title: LogisticsWebDraftCreateRequest
+    LogisticsWebDraftScanRequest:
+      properties:
+        barcode:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Barcode
+        lookup_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lookup Code
+        dropoff_warehouse_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Dropoff Warehouse Id
+      type: object
+      title: LogisticsWebDraftScanRequest
+    LogisticsWebSessionRequest:
+      properties:
+        actor_user_id:
+          type: integer
+          title: Actor User Id
+      type: object
+      required:
+      - actor_user_id
+      title: LogisticsWebSessionRequest
     ManagementComponentHealth:
       properties:
         component:
@@ -8875,6 +11440,171 @@ components:
       - brand
       - model_name
       title: ModelDemandTimeseriesItem
+    OrderFulfillmentMentionResponse:
+      properties:
+        site_order_number:
+          type: string
+          title: Site Order Number
+        event_type:
+          type: string
+          title: Event Type
+        confidence:
+          type: string
+          title: Confidence
+        evidence_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Evidence Text
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+      type: object
+      required:
+      - site_order_number
+      - event_type
+      - confidence
+      title: OrderFulfillmentMentionResponse
+    OrderFulfillmentRecommendationItem:
+      properties:
+        site_order_number:
+          type: string
+          title: Site Order Number
+        bitrix_deal_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Bitrix Deal Id
+        current_stage:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Stage
+        recommended_stage:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Stage
+        derived_status:
+          type: string
+          title: Derived Status
+        confidence:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Confidence
+        action:
+          type: string
+          title: Action
+        evidence_event_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Evidence Event Id
+      type: object
+      required:
+      - site_order_number
+      - derived_status
+      - action
+      title: OrderFulfillmentRecommendationItem
+    OrderFulfillmentRecommendationsResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/OrderFulfillmentRecommendationItem'
+          type: array
+          title: Items
+      type: object
+      title: OrderFulfillmentRecommendationsResponse
+    OrderFulfillmentReviewItem:
+      properties:
+        site_order_number:
+          type: string
+          title: Site Order Number
+        bitrix_deal_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Bitrix Deal Id
+        crm_stage:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Crm Stage
+        crm_delivery:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Crm Delivery
+        crm_payment_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Crm Payment Status
+        onec_raw_delivery:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Raw Delivery
+        onec_order_date:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Order Date
+        onec_courier:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Courier
+        onec_delivery_cost:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Delivery Cost
+        chat_event:
+          type: string
+          title: Chat Event
+        event_confidence:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Event Confidence
+        evidence_redacted:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Evidence Redacted
+        recommended_stage:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Stage
+        action:
+          type: string
+          title: Action
+        manual_review_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Manual Review Reason
+      type: object
+      required:
+      - site_order_number
+      - chat_event
+      - action
+      title: OrderFulfillmentReviewItem
+    OrderFulfillmentReviewResponse:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/OrderFulfillmentReviewItem'
+          type: array
+          title: Items
+      type: object
+      title: OrderFulfillmentReviewResponse
     PaginatedCandidates:
       properties:
         items:
@@ -9028,6 +11758,11 @@ components:
           type: integer
           title: Live Candidate Count
           default: 0
+        compatibility_models:
+          items:
+            type: string
+          type: array
+          title: Compatibility Models
       type: object
       required:
       - id
@@ -9035,6 +11770,12 @@ components:
       - article
       - status
       title: ProductRow
+    ProductSort:
+      type: string
+      enum:
+      - default
+      - name_asc
+      title: ProductSort
     PropertyComparisonItem:
       properties:
         property_key:
@@ -9602,6 +12343,16 @@ components:
           - type: string
           - type: 'null'
           title: Current Manager Name
+        department_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Ref
+        department_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Name
         planned_payment_date:
           anyOf:
           - type: string
@@ -11625,9 +14376,9 @@ components:
       - payload
       title: WeeklyManagerSalesReportResponse
   securitySchemes:
-    HTTPBasic:
-      type: http
-      scheme: basic
     HTTPBearer:
       type: http
       scheme: bearer
+    HTTPBasic:
+      type: http
+      scheme: basic

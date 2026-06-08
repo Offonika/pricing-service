@@ -270,6 +270,18 @@ def iphone_model_keys(text: str | None) -> set[str]:
         if variant:
             base = f"{base}_{variant.replace(' ', '_')}"
         keys.add(base)
+    for match in re.finditer(
+        r"\biphone\s+(\d{1,2}|x|xs|xr)(s|c|e)?"
+        r"(?:\s*\([^)]*\))?\s*/\s*(?:iphone\s+)?"
+        r"(\d{1,2}|x|xs|xr)(s|c|e)?\s+"
+        r"(pro\s+max|pro|max|plus|mini|air)\b",
+        value,
+    ):
+        left_model, left_suffix, right_model, right_suffix, variant = match.groups()
+        if f"{left_model}{left_suffix or ''}" != f"{right_model}{right_suffix or ''}":
+            continue
+        base = f"iphone_{right_model}{right_suffix or ''}_{variant.replace(' ', '_')}"
+        keys.add(base)
     return keys
 
 
@@ -462,6 +474,25 @@ def strict_model_conflict(left: str | None, right: str | None) -> bool:
     return False
 
 
+def _strong_device_code_tokens(text: str | None) -> set[str]:
+    value = _text(text)
+    tokens: set[str] = set()
+    for match in re.finditer(r"\b[a-z0-9][a-z0-9-]{4,}\b", value):
+        token = re.sub(r"[^a-z0-9]", "", match.group(0))
+        if len(token) < 6:
+            continue
+        if not (re.search(r"[a-z]", token) and re.search(r"\d", token)):
+            continue
+        tokens.add(token)
+    return tokens
+
+
+def _shared_strong_device_code(left: str | None, right: str | None) -> bool:
+    left_codes = _strong_device_code_tokens(left)
+    right_codes = _strong_device_code_tokens(right)
+    return bool(left_codes and right_codes and left_codes & right_codes)
+
+
 def _drop_shadowed_variant_base_keys(keys: set[str]) -> set[str]:
     shadowed: set[str] = set()
     for key in keys:
@@ -471,17 +502,49 @@ def _drop_shadowed_variant_base_keys(keys: set[str]) -> set[str]:
     return keys - shadowed
 
 
+def _multi_model_text(text: str | None) -> bool:
+    value = _text(text)
+    if not value:
+        return False
+    return bool(
+        re.search(
+            r"\biphone\s+(?:\d{1,2}|x|xs|xr)(?:s|c|e)?"
+            r"(?:\s*\([^)]*\))?\s*/\s*(?:iphone\s+)?"
+            r"(?:\d{1,2}|x|xs|xr)(?:s|c|e)?\s+"
+            r"(?:pro\s+max|pro|max|plus|mini|air)\b",
+            value,
+        )
+    )
+
+
+def _model_keys_for_conflict(text: str | None) -> set[str]:
+    keys = phone_model_keys(text)
+    if _multi_model_text(text):
+        return keys
+    return _drop_shadowed_variant_base_keys(keys)
+
+
 def candidate_model_conflict(
     candidate_title: str | None,
     product_title: str | None,
     candidate_text: str | None,
     product_text_value: str | None,
 ) -> bool:
-    candidate_title_keys = _drop_shadowed_variant_base_keys(phone_model_keys(candidate_title))
-    product_title_keys = _drop_shadowed_variant_base_keys(phone_model_keys(product_title))
+    if _shared_strong_device_code(candidate_title, product_title):
+        return False
+    candidate_title_keys = _model_keys_for_conflict(candidate_title)
+    product_title_keys = _model_keys_for_conflict(product_title)
     if candidate_title_keys and product_title_keys:
         return candidate_title_keys.isdisjoint(product_title_keys)
+    if _shared_strong_device_code(candidate_text, product_text_value):
+        return False
     return strict_model_conflict(candidate_text, product_text_value)
+
+
+def _shared_title_model_key(candidate_title: str | None, product_title: str | None) -> bool:
+    candidate_keys = _model_keys_for_conflict(candidate_title)
+    product_keys = _model_keys_for_conflict(product_title)
+    return bool(candidate_keys and product_keys and candidate_keys & product_keys)
 
 
 def external_internal_display_conflict(left: str | None, right: str | None) -> bool:
@@ -1037,5 +1100,6 @@ def basic_candidate_guardrails(item: CompetitorItem, product: Product) -> Candid
         if device_group_conflict(compat_text, product_compat_text):
             return CandidateGuardrailResult(False, "compatibility_device_group_conflict")
         if strict_model_conflict(compat_text, product_compat_text):
-            return CandidateGuardrailResult(False, "compatibility_model_conflict")
+            if not _shared_title_model_key(item_title_text, prod_title_text):
+                return CandidateGuardrailResult(False, "compatibility_model_conflict")
     return CandidateGuardrailResult(True)

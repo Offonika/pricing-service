@@ -15,6 +15,13 @@ from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable
 
+from app.services.online_demand_metrics import (
+    DEFAULT_METRIKA_BASE_URL,
+    DEFAULT_METRIKA_COUNTER_ID,
+    fetch_online_demand_weekly_summary,
+    render_online_demand_block,
+)
+
 DEFAULT_LOCAL_SOURCE_URL = "http://127.0.0.1:18080"
 DEFAULT_LOCAL_ENV_FILE = "/opt/MM/pricing-service/.env"
 DEFAULT_STATE_PATH = "/home/deploy/.openclaw/workspace/.data/weekly-manager-sales/state.json"
@@ -211,6 +218,17 @@ def _parse_chat_ids(raw: str | None) -> list[str]:
     return [chunk.strip() for chunk in raw.split(",") if chunk.strip()]
 
 
+def _parse_bool(raw: str | None, *, default: bool = False) -> bool:
+    if raw is None or str(raw).strip() == "":
+        return default
+    normalized = str(raw).strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
 def _resolve_chat_ids_for_artifact(env: dict[str, str], *, artifact_type: str) -> list[str]:
     normalized_type = artifact_type.strip().upper()
     scoped_chat_ids: str | None = None
@@ -224,6 +242,65 @@ def _resolve_chat_ids_for_artifact(env: dict[str, str], *, artifact_type: str) -
         or env.get("WEEKLY_MANAGER_SALES_REPORT_TELEGRAM_CHAT_ID")
         or env.get("WEEKLY_BUYER_DIGEST_ALERT_TELEGRAM_CHAT_ID")
     )
+
+
+def _parse_manifest_date(value: Any) -> date:
+    if isinstance(value, date):
+        return value
+    return date.fromisoformat(str(value))
+
+
+def _build_online_demand_block(
+    env: dict[str, str],
+    *,
+    manifest: dict[str, Any],
+) -> str | None:
+    token = env.get("WEEKLY_MANAGER_SALES_METRIKA_TOKEN") or env.get("YANDEX_METRIKA_TOKEN")
+    if not token:
+        return None
+    enabled = _parse_bool(env.get("WEEKLY_MANAGER_SALES_ONLINE_DEMAND_ENABLED"), default=True)
+    if not enabled:
+        return None
+
+    period = manifest.get("period") if isinstance(manifest.get("period"), dict) else {}
+    week_start = _parse_manifest_date(period.get("week_start"))
+    week_end = _parse_manifest_date(period.get("week_end"))
+    compare_week_start = _parse_manifest_date(period.get("compare_week_start"))
+    compare_week_end = _parse_manifest_date(period.get("compare_week_end"))
+    summary = fetch_online_demand_weekly_summary(
+        token=token,
+        counter_id=(
+            env.get("WEEKLY_MANAGER_SALES_METRIKA_COUNTER_ID")
+            or env.get("YANDEX_METRIKA_COUNTER_ID")
+            or DEFAULT_METRIKA_COUNTER_ID
+        ),
+        week_start=week_start,
+        week_end=week_end,
+        compare_week_start=compare_week_start,
+        compare_week_end=compare_week_end,
+        base_url=env.get("YANDEX_METRIKA_BASE_URL") or DEFAULT_METRIKA_BASE_URL,
+        timeout=float(env.get("YANDEX_METRIKA_TIMEOUT_SECONDS", "20")),
+    )
+    return render_online_demand_block(summary)
+
+
+def _append_online_demand_to_caption(
+    env: dict[str, str],
+    *,
+    artifact_type: str,
+    caption: str,
+    manifest: dict[str, Any],
+) -> str:
+    if artifact_type.strip().lower() != "sales":
+        return caption
+    try:
+        block = _build_online_demand_block(env, manifest=manifest)
+    except Exception as error:
+        note = f"📊 Онлайн-спрос и конверсия: Метрика временно недоступна ({error})."
+        return f"{caption}\n\n{note}" if caption else note
+    if not block:
+        return caption
+    return f"{caption}\n\n{block}" if caption else block
 
 
 def _artifact_sha256(payload: bytes) -> str:
@@ -641,14 +718,19 @@ def main() -> None:
         manifest: dict[str, Any],
         is_correction: bool,
     ) -> dict[str, Any]:
-        del manifest, title
+        del title
         assert telegram_token is not None
         chat_ids = _resolve_chat_ids_for_artifact(env, artifact_type=artifact_type)
         if not chat_ids:
             raise RuntimeError(
                 f"Missing Telegram chat IDs for weekly manager sales artifact_type={artifact_type}"
             )
-        caption = message
+        caption = _append_online_demand_to_caption(
+            env,
+            artifact_type=artifact_type,
+            caption=message,
+            manifest=manifest,
+        )
         if is_correction:
             caption = "Исправленная версия weekly-отчета.\n\n" + caption
         sent_count = 0

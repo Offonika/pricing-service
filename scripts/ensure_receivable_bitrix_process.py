@@ -112,7 +112,7 @@ CUSTOM_FIELD_SPECS = [
     {
         "logical_key": "current_balance",
         "title": "Сумма просрочки",
-        "type": "string",
+        "type": "double",
         "searchable": False,
         "edit_in_list": True,
     },
@@ -159,6 +159,20 @@ CUSTOM_FIELD_SPECS = [
         "edit_in_list": True,
     },
     {
+        "logical_key": "department_ref",
+        "title": "Тех. ref подразделения 1С",
+        "type": "string",
+        "searchable": True,
+        "edit_in_list": False,
+    },
+    {
+        "logical_key": "department_name",
+        "title": "Подразделение",
+        "type": "string",
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
         "logical_key": "phone",
         "title": "Телефон клиента",
         "type": "string",
@@ -168,7 +182,12 @@ CUSTOM_FIELD_SPECS = [
     {
         "logical_key": "phone_status",
         "title": "Статус телефона",
-        "type": "string",
+        "type": "enumeration",
+        "enum": [
+            {"xml_id": "present", "value": "Есть телефон"},
+            {"xml_id": "missing", "value": "Нет телефона"},
+            {"xml_id": "needs_check", "value": "Телефон требует проверки"},
+        ],
         "searchable": False,
         "edit_in_list": True,
     },
@@ -182,7 +201,14 @@ CUSTOM_FIELD_SPECS = [
     {
         "logical_key": "sms_status",
         "title": "Статус SMS",
-        "type": "string",
+        "type": "enumeration",
+        "enum": [
+            {"xml_id": "planned", "value": "Запланирована"},
+            {"xml_id": "dry_run", "value": "Тестовый режим"},
+            {"xml_id": "sent", "value": "Отправлена"},
+            {"xml_id": "failed", "value": "Ошибка отправки"},
+            {"xml_id": "skipped_no_phone", "value": "Не отправлена: нет телефона"},
+        ],
         "searchable": False,
         "edit_in_list": True,
     },
@@ -215,8 +241,23 @@ CUSTOM_FIELD_SPECS = [
         "edit_in_list": True,
     },
     {
+        "logical_key": "contact_result",
+        "title": "Результат контакта",
+        "type": "enumeration",
+        "enum": [
+            {"xml_id": "not_reached", "value": "Не дозвонился"},
+            {"xml_id": "reached", "value": "Дозвонился"},
+            {"xml_id": "promised_payment", "value": "Клиент обещал оплатить"},
+            {"xml_id": "dispute_check", "value": "Спор / проверка суммы"},
+            {"xml_id": "wrong_phone", "value": "Неверный телефон"},
+            {"xml_id": "refused", "value": "Отказ от оплаты"},
+        ],
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
         "logical_key": "last_contact_comment",
-        "title": "Комментарий / результат контакта",
+        "title": "Комментарий по контакту",
         "type": "text",
         "searchable": False,
         "edit_in_list": True,
@@ -224,7 +265,13 @@ CUSTOM_FIELD_SPECS = [
     {
         "logical_key": "escalation_level",
         "title": "Уровень эскалации",
-        "type": "string",
+        "type": "enumeration",
+        "enum": [
+            {"xml_id": "retail_network_head", "value": "Руководитель розничной сети"},
+            {"xml_id": "finance", "value": "Финансовый контроль"},
+            {"xml_id": "director", "value": "Директор"},
+            {"xml_id": "legal", "value": "Юридический контур"},
+        ],
         "searchable": False,
         "edit_in_list": True,
     },
@@ -268,6 +315,7 @@ DETAIL_SECTION_SPECS = [
         "title": "Клиент",
         "elements": [
             "counterparty_name",
+            "department_name",
             "phone",
             "phone_status",
             "manager_name",
@@ -291,6 +339,7 @@ DETAIL_SECTION_SPECS = [
             "last_sms_at",
             "promised_payment_date",
             "next_action_date",
+            "contact_result",
             "last_contact_comment",
             "escalation_level",
         ],
@@ -383,6 +432,7 @@ def main() -> None:
     field_map = dict(BUILTIN_FIELD_MAPPING)
     for row in custom_fields:
         field_map[row["logical_key"]] = row["field_name"]
+    enum_map = {row["logical_key"]: row["enum_map"] for row in custom_fields if row.get("enum_map")}
     stage_map = {
         key: str(value.get("STATUS_ID") or value.get("statusId") or "")
         for key, value in stages.items()
@@ -396,11 +446,13 @@ def main() -> None:
         },
         "stage_map": stage_map,
         "field_map": field_map,
+        "enum_map": enum_map,
         "env": {
             "RECEIVABLE_BITRIX_ENTITY_TYPE_ID": entity_type_id,
             "RECEIVABLE_BITRIX_CATEGORY_ID": category_id,
             "RECEIVABLE_BITRIX_STAGE_MAP": json.dumps(stage_map, ensure_ascii=False),
             "RECEIVABLE_BITRIX_FIELD_MAP": json.dumps(field_map, ensure_ascii=False),
+            "RECEIVABLE_BITRIX_ENUM_MAP": json.dumps(enum_map, ensure_ascii=False),
         },
     }
     details_mapping = {

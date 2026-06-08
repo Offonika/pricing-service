@@ -17,6 +17,7 @@ from app.models import (
     CompatibilityMappingDecision,
     CompetitorItem,
     CompetitorItemMatch,
+    CompetitorItemUrlAlias,
     DeviceBrandAlias,
     PhoneModel,
     Product,
@@ -294,10 +295,105 @@ def test_product_status_filters_distinguish_candidates_and_matched(
     assert matched.json()["items"][0]["status"] == "manual"
 
 
+def test_product_with_accepted_and_remaining_candidate_stays_in_candidate_queue(
+    matching_client: TestClient, db_session: Session
+) -> None:
+    product = Product(
+        article="P-MULTI-COMP",
+        name="Дисплей для Google Pixel 8",
+        brand="Google",
+        category="Дисплеи",
+        subject="Дисплеи для телефонов",
+    )
+    accepted_item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-GGL-PXL8-MOBA",
+        name="Дисплей Google Pixel 8",
+        item_type="display",
+        category_group="display",
+        item_brand="Google",
+        availability=True,
+    )
+    pending_item = CompetitorItem(
+        competitor="liberti",
+        external_id="470001",
+        name="LCD дисплей Google Pixel 8",
+        item_type="display",
+        category_group="display",
+        item_brand="Google",
+        availability=True,
+    )
+    db_session.add_all([product, accepted_item, pending_item])
+    db_session.flush()
+    db_session.add_all(
+        [
+            CompetitorItemMatch(
+                competitor_item_id=accepted_item.id,
+                product_id=product.id,
+                status=CompetitorItemMatchStatus.ACCEPTED,
+                method=CompetitorItemMatchMethod.MANUAL,
+                final_score=1.0,
+            ),
+            CompetitorItemMatch(
+                competitor_item_id=pending_item.id,
+                product_id=product.id,
+                status=CompetitorItemMatchStatus.SUGGESTED,
+                method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+                final_score=0.9,
+            ),
+        ]
+    )
+    db_session.commit()
+
+    candidates = matching_client.get(
+        "/api/matching/products", params={"status": "candidates"}, auth=_auth()
+    )
+    assert candidates.status_code == 200
+    assert candidates.json()["total"] == 1
+    candidate_row = candidates.json()["items"][0]
+    assert candidate_row["id"] == product.id
+    assert candidate_row["status"] == "candidates"
+    assert candidate_row["accepted_count"] == 1
+    assert candidate_row["suggested_count"] == 1
+
+    matched = matching_client.get(
+        "/api/matching/products", params={"status": "matched"}, auth=_auth()
+    )
+    assert matched.status_code == 200
+    assert matched.json()["total"] == 1
+    assert matched.json()["items"][0]["id"] == product.id
+
+
 def test_product_subject_filter_and_facets(
     matching_client: TestClient, db_session: Session
 ) -> None:
     seeded = _seed(db_session)
+    wrong_category = Product(
+        article="P-WRONG-CATEGORY",
+        name="Аккумулятор для Vivo V29 (V2250) (B-Z7) (Premium)",
+        brand="Vivo",
+        category="Дисплеи",
+        subject="аккумулятор",
+        subject_1c="аккумулятор",
+    )
+    wrong_device_group = Product(
+        article="P-WRONG-DEVICE",
+        name="Дисплей для Apple iPad Pro 10.5 (2017) + тачскрин (белый) (ORIG)",
+        brand="Apple",
+        category="Дисплеи для телефонов",
+        subject="дисплей",
+        subject_1c="дисплей",
+    )
+    phone_display = Product(
+        article="P-PHONE-DISPLAY",
+        name="Дисплей для Apple iPhone 12 + тачскрин (черный)",
+        brand="Apple",
+        category="Дисплеи для телефонов",
+        subject="дисплей",
+        subject_1c="дисплей",
+    )
+    db_session.add_all([wrong_category, wrong_device_group, phone_display])
+    db_session.commit()
 
     response = matching_client.get(
         "/api/matching/products",
@@ -315,6 +411,9 @@ def test_product_subject_filter_and_facets(
         "Аккумуляторы для телефонов",
     }
     assert {item["value"] for item in body["facets"]["categories"]} >= {"Дисплеи", "АКБ"}
+    category_counts = {item["value"]: item["count"] for item in body["facets"]["categories"]}
+    assert category_counts["Дисплеи"] == 1
+    assert category_counts["Дисплеи для телефонов"] == 1
     assert {item["value"] for item in body["facets"]["compatibility_brands"]} >= {
         "apple",
         "samsung",
@@ -331,6 +430,26 @@ def test_product_subject_filter_and_facets(
     assert category_body["items"][0]["id"] == seeded["p2"].id
     assert category_body["items"][0]["category"] == "АКБ"
 
+    display_category_response = matching_client.get(
+        "/api/matching/products",
+        params={"category": "Дисплеи"},
+        auth=_auth(),
+    )
+    assert display_category_response.status_code == 200
+    display_category_body = display_category_response.json()
+    assert display_category_body["total"] == 1
+    assert display_category_body["items"][0]["id"] == seeded["p1"].id
+
+    phone_display_response = matching_client.get(
+        "/api/matching/products",
+        params={"category": "Дисплеи для телефонов"},
+        auth=_auth(),
+    )
+    assert phone_display_response.status_code == 200
+    phone_display_body = phone_display_response.json()
+    assert phone_display_body["total"] == 1
+    assert phone_display_body["items"][0]["id"] == phone_display.id
+
     compatibility_response = matching_client.get(
         "/api/matching/products",
         params={"compatibility_brand": "samsung"},
@@ -340,6 +459,22 @@ def test_product_subject_filter_and_facets(
     compatibility_body = compatibility_response.json()
     assert compatibility_body["total"] == 1
     assert compatibility_body["items"][0]["id"] == seeded["p2"].id
+
+
+def test_products_list_can_sort_by_name_asc(
+    matching_client: TestClient, db_session: Session
+) -> None:
+    seeded = _seed(db_session)
+
+    response = matching_client.get(
+        "/api/matching/products",
+        params={"sort": "name_asc"},
+        auth=_auth(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [item["id"] for item in body["items"]] == [seeded["p2"].id, seeded["p1"].id]
 
 
 def test_products_list_includes_candidate_previews(
@@ -516,6 +651,7 @@ def test_live_candidate_count_and_search_apply_device_guardrails(
     assert "LAPTOP-P11-FLEX" not in skus
     by_sku = {candidate["sku"]: candidate for candidate in search.json()["items"]}
     assert by_sku["TAB-P11-FLEX-1"]["needs_compat_review"] is True
+    assert by_sku["TAB-P11-FLEX-1"]["compatibility_hint"]["status"] == "required"
 
 
 def test_candidate_search_does_not_require_display_quality_words(
@@ -560,6 +696,11 @@ def test_candidate_search_does_not_require_display_quality_words(
     candidates = {candidate["sku"]: candidate for candidate in response.json()["items"]}
     assert "LCD-PMIMSX-CP-B-GX" in candidates
     assert candidates["LCD-PMIMSX-CP-B-GX"]["needs_compat_review"] is False
+    assert candidates["LCD-PMIMSX-CP-B-GX"]["compatibility_hint"]["status"] == "existing"
+    assert "apple iphone xs max" in [
+        value.lower()
+        for value in candidates["LCD-PMIMSX-CP-B-GX"]["compatibility_hint"]["matched_values"]
+    ]
 
 
 def test_candidate_search_treats_slash_compatibility_models_as_alternatives(
@@ -602,6 +743,226 @@ def test_candidate_search_treats_slash_compatibility_models_as_alternatives(
     skus = {candidate["sku"] for candidate in response.json()["items"]}
     assert "FPC-TCN-SPR-7-VOL" in skus
     assert "FPC-TCN-CMN-7-VOL" not in skus
+
+
+def test_candidate_search_allows_untyped_display_and_blocks_oneplus_nord_ce5(
+    matching_client: TestClient, db_session: Session
+) -> None:
+    product = Product(
+        article="039882",
+        name="Дисплей для OnePlus 5 + тачскрин (черный) (OLED)",
+        category="Дисплеи для телефонов",
+        subject="дисплей",
+    )
+    moba_item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-OPL-5-CP-B-OR",
+        name="Дисплей для OnePlus 5 в сборе с тачскрином Черный - OR",
+        url="https://moba.ru/catalog/displei/7779/",
+        item_type=None,
+        category_group=None,
+        availability=True,
+    )
+    nord_item = CompetitorItem(
+        competitor="liberti",
+        external_id="472505",
+        name="LCD дисплей для OnePlus Nord CE5 в сборе с тачскрином (черный)OR 100%",
+        item_type="display",
+        category_group="display",
+        parsed_device_brand="oneplus",
+        parsed_device_model="5",
+        attrs_model="5",
+        availability=True,
+    )
+    five_t_item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-OPL-5T-CP-B-LED",
+        name="Дисплей для OnePlus 5T (A5010) в сборе с тачскрином Черный - (OLED)",
+        item_type="display",
+        category_group="display",
+        parsed_device_brand="oneplus",
+        parsed_device_model="5",
+        parsed_device_variant="t",
+        attrs_model="5T",
+        availability=True,
+    )
+    db_session.add_all([product, moba_item, nord_item, five_t_item])
+    db_session.commit()
+
+    response = matching_client.get(
+        f"/api/matching/products/{product.id}/candidate-search",
+        auth=_auth(),
+    )
+
+    assert response.status_code == 200
+    skus = {candidate["sku"] for candidate in response.json()["items"]}
+    assert "LCD-OPL-5-CP-B-OR" in skus
+    assert "472505" not in skus
+    assert "LCD-OPL-5T-CP-B-LED" not in skus
+
+
+def test_candidate_search_full_query_ignores_display_service_words(
+    matching_client: TestClient, db_session: Session
+) -> None:
+    product = Product(
+        article="062490",
+        name="Дисплей для OPPO A78 4G (CPH2565) + тачскрин (черный) (In-Cell)",
+        category="Дисплеи для телефонов",
+        subject="дисплей",
+    )
+    moba_item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-OPP-A78-4G-CP-B-IC",
+        name="Дисплей для OPPO A78 4G (CPH2565) Черный - In-Cell",
+        url="https://poiskzip.ru/redirect/1134761",
+        item_type=None,
+        category_group=None,
+        availability=True,
+    )
+    wrong_item = CompetitorItem(
+        competitor="liberti",
+        external_id="460996",
+        name="LCD дисплей для Oppo A18/A38 (CPH2591/CPH2579) с тачскрином (черный) 100% OR",
+        item_type="display",
+        category_group="display",
+        availability=True,
+    )
+    flex_item = CompetitorItem(
+        competitor="moba",
+        external_id="FPC-OPP-A78-4G-VOL",
+        name="Шлейф для OPPO A78 4G (CPH2565) на кнопку включения и кнопки громкости",
+        item_type="flex",
+        category_group="flex",
+        availability=True,
+    )
+    db_session.add_all([product, moba_item, wrong_item, flex_item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemUrlAlias(
+            competitor_item_id=moba_item.id,
+            competitor="moba",
+            alias_url="https://moba.ru/catalog/displei/101185/?utm_referrer=poiskzip.ru",
+            normalized_url="https://moba.ru/catalog/displei/101185",
+            url_kind="resolved",
+            catalog_id="101185",
+            redirect_id="1134761",
+            resolved_from_url="https://poiskzip.ru/redirect/1134761",
+        )
+    )
+    db_session.commit()
+
+    response = matching_client.get(
+        f"/api/matching/products/{product.id}/candidate-search",
+        params={"q": "дисплей для OPPO A78 4G (CPH2565) в сборе с тачскрином Черный - (In-Cell)"},
+        auth=_auth(),
+    )
+
+    assert response.status_code == 200
+    skus = {candidate["sku"] for candidate in response.json()["items"]}
+    assert "LCD-OPP-A78-4G-CP-B-IC" in skus
+    assert "460996" not in skus
+
+    url_response = matching_client.get(
+        f"/api/matching/products/{product.id}/candidate-search",
+        params={"q": "https://moba.ru/catalog/displei/101185/"},
+        auth=_auth(),
+    )
+
+    assert url_response.status_code == 200
+    url_skus = {candidate["sku"] for candidate in url_response.json()["items"]}
+    assert "LCD-OPP-A78-4G-CP-B-IC" in url_skus
+    assert "FPC-OPP-A78-4G-VOL" not in url_skus
+
+    global_url_response = matching_client.get(
+        "/api/matching/candidates",
+        params={"q": "https://moba.ru/catalog/displei/101185/"},
+        auth=_auth(),
+    )
+
+    assert global_url_response.status_code == 200
+    assert global_url_response.json()["items"][0]["sku"] == "LCD-OPP-A78-4G-CP-B-IC"
+
+
+def test_candidate_search_precise_sku_bypasses_inferred_item_type_filter(
+    matching_client: TestClient, db_session: Session
+) -> None:
+    product = Product(
+        article="P-DISPLAY-STRICT",
+        name="Дисплей для Xiaomi Redmi Note 12S (черный)",
+        category="Дисплеи для телефонов",
+        subject="дисплей",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-XMI-RMN12S-B-OR",
+        name="Дисплей для Xiaomi Redmi Note 12S Черный - OR",
+        item_type="screen",
+        category_group="display",
+        availability=True,
+    )
+    db_session.add_all([product, item])
+    db_session.commit()
+
+    response = matching_client.get(
+        f"/api/matching/products/{product.id}/candidate-search",
+        params={"q": "LCD-XMI-RMN12S-B-OR"},
+        auth=_auth(),
+    )
+
+    assert response.status_code == 200
+    assert response.json()["total"] == 1
+    assert response.json()["items"][0]["sku"] == "LCD-XMI-RMN12S-B-OR"
+
+
+def test_candidate_search_allows_sim_holder_when_device_code_matches(
+    matching_client: TestClient, db_session: Session
+) -> None:
+    huawei_product = Product(
+        article="063512",
+        name="Держатель сим-карты для Huawei Nova Y71 (MGA-LX9N) (черный)",
+        category="Держатели сим-карт для телефонов",
+        subject="держатель сим-карты",
+    )
+    huawei_item = CompetitorItem(
+        competitor="moba",
+        external_id="HLD-SIM-HUW-NVA-Y70-B",
+        name="Держатель SIM для Huawei Nova Y70/Y70 Plus/Y71 (MGA-LX9N) Черный",
+        item_type="other",
+        category_group="аксессуары",
+        availability=True,
+        first_seen_at=datetime(2026, 5, 2, tzinfo=timezone.utc),
+    )
+    oppo_product = Product(
+        article="066991",
+        name="Держатель сим-карты для OPPO A3x (CPH2641) (голубой)",
+        category="Держатели сим-карт для телефонов",
+        subject="держатель сим-карты",
+    )
+    oppo_item = CompetitorItem(
+        competitor="moba",
+        external_id="HLD-SIM-OPP-A3X-4G-LHT-BLU",
+        name="Держатель SIM для OPPO A3x 4G (CPH2641) Голубой",
+        item_type="other",
+        category_group="аксессуары",
+        availability=True,
+        first_seen_at=datetime(2026, 5, 2, tzinfo=timezone.utc),
+    )
+    db_session.add_all([huawei_product, huawei_item, oppo_product, oppo_item])
+    db_session.commit()
+
+    for product, item in (
+        (huawei_product, huawei_item),
+        (oppo_product, oppo_item),
+    ):
+        response = matching_client.get(
+            f"/api/matching/products/{product.id}/candidate-search",
+            params={"q": item.external_id},
+            auth=_auth(),
+        )
+
+        assert response.status_code == 200
+        candidates = {candidate["sku"]: candidate for candidate in response.json()["items"]}
+        assert item.external_id in candidates
 
 
 def test_products_list_uses_cached_live_candidate_count(
@@ -771,6 +1132,136 @@ def test_candidate_search_uses_model_compatibility_as_default_fallback(
     assert response.status_code == 200
     skus = {candidate["sku"] for candidate in response.json()["items"]}
     assert "LCD-PMIMSX-CP-B-GX" in skus
+
+
+def test_candidate_search_prefers_title_model_over_parser_base_compatibility(
+    matching_client: TestClient, db_session: Session
+) -> None:
+    product = Product(
+        article="037404",
+        name="Дисплей для Apple iPhone 6s + тачскрин (белый) (Medium)",
+        category="Дисплеи для телефонов",
+        subject="дисплей",
+        subject_1c="дисплей",
+        display_quality="Copy Medium",
+        quality="Copy Medium",
+        quality_raw="Optima",
+        display_type="In-Cell",
+    )
+    iphone6 = PhoneModel(brand="apple", model_name="iphone 6")
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-PMIS600-CP-W",
+        name="Дисплей для iPhone 6S в сборе с тачскрином Белый - Оптима",
+        normalized_title="Дисплей для iPhone 6S в сборе с тачскрином Белый",
+        item_type="display",
+        category_group="display",
+        parsed_device_brand="apple",
+        parsed_device_model="iphone 6",
+        attrs_model="iPhone 6S",
+        attrs_quality="Original",
+        screen_quality_grade="UNKNOWN",
+        attrs_color="Белый",
+        color="Белый",
+        availability=True,
+    )
+    plus_item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-PMISP600-CP-W",
+        name="Дисплей для iPhone 6S Plus в сборе с тачскрином Белый - Оптима",
+        normalized_title="Дисплей для iPhone 6S Plus в сборе с тачскрином Белый",
+        item_type="display",
+        category_group="display",
+        parsed_device_brand="apple",
+        parsed_device_model="iphone 6",
+        attrs_model="iPhone 6S Plus",
+        availability=True,
+    )
+    db_session.add_all([product, iphone6, item, plus_item])
+    db_session.flush()
+    db_session.add_all(
+        [
+            CompetitorItemCompatibility(
+                competitor_item_id=item.id,
+                phone_model_id=iphone6.id,
+                device_brand="apple",
+                device_model="iphone 6",
+                source="parser",
+            ),
+            CompetitorItemCompatibility(
+                competitor_item_id=plus_item.id,
+                phone_model_id=iphone6.id,
+                device_brand="apple",
+                device_model="iphone 6",
+                source="parser",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    response = matching_client.get(
+        f"/api/matching/products/{product.id}/candidate-search",
+        params={"q": "LCD-PMIS600-CP-W"},
+        auth=_auth(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items"][0]["sku"] == "LCD-PMIS600-CP-W"
+    skus = {candidate["sku"] for candidate in body["items"]}
+    assert "LCD-PMISP600-CP-W" not in skus
+
+
+def test_candidate_search_allows_iphone_slash_combo_display(
+    matching_client: TestClient, db_session: Session
+) -> None:
+    product = Product(
+        article="064280",
+        name=(
+            "Дисплей для Apple iPhone 12 / iPhone 12 Pro + тачскрин "
+            "(черный) (GX ORIG) (Hard Oled)"
+        ),
+        category="Дисплеи для телефонов",
+        subject="дисплей",
+        subject_1c="дисплей",
+        display_quality="Copy High",
+        quality="Copy High",
+        quality_raw="High",
+        display_type="OLED",
+        display_has_frame=True,
+        color="черный",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-PMI120-CP-B-GX",
+        name=(
+            "Дисплей для iPhone 12/12 Pro (A2403/A2407) в сборе с тачскрином "
+            "Черный - GX (Hard OLED) (площадка под IC)"
+        ),
+        normalized_title="Дисплей для iPhone 12/12 Pro в сборе с тачскрином Черный GX",
+        item_type="display",
+        category_group="display",
+        parsed_device_brand="apple",
+        parsed_device_model="iphone 12",
+        attrs_model="12/12 Pro",
+        attrs_quality="GX",
+        screen_quality_grade="GX",
+        attrs_color="Черный",
+        color="Черный",
+        availability=True,
+    )
+    db_session.add_all([product, item])
+    db_session.commit()
+
+    response = matching_client.get(
+        f"/api/matching/products/{product.id}/candidate-search",
+        params={"q": "LCD-PMI120-CP-B-GX"},
+        auth=_auth(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["items"][0]["sku"] == "LCD-PMI120-CP-B-GX"
 
 
 def test_candidate_search_allows_samsung_s20_text_overlap_when_compat_ids_differ(
@@ -1058,6 +1549,19 @@ def test_accept_new_item_infers_missing_compatibility_from_product_model(
     )
     db_session.commit()
 
+    search = matching_client.get(
+        f"/api/matching/products/{product.id}/candidate-search",
+        params={"q": "Realme C85 4G"},
+        auth=_auth(),
+    )
+    assert search.status_code == 200
+    candidates = {candidate["sku"]: candidate for candidate in search.json()["items"]}
+    assert candidates["HLD-SIM-REAL-C85-4G-B"]["compatibility_hint"]["status"] == "inferred_model"
+    assert "realme c85 4g (rmx5566)" in [
+        value.lower()
+        for value in candidates["HLD-SIM-REAL-C85-4G-B"]["compatibility_hint"]["matched_values"]
+    ]
+
     accepted = matching_client.post(
         f"/api/matching/products/{product.id}/matches",
         json={"competitor_item_id": item.id},
@@ -1072,6 +1576,97 @@ def test_accept_new_item_infers_missing_compatibility_from_product_model(
     )
     assert compat.phone_model_id == phone_model.id
     assert compat.source == "manual_accept_inferred"
+
+
+def test_accept_new_router_battery_infers_compatibility_from_shared_code(
+    matching_client: TestClient, db_session: Session
+) -> None:
+    product = Product(
+        article="041567",
+        name="Аккумулятор для Huawei Wi-Fi роутера E5573 / E5577 (HB434666RBC)",
+        category="Аккумуляторы",
+        subject="аккумулятор",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BTT-HUW-HB434666RBC",
+        name="Аккумулятор для Huawei E5573 Wi-Fi роутер (HB434666RBC)",
+        item_type="battery",
+        category_group="battery",
+        availability=True,
+        first_seen_at=datetime(2026, 5, 2, tzinfo=timezone.utc),
+    )
+    db_session.add_all([product, item])
+    db_session.commit()
+
+    search = matching_client.get(
+        f"/api/matching/products/{product.id}/candidate-search",
+        auth=_auth(),
+    )
+    assert search.status_code == 200
+    candidates = {candidate["sku"]: candidate for candidate in search.json()["items"]}
+    assert candidates["BTT-HUW-HB434666RBC"]["needs_compat_review"] is False
+    assert candidates["BTT-HUW-HB434666RBC"]["compatibility_hint"]["status"] == "inferred_code"
+    assert (
+        "HB434666RBC" in candidates["BTT-HUW-HB434666RBC"]["compatibility_hint"]["matched_values"]
+    )
+
+    accepted = matching_client.post(
+        f"/api/matching/products/{product.id}/matches",
+        json={"competitor_item_id": item.id},
+        auth=_auth(),
+    )
+
+    assert accepted.status_code == 200
+    compat = (
+        db_session.query(CompetitorItemCompatibility)
+        .filter(CompetitorItemCompatibility.competitor_item_id == item.id)
+        .one()
+    )
+    assert compat.phone_model_id is None
+    assert compat.device_model == "HB434666RBC"
+    assert compat.source == "manual_accept_code_overlap"
+
+
+def test_accept_new_item_without_model_or_shared_code_still_requires_compatibility(
+    matching_client: TestClient, db_session: Session
+) -> None:
+    product = Product(
+        article="047312",
+        name="Аккумулятор для OnePlus 8 Pro (BLP759)",
+        category="Аккумуляторы",
+        subject="аккумулятор",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BTT-ONE-NOCODE",
+        name="Аккумулятор для OnePlus 8 Pro",
+        item_type="battery",
+        category_group="battery",
+        availability=True,
+        first_seen_at=datetime(2026, 5, 2, tzinfo=timezone.utc),
+    )
+    db_session.add_all([product, item])
+    db_session.commit()
+
+    search = matching_client.get(
+        f"/api/matching/products/{product.id}/candidate-search",
+        params={"q": "OnePlus 8 Pro"},
+        auth=_auth(),
+    )
+    assert search.status_code == 200
+    candidates = {candidate["sku"]: candidate for candidate in search.json()["items"]}
+    assert candidates["BTT-ONE-NOCODE"]["needs_compat_review"] is True
+    assert candidates["BTT-ONE-NOCODE"]["compatibility_hint"]["status"] == "required"
+
+    accepted = matching_client.post(
+        f"/api/matching/products/{product.id}/matches",
+        json={"competitor_item_id": item.id},
+        auth=_auth(),
+    )
+
+    assert accepted.status_code == 409
+    assert accepted.json()["detail"]["error"] == "compatibility_required"
 
 
 def test_candidate_search_uses_product_tokens_by_default(

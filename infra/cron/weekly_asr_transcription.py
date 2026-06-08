@@ -14,6 +14,12 @@ sys.path.insert(0, os.path.dirname(__file__))
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "scripts"))
 
 try:
+    sys.stdout.reconfigure(line_buffering=True)
+    sys.stderr.reconfigure(line_buffering=True)
+except AttributeError:
+    pass
+
+try:
     from .asr_runtime import ensure_runtime
     from .calls_unified_projection import build_asr_candidates_sql, build_asr_window_stats_sql
 except ImportError:  # pragma: no cover - script execution path

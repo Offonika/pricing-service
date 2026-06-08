@@ -9,6 +9,8 @@ export type MatchStatus =
   | "uncertain"
   | "multiple";
 
+export type ProductSort = "default" | "name_asc";
+
 export interface CurrentMatch {
   competitor_item_id?: number;
   competitor_id?: number;
@@ -36,6 +38,16 @@ export interface ProductRow {
   suggested_count?: number;
   review_count?: number;
   live_candidate_count?: number;
+  compatibility_models?: string[];
+}
+
+export type CompatibilityHintStatus = "existing" | "inferred_model" | "inferred_code" | "required" | "not_required";
+
+export interface CompatibilityHint {
+  status: CompatibilityHintStatus;
+  label: string;
+  detail: string;
+  matched_values: string[];
 }
 
 export interface Candidate {
@@ -58,6 +70,7 @@ export interface Candidate {
   score?: number;
   reason?: string;
   needs_compat_review?: boolean;
+  compatibility_hint?: CompatibilityHint;
   last_seen_at?: string;
   attrs?: Record<string, unknown>;
   property_summary?: PropertySummary | null;

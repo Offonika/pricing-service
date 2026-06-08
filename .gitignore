@@ -14,6 +14,7 @@ env/
 # Environment / secrets
 .env
 .env.*.local
+.env.bak*
 
 # Tooling caches
 .mypy_cache/
@@ -40,5 +41,24 @@ Thumbs.db
 *.db
 data/
 
-# Local research artifacts
-.local/1c-config/
+# Local research/runtime artifacts
+.artifacts/
+.local/
+.venv*/
+embeddings/
+reports/
+
+# Generated or imported office/business exports
+docs/**/*.docx
+docs/**/*.xls
+docs/**/*.xlsx
+docs/**/*.mxl
+docs/_*
+
+# Accidental shell argument fragments
+--*
+LOCAL_LLM_CHAT_MODEL=*
+python
+*, sql)*
+*conn.execute(text(sql))*
+PY

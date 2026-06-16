@@ -1211,6 +1211,18 @@ def test_candidate_search_prefers_title_model_over_parser_base_compatibility(
     skus = {candidate["sku"] for candidate in body["items"]}
     assert "LCD-PMISP600-CP-W" not in skus
 
+    prefixed_response = matching_client.get(
+        f"/api/matching/products/{product.id}/candidate-search",
+        params={"q": "Артикул: LCD-PMIS600-CP-W"},
+        auth=_auth(),
+    )
+
+    assert prefixed_response.status_code == 200
+    prefixed_body = prefixed_response.json()
+    assert prefixed_body["items"][0]["sku"] == "LCD-PMIS600-CP-W"
+    prefixed_skus = {candidate["sku"] for candidate in prefixed_body["items"]}
+    assert "LCD-PMISP600-CP-W" not in prefixed_skus
+
 
 def test_candidate_search_allows_iphone_slash_combo_display(
     matching_client: TestClient, db_session: Session
@@ -1262,6 +1274,15 @@ def test_candidate_search_allows_iphone_slash_combo_display(
     assert response.status_code == 200
     body = response.json()
     assert body["items"][0]["sku"] == "LCD-PMI120-CP-B-GX"
+
+    prefixed_response = matching_client.get(
+        f"/api/matching/products/{product.id}/candidate-search",
+        params={"q": "Артикул: LCD-PMI120-CP-B-GX"},
+        auth=_auth(),
+    )
+
+    assert prefixed_response.status_code == 200
+    assert prefixed_response.json()["items"][0]["sku"] == "LCD-PMI120-CP-B-GX"
 
 
 def test_candidate_search_allows_samsung_s20_text_overlap_when_compat_ids_differ(
@@ -1926,6 +1947,203 @@ def test_reject_hides_only_for_current_product(
     assert visible.status_code == 200
     assert visible.json()["total"] == 1
     assert visible.json()["items"][0]["status"] == "rejected"
+
+
+def test_bulk_reject_hides_multiple_candidates_and_skips_locked(
+    matching_client: TestClient, db_session: Session
+) -> None:
+    seeded = _seed(db_session)
+    product = seeded["p1"]
+    item1 = seeded["item1"]
+    item2 = seeded["item2"]
+    item3 = seeded["item3"]
+    missing_id = 999999
+
+    response = matching_client.post(
+        f"/api/matching/products/{product.id}/reject-bulk",
+        json={
+            "competitor_item_ids": [item1.id, item3.id, item2.id, missing_id],
+            "reason": "bulk cleanup",
+        },
+        auth=_auth(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["rejected_count"] == 2
+    assert body["skipped_count"] == 2
+    reasons = {row["competitor_item_id"]: row["reason"] for row in body["items"]}
+    assert reasons[item1.id] == "rejected"
+    assert reasons[item3.id] == "rejected"
+    assert reasons[item2.id] == "locked"
+    assert reasons[missing_id] == "not_found"
+
+    hidden = matching_client.get(
+        f"/api/matching/products/{product.id}/candidate-search",
+        params={"q": "iphone 11", "item_type": "display"},
+        auth=_auth(),
+    )
+    assert hidden.status_code == 200
+    hidden_ids = {row["competitor_item_id"] for row in hidden.json()["items"]}
+    assert item1.id not in hidden_ids
+    assert item3.id not in hidden_ids
+
+    visible = matching_client.get(
+        f"/api/matching/products/{product.id}/candidate-search",
+        params={"q": "iphone 11", "item_type": "display", "include_rejected": True},
+        auth=_auth(),
+    )
+    assert visible.status_code == 200
+    statuses = {
+        row["competitor_item_id"]: row["status"]
+        for row in visible.json()["items"]
+        if row["competitor_item_id"] in {item1.id, item3.id}
+    }
+    assert statuses == {item1.id: "rejected", item3.id: "rejected"}
+
+
+def test_bulk_reject_skips_current_match(matching_client: TestClient, db_session: Session) -> None:
+    seeded = _seed(db_session)
+    product = seeded["p1"]
+    item = seeded["item1"]
+
+    accepted = matching_client.post(
+        f"/api/matching/products/{product.id}/matches",
+        json={"competitor_item_id": item.id},
+        auth=_auth(),
+    )
+    assert accepted.status_code == 200
+
+    response = matching_client.post(
+        f"/api/matching/products/{product.id}/reject-bulk",
+        json={"competitor_item_ids": [item.id], "reason": "bulk cleanup"},
+        auth=_auth(),
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["rejected_count"] == 0
+    assert body["skipped_count"] == 1
+    assert body["items"][0]["reason"] == "current"
+
+    history = matching_client.get(f"/api/matching/products/{product.id}/history", auth=_auth())
+    assert history.status_code == 200
+    assert [row["action"] for row in history.json()["items"]] == ["accept"]
+
+
+def test_bulk_reject_is_idempotent_for_already_rejected_candidate(
+    matching_client: TestClient, db_session: Session
+) -> None:
+    seeded = _seed(db_session)
+    product = seeded["p1"]
+    item = seeded["item3"]
+
+    first = matching_client.post(
+        f"/api/matching/products/{product.id}/reject-bulk",
+        json={"competitor_item_ids": [item.id], "reason": "bulk cleanup"},
+        auth=_auth(),
+    )
+    assert first.status_code == 200
+    assert first.json()["rejected_count"] == 1
+
+    second = matching_client.post(
+        f"/api/matching/products/{product.id}/reject-bulk",
+        json={"competitor_item_ids": [item.id], "reason": "bulk cleanup"},
+        auth=_auth(),
+    )
+    assert second.status_code == 200
+    body = second.json()
+    assert body["rejected_count"] == 0
+    assert body["skipped_count"] == 1
+    assert body["items"][0]["reason"] == "already_rejected"
+
+    history = matching_client.get(f"/api/matching/products/{product.id}/history", auth=_auth())
+    assert history.status_code == 200
+    assert [row["action"] for row in history.json()["items"]] == ["reject"]
+
+
+def test_revoke_rejected_candidate_returns_it_to_search(
+    matching_client: TestClient, db_session: Session
+) -> None:
+    seeded = _seed(db_session)
+    product = seeded["p1"]
+    item = seeded["item3"]
+
+    rejected = matching_client.post(
+        f"/api/matching/products/{product.id}/reject-bulk",
+        json={"competitor_item_ids": [item.id], "reason": "wrong candidate"},
+        auth=_auth(),
+    )
+    assert rejected.status_code == 200
+
+    hidden = matching_client.get(
+        f"/api/matching/products/{product.id}/candidate-search",
+        params={"q": "белый"},
+        auth=_auth(),
+    )
+    assert hidden.status_code == 200
+    assert hidden.json()["total"] == 0
+
+    revoked = matching_client.post(
+        f"/api/matching/products/{product.id}/revoke",
+        json={"competitor_item_id": item.id, "reason": "mistaken reject"},
+        auth=_auth(),
+    )
+    assert revoked.status_code == 200
+
+    visible = matching_client.get(
+        f"/api/matching/products/{product.id}/candidate-search",
+        params={"q": "белый"},
+        auth=_auth(),
+    )
+    assert visible.status_code == 200
+    assert visible.json()["total"] == 1
+    assert visible.json()["items"][0]["competitor_item_id"] == item.id
+
+    history = matching_client.get(f"/api/matching/products/{product.id}/history", auth=_auth())
+    assert history.status_code == 200
+    history_items = history.json()["items"]
+    assert [row["action"] for row in history_items] == ["revoke", "reject"]
+    assert history_items[0]["previous_status"] == "rejected"
+
+
+def test_revoke_rejected_candidate_restores_previous_suggestion_status(
+    matching_client: TestClient, db_session: Session
+) -> None:
+    seeded = _seed(db_session)
+    product = seeded["p1"]
+    item = seeded["item1"]
+
+    rejected = matching_client.post(
+        f"/api/matching/products/{product.id}/reject-bulk",
+        json={"competitor_item_ids": [item.id], "reason": "wrong candidate"},
+        auth=_auth(),
+    )
+    assert rejected.status_code == 200
+
+    rejected_search = matching_client.get(
+        f"/api/matching/products/{product.id}/candidate-search",
+        params={"q": "черный", "include_rejected": True},
+        auth=_auth(),
+    )
+    assert rejected_search.status_code == 200
+    assert rejected_search.json()["items"][0]["status"] == "rejected"
+
+    revoked = matching_client.post(
+        f"/api/matching/products/{product.id}/revoke",
+        json={"competitor_item_id": item.id, "reason": "mistaken reject"},
+        auth=_auth(),
+    )
+    assert revoked.status_code == 200
+
+    restored = matching_client.get(
+        f"/api/matching/products/{product.id}/candidate-search",
+        params={"q": "черный"},
+        auth=_auth(),
+    )
+    assert restored.status_code == 200
+    assert restored.json()["items"][0]["competitor_item_id"] == item.id
+    assert restored.json()["items"][0]["status"] == "suggested"
 
 
 def test_accept_locked_item_returns_conflict(

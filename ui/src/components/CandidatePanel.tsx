@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import {
   acceptItemMatch,
+  bulkRejectItemMatches,
   fetchCandidates,
   fetchMatchHistory,
   fetchPropertyComparison,
@@ -26,6 +27,11 @@ interface SelectedCandidateState {
 interface CandidatePageState {
   productId: number | null;
   value: number;
+}
+
+interface BulkSelectionState {
+  scope: string;
+  value: Set<number>;
 }
 
 type CompareTab = "summary" | "properties" | "history";
@@ -203,6 +209,13 @@ function canAcceptCandidate(candidate: Candidate | undefined) {
   return !["accepted", "current", "locked", "rejected"].includes(candidate.status || "");
 }
 
+const BULK_REJECTABLE_STATUSES = new Set(["available", "suggested", "needs_review", "ambiguous"]);
+
+function canBulkRejectCandidate(candidate: Candidate | undefined) {
+  if (!candidate?.competitor_item_id) return false;
+  return BULK_REJECTABLE_STATUSES.has(candidate.status || "available");
+}
+
 interface CandidatePanelProps {
   onNextProduct?: () => void;
   onAfterDecision?: () => void;
@@ -234,12 +247,55 @@ export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePane
   const [candidateStatus, setCandidateStatus] = useState(savedCandidatePrefs.candidateStatus);
   const [isWideList, setIsWideList] = useState(savedCandidatePrefs.isWideList);
   const [compareTab, setCompareTab] = useState<CompareTab>("summary");
+  const [bulkSelectionState, setBulkSelectionState] = useState<BulkSelectionState>(() => ({
+    scope: "",
+    value: new Set(),
+  }));
   const searchDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const selectAllRef = useRef<HTMLInputElement | null>(null);
   const pageSize = 25;
 
   const search = searchState.productId === selectedProductId ? searchState.value : "";
   const selectedCandidateId = selectedCandidateState.productId === selectedProductId ? selectedCandidateState.value : null;
   const page = pageState.productId === selectedProductId ? pageState.value : 1;
+  const bulkSelectionScope = useMemo(
+    () =>
+      [
+        selectedProductId ?? "",
+        page,
+        pageSize,
+        debouncedSearch,
+        onlyInStock,
+        includeRejected,
+        source,
+        itemType,
+        categoryGroup,
+        brand,
+        quality,
+        color,
+        model,
+        priceMin,
+        priceMax,
+        candidateStatus,
+      ].join("|"),
+    [
+      brand,
+      candidateStatus,
+      categoryGroup,
+      color,
+      debouncedSearch,
+      includeRejected,
+      itemType,
+      model,
+      onlyInStock,
+      page,
+      priceMax,
+      priceMin,
+      selectedProductId,
+      source,
+      quality,
+    ]
+  );
   const setSelectedCandidateId = useCallback((candidateId: number | null) => {
     setSelectedCandidateState({ productId: selectedProductId, value: candidateId });
   }, [selectedProductId]);
@@ -352,7 +408,24 @@ export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePane
   const total = data?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(total / pageSize));
   const canAcceptSelected = canAcceptCandidate(selectedCandidate);
+  const canRevokeSelected = selectedCandidate?.status === "current" || selectedCandidate?.status === "rejected";
   const selectedCandidateItemId = selectedCandidate?.competitor_item_id;
+  const visibleRejectableIds = useMemo(
+    () =>
+      items
+        .filter(canBulkRejectCandidate)
+        .map((candidate) => candidate.competitor_item_id)
+        .filter((candidateId): candidateId is number => typeof candidateId === "number"),
+    [items]
+  );
+  const bulkSelectedIds = useMemo(() => {
+    if (bulkSelectionState.scope !== bulkSelectionScope) return new Set<number>();
+    const visibleIds = new Set(visibleRejectableIds);
+    return new Set([...bulkSelectionState.value].filter((candidateId) => visibleIds.has(candidateId)));
+  }, [bulkSelectionScope, bulkSelectionState, visibleRejectableIds]);
+  const selectedBulkCount = bulkSelectedIds.size;
+  const allVisibleRejectableSelected =
+    visibleRejectableIds.length > 0 && visibleRejectableIds.every((candidateId) => bulkSelectedIds.has(candidateId));
   const {
     data: propertyData,
     isError: isPropertyError,
@@ -365,6 +438,12 @@ export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePane
       compareTab === "properties" &&
       Boolean(selectedProductId && selectedCandidateItemId),
   });
+
+  useEffect(() => {
+    if (!selectAllRef.current) return;
+    selectAllRef.current.indeterminate = selectedBulkCount > 0 && !allVisibleRejectableSelected;
+  }, [allVisibleRejectableSelected, selectedBulkCount]);
+
   const hasSearch = Boolean(search.trim() || debouncedSearch.trim());
   const hasActiveFilters = Boolean(
     hasSearch ||
@@ -404,6 +483,7 @@ export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePane
     mutationFn: (candidate: Candidate) => rejectItemMatch(selectedProductId!, candidate.competitor_item_id!),
     onSuccess: () => {
       setSelectedCandidateId(null);
+      setBulkSelectionState({ scope: bulkSelectionScope, value: new Set() });
       invalidateMatching();
       toast.success("Кандидат отклонен");
       onAfterDecision?.();
@@ -411,13 +491,28 @@ export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePane
     onError: (error) => toast.error(matchingErrorMessage(error, "Не удалось отклонить кандидата")),
   });
 
+  const bulkRejectMutation = useMutation({
+    mutationFn: (candidateIds: number[]) => bulkRejectItemMatches(selectedProductId!, candidateIds, "bulk_ui_reject"),
+    onSuccess: (response) => {
+      setSelectedCandidateId(null);
+      setBulkSelectionState({ scope: bulkSelectionScope, value: new Set() });
+      invalidateMatching();
+      const skippedText = response.skipped_count ? `, пропущено ${response.skipped_count}` : "";
+      toast.success(`Отклонено ${response.rejected_count}${skippedText}`);
+      onAfterDecision?.();
+    },
+    onError: (error) => toast.error(matchingErrorMessage(error, "Не удалось отклонить выбранных кандидатов")),
+  });
+
   const revokeMutation = useMutation({
     mutationFn: (candidate: Candidate) => revokeItemMatch(selectedProductId!, candidate.competitor_item_id!),
-    onSuccess: () => {
+    onSuccess: (_response, candidate) => {
+      setSelectedCandidateId(null);
+      setBulkSelectionState({ scope: bulkSelectionScope, value: new Set() });
       invalidateMatching();
-      toast.success("Сопоставление снято");
+      toast.success(candidate.status === "rejected" ? "Отклонение снято" : "Сопоставление снято");
     },
-    onError: (error) => toast.error(matchingErrorMessage(error, "Не удалось снять сопоставление")),
+    onError: (error) => toast.error(matchingErrorMessage(error, "Не удалось снять действие")),
   });
 
   useEffect(() => {
@@ -511,9 +606,46 @@ export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePane
     rejectMutation.mutate(selectedCandidate);
   };
 
+  const toggleBulkCandidate = (candidateId: number, checked: boolean) => {
+    setBulkSelectionState((previous) => {
+      const next = previous.scope === bulkSelectionScope ? new Set(previous.value) : new Set<number>();
+      if (checked) {
+        next.add(candidateId);
+      } else {
+        next.delete(candidateId);
+      }
+      return { scope: bulkSelectionScope, value: next };
+    });
+  };
+
+  const toggleAllVisibleRejectable = (checked: boolean) => {
+    setBulkSelectionState((previous) => {
+      const next = previous.scope === bulkSelectionScope ? new Set(previous.value) : new Set<number>();
+      visibleRejectableIds.forEach((candidateId) => {
+        if (checked) {
+          next.add(candidateId);
+        } else {
+          next.delete(candidateId);
+        }
+      });
+      return { scope: bulkSelectionScope, value: next };
+    });
+  };
+
+  const clearBulkSelection = () => {
+    setBulkSelectionState({ scope: bulkSelectionScope, value: new Set() });
+  };
+
+  const rejectBulkSelected = () => {
+    if (!selectedBulkCount || bulkRejectMutation.isPending) return;
+    bulkRejectMutation.mutate(Array.from(bulkSelectedIds));
+  };
+
   const revokeSelected = () => {
     if (!selectedCandidate?.competitor_item_id) return;
-    if (window.confirm("Снять принятое сопоставление?")) {
+    const confirmText =
+      selectedCandidate.status === "rejected" ? "Снять отклонение с кандидата?" : "Снять принятое сопоставление?";
+    if (window.confirm(confirmText)) {
       revokeMutation.mutate(selectedCandidate);
     }
   };
@@ -746,8 +878,46 @@ export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePane
           </button>
         </div>
 
+        <div className="picker__bulkbar">
+          <span>Выбрано {selectedBulkCount}</span>
+          <div className="picker__bulkbar-actions">
+            <button
+              className="btn btn--ghost"
+              onClick={() => toggleAllVisibleRejectable(true)}
+              disabled={!visibleRejectableIds.length || allVisibleRejectableSelected || bulkRejectMutation.isPending}
+            >
+              Выбрать все на странице
+            </button>
+            <button
+              className="btn btn--ghost"
+              onClick={clearBulkSelection}
+              disabled={!selectedBulkCount || bulkRejectMutation.isPending}
+            >
+              Снять выбор
+            </button>
+            <button
+              className="btn btn--danger"
+              onClick={rejectBulkSelected}
+              disabled={!selectedBulkCount || bulkRejectMutation.isPending}
+            >
+              Отклонить выбранные
+            </button>
+          </div>
+        </div>
+
         <div className="candidate-table">
           <div className="candidate-table__head">
+            <span className="candidate-table__select">
+              <input
+                ref={selectAllRef}
+                className="candidate-table__checkbox"
+                type="checkbox"
+                checked={allVisibleRejectableSelected}
+                disabled={!visibleRejectableIds.length || bulkRejectMutation.isPending}
+                aria-label="Выбрать всех доступных для отклонения кандидатов на странице"
+                onChange={(e) => toggleAllVisibleRejectable(e.target.checked)}
+              />
+            </span>
             <span>Конкурент</span>
             <span>Товар</span>
             <span>SKU</span>
@@ -759,13 +929,42 @@ export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePane
           {!isLoading &&
             !isError &&
             items.map((candidate) => (
-              <button
+              <div
                 key={candidate.competitor_item_id}
+                role="button"
+                tabIndex={0}
                 className={`candidate-row ${
                   candidate.competitor_item_id === selectedCandidate?.competitor_item_id ? "candidate-row--selected" : ""
                 }`}
                 onClick={() => setSelectedCandidateId(candidate.competitor_item_id ?? null)}
+                onKeyDown={(event) => {
+                  const target = event.target as HTMLElement | null;
+                  if (target?.tagName === "INPUT") return;
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    setSelectedCandidateId(candidate.competitor_item_id ?? null);
+                  }
+                }}
               >
+                <span className="candidate-row__select">
+                  <input
+                    className="candidate-table__checkbox"
+                    type="checkbox"
+                    checked={
+                      typeof candidate.competitor_item_id === "number" &&
+                      bulkSelectedIds.has(candidate.competitor_item_id)
+                    }
+                    disabled={!canBulkRejectCandidate(candidate) || bulkRejectMutation.isPending}
+                    aria-label={`Выбрать кандидата ${candidate.name || candidate.sku || ""}`}
+                    onClick={(event) => event.stopPropagation()}
+                    onChange={(event) => {
+                      event.stopPropagation();
+                      if (typeof candidate.competitor_item_id === "number") {
+                        toggleBulkCandidate(candidate.competitor_item_id, event.target.checked);
+                      }
+                    }}
+                  />
+                </span>
                 <span>{candidate.competitor_name || "-"}</span>
                 <strong>{candidate.name || "Без названия"}</strong>
                 <span>{candidate.sku || "-"}</span>
@@ -791,7 +990,7 @@ export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePane
                     </span>
                   )}
                 </span>
-              </button>
+              </div>
             ))}
           {!isLoading && !isError && !items.length && <div className="panel__empty">Ничего не найдено</div>}
         </div>
@@ -911,6 +1110,7 @@ export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePane
                       disabled={
                         !selectedCandidate.competitor_item_id ||
                         selectedCandidate.status === "current" ||
+                        selectedCandidate.status === "rejected" ||
                         rejectMutation.isPending
                       }
                     >
@@ -919,9 +1119,9 @@ export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePane
                     <button
                       className="btn btn--danger"
                       onClick={revokeSelected}
-                      disabled={selectedCandidate.status !== "current" || revokeMutation.isPending}
+                      disabled={!canRevokeSelected || revokeMutation.isPending}
                     >
-                      Снять
+                      {selectedCandidate.status === "rejected" ? "Снять отклонение" : "Снять"}
                     </button>
                   </div>
                 </div>

@@ -17,6 +17,7 @@ import type {
   CompatibilitySummary,
   CompatibilityUnresolvedGroup,
   CompatibilityUnresolvedItem,
+  BulkRejectResponse,
   DecisionHistoryResponse,
   PaginatedCandidates,
   PaginatedProducts,
@@ -96,6 +97,14 @@ export async function acceptItemMatch(productId: number, competitorItemId: numbe
 export async function rejectItemMatch(productId: number, competitorItemId: number, reason?: string) {
   const { data } = await api.post(`/matching/products/${productId}/reject`, {
     competitor_item_id: competitorItemId,
+    reason,
+  });
+  return data;
+}
+
+export async function bulkRejectItemMatches(productId: number, competitorItemIds: number[], reason?: string) {
+  const { data } = await api.post<BulkRejectResponse>(`/matching/products/${productId}/reject-bulk`, {
+    competitor_item_ids: competitorItemIds,
     reason,
   });
   return data;

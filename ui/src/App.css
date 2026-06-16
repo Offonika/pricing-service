@@ -638,6 +638,30 @@
   margin-bottom: 10px;
 }
 
+.picker__bulkbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid #d9e0e8;
+  border-radius: 6px;
+  background: #f8fafc;
+  color: #475467;
+  font-size: 13px;
+  font-weight: 650;
+}
+
+.picker__bulkbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
 .picker__filters--dense {
   display: grid;
   grid-template-columns: repeat(5, minmax(120px, 1fr)) auto;
@@ -660,10 +684,10 @@
 .candidate-table__head,
 .candidate-row {
   display: grid;
-  grid-template-columns: 104px minmax(360px, 1fr) minmax(150px, 190px) 82px 164px;
+  grid-template-columns: 34px 104px minmax(360px, 1fr) minmax(150px, 190px) 82px 164px;
   gap: 8px;
   align-items: center;
-  min-width: 920px;
+  min-width: 980px;
 }
 
 .candidate-table__head {
@@ -688,6 +712,30 @@
   color: #18202a;
   text-align: left;
   cursor: pointer;
+}
+
+.candidate-row:focus-visible {
+  outline: 2px solid #1665d8;
+  outline-offset: -2px;
+}
+
+.candidate-table__select,
+.candidate-row__select {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.candidate-table__checkbox {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  accent-color: #1665d8;
+  cursor: pointer;
+}
+
+.candidate-table__checkbox:disabled {
+  cursor: not-allowed;
 }
 
 .candidate-table__status,
@@ -1883,5 +1931,14 @@
   .settings-shell,
   .settings-modal {
     overflow: auto;
+  }
+
+  .picker__bulkbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .picker__bulkbar-actions {
+    justify-content: flex-start;
   }
 }

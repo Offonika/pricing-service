@@ -2367,6 +2367,39 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/matching/products/{product_id}/reject-bulk:
+    post:
+      summary: Reject Candidates Bulk
+      operationId: reject_candidates_bulk_api_matching_products__product_id__reject_bulk_post
+      security:
+      - HTTPBasic: []
+      - HTTPBearer: []
+      parameters:
+      - name: product_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Product Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkRejectRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkRejectResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/matching/products/{product_id}/revoke:
     post:
       summary: Revoke Item Match
@@ -6896,6 +6929,62 @@ components:
       required:
       - file
       title: Body_normalize_bank_payment_file_api_v1_bank_payments_normalize_post
+    BulkRejectItemResult:
+      properties:
+        competitor_item_id:
+          type: integer
+          title: Competitor Item Id
+        status:
+          type: string
+          enum:
+          - rejected
+          - skipped
+          title: Status
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+      type: object
+      required:
+      - competitor_item_id
+      - status
+      title: BulkRejectItemResult
+    BulkRejectRequest:
+      properties:
+        competitor_item_ids:
+          items:
+            type: integer
+          type: array
+          title: Competitor Item Ids
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+      type: object
+      title: BulkRejectRequest
+    BulkRejectResponse:
+      properties:
+        ok:
+          type: boolean
+          title: Ok
+          default: true
+        rejected_count:
+          type: integer
+          title: Rejected Count
+          default: 0
+        skipped_count:
+          type: integer
+          title: Skipped Count
+          default: 0
+        items:
+          items:
+            $ref: '#/components/schemas/BulkRejectItemResult'
+          type: array
+          title: Items
+      type: object
+      title: BulkRejectResponse
     Candidate:
       properties:
         competitor_item_id:

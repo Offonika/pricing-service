@@ -153,6 +153,24 @@ class RejectRequest(BaseModel):
     reason: str | None = None
 
 
+class BulkRejectRequest(BaseModel):
+    competitor_item_ids: list[int] = Field(default_factory=list)
+    reason: str | None = None
+
+
+class BulkRejectItemResult(BaseModel):
+    competitor_item_id: int
+    status: Literal["rejected", "skipped"]
+    reason: str | None = None
+
+
+class BulkRejectResponse(BaseModel):
+    ok: bool = True
+    rejected_count: int = 0
+    skipped_count: int = 0
+    items: list[BulkRejectItemResult] = Field(default_factory=list)
+
+
 class RevokeRequest(BaseModel):
     competitor_item_id: int
     reason: str | None = None

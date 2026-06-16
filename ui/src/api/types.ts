@@ -131,6 +131,19 @@ export interface DecisionHistoryResponse {
   items: DecisionHistoryItem[];
 }
 
+export interface BulkRejectItemResult {
+  competitor_item_id: number;
+  status: "rejected" | "skipped";
+  reason?: string;
+}
+
+export interface BulkRejectResponse {
+  ok: boolean;
+  rejected_count: number;
+  skipped_count: number;
+  items: BulkRejectItemResult[];
+}
+
 export interface PropertySummary {
   total: number;
   matched: number;

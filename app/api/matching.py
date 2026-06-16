@@ -42,6 +42,9 @@ from app.models.competitor_item_match import (
 from app.schemas.matching import (
     AcceptSafePropertyValueSuggestionsRequest,
     AcceptSafePropertyValueSuggestionsResponse,
+    BulkRejectItemResult,
+    BulkRejectRequest,
+    BulkRejectResponse,
     Candidate,
     CandidateFacetOption,
     CandidateFacets,
@@ -129,6 +132,7 @@ _SEARCH_STOPWORDS = {
     "with",
     "and",
     "the",
+    "артикул",
     "для",
     "без",
     "под",
@@ -162,6 +166,23 @@ _SEARCH_STOPWORDS = {
     "громкости",
     "galaxy",
 }
+_CANDIDATE_QUERY_PREFIX_RE = re.compile(
+    r"^\s*(?:артикул|sku|скю|код)\s*[:：#№-]?\s*",
+    flags=re.IGNORECASE,
+)
+
+
+def _clean_candidate_query(value: str | None) -> str:
+    if not value:
+        return ""
+    cleaned = value.strip()
+    while True:
+        stripped = _CANDIDATE_QUERY_PREFIX_RE.sub("", cleaned, count=1).strip()
+        if stripped == cleaned:
+            return cleaned
+        cleaned = stripped
+
+
 _DEFAULT_OPTIONAL_TOKENS = {
     "apple",
     "black",
@@ -383,6 +404,7 @@ def _record_decision(
 
 
 def _search_tokens(value: str | None) -> list[str]:
+    value = _clean_candidate_query(value)
     if not value:
         return []
     seen: set[str] = set()
@@ -434,9 +456,7 @@ def _candidate_terms_condition(terms: list[str], *, include_external_id: bool = 
 
 
 def _candidate_exact_search_condition(value: str | None):
-    if not value:
-        return None
-    cleaned = value.strip()
+    cleaned = _clean_candidate_query(value)
     if not cleaned:
         return None
     conditions = [
@@ -479,7 +499,7 @@ def _candidate_exact_search_condition(value: str | None):
 
 
 def _is_moba_catalog_url(value: str | None) -> bool:
-    cleaned = (value or "").strip().lower()
+    cleaned = _clean_candidate_query(value).lower()
     if not cleaned:
         return False
     return bool(
@@ -491,7 +511,7 @@ def _is_moba_catalog_url(value: str | None) -> bool:
 
 
 def _is_precise_candidate_query(value: str | None) -> bool:
-    cleaned = (value or "").strip()
+    cleaned = _clean_candidate_query(value)
     if not cleaned:
         return False
     lowered = cleaned.lower()
@@ -1173,6 +1193,47 @@ def _rejected_item_ids_for_product(db: Session, product_id: int) -> set[int]:
         elif decision.action in {"accept", "revoke"}:
             rejected.discard(decision.competitor_item_id)
     return rejected
+
+
+def _dedupe_item_ids(item_ids: Iterable[int]) -> list[int]:
+    seen: set[int] = set()
+    deduped: list[int] = []
+    for item_id in item_ids:
+        if item_id in seen:
+            continue
+        seen.add(item_id)
+        deduped.append(item_id)
+    return deduped
+
+
+def _latest_reject_decision_for_product_item(
+    db: Session,
+    product_id: int,
+    competitor_item_id: int,
+) -> ProductCompetitorItemDecision | None:
+    return (
+        db.execute(
+            select(ProductCompetitorItemDecision)
+            .where(
+                ProductCompetitorItemDecision.product_id == product_id,
+                ProductCompetitorItemDecision.competitor_item_id == competitor_item_id,
+                ProductCompetitorItemDecision.action == "reject",
+            )
+            .order_by(ProductCompetitorItemDecision.id.desc())
+        )
+        .scalars()
+        .first()
+    )
+
+
+def _restorable_rejected_match_status(value: str | None) -> CompetitorItemMatchStatus | None:
+    if value not in {
+        CompetitorItemMatchStatus.SUGGESTED.value,
+        CompetitorItemMatchStatus.NEEDS_REVIEW.value,
+        CompetitorItemMatchStatus.AMBIGUOUS.value,
+    }:
+        return None
+    return CompetitorItemMatchStatus(value)
 
 
 def _product_status(
@@ -2501,7 +2562,7 @@ def search_product_candidates(
         case((CompetitorItemMatch.product_id == product_id, 1), else_=0).desc(),
     ]
     if q:
-        cleaned_q = q.strip()
+        cleaned_q = _clean_candidate_query(q)
         if cleaned_q:
             order_by.append(case((CompetitorItem.external_id.ilike(cleaned_q), 1), else_=0).desc())
     item_type_hint = _infer_product_item_type(product)
@@ -2790,6 +2851,138 @@ def reject_candidate(
     return MatchingActionResponse(ok=True)
 
 
+@router.post(
+    "/matching/products/{product_id}/reject-bulk",
+    response_model=BulkRejectResponse,
+)
+def reject_candidates_bulk(
+    product_id: int,
+    payload: BulkRejectRequest,
+    db: Session = Depends(get_db),
+    user: str = Depends(_authorize),
+) -> BulkRejectResponse:
+    product = db.get(Product, product_id)
+    if not product:
+        raise HTTPException(status_code=404, detail="product not found")
+
+    item_ids = _dedupe_item_ids(payload.competitor_item_ids)
+    if not item_ids:
+        return BulkRejectResponse(ok=True)
+
+    items_by_id = {
+        item.id: item
+        for item in db.execute(select(CompetitorItem).where(CompetitorItem.id.in_(item_ids)))
+        .scalars()
+        .all()
+    }
+    matches_by_item_id = {
+        match.competitor_item_id: match
+        for match in db.execute(
+            select(CompetitorItemMatch).where(CompetitorItemMatch.competitor_item_id.in_(item_ids))
+        )
+        .scalars()
+        .all()
+    }
+    rejected_ids = _rejected_item_ids_for_product(db, product_id)
+    changed_product_ids: set[int | None] = {product_id}
+    results: list[BulkRejectItemResult] = []
+    rejected_count = 0
+    skipped_count = 0
+
+    for item_id in item_ids:
+        item = items_by_id.get(item_id)
+        if item is None:
+            skipped_count += 1
+            results.append(
+                BulkRejectItemResult(
+                    competitor_item_id=item_id,
+                    status="skipped",
+                    reason="not_found",
+                )
+            )
+            continue
+
+        existing = matches_by_item_id.get(item_id)
+        previous_product_id = existing.product_id if existing else None
+        previous_status = _match_status_value(existing.status) if existing else None
+        if item_id in rejected_ids or (
+            existing
+            and existing.product_id == product_id
+            and existing.status == CompetitorItemMatchStatus.REJECTED
+        ):
+            skipped_count += 1
+            results.append(
+                BulkRejectItemResult(
+                    competitor_item_id=item_id,
+                    status="skipped",
+                    reason="already_rejected",
+                )
+            )
+            continue
+        if (
+            existing
+            and existing.product_id == product_id
+            and existing.status == CompetitorItemMatchStatus.ACCEPTED
+        ):
+            skipped_count += 1
+            results.append(
+                BulkRejectItemResult(
+                    competitor_item_id=item_id,
+                    status="skipped",
+                    reason="current",
+                )
+            )
+            continue
+        if (
+            existing
+            and existing.product_id != product_id
+            and existing.status == CompetitorItemMatchStatus.ACCEPTED
+        ):
+            skipped_count += 1
+            results.append(
+                BulkRejectItemResult(
+                    competitor_item_id=item_id,
+                    status="skipped",
+                    reason="locked",
+                )
+            )
+            continue
+
+        if existing and existing.product_id == product_id:
+            existing.status = CompetitorItemMatchStatus.REJECTED
+            existing.method = CompetitorItemMatchMethod.MANUAL
+            db.add(existing)
+        _record_decision(
+            db,
+            product_id=product_id,
+            competitor_item_id=item_id,
+            action="reject",
+            user=user,
+            reason=payload.reason,
+            previous_product_id=previous_product_id,
+            previous_status=previous_status,
+        )
+        changed_product_ids.add(previous_product_id)
+        rejected_ids.add(item_id)
+        rejected_count += 1
+        results.append(
+            BulkRejectItemResult(
+                competitor_item_id=item_id,
+                status="rejected",
+                reason="rejected",
+            )
+        )
+
+    _invalidate_live_candidate_cache(db, *changed_product_ids)
+    db.commit()
+    return BulkRejectResponse(
+        ok=True,
+        rejected_count=rejected_count,
+        skipped_count=skipped_count,
+        items=results,
+    )
+
+
 @router.post("/matching/products/{product_id}/revoke", response_model=MatchingActionResponse)
 def revoke_item_match(
     product_id: int,
@@ -2812,8 +3005,34 @@ def revoke_item_match(
         .scalars()
         .one_or_none()
     )
-    if not match:
-        raise HTTPException(status_code=404, detail="accepted match not found")
+    rejected_match = None
+    latest_reject_decision = None
+    if match is None:
+        rejected_match = (
+            db.execute(
+                select(CompetitorItemMatch).where(
+                    CompetitorItemMatch.product_id == product_id,
+                    CompetitorItemMatch.competitor_item_id == item.id,
+                    CompetitorItemMatch.status == CompetitorItemMatchStatus.REJECTED,
+                )
+            )
+            .scalars()
+            .one_or_none()
+        )
+        latest_reject_decision = _latest_reject_decision_for_product_item(db, product_id, item.id)
+        if item.id not in _rejected_item_ids_for_product(db, product_id) and rejected_match is None:
+            raise HTTPException(status_code=404, detail="match or rejected decision not found")
+
+    previous_product_id = match.product_id if match is not None else product_id
+    previous_status = (
+        _match_status_value(match.status)
+        if match is not None
+        else (
+            _match_status_value(rejected_match.status)
+            if rejected_match is not None
+            else CompetitorItemMatchStatus.REJECTED.value
+        )
+    )
     _record_decision(
         db,
         product_id=product_id,
@@ -2821,11 +3040,23 @@ def revoke_item_match(
         action="revoke",
         user=user,
         reason=payload.reason,
-        previous_product_id=match.product_id,
-        previous_status=_match_status_value(match.status),
+        previous_product_id=previous_product_id,
+        previous_status=previous_status,
     )
     _invalidate_live_candidate_cache(db, product_id)
-    db.delete(match)
+    if match is not None:
+        db.delete(match)
+    elif rejected_match is not None:
+        restored_status = _restorable_rejected_match_status(
+            latest_reject_decision.previous_status if latest_reject_decision else None
+        )
+        if restored_status is None:
+            db.delete(rejected_match)
+        else:
+            rejected_match.status = restored_status
+            if rejected_match.method == CompetitorItemMatchMethod.MANUAL:
+                rejected_match.method = CompetitorItemMatchMethod.EMBEDDING_AUTO
+            db.add(rejected_match)
     db.commit()
     return MatchingActionResponse(ok=True)
 

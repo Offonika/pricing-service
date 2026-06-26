@@ -5,10 +5,14 @@ const SESSION_STORAGE_KEY = "mm_matching_bitrix_session";
 const LEFT_MENU_STORAGE_KEY = "mm_matching_bitrix_left_menu_bound";
 const RECEIVABLES_SESSION_STORAGE_KEY = "mm_receivables_bitrix_session";
 const RECEIVABLES_LEFT_MENU_STORAGE_KEY = "mm_receivables_bitrix_left_menu_bound";
+const PROCUREMENT_LABELS_SESSION_STORAGE_KEY = "mm_procurement_labels_bitrix_session";
+const PROCUREMENT_LABELS_PLACEMENT_STORAGE_KEY = "mm_procurement_labels_bitrix_tab_bound";
 const REFRESH_SKEW_MS = 60_000;
 const MATCHING_LEFT_MENU_PLACEMENT = "LEFT_MENU";
+const PROCUREMENT_LABELS_DETAIL_PLACEMENT = "CRM_DYNAMIC_1056_DETAIL_TAB";
 const MATCHING_LEFT_MENU_TITLE = "Сопоставление товаров";
 const RECEIVABLES_LEFT_MENU_TITLE = "Дебиторка покупателей";
+const PROCUREMENT_LABELS_TITLE = "Сформировать этикетки";
 
 interface BitrixAuthPayload {
   access_token: string;
@@ -20,6 +24,8 @@ interface BitrixLaunchPayload {
   access_token?: string | null;
   domain?: string | null;
   member_id?: string | null;
+  placement?: string | null;
+  placement_options?: Record<string, unknown> | null;
 }
 
 interface BitrixMatchingUser {
@@ -50,6 +56,10 @@ interface CachedBitrixSession extends BitrixMatchingSessionResponse {
 }
 
 interface CachedBitrixReceivablesSession extends BitrixReceivablesSessionResponse {
+  cached_at: string;
+}
+
+interface CachedProcurementLabelsSession extends BitrixMatchingSessionResponse {
   cached_at: string;
 }
 
@@ -86,6 +96,11 @@ export function isBitrixReceivablesRoute() {
   return path === "/bitrix/receivables" || path.startsWith("/bitrix/receivables/");
 }
 
+export function isBitrixProcurementLabelsRoute() {
+  const path = window.location.pathname.replace(/\/+$/, "");
+  return path === "/bitrix/procurement-labels" || path.startsWith("/bitrix/procurement-labels/");
+}
+
 function readCachedSession(): CachedBitrixSession | null {
   try {
     const raw = window.sessionStorage.getItem(SESSION_STORAGE_KEY);
@@ -116,6 +131,21 @@ function readCachedReceivablesSession(): CachedBitrixReceivablesSession | null {
   }
 }
 
+function readCachedProcurementLabelsSession(): CachedProcurementLabelsSession | null {
+  try {
+    const raw = window.sessionStorage.getItem(PROCUREMENT_LABELS_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const cached = JSON.parse(raw) as CachedProcurementLabelsSession;
+    if (Date.parse(cached.expires_at) - Date.now() <= REFRESH_SKEW_MS) {
+      window.sessionStorage.removeItem(PROCUREMENT_LABELS_SESSION_STORAGE_KEY);
+      return null;
+    }
+    return cached;
+  } catch {
+    return null;
+  }
+}
+
 function cacheSession(session: BitrixMatchingSessionResponse) {
   const cached: CachedBitrixSession = {
     ...session,
@@ -135,6 +165,18 @@ function cacheReceivablesSession(session: BitrixReceivablesSessionResponse) {
   };
   try {
     window.sessionStorage.setItem(RECEIVABLES_SESSION_STORAGE_KEY, JSON.stringify(cached));
+  } catch {
+    // Storage can be restricted in embedded contexts; in-memory axios auth still works.
+  }
+}
+
+function cacheProcurementLabelsSession(session: BitrixMatchingSessionResponse) {
+  const cached: CachedProcurementLabelsSession = {
+    ...session,
+    cached_at: new Date().toISOString(),
+  };
+  try {
+    window.sessionStorage.setItem(PROCUREMENT_LABELS_SESSION_STORAGE_KEY, JSON.stringify(cached));
   } catch {
     // Storage can be restricted in embedded contexts; in-memory axios auth still works.
   }
@@ -224,6 +266,10 @@ function matchingHandlerUrl() {
 
 function receivablesHandlerUrl() {
   return new URL("/bitrix/receivables/", window.location.origin).toString();
+}
+
+function procurementLabelsHandlerUrl() {
+  return new URL("/bitrix/procurement-labels/", window.location.origin).toString();
 }
 
 async function ensureBitrixLeftMenuPlacement() {
@@ -318,6 +364,52 @@ async function ensureBitrixReceivablesLeftMenuPlacement() {
   }
 }
 
+async function ensureBitrixProcurementLabelsPlacement() {
+  try {
+    if (window.sessionStorage.getItem(PROCUREMENT_LABELS_PLACEMENT_STORAGE_KEY) === "1") return;
+  } catch {
+    // Ignore restricted storage in embedded contexts.
+  }
+
+  await loadBitrixSdk();
+  await initBitrix();
+
+  const handler = procurementLabelsHandlerUrl();
+  const normalizedHandler = normalizeHandlerUrl(handler);
+  const placements = await bitrixCall<
+    Array<{ placement?: string; handler?: string; title?: string }>
+  >("placement.get", {});
+  const alreadyBound = placements.some(
+    (item) =>
+      item.placement === PROCUREMENT_LABELS_DETAIL_PLACEMENT &&
+      normalizeHandlerUrl(String(item.handler || "")) === normalizedHandler
+  );
+  if (!alreadyBound) {
+    await bitrixCall<boolean>("placement.bind", {
+      PLACEMENT: PROCUREMENT_LABELS_DETAIL_PLACEMENT,
+      HANDLER: handler,
+      TITLE: PROCUREMENT_LABELS_TITLE,
+      DESCRIPTION: "ВЭД этикетки",
+      LANG_ALL: {
+        ru: {
+          TITLE: PROCUREMENT_LABELS_TITLE,
+          DESCRIPTION: "ВЭД этикетки",
+        },
+        en: {
+          TITLE: "Generate labels",
+          DESCRIPTION: "VED product labels",
+        },
+      },
+    });
+  }
+
+  try {
+    window.sessionStorage.setItem(PROCUREMENT_LABELS_PLACEMENT_STORAGE_KEY, "1");
+  } catch {
+    // Storage can be restricted in embedded contexts; binding already succeeded.
+  }
+}
+
 function ensureBitrixLeftMenuPlacementInBackground() {
   ensureBitrixLeftMenuPlacement().catch((error: unknown) => {
     console.warn("Не удалось добавить приложение в левое меню Bitrix24", error);
@@ -327,6 +419,12 @@ function ensureBitrixLeftMenuPlacementInBackground() {
 function ensureBitrixReceivablesLeftMenuPlacementInBackground() {
   ensureBitrixReceivablesLeftMenuPlacement().catch((error: unknown) => {
     console.warn("Не удалось добавить дебиторку в левое меню Bitrix24", error);
+  });
+}
+
+function ensureBitrixProcurementLabelsPlacementInBackground() {
+  ensureBitrixProcurementLabelsPlacement().catch((error: unknown) => {
+    console.warn("Не удалось добавить вкладку этикеток в Bitrix24", error);
   });
 }
 
@@ -378,4 +476,39 @@ export async function initializeBitrixReceivablesSession() {
   cacheReceivablesSession(data);
   ensureBitrixReceivablesLeftMenuPlacementInBackground();
   return data;
+}
+
+export async function initializeBitrixProcurementLabelsSession() {
+  const cached = readCachedProcurementLabelsSession();
+  if (cached) {
+    setApiAuthToken(cached.session_token);
+    ensureBitrixProcurementLabelsPlacementInBackground();
+    return cached.user;
+  }
+
+  clearApiAuthToken();
+  let auth = getLaunchAuth();
+  if (!auth) {
+    await loadBitrixSdk();
+    auth = await initBitrix();
+  }
+  const { data } = await api.post<BitrixMatchingSessionResponse>("/procurement-labels/session", {
+    access_token: auth.access_token,
+    domain: auth.domain,
+    member_id: auth.member_id,
+  });
+  setApiAuthToken(data.session_token);
+  cacheProcurementLabelsSession(data);
+  ensureBitrixProcurementLabelsPlacementInBackground();
+  return data.user;
+}
+
+export function getProcurementLabelsItemId() {
+  const launchId = window.__MM_BITRIX_LAUNCH__?.placement_options?.ID;
+  if (typeof launchId === "number" || typeof launchId === "string") {
+    const value = String(launchId).trim();
+    if (value) return value;
+  }
+  const url = new URL(window.location.href);
+  return url.searchParams.get("itemId") || "";
 }

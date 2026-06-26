@@ -13,6 +13,7 @@ STATEMENT_RULE_STRUCTURE_OPEN = "statement_structure_confirmed_open"
 
 DIRECT_PAYMENT_TOLERANCE = Decimal("50.00")
 MULTI_SALE_PAYMENT_TOLERANCE = Decimal("100.00")
+SAFE_BALANCE_TOLERANCE = Decimal("100.00")
 NEARBY_PAYMENT_ROW_WINDOW = 5
 MULTI_SALE_ROW_WINDOW = 7
 
@@ -42,6 +43,9 @@ class ReceivableStatementOpenDocument:
     return_amount: Decimal
     manager_ref: str | None
     manager_name: str | None
+    statement_balance_after: Decimal | None
+    statement_segment_start_row: int | None
+    statement_segment_end_row: int | None
     statement_selection_rule: str
     statement_match_details: tuple[dict[str, Any], ...] = ()
 
@@ -62,6 +66,9 @@ class _SaleLayer:
     open_amount: Decimal
     structure_closing_amount: Decimal = Decimal("0.00")
     return_amount: Decimal = Decimal("0.00")
+    statement_balance_after: Decimal | None = None
+    statement_segment_start_row: int | None = None
+    statement_segment_end_row: int | None = None
     closed: bool = False
     selection_rule: str = STATEMENT_RULE_UNMATCHED_OPEN
     match_details: list[dict[str, Any]] = field(default_factory=list)
@@ -290,6 +297,67 @@ def _apply_multi_sale_payment_matches(
                 break
 
 
+def _closing_belongs_to_following_sale(
+    *,
+    closing: _ClosingLayer,
+    sale_layers: list[_SaleLayer],
+) -> bool:
+    following_sales = [
+        sale
+        for sale in sale_layers
+        if sale.row_index > closing.row_index
+        and _distance(sale.row_index, closing.row_index) <= MULTI_SALE_ROW_WINDOW
+        and sale.match_amount > Decimal("0.00")
+    ][:MULTI_SALE_ROW_WINDOW]
+    if not following_sales:
+        return False
+
+    if _is_close(following_sales[0].match_amount, closing.amount, DIRECT_PAYMENT_TOLERANCE):
+        return True
+
+    accumulated = Decimal("0.00")
+    for index, sale in enumerate(following_sales, start=1):
+        accumulated += sale.match_amount
+        if index > 1 and _is_close(accumulated, closing.amount, MULTI_SALE_PAYMENT_TOLERANCE):
+            return True
+    return False
+
+
+def _last_safe_balance_row(
+    balances_after: Sequence[Decimal],
+    *,
+    sale_layers: list[_SaleLayer],
+    payment_layers: list[_ClosingLayer],
+) -> int | None:
+    payment_by_row = {payment.row_index: payment for payment in payment_layers}
+    last_safe_row: int | None = None
+    for row_index, balance_after in enumerate(balances_after):
+        if not Decimal("0.00") <= balance_after <= SAFE_BALANCE_TOLERANCE:
+            continue
+        payment = payment_by_row.get(row_index)
+        if payment is not None and _closing_belongs_to_following_sale(
+            closing=payment,
+            sale_layers=sale_layers,
+        ):
+            continue
+        last_safe_row = row_index
+    return last_safe_row
+
+
+def _apply_statement_segment(
+    sale_layers: list[_SaleLayer],
+    balances_after: Sequence[Decimal],
+    *,
+    segment_start_row: int,
+    segment_end_row: int | None,
+) -> None:
+    for sale in sale_layers:
+        if sale.row_index < len(balances_after):
+            sale.statement_balance_after = _money(balances_after[sale.row_index])
+        sale.statement_segment_start_row = segment_start_row + 1
+        sale.statement_segment_end_row = None if segment_end_row is None else segment_end_row + 1
+
+
 def _select_open_sales_by_balance(
     open_sales: list[_SaleLayer],
     *,
@@ -365,6 +433,12 @@ def resolve_open_debt_documents_by_statement(
         elif event_type == "return" and amount < Decimal("0.00"):
             return_layers.append(_ClosingLayer(event=event, amount=abs(amount), row_index=index))
 
+    balances_after: list[Decimal] = []
+    running_balance = Decimal("0.00")
+    for event in sorted_events:
+        running_balance = _money(running_balance + _money(event.amount_delta))
+        balances_after.append(running_balance)
+
     resolved_structure_checks = structure_checks or {}
     _apply_structure_checks(sale_layers, resolved_structure_checks, ref_key=ref_key)
     structure_linked_document_refs = _structure_linked_document_refs(
@@ -385,10 +459,26 @@ def resolve_open_debt_documents_by_statement(
     _apply_direct_payment_matches(sale_layers, payment_layers)
     _apply_multi_sale_payment_matches(sale_layers, payment_layers)
 
+    last_safe_row = _last_safe_balance_row(
+        balances_after,
+        sale_layers=sale_layers,
+        payment_layers=payment_layers,
+    )
+    segment_start_row = 0 if last_safe_row is None else last_safe_row + 1
+    segment_end_row = len(sorted_events) - 1 if sorted_events else None
+    _apply_statement_segment(
+        sale_layers,
+        balances_after,
+        segment_start_row=segment_start_row,
+        segment_end_row=segment_end_row,
+    )
+
     open_sales = [
         sale
         for sale in sale_layers
-        if not sale.closed and sale.match_amount > Decimal("0.00")
+        if not sale.closed
+        and sale.match_amount > Decimal("0.00")
+        and sale.row_index >= segment_start_row
     ]
     selected_sales = _select_open_sales_by_balance(
         open_sales,
@@ -409,6 +499,9 @@ def resolve_open_debt_documents_by_statement(
                 return_amount=_money(sale.return_amount),
                 manager_ref=sale.event.manager_ref,
                 manager_name=sale.event.manager_name,
+                statement_balance_after=sale.statement_balance_after,
+                statement_segment_start_row=sale.statement_segment_start_row,
+                statement_segment_end_row=sale.statement_segment_end_row,
                 statement_selection_rule=sale.selection_rule,
                 statement_match_details=tuple(sale.match_details),
             )

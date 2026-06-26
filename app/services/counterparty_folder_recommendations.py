@@ -54,6 +54,7 @@ REVIEW_REASON_SPB_CROSS_FOLDER = "spb_cross_folder_manual_review"
 REVIEW_REASON_EXCLUDED_EMPLOYEE_FOLDER = "excluded_employee_folder"
 REVIEW_REASON_EXCLUDED_WHOLESALE = "excluded_wholesale_counterparty"
 REVIEW_REASON_EXCLUDED_SITE_PAYMENT_ON_PICKUP = "excluded_site_payment_on_pickup"
+REVIEW_REASON_EXCLUDED_MAKLAB_SPB_PROSVET = "excluded_maklab_spb_prosvet"
 REVIEW_REASON_BELOW_MIN_BALANCE = "below_min_balance_threshold"
 REVIEW_REASON_EXCLUDED_CHINA_SUPPLIER_GROUP = "excluded_china_supplier_group"
 REVIEW_REASON_OPEN_STRUCTURE_DOCUMENT_NOT_FOUND = (
@@ -71,6 +72,7 @@ REVIEW_REASON_ORIGIN_DOCUMENT_STRUCTURE_CONFIRMED = (
 REVIEW_REASON_ORIGIN_DOCUMENT_CLOSED_BY_STRUCTURE = (
     "origin_document_closed_by_structure"
 )
+REVIEW_REASON_DOCUMENT_COMMENT_HISTORY_REQUIRED = "document_comment_history_required"
 
 
 @dataclass(frozen=True)
@@ -89,6 +91,8 @@ class SaleDocumentDepartmentRow:
     document_department_name: str | None
     recommended_folder_ref: str | None
     recommended_folder_name: str | None
+    document_responsible_ref: str | None
+    document_responsible_name: str | None
     document_author_ref: str | None
     document_author_name: str | None
 
@@ -272,6 +276,7 @@ def fetch_sale_document_departments(
     document_ref_expr = _hex_ref_expr("sale._IDRRef", dialect_name=dialect_name)
     department_ref_expr = _hex_ref_expr("department._IDRRef", dialect_name=dialect_name)
     folder_ref_expr = _hex_ref_expr("department_folder._IDRRef", dialect_name=dialect_name)
+    responsible_ref_expr = _hex_ref_expr("responsible._IDRRef", dialect_name=dialect_name)
     author_ref_expr = _hex_ref_expr("author._IDRRef", dialect_name=dialect_name)
     rows_by_ref: dict[str, SaleDocumentDepartmentRow] = {}
 
@@ -290,6 +295,8 @@ def fetch_sale_document_departments(
                     department._Description AS document_department_name,
                     {folder_ref_expr} AS recommended_folder_ref,
                     department_folder._Description AS recommended_folder_name,
+                    {responsible_ref_expr} AS document_responsible_ref,
+                    responsible._Description AS document_responsible_name,
                     {author_ref_expr} AS document_author_ref,
                     author._Description AS document_author_name
                 FROM _Document203 AS sale {nolock}
@@ -297,6 +304,8 @@ def fetch_sale_document_departments(
                     ON department._IDRRef = sale._Fld4937RRef
                 LEFT JOIN _Reference54 AS department_folder {nolock}
                     ON department_folder._IDRRef = department._Fld8927RRef
+                LEFT JOIN _Reference69 AS responsible {nolock}
+                    ON responsible._IDRRef = sale._Fld4950RRef
                 LEFT JOIN _Reference54 AS author {nolock}
                     ON author._IDRRef = sale._Fld4942RRef
                 WHERE {where_clause}
@@ -317,6 +326,12 @@ def fetch_sale_document_departments(
                     or None,
                     recommended_folder_name=_normalize_ref(row.get("recommended_folder_name"))
                     or None,
+                    document_responsible_ref=(
+                        _normalize_ref(row.get("document_responsible_ref")) or None
+                    ),
+                    document_responsible_name=(
+                        _normalize_ref(row.get("document_responsible_name")) or None
+                    ),
                     document_author_ref=_normalize_ref(row.get("document_author_ref")) or None,
                     document_author_name=_normalize_ref(row.get("document_author_name"))
                     or None,
@@ -493,8 +508,11 @@ def _effective_payment_term(
     due_date = snapshot.due_date or snapshot.planned_payment_date
     credit_depth_days = snapshot.credit_depth_days
     source = snapshot.payment_term_source
+    has_selected_debt_document = debt_document_date is not None
     effective_origin_date = debt_document_date or snapshot.origin_document_date
-    if due_date is None and effective_origin_date is not None and credit_depth_days:
+    if effective_origin_date is not None and credit_depth_days and (
+        has_selected_debt_document or due_date is None
+    ):
         due_date = effective_origin_date + timedelta(days=credit_depth_days)
 
     if _has_missing_payment_term(snapshot) and effective_origin_date is not None:
@@ -504,7 +522,9 @@ def _effective_payment_term(
 
     overdue_days = (
         snapshot.overdue_days
-        if snapshot.overdue_days is not None and source != PAYMENT_TERM_SOURCE_FALLBACK
+        if snapshot.overdue_days is not None
+        and source != PAYMENT_TERM_SOURCE_FALLBACK
+        and not has_selected_debt_document
         else _compute_overdue_days(snapshot.snapshot_date, due_date)
     )
     is_overdue = bool(overdue_days is not None and overdue_days > 0)
@@ -549,6 +569,13 @@ def _is_site_payment_on_pickup(counterparty_name: str | None) -> bool:
     return "выдача без оплаты" in _text_key(counterparty_name)
 
 
+def _is_maklab_spb_prosvet(*, counterparty_code: str | None, counterparty_name: str | None) -> bool:
+    return _text_key(counterparty_code) == "рб028196" or (
+        "маклаб" in _text_key(counterparty_name)
+        and "просвет" in _text_key(counterparty_name)
+    )
+
+
 def _is_site_folder(current_folder_name: str | None) -> bool:
     return _text_key(current_folder_name) in {"08. сайт", "сайт"}
 
@@ -573,6 +600,11 @@ def _counterparty_exception_reason(
         return REVIEW_REASON_EXCLUDED_WHOLESALE
     if _is_site_payment_on_pickup(snapshot.counterparty_name):
         return REVIEW_REASON_EXCLUDED_SITE_PAYMENT_ON_PICKUP
+    if _is_maklab_spb_prosvet(
+        counterparty_code=folder_row.counterparty_code if folder_row else None,
+        counterparty_name=snapshot.counterparty_name,
+    ):
+        return REVIEW_REASON_EXCLUDED_MAKLAB_SPB_PROSVET
     return None
 
 
@@ -595,11 +627,11 @@ def _is_spb_cross_folder(
 def _is_manual_review_exception(reason: str | None) -> bool:
     return reason in {
         REVIEW_REASON_SPB_CROSS_FOLDER,
-        REVIEW_REASON_ORIGIN_DOCUMENT_NEEDS_ORDER_PAYMENT_CHECK,
         REVIEW_REASON_ORIGIN_DOCUMENT_STRUCTURE_UNCONFIRMED,
         REVIEW_REASON_ORIGIN_DOCUMENT_STRUCTURE_CONFIRMED,
         REVIEW_REASON_ORIGIN_DOCUMENT_CLOSED_BY_STRUCTURE,
         REVIEW_REASON_OPEN_STRUCTURE_DOCUMENT_NOT_FOUND,
+        REVIEW_REASON_DOCUMENT_COMMENT_HISTORY_REQUIRED,
     }
 
 
@@ -609,6 +641,8 @@ def _is_excluded_reason(reason: str | None) -> bool:
         REVIEW_REASON_EXCLUDED_EMPLOYEE_FOLDER,
         REVIEW_REASON_EXCLUDED_WHOLESALE,
         REVIEW_REASON_EXCLUDED_SITE_PAYMENT_ON_PICKUP,
+        REVIEW_REASON_EXCLUDED_MAKLAB_SPB_PROSVET,
+        REVIEW_REASON_ORIGIN_DOCUMENT_NEEDS_ORDER_PAYMENT_CHECK,
     }
 
 
@@ -681,6 +715,18 @@ def _open_debt_documents_for_snapshot(
                 "closing_amount": structure_check.closing_amount,
                 "manager_ref": event.manager_ref,
                 "manager_name": event.manager_name,
+                "document_responsible_ref": (
+                    document_row.document_responsible_ref if document_row else None
+                ),
+                "document_responsible_name": (
+                    document_row.document_responsible_name if document_row else None
+                ),
+                "document_author_ref": (
+                    document_row.document_author_ref if document_row else None
+                ),
+                "document_author_name": (
+                    document_row.document_author_name if document_row else None
+                ),
                 "debt_department_ref": (
                     document_row.document_department_ref if document_row else None
                 ),
@@ -748,6 +794,12 @@ def _open_debt_documents_from_statement(
                 "return_amount": document.return_amount,
                 "manager_ref": document.manager_ref,
                 "manager_name": document.manager_name,
+                "document_responsible_ref": (
+                    document_row.document_responsible_ref if document_row else None
+                ),
+                "document_responsible_name": (
+                    document_row.document_responsible_name if document_row else None
+                ),
                 "document_author_ref": (
                     document_row.document_author_ref if document_row else None
                 ),
@@ -782,6 +834,9 @@ def _open_debt_documents_from_statement(
                     list(structure_check.linked_documents) if structure_check else []
                 ),
                 "statement_selection_rule": document.statement_selection_rule,
+                "statement_balance_after": document.statement_balance_after,
+                "statement_segment_start_row": document.statement_segment_start_row,
+                "statement_segment_end_row": document.statement_segment_end_row,
                 "statement_match_details": list(document.statement_match_details),
             }
         )
@@ -853,6 +908,36 @@ def _build_item(
     )
     debt_document_author_name = (
         _normalize_ref(primary_open_document.get("document_author_name"))
+        if primary_open_document
+        else None
+    )
+    debt_document_responsible_ref = (
+        _normalize_ref(primary_open_document.get("document_responsible_ref"))
+        if primary_open_document
+        else None
+    )
+    debt_document_responsible_name = (
+        _normalize_ref(primary_open_document.get("document_responsible_name"))
+        if primary_open_document
+        else None
+    )
+    statement_selection_rule = (
+        _normalize_ref(primary_open_document.get("statement_selection_rule"))
+        if primary_open_document
+        else None
+    )
+    statement_balance_after = (
+        primary_open_document.get("statement_balance_after")
+        if primary_open_document
+        else None
+    )
+    statement_segment_start_row = (
+        primary_open_document.get("statement_segment_start_row")
+        if primary_open_document
+        else None
+    )
+    statement_segment_end_row = (
+        primary_open_document.get("statement_segment_end_row")
         if primary_open_document
         else None
     )
@@ -940,9 +1025,15 @@ def _build_item(
         "debt_document_ref": debt_document_ref,
         "debt_document_number": debt_document_number,
         "debt_document_date": debt_document_date,
+        "debt_document_responsible_ref": debt_document_responsible_ref,
+        "debt_document_responsible_name": debt_document_responsible_name,
         "debt_document_author_ref": debt_document_author_ref,
         "debt_document_author_name": debt_document_author_name,
         "open_debt_documents": list(open_debt_documents),
+        "statement_balance_after": statement_balance_after,
+        "statement_segment_start_row": statement_segment_start_row,
+        "statement_segment_end_row": statement_segment_end_row,
+        "statement_selection_rule": statement_selection_rule,
         "origin_document_ref": snapshot.origin_document_ref,
         "origin_document_number": snapshot.origin_document_number,
         "origin_document_date": snapshot.origin_document_date,

@@ -339,6 +339,26 @@ class Settings(BaseSettings):
     matching_bitrix_session_secret: str | None = None
     matching_bitrix_session_ttl_seconds: int = 3600
     matching_bitrix_rest_timeout_seconds: float = 6.0
+    procurement_labels_bitrix_enabled: bool = False
+    procurement_labels_bitrix_allowed_domains: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    procurement_labels_bitrix_allowed_member_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    procurement_labels_bitrix_allowed_user_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    procurement_labels_bitrix_session_secret: str | None = None
+    procurement_labels_bitrix_session_ttl_seconds: int = 3600
+    procurement_labels_bitrix_rest_timeout_seconds: float = 6.0
+    procurement_labels_bitrix_webhook_url: str | None = None
+    procurement_labels_bitrix_root_folder_id: int | None = None
+    procurement_labels_entity_type_id: int = 1056
+    procurement_labels_mapping_path: str = "build/bitrix/procurement_order_mapping.json"
+    procurement_labels_artifact_dir: str = ".local/procurement-labels"
+    procurement_labels_barcode_catalog_path: str = ".local/procurement-labels/barcodes.json"
+    procurement_labels_certificate_catalog_path: str = ".local/procurement-labels/certificates.json"
 
     model_config = SettingsConfigDict(
         env_file=".env", env_prefix="", env_nested_delimiter="__", extra="ignore"

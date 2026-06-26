@@ -4,15 +4,21 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import csv
 import json
 import os
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import UTC, date, datetime
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable
+
+from openpyxl import Workbook
+from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
+from openpyxl.utils import get_column_letter
 
 try:  # Deployed on Openclaw as a flat scripts directory.
     from weekly_kpi_reports_from_a import (  # type: ignore
@@ -62,6 +68,7 @@ REVIEW_REASON_LABELS = {
     "excluded_employee_folder": "исключено: контрагент или папка сотрудников",
     "excluded_wholesale_counterparty": "исключено: оптовый клиент или оптовый отдел",
     "excluded_site_payment_on_pickup": "исключено: выдача без оплаты, отвечает сайт",
+    "excluded_maklab_spb_prosvet": "исключено: Маклаб СПБ ПРОСВЕТ, не трогаем",
     "below_min_balance_threshold": "скрыто из ежедневного списка: сумма долга ниже порога",
     "excluded_china_supplier_group": "исключено: группа доступа Поставщики Китай",
     "open_structure_document_not_found": (
@@ -78,6 +85,9 @@ REVIEW_REASON_LABELS = {
     ),
     "origin_document_closed_by_structure": (
         "выбранный документ закрыт по структуре 1С; нужно найти фактический источник долга"
+    ),
+    "document_comment_history_required": (
+        "нужна проверка комментария или истории документа в 1С"
     ),
 }
 DOCUMENT_STRUCTURE_STATUS_LABELS = {
@@ -299,8 +309,14 @@ def _format_open_debt_documents(value: Any, *, limit: int | None = None) -> str:
         doc_date = _format_dt(item.get("document_date"))
         amount = _csv_number(item.get("open_amount"))
         department = _safe(item.get("debt_department_name"))
-        author = _safe(item.get("document_author_name"))
+        responsible = _safe(
+            _first_present(
+                item.get("document_responsible_name"),
+                item.get("manager_name"),
+            )
+        )
         rule = _statement_rule_label(item.get("statement_selection_rule"))
+        balance_after = _csv_number(item.get("statement_balance_after"))
         label = " ".join(chunk for chunk in ("Реализация", number) if chunk)
         if doc_date:
             label = f"{label} от {doc_date}" if label else doc_date
@@ -308,8 +324,18 @@ def _format_open_debt_documents(value: Any, *, limit: int | None = None) -> str:
             label = f"{label}, остаток {amount} ₽" if label else f"остаток {amount} ₽"
         if department:
             label = f"{label}, подразделение: {department}" if label else department
-        if author:
-            label = f"{label}, автор: {author}" if label else f"автор: {author}"
+        if responsible:
+            label = (
+                f"{label}, ответственный РТУ: {responsible}"
+                if label
+                else f"ответственный РТУ: {responsible}"
+            )
+        if balance_after:
+            label = (
+                f"{label}, конечный остаток: {balance_after} ₽"
+                if label
+                else f"конечный остаток: {balance_after} ₽"
+            )
         if rule:
             label = f"{label}, правило: {rule}" if label else f"правило: {rule}"
         if label:
@@ -369,6 +395,31 @@ def _bitrix_call(
     return data
 
 
+def _bitrix_form_call(base_url: str, method: str, params: list[tuple[str, str]]) -> dict[str, Any]:
+    request = urllib.request.Request(
+        base_url.rstrip("/") + f"/{method}.json",
+        data=urllib.parse.urlencode(params, doseq=True).encode("utf-8"),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+        method="POST",
+    )
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(request, timeout=60) as response:
+        data = json.loads(response.read().decode("utf-8"))
+    if "error" in data:
+        raise RuntimeError(
+            f"Bitrix API error for {method}: {data.get('error')} "
+            f"{data.get('error_description', '')}"
+        )
+    return data
+
+
+def _to_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def post_bitrix_task_comment(
     base_url: str,
     *,
@@ -383,6 +434,49 @@ def post_bitrix_task_comment(
         timeout=timeout,
     )
     return int(data.get("result") or 0)
+
+
+def upload_bitrix_disk_file(
+    base_url: str,
+    *,
+    folder_id: int,
+    file_path: Path,
+) -> int:
+    encoded = base64.b64encode(file_path.read_bytes()).decode("ascii")
+    data = _bitrix_form_call(
+        base_url,
+        "disk.folder.uploadfile",
+        [
+            ("id", str(folder_id)),
+            ("data[NAME]", file_path.name),
+            ("fileContent[0]", file_path.name),
+            ("fileContent[1]", encoded),
+            ("generateUniqueName", "true"),
+        ],
+    )
+    result = data.get("result") or {}
+    file_object_id = _to_int(result.get("ID") if isinstance(result, dict) else result)
+    if file_object_id is None:
+        raise RuntimeError("Bitrix disk.folder.uploadfile returned empty object id")
+    return file_object_id
+
+
+def attach_bitrix_file_to_task(
+    base_url: str,
+    *,
+    task_id: int,
+    file_object_id: int,
+) -> int:
+    data = _bitrix_form_call(
+        base_url,
+        "tasks.task.files.attach",
+        [("taskId", str(task_id)), ("fileId", str(file_object_id))],
+    )
+    result = data.get("result") or {}
+    attachment_id = _to_int(result.get("attachmentId") if isinstance(result, dict) else result)
+    if attachment_id is None:
+        raise RuntimeError("Bitrix tasks.task.files.attach returned empty attachment id")
+    return attachment_id
 
 
 def export_recommendations_csv(report: dict[str, Any], output_path: Path) -> Path:
@@ -409,8 +503,10 @@ def export_recommendations_csv(report: dict[str, Any], output_path: Path) -> Pat
                 "Сумма",
                 "Открытые документы по ведомостной логике 1С",
                 "Основной открытый документ",
-                "Автор накладной",
+                "Ответственный РТУ",
                 "Правило выбора источника",
+                "Конечный остаток ведомости",
+                "Сегмент ведомости",
                 "Документ витрины дебиторки",
                 "Дата долга",
                 "Просрочка дней",
@@ -460,7 +556,10 @@ def export_recommendations_csv(report: dict[str, Any], output_path: Path) -> Pat
                     _csv_number(item.get("current_balance")),
                     _format_open_debt_documents(item.get("open_debt_documents")),
                     debt_document_label,
-                    item.get("debt_document_author_name"),
+                    _first_present(
+                        item.get("debt_document_responsible_name"),
+                        item.get("origin_manager_name"),
+                    ),
                     _statement_rule_label(
                         (item.get("open_debt_documents") or [{}])[0].get(
                             "statement_selection_rule"
@@ -468,6 +567,15 @@ def export_recommendations_csv(report: dict[str, Any], output_path: Path) -> Pat
                         if isinstance(item.get("open_debt_documents"), list)
                         and item.get("open_debt_documents")
                         else ""
+                    ),
+                    _csv_number(item.get("statement_balance_after")),
+                    "–".join(
+                        chunk
+                        for chunk in (
+                            _safe(item.get("statement_segment_start_row")),
+                            _safe(item.get("statement_segment_end_row")),
+                        )
+                        if chunk
                     ),
                     legacy_document_label,
                     _format_dt(

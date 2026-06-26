@@ -3,12 +3,16 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { CompatibilityMappingSettings } from "./components/CompatibilityMappingSettings";
 import { MatchingLayout } from "./components/MatchingLayout";
+import { ProcurementLabelsApp } from "./components/ProcurementLabelsApp";
 import { PropertyMappingSettings } from "./components/PropertyMappingSettings";
 import { ReceivablesWorkplace } from "./components/ReceivablesWorkplace";
 import {
+  getProcurementLabelsItemId,
   initializeBitrixMatchingSession,
+  initializeBitrixProcurementLabelsSession,
   initializeBitrixReceivablesSession,
   isBitrixMatchingRoute,
+  isBitrixProcurementLabelsRoute,
   isBitrixReceivablesRoute,
   type BitrixReceivablesSessionResponse,
 } from "./api/bitrix";
@@ -709,8 +713,55 @@ function ReceivablesApp() {
   );
 }
 
+function ProcurementLabelsBitrixApp() {
+  const [authState, setAuthState] = useState<{
+    status: "ready" | "loading" | "error";
+    message?: string;
+    userName?: string | null;
+  }>({ status: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+    initializeBitrixProcurementLabelsSession()
+      .then((user) => {
+        if (!cancelled) {
+          setAuthState({ status: "ready", userName: user.name });
+        }
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "Не удалось открыть Bitrix24-сессию";
+        if (!cancelled) {
+          setAuthState({ status: "error", message });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (authState.status !== "ready") {
+    return (
+      <div className="app app--center">
+        <div className="app-state">
+          <h1>Этикетки ВЭД</h1>
+          {authState.status === "loading" && <p>Подключение к Bitrix24...</p>}
+          {authState.status === "error" && (
+            <>
+              <p>Нет доступа к генерации этикеток.</p>
+              <small>{authState.message}</small>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return <ProcurementLabelsApp bitrixUserName={authState.userName} itemId={getProcurementLabelsItemId()} />;
+}
+
 function App() {
   if (isLogisticsFallbackRoute()) return <LogisticsFallbackApp />;
+  if (isBitrixProcurementLabelsRoute()) return <ProcurementLabelsBitrixApp />;
   if (isBitrixReceivablesRoute() || isReceivablesWorkplaceRoute()) return <ReceivablesApp />;
   return <MatchingApp />;
 }

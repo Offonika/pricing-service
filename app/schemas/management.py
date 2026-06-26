@@ -92,9 +92,15 @@ class CounterpartyFolderRecommendationItem(BaseModel):
     debt_document_ref: str | None = None
     debt_document_number: str | None = None
     debt_document_date: datetime | None = None
+    debt_document_responsible_ref: str | None = None
+    debt_document_responsible_name: str | None = None
     debt_document_author_ref: str | None = None
     debt_document_author_name: str | None = None
     open_debt_documents: list[dict[str, Any]] = []
+    statement_balance_after: Decimal | None = None
+    statement_segment_start_row: int | None = None
+    statement_segment_end_row: int | None = None
+    statement_selection_rule: str | None = None
     origin_document_ref: str | None = None
     origin_document_number: str | None = None
     origin_document_date: datetime | None = None

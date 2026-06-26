@@ -64,6 +64,13 @@ CONTOUR_ENUM = [
     for item in CONTOUR_CONTRACT
 ]
 
+LABEL_STATUS_ENUM = [
+    {"value": "Черновик", "xml_id": "draft"},
+    {"value": "Заблокировано", "xml_id": "blocked"},
+    {"value": "Утверждено", "xml_id": "approved"},
+    {"value": "Отправлено фабрике", "xml_id": "sent_to_factory"},
+]
+
 CRM_SYNC_FIELD_SPECS = [
     {
         "entity": "company",
@@ -584,6 +591,47 @@ CUSTOM_FIELD_SPECS = [
         "searchable": False,
         "edit_in_list": True,
     },
+    {
+        "logical_key": "label_generation_status",
+        "title": "Этикетки: статус",
+        "type": "enumeration",
+        "enum": LABEL_STATUS_ENUM,
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "label_generation_version",
+        "title": "Этикетки: версия макета",
+        "type": "integer",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "label_generation_zip_url",
+        "title": "Этикетки: ZIP",
+        "type": "url",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "label_generation_errors",
+        "title": "Этикетки: ошибки",
+        "type": "text",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "label_generation_approved_at",
+        "title": "Этикетки: утверждено",
+        "type": "datetime",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
 ]
 
 BUILTIN_FIELD_MAPPING = {
@@ -640,6 +688,17 @@ DETAIL_SECTION_SPECS = [
             "expects_import_gtd",
             "gtd_number",
             "blocker_comment",
+        ],
+    },
+    {
+        "name": "labels",
+        "title": "Этикетки ВЭД",
+        "elements": [
+            "label_generation_status",
+            "label_generation_version",
+            "label_generation_zip_url",
+            "label_generation_errors",
+            "label_generation_approved_at",
         ],
     },
 ]

@@ -6138,6 +6138,113 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-labels/session:
+    post:
+      summary: Create Bitrix Procurement Labels Session
+      operationId: create_bitrix_procurement_labels_session_api_procurement_labels_session_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementLabelsSessionRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementLabelsSessionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-labels/orders/{item_id}/preview:
+    get:
+      summary: Preview Procurement Labels
+      operationId: preview_procurement_labels_api_procurement_labels_orders__item_id__preview_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Item Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementLabelOrderPreview'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-labels/orders/{item_id}/generate:
+    post:
+      summary: Generate Procurement Labels
+      operationId: generate_procurement_labels_api_procurement_labels_orders__item_id__generate_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Item Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementLabelGenerateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementLabelGenerateResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-labels/orders/{item_id}/approve:
+    post:
+      summary: Approve Procurement Labels
+      operationId: approve_procurement_labels_api_procurement_labels_orders__item_id__approve_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Item Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementLabelApproveResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
 components:
   schemas:
     AcceptSafePropertyValueSuggestionsRequest:
@@ -9472,6 +9579,16 @@ components:
             format: date-time
           - type: 'null'
           title: Debt Document Date
+        debt_document_responsible_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Debt Document Responsible Ref
+        debt_document_responsible_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Debt Document Responsible Name
         debt_document_author_ref:
           anyOf:
           - type: string
@@ -9489,6 +9606,27 @@ components:
           type: array
           title: Open Debt Documents
           default: []
+        statement_balance_after:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Statement Balance After
+        statement_segment_start_row:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Statement Segment Start Row
+        statement_segment_end_row:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Statement Segment End Row
+        statement_selection_rule:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Statement Selection Rule
         origin_document_ref:
           anyOf:
           - type: string
@@ -12603,6 +12741,257 @@ components:
       - delta
       - reasons
       title: PriceChangeItem
+    ProcurementLabelApproveResponse:
+      properties:
+        item_id:
+          type: string
+          title: Item Id
+        status:
+          type: string
+          title: Status
+        artifact_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Artifact Version
+        zip_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Zip Url
+      type: object
+      required:
+      - item_id
+      - status
+      title: ProcurementLabelApproveResponse
+    ProcurementLabelGenerateRequest:
+      properties:
+        dry_run:
+          type: boolean
+          title: Dry Run
+          default: false
+      type: object
+      title: ProcurementLabelGenerateRequest
+    ProcurementLabelGenerateResponse:
+      properties:
+        preview:
+          $ref: '#/components/schemas/ProcurementLabelOrderPreview'
+        generated:
+          type: boolean
+          title: Generated
+        artifact_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Artifact Version
+        zip_filename:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Zip Filename
+        zip_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Zip Url
+        disk_file_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Disk File Id
+      type: object
+      required:
+      - preview
+      - generated
+      title: ProcurementLabelGenerateResponse
+    ProcurementLabelOrderPreview:
+      properties:
+        item_id:
+          type: string
+          title: Item Id
+        entity_type_id:
+          type: integer
+          title: Entity Type Id
+        onec_number:
+          type: string
+          title: Onec Number
+        title:
+          type: string
+          title: Title
+        contour:
+          type: string
+          title: Contour
+        status:
+          type: string
+          title: Status
+        ready:
+          type: boolean
+          title: Ready
+        blocked:
+          type: boolean
+          title: Blocked
+        blockers:
+          items:
+            type: string
+          type: array
+          title: Blockers
+        rows:
+          items:
+            $ref: '#/components/schemas/ProcurementLabelRow'
+          type: array
+          title: Rows
+        artifact_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Artifact Version
+        zip_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Zip Url
+        disk_file_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Disk File Id
+      type: object
+      required:
+      - item_id
+      - entity_type_id
+      - onec_number
+      - title
+      - contour
+      - status
+      - ready
+      - blocked
+      title: ProcurementLabelOrderPreview
+    ProcurementLabelRow:
+      properties:
+        line_no:
+          type: integer
+          title: Line No
+        onec_item_code:
+          type: string
+          title: Onec Item Code
+        item_name:
+          type: string
+          title: Item Name
+        sku:
+          type: string
+          title: Sku
+        barcode:
+          type: string
+          title: Barcode
+        unit:
+          type: string
+          title: Unit
+        quantity:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Quantity
+        price:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Price
+        amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Amount
+        certificate_id:
+          type: string
+          title: Certificate Id
+          default: ''
+        certificate_status:
+          type: string
+          title: Certificate Status
+        eac_allowed:
+          type: boolean
+          title: Eac Allowed
+        status:
+          type: string
+          title: Status
+        blockers:
+          items:
+            type: string
+          type: array
+          title: Blockers
+      type: object
+      required:
+      - line_no
+      - onec_item_code
+      - item_name
+      - sku
+      - barcode
+      - unit
+      - quantity
+      - certificate_status
+      - eac_allowed
+      - status
+      title: ProcurementLabelRow
+    ProcurementLabelsSessionRequest:
+      properties:
+        access_token:
+          type: string
+          minLength: 1
+          title: Access Token
+        domain:
+          type: string
+          minLength: 1
+          title: Domain
+        member_id:
+          type: string
+          minLength: 1
+          title: Member Id
+      type: object
+      required:
+      - access_token
+      - domain
+      - member_id
+      title: ProcurementLabelsSessionRequest
+    ProcurementLabelsSessionResponse:
+      properties:
+        session_token:
+          type: string
+          title: Session Token
+        token_type:
+          type: string
+          title: Token Type
+          default: bearer
+        expires_at:
+          type: string
+          format: date-time
+          title: Expires At
+        expires_in:
+          type: integer
+          title: Expires In
+        user:
+          $ref: '#/components/schemas/ProcurementLabelsUser'
+      type: object
+      required:
+      - session_token
+      - expires_at
+      - expires_in
+      - user
+      title: ProcurementLabelsSessionResponse
+    ProcurementLabelsUser:
+      properties:
+        user_id:
+          type: string
+          title: User Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+      type: object
+      required:
+      - user_id
+      title: ProcurementLabelsUser
     ProductFacets:
       properties:
         subjects:

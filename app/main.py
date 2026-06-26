@@ -28,6 +28,8 @@ from app.api.logistics_web import router as logistics_web_router
 from app.api.management import router as management_router
 from app.api.matching import router as matching_router
 from app.api.order_fulfillment import router as order_fulfillment_router
+from app.api.procurement_labels import page_router as procurement_labels_page_router
+from app.api.procurement_labels import router as procurement_labels_router
 from app.api.receivable_workplace import page_router as receivable_workplace_page_router
 from app.api.receivable_workplace import router as receivable_workplace_router
 from app.api.receivables import router as receivables_router
@@ -120,6 +122,7 @@ app.include_router(bitrix_receivables_page_router)
 app.include_router(logistics_web_page_router)
 app.include_router(site_defect_archive_page_router)
 app.include_router(receivable_workplace_page_router)
+app.include_router(procurement_labels_page_router)
 app.include_router(recommendations_router, prefix="/api")
 app.include_router(reports_router, prefix="/api/reports")
 app.include_router(bi_router, prefix="/api/bi")
@@ -143,3 +146,4 @@ app.include_router(logistics_router, prefix="/api/logistics")
 app.include_router(logistics_bot_router, prefix="/api/logistics/bot")
 app.include_router(logistics_web_router, prefix="/api/logistics/web")
 app.include_router(order_fulfillment_router, prefix="/api/order-fulfillment")
+app.include_router(procurement_labels_router, prefix="/api")

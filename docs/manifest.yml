@@ -78,9 +78,44 @@ documents:
     status: draft
     owner: operations
     source_of_truth: true
-    related_code: []
-    related_tests: []
+    related_code:
+      - scripts/ensure_procurement_bitrix_process.py
+      - scripts/sync_onec_supplier_to_crm.py
+      - scripts/import_onec_supplier_order_to_procurement.py
+      - app/services/procurement_supplier_crm.py
+    related_tests:
+      - tests/test_procurement_bitrix_process.py
+      - tests/test_procurement_supplier_crm.py
     keywords: [ved, akb, import, procurement, bitrix24, smart-process, warehouse-receiving]
+  - path: docs/specs/procurement-decision-contract-roadmap.md
+    title: Procurement Decision Contract And Roadmap
+    doc_type: spec
+    domain: procurement
+    status: draft
+    owner: operations
+    source_of_truth: true
+    related_code:
+      - scripts/ensure_procurement_bitrix_process.py
+      - scripts/import_onec_supplier_order_to_procurement.py
+      - app/services/procurement_supplier_crm.py
+      - app/services/assortment_lifecycle.py
+      - app/services/assortment_lifecycle_facts.py
+      - app/services/exporters/ut103_exchange.py
+      - app/services/exporters/ut103_nomenclature_properties.py
+      - tasks/build_assortment_lifecycle_facts.py
+      - tasks/build_assortment_lifecycle_updates.py
+      - tasks/export_ut103_nomenclature_properties.py
+    related_tests:
+      - tests/test_procurement_bitrix_process.py
+      - tests/test_procurement_supplier_crm.py
+      - tests/test_assortment_lifecycle.py
+      - tests/test_assortment_lifecycle_facts.py
+      - tests/test_build_assortment_lifecycle_facts_task.py
+      - tests/test_build_assortment_lifecycle_updates_task.py
+      - tests/test_ut103_exchange.py
+      - tests/test_ut103_nomenclature_properties_exporter.py
+      - tests/test_export_ut103_nomenclature_properties_task.py
+    keywords: [procurement, supplier-order, decision-contract, roadmap, topcontrol, wechat, bitrix24, onec, akb]
   - path: docs/specs/site-order-fulfillment-control-contour.md
     title: Site Order Fulfillment Control Contour
     doc_type: spec
@@ -91,6 +126,24 @@ documents:
     related_code: [app/api/order_fulfillment.py, app/models/site_order_fulfillment.py, app/schemas/order_fulfillment.py, app/services/site_order_fulfillment.py, infra/cron/order_fulfillment_sync.py, scripts/apply_order_fulfillment_stage_outbox.py, scripts/build_order_fulfillment_stage_outbox.py, scripts/ensure_site_order_deal_stages.py]
     related_tests: [tests/test_ensure_site_order_deal_stages.py, tests/test_order_fulfillment_api.py, tests/test_order_fulfillment_parser.py, tests/test_order_fulfillment_stage_apply.py, tests/test_order_fulfillment_sync.py]
     keywords: [site-orders, order-flow, pickup, courier, bitrix-chat, bitrix24, logistics]
+  - path: docs/specs/site-defect-archive-search.md
+    title: Site Defect Archive Search
+    doc_type: spec
+    domain: order_flow
+    status: implemented
+    owner: operations
+    source_of_truth: true
+    related_code:
+      - app/api/site_defect_archive.py
+      - app/models/site_defect_archive.py
+      - app/schemas/site_defect_archive.py
+      - app/services/site_defect_archive.py
+      - scripts/ensure_site_defect_archive_bitrix_process.py
+      - scripts/import-old-bitrix-site-defects
+      - scripts/import_old_bitrix_site_defects.py
+    related_tests:
+      - tests/test_site_defect_archive.py
+    keywords: [site-defects, old-bitrix, chat69465, archive, smart-process, disk, search]
   - path: docs/specs/logistics-control-contour.md
     title: Logistics Control Contour
     doc_type: spec
@@ -102,14 +155,14 @@ documents:
     related_tests: [tests/test_logistics_api.py, tests/test_logistics_onec.py, tests/test_logistics_bot.py, tests/test_logistics_bot_webhook_api.py, tests/test_order_fulfillment_api.py]
     keywords: [logistics, route-run, rtu, external-carrier, manual-review, web-fallback]
   - path: docs/specs/receivables-smart-process-workflow.md
-    title: Receivables Smart Process Workflow
+    title: Receivables Workplace And Smart Process Workflow
     doc_type: spec
     domain: receivables
     status: draft
     owner: product
     source_of_truth: false
-    related_code: [app/api/receivables.py, app/api/management.py, app/models/receivable_case.py, app/services/receivables.py, app/services/management_rules.py, infra/cron/new_daily_receivables_from_a.py]
-    related_tests: [tests/test_receivables.py, tests/test_management_rules.py, tests/test_management_tasks_api.py, tests/test_new_daily_receivables_from_a.py]
+    related_code: [app/api/bitrix_receivables.py, app/api/receivables.py, app/api/receivable_workplace.py, app/api/management.py, app/models/receivable_case.py, app/models/receivable_work.py, app/schemas/bitrix_receivables.py, app/schemas/receivable_workplace.py, app/services/bitrix_receivables_auth.py, app/services/receivables.py, app/services/receivable_workplace.py, app/services/receivable_workflow.py, app/services/management_rules.py, ui/src/api/bitrix.ts, ui/src/components/ReceivablesWorkplace.tsx, infra/cron/new_daily_receivables_from_a.py]
+    related_tests: [tests/test_receivables.py, tests/test_receivable_workplace.py, tests/test_receivable_workflow.py, tests/test_management_rules.py, tests/test_management_tasks_api.py, tests/test_new_daily_receivables_from_a.py]
     keywords: [receivables, bitrix24, smart-process, debt, sms]
   - path: docs/specs/counterparty-folder-recommendations.md
     title: Counterparty Folder Recommendations
@@ -128,9 +181,23 @@ documents:
     status: draft
     owner: finance
     source_of_truth: true
-    related_code: [app/services/exporters/ut103_forecast.py, tasks/export_ut103_forecast.py]
-    related_tests: [tests/test_ut103_forecast_exporter.py, tests/test_export_ut103_forecast_task.py]
-    keywords: [ut103, onec, file-exchange, bot-commands, credit-depth, credit-limit, receivables]
+    related_code:
+      - app/services/exporters/ut103_exchange.py
+      - app/services/exporters/ut103_forecast.py
+      - app/services/exporters/ut103_nomenclature_properties.py
+      - tasks/build_assortment_lifecycle_facts.py
+      - tasks/build_assortment_lifecycle_updates.py
+      - tasks/export_ut103_forecast.py
+      - tasks/export_ut103_nomenclature_properties.py
+    related_tests:
+      - tests/test_ut103_exchange.py
+      - tests/test_ut103_forecast_exporter.py
+      - tests/test_build_assortment_lifecycle_facts_task.py
+      - tests/test_build_assortment_lifecycle_updates_task.py
+      - tests/test_ut103_nomenclature_properties_exporter.py
+      - tests/test_export_ut103_forecast_task.py
+      - tests/test_export_ut103_nomenclature_properties_task.py
+    keywords: [ut103, onec, file-exchange, bot-commands, credit-depth, credit-limit, receivables, nomenclature-properties]
   - path: docs/specs/exchange-counterparty-daily-settlements.md
     title: Exchange Counterparty Daily Settlements Report
     doc_type: spec
@@ -181,6 +248,21 @@ documents:
     related_code: []
     related_tests: []
     keywords: [dhl, europe, logistics, onepager, spare-parts]
+  - path: docs/Onepage.ProcurementManagementContour.md
+    title: Procurement Management Contour Onepage
+    doc_type: onepager
+    domain: procurement
+    status: draft
+    owner: operations
+    source_of_truth: false
+    related_code:
+      - scripts/ensure_procurement_bitrix_process.py
+      - scripts/import_onec_supplier_order_to_procurement.py
+      - app/services/procurement_supplier_crm.py
+    related_tests:
+      - tests/test_procurement_bitrix_process.py
+      - tests/test_procurement_supplier_crm.py
+    keywords: [procurement, supplier-order, topcontrol, wechat, onepager, bitrix24, onec]
   - path: docs/Onepage.OfflineStoreAudioAnalytics.md
     title: Offline Store Audio Analytics Onepage
     doc_type: onepager

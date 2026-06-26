@@ -623,6 +623,185 @@ def test_ensure_daily_bitrix_items_creates_only_eligible_cashboxes(monkeypatch) 
             os.remove(path)
 
 
+def test_ensure_daily_bitrix_items_dry_run_counts_without_creating(monkeypatch) -> None:
+    engine, path = _setup_db()
+    _configure_env(monkeypatch)
+
+    monkeypatch.setattr(
+        card_balance_bitrix,
+        "list_existing_cashbox_codes_for_business_date",
+        lambda *args, **kwargs: set(),
+    )
+    monkeypatch.setattr(
+        card_balance_bitrix,
+        "create_bitrix_item",
+        lambda *args, **kwargs: pytest.fail("dry-run must not create Bitrix items"),
+    )
+    monkeypatch.setattr(
+        reconciliation_worker,
+        "_resolve_cashbox_bitrix_employee",
+        lambda *args, **kwargs: None,
+    )
+
+    try:
+        with Session(engine) as session:
+            session.add(
+                CardBalanceCashbox(
+                    onec_cashbox_code="РБ0000107",
+                    onec_cashbox_name="1223 Горбушкин Двор карта Тюрнин",
+                    card_last4="1223",
+                    employee_last_name="Тюрнин",
+                    needs_manual_review=False,
+                )
+            )
+            session.commit()
+
+            stats = reconciliation_worker._ensure_daily_bitrix_items(
+                session,
+                business_date=date(2026, 4, 23),
+                settings=get_settings(),
+                dry_run=True,
+            )
+
+        assert stats["created"] == 0
+        assert stats["planned_create"] == 1
+        assert stats["eligible_cashboxes"] == 1
+    finally:
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_ensure_daily_bitrix_items_dry_run_respects_max_create_count(monkeypatch) -> None:
+    engine, path = _setup_db()
+    _configure_env(monkeypatch)
+
+    monkeypatch.setattr(
+        card_balance_bitrix,
+        "list_existing_cashbox_codes_for_business_date",
+        lambda *args, **kwargs: set(),
+    )
+    monkeypatch.setattr(
+        card_balance_bitrix,
+        "create_bitrix_item",
+        lambda *args, **kwargs: pytest.fail("dry-run must not create Bitrix items"),
+    )
+    monkeypatch.setattr(
+        reconciliation_worker,
+        "_resolve_cashbox_bitrix_employee",
+        lambda *args, **kwargs: None,
+    )
+
+    try:
+        with Session(engine) as session:
+            session.add_all(
+                [
+                    CardBalanceCashbox(
+                        onec_cashbox_code="РБ0000107",
+                        onec_cashbox_name="1223 Горбушкин Двор карта Тюрнин",
+                        card_last4="1223",
+                        employee_last_name="Тюрнин",
+                        needs_manual_review=False,
+                    ),
+                    CardBalanceCashbox(
+                        onec_cashbox_code="РБ0000108",
+                        onec_cashbox_name="1285 Горбушкин Двор карта Олимжонов",
+                        card_last4="1285",
+                        employee_last_name="Олимжонов",
+                        needs_manual_review=False,
+                    ),
+                ]
+            )
+            session.commit()
+
+            stats = reconciliation_worker._ensure_daily_bitrix_items(
+                session,
+                business_date=date(2026, 4, 23),
+                settings=get_settings(),
+                dry_run=True,
+                max_create_count=1,
+            )
+
+        assert stats["created"] == 0
+        assert stats["planned_create"] == 1
+        assert stats["skipped_create_limit"] == 1
+        assert stats["eligible_cashboxes"] == 2
+        assert stats["max_create_count"] == 1
+    finally:
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_ensure_daily_bitrix_items_create_respects_max_create_count(monkeypatch) -> None:
+    engine, path = _setup_db()
+    _configure_env(monkeypatch)
+    created_fields: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        card_balance_bitrix,
+        "list_existing_cashbox_codes_for_business_date",
+        lambda *args, **kwargs: set(),
+    )
+    monkeypatch.setattr(
+        card_balance_bitrix,
+        "create_bitrix_item",
+        lambda *, fields, settings=None: created_fields.append(fields) or {"id": "1"},
+    )
+    monkeypatch.setattr(
+        reconciliation_worker,
+        "_resolve_cashbox_bitrix_employee",
+        lambda *args, **kwargs: None,
+    )
+
+    try:
+        with Session(engine) as session:
+            session.add_all(
+                [
+                    CardBalanceCashbox(
+                        onec_cashbox_code="РБ0000107",
+                        onec_cashbox_name="1223 Горбушкин Двор карта Тюрнин",
+                        card_last4="1223",
+                        employee_last_name="Тюрнин",
+                        needs_manual_review=False,
+                    ),
+                    CardBalanceCashbox(
+                        onec_cashbox_code="РБ0000108",
+                        onec_cashbox_name="1285 Горбушкин Двор карта Олимжонов",
+                        card_last4="1285",
+                        employee_last_name="Олимжонов",
+                        needs_manual_review=False,
+                    ),
+                ]
+            )
+            session.commit()
+
+            stats = reconciliation_worker._ensure_daily_bitrix_items(
+                session,
+                business_date=date(2026, 4, 23),
+                settings=get_settings(),
+                max_create_count=1,
+            )
+
+        assert stats["created"] == 1
+        assert stats["planned_create"] == 0
+        assert stats["skipped_create_limit"] == 1
+        assert stats["eligible_cashboxes"] == 2
+        assert [field["ufCrmCardBalanceOnecCashboxCode"] for field in created_fields] == [
+            "РБ0000107"
+        ]
+    finally:
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
 def test_ensure_daily_bitrix_items_respects_pilot_allowlist(monkeypatch) -> None:
     engine, path = _setup_db()
     _configure_env(monkeypatch)
@@ -681,6 +860,63 @@ def test_ensure_daily_bitrix_items_respects_pilot_allowlist(monkeypatch) -> None
             os.remove(path)
 
 
+def test_ensure_daily_bitrix_items_uses_runtime_pilot_allowlist(monkeypatch) -> None:
+    engine, path = _setup_db()
+    _configure_env(monkeypatch)
+    created_fields: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        card_balance_bitrix,
+        "list_existing_cashbox_codes_for_business_date",
+        lambda *args, **kwargs: set(),
+    )
+    monkeypatch.setattr(
+        card_balance_bitrix,
+        "create_bitrix_item",
+        lambda *, fields, settings=None: created_fields.append(fields) or {"id": "1"},
+    )
+
+    try:
+        with Session(engine) as session:
+            session.add_all(
+                [
+                    CardBalanceCashbox(
+                        onec_cashbox_code="РБ0000107",
+                        onec_cashbox_name="1223 Горбушкин Двор карта Тюрнин",
+                        card_last4="1223",
+                        employee_last_name="Тюрнин",
+                    ),
+                    CardBalanceCashbox(
+                        onec_cashbox_code="РБ0000108",
+                        onec_cashbox_name="1285 Горбушкин Двор карта Олимжонов",
+                        card_last4="1285",
+                        employee_last_name="Олимжонов",
+                    ),
+                ]
+            )
+            session.commit()
+
+            stats = reconciliation_worker._ensure_daily_bitrix_items(
+                session,
+                business_date=date(2026, 4, 23),
+                settings=get_settings(),
+                pilot_cashbox_codes=["РБ0000107"],
+            )
+
+        assert stats["created"] == 1
+        assert stats["skipped_not_in_pilot"] == 1
+        assert stats["pilot_cashbox_codes_count"] == 1
+        assert [field["ufCrmCardBalanceOnecCashboxCode"] for field in created_fields] == [
+            "РБ0000107"
+        ]
+    finally:
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
 def test_ensure_daily_bitrix_items_skips_without_workday_data(monkeypatch) -> None:
     engine, path = _setup_db()
     _configure_env(monkeypatch)
@@ -723,6 +959,66 @@ def test_ensure_daily_bitrix_items_skips_without_workday_data(monkeypatch) -> No
         assert stats["skipped_no_workday_data"] == 1
         assert stats["eligible_cashboxes"] == 0
         assert created_fields == []
+    finally:
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_ensure_daily_bitrix_items_can_ignore_workday_for_pilot(monkeypatch) -> None:
+    engine, path = _setup_db()
+    _configure_env(monkeypatch)
+    monkeypatch.setenv("CARD_BALANCE_PILOT_CASHBOX_CODES", "РБ0000107")
+    monkeypatch.setenv("CARD_BALANCE_REQUIRE_WORKDAY", "true")
+    get_settings.cache_clear()
+    created_fields: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        card_balance_bitrix,
+        "list_existing_cashbox_codes_for_business_date",
+        lambda *args, **kwargs: set(),
+    )
+    monkeypatch.setattr(
+        card_balance_bitrix,
+        "create_bitrix_item",
+        lambda *, fields, settings=None: created_fields.append(fields) or {"id": "1"},
+    )
+    monkeypatch.setattr(
+        reconciliation_worker,
+        "_resolve_cashbox_bitrix_employee",
+        lambda *args, **kwargs: {
+            "bitrix_user_id": "130768",
+            "full_name": "Вадим Тюрнин",
+        },
+    )
+
+    try:
+        with Session(engine) as session:
+            session.add(
+                CardBalanceCashbox(
+                    onec_cashbox_code="РБ0000107",
+                    onec_cashbox_name="1223 Горбушкин Двор карта Тюрнин",
+                    card_last4="1223",
+                    employee_last_name="Тюрнин",
+                    employee_id="130768",
+                )
+            )
+            session.commit()
+
+            stats = reconciliation_worker._ensure_daily_bitrix_items(
+                session,
+                business_date=date(2026, 4, 23),
+                settings=get_settings(),
+                require_workday=False,
+            )
+
+        assert stats["workday_required"] == 0
+        assert stats["created"] == 1
+        assert stats["skipped_no_workday_data"] == 0
+        assert stats["eligible_cashboxes"] == 1
+        assert created_fields[0]["ufCrmCardBalanceEmployeeUser"] == 130768
     finally:
         get_settings.cache_clear()
         get_engine.cache_clear()
@@ -1283,6 +1579,71 @@ def test_bitrix_sync_item_manual_balance_does_not_require_ocr(monkeypatch) -> No
             os.remove(path)
 
 
+def test_bitrix_sync_item_can_skip_ocr_for_manual_pilot(monkeypatch) -> None:
+    engine, path = _setup_db()
+    _configure_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    get_settings.cache_clear()
+    business_date = reconciliation_service.utcnow().date().isoformat()
+
+    class FailingOCRClient:
+        def __init__(self, *, settings=None, client=None):
+            self.settings = settings
+
+        def extract_balance(self, *, image_bytes, mime_type, item_title=None):
+            pytest.fail("apply_ocr=False must bypass OCR")
+
+    monkeypatch.setattr(card_balance_bitrix, "CardBalanceOCRClient", FailingOCRClient)
+    monkeypatch.setattr(
+        card_balance_bitrix,
+        "download_bitrix_item_screenshot",
+        lambda item, settings=None: pytest.fail("apply_ocr=False must skip screenshot download"),
+    )
+    monkeypatch.setattr(
+        card_balance_bitrix, "update_and_mark_bitrix_item", lambda *args, **kwargs: None
+    )
+
+    try:
+        with Session(engine) as session:
+            session.add(
+                CardBalanceCashbox(
+                    onec_cashbox_code="РБ0000220",
+                    onec_cashbox_name="6426 карта Куценко Дмитрий",
+                    card_last4="6426",
+                    employee_last_name="Куценко Дмитрий",
+                )
+            )
+            session.commit()
+
+            row = card_balance_bitrix.sync_bitrix_item(
+                session,
+                item={"id": 49, "title": "24.04.2026 6426 карта Куценко Дмитрий"},
+                decoded_payload={
+                    "external_id": "bitrix:49",
+                    "business_date": business_date,
+                    "employee_last_name": "Куценко Дмитрий",
+                    "card_last4": "6426",
+                    "onec_cashbox_code": "РБ0000220",
+                    "bitrix_item_id": "49",
+                    "screenshot_file_id": "2710162",
+                },
+                onec_balances={"РБ0000220": Decimal("1060.00")},
+                apply_ocr=False,
+                settings=get_settings(),
+            )
+
+            assert row.status == "low_confidence"
+            assert row.recognized_balance is None
+            assert row.recognition_confidence is None
+            assert "ocr_error" not in row.payload
+    finally:
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
 def test_bitrix_sync_counts_unmapped_item_and_ocr_error(monkeypatch) -> None:
     engine, path = _setup_db()
     _configure_env(monkeypatch)
@@ -1337,6 +1698,159 @@ def test_bitrix_sync_counts_unmapped_item_and_ocr_error(monkeypatch) -> None:
             assert row.payload["mapping_error"] == "unmapped_card"
             assert "кассе 1С" in row.payload["manual_review_reason"]
             assert row.payload["ocr_error"] == "403 Forbidden"
+    finally:
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_bitrix_sync_can_skip_ocr_for_manual_pilot(monkeypatch) -> None:
+    engine, path = _setup_db()
+    _configure_env(monkeypatch)
+    monkeypatch.setenv("OPENAI_API_KEY", "test-openai-key")
+    get_settings.cache_clear()
+    business_date = reconciliation_service.utcnow().date().isoformat()
+
+    class FakeExtractor:
+        def fetch_balance_by_cashbox_codes(self, *, business_date, cashbox_codes):
+            return {"РБ0000220": Decimal("1060.00")}
+
+    monkeypatch.setattr(reconciliation_worker, "_get_app_engine", lambda: engine)
+    monkeypatch.setattr(
+        card_balance_bitrix,
+        "list_bitrix_items",
+        lambda *, settings=None, limit=50: [
+            {"id": 49, "title": "24.04.2026 6426 карта Куценко Дмитрий"}
+        ],
+    )
+    monkeypatch.setattr(
+        card_balance_bitrix,
+        "decode_bitrix_item",
+        lambda item, settings=None: {
+            "external_id": "bitrix:49",
+            "business_date": business_date,
+            "employee_last_name": "Куценко Дмитрий",
+            "card_last4": "6426",
+            "onec_cashbox_code": "РБ0000220",
+            "bitrix_item_id": "49",
+            "screenshot_file_id": "2710162",
+        },
+    )
+    monkeypatch.setattr(
+        card_balance_bitrix,
+        "download_bitrix_item_screenshot",
+        lambda item, settings=None: pytest.fail("ocr_enabled=False must skip screenshot download"),
+    )
+    monkeypatch.setattr(
+        card_balance_bitrix, "update_and_mark_bitrix_item", lambda *args, **kwargs: None
+    )
+
+    try:
+        with Session(engine) as session:
+            session.add(
+                CardBalanceCashbox(
+                    onec_cashbox_code="РБ0000220",
+                    onec_cashbox_name="6426 карта Куценко Дмитрий",
+                    card_last4="6426",
+                    employee_last_name="Куценко Дмитрий",
+                )
+            )
+            session.commit()
+
+        result = reconciliation_worker.run_card_balance_bitrix_sync(
+            ocr_enabled=False,
+            extractor=FakeExtractor(),
+        )
+
+        assert result["processed"] == 1
+        assert result["exceptions"] == 1
+        assert result["ocr_errors"] == 0
+        assert result["ocr_enabled"] is False
+        with Session(engine) as session:
+            row = session.scalar(
+                select(CardBalanceReconciliation).where(
+                    CardBalanceReconciliation.external_id == "bitrix:49"
+                )
+            )
+            assert row is not None
+            assert row.status == "low_confidence"
+            assert "ocr_error" not in row.payload
+    finally:
+        get_settings.cache_clear()
+        get_engine.cache_clear()
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_bitrix_sync_dry_run_auto_create_skips_item_processing(monkeypatch) -> None:
+    engine, path = _setup_db()
+    _configure_env(monkeypatch)
+
+    class FakeExtractor:
+        pass
+
+    monkeypatch.setattr(reconciliation_worker, "_get_app_engine", lambda: engine)
+    monkeypatch.setattr(
+        reconciliation_worker,
+        "_resolve_cashbox_bitrix_employee",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        card_balance_bitrix,
+        "list_existing_cashbox_codes_for_business_date",
+        lambda *args, **kwargs: set(),
+    )
+    monkeypatch.setattr(
+        card_balance_bitrix,
+        "create_bitrix_item",
+        lambda *args, **kwargs: pytest.fail("dry-run must not create Bitrix items"),
+    )
+    monkeypatch.setattr(
+        card_balance_bitrix,
+        "list_bitrix_items",
+        lambda *args, **kwargs: pytest.fail("dry-run must not process Bitrix items"),
+    )
+    monkeypatch.setattr(
+        card_balance_bitrix,
+        "list_bitrix_items_by_business_date",
+        lambda *args, **kwargs: pytest.fail("dry-run must not process Bitrix items"),
+    )
+
+    try:
+        with Session(engine) as session:
+            session.add(
+                CardBalanceCashbox(
+                    onec_cashbox_code="РБ0000107",
+                    onec_cashbox_name="1223 Горбушкин Двор карта Тюрнин",
+                    card_last4="1223",
+                    employee_last_name="Тюрнин",
+                    needs_manual_review=False,
+                )
+            )
+            session.commit()
+
+        result = reconciliation_worker.run_card_balance_bitrix_sync(
+            business_date=date(2026, 4, 23),
+            auto_create_daily=False,
+            dry_run_auto_create=True,
+            require_workday=False,
+            pilot_cashbox_codes=["РБ0000107"],
+            max_create_count=1,
+            extractor=FakeExtractor(),
+        )
+
+        assert result["processed"] == 0
+        assert result["daily_created"] == 0
+        assert result["daily_planned_create"] == 1
+        assert result["dry_run_auto_create"] is True
+        assert result["workday_required"] is False
+        assert result["pilot_cashbox_codes_count"] == 1
+        assert result["max_create_count"] == 1
+        assert result["daily_skipped_create_limit"] == 0
+        assert result["business_date"] == "2026-04-23"
     finally:
         get_settings.cache_clear()
         get_engine.cache_clear()

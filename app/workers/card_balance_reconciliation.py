@@ -68,15 +68,23 @@ def run_card_balance_bitrix_sync(
     limit: int = 50,
     business_date: date | None = None,
     auto_create_daily: bool | None = None,
+    dry_run_auto_create: bool = False,
+    require_workday: bool | None = None,
+    pilot_cashbox_codes: list[str] | None = None,
+    ocr_enabled: bool | None = None,
+    max_create_count: int | None = None,
     extractor: OneCCardBalanceExtractor | None = None,
-) -> dict[str, int | str]:
+) -> dict[str, int | str | bool]:
     settings = get_settings()
     should_auto_create = (
         settings.card_balance_auto_create_daily if auto_create_daily is None else auto_create_daily
     )
+    if dry_run_auto_create:
+        should_auto_create = True
+    should_apply_ocr = settings.card_balance_ocr_enabled if ocr_enabled is None else ocr_enabled
     extractor = extractor or OneCCardBalanceExtractor(_get_onec_engine())
     target_business_date = business_date or reconciliation_service.utcnow().date()
-    result: dict[str, int | str] = {
+    result: dict[str, int | str | bool] = {
         "processed": 0,
         "matched": 0,
         "exceptions": 0,
@@ -85,6 +93,8 @@ def run_card_balance_bitrix_sync(
         "skipped_no_workday_data": 0,
         "skipped_unmapped_bitrix_item": 0,
         "ocr_errors": 0,
+        "ocr_enabled": should_apply_ocr,
+        "max_create_count": max_create_count or 0,
     }
 
     with Session(_get_app_engine()) as session:
@@ -97,22 +107,44 @@ def run_card_balance_bitrix_sync(
             "skipped_no_workday_data": 0,
             "create_errors": 0,
             "eligible_cashboxes": 0,
+            "planned_create": 0,
+            "skipped_create_limit": 0,
+            "max_create_count": max_create_count or 0,
+            "workday_required": int(
+                settings.card_balance_require_workday
+                if require_workday is None
+                else require_workday
+            ),
         }
         if should_auto_create:
             ensure_stats = _ensure_daily_bitrix_items(
                 session,
                 business_date=target_business_date,
                 settings=settings,
+                dry_run=dry_run_auto_create,
+                require_workday=require_workday,
+                pilot_cashbox_codes=pilot_cashbox_codes,
+                max_create_count=max_create_count,
             )
             result["daily_created"] = ensure_stats["created"]
+            result["daily_planned_create"] = ensure_stats["planned_create"]
             result["daily_skipped_existing"] = ensure_stats["skipped_existing"]
             result["daily_skipped_manual_review"] = ensure_stats["skipped_manual_review"]
             result["daily_skipped_missing_data"] = ensure_stats["skipped_missing_data"]
             result["daily_skipped_not_in_pilot"] = ensure_stats["skipped_not_in_pilot"]
             result["daily_skipped_no_workday_data"] = ensure_stats["skipped_no_workday_data"]
+            result["daily_skipped_create_limit"] = ensure_stats["skipped_create_limit"]
             result["skipped_not_in_pilot"] = ensure_stats["skipped_not_in_pilot"]
             result["skipped_no_workday_data"] = ensure_stats["skipped_no_workday_data"]
             result["daily_create_errors"] = ensure_stats["create_errors"]
+            result["dry_run_auto_create"] = dry_run_auto_create
+            result["workday_required"] = bool(ensure_stats["workday_required"])
+            result["pilot_cashbox_codes_count"] = ensure_stats["pilot_cashbox_codes_count"]
+            result["max_create_count"] = ensure_stats["max_create_count"]
+
+        if dry_run_auto_create:
+            result["business_date"] = target_business_date.isoformat()
+            return result
 
         if should_auto_create or business_date is not None:
             list_limit = max(limit, int(ensure_stats["eligible_cashboxes"]) + 20)
@@ -141,6 +173,7 @@ def run_card_balance_bitrix_sync(
                     item=item,
                     decoded_payload=payload,
                     onec_balances={code: onec_balances.get((business_date, code))} if code else {},
+                    apply_ocr=should_apply_ocr,
                     settings=settings,
                 )
                 result["processed"] += 1
@@ -278,6 +311,10 @@ def _ensure_daily_bitrix_items(
     *,
     business_date: date,
     settings: Settings,
+    dry_run: bool = False,
+    require_workday: bool | None = None,
+    pilot_cashbox_codes: list[str] | None = None,
+    max_create_count: int | None = None,
 ) -> dict[str, int]:
     existing_codes = card_balance_bitrix.list_existing_cashbox_codes_for_business_date(
         business_date,
@@ -293,8 +330,16 @@ def _ensure_daily_bitrix_items(
         "skipped_no_workday_data": 0,
         "create_errors": 0,
         "eligible_cashboxes": 0,
+        "planned_create": 0,
+        "skipped_create_limit": 0,
+        "max_create_count": max_create_count or 0,
+        "workday_required": int(
+            settings.card_balance_require_workday if require_workday is None else require_workday
+        ),
+        "pilot_cashbox_codes_count": 0,
     }
-    pilot_codes = _pilot_cashbox_codes(settings)
+    pilot_codes = _pilot_cashbox_codes(settings, pilot_cashbox_codes)
+    stats["pilot_cashbox_codes_count"] = len(pilot_codes)
     cashboxes = session.scalars(
         select(CardBalanceCashbox)
         .where(CardBalanceCashbox.is_active.is_(True))
@@ -313,7 +358,7 @@ def _ensure_daily_bitrix_items(
             stats["skipped_not_in_pilot"] += 1
             continue
         employee = _resolve_cashbox_bitrix_employee(session, cashbox, settings=settings)
-        if settings.card_balance_require_workday and not _cashbox_has_workday(
+        if bool(stats["workday_required"]) and not _cashbox_has_workday(
             session,
             cashbox=cashbox,
             employee=employee,
@@ -324,6 +369,9 @@ def _ensure_daily_bitrix_items(
         stats["eligible_cashboxes"] += 1
         if code in existing_codes:
             stats["skipped_existing"] += 1
+            continue
+        if max_create_count and stats["created"] + stats["planned_create"] >= max_create_count:
+            stats["skipped_create_limit"] += 1
             continue
         employee_id = employee.get("bitrix_user_id") if employee else None
         employee_name = (
@@ -343,6 +391,9 @@ def _ensure_daily_bitrix_items(
             assigned_by_id=employee_id,
             settings=settings,
         )
+        if dry_run:
+            stats["planned_create"] += 1
+            continue
         try:
             card_balance_bitrix.create_bitrix_item(fields=fields, settings=settings)
         except Exception:
@@ -353,12 +404,9 @@ def _ensure_daily_bitrix_items(
     return stats
 
 
-def _pilot_cashbox_codes(settings: Settings) -> set[str]:
-    return {
-        code
-        for code in (clean_string(item) for item in settings.card_balance_pilot_cashbox_codes)
-        if code
-    }
+def _pilot_cashbox_codes(settings: Settings, overrides: list[str] | None = None) -> set[str]:
+    source = overrides if overrides is not None else settings.card_balance_pilot_cashbox_codes
+    return {code for code in (clean_string(item) for item in source) if code}
 
 
 def _cashbox_has_workday(

@@ -149,10 +149,15 @@ def _make_case(
     bitrix_disk_folder_url: str | None = None,
     bitrix_notify_task_id: str | None = None,
     store_external_id: str = "store-1",
+    owner_user_external_id: str = "okk-1",
+    payload_extra: dict | None = None,
     payload_posted: bool = False,
     created_at_source: datetime | None = None,
     due_at: datetime | None = None,
 ) -> ExpertiseCase:
+    payload = {"source": "1c", "posted": payload_posted, "items": [{"line_no": 1}]}
+    if payload_extra:
+        payload.update(payload_extra)
     row = ExpertiseCase(
         external_id=external_id,
         onec_expertise_ref=onec_expertise_ref,
@@ -177,12 +182,12 @@ def _make_case(
         decision_comment="Подтвержден дефект",
         client_notified=client_notified,
         due_at=due_at or datetime(2026, 4, 15, 10, 0, 0),
-        owner_user_external_id="okk-1",
+        owner_user_external_id=owner_user_external_id,
         bitrix_entity_id=bitrix_entity_id,
         bitrix_disk_folder_id=bitrix_disk_folder_id,
         bitrix_disk_folder_url=bitrix_disk_folder_url,
         bitrix_notify_task_id=bitrix_notify_task_id,
-        payload={"source": "1c", "posted": payload_posted, "items": [{"line_no": 1}]},
+        payload=payload,
         updated_at=updated_at or datetime(2026, 4, 2, 12, 0, 0),
     )
     session.add(row)
@@ -274,7 +279,12 @@ def test_sync_case_to_bitrix_updates_existing_item_and_task(monkeypatch) -> None
         calls.append(method)
         if method == "disk.folder.get":
             return _FakeHTTPResponse(
-                {"result": {"ID": "701", "DETAIL_URL": "https://disk/new/701/"}}
+                {
+                    "result": {
+                        "ID": "701",
+                        "DETAIL_URL": "https://disk/shared/path/Отдел контроля качества/Экспертиза",
+                    }
+                }
             )
         if method == "tasks.task.get":
             return _FakeHTTPResponse({"result": {"task": {"id": "8801", "status": "2"}}})
@@ -303,7 +313,10 @@ def test_sync_case_to_bitrix_updates_existing_item_and_task(monkeypatch) -> None
             expertise_bitrix.sync_case_to_bitrix(session, case_id=row.id)
             session.commit()
             session.refresh(row)
-            assert row.bitrix_disk_folder_url == "https://disk/new/701/"
+            assert (
+                row.bitrix_disk_folder_url
+                == "https://disk/shared/path/Отдел контроля качества/Экспертиза"
+            )
         assert calls == [
             "disk.folder.get",
             "tasks.task.get",
@@ -321,7 +334,12 @@ def test_sync_case_to_bitrix_updates_existing_item_and_task(monkeypatch) -> None
         assert task_fields["AUDITORS"] == [901, 902]
         assert "Экспертиза: ЭКС-001" in task_fields["DESCRIPTION"]
         assert "Smart-process item ID: 555" in task_fields["DESCRIPTION"]
-        assert "Папка Bitrix Disk: https://disk/new/701/" in task_fields["DESCRIPTION"]
+        assert (
+            "Папка Bitrix Disk: [URL=https://disk/shared/path/%D0%9E%D1%82%D0%B4%D0%B5%D0%BB%20"
+            in task_fields["DESCRIPTION"]
+        )
+        assert "открыть папку[/URL]" in task_fields["DESCRIPTION"]
+        assert "https://disk/shared/path/Отдел контроля" not in task_fields["DESCRIPTION"]
         assert "DEADLINE" in task_fields
     finally:
         get_settings.cache_clear()
@@ -601,7 +619,7 @@ def test_sync_case_to_bitrix_finalizes_approved_case_when_notify_task_closed(
         assert methods == ["disk.folder.get", "tasks.task.get", "crm.item.update"]
         update_params = next(params for method, params in calls if method == "crm.item.update")
         assert update_params["fields[stageId]"] == ["DT187_1:SUCCESS"]
-        assert update_params["fields[ufCrmExpertiseClientNotified]"] == ["1"]
+        assert update_params["fields[ufCrmExpertiseClientNotified]"] == ["Y"]
         assert "tasks.task.complete" not in methods
     finally:
         get_settings.cache_clear()
@@ -869,12 +887,260 @@ def test_sync_case_to_bitrix_falls_back_when_department_head_is_missing(monkeypa
                 )
             ).all()
             assert len(events) == 1
-            assert "has no assigned head" in (events[0].comment or "")
+            assert "fallback to department manager" in (events[0].comment or "")
 
         task_params = next(params for method, params in calls if method == "tasks.task.add")
         assert task_params["fields[RESPONSIBLE_ID]"] == ["1001"]
         assert task_params["fields[CREATED_BY]"] == ["900"]
         assert task_params["fields[ACCOMPLICES][]"] == ["1002"]
+    finally:
+        get_settings.cache_clear()
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_sync_case_to_bitrix_prefers_active_non_courier_owner(monkeypatch) -> None:
+    engine, path = _setup_db()
+    _configure_bitrix_env(monkeypatch)
+    calls: list[tuple[str, dict[str, list[str]]]] = []
+
+    def fake_urlopen(request, timeout=60):
+        method = request.full_url.rsplit("/", 1)[-1].replace(".json", "")
+        params = urllib.parse.parse_qs((request.data or b"").decode("utf-8"))
+        calls.append((method, params))
+        if method == "disk.folder.getchildren":
+            return _FakeHTTPResponse({"result": []})
+        if method == "disk.folder.addsubfolder":
+            return _FakeHTTPResponse({"result": {"ID": "701"}})
+        if method == "crm.item.list":
+            return _FakeHTTPResponse({"result": {"items": []}})
+        if method == "crm.item.add":
+            return _FakeHTTPResponse({"result": {"item": {"id": 555}}})
+        if method == "department.get":
+            return _FakeHTTPResponse({"result": [{"ID": "501", "UF_HEAD": "1001"}]})
+        if method == "user.get":
+            return _FakeHTTPResponse(
+                {
+                    "result": [
+                        {
+                            "ID": "1001",
+                            "NAME": "Мария",
+                            "LAST_NAME": "Давыденкова",
+                            "WORK_POSITION": "Курьер",
+                        },
+                        {
+                            "ID": "1002",
+                            "NAME": "Дмитрий",
+                            "LAST_NAME": "Куценко",
+                            "SECOND_NAME": "Алексеевич",
+                            "WORK_POSITION": "Менеджер по продажам",
+                        },
+                        {
+                            "ID": "1003",
+                            "NAME": "Камиль",
+                            "LAST_NAME": "Гаджимурадов",
+                            "WORK_POSITION": "Менеджер по продажам",
+                        },
+                        {
+                            "ID": "1004",
+                            "NAME": "Иван",
+                            "LAST_NAME": "Морозов",
+                            "WORK_POSITION": "Курьер",
+                        },
+                    ]
+                }
+            )
+        if method == "tasks.task.add":
+            return _FakeHTTPResponse({"result": {"task": {"id": "8801"}}})
+        raise AssertionError(f"unexpected Bitrix24 method: {method}")
+
+    monkeypatch.setattr(expertise_bitrix.urllib.request, "urlopen", fake_urlopen)
+
+    try:
+        with Session(engine) as session:
+            row = _make_case(
+                session,
+                owner_user_external_id="0xtechnical",
+                payload_extra={"responsible_name": "Куценко Дмитрий Алексеевич"},
+            )
+            expertise_bitrix.sync_case_to_bitrix(session, case_id=row.id)
+            session.commit()
+
+            events = session.scalars(
+                select(ExpertiseCaseEvent).where(
+                    ExpertiseCaseEvent.expertise_case_id == row.id,
+                    ExpertiseCaseEvent.event_type == "automation_error",
+                )
+            ).all()
+            assert events == []
+
+        task_params = next(params for method, params in calls if method == "tasks.task.add")
+        assert task_params["fields[RESPONSIBLE_ID]"] == ["1002"]
+        assert task_params["fields[ACCOMPLICES][]"] == ["1003"]
+    finally:
+        get_settings.cache_clear()
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_sync_case_to_bitrix_falls_back_to_manager_when_owner_is_technical(
+    monkeypatch,
+) -> None:
+    engine, path = _setup_db()
+    _configure_bitrix_env(monkeypatch)
+    calls: list[tuple[str, dict[str, list[str]]]] = []
+
+    def fake_urlopen(request, timeout=60):
+        method = request.full_url.rsplit("/", 1)[-1].replace(".json", "")
+        params = urllib.parse.parse_qs((request.data or b"").decode("utf-8"))
+        calls.append((method, params))
+        if method == "disk.folder.getchildren":
+            return _FakeHTTPResponse({"result": []})
+        if method == "disk.folder.addsubfolder":
+            return _FakeHTTPResponse({"result": {"ID": "701"}})
+        if method == "crm.item.list":
+            return _FakeHTTPResponse({"result": {"items": []}})
+        if method == "crm.item.add":
+            return _FakeHTTPResponse({"result": {"item": {"id": 555}}})
+        if method == "department.get":
+            return _FakeHTTPResponse({"result": [{"ID": "501", "UF_HEAD": "130912"}]})
+        if method == "user.get":
+            return _FakeHTTPResponse(
+                {
+                    "result": [
+                        {
+                            "ID": "130912",
+                            "NAME": "Мария",
+                            "LAST_NAME": "Давыденкова",
+                            "WORK_POSITION": "Курьер",
+                        },
+                        {
+                            "ID": "130907",
+                            "NAME": "Ксения",
+                            "LAST_NAME": "Сосновская",
+                            "WORK_POSITION": "Мерчандайзер",
+                        },
+                        {
+                            "ID": "131017",
+                            "NAME": "Дмитрий",
+                            "LAST_NAME": "Куценко",
+                            "WORK_POSITION": "Менеджер по продажам",
+                        },
+                        {
+                            "ID": "131748",
+                            "NAME": "Камиль",
+                            "LAST_NAME": "Гаджимурадов",
+                            "WORK_POSITION": "Менеджер по продажам",
+                        },
+                        {
+                            "ID": "132818",
+                            "NAME": "Иван",
+                            "LAST_NAME": "Морозов",
+                            "WORK_POSITION": "Курьер",
+                        },
+                    ]
+                }
+            )
+        if method == "tasks.task.add":
+            return _FakeHTTPResponse({"result": {"task": {"id": "8801"}}})
+        raise AssertionError(f"unexpected Bitrix24 method: {method}")
+
+    monkeypatch.setattr(expertise_bitrix.urllib.request, "urlopen", fake_urlopen)
+
+    try:
+        with Session(engine) as session:
+            row = _make_case(
+                session,
+                owner_user_external_id="0x9e79002590803daf11efe977ca909c8c",
+                payload_extra={"responsible_name": "Стажер_Экама12"},
+            )
+            expertise_bitrix.sync_case_to_bitrix(session, case_id=row.id)
+            session.commit()
+
+            events = session.scalars(
+                select(ExpertiseCaseEvent).where(
+                    ExpertiseCaseEvent.expertise_case_id == row.id,
+                    ExpertiseCaseEvent.event_type == "automation_error",
+                )
+            ).all()
+            assert len(events) == 1
+            assert "fallback to department manager" in (events[0].comment or "")
+
+        task_params = next(params for method, params in calls if method == "tasks.task.add")
+        assert task_params["fields[RESPONSIBLE_ID]"] == ["131017"]
+        assert task_params["fields[ACCOMPLICES][]"] == ["131748"]
+    finally:
+        get_settings.cache_clear()
+        engine.dispose()
+        if os.path.exists(path):
+            os.remove(path)
+
+
+def test_sync_case_to_bitrix_allows_store_manager_head_as_responsible(monkeypatch) -> None:
+    engine, path = _setup_db()
+    _configure_bitrix_env(monkeypatch)
+    calls: list[tuple[str, dict[str, list[str]]]] = []
+
+    def fake_urlopen(request, timeout=60):
+        method = request.full_url.rsplit("/", 1)[-1].replace(".json", "")
+        params = urllib.parse.parse_qs((request.data or b"").decode("utf-8"))
+        calls.append((method, params))
+        if method == "disk.folder.getchildren":
+            return _FakeHTTPResponse({"result": []})
+        if method == "disk.folder.addsubfolder":
+            return _FakeHTTPResponse({"result": {"ID": "701"}})
+        if method == "crm.item.list":
+            return _FakeHTTPResponse({"result": {"items": []}})
+        if method == "crm.item.add":
+            return _FakeHTTPResponse({"result": {"item": {"id": 555}}})
+        if method == "department.get":
+            return _FakeHTTPResponse({"result": [{"ID": "501", "UF_HEAD": "130743"}]})
+        if method == "user.get":
+            return _FakeHTTPResponse(
+                {
+                    "result": [
+                        {
+                            "ID": "130743",
+                            "NAME": "Зафаржон",
+                            "LAST_NAME": "Юлдошев",
+                            "WORK_POSITION": "Управляющий магазином",
+                        },
+                        {
+                            "ID": "130744",
+                            "NAME": "Елена",
+                            "LAST_NAME": "Петрова",
+                            "WORK_POSITION": "Менеджер по продажам",
+                        },
+                        {
+                            "ID": "130745",
+                            "NAME": "Игорь",
+                            "LAST_NAME": "Сидоров",
+                            "WORK_POSITION": "Курьер",
+                        },
+                    ]
+                }
+            )
+        if method == "tasks.task.add":
+            return _FakeHTTPResponse({"result": {"task": {"id": "8801"}}})
+        raise AssertionError(f"unexpected Bitrix24 method: {method}")
+
+    monkeypatch.setattr(expertise_bitrix.urllib.request, "urlopen", fake_urlopen)
+
+    try:
+        with Session(engine) as session:
+            row = _make_case(
+                session,
+                owner_user_external_id="0xtechnical",
+                payload_extra={"responsible_name": "Стажер_Экама12"},
+            )
+            expertise_bitrix.sync_case_to_bitrix(session, case_id=row.id)
+            session.commit()
+
+        task_params = next(params for method, params in calls if method == "tasks.task.add")
+        assert task_params["fields[RESPONSIBLE_ID]"] == ["130743"]
+        assert task_params["fields[ACCOMPLICES][]"] == ["130744"]
     finally:
         get_settings.cache_clear()
         engine.dispose()

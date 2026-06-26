@@ -4,7 +4,14 @@ import toast from "react-hot-toast";
 import { CompatibilityMappingSettings } from "./components/CompatibilityMappingSettings";
 import { MatchingLayout } from "./components/MatchingLayout";
 import { PropertyMappingSettings } from "./components/PropertyMappingSettings";
-import { initializeBitrixMatchingSession, isBitrixMatchingRoute } from "./api/bitrix";
+import { ReceivablesWorkplace } from "./components/ReceivablesWorkplace";
+import {
+  initializeBitrixMatchingSession,
+  initializeBitrixReceivablesSession,
+  isBitrixMatchingRoute,
+  isBitrixReceivablesRoute,
+  type BitrixReceivablesSessionResponse,
+} from "./api/bitrix";
 import type { ProductFacets, ProductRow, ProductSort } from "./api/types";
 import { useSelectedProduct } from "./store/useSelectionStore";
 
@@ -88,6 +95,7 @@ function writeProductListPrefs(prefs: ProductListPrefs) {
 }
 
 const isLogisticsFallbackRoute = () => window.location.pathname.startsWith("/logistics/fallback");
+const isReceivablesWorkplaceRoute = () => window.location.pathname.startsWith("/receivables/workplace");
 
 type LogisticsProfile = {
   id: number;
@@ -646,8 +654,65 @@ function MatchingApp() {
   );
 }
 
+function ReceivablesApp() {
+  const bitrixMode = isBitrixReceivablesRoute();
+  const [authState, setAuthState] = useState<{
+    status: "ready" | "loading" | "error";
+    message?: string;
+    session?: BitrixReceivablesSessionResponse;
+  }>(() => ({ status: bitrixMode ? "loading" : "ready" }));
+
+  useEffect(() => {
+    if (!bitrixMode) return;
+    let cancelled = false;
+    initializeBitrixReceivablesSession()
+      .then((session) => {
+        if (!cancelled) {
+          setAuthState({ status: "ready", session });
+        }
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "Не удалось открыть Bitrix24-сессию";
+        if (!cancelled) {
+          setAuthState({ status: "error", message });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bitrixMode]);
+
+  if (authState.status !== "ready") {
+    return (
+      <div className="app app--center">
+        <div className="app-state">
+          <h1>Дебиторка покупателей</h1>
+          {authState.status === "loading" && <p>Подключение к Bitrix24...</p>}
+          {authState.status === "error" && (
+            <>
+              <p>Нет доступа к рабочему месту дебиторки.</p>
+              <small>{authState.message}</small>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <ReceivablesWorkplace
+      accessLevel={authState.session?.access_level}
+      bitrixMode={bitrixMode}
+      bitrixUserName={authState.session?.user.name}
+      departmentRefs={authState.session?.department_refs}
+    />
+  );
+}
+
 function App() {
-  return isLogisticsFallbackRoute() ? <LogisticsFallbackApp /> : <MatchingApp />;
+  if (isLogisticsFallbackRoute()) return <LogisticsFallbackApp />;
+  if (isBitrixReceivablesRoute() || isReceivablesWorkplaceRoute()) return <ReceivablesApp />;
+  return <MatchingApp />;
 }
 
 export default App;

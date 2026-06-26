@@ -76,6 +76,22 @@ def require_expertise_internal_token(
     )
 
 
+def require_site_defect_archive_internal_token(
+    credentials: HTTPAuthorizationCredentials = Security(security),
+) -> str:
+    settings = get_settings()
+    expected = (
+        settings.site_defect_archive_internal_api_token
+        or settings.expertise_internal_api_token
+        or settings.management_internal_api_token
+    )
+    return _require_bearer_token(
+        credentials,
+        expected,
+        missing_detail="site defect archive internal token not configured",
+    )
+
+
 def require_card_balance_reconciliation_internal_token(
     credentials: HTTPAuthorizationCredentials = Security(security),
 ) -> str:

@@ -7,18 +7,28 @@ status: draft
 owner: "finance"
 source_of_truth: true
 related_code:
+  - app/services/exporters/ut103_exchange.py
   - app/services/exporters/ut103_forecast.py
+  - app/services/exporters/ut103_nomenclature_properties.py
+  - tasks/build_assortment_lifecycle_updates.py
   - tasks/export_ut103_forecast.py
+  - tasks/export_ut103_nomenclature_properties.py
 related_tests:
+  - tests/test_ut103_exchange.py
   - tests/test_ut103_forecast_exporter.py
+  - tests/test_build_assortment_lifecycle_updates_task.py
+  - tests/test_ut103_nomenclature_properties_exporter.py
   - tests/test_export_ut103_forecast_task.py
+  - tests/test_export_ut103_nomenclature_properties_task.py
 contracts:
+  - app/services/exporters/ut103_exchange.py
   - app/services/exporters/ut103_forecast.py
+  - app/services/exporters/ut103_nomenclature_properties.py
 depends_on:
   - docs/specs/counterparty-folder-recommendations.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-05-29"
+updated_at: "2026-06-25"
 ---
 
 # Назначение
@@ -32,6 +42,7 @@ updated_at: "2026-05-29"
 
 Входит:
 - единый файловый корень `UT103_EXCHANGE_ROOT`;
+- фактический тестовый корень на сервере `УТ 10.3`: `E:\MMExchange\UT103`;
 - входящие команды от бота в `to_1c/new`;
 - ответы 1С в `from_1c/new`;
 - режимы `dry_run` и `apply`;
@@ -60,8 +71,18 @@ updated_at: "2026-05-29"
   `UT103_EXCHANGE_ROOT/from_1c/new`;
 - результат читается сервером как `*.result.xml`.
 
-Текущий пример реализации этого паттерна - `forecast_sales.v1` в
-`app/services/exporters/ut103_forecast.py`.
+Текущий legacy-пример реализации этого паттерна - `forecast_sales.v1` в
+`app/services/exporters/ut103_forecast.py`. Новый прикладной пакет для закупки и
+ассортимента - `nomenclature_property_updates.v1` в
+`app/services/exporters/ut103_nomenclature_properties.py`; прогноз продаж больше
+не развиваем как целевой процесс.
+
+Фактически найденный Windows-контур `УТ 10.3` использует папку
+`E:\MMExchange\UT103`. Старый `run_forecast_import.vbs` рядом с этой папкой
+запускает COM-соединение и вызывает `MMForecastImport.RunForecastImport()`, а
+лог пишет в `E:\MMExchange\UT103\logs\forecast_scheduler.log`. Этот VBS не
+используется для статусов ассортимента, но подтверждает рабочий паттерн:
+файл кладет сервер, 1С забирает его штатным запуском.
 
 # Data Flow
 
@@ -85,6 +106,47 @@ updated_at: "2026-05-29"
 ## Папки
 
 Используем тот же корень, что и прогноз продаж:
+
+Рабочий Windows-путь:
+
+```text
+E:\MMExchange\UT103
+```
+
+На тесте этот путь был подключен к `Ekama_Test_Arsen`. Для боевого переноса
+принято решение не создавать `UT103_PROD`, а использовать ту же папку после
+отключения тестового планировщика, очистки `to_1c/new` и замены `OneCRef` в
+локальном `run_nomenclature_properties_import.vbs` на боевую базу. Пошаговый
+чеклист переноса живет в
+`1C_Dev_Workflow/docs/order_flow/ut103-nomenclature-property-file-exchange-runbook-2026-06-24.md`.
+
+В `pricing-service` этот путь задается переменной `UT103_EXCHANGE_ROOT`. Если
+задача запускается на Windows-машине, где доступен диск `E:`, код использует
+`E:\MMExchange\UT103` как дефолт. Если задача запускается на Linux-сервере,
+`UT103_EXCHANGE_ROOT` должен указывать на смонтированную папку/шару, которая
+ведет в тот же Windows-каталог.
+
+Текущий рабочий вариант без SMB-монтажа:
+
+```text
+pricing-service Linux outbox:
+/opt/MM/pricing-service/.local/ut103_exchange/UT103
+
+UT 10.3 Windows root:
+E:\MMExchange\UT103
+```
+
+В этом режиме `pricing-service` пишет XML в локальный Linux outbox, а
+Windows-планировщик перед запуском 1С забирает
+`to_1c/new/nomenclature_properties_*.ready.xml` с Linux и после обработки
+возвращает `from_1c/new/nomenclature_properties_*.result.xml` обратно в Linux
+outbox. Windows-скрипты лежат в `1C_Dev_Workflow/scripts/windows/`:
+`sync_nomenclature_properties_exchange.ps1` и
+`run_nomenclature_properties_exchange.bat`.
+
+CLI-задачи `tasks.export_ut103_forecast` и
+`tasks.export_ut103_nomenclature_properties` перед запуском подхватывают только
+`UT103_*` ключи из проектного `.env`, если они еще не заданы окружением процесса.
 
 ```text
 UT103_EXCHANGE_ROOT/
@@ -162,6 +224,66 @@ UT103_EXCHANGE_ROOT/
 - `NewValue` - ссылка/код рекомендуемой папки;
 - `apply` запрещен до отдельного решения по автопереносу и проверки защиты ролей.
 
+## XML Свойств Номенклатуры `nomenclature_property_updates.v1`
+
+Для управления ассортиментом используется отдельный пакет в тех же папках
+обмена:
+
+```text
+UT103_EXCHANGE_ROOT/
+  to_1c/new/nomenclature_properties_<message_id>.ready.xml
+  from_1c/new/nomenclature_properties_<message_id>.result.xml
+```
+
+Минимальная строка:
+
+```xml
+<Item>
+  <IdempotencyKey>nom-prop:РБ000074721:Статус ассортимента:2026-06-23:r1</IdempotencyKey>
+  <NomenclatureCode>РБ000074721</NomenclatureCode>
+  <PropertyName>Статус ассортимента</PropertyName>
+  <ValueType>property_value</ValueType>
+  <NewValueName>Новинка</NewValueName>
+  <NewValueTag>new_item</NewValueTag>
+  <ExpectedCurrentValueName></ExpectedCurrentValueName>
+  <Reason>Первый приход, товар моложе 90 дней</Reason>
+</Item>
+```
+
+Поддержанные типы v1: `property_value`, `string`, `date`, `number`, `boolean`.
+В `apply` обязателен `ApprovedBy` в шапке или строке пакета.
+
+Whitelist v1:
+
+- `Статус ассортимента`;
+- `Причина статуса ассортимента`;
+- `Дата изменения статуса ассортимента`;
+- `Источник статуса ассортимента`;
+- `Утвердил статус ассортимента`;
+- `Профиль закупочного поведения`;
+- `Ручной минимальный остаток`;
+- `Дата пересмотра правила наличия`.
+
+Статус ассортимента хранит машинный код в поле `Тэг` значения свойства, поэтому
+отдельное свойство для кода статуса на первом этапе не нужно.
+
+Python CLI:
+
+```bash
+python -m tasks.export_ut103_nomenclature_properties \
+  --mode dry_run \
+  --input-json property-updates.json
+```
+
+`--exchange-root` можно передать явно, но штатный способ - держать
+`UT103_EXCHANGE_ROOT` в окружении сервиса.
+
+На текущем Linux-сервере без смонтированной Windows-папки штатное значение:
+
+```bash
+UT103_EXCHANGE_ROOT=/opt/MM/pricing-service/.local/ut103_exchange/UT103
+```
+
 ## XML Результата
 
 Черновой формат:
@@ -206,6 +328,8 @@ UT103_EXCHANGE_ROOT/
 - Для `move_counterparty_folder` автоприменение запрещено до отдельного acceptance.
 - Обработка 1С должна писать результат по каждой команде, даже если весь пакет
   завершился с ошибкой.
+- Пакет `nomenclature_property_updates.v1` не использует `forecast_sales.v1`;
+  общий только технический паттерн файлового обмена.
 
 # Errors / Edge Cases
 
@@ -222,6 +346,7 @@ UT103_EXCHANGE_ROOT/
 
 До реализации:
 - unit: генерация XML `onec_commands.v1` в `windows-1251`;
+- unit: генерация XML `nomenclature_property_updates.v1` в `windows-1251`;
 - unit: атомарная запись `*.ready.xml` в `to_1c/new`;
 - unit: парсинг `*.result.xml` из `from_1c/new`;
 - unit: запрет `apply` без `ApprovedBy`;
@@ -239,12 +364,25 @@ UT103_EXCHANGE_ROOT/
 3. Подготовить внешнюю обработку или регламентное задание 1С для
    `onec_commands.v1`.
 4. Запустить только `dry_run` в `Ekama_Test_Arsen`.
-5. После приемки включить `apply` сначала для `set_credit_depth`.
-6. Затем отдельно включать `set_credit_limit`.
-7. `move_counterparty_folder` оставить отдельным этапом после проверки отчетов по
+5. Для `nomenclature_property_updates.v1` после тестового `dry_run/apply`
+   отключить тестовый планировщик, переключить `run_nomenclature_properties_import.vbs`
+   на боевую базу и повторить боевой `dry_run` на одном товаре.
+6. После приемки включить `apply` сначала для одной утвержденной строки
+   номенклатуры или для `set_credit_depth`, в зависимости от активного контура.
+7. Затем отдельно включать `set_credit_limit`.
+8. `move_counterparty_folder` оставить отдельным этапом после проверки отчетов по
    папкам контрагентов и решения по автопереносу.
 
 # Changelog
 
+- 2026-06-26 - clarified production cutover: reuse `E:\MMExchange\UT103` after
+  disabling the test scheduler and switching the local VBS `OneCRef` to the
+  production UT 10.3 database.
+- 2026-06-25 - added `tasks/build_assortment_lifecycle_updates.py` as the
+  dry-run builder from normalized assortment facts to
+  `nomenclature_property_updates.v1` rows.
+- 2026-06-23 - added `nomenclature_property_updates.v1` exporter/CLI for
+  whitelist updates of 1C nomenclature properties; `forecast_sales.v1` remains
+  only as legacy exchange sample.
 - 2026-05-29 - draft created; закреплено использование существующего
   `UT103_EXCHANGE_ROOT` вместо нового канала обмена.

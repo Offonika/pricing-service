@@ -96,6 +96,13 @@ class Settings(BaseSettings):
     expertise_bitrix_notify_responsible_user_id: int | None = None
     expertise_bitrix_notify_auditor_user_ids: list[int] = Field(default_factory=list)
     expertise_bitrix_store_department_map: dict[str, int] = Field(default_factory=dict)
+    expertise_bitrix_notify_owner_user_map: dict[str, int] = Field(default_factory=dict)
+    expertise_bitrix_notify_excluded_position_keywords: list[str] = Field(
+        default_factory=lambda: ["курьер"]
+    )
+    expertise_bitrix_notify_manager_position_keywords: list[str] = Field(
+        default_factory=lambda: ["менедж", "управля"]
+    )
     expertise_sla_store_group_map: dict[str, str] = Field(default_factory=dict)
     expertise_sla_delivery_days_map: dict[str, int] = Field(
         default_factory=lambda: {
@@ -138,6 +145,20 @@ class Settings(BaseSettings):
     expertise_alarm_review_primary_user_ids: list[int] = Field(default_factory=list)
     expertise_alarm_review_escalation_user_ids: list[int] = Field(default_factory=list)
     expertise_alarm_review_top_escalation_user_ids: list[int] = Field(default_factory=list)
+    site_defect_archive_internal_api_token: str | None = None
+    site_defect_archive_bitrix_webhook_url: str | None = None
+    site_defect_archive_bitrix_entity_type_id: int | None = None
+    site_defect_archive_bitrix_working_category_id: int | None = None
+    site_defect_archive_bitrix_archive_category_id: int | None = None
+    site_defect_archive_bitrix_archive_stage_id: str | None = None
+    site_defect_archive_bitrix_root_folder_id: int | None = None
+    site_defect_archive_bitrix_working_stage_map: dict[str, str] = Field(default_factory=dict)
+    site_defect_archive_bitrix_field_map: dict[str, str] = Field(default_factory=dict)
+    site_defect_workflow_created_by_user_id: int | None = None
+    site_defect_workflow_okk_user_ids: list[int] = Field(default_factory=list)
+    site_defect_workflow_finance_user_ids: list[int] = Field(default_factory=list)
+    site_defect_workflow_logistics_user_ids: list[int] = Field(default_factory=list)
+    site_defect_workflow_leader_user_ids: list[int] = Field(default_factory=list)
     card_balance_reconciliation_internal_api_token: str | None = None
     card_balance_bitrix_webhook_url: str | None = None
     card_balance_bitrix_entity_type_id: int | None = None
@@ -221,6 +242,19 @@ class Settings(BaseSettings):
     receivable_workflow_department_names: Annotated[list[str], NoDecode] = Field(
         default_factory=list
     )
+    receivable_workplace_bitrix_enabled: bool = False
+    receivable_workplace_bitrix_allowed_domains: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    receivable_workplace_bitrix_allowed_member_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    receivable_workplace_bitrix_full_access_user_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    receivable_workplace_bitrix_session_secret: str | None = None
+    receivable_workplace_bitrix_session_ttl_seconds: int = 3600
+    receivable_workplace_bitrix_rest_timeout_seconds: float = 6.0
     management_receivables_max_lag_days: int = 1
     management_staffing_max_lag_days: int = 1
     management_task_payloads_max_lag_days: int = 1
@@ -327,6 +361,8 @@ class Settings(BaseSettings):
     @field_validator(
         "expertise_bitrix_stage_map",
         "expertise_bitrix_field_map",
+        "site_defect_archive_bitrix_working_stage_map",
+        "site_defect_archive_bitrix_field_map",
         "expertise_sla_store_group_map",
         "card_balance_bitrix_stage_map",
         "card_balance_bitrix_field_map",
@@ -378,6 +414,9 @@ class Settings(BaseSettings):
         "order_fulfillment_known_raw_deliveries",
         "receivable_workflow_department_refs",
         "receivable_workflow_department_names",
+        "receivable_workplace_bitrix_allowed_domains",
+        "receivable_workplace_bitrix_allowed_member_ids",
+        "receivable_workplace_bitrix_full_access_user_ids",
         mode="before",
     )
     @classmethod

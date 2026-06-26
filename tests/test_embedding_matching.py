@@ -21,6 +21,7 @@ from app.services.matching_guardrails import (
     basic_candidate_guardrails,
     device_group_conflict,
     iphone_model_keys,
+    phone_model_keys,
 )
 from tasks.match_competitor_items_embeddings import (
     _auto_accept_battery_original_part_code_matches,
@@ -52,6 +53,7 @@ from tasks.match_competitor_items_embeddings import (
     _auto_reject_display_text_model_conflicts,
     _auto_reject_explicit_model_conflicts,
     _auto_reject_flex_role_conflicts,
+    _auto_reject_guardrail_catalog_family_conflicts,
     _auto_reject_guardrail_device_group_conflicts,
     _auto_reject_housing_condition_conflicts,
     _auto_reject_housing_device_code_conflicts,
@@ -125,6 +127,170 @@ def test_apple_watch_model_keys_include_series_year_and_size():
     assert _extract_device_model_keys("Дисплей для Apple Watch 5/SE 40 мм") == {
         "apple_watch_5_40mm"
     }
+
+
+def test_iqoo_model_keys_include_neo_series_and_guardrail_conflict():
+    assert _extract_device_model_keys("LCD дисплей для Vivo IQOO Neo 10") == {"vivo_iqoo_neo_10"}
+    assert _extract_device_model_keys("Дисплей для Vivo iQOO 12") == {"vivo_iqoo_12"}
+    assert phone_model_keys("LCD дисплей для Vivo IQOO Neo 10") == {"vivo_iqoo_neo_10"}
+    assert phone_model_keys("Дисплей для Vivo iQOO 12") == {"vivo_iqoo_12"}
+
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="iqoo-neo-10",
+        name="LCD дисплей для Vivo IQOO Neo 10 с тачскрином в рамке OLED (черный)",
+        normalized_title="LCD дисплей для Vivo IQOO Neo 10 с тачскрином в рамке OLED черный",
+        item_type="display",
+        category_group="display",
+    )
+    product = Product(
+        name="Дисплей для Vivo iQOO 12 (V2307A) + тачскрин (черный) (ORIG)",
+        article="debug-iqoo12",
+        category="Дисплеи для телефонов",
+        subject="дисплей",
+    )
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "strict_model_conflict"
+
+
+def test_phone_model_keys_include_ipad_and_xiaomi_mi_models():
+    assert phone_model_keys("LCD дисплей для Apple iPad mini 5 2019") == {"ipad_mini_5"}
+    assert phone_model_keys('LCD дисплей для Apple iPad Pro 11" 2018/2020') == {"ipad_pro_11"}
+    assert phone_model_keys("LCD дисплей для Xiaomi Mi 9 Lite 2019") == {"xiaomi_mi_9_lite"}
+
+
+def test_basic_guardrails_allow_compatibility_conflict_when_title_model_keys_overlap():
+    ipad_item = CompetitorItem(
+        competitor="liberti",
+        external_id="473522",
+        name="LCD дисплей для Apple iPad mini 5 2019 (A2133/A2124/A2126/A2125)",
+        normalized_title="LCD дисплей для Apple iPad mini 5 2019 A2133 A2124 A2126 A2125",
+        item_type="display",
+        category_group="display",
+    )
+    ipad_item.compatibilities = [
+        CompetitorItemCompatibility(
+            device_brand="apple",
+            device_model="ipad mini 5",
+            device_variant="A2133/A2124/A2126/A2125",
+            phone_model_id=11807,
+            source="parser",
+        )
+    ]
+    ipad_product = Product(
+        name="Дисплей для Apple iPad mini 5 (A2124/A2126/A2133) + тачскрин (черный) (Medium)",
+        article="044320",
+        category="Дисплеи для планшетов",
+        subject="дисплей",
+    )
+    ipad_product.phone_model_links = [
+        ProductPhoneModel(
+            raw_value="ipad mini 5 (a2124/a2126/a2133)",
+            phone_model_id=4769,
+        )
+    ]
+
+    xiaomi_item = CompetitorItem(
+        competitor="liberti",
+        external_id="467483",
+        name="LCD дисплей для Xiaomi Mi 9 Lite 2019 с тачскрином (черный) SP",
+        normalized_title="LCD дисплей для Xiaomi Mi 9 Lite 2019 с тачскрином черный SP",
+        item_type="display",
+        category_group="display",
+    )
+    xiaomi_item.compatibilities = [
+        CompetitorItemCompatibility(
+            device_brand="xiaomi",
+            device_model="mi 9 lite",
+            phone_model_id=5887,
+            source="parser",
+        )
+    ]
+    xiaomi_product = Product(
+        name="Дисплей для Xiaomi Mi 9 Lite (M1904F3BG) / Mi A3 Lite / Mi CC9 + тачскрин (черный) (In-Cell)",
+        article="067623",
+        category="Дисплеи для телефонов",
+        subject="дисплей",
+    )
+    xiaomi_product.phone_model_links = [
+        ProductPhoneModel(raw_value="mi 9 lite (m1904f3bg)", phone_model_id=4322),
+        ProductPhoneModel(raw_value="mi cc9", phone_model_id=5032),
+        ProductPhoneModel(raw_value="mi a3", phone_model_id=6090),
+    ]
+
+    assert basic_candidate_guardrails(ipad_item, ipad_product).allowed is True
+    assert basic_candidate_guardrails(xiaomi_item, xiaomi_product).allowed is True
+
+
+def test_basic_guardrails_allow_parser_base_model_when_title_has_exact_iphone_suffix():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="LCD-PMIS600-CP-W",
+        name="Дисплей для iPhone 6S в сборе с тачскрином Белый - Оптима",
+        normalized_title="Дисплей для iPhone 6S в сборе с тачскрином Белый",
+        item_type="display",
+        category_group="display",
+    )
+    item.compatibilities = [
+        CompetitorItemCompatibility(
+            device_brand="apple",
+            device_model="iphone 6",
+            phone_model_id=600,
+            source="parser",
+        )
+    ]
+    product = Product(
+        name="Дисплей для Apple iPhone 6s + тачскрин (белый) (Medium)",
+        article="037404",
+        category="Дисплеи для телефонов",
+        subject="дисплей",
+    )
+    product.phone_model_links = [ProductPhoneModel(raw_value="Apple iPhone 6s", phone_model_id=601)]
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is True
+
+
+def test_auto_reject_display_text_model_conflicts_rejects_iqoo_neo_mismatch(db_session):
+    product = Product(
+        name="Дисплей для Vivo iQOO 12 (V2307A) + тачскрин (черный) (ORIG)",
+        article="debug-iqoo12",
+        category="Дисплеи для телефонов",
+        subject="дисплей",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="iqoo-neo-10",
+        name="LCD дисплей для Vivo IQOO Neo 10 с тачскрином в рамке OLED (черный)",
+        normalized_title="LCD дисплей для Vivo IQOO Neo 10 с тачскрином в рамке OLED черный",
+        item_type="display",
+        category_group="display",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.82,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_display_text_model_conflicts(db_session) == 1
+
+    match = db_session.execute(select(CompetitorItemMatch)).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    assert (
+        match.rationale_json["auto_reject_display_text_model_conflict"]["reason"]
+        == "display_text_model_conflict"
+    )
 
 
 def test_display_apple_watch_original_sweeper_accepts_exact_and_rejects_wrong_series(
@@ -606,6 +772,62 @@ def test_basic_guardrails_reject_laptop_power_supply_against_phone_charger():
     assert result.reason == "catalog_family_conflict"
 
 
+def test_basic_guardrails_reject_charger_abbreviation_against_data_cable():
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="474320",
+        name="СЗУ Samsung 1xUSB-C, 3А, PD25W, 0531741048S (черный)",
+        normalized_title="СЗУ Samsung 1xUSB-C 3А PD25W 0531741048S черный",
+        item_type="cable",
+    )
+    product = Product(
+        name="Дата-кабель Samsung Type-C-Type-C, 5А , 1.8 м (черный) (Premium)",
+        article="068306",
+    )
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
+def test_auto_reject_guardrail_catalog_family_conflicts_rejects_charger_against_cable(
+    db_session,
+):
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="474320",
+        name="СЗУ Samsung 1xUSB-C, 3А, PD25W, 0531741048S (черный)",
+        normalized_title="СЗУ Samsung 1xUSB-C 3А PD25W 0531741048S черный",
+        item_type="cable",
+    )
+    product = Product(
+        name="Дата-кабель Samsung Type-C-Type-C, 5А , 1.8 м (черный) (Premium)",
+        article="068306",
+    )
+    db_session.add_all([item, product])
+    db_session.flush()
+    db_session.add(
+        CompetitorItemMatch(
+            competitor_item_id=item.id,
+            product_id=product.id,
+            status=CompetitorItemMatchStatus.AMBIGUOUS,
+            method=CompetitorItemMatchMethod.EMBEDDING_AUTO,
+            final_score=0.75,
+        )
+    )
+    db_session.flush()
+
+    assert _auto_reject_guardrail_catalog_family_conflicts(db_session) == 1
+
+    match = db_session.execute(select(CompetitorItemMatch)).scalar_one()
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+    assert (
+        match.rationale_json["auto_reject_guardrail_catalog_family_conflict"]["reason"]
+        == "catalog_family_conflict"
+    )
+
+
 def test_basic_guardrails_reject_laptop_power_supply_against_laptop_fan():
     item = CompetitorItem(
         competitor="moba",
@@ -874,6 +1096,95 @@ def test_basic_guardrails_reject_battery_activation_board_against_battery():
 
     assert result.allowed is False
     assert result.reason == "catalog_family_conflict"
+
+
+def test_basic_guardrails_reject_battery_activation_board_with_controller_against_battery():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BA27-PRO",
+        name="Плата активации и зарядки АКБ Mechanic BA27 с контроллером",
+        normalized_title="Плата активации зарядки АКБ Mechanic BA27 контроллер",
+        item_type="battery",
+    )
+    product = Product(name="Аккумулятор для Apple iPhone 17 (Premium)")
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
+def test_basic_guardrails_reject_battery_adhesive_against_battery():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="ADT-BTT-PMI-17",
+        name="Скотч Аккумулятора для iPhone 17 (A3520)",
+        normalized_title="Скотч Аккумулятора iPhone 17 A3520",
+        item_type="battery",
+    )
+    product = Product(name="Аккумулятор для Apple iPhone 17 (Premium)")
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
+def test_basic_guardrails_reject_battery_connector_against_battery():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="CON-BTT-PMI-17",
+        name="Коннектор АКБ для iPhone 17/Air 16 Pro Max",
+        normalized_title="Коннектор АКБ iPhone 17 Air 16 Pro Max",
+        item_type="battery",
+    )
+    product = Product(name="Аккумулятор для Apple iPhone 17 (Premium)")
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
+def test_basic_guardrails_reject_sim_tray_against_back_cover():
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="451224",
+        name="Задняя крышка для Huawei Honor X6 (VNE-LX1) (синий)",
+        normalized_title="Задняя крышка Huawei Honor X6 VNE-LX1 синий",
+        item_type="housing",
+    )
+    product = Product(
+        name="Держатель сим-карты для Huawei Honor X6 (VNE-LX1) (синий)",
+        article="056286",
+        category="Держатели SIM-карт",
+        subject="держатель сим-карты",
+    )
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
+def test_basic_guardrails_allow_actual_battery_collection_against_battery():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BTT-PMI-16",
+        name="Аккумулятор для iPhone 16 - Battery Collection",
+        normalized_title="Аккумулятор iPhone 16 Battery Collection",
+        item_type="battery",
+    )
+    product = Product(
+        name=(
+            "Аккумулятор для Apple iPhone 16 (F5ENERGY) (усиленный) "
+            "(SPECIAL EDITION) + двухсторонний скотч"
+        ),
+        category="Аккумуляторы",
+        subject="аккумулятор",
+    )
+
+    assert basic_candidate_guardrails(item, product).allowed is True
 
 
 def test_basic_guardrails_allow_battery_with_included_tape():
@@ -3002,26 +3313,17 @@ def test_flex_sweeper_accepts_low_score_charge_mic_only_with_color_overlap(db_se
 
 def test_flex_sweeper_accepts_lower_board_charge_flex_with_model_overlap(db_session):
     product = Product(
-        name=(
-            "Нижняя плата для Huawei Honor 10 (COL-L29) + системный разъем "
-            "+ микрофон"
-        ),
+        name=("Нижняя плата для Huawei Honor 10 (COL-L29) + системный разъем " "+ микрофон"),
         article="071901",
         subject="разъем",
     )
     buttons_product = Product(
-        name=(
-            "Нижняя плата для Huawei Honor 10 (COL-L29) + системный разъем "
-            "+ микрофон"
-        ),
+        name=("Нижняя плата для Huawei Honor 10 (COL-L29) + системный разъем " "+ микрофон"),
         article="071902",
         subject="разъем",
     )
     wrong_model_product = Product(
-        name=(
-            "Нижняя плата для Huawei Honor 20 (YAL-L21) + системный разъем "
-            "+ микрофон"
-        ),
+        name=("Нижняя плата для Huawei Honor 20 (YAL-L21) + системный разъем " "+ микрофон"),
         article="071903",
         subject="разъем",
     )
@@ -3033,8 +3335,7 @@ def test_flex_sweeper_accepts_lower_board_charge_flex_with_model_overlap(db_sess
             "разъем гарнитуры/микрофон"
         ),
         normalized_title=(
-            "Шлейф Huawei Honor 10 COL-L29 плата системный разъем "
-            "разъем гарнитуры микрофон"
+            "Шлейф Huawei Honor 10 COL-L29 плата системный разъем " "разъем гарнитуры микрофон"
         ),
         item_type="flex",
     )
@@ -3053,8 +3354,7 @@ def test_flex_sweeper_accepts_lower_board_charge_flex_with_model_overlap(db_sess
             "разъем гарнитуры/микрофон"
         ),
         normalized_title=(
-            "Шлейф Huawei Honor 10 COL-L29 плата системный разъем "
-            "разъем гарнитуры микрофон"
+            "Шлейф Huawei Honor 10 COL-L29 плата системный разъем " "разъем гарнитуры микрофон"
         ),
         item_type="flex",
     )

@@ -12,8 +12,11 @@ from sqlalchemy.orm import Session
 from app.api.dependencies import get_db, require_management_internal_token
 from app.core.config import get_settings
 from app.schemas.management import (
+    CounterpartyFolderChangeItem,
+    CounterpartyFolderChangeResponse,
     CounterpartyFolderRecommendationItem,
     CounterpartyFolderRecommendationResponse,
+    CounterpartyFolderSnapshotSyncResponse,
     ManagementComponentHealth,
     ManagementHealthResponse,
     ManagementTaskPayload,
@@ -46,6 +49,10 @@ from app.services.counterparty_folder_recommendations import (
     STATUS_NO_OVERDUE,
     STATUS_OK,
     build_counterparty_folder_recommendations,
+)
+from app.services.counterparty_folder_snapshots import (
+    build_counterparty_folder_changes,
+    sync_counterparty_folder_snapshot,
 )
 from app.services.exchange_counterparty_settlements import (
     DEFAULT_EXCHANGE_COUNTERPARTY_CODE,
@@ -310,6 +317,91 @@ def get_counterparty_folder_recommendations(
         as_of=report["snapshot_date"],
         freshness_status="fresh" if source_snapshot_count else "missing",
         source_status="ready" if source_snapshot_count else "empty",
+        report_revision=report["report_revision"],
+        summary=report["summary"],
+        payload=payload,
+    )
+
+
+@router.post(
+    "/counterparty-folder-snapshots/sync",
+    response_model=CounterpartyFolderSnapshotSyncResponse,
+)
+def sync_counterparty_folder_snapshots(
+    date_value: date = Query(alias="date"),
+    db: Session = Depends(get_db),
+    _: str = Depends(require_management_internal_token),
+):
+    onec_engine = _build_onec_engine()
+    try:
+        result = sync_counterparty_folder_snapshot(
+            db,
+            onec_engine=onec_engine,
+            snapshot_date=date_value,
+        )
+    except SQLAlchemyError as error:
+        raise HTTPException(status_code=503, detail="1C source is unavailable") from error
+    finally:
+        onec_engine.dispose()
+
+    summary = {
+        "fetched_count": result.fetched_count,
+        "inserted_count": result.inserted_count,
+        "updated_count": result.updated_count,
+        "deleted_count": result.deleted_count,
+    }
+    return CounterpartyFolderSnapshotSyncResponse(
+        as_of=result.snapshot_date,
+        freshness_status="fresh" if result.fetched_count else "missing",
+        source_status="ready" if result.fetched_count else "empty",
+        summary=summary,
+    )
+
+
+@router.get(
+    "/counterparty-folder-changes",
+    response_model=CounterpartyFolderChangeResponse,
+)
+def get_counterparty_folder_changes(
+    date_value: date = Query(alias="date"),
+    previous_date: date | None = Query(default=None),
+    limit: int | None = Query(default=None, ge=1, le=10000),
+    db: Session = Depends(get_db),
+    _: str = Depends(require_management_internal_token),
+):
+    onec_engine = None
+    recommendations_report = None
+    debt_enrichment_status = "ready"
+    try:
+        onec_engine = _build_onec_engine()
+        recommendations_report = build_counterparty_folder_recommendations(
+            db,
+            onec_engine=onec_engine,
+            snapshot_date=date_value,
+        )
+    except (HTTPException, SQLAlchemyError):
+        debt_enrichment_status = "unavailable"
+    finally:
+        if onec_engine is not None:
+            onec_engine.dispose()
+
+    report = build_counterparty_folder_changes(
+        db,
+        snapshot_date=date_value,
+        previous_snapshot_date=previous_date,
+        recommendations_report=recommendations_report,
+        limit=limit,
+    )
+    report["summary"]["debt_enrichment_status"] = debt_enrichment_status
+    payload = [CounterpartyFolderChangeItem.model_validate(item) for item in report["payload"]]
+    current_snapshot_count = int(report["summary"].get("current_snapshot_count") or 0)
+    previous_snapshot_count = int(report["summary"].get("previous_snapshot_count") or 0)
+    source_status = "ready" if current_snapshot_count and previous_snapshot_count else "empty"
+    return CounterpartyFolderChangeResponse(
+        as_of=report["snapshot_date"],
+        previous_as_of=report["previous_snapshot_date"],
+        freshness_status="fresh" if current_snapshot_count else "missing",
+        source_status=source_status,
         report_revision=report["report_revision"],
         summary=report["summary"],
         payload=payload,

@@ -1,26 +1,35 @@
 ---
 spec_id: "receivables-smart-process-workflow"
-title: "Receivables Smart Process Workflow"
+title: "Receivables Workplace And Smart Process Workflow"
 doc_type: spec
 domain: receivables
 status: draft
 owner: product
 source_of_truth: false
 related_code:
+  - app/api/bitrix_receivables.py
   - app/api/receivables.py
+  - app/api/receivable_workplace.py
   - app/api/management.py
   - app/models/receivable_case.py
   - app/models/receivable_work.py
+  - app/schemas/bitrix_receivables.py
+  - app/schemas/receivable_workplace.py
+  - app/services/bitrix_receivables_auth.py
   - app/services/receivables.py
+  - app/services/receivable_workplace.py
   - app/services/receivable_workflow.py
   - app/services/management_rules.py
   - app/workers/receivable_workflow.py
+  - ui/src/api/bitrix.ts
+  - ui/src/components/ReceivablesWorkplace.tsx
   - scripts/ensure_receivable_bitrix_process.py
   - tasks/sync_receivable_workflow.py
   - tasks/export_receivable_work_report.py
   - infra/cron/new_daily_receivables_from_a.py
 related_tests:
   - tests/test_receivables.py
+  - tests/test_receivable_workplace.py
   - tests/test_receivable_workflow.py
   - tests/test_receivables_worker.py
   - tests/test_management_rules.py
@@ -33,33 +42,74 @@ contracts:
 depends_on: []
 supersedes: []
 rollout_required: true
-updated_at: "2026-05-26"
+updated_at: "2026-06-24"
 ---
 
 # Назначение
 
-Перевести работу с покупательской дебиторкой из Excel и Bitrix-задач в
-`Bitrix24` smart-process, где одна карточка отвечает за один открытый рабочий
-кейс контрагента.
+Перевести работу с покупательской дебиторкой из Excel и Bitrix-задач в единое
+рабочее место менеджера. Основной ежедневный интерфейс - веб-форма
+`pricing-service`, где менеджер за несколько секунд видит клиентов для обзвона,
+критичную просрочку и статус работы. `Bitrix24` smart-process остается карточкой
+истории, эскалации и синхронизации, но не является основной массовой таблицей.
 
 Цель первой волны:
 
 - долг и документы считаются из `1С`;
-- менеджер работает в карточке smart-process;
+- менеджер работает в веб-форме по клиентам, а не по отдельным накладным;
 - комментарии, обещанные даты оплаты, статусы контакта и SMS-история не живут в
   Excel;
+- накладные раскрываются вторым уровнем внутри строки клиента;
 - еженедельный Excel остается отчетом, а не местом ручного ведения процесса.
+
+# Decision 2026-06-24 / Ответ Максима
+
+Утверждено по задаче Bitrix `#43`:
+
+- основной вход в рабочее место - embedded Bitrix local app
+  `/bitrix/receivables`, а прямой `/receivables/workplace` остается
+  техническим fallback для локальной проверки;
+- менеджер не вводит внутренний токен: фронт получает `BX24.getAuth()`,
+  backend проверяет `user.current` и выдает короткую receivables session;
+- основной интерфейс - веб-форма, smart-process - история/эскалация;
+- первый уровень - клиенты с дебиторкой, второй уровень - накладные клиента;
+- MVP показывает актуальных клиентов с долгом старше расчетного срока 7 дней;
+- основные колонки: №, код 1С, клиент, ответственный по долгообразующей
+  накладной, телефон, общий долг, просрочка, самая старая просрочка, обещанная
+  дата оплаты, последний контакт, кто общался сегодня, статус, следующий контакт,
+  перенос оплаты, комментарий/причина неоплаты;
+- сводка рядом или сверху: общая дебиторка, общая просрочка, просрочка более 30
+  дней, просрочка более 90 дней, сумма для звонка сегодня;
+- статусы менеджера: `Не берет трубку`, `Ждем оплату`, `Перезвонить`,
+  `Требуется вмешательство`, `Напомнить`, `Оплачено`; для Пятигорска
+  дополнительно `Перемещение`, `На карте/в маршрутке`;
+- менеджер и старший подразделения видят свое подразделение; Арсен, Арсений и
+  владелец видят всю картину;
+- выпадающий список сотрудников должен быть привязан к подразделению строки;
+- клиентов без телефона показывать в общем списке с красной пометкой;
+- риск невозврата в MVP не считать отдельной моделью: достаточно суммы, дней
+  просрочки и отсутствия движения;
+- задача `#756` включается отдельной вкладкой веб-формы как контроль папок и
+  поиск источника долга;
+- клиентам с дебиторкой и пустой глубиной кредита нужно установить 7 дней, но
+  реализация записи в `1С` идет отдельным dry-run/apply шагом через утвержденный
+  механизм обмена.
 
 # Scope / Out of Scope
 
 Входит:
 
 - smart-process `Дебиторка покупателей`;
+- веб-форма `Дебиторка` как основное рабочее место менеджера и руководителя;
+- read-only workplace API со сводкой, строками клиентов и детализацией
+  накладных;
+- сохранение действий менеджера из веб-формы в `receivable_work_item`;
 - idempotent create/update карточки по контрагенту;
 - daily sync суммы, сроков, ответственного, подразделения и документов из
   текущего receivables-контура;
 - создание карточки, когда долг стал просроченным;
-- статусы работы, SMS-факты, комментарии и обещанные даты оплаты в карточке;
+- статусы работы, SMS-факты, комментарии и обещанные даты оплаты в рабочем
+  кейсе и smart-process;
 - правило отсутствующего телефона;
 - эскалация после 15 дней просрочки;
 - недельный Excel по подразделениям с первым листом для руководителя;
@@ -71,6 +121,7 @@ updated_at: "2026-05-26"
 - ручная корректировка суммы долга из `Bitrix24`;
 - полный зарплатный контур удержаний;
 - BI-дашборд вместо smart-process;
+- прямые изменения глубины кредита в `1С` из веб-формы;
 - обязательная телефония в первой волне, если нет готового технического
   маппинга звонка к карточке.
 
@@ -116,7 +167,8 @@ updated_at: "2026-05-26"
 
 ```text
 1С -> pricing-service DB -> receivables snapshots/cases -> workflow rules
-   -> Bitrix24 smart-process -> manager actions / comments
+   -> web workplace -> manager actions / comments
+   -> Bitrix24 smart-process
    -> pricing-service sync/readback -> weekly Excel / Telegram / BI
 ```
 
@@ -152,6 +204,55 @@ Daily sync:
 - writable/work fields из `Bitrix24`: статус работы, комментарий/результат
   контакта, обещанная дата оплаты, дата следующего действия, телефон, признак
   спора.
+
+Workplace API:
+
+- `GET /api/receivables/workplace?date=YYYY-MM-DD` - рабочий список клиентов,
+  сводка, варианты статусов и сотрудники подразделения для выпадающего списка;
+- `PATCH /api/receivables/workplace/{counterparty_ref}?date=YYYY-MM-DD` -
+  сохранение действия менеджера: статус, кто общался сегодня, обещанная дата,
+  следующий контакт, перенос оплаты, комментарий;
+- `GET /api/receivables/workplace/folder-recommendations?date=YYYY-MM-DD` -
+  данные вкладки контроля папок по задаче `#756` с тем же контуром доступа, что
+  у рабочего места;
+- internal management token остается full-access для cron/локальной проверки;
+- Bitrix session token ограничивается подразделениями пользователя, backend не
+  доверяет `department_ref` из UI и сам применяет фильтр.
+
+Веб-страница:
+
+- `/bitrix/receivables` и `/bitrix/receivables/*` - основной встроенный вход в
+  `Bitrix24`;
+- `/receivables/workplace` - технический fallback с ручным internal token.
+
+Bitrix session API:
+
+- `POST /api/bitrix/receivables/session`;
+- вход: `access_token`, `domain`, `member_id`;
+- backend проверяет allowlist портала/member, вызывает `user.current`, затем
+  выдает короткий `session_token`;
+- ответ: `session_token`, `expires_at`, `expires_in`, `user`, `access_level`,
+  `department_refs`;
+- full-access задается `RECEIVABLE_WORKPLACE_BITRIX_FULL_ACCESS_USER_IDS`;
+- обычный доступ берется из последнего `telephony_user_line_snapshot` по
+  `bitrix_user_id`: сначала `staff_department_ref`, fallback
+  `department_ref_hex`;
+- если подразделение не найдено, backend возвращает `403` с понятной причиной.
+
+Env-настройки:
+
+- `RECEIVABLE_WORKPLACE_BITRIX_ENABLED`;
+- `RECEIVABLE_WORKPLACE_BITRIX_ALLOWED_DOMAINS`;
+- `RECEIVABLE_WORKPLACE_BITRIX_ALLOWED_MEMBER_IDS`;
+- `RECEIVABLE_WORKPLACE_BITRIX_FULL_ACCESS_USER_IDS`;
+- `RECEIVABLE_WORKPLACE_BITRIX_SESSION_SECRET`;
+- `RECEIVABLE_WORKPLACE_BITRIX_SESSION_TTL_SECONDS`;
+- `RECEIVABLE_WORKPLACE_BITRIX_REST_TIMEOUT_SECONDS`.
+
+Первый MVP не пишет в `1С`, не отправляет live SMS и не меняет сумму долга.
+Для клиентов без `planned_payment_date`, `credit_depth_days` и `due_date`
+интерфейс применяет расчетный срок `origin_document_date + 7 дней`, явно
+помечая строку как `глубина кредита расчетно 7 дней`.
 
 Для `Bitrix24` использовать уже проверенный подход проекта:
 
@@ -301,6 +402,11 @@ SMS считается от срока оплаты: за один календ�
 - unit: stable key карточки, field mapping, state transitions, SMS dedupe;
 - integration: create/update/close smart-process item через mocked Bitrix API;
 - regression: текущие `/api/receivables/*` и `/api/bi/*` не меняют контракт;
+- API auth: session endpoint принимает валидный Bitrix launch, отклоняет чужой
+  портал/member, full-access пользователь видит все строки, обычный пользователь
+  видит только свое подразделение и не может менять чужую строку;
+- embedded UI: `/bitrix/receivables` показывает подключение/нет доступа без поля
+  внутреннего токена, `/receivables/workplace` продолжает работать как fallback;
 - workbook: первый лист weekly Excel содержит только согласованные короткие
   поля;
 - permissions/manual: менеджер и руководитель могут перевести карточку в
@@ -312,23 +418,25 @@ SMS считается от срока оплаты: за один календ�
 # Rollout
 
 1. Заполнить справочник руководителей подразделений с `Bitrix24 user id`.
-2. Завести smart-process и layout в тестовом `Bitrix24`.
-3. Применить миграцию `7b6c5d4e3f2a_add_receivable_workflow_tables.py`.
-4. Создать/обновить smart-process в тестовом `Bitrix24` через
+2. Настроить Bitrix local app: handler `/bitrix/receivables/`, left menu title
+   `Дебиторка покупателей`, portal/member allowlist и отдельный session secret.
+3. Завести smart-process и layout в тестовом `Bitrix24`.
+4. Применить миграцию `7b6c5d4e3f2a_add_receivable_workflow_tables.py`.
+5. Создать/обновить smart-process в тестовом `Bitrix24` через
    `scripts/ensure_receivable_bitrix_process.py`; реальные webhook URL хранить
    только локально, а напечатанные `RECEIVABLE_BITRIX_*` значения перенести в
    окружение сервиса.
-5. Включить backend sync adapter с `RECEIVABLE_SMS_MODE=dry_run` и
+6. Включить backend sync adapter с `RECEIVABLE_SMS_MODE=dry_run` и
    `--dry-run-bitrix`.
-6. Подключить телефон из справочника контрагента `1С` и проверить, что
+7. Подключить телефон из справочника контрагента `1С` и проверить, что
    карточки без телефона попадают в статус `Нет телефона`, а не в live SMS.
-7. Включить sync в `Bitrix24` без `--dry-run-bitrix`.
-8. Включить SMS live с same-day dedupe только после подтверждения endpoint и
+8. Включить sync в `Bitrix24` без `--dry-run-bitrix`.
+9. Включить SMS live с same-day dedupe только после подтверждения endpoint и
    контракта SMS/1С.
-9. Отключить receivables-кейсы из `/api/management/task-payloads` или оставить
+10. Отключить receivables-кейсы из `/api/management/task-payloads` или оставить
    только служебные non-workflow уведомления.
-10. Переключить weekly Excel на данные smart-process по комментариям и статусам.
-11. Провести pilot по 1-2 подразделениям.
+11. Переключить weekly Excel на данные smart-process по комментариям и статусам.
+12. Провести pilot по 1-2 подразделениям.
 
 Rollback:
 
@@ -347,6 +455,9 @@ Pilot safety valve:
 
 # Changelog
 
+- 2026-06-24 - добавлено решение `Bitrix embedded first`: `/bitrix/receivables`,
+  session API, allowlist portal/member, full-access users и доступ по
+  подразделению из снимка телефонии.
 - 2026-05-26 - обновлены правила запуска после обсуждения в задаче: SMS за
   один день до срока оплаты, карточка smart-process на следующий день после
   срока оплаты.

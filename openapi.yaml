@@ -2612,6 +2612,29 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/receivables/session:
+    post:
+      summary: Create Bitrix Receivables Session
+      operationId: create_bitrix_receivables_session_api_bitrix_receivables_session_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixReceivablesSessionRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixReceivablesSessionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/management/retail-director-monthly-kpi:
     get:
       summary: Get Retail Director Monthly Kpi
@@ -2791,6 +2814,79 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CounterpartyFolderRecommendationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/counterparty-folder-snapshots/sync:
+    post:
+      summary: Sync Counterparty Folder Snapshots
+      operationId: sync_counterparty_folder_snapshots_api_management_counterparty_folder_snapshots_sync_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: Date
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CounterpartyFolderSnapshotSyncResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/counterparty-folder-changes:
+    get:
+      summary: Get Counterparty Folder Changes
+      operationId: get_counterparty_folder_changes_api_management_counterparty_folder_changes_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: Date
+      - name: previous_date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Previous Date
+      - name: limit
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 10000
+            minimum: 1
+          - type: 'null'
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CounterpartyFolderChangeResponse'
         '422':
           description: Validation Error
           content:
@@ -3393,6 +3489,143 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/receivables/workplace:
+    get:
+      summary: Get Receivable Workplace
+      operationId: get_receivable_workplace_api_receivables_workplace_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: Date
+      - name: department_ref
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Ref
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 2000
+          minimum: 1
+          default: 500
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReceivableWorkplaceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/receivables/workplace/folder-recommendations:
+    get:
+      summary: Get Receivable Workplace Folder Recommendations
+      operationId: get_receivable_workplace_folder_recommendations_api_receivables_workplace_folder_recommendations_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: Date
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^(move_recommended|ok|no_overdue|needs_review)$
+          - type: 'null'
+          title: Status
+      - name: limit
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            maximum: 10000
+            minimum: 1
+          - type: 'null'
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CounterpartyFolderRecommendationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/receivables/workplace/{counterparty_ref}:
+    patch:
+      summary: Update Receivable Workplace Item
+      operationId: update_receivable_workplace_item_api_receivables_workplace__counterparty_ref__patch
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: counterparty_ref
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Counterparty Ref
+      - name: date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: Date
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReceivableWorkplaceActionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReceivableWorkplaceActionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/staffing/daily:
     get:
       summary: Get Staffing Daily
@@ -3914,6 +4147,207 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/site-defects/archive:
+    get:
+      summary: Search Archive
+      operationId: search_archive_api_site_defects_archive_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: q
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          description: Поиск по текстам, номерам и файлам
+          title: Q
+        description: Поиск по текстам, номерам и файлам
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date From
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date To
+      - name: author
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Author
+      - name: problem_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Problem Type
+      - name: number
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Number
+      - name: has_file
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Has File
+      - name: has_photo
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Has Photo
+      - name: has_video
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Has Video
+      - name: has_linked_expertise
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Has Linked Expertise
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteDefectArchiveSearchResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/site-defects/archive/{case_id}:
+    get:
+      summary: Get Archive Detail
+      operationId: get_archive_detail_api_site_defects_archive__case_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Case Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteDefectArchiveCaseDetailResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/site-defects/working/analyze:
+    post:
+      summary: Analyze Working Reclamation
+      operationId: analyze_working_reclamation_api_site_defects_working_analyze_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SiteDefectWorkingAnalyzeRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteDefectWorkingAnalyzeResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/site-defects/working/report:
+    get:
+      summary: Working Reclamations Report
+      operationId: working_reclamations_report_api_site_defects_working_report_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 100
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SiteDefectWorkingReportResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/card-balance-reconciliation/events:
     get:
       summary: List Events
@@ -4102,6 +4536,48 @@ paths:
           - type: boolean
           - type: 'null'
           title: Auto Create Daily
+      - name: dry_run_auto_create
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Dry Run Auto Create
+      - name: require_workday
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Require Workday
+      - name: pilot_cashbox_code
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          title: Pilot Cashbox Code
+      - name: ocr_enabled
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Ocr Enabled
+      - name: max_create_count
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+            minimum: 1
+          - type: 'null'
+          title: Max Create Count
       responses:
         '200':
           description: Successful Response
@@ -6919,6 +7395,78 @@ components:
       required:
       - user_id
       title: BitrixMatchingUser
+    BitrixReceivablesSessionRequest:
+      properties:
+        access_token:
+          type: string
+          minLength: 1
+          title: Access Token
+        domain:
+          type: string
+          minLength: 1
+          title: Domain
+        member_id:
+          type: string
+          minLength: 1
+          title: Member Id
+      type: object
+      required:
+      - access_token
+      - domain
+      - member_id
+      title: BitrixReceivablesSessionRequest
+    BitrixReceivablesSessionResponse:
+      properties:
+        session_token:
+          type: string
+          title: Session Token
+        token_type:
+          type: string
+          title: Token Type
+          default: bearer
+        expires_at:
+          type: string
+          format: date-time
+          title: Expires At
+        expires_in:
+          type: integer
+          title: Expires In
+        user:
+          $ref: '#/components/schemas/BitrixReceivablesUser'
+        access_level:
+          type: string
+          enum:
+          - full
+          - department
+          title: Access Level
+        department_refs:
+          items:
+            type: string
+          type: array
+          title: Department Refs
+      type: object
+      required:
+      - session_token
+      - expires_at
+      - expires_in
+      - user
+      - access_level
+      - department_refs
+      title: BitrixReceivablesSessionResponse
+    BitrixReceivablesUser:
+      properties:
+        user_id:
+          type: string
+          title: User Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+      type: object
+      required:
+      - user_id
+      title: BitrixReceivablesUser
     Body_normalize_bank_payment_file_api_v1_bank_payments_normalize_post:
       properties:
         file:
@@ -7688,6 +8236,10 @@ components:
           type: integer
           title: Daily Created
           default: 0
+        daily_planned_create:
+          type: integer
+          title: Daily Planned Create
+          default: 0
         daily_skipped_existing:
           type: integer
           title: Daily Skipped Existing
@@ -7708,6 +8260,10 @@ components:
           type: integer
           title: Daily Skipped No Workday Data
           default: 0
+        daily_skipped_create_limit:
+          type: integer
+          title: Daily Skipped Create Limit
+          default: 0
         skipped_not_in_pilot:
           type: integer
           title: Skipped Not In Pilot
@@ -7727,6 +8283,26 @@ components:
         daily_create_errors:
           type: integer
           title: Daily Create Errors
+          default: 0
+        dry_run_auto_create:
+          type: boolean
+          title: Dry Run Auto Create
+          default: false
+        workday_required:
+          type: boolean
+          title: Workday Required
+          default: true
+        pilot_cashbox_codes_count:
+          type: integer
+          title: Pilot Cashbox Codes Count
+          default: 0
+        ocr_enabled:
+          type: boolean
+          title: Ocr Enabled
+          default: true
+        max_create_count:
+          type: integer
+          title: Max Create Count
           default: 0
       type: object
       required:
@@ -8700,6 +9276,133 @@ components:
       required:
       - items
       title: CounterpartyDuplicatePendingResponse
+    CounterpartyFolderChangeItem:
+      properties:
+        snapshot_date:
+          type: string
+          format: date
+          title: Snapshot Date
+        previous_snapshot_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Previous Snapshot Date
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        counterparty_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Name
+        old_folder_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Old Folder Ref
+        old_folder_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Old Folder Name
+        new_folder_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: New Folder Ref
+        new_folder_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: New Folder Name
+        current_balance:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Current Balance
+        origin_document_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Origin Document Ref
+        origin_document_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Origin Document Number
+        origin_document_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Origin Document Date
+        recommended_folder_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Folder Ref
+        recommended_folder_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Folder Name
+        debt_department_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Debt Department Ref
+        debt_department_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Debt Department Name
+      type: object
+      required:
+      - snapshot_date
+      - counterparty_ref
+      - current_balance
+      title: CounterpartyFolderChangeItem
+    CounterpartyFolderChangeResponse:
+      properties:
+        as_of:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+          title: As Of
+        freshness_status:
+          type: string
+          title: Freshness Status
+        source_status:
+          type: string
+          title: Source Status
+        previous_as_of:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Previous As Of
+        report_revision:
+          type: string
+          title: Report Revision
+        summary:
+          additionalProperties: true
+          type: object
+          title: Summary
+        payload:
+          items:
+            $ref: '#/components/schemas/CounterpartyFolderChangeItem'
+          type: array
+          title: Payload
+      type: object
+      required:
+      - as_of
+      - freshness_status
+      - source_status
+      - report_revision
+      - summary
+      - payload
+      title: CounterpartyFolderChangeResponse
     CounterpartyFolderRecommendationItem:
       properties:
         snapshot_date:
@@ -8709,6 +9412,11 @@ components:
         counterparty_ref:
           type: string
           title: Counterparty Ref
+        counterparty_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Code
         counterparty_name:
           anyOf:
           - type: string
@@ -8748,6 +9456,39 @@ components:
           - type: string
           - type: 'null'
           title: Debt Department Name
+        debt_document_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Debt Document Ref
+        debt_document_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Debt Document Number
+        debt_document_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Debt Document Date
+        debt_document_author_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Debt Document Author Ref
+        debt_document_author_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Debt Document Author Name
+        open_debt_documents:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Open Debt Documents
+          default: []
         origin_document_ref:
           anyOf:
           - type: string
@@ -8814,6 +9555,27 @@ components:
         is_overdue:
           type: boolean
           title: Is Overdue
+        effective_credit_depth_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Effective Credit Depth Days
+        effective_payment_term_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Effective Payment Term Source
+        effective_due_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Effective Due Date
+        effective_overdue_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Effective Overdue Days
         status:
           type: string
           title: Status
@@ -8822,6 +9584,52 @@ components:
           - type: string
           - type: 'null'
           title: Review Reason
+        document_structure_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Document Structure Status
+        document_structure_open_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Document Structure Open Amount
+        document_structure_sale_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Document Structure Sale Amount
+        document_structure_closing_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Document Structure Closing Amount
+        document_structure_order_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Document Structure Order Ref
+        document_structure_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Document Structure Order Number
+        document_structure_order_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Document Structure Order Date
+        document_structure_linked_documents:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Document Structure Linked Documents
+          default: []
       type: object
       required:
       - snapshot_date
@@ -8865,6 +9673,31 @@ components:
       - summary
       - payload
       title: CounterpartyFolderRecommendationResponse
+    CounterpartyFolderSnapshotSyncResponse:
+      properties:
+        as_of:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+          title: As Of
+        freshness_status:
+          type: string
+          title: Freshness Status
+        source_status:
+          type: string
+          title: Source Status
+        summary:
+          additionalProperties: true
+          type: object
+          title: Summary
+      type: object
+      required:
+      - as_of
+      - freshness_status
+      - source_status
+      - summary
+      title: CounterpartyFolderSnapshotSyncResponse
     CurrentMatch:
       properties:
         competitor_item_id:
@@ -12496,6 +13329,380 @@ components:
       - aged_bucket
       - activity_segment
       title: ReceivableCaseItem
+    ReceivableWorkplaceActionRequest:
+      properties:
+        status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+        contacted_staff_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contacted Staff Ref
+        contacted_staff_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contacted Staff Name
+        promised_payment_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Promised Payment Date
+        next_action_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Next Action Date
+        payment_postponed:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Payment Postponed
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+      type: object
+      title: ReceivableWorkplaceActionRequest
+    ReceivableWorkplaceActionResponse:
+      properties:
+        item:
+          $ref: '#/components/schemas/ReceivableWorkplaceItem'
+        event:
+          additionalProperties: true
+          type: object
+          title: Event
+      type: object
+      required:
+      - item
+      - event
+      title: ReceivableWorkplaceActionResponse
+    ReceivableWorkplaceDocument:
+      properties:
+        document_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Document Ref
+        document_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Document Number
+        document_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Document Date
+        amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Amount
+        manager_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Manager Name
+        due_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Due Date
+        overdue_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Overdue Days
+        is_overdue:
+          type: boolean
+          title: Is Overdue
+          default: false
+      type: object
+      required:
+      - amount
+      title: ReceivableWorkplaceDocument
+    ReceivableWorkplaceItem:
+      properties:
+        snapshot_date:
+          type: string
+          format: date
+          title: Snapshot Date
+        stable_key:
+          type: string
+          title: Stable Key
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        counterparty_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Code
+        counterparty_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Name
+        department_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Ref
+        department_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Name
+        responsible_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Responsible Ref
+        responsible_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Responsible Name
+        phone:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Phone
+        phone_status:
+          type: string
+          title: Phone Status
+        current_balance:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Current Balance
+        overdue_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Overdue Amount
+        effective_due_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Effective Due Date
+        effective_overdue_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Effective Overdue Days
+        oldest_overdue_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Oldest Overdue Date
+        invoice_count:
+          type: integer
+          title: Invoice Count
+        overdue_invoice_count:
+          type: integer
+          title: Overdue Invoice Count
+        promised_payment_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Promised Payment Date
+        last_contact_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Contact At
+        contacted_staff_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contacted Staff Ref
+        contacted_staff_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contacted Staff Name
+        status:
+          type: string
+          title: Status
+        next_action_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Next Action Date
+        payment_postponed:
+          type: boolean
+          title: Payment Postponed
+          default: false
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+        needs_call_today:
+          type: boolean
+          title: Needs Call Today
+        no_phone_marker:
+          type: boolean
+          title: No Phone Marker
+        needs_credit_depth_default:
+          type: boolean
+          title: Needs Credit Depth Default
+        criticality:
+          type: string
+          title: Criticality
+        documents:
+          items:
+            $ref: '#/components/schemas/ReceivableWorkplaceDocument'
+          type: array
+          title: Documents
+        staff_options:
+          items:
+            $ref: '#/components/schemas/ReceivableWorkplaceStaffOption'
+          type: array
+          title: Staff Options
+      type: object
+      required:
+      - snapshot_date
+      - stable_key
+      - counterparty_ref
+      - phone_status
+      - current_balance
+      - overdue_amount
+      - invoice_count
+      - overdue_invoice_count
+      - status
+      - needs_call_today
+      - no_phone_marker
+      - needs_credit_depth_default
+      - criticality
+      title: ReceivableWorkplaceItem
+    ReceivableWorkplaceResponse:
+      properties:
+        as_of:
+          type: string
+          format: date
+          title: As Of
+        freshness_status:
+          type: string
+          title: Freshness Status
+        source_status:
+          type: string
+          title: Source Status
+        summary:
+          $ref: '#/components/schemas/ReceivableWorkplaceSummary'
+        status_options:
+          items:
+            $ref: '#/components/schemas/ReceivableWorkplaceStatusOption'
+          type: array
+          title: Status Options
+        payload:
+          items:
+            $ref: '#/components/schemas/ReceivableWorkplaceItem'
+          type: array
+          title: Payload
+      type: object
+      required:
+      - as_of
+      - freshness_status
+      - source_status
+      - summary
+      - status_options
+      - payload
+      title: ReceivableWorkplaceResponse
+    ReceivableWorkplaceStaffOption:
+      properties:
+        staff_ref:
+          type: string
+          title: Staff Ref
+        staff_name:
+          type: string
+          title: Staff Name
+        department_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Ref
+        department_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Name
+      type: object
+      required:
+      - staff_ref
+      - staff_name
+      title: ReceivableWorkplaceStaffOption
+    ReceivableWorkplaceStatusOption:
+      properties:
+        value:
+          type: string
+          title: Value
+        label:
+          type: string
+          title: Label
+        scope:
+          type: string
+          title: Scope
+          default: common
+      type: object
+      required:
+      - value
+      - label
+      title: ReceivableWorkplaceStatusOption
+    ReceivableWorkplaceSummary:
+      properties:
+        row_count:
+          type: integer
+          title: Row Count
+        total_receivable:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Total Receivable
+        total_overdue:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Total Overdue
+        overdue_over_30_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Overdue Over 30 Amount
+        overdue_over_90_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Overdue Over 90 Amount
+        need_call_today_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Need Call Today Amount
+        no_phone_count:
+          type: integer
+          title: No Phone Count
+        credit_depth_default_count:
+          type: integer
+          title: Credit Depth Default Count
+      type: object
+      required:
+      - row_count
+      - total_receivable
+      - total_overdue
+      - overdue_over_30_amount
+      - overdue_over_90_amount
+      - need_call_today_amount
+      - no_phone_count
+      - credit_depth_default_count
+      title: ReceivableWorkplaceSummary
     ReceivablesCaseListResponse:
       properties:
         as_of:
@@ -13139,6 +14346,527 @@ components:
           description: Частота обновления экрана
       type: object
       title: ScreenInfo
+    SiteDefectArchiveCaseDetailResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        idempotency_key:
+          type: string
+          title: Idempotency Key
+        source_dialog_id:
+          type: string
+          title: Source Dialog Id
+        source_post_message_id:
+          type: string
+          title: Source Post Message Id
+        source_comment_chat_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Comment Chat Id
+        posted_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Posted At
+        author_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Author Name
+        title:
+          type: string
+          title: Title
+        summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Summary
+        problem_type:
+          type: string
+          title: Problem Type
+        problem_type_label:
+          type: string
+          title: Problem Type Label
+        status:
+          type: string
+          title: Status
+        extracted_numbers:
+          items:
+            type: string
+          type: array
+          title: Extracted Numbers
+        comment_count:
+          type: integer
+          title: Comment Count
+        file_count:
+          type: integer
+          title: File Count
+        has_photo:
+          type: boolean
+          title: Has Photo
+        has_video:
+          type: boolean
+          title: Has Video
+        bitrix_entity_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Entity Id
+        bitrix_detail_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Detail Url
+        bitrix_disk_folder_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Disk Folder Id
+        bitrix_disk_folder_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Disk Folder Url
+        linked_expertise_case_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Linked Expertise Case Id
+        snippets:
+          items:
+            type: string
+          type: array
+          title: Snippets
+        search_text:
+          type: string
+          title: Search Text
+        messages:
+          items:
+            $ref: '#/components/schemas/SiteDefectArchiveMessageResponse'
+          type: array
+          title: Messages
+        files:
+          items:
+            $ref: '#/components/schemas/SiteDefectArchiveFileResponse'
+          type: array
+          title: Files
+      type: object
+      required:
+      - id
+      - idempotency_key
+      - source_dialog_id
+      - source_post_message_id
+      - title
+      - problem_type
+      - problem_type_label
+      - status
+      - comment_count
+      - file_count
+      - has_photo
+      - has_video
+      - search_text
+      title: SiteDefectArchiveCaseDetailResponse
+    SiteDefectArchiveCaseListItem:
+      properties:
+        id:
+          type: integer
+          title: Id
+        idempotency_key:
+          type: string
+          title: Idempotency Key
+        source_dialog_id:
+          type: string
+          title: Source Dialog Id
+        source_post_message_id:
+          type: string
+          title: Source Post Message Id
+        source_comment_chat_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Comment Chat Id
+        posted_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Posted At
+        author_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Author Name
+        title:
+          type: string
+          title: Title
+        summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Summary
+        problem_type:
+          type: string
+          title: Problem Type
+        problem_type_label:
+          type: string
+          title: Problem Type Label
+        status:
+          type: string
+          title: Status
+        extracted_numbers:
+          items:
+            type: string
+          type: array
+          title: Extracted Numbers
+        comment_count:
+          type: integer
+          title: Comment Count
+        file_count:
+          type: integer
+          title: File Count
+        has_photo:
+          type: boolean
+          title: Has Photo
+        has_video:
+          type: boolean
+          title: Has Video
+        bitrix_entity_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Entity Id
+        bitrix_detail_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Detail Url
+        bitrix_disk_folder_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Disk Folder Id
+        bitrix_disk_folder_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Disk Folder Url
+        linked_expertise_case_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Linked Expertise Case Id
+        snippets:
+          items:
+            type: string
+          type: array
+          title: Snippets
+      type: object
+      required:
+      - id
+      - idempotency_key
+      - source_dialog_id
+      - source_post_message_id
+      - title
+      - problem_type
+      - problem_type_label
+      - status
+      - comment_count
+      - file_count
+      - has_photo
+      - has_video
+      title: SiteDefectArchiveCaseListItem
+    SiteDefectArchiveFileResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        source_file_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source File Id
+        source_message_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Message Id
+        name:
+          type: string
+          title: Name
+        storage_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Storage Path
+        content_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Content Type
+        extension:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Extension
+        size:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Size
+        bitrix_disk_file_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Disk File Id
+        bitrix_disk_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Disk Url
+      type: object
+      required:
+      - id
+      - name
+      title: SiteDefectArchiveFileResponse
+    SiteDefectArchiveMessageResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        source_message_id:
+          type: string
+          title: Source Message Id
+        message_kind:
+          type: string
+          title: Message Kind
+        message_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Message At
+        author_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Author Name
+        text:
+          type: string
+          title: Text
+        file_ids:
+          items:
+            type: string
+          type: array
+          title: File Ids
+      type: object
+      required:
+      - id
+      - source_message_id
+      - message_kind
+      - text
+      title: SiteDefectArchiveMessageResponse
+    SiteDefectArchiveSearchResponse:
+      properties:
+        total:
+          type: integer
+          title: Total
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+        items:
+          items:
+            $ref: '#/components/schemas/SiteDefectArchiveCaseListItem'
+          type: array
+          title: Items
+      type: object
+      required:
+      - total
+      - limit
+      - offset
+      - items
+      title: SiteDefectArchiveSearchResponse
+    SiteDefectWorkingAnalyzeRequest:
+      properties:
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
+        customer_contact:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Customer Contact
+        order_refs:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Order Refs
+        product_model:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Product Model
+        problem_description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Problem Description
+        customer_request:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Customer Request
+        comments_text:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comments Text
+        similar_limit:
+          type: integer
+          maximum: 20.0
+          minimum: 0.0
+          title: Similar Limit
+          default: 5
+      type: object
+      title: SiteDefectWorkingAnalyzeRequest
+    SiteDefectWorkingAnalyzeResponse:
+      properties:
+        numbers:
+          items:
+            type: string
+          type: array
+          title: Numbers
+        problem_type:
+          type: string
+          title: Problem Type
+        problem_type_label:
+          type: string
+          title: Problem Type Label
+        priority:
+          type: string
+          title: Priority
+        recommended_stage:
+          type: string
+          title: Recommended Stage
+        recommended_stage_label:
+          type: string
+          title: Recommended Stage Label
+        recommended_tasks:
+          items:
+            $ref: '#/components/schemas/SiteDefectWorkingTaskRecommendation'
+          type: array
+          title: Recommended Tasks
+        similar_archive_cases:
+          items:
+            $ref: '#/components/schemas/SiteDefectWorkingSimilarArchiveCase'
+          type: array
+          title: Similar Archive Cases
+        analysis_key:
+          type: string
+          title: Analysis Key
+        comment:
+          type: string
+          title: Comment
+      type: object
+      required:
+      - problem_type
+      - problem_type_label
+      - priority
+      - recommended_stage
+      - recommended_stage_label
+      - analysis_key
+      - comment
+      title: SiteDefectWorkingAnalyzeResponse
+    SiteDefectWorkingReportResponse:
+      properties:
+        status:
+          type: string
+          title: Status
+        items_checked:
+          type: integer
+          title: Items Checked
+          default: 0
+        buckets:
+          additionalProperties:
+            items:
+              additionalProperties: true
+              type: object
+            type: array
+          type: object
+          title: Buckets
+        reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reason
+      type: object
+      required:
+      - status
+      title: SiteDefectWorkingReportResponse
+    SiteDefectWorkingSimilarArchiveCase:
+      properties:
+        id:
+          type: integer
+          title: Id
+        title:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Title
+        summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Summary
+        numbers:
+          items:
+            type: string
+          type: array
+          title: Numbers
+        problem_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Problem Type
+        bitrix_detail_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Detail Url
+        bitrix_disk_folder_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Disk Folder Url
+      type: object
+      required:
+      - id
+      title: SiteDefectWorkingSimilarArchiveCase
+    SiteDefectWorkingTaskRecommendation:
+      properties:
+        role:
+          type: string
+          title: Role
+        title:
+          type: string
+          title: Title
+        due_hours:
+          type: integer
+          title: Due Hours
+        reason:
+          type: string
+          title: Reason
+      type: object
+      required:
+      - role
+      - title
+      - due_hours
+      - reason
+      title: SiteDefectWorkingTaskRecommendation
     StaffingDailyItem:
       properties:
         snapshot_date:

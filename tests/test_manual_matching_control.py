@@ -208,6 +208,32 @@ def test_suspicious_accept_reasons_detect_later_reject(db_session: Session) -> N
     assert "later_rejected_or_revoked" in reasons
 
 
+def test_suspicious_accept_reasons_detect_guardrail_catalog_conflict(
+    db_session: Session,
+) -> None:
+    product = Product(
+        article="056286",
+        name="Держатель сим-карты для Huawei Honor X6 (VNE-LX1) (синий)",
+        category="Держатели SIM-карт",
+        subject="держатель сим-карты",
+    )
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="451224",
+        name="Задняя крышка для Huawei Honor X6 (VNE-LX1) (синий)",
+        item_type="housing",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    decision = _decision(product, item, action="accept", user_id="130747")
+    db_session.add(decision)
+    db_session.commit()
+
+    reasons = suspicious_accept_reasons(db_session, decision=decision, product=product, item=item)
+
+    assert "guardrail_catalog_family_conflict" in reasons
+
+
 def test_manual_matching_cli_writes_markdown_and_json(
     db_session: Session, sqlite_engine, tmp_path, capsys
 ) -> None:

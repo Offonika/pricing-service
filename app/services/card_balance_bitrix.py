@@ -572,11 +572,13 @@ def sync_bitrix_item(
     item: dict[str, Any],
     decoded_payload: dict[str, Any] | None = None,
     onec_balances: dict[str, Decimal] | None = None,
+    apply_ocr: bool = True,
     settings: Settings | None = None,
 ) -> CardBalanceReconciliation:
     settings = settings or get_settings()
     payload = decoded_payload or decode_bitrix_item(item, settings=settings)
-    payload = _apply_ocr_to_payload(item=item, payload=payload, settings=settings)
+    if apply_ocr:
+        payload = _apply_ocr_to_payload(item=item, payload=payload, settings=settings)
     onec_balance = None
     cashbox_code = clean_string(payload.get("onec_cashbox_code"))
     if onec_balances is not None and cashbox_code:

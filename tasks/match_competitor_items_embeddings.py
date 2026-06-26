@@ -5226,6 +5226,51 @@ def _auto_reject_guardrail_device_group_conflicts(session: Session) -> int:
     return rejected
 
 
+def _auto_reject_guardrail_catalog_family_conflicts(session: Session) -> int:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(
+                joinedload(CompetitorItemMatch.competitor_item),
+                joinedload(CompetitorItemMatch.product),
+            )
+            .where(
+                CompetitorItemMatch.status.in_(
+                    (
+                        CompetitorItemMatchStatus.SUGGESTED,
+                        CompetitorItemMatchStatus.NEEDS_REVIEW,
+                        CompetitorItemMatchStatus.AMBIGUOUS,
+                    )
+                ),
+                CompetitorItemMatch.method != CompetitorItemMatchMethod.MANUAL,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    now = datetime.now(UTC)
+    rejected = 0
+    for match in matches:
+        item = match.competitor_item
+        product = match.product
+        if not item or not product:
+            continue
+        guardrail = basic_candidate_guardrails(item, product)
+        if guardrail.allowed or guardrail.reason != "catalog_family_conflict":
+            continue
+        rationale = dict(match.rationale_json or {})
+        rationale["auto_reject_guardrail_catalog_family_conflict"] = {
+            "reason": guardrail.reason,
+            "rejected_at": now.isoformat(),
+        }
+        match.status = CompetitorItemMatchStatus.REJECTED
+        match.rationale_json = rationale
+        match.updated_at = now
+        session.add(match)
+        rejected += 1
+    return rejected
+
+
 def _auto_reject_display_attribute_conflicts(session: Session) -> int:
     matches = (
         session.execute(
@@ -7079,6 +7124,16 @@ def _extract_device_model_keys(text: str | None) -> set[str]:
         _add_key_with_optional_network(keys, base, network)
 
     for match in re.finditer(
+        r"\biqoo\s+neo\s+(\d{1,3}[a-z]?)(?:\s+(lite|pro|max|plus|ultra|se))?(?:\s+(4g|5g))?\b",
+        normalized,
+    ):
+        model, variant, network = match.groups()
+        base = f"vivo_iqoo_neo_{model}"
+        if variant:
+            base = f"{base}_{variant}"
+        _add_key_with_optional_network(keys, base, network)
+
+    for match in re.finditer(
         r"\biqoo\s+([a-z]?\d{1,3}[a-z]?)(?:\s+(lite|pro|max|plus|ultra))?(?:\s+(4g|5g))?\b",
         normalized,
     ):
@@ -8736,6 +8791,9 @@ def match_items(
         )
         stats["auto_rejected_guardrail_device_group_conflict"] = (
             _auto_reject_guardrail_device_group_conflicts(session)
+        )
+        stats["auto_rejected_guardrail_catalog_family_conflict"] = (
+            _auto_reject_guardrail_catalog_family_conflicts(session)
         )
         stats["auto_rejected_display_attribute_conflict"] = (
             _auto_reject_display_attribute_conflicts(session)

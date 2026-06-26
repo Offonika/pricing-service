@@ -24,6 +24,30 @@ STATUS_DISPUTE = "dispute_check"
 STATUS_ESCALATED = "escalated"
 STATUS_DATA_QUALITY = "data_quality_error"
 STATUS_CLOSED = "closed"
+STATUS_NO_ANSWER = "no_answer"
+STATUS_CALL_BACK = "call_back"
+STATUS_INTERVENTION_REQUIRED = "intervention_required"
+STATUS_REMIND = "remind"
+STATUS_PAID = "paid"
+STATUS_TRANSFER = "transfer"
+STATUS_ON_CARD_ROUTE = "on_card_route"
+WORKPLACE_MANUAL_STATUS_VALUES = {
+    STATUS_WAITING_PAYMENT,
+    STATUS_PROMISED_PAYMENT,
+    STATUS_NO_ANSWER,
+    STATUS_CALL_BACK,
+    STATUS_INTERVENTION_REQUIRED,
+    STATUS_REMIND,
+    STATUS_PAID,
+    STATUS_TRANSFER,
+    STATUS_ON_CARD_ROUTE,
+}
+WORKPLACE_PAYLOAD_KEYS = {
+    "contacted_staff_ref",
+    "contacted_staff_name",
+    "payment_postponed",
+    "workplace_last_action_at",
+}
 
 SMS_PLANNED = "planned"
 SMS_DRY_RUN = "dry_run"
@@ -444,6 +468,8 @@ def _resolve_status(
 ) -> str:
     if item.status == STATUS_DISPUTE:
         return STATUS_DISPUTE
+    if item.status in WORKPLACE_MANUAL_STATUS_VALUES:
+        return item.status
     if (case.overdue_days or 0) >= 15:
         return STATUS_ESCALATED
     if item.phone_status == "missing":
@@ -711,6 +737,11 @@ def _update_work_item_from_case(
     item.phone_status = "present" if phone else "missing"
     item.needs_call_today = needs_call_on_date(case, as_of=as_of)
     item.chain_documents = case.chain_documents or []
+    preserved_payload = {}
+    if isinstance(item.payload, dict):
+        preserved_payload = {
+            key: item.payload.get(key) for key in WORKPLACE_PAYLOAD_KEYS if key in item.payload
+        }
     item.payload = {
         "snapshot_date": case.snapshot_date.isoformat(),
         "segment": case.segment,
@@ -718,6 +749,7 @@ def _update_work_item_from_case(
         "activity_segment": case.activity_segment,
         "payment_term_source": case.payment_term_source,
         "shipment_ban": case.shipment_ban,
+        **preserved_payload,
     }
     _sync_item_sms_state(session, item=item)
     item.status = _resolve_status(item=item, case=case, as_of=as_of)

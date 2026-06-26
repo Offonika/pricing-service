@@ -1,0 +1,2 @@
+CRON_TZ=Europe/Moscow
+*/30 8-21 * * * PROCUREMENT_SYNC_CONTOURS=ved_import /opt/MM/pricing-service/infra/cron/sync_open_procurement_supplier_orders_to_bitrix.sh >> /var/log/pricing/open_procurement_supplier_orders_sync.log 2>&1

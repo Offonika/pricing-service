@@ -9,6 +9,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from app.services.exporters.ut103_exchange import load_ut103_env_file, resolve_ut103_exchange_root
 from app.services.exporters.ut103_forecast import (
     DEFAULT_SOURCE,
     ForecastSalesMessage,
@@ -20,6 +21,7 @@ from app.services.exporters.ut103_forecast import (
 
 
 def main() -> int:
+    load_ut103_env_file()
     args = _parse_args()
     rows = _load_rows(args)
     message_id = args.message_id or f"forecast-sales-{datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -33,9 +35,10 @@ def main() -> int:
         print(build_forecast_sales_xml(message).decode("windows-1251"))
         return 0
 
-    exchange_root = args.exchange_root or os.environ.get("UT103_EXCHANGE_ROOT")
-    if not exchange_root:
-        raise SystemExit("Set --exchange-root or UT103_EXCHANGE_ROOT")
+    try:
+        exchange_root = resolve_ut103_exchange_root(args.exchange_root)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
 
     output_path = write_forecast_sales_message(exchange_root, message, overwrite=args.overwrite)
     if args.json:
@@ -82,9 +85,10 @@ def _parse_args() -> argparse.Namespace:
     args = parser.parse_args()
 
     if args.list_results:
-        exchange_root = args.exchange_root or os.environ.get("UT103_EXCHANGE_ROOT")
-        if not exchange_root:
-            raise SystemExit("Set --exchange-root or UT103_EXCHANGE_ROOT")
+        try:
+            exchange_root = resolve_ut103_exchange_root(args.exchange_root)
+        except ValueError as exc:
+            raise SystemExit(str(exc)) from exc
         results = [
             {
                 "message_id": result.message_id,

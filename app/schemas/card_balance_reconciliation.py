@@ -103,16 +103,23 @@ class CardBalanceSyncResponse(BaseModel):
     errors: int = 0
     business_date: date | None = None
     daily_created: int = 0
+    daily_planned_create: int = 0
     daily_skipped_existing: int = 0
     daily_skipped_manual_review: int = 0
     daily_skipped_missing_data: int = 0
     daily_skipped_not_in_pilot: int = 0
     daily_skipped_no_workday_data: int = 0
+    daily_skipped_create_limit: int = 0
     skipped_not_in_pilot: int = 0
     skipped_no_workday_data: int = 0
     skipped_unmapped_bitrix_item: int = 0
     ocr_errors: int = 0
     daily_create_errors: int = 0
+    dry_run_auto_create: bool = False
+    workday_required: bool = True
+    pilot_cashbox_codes_count: int = 0
+    ocr_enabled: bool = True
+    max_create_count: int = 0
 
 
 class CardBalanceCashboxSyncResponse(BaseModel):

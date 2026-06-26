@@ -80,6 +80,7 @@ class ReceivablesCaseListResponse(ManagementEnvelope):
 class CounterpartyFolderRecommendationItem(BaseModel):
     snapshot_date: date
     counterparty_ref: str
+    counterparty_code: str | None = None
     counterparty_name: str | None = None
     current_balance: Decimal
     current_folder_ref: str | None = None
@@ -88,6 +89,12 @@ class CounterpartyFolderRecommendationItem(BaseModel):
     recommended_folder_name: str | None = None
     debt_department_ref: str | None = None
     debt_department_name: str | None = None
+    debt_document_ref: str | None = None
+    debt_document_number: str | None = None
+    debt_document_date: datetime | None = None
+    debt_document_author_ref: str | None = None
+    debt_document_author_name: str | None = None
+    open_debt_documents: list[dict[str, Any]] = []
     origin_document_ref: str | None = None
     origin_document_number: str | None = None
     origin_document_date: datetime | None = None
@@ -101,14 +108,56 @@ class CounterpartyFolderRecommendationItem(BaseModel):
     due_date: datetime | None = None
     overdue_days: int | None = None
     is_overdue: bool
+    effective_credit_depth_days: int | None = None
+    effective_payment_term_source: str | None = None
+    effective_due_date: datetime | None = None
+    effective_overdue_days: int | None = None
     status: str
     review_reason: str | None = None
+    document_structure_status: str | None = None
+    document_structure_open_amount: Decimal | None = None
+    document_structure_sale_amount: Decimal | None = None
+    document_structure_closing_amount: Decimal | None = None
+    document_structure_order_ref: str | None = None
+    document_structure_order_number: str | None = None
+    document_structure_order_date: datetime | None = None
+    document_structure_linked_documents: list[dict[str, Any]] = []
 
 
 class CounterpartyFolderRecommendationResponse(ManagementEnvelope):
     report_revision: str
     summary: dict[str, Any]
     payload: list[CounterpartyFolderRecommendationItem]
+
+
+class CounterpartyFolderSnapshotSyncResponse(ManagementEnvelope):
+    summary: dict[str, Any]
+
+
+class CounterpartyFolderChangeItem(BaseModel):
+    snapshot_date: date
+    previous_snapshot_date: date | None = None
+    counterparty_ref: str
+    counterparty_name: str | None = None
+    old_folder_ref: str | None = None
+    old_folder_name: str | None = None
+    new_folder_ref: str | None = None
+    new_folder_name: str | None = None
+    current_balance: Decimal
+    origin_document_ref: str | None = None
+    origin_document_number: str | None = None
+    origin_document_date: datetime | None = None
+    recommended_folder_ref: str | None = None
+    recommended_folder_name: str | None = None
+    debt_department_ref: str | None = None
+    debt_department_name: str | None = None
+
+
+class CounterpartyFolderChangeResponse(ManagementEnvelope):
+    previous_as_of: date | None = None
+    report_revision: str
+    summary: dict[str, Any]
+    payload: list[CounterpartyFolderChangeItem]
 
 
 class ReceivablesManagerSummaryItem(BaseModel):

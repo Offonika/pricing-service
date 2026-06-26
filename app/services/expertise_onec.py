@@ -127,6 +127,7 @@ def build_expertise_sync_payloads(rows: Iterable[Mapping[str, Any]]) -> list[dic
                 ("store_ref", "store_ref"),
                 ("counterparty_ref", "counterparty_ref"),
                 ("responsible_ref", "responsible_ref"),
+                ("responsible_name", "responsible_name"),
                 ("contract_ref", "contract_ref"),
                 ("warehouse_ref", "warehouse_ref"),
             ):

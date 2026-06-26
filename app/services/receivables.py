@@ -457,6 +457,18 @@ def _is_debt_increase_event(event: Any) -> bool:
     return amount_delta > 0 and _event_value(event, "event_type") != EVENT_OPENING_BALANCE
 
 
+def _debt_increase_dedupe_key(event: Any) -> tuple[Any, ...]:
+    document_number = _event_value(event, "external_document_number")
+    document_ref = _event_value(event, "external_document_ref")
+    document_identity = document_number or document_ref
+    return (
+        _event_value(event, "event_type"),
+        document_identity,
+        _event_value(event, "external_document_date"),
+        _quantize_amount(Decimal(_event_value(event, "amount_delta"))),
+    )
+
+
 def _find_unpaid_origin_event(
     events: Sequence[Any],
     *,
@@ -466,11 +478,20 @@ def _find_unpaid_origin_event(
     if target_balance <= 0:
         return None
 
-    accumulated = Decimal("0.00")
-    origin_event: Any | None = None
-    for event in reversed(events):
+    debt_increase_events: list[Any] = []
+    seen_keys: set[tuple[Any, ...]] = set()
+    for event in events:
         if not _is_debt_increase_event(event):
             continue
+        dedupe_key = _debt_increase_dedupe_key(event)
+        if dedupe_key in seen_keys:
+            continue
+        seen_keys.add(dedupe_key)
+        debt_increase_events.append(event)
+
+    accumulated = Decimal("0.00")
+    origin_event: Any | None = None
+    for event in reversed(debt_increase_events):
         accumulated = _quantize_amount(accumulated + Decimal(_event_value(event, "amount_delta")))
         origin_event = event
         if accumulated >= target_balance:

@@ -25,6 +25,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.competitor_manufacturer_map import CompetitorManufacturerMap
     from app.models.competitor_price import CompetitorPrice
     from app.models.counterparty_duplicate_case import CounterpartyDuplicateCase
+    from app.models.counterparty_folder_snapshot import CounterpartyFolderSnapshot
     from app.models.counterparty_manager_assignment import CounterpartyManagerAssignment
     from app.models.device_brand import (
         CompatibilityMappingDecision,
@@ -82,6 +83,11 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.smartphone_release import ReleaseStatus, SmartphoneRelease, SourceType
     from app.models.staff_member import StaffMember
     from app.models.staffing_snapshot import StaffingSnapshot
+    from app.models.site_defect_archive import (
+        SiteDefectArchiveCase,
+        SiteDefectArchiveFile,
+        SiteDefectArchiveMessage,
+    )
     from app.models.site_order_fulfillment import (
         BitrixChatMention,
         BitrixChatMessage,
@@ -108,6 +114,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "CardBalanceReconciliation",
         "CardBalanceReconciliationEvent",
         "CounterpartyDuplicateCase",
+        "CounterpartyFolderSnapshot",
         "CompetitorFtpFile",
         "CompetitorFtpRawRow",
         "CompetitorFtpRecord",
@@ -167,6 +174,9 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "StoreShiftFact",
         "StaffingSnapshot",
         "TelephonyUserLineSnapshot",
+        "SiteDefectArchiveCase",
+        "SiteDefectArchiveMessage",
+        "SiteDefectArchiveFile",
         "SiteOrderExecutionCase",
         "BitrixChatMessage",
         "BitrixChatMention",

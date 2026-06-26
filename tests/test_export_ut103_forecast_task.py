@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -52,6 +53,49 @@ def test_export_ut103_forecast_task_writes_ready_xml(tmp_path: Path) -> None:
     root = ET.fromstring(output_path.read_bytes())
     assert root.findtext("Header/MessageId") == "forecast-sales-task-test-001"
     assert root.findtext("Items/Item/NomenclatureCode") == "РБ000074721"
+
+
+def test_export_ut103_forecast_task_uses_exchange_root_env(tmp_path: Path) -> None:
+    input_path = tmp_path / "forecast.json"
+    input_path.write_text(
+        json.dumps(
+            [
+                {
+                    "nomenclature_code": "РБ000074721",
+                    "warehouse_code": "РБ0000050",
+                    "period": "2026-08",
+                    "forecast_qty": "88",
+                    "forecast_amount": "188000.00",
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    exchange_root = tmp_path / "env-exchange"
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tasks.export_ut103_forecast",
+            "--message-id",
+            "forecast-sales-task-test-001",
+            "--input-json",
+            str(input_path),
+            "--json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={**os.environ, "UT103_EXCHANGE_ROOT": str(exchange_root)},
+    )
+
+    summary = json.loads(result.stdout)
+    assert Path(summary["path"]) == (
+        exchange_root / "to_1c" / "new" / "forecast_sales_forecast-sales-task-test-001.ready.xml"
+    )
+    assert Path(summary["path"]).exists()
 
 
 def test_export_ut103_forecast_task_lists_results(tmp_path: Path) -> None:

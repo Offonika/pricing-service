@@ -26,6 +26,7 @@ from app.services.receivables import (
     AuthoritativeReceivableBalanceRow,
     OneCReceivableLedgerExtractor,
     _build_synthetic_receivable_ref,
+    _find_unpaid_origin_event,
     _resolve_counterparty_credit_terms,
     build_receivable_balance_snapshots,
     build_receivable_cases,
@@ -337,6 +338,86 @@ def test_compute_bucket_and_activity_segments() -> None:
     assert (
         compute_activity_segment(datetime(2025, 12, 1, 10, 0, 0), date(2026, 3, 20)) == "inactive"
     )
+
+
+def _origin_event(
+    event_id: int,
+    event_type: str,
+    ref: str,
+    number: str,
+    document_date: datetime,
+    amount: str,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        id=event_id,
+        event_type=event_type,
+        external_document_ref=ref,
+        external_document_number=number,
+        external_document_date=document_date,
+        manager_ref=f"mgr-{event_id}",
+        manager_name=f"Менеджер {event_id}",
+        store_ref=f"store-{event_id}",
+        store_name=f"Магазин {event_id}",
+        amount_delta=Decimal(amount),
+    )
+
+
+def test_unpaid_origin_keeps_old_sale_after_partial_payment() -> None:
+    events = [
+        _origin_event(1, "sale", "sale-old", "S-OLD", datetime(2026, 1, 10, 10), "100.00"),
+        _origin_event(2, "payment", "pay-part", "P-PART", datetime(2026, 1, 11, 10), "-30.00"),
+        _origin_event(3, "sale", "sale-new", "S-NEW", datetime(2026, 1, 12, 10), "20.00"),
+    ]
+
+    origin = _find_unpaid_origin_event(events, current_balance=Decimal("90.00"))
+
+    assert origin is not None
+    assert origin["external_document_ref"] == "sale-old"
+
+
+def test_unpaid_origin_moves_to_next_sale_after_full_payment() -> None:
+    events = [
+        _origin_event(1, "sale", "sale-old", "S-OLD", datetime(2026, 1, 10, 10), "100.00"),
+        _origin_event(2, "payment", "pay-full", "P-FULL", datetime(2026, 1, 11, 10), "-100.00"),
+        _origin_event(3, "sale", "sale-new", "S-NEW", datetime(2026, 1, 12, 10), "20.00"),
+    ]
+
+    origin = _find_unpaid_origin_event(events, current_balance=Decimal("20.00"))
+
+    assert origin is not None
+    assert origin["external_document_ref"] == "sale-new"
+
+
+def test_unpaid_origin_ignores_return_closed_sale() -> None:
+    events = [
+        _origin_event(1, "sale", "sale-returned", "S-RET", datetime(2026, 1, 10, 10), "100.00"),
+        _origin_event(2, "return", "return-full", "R-FULL", datetime(2026, 1, 11, 10), "-100.00"),
+        _origin_event(3, "sale", "sale-open", "S-OPEN", datetime(2026, 1, 12, 10), "20.00"),
+    ]
+
+    origin = _find_unpaid_origin_event(events, current_balance=Decimal("20.00"))
+
+    assert origin is not None
+    assert origin["external_document_ref"] == "sale-open"
+
+
+def test_unpaid_origin_does_not_use_order_payment_as_origin() -> None:
+    events = [
+        _origin_event(
+            1,
+            "payment",
+            "order-payment",
+            "PAY-ORDER",
+            datetime(2026, 1, 10, 10),
+            "-500.00",
+        ),
+        _origin_event(2, "sale", "sale-open", "S-OPEN", datetime(2026, 1, 12, 10), "20.00"),
+    ]
+
+    origin = _find_unpaid_origin_event(events, current_balance=Decimal("20.00"))
+
+    assert origin is not None
+    assert origin["external_document_ref"] == "sale-open"
 
 
 def test_credit_terms_ignore_zero_depth_and_dates_before_origin() -> None:

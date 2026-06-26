@@ -1942,3 +1942,258 @@
     justify-content: flex-start;
   }
 }
+
+.receivables {
+  display: grid;
+  gap: 12px;
+}
+
+.receivables__header .receivables__token {
+  flex: 0 1 190px;
+}
+
+.receivables__summary {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+}
+
+.receivables__auth-state {
+  padding: 14px 16px;
+  border: 1px solid #c8d0da;
+  border-radius: 8px;
+  background: #ffffff;
+  color: #344054;
+  font-size: 14px;
+  font-weight: 750;
+}
+
+.receivables__metric {
+  display: grid;
+  min-height: 72px;
+  align-content: center;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid #d9e0e8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.receivables__metric span {
+  color: #667085;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.receivables__metric strong {
+  color: #18202a;
+  font-size: 18px;
+  line-height: 1.1;
+}
+
+.receivables__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.receivables__table-wrap,
+.receivables__folder-tab {
+  overflow: auto;
+  border: 1px solid #d9e0e8;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.receivables__table,
+.receivables__folder-tab table,
+.receivables__documents table {
+  width: 100%;
+  min-width: 1660px;
+  border-collapse: collapse;
+}
+
+.receivables__folder-tab table {
+  min-width: 1080px;
+}
+
+.receivables__documents table {
+  min-width: 860px;
+}
+
+.receivables__table th,
+.receivables__table td,
+.receivables__folder-tab th,
+.receivables__folder-tab td,
+.receivables__documents th,
+.receivables__documents td {
+  padding: 8px 9px;
+  border-bottom: 1px solid #eef2f6;
+  color: #18202a;
+  font-size: 12px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.receivables__table th,
+.receivables__folder-tab th,
+.receivables__documents th {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: #eef2f6;
+  color: #344054;
+  font-weight: 800;
+}
+
+.receivables__row:hover {
+  background: #f8fafc;
+}
+
+.receivables__row--alert {
+  background: #fff7ed;
+  box-shadow: inset 3px 0 0 #f97316;
+}
+
+.receivables__row strong,
+.receivables__row span {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.receivables__row span {
+  margin-top: 3px;
+  color: #667085;
+  font-size: 11px;
+}
+
+.receivables__badges {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-top: 5px;
+}
+
+.receivables__badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 2px 6px;
+  border-radius: 6px;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 800;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.receivables__badge--danger {
+  background: #fff1f2;
+  color: #b42318;
+}
+
+.receivables__badge--warning {
+  background: #fffbeb;
+  color: #92400e;
+}
+
+.receivables__badge--info {
+  background: #eef7ff;
+  color: #184e77;
+}
+
+.receivables__expand {
+  width: 26px;
+  height: 26px;
+  margin-right: 6px;
+  border: 1px solid #c8d0da;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #184e77;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.receivables__phone--missing {
+  color: #b42318;
+  font-weight: 800;
+}
+
+.receivables__input,
+.receivables__select,
+.receivables__comment {
+  width: 100%;
+  min-width: 126px;
+  min-height: 34px;
+  padding: 6px 8px;
+  border: 1px solid #c8d0da;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #18202a;
+  font: inherit;
+}
+
+.receivables__comment {
+  min-width: 190px;
+  height: 42px;
+  resize: vertical;
+}
+
+.receivables__center {
+  text-align: center;
+}
+
+.receivables__details td {
+  background: #f8fafc;
+}
+
+.receivables__documents {
+  display: grid;
+  gap: 8px;
+}
+
+.receivables__documents-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.receivables__documents-head span {
+  color: #667085;
+  font-size: 12px;
+}
+
+.receivables__documents-head mark {
+  padding: 3px 6px;
+  border-radius: 6px;
+  background: #fffbeb;
+  color: #92400e;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.receivables__state {
+  padding: 18px;
+  color: #667085;
+  font-weight: 700;
+}
+
+.receivables__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  color: #667085;
+  font-size: 12px;
+}
+
+@media (max-width: 760px) {
+  .receivables__summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .receivables__metric strong {
+    font-size: 15px;
+  }
+}

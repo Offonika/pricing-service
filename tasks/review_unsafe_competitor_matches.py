@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+from collections import Counter
 from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import create_engine, exists, func, or_, select
 from sqlalchemy.orm import Session
@@ -20,9 +22,64 @@ from app.models.competitor_item_match import (
 )
 from app.services.matching_guardrails import basic_candidate_guardrails
 
+SAFE_AUTO_ACCEPT_RATIONALE_KEYS = {
+    "auto_accept_battery_original_part_code",
+    "auto_accept_battery_part_code",
+    "auto_accept_connector",
+    "auto_accept_display_construction",
+    "auto_accept_display_matrix_tag",
+    "auto_accept_display_matrix_type",
+    "auto_accept_display_original_quality",
+    "auto_accept_display_unspecified_quality",
+    "auto_accept_explicit_model_code_overlap",
+    "auto_accept_explicit_model_text",
+    "auto_accept_flex",
+    "auto_accept_housing_part",
+    "auto_accept_iphone_battery_capacity",
+    "auto_accept_camera",
+    "auto_accept_other_safe_family",
+}
+DEFAULT_SAFE_AUTO_ACCEPT_MIN_SCORE = 0.80
+
 
 def _parse_date(value: str) -> date:
     return datetime.strptime(value, "%Y-%m-%d").date()
+
+
+def _float(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_auto_accept_rationale_key(
+    match: CompetitorItemMatch,
+) -> tuple[str | None, float]:
+    rationale = match.rationale_json or {}
+    for key in SAFE_AUTO_ACCEPT_RATIONALE_KEYS:
+        details = rationale.get(key)
+        if not isinstance(details, dict):
+            continue
+        threshold = (
+            _float(details.get("query_min_score"))
+            or _float(details.get("min_score"))
+            or DEFAULT_SAFE_AUTO_ACCEPT_MIN_SCORE
+        )
+        return key, threshold
+    return None, DEFAULT_SAFE_AUTO_ACCEPT_MIN_SCORE
+
+
+def _safe_auto_accept_can_stay(match: CompetitorItemMatch, *, guardrail_allowed: bool) -> bool:
+    if not guardrail_allowed:
+        return False
+    rationale_key, min_score = _safe_auto_accept_rationale_key(match)
+    if not rationale_key:
+        return False
+    score = _float(match.final_score)
+    return bool(score is not None and score >= min_score)
 
 
 def move_unsafe_matches_to_review(
@@ -58,15 +115,48 @@ def move_unsafe_matches_to_review(
     ).all()
     now = datetime.now(timezone.utc)
     samples: list[dict] = []
+    safe_auto_accept_kept = 0
+    unsafe_auto_accept_moved_to_review = 0
     updated = 0
+    unsafe_reason_counts: Counter[str] = Counter()
     for match, item, product in rows:
         guardrail = basic_candidate_guardrails(item, product)
         reason = "missing_attrs_or_compatibility"
         if not guardrail.allowed:
             reason = guardrail.reason or reason
+        rationale_key, safe_min_score = _safe_auto_accept_rationale_key(match)
+        keep_safe_auto_accept = _safe_auto_accept_can_stay(
+            match,
+            guardrail_allowed=guardrail.allowed,
+        )
+        if keep_safe_auto_accept:
+            safe_auto_accept_kept += 1
+            if len(samples) < sample_limit:
+                samples.append(
+                    {
+                        "action": "kept_safe_auto_accept",
+                        "competitor_item_id": item.id,
+                        "competitor": item.competitor,
+                        "external_id": item.external_id,
+                        "name": item.name,
+                        "product_id": product.id,
+                        "product_article": product.article,
+                        "product_name": product.name,
+                        "final_score": (
+                            float(match.final_score) if match.final_score is not None else None
+                        ),
+                        "reason": "safe_auto_accept_rationale",
+                        "rationale_key": rationale_key,
+                        "safe_min_score": safe_min_score,
+                    }
+                )
+            continue
+        unsafe_auto_accept_moved_to_review += 1
+        unsafe_reason_counts[reason] += 1
         if len(samples) < sample_limit:
             samples.append(
                 {
+                    "action": "moved_to_review",
                     "competitor_item_id": item.id,
                     "competitor": item.competitor,
                     "external_id": item.external_id,
@@ -78,6 +168,8 @@ def move_unsafe_matches_to_review(
                         float(match.final_score) if match.final_score is not None else None
                     ),
                     "reason": reason,
+                    "rationale_key": rationale_key,
+                    "safe_min_score": safe_min_score,
                 }
             )
         if dry_run:
@@ -103,6 +195,9 @@ def move_unsafe_matches_to_review(
     return {
         "processed": len(rows),
         "updated": updated,
+        "safe_auto_accept_kept": safe_auto_accept_kept,
+        "unsafe_auto_accept_moved_to_review": unsafe_auto_accept_moved_to_review,
+        "unsafe_reason_counts": dict(sorted(unsafe_reason_counts.items())),
         "dry_run": dry_run,
         "samples": samples,
     }

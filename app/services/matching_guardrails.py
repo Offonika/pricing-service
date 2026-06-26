@@ -37,6 +37,10 @@ COMPATIBILITY_NOISE_TOKENS = (
     "термовоздушная",
     "микроскоп",
     "тепловизор",
+    "коннектор акб",
+    "коннектор аккумулятора",
+    "разъем акб",
+    "разъем аккумулятора",
     "наушник",
     "гарнитур",
     "bluetooth",
@@ -370,6 +374,28 @@ def phone_model_keys(text: str | None) -> set[str]:
         _add_key_with_variant(keys, "huawei_nova", match.group(1), match.group(2))
 
     for match in re.finditer(
+        r"\b(?:apple\s+)?ipad\s+mini\s+(\d{1,2})(?:\s+(\d{4}))?",
+        value,
+    ):
+        model, _year = match.groups()
+        _add_key_with_variant(keys, "ipad_mini", model, None)
+
+    for match in re.finditer(
+        r"\b(?:apple\s+)?ipad\s+pro\s+(\d{1,2})(?:[.,]\d)?(?:\s+(\d{4}))?",
+        value,
+    ):
+        size, _year = match.groups()
+        _add_key_with_variant(keys, "ipad_pro", size, None)
+
+    for match in re.finditer(
+        r"\b(?:xiaomi\s+)?mi\s+([a-z]?\d{1,2}[a-z]?)(?:\s+(lite|pro\+?|pro|max|plus|ultra))?",
+        value,
+    ):
+        if "xiaomi" not in value and not re.search(r"\bmi\s+[a-z]?\d", value):
+            continue
+        _add_key_with_variant(keys, "xiaomi_mi", match.group(1), match.group(2))
+
+    for match in re.finditer(
         r"\boppo\s+a(\d{1,3}[a-z]?)(?:\s+(lite|pro|max|plus))?(?:\s+(4g|5g))?",
         value,
     ):
@@ -404,6 +430,24 @@ def phone_model_keys(text: str | None) -> set[str]:
         _add_key_with_variant(keys, "oppo_find_x", model, variant)
         if network:
             _add_key_with_variant(keys, "oppo_find_x", model, network)
+
+    for match in re.finditer(
+        r"\biqoo\s+neo\s+(\d{1,3}[a-z]?)(?:\s+(lite|pro\+?|pro|max|plus|ultra|se))?(?:\s+(4g|5g))?",
+        value,
+    ):
+        model, variant, network = match.groups()
+        _add_key_with_variant(keys, "vivo_iqoo_neo", model, variant)
+        if network:
+            _add_key_with_variant(keys, "vivo_iqoo_neo", model, network)
+
+    for match in re.finditer(
+        r"\biqoo\s+([a-z]?\d{1,3}[a-z]?)(?:\s+(lite|pro\+?|pro|max|plus|ultra|se))?(?:\s+(4g|5g))?",
+        value,
+    ):
+        model, variant, network = match.groups()
+        _add_key_with_variant(keys, "vivo_iqoo", model, variant)
+        if network:
+            _add_key_with_variant(keys, "vivo_iqoo", model, network)
 
     for match in re.finditer(
         r"\b(?:zte\s+)?(?:nubia\s+)?red\s+magic\s+(\d{1,2}s?)"
@@ -547,6 +591,15 @@ def _shared_title_model_key(candidate_title: str | None, product_title: str | No
     return bool(candidate_keys and product_keys and candidate_keys & product_keys)
 
 
+def _model_key_matches_or_refines(base_key: str, model_key: str) -> bool:
+    if model_key == base_key or model_key.startswith(f"{base_key}_"):
+        return True
+    if base_key.startswith("iphone_") and model_key.startswith(base_key):
+        suffix = model_key[len(base_key) : len(base_key) + 1]
+        return suffix in {"s", "c", "e", "_"}
+    return False
+
+
 def external_internal_display_conflict(left: str | None, right: str | None) -> bool:
     left_text = _text(left)
     right_text = _text(right)
@@ -616,11 +669,35 @@ def tape_dimension_conflict(left: str | None, right: str | None) -> bool:
     return bool(left_m and right_m and left_m.isdisjoint(right_m))
 
 
+def _is_battery_adhesive_family(value: str) -> bool:
+    return bool(
+        re.search(r"\bскотч\w*(?:\s+для)?\s+(?:акб|аккумулятора|аккумуляторн\w*)\b", value)
+        or re.search(r"\b(?:акб|аккумулятора|аккумуляторн\w*)\s+скотч\w*\b", value)
+        or re.search(r"\bbattery\s+(?:adhesive|sticker|tape)\b", value)
+        or re.search(r"\b(?:adhesive|sticker|tape)\s+(?:for\s+)?battery\b", value)
+    )
+
+
+def _is_battery_connector_family(value: str) -> bool:
+    return bool(
+        re.search(r"\b(?:коннектор|разъ[её]м)\w*\s+(?:акб|аккумулятор\w*)\b", value)
+        or re.search(r"\b(?:акб|аккумулятор\w*)\s+(?:коннектор|разъ[её]м)\w*\b", value)
+        or re.search(r"\bbattery\s+(?:connector|socket)\b", value)
+        or re.search(r"\b(?:connector|socket)\s+(?:for\s+)?battery\b", value)
+    )
+
+
 def catalog_family(text: str | None) -> str | None:
     value = _text(text)
     if not value:
         return None
 
+    if any(token in value for token in ("плата активации", "активации и зарядки акб")):
+        return "battery_activation_board"
+    if _is_battery_adhesive_family(value):
+        return "battery_adhesive"
+    if _is_battery_connector_family(value):
+        return "battery_connector"
     if re.search(r"\b(usb[-\s]*флеш|флешк|flash\s*drive|usb\s*flash)\b", value):
         return "usb_storage"
     if any(token in value for token in ("внешний аккумулятор", "power bank", "powerbank")):
@@ -645,6 +722,26 @@ def catalog_family(text: str | None) -> str | None:
         return "phone_camera_gasket"
     if any(token in value for token in ("держатель sim", "держатель сим", "sim tray")):
         return "phone_sim_tray"
+    if any(
+        token in value
+        for token in (
+            "задняя крышка",
+            "крышка задняя",
+            "back cover",
+            "battery cover",
+        )
+    ):
+        return "phone_back_cover"
+    if (
+        "корпус" in value
+        and "средняя часть" not in value
+        and "middle frame" not in value
+        and (
+            device_group(value) in {"phone", "tablet"}
+            or any(token in value for token in PHONE_OR_TABLET_HINT_TOKENS)
+        )
+    ):
+        return "phone_back_cover"
     if any(token in value for token in ("винты", "винт ", "набор винтов", "screw")):
         return "phone_screws"
     if any(token in value for token in ("трафарет", "bga")):
@@ -657,8 +754,6 @@ def catalog_family(text: str | None) -> str | None:
         return "ic"
     if any(token in value for token in ("колодка теста", "isocket", "тест платы")):
         return "test_socket"
-    if any(token in value for token in ("плата активации", "активации и зарядки акб")):
-        return "battery_activation_board"
     if any(token in value for token in ("скотч", "dst030", "tape")) and not any(
         token in value for token in ("аккумулятор", "акб", "battery")
     ):
@@ -781,6 +876,7 @@ def catalog_family(text: str | None) -> str | None:
             "адаптер питания",
             "power supply",
             "зарядное устройство",
+            "сзу",
         )
     ):
         group = device_group(value)
@@ -843,6 +939,8 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "network_cable",
         "component_connector",
         "battery_activation_board",
+        "battery_adhesive",
+        "battery_connector",
         "tape",
         "cutting_wire",
         "solder",
@@ -884,6 +982,10 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         right_family in power_families and left_family == "cable"
     ):
         return True
+    if (left_family == "power_supply" and right_family == "cable") or (
+        right_family == "power_supply" and left_family == "cable"
+    ):
+        return True
 
     if left_family.startswith("laptop_") and right_family.startswith("laptop_"):
         return left_family != right_family
@@ -905,6 +1007,8 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "network_cable",
         "component_connector",
         "battery_activation_board",
+        "battery_adhesive",
+        "battery_connector",
         "tape",
         "cutting_wire",
         "solder",
@@ -925,6 +1029,7 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "phone_speaker",
         "phone_speaker_mesh",
         "phone_sim_tray",
+        "phone_back_cover",
         "phone_screws",
         "laptop_connector",
         "laptop_flex",
@@ -1091,8 +1196,30 @@ def basic_candidate_guardrails(item: CompetitorItem, product: Product) -> Candid
     item_model_ids = _item_phone_model_ids(item)
     if product_model_ids and item_model_ids and product_model_ids.isdisjoint(item_model_ids):
         product_model_keys = phone_model_keys(_product_compatibility_text(product))
-        item_model_keys = phone_model_keys(_text(item_title_text, _compatibility_text(item)))
+        item_compat_text = _compatibility_text(item)
+        item_model_keys = phone_model_keys(_text(item_title_text, item_compat_text))
+        item_title_keys = phone_model_keys(item_title_text)
+        item_compat_keys = phone_model_keys(item_compat_text)
         if not (product_model_keys and item_model_keys and product_model_keys & item_model_keys):
+            return CandidateGuardrailResult(False, "compatibility_phone_model_conflict")
+        title_model_overlap = bool(product_model_keys and item_title_keys & product_model_keys)
+        compat_is_title_base = bool(
+            title_model_overlap
+            and item_compat_keys
+            and item_title_keys
+            and all(
+                any(
+                    _model_key_matches_or_refines(compat_key, title_key)
+                    for title_key in item_title_keys
+                )
+                for compat_key in item_compat_keys
+            )
+        )
+        if (
+            item_compat_keys
+            and product_model_keys.isdisjoint(item_compat_keys)
+            and not compat_is_title_base
+        ):
             return CandidateGuardrailResult(False, "compatibility_phone_model_conflict")
     compat_text = _compatibility_text(item)
     if compat_text:

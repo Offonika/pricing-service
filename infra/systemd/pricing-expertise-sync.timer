@@ -1,8 +1,8 @@
 [Unit]
-Description=Run Pricing Service Expertise Sync every 5 minutes with 2-minute offset
+Description=Run Pricing Service Expertise Sync every 30 minutes with 2-minute offset
 
 [Timer]
-OnCalendar=*:02,07,12,17,22,27,32,37,42,47,52,57
+OnCalendar=*:02,32
 Persistent=true
 AccuracySec=1m
 Unit=pricing-expertise-sync.service

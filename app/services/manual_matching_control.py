@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.models import CompetitorItem, CompetitorItemMatch, Product, ProductCompetitorItemDecision
 from app.models.competitor_item_match import CompetitorItemMatchStatus
+from app.services.matching_guardrails import basic_candidate_guardrails
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 REVIEW_STATUSES = (
@@ -283,6 +284,10 @@ def suspicious_accept_reasons(
     item_type = (item.item_type or "").strip().lower()
     if expected_type and item_type and expected_type != item_type:
         reasons.append(f"item_type_conflict:{expected_type}!={item_type}")
+
+    guardrail = basic_candidate_guardrails(item, product)
+    if not guardrail.allowed and guardrail.reason:
+        reasons.append(f"guardrail_{guardrail.reason}")
 
     is_display_pair = expected_type == "display" or item_type == "display"
     if is_display_pair:

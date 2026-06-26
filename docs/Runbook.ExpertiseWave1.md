@@ -31,9 +31,12 @@
 Операционное решение `Wave 1`:
 
 - постановщик notify-task — система / технический пользователь интеграции;
-- `RESPONSIBLE_ID` у notify-task — руководитель подразделения-инициатора экспертизы в `Bitrix24`;
-- если у подразделения не заполнен руководитель или оргструктура неполная, `RESPONSIBLE_ID` уходит на fallback-координатора `ОКК` из конфига;
-- `ACCOMPLICES` у notify-task — остальные активные сотрудники подразделения-инициатора, которые должны реально уведомить клиента;
+- `RESPONSIBLE_ID` у notify-task — автор документа экспертизы, если он найден среди активных не-курьеров подразделения;
+- если автор не найден или не подходит, `RESPONSIBLE_ID` берется из активных менеджеров подразделения-инициатора;
+- руководитель подразделения используется как fallback только если он не относится к исключенным должностям;
+- если подходящих сотрудников подразделения нет, `RESPONSIBLE_ID` уходит на fallback-координатора `ОКК` из конфига;
+- `ACCOMPLICES` у notify-task — остальные активные менеджеры подразделения-инициатора, которые должны реально уведомить клиента;
+- сотрудники с исключенными должностями, например курьеры, не попадают ни в исполнителя, ни в соисполнители notify-task;
 - `AUDITORS` — контрольные пользователи `ОКК` / руководители, которым нужен обзор и эскалации, но не ежедневное исполнение;
 - `client_notified` в `Wave 1` означает, что подразделение-инициатор подтвердило факт уведомления клиента;
 - автоматическая `SMS` из `Bitrix24` не входит в первый запуск и рассматривается как следующий этап автоматизации.
@@ -176,6 +179,9 @@ EXPERTISE_BITRIX_CATEGORY_ID=1
 EXPERTISE_BITRIX_ROOT_FOLDER_ID=77
 EXPERTISE_BITRIX_NOTIFY_RESPONSIBLE_USER_ID=900
 EXPERTISE_BITRIX_NOTIFY_AUDITOR_USER_IDS=[130750]
+EXPERTISE_BITRIX_NOTIFY_OWNER_USER_MAP={}
+EXPERTISE_BITRIX_NOTIFY_EXCLUDED_POSITION_KEYWORDS=["курьер"]
+EXPERTISE_BITRIX_NOTIFY_MANAGER_POSITION_KEYWORDS=["менедж","управля"]
 
 EXPERTISE_BITRIX_STAGE_MAP={"created":"DT187_1:CREATED","received_by_okk":"DT187_1:PREPARATION","under_review":"DT187_1:PREPARATION","decision_ready":"DT187_1:DECISION","client_notified":"DT187_1:NOTIFIED","returned_to_central_defect":"DT187_1:SUCCESS","returned_to_store":"DT187_1:FAIL","manual_review":"DT187_1:MANUAL"}
 EXPERTISE_BITRIX_FIELD_MAP={"title":"TITLE","expertise_ref":"UF_CRM_25_EXPERTISEREF","expertise_number":"UF_CRM_25_EXPERTISENUMBER","case_id":"UF_CRM_25_CASEID","sale_ref":"UF_CRM_25_SALEREF","sale_number":"UF_CRM_25_SALENUMBER","order_ref":"UF_CRM_25_ORDERREF","order_number":"UF_CRM_25_ORDERNUMBER","organization_ref":"UF_CRM_25_ORGANIZATIONREF","contract_ref":"UF_CRM_25_CONTRACTREF","store":"UF_CRM_25_STORE","customer":"UF_CRM_25_CUSTOMER","phone":"UF_CRM_25_PHONE","problem":"UF_CRM_25_PROBLEM","decision_code":"UF_CRM_25_DECISIONCODE","decision_label":"UF_CRM_25_DECISIONLABEL","decision_comment":"UF_CRM_25_DECISIONCOMMENT","status":"UF_CRM_25_STATUS","owner_ext":"UF_CRM_25_OWNEREXT","owner_name":"UF_CRM_25_OWNERNAME","due_at":"UF_CRM_25_DUEAT","overdue":"UF_CRM_25_OVERDUE","client_notified":"UF_CRM_25_CLIENTNOTIFIED","sync_at":"UF_CRM_25_SYNCAT","source":"UF_CRM_25_SOURCE","folder_url":"UF_CRM_25_FOLDERURL","assigned_by":"ASSIGNED_BY_ID"}
@@ -401,7 +407,7 @@ cd /opt/MM/pricing-service
 - systemd service: [pricing-expertise-sync.service](/opt/MM/pricing-service/infra/systemd/pricing-expertise-sync.service)
 - systemd timer: [pricing-expertise-sync.timer](/opt/MM/pricing-service/infra/systemd/pricing-expertise-sync.timer)
 
-Рекомендуемая частота для `Wave 1`: каждые `5` минут со сдвигом `+2` минуты относительно часа, чтобы не совпадать с будильником `alarm_scan`.
+Текущая рабочая частота для `Wave 1`: каждые `30` минут со сдвигом `+2` минуты относительно часа, чтобы снизить фоновое чтение `1С` в период расследования SQL-блокировок.
 
 Пример ручного запуска:
 

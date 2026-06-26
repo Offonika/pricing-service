@@ -70,11 +70,21 @@ def sync_bitrix(
     limit: int = Query(default=50, ge=1, le=2000),
     business_date: date | None = Query(default=None),
     auto_create_daily: bool | None = Query(default=None),
+    dry_run_auto_create: bool = Query(default=False),
+    require_workday: bool | None = Query(default=None),
+    pilot_cashbox_code: list[str] | None = Query(default=None),
+    ocr_enabled: bool | None = Query(default=None),
+    max_create_count: int | None = Query(default=None, ge=1),
 ):
     return worker.run_card_balance_bitrix_sync(
         limit=limit,
         business_date=business_date,
         auto_create_daily=auto_create_daily,
+        dry_run_auto_create=dry_run_auto_create,
+        require_workday=require_workday,
+        pilot_cashbox_codes=pilot_cashbox_code,
+        ocr_enabled=ocr_enabled,
+        max_create_count=max_create_count,
     )
 
 

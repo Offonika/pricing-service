@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time as time_module
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -68,7 +69,7 @@ def _format_field_value(value: Any) -> str:
     if value is None:
         return ""
     if isinstance(value, bool):
-        return "1" if value else "0"
+        return "Y" if value else "N"
     if isinstance(value, datetime):
         return _format_datetime(value)
     return str(value)
@@ -85,6 +86,13 @@ def _rest_field_name(field_name: str) -> str:
     return head + "".join(part.capitalize() for part in tail)
 
 
+def _format_bitrix_link(url: str | None, label: str) -> str | None:
+    if not url:
+        return None
+    safe_url = urllib.parse.quote(url.strip(), safe="/:?&=#%")
+    return f"[URL={safe_url}]{label}[/URL]"
+
+
 def _truncate_error(value: str | None, *, limit: int = 1000) -> str | None:
     if value is None:
         return None
@@ -92,6 +100,16 @@ def _truncate_error(value: str | None, *, limit: int = 1000) -> str | None:
     if not normalized:
         return None
     return normalized[:limit]
+
+
+def _coalesce_text(*values: Any) -> str | None:
+    for value in values:
+        if value is None:
+            continue
+        normalized = str(value).strip()
+        if normalized:
+            return normalized
+    return None
 
 
 def _is_bitrix_item_not_found(error: Exception) -> bool:
@@ -363,6 +381,9 @@ class ExpertiseBitrixConfig:
     notify_responsible_user_id: int | None
     notify_auditor_user_ids: list[int]
     store_department_map: dict[str, int]
+    notify_owner_user_map: dict[str, int]
+    notify_excluded_position_keywords: list[str]
+    notify_manager_position_keywords: list[str]
     sla_store_group_map: dict[str, str]
     sla_delivery_days_map: dict[str, int]
     sla_review_days_map: dict[str, int]
@@ -392,6 +413,13 @@ class ExpertiseBitrixConfig:
             notify_responsible_user_id=settings.expertise_bitrix_notify_responsible_user_id,
             notify_auditor_user_ids=list(settings.expertise_bitrix_notify_auditor_user_ids or []),
             store_department_map=dict(settings.expertise_bitrix_store_department_map or {}),
+            notify_owner_user_map=dict(settings.expertise_bitrix_notify_owner_user_map or {}),
+            notify_excluded_position_keywords=list(
+                settings.expertise_bitrix_notify_excluded_position_keywords or []
+            ),
+            notify_manager_position_keywords=list(
+                settings.expertise_bitrix_notify_manager_position_keywords or []
+            ),
             sla_store_group_map=dict(settings.expertise_sla_store_group_map or {}),
             sla_delivery_days_map=dict(settings.expertise_sla_delivery_days_map or {}),
             sla_review_days_map=dict(settings.expertise_sla_review_days_map or {}),
@@ -415,6 +443,15 @@ class ExpertiseBitrixConfig:
         )
 
 
+@dataclass(frozen=True)
+class BitrixDepartmentUser:
+    id: int
+    name: str | None = None
+    last_name: str | None = None
+    second_name: str | None = None
+    work_position: str | None = None
+
+
 class BitrixRestClient:
     def __init__(self, webhook_url: str):
         self.webhook_url = webhook_url.rstrip("/")
@@ -425,6 +462,7 @@ class BitrixRestClient:
         *,
         data: bytes | None,
         content_type: str,
+        timeout: int = 60,
     ) -> dict[str, Any]:
         url = f"{self.webhook_url}/{method}.json"
         request = urllib.request.Request(
@@ -433,26 +471,43 @@ class BitrixRestClient:
             headers={"Content-Type": content_type},
             method="POST" if data is not None else "GET",
         )
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except urllib.error.HTTPError as error:
-            body = error.read().decode("utf-8", errors="replace")
-            detail = body[:1000]
+        for attempt in range(1, 4):
             try:
-                payload = json.loads(body)
-                if payload.get("error"):
-                    detail = f"{payload['error']} {payload.get('error_description', '')}".strip()
-            except json.JSONDecodeError:
-                pass
-            raise RuntimeError(f"Bitrix24 {method}: HTTP {error.code} {detail}") from error
+                with urllib.request.urlopen(request, timeout=timeout) as response:
+                    payload = json.loads(response.read().decode("utf-8"))
+                break
+            except urllib.error.HTTPError as error:
+                body = error.read().decode("utf-8", errors="replace")
+                detail = body[:1000]
+                try:
+                    payload = json.loads(body)
+                    if payload.get("error"):
+                        detail = (
+                            f"{payload['error']} {payload.get('error_description', '')}".strip()
+                        )
+                except json.JSONDecodeError:
+                    pass
+                raise RuntimeError(f"Bitrix24 {method}: HTTP {error.code} {detail}") from error
+            except urllib.error.URLError as error:
+                if isinstance(error.reason, ConnectionRefusedError) and attempt < 3:
+                    time_module.sleep(attempt * 3)
+                    continue
+                raise RuntimeError(f"Bitrix24 {method}: network error {error.reason}") from error
+            except TimeoutError as error:
+                raise RuntimeError(f"Bitrix24 {method}: network timeout") from error
         if payload.get("error"):
             raise RuntimeError(
                 f"Bitrix24 {method}: {payload['error']} {payload.get('error_description', '')}"
             )
         return payload
 
-    def call(self, method: str, params: list[tuple[str, str]] | None = None) -> dict[str, Any]:
+    def call(
+        self,
+        method: str,
+        params: list[tuple[str, str]] | None = None,
+        *,
+        timeout: int = 60,
+    ) -> dict[str, Any]:
         data = None
         if params:
             data = urllib.parse.urlencode(params, doseq=True).encode("utf-8")
@@ -460,11 +515,18 @@ class BitrixRestClient:
             method,
             data=data,
             content_type="application/x-www-form-urlencoded",
+            timeout=timeout,
         )
 
-    def call_json(self, method: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def call_json(
+        self,
+        method: str,
+        payload: dict[str, Any],
+        *,
+        timeout: int = 60,
+    ) -> dict[str, Any]:
         data = json.dumps(payload, ensure_ascii=False).encode("utf-8")
-        return self._request(method, data=data, content_type="application/json")
+        return self._request(method, data=data, content_type="application/json", timeout=timeout)
 
     def list_items_by_ref(
         self,
@@ -514,6 +576,77 @@ class BitrixRestClient:
         for key, value in fields.items():
             params.append((f"fields[{_rest_field_name(key)}]", _format_field_value(value)))
         self.call("crm.item.update", params)
+
+    def get_smart_process_item(
+        self,
+        *,
+        entity_type_id: int,
+        item_id: str | int,
+    ) -> dict[str, Any]:
+        response = self.call(
+            "crm.item.get",
+            [("entityTypeId", str(entity_type_id)), ("id", str(item_id))],
+        )
+        result = response.get("result") or {}
+        item = result.get("item")
+        return item if isinstance(item, dict) else {}
+
+    def list_smart_process_items(
+        self,
+        *,
+        entity_type_id: int,
+        filters: dict[str, Any] | None = None,
+        select: list[str] | None = None,
+        order: dict[str, str] | None = None,
+        limit: int = 50,
+    ) -> list[dict[str, Any]]:
+        params: list[tuple[str, str]] = [("entityTypeId", str(entity_type_id))]
+        if filters:
+            for key, value in filters.items():
+                params.append((f"filter[{_rest_field_name(key)}]", _format_field_value(value)))
+        for field_name in select or ["id", "title", "stageId", "categoryId", "assignedById"]:
+            params.append(("select[]", _rest_field_name(field_name)))
+        if order:
+            for key, value in order.items():
+                params.append((f"order[{_rest_field_name(key)}]", str(value)))
+        safe_limit = max(1, min(limit, 500))
+        result: list[dict[str, Any]] = []
+        start = 0
+        while len(result) < safe_limit:
+            page_params = [*params, ("start", str(start))]
+            response = self.call("crm.item.list", page_params)
+            payload = response.get("result") or {}
+            items = payload.get("items")
+            if not isinstance(items, list) or not items:
+                break
+            result.extend(item for item in items if isinstance(item, dict))
+            next_page = payload.get("next", response.get("next"))
+            if len(result) >= safe_limit or next_page is None:
+                break
+            try:
+                start = int(next_page)
+            except (TypeError, ValueError):
+                break
+        return result[:safe_limit]
+
+    def add_crm_timeline_comment(
+        self,
+        *,
+        entity_type_id: int,
+        item_id: str | int,
+        comment: str,
+    ) -> str:
+        response = self.call_json(
+            "crm.timeline.comment.add",
+            {
+                "fields": {
+                    "ENTITY_ID": int(item_id),
+                    "ENTITY_TYPE": f"dynamic_{entity_type_id}",
+                    "COMMENT": comment,
+                }
+            },
+        )
+        return str((response.get("result") or {}).get("ID") or response.get("result") or "")
 
     def add_subfolder(self, *, parent_folder_id: int, name: str) -> tuple[str, str | None]:
         response = self.call(
@@ -573,25 +706,41 @@ class BitrixRestClient:
         return folder_id, folder_url
 
     def list_department_user_ids(self, *, department_id: int) -> list[int]:
+        return [user.id for user in self.list_department_users(department_id=department_id)]
+
+    def list_department_users(self, *, department_id: int) -> list[BitrixDepartmentUser]:
         response = self.call(
             "user.get",
             [
                 ("FILTER[ACTIVE]", "Y"),
                 ("FILTER[UF_DEPARTMENT]", str(department_id)),
                 ("SELECT[]", "ID"),
+                ("SELECT[]", "NAME"),
+                ("SELECT[]", "LAST_NAME"),
+                ("SELECT[]", "SECOND_NAME"),
+                ("SELECT[]", "WORK_POSITION"),
                 ("SELECT[]", "UF_DEPARTMENT"),
             ],
         )
         result = response.get("result") or []
-        ids: list[int] = []
+        users: list[BitrixDepartmentUser] = []
         for item in result:
             try:
                 value = int(item.get("ID"))
             except (TypeError, ValueError):
                 continue
-            if value not in ids:
-                ids.append(value)
-        return ids
+            if any(user.id == value for user in users):
+                continue
+            users.append(
+                BitrixDepartmentUser(
+                    id=value,
+                    name=_coalesce_text(item.get("NAME")),
+                    last_name=_coalesce_text(item.get("LAST_NAME")),
+                    second_name=_coalesce_text(item.get("SECOND_NAME")),
+                    work_position=_coalesce_text(item.get("WORK_POSITION")),
+                )
+            )
+        return users
 
     def get_department_head_user_id(self, *, department_id: int) -> int | None:
         response = self.call(
@@ -788,8 +937,9 @@ def _task_description(
     ]
     if case_row.bitrix_entity_id:
         lines.append(f"Smart-process item ID: {case_row.bitrix_entity_id}")
-    if case_row.bitrix_disk_folder_url:
-        lines.append(f"Папка Bitrix Disk: {case_row.bitrix_disk_folder_url}")
+    folder_link = _format_bitrix_link(case_row.bitrix_disk_folder_url, "открыть папку")
+    if folder_link:
+        lines.append(f"Папка Bitrix Disk: {folder_link}")
     return "\n".join(lines)
 
 
@@ -849,8 +999,9 @@ def _alarm_notification_message(
         lines.append(f"Задача уведомления: {case_row.bitrix_notify_task_id}")
     if case_row.bitrix_entity_id:
         lines.append(f"Smart-process item ID: {case_row.bitrix_entity_id}")
-    if case_row.bitrix_disk_folder_url:
-        lines.append(f"Папка Bitrix Disk: {case_row.bitrix_disk_folder_url}")
+    folder_link = _format_bitrix_link(case_row.bitrix_disk_folder_url, "открыть папку")
+    if folder_link:
+        lines.append(f"Папка Bitrix Disk: {folder_link}")
     if event_type in {EVENT_CLIENT_NOTIFY_REMINDER, EVENT_CLIENT_NOTIFY_ESCALATION}:
         lines.append(
             f"Текущий дедлайн уведомления: {_format_datetime(_notify_deadline_at(session, case_row, notify_warning_hours=config.notify_warning_hours))}"
@@ -917,6 +1068,98 @@ def _deliver_alarm_notification(
     return errors
 
 
+def _normalize_person_text(value: str | None) -> str:
+    normalized = (value or "").strip().casefold().replace("ё", "е")
+    normalized = "".join(character if character.isalnum() else " " for character in normalized)
+    return " ".join(normalized.split())
+
+
+def _department_user_name_variants(user: BitrixDepartmentUser) -> set[str]:
+    last_first = " ".join(part for part in [user.last_name, user.name, user.second_name] if part)
+    first_last = " ".join(part for part in [user.name, user.last_name, user.second_name] if part)
+    variants = {_normalize_person_text(last_first), _normalize_person_text(first_last)}
+    return {variant for variant in variants if variant}
+
+
+def _position_matches(value: str | None, keywords: list[str]) -> bool:
+    normalized = _normalize_person_text(value)
+    return any(_normalize_person_text(keyword) in normalized for keyword in keywords if keyword)
+
+
+def _is_excluded_notify_user(user: BitrixDepartmentUser, config: ExpertiseBitrixConfig) -> bool:
+    return _position_matches(user.work_position, config.notify_excluded_position_keywords)
+
+
+def _is_manager_notify_user(user: BitrixDepartmentUser, config: ExpertiseBitrixConfig) -> bool:
+    if _is_excluded_notify_user(user, config):
+        return False
+    if not (user.work_position or "").strip():
+        return True
+    if not config.notify_manager_position_keywords:
+        return True
+    return _position_matches(user.work_position, config.notify_manager_position_keywords)
+
+
+def _payload_owner_keys(case_row: ExpertiseCase) -> list[str]:
+    payload = case_row.payload if isinstance(case_row.payload, dict) else {}
+    return [
+        str(value).strip()
+        for value in [
+            case_row.owner_user_external_id,
+            payload.get("responsible_ref"),
+            payload.get("owner_user_external_id"),
+            payload.get("responsible_name"),
+            payload.get("owner_name"),
+            _owner_name(case_row),
+        ]
+        if value is not None and str(value).strip()
+    ]
+
+
+def _resolve_owner_user_id(
+    *,
+    case_row: ExpertiseCase,
+    users: list[BitrixDepartmentUser],
+    config: ExpertiseBitrixConfig,
+) -> int | None:
+    users_by_id = {user.id: user for user in users}
+    owner_keys = _payload_owner_keys(case_row)
+    owner_user_map: dict[str, int] = {}
+    for key, user_id in config.notify_owner_user_map.items():
+        normalized_key = str(key).strip()
+        if not normalized_key:
+            continue
+        owner_user_map[normalized_key] = user_id
+        owner_user_map[_normalize_person_text(normalized_key)] = user_id
+
+    for key in owner_keys:
+        mapped_user_id = owner_user_map.get(key)
+        if mapped_user_id is None:
+            mapped_user_id = owner_user_map.get(_normalize_person_text(key))
+        mapped_user = users_by_id.get(mapped_user_id) if mapped_user_id is not None else None
+        if mapped_user is not None and not _is_excluded_notify_user(mapped_user, config):
+            return mapped_user.id
+
+    for key in owner_keys:
+        try:
+            direct_user_id = int(key)
+        except ValueError:
+            continue
+        user = users_by_id.get(direct_user_id)
+        if user is not None and not _is_excluded_notify_user(user, config):
+            return user.id
+
+    owner_name_variants = {_normalize_person_text(key) for key in owner_keys}
+    owner_name_variants.discard("")
+    for user in users:
+        if _is_excluded_notify_user(user, config):
+            continue
+        if owner_name_variants & _department_user_name_variants(user):
+            return user.id
+
+    return None
+
+
 def _resolve_task_participants(
     *,
     session: Session,
@@ -929,18 +1172,62 @@ def _resolve_task_participants(
     if department_id is None:
         return None, [], f"bitrix department is not configured for store_ref={store_ref or '-'}"
     head_user_id = client.get_department_head_user_id(department_id=department_id)
-    user_ids = client.list_department_user_ids(department_id=department_id)
-    if not user_ids:
+    users = client.list_department_users(department_id=department_id)
+    if not users:
         return head_user_id, [], f"bitrix department={department_id} has no active users"
-    if head_user_id is not None:
-        accomplice_ids = [user_id for user_id in user_ids if user_id != head_user_id]
-        return head_user_id, accomplice_ids, None
-    fallback_responsible_user_id = user_ids[0]
-    accomplice_ids = [user_id for user_id in user_ids if user_id != fallback_responsible_user_id]
+
+    owner_user_id = _resolve_owner_user_id(case_row=case_row, users=users, config=config)
+    manager_user_ids = [user.id for user in users if _is_manager_notify_user(user, config)]
+    non_excluded_user_ids = [
+        user.id for user in users if not _is_excluded_notify_user(user, config)
+    ]
+
+    if owner_user_id is not None:
+        accomplice_ids = [user_id for user_id in manager_user_ids if user_id != owner_user_id]
+        return owner_user_id, accomplice_ids, None
+
+    if head_user_id is not None and head_user_id in manager_user_ids:
+        accomplice_ids = [user_id for user_id in manager_user_ids if user_id != head_user_id]
+        return (
+            head_user_id,
+            accomplice_ids,
+            f"owner user is not resolved or is excluded; fallback to department head={head_user_id}",
+        )
+
+    if manager_user_ids:
+        fallback_responsible_user_id = manager_user_ids[0]
+        accomplice_ids = [
+            user_id for user_id in manager_user_ids if user_id != fallback_responsible_user_id
+        ]
+        return (
+            fallback_responsible_user_id,
+            accomplice_ids,
+            "owner user is not resolved or is excluded; fallback to department manager",
+        )
+
+    if head_user_id is not None and head_user_id in non_excluded_user_ids:
+        accomplice_ids = [user_id for user_id in non_excluded_user_ids if user_id != head_user_id]
+        return (
+            head_user_id,
+            accomplice_ids,
+            f"department={department_id} has no active manager users; fallback to head",
+        )
+
+    if non_excluded_user_ids:
+        fallback_responsible_user_id = non_excluded_user_ids[0]
+        accomplice_ids = [
+            user_id for user_id in non_excluded_user_ids if user_id != fallback_responsible_user_id
+        ]
+        return (
+            fallback_responsible_user_id,
+            accomplice_ids,
+            f"department={department_id} has no active manager users; fallback to non-courier user",
+        )
+
     return (
-        fallback_responsible_user_id,
-        accomplice_ids,
-        f"bitrix department={department_id} has no assigned head",
+        None,
+        [],
+        f"bitrix department={department_id} has no active non-courier users",
     )
 
 

@@ -215,8 +215,8 @@ def _summary_int(report: dict[str, Any], key: str) -> int:
         return 0
 
 
-def _state_key(snapshot_date: date, report_revision: str) -> str:
-    return f"{snapshot_date.isoformat()}|{report_revision}"
+def _state_key(snapshot_date: date, *, status: str, report_revision: str) -> str:
+    return f"{snapshot_date.isoformat()}|{status}|{report_revision}"
 
 
 def _delivery_state_key(
@@ -479,6 +479,29 @@ def attach_bitrix_file_to_task(
     return attachment_id
 
 
+def deliver_bitrix_task_attachment(
+    base_url: str,
+    *,
+    folder_id: int,
+    task_id: int,
+    file_path: Path,
+) -> dict[str, int]:
+    file_object_id = upload_bitrix_disk_file(
+        base_url,
+        folder_id=folder_id,
+        file_path=file_path,
+    )
+    attachment_id = attach_bitrix_file_to_task(
+        base_url,
+        task_id=task_id,
+        file_object_id=file_object_id,
+    )
+    return {
+        "bitrix_file_object_id": file_object_id,
+        "bitrix_attachment_id": attachment_id,
+    }
+
+
 def export_recommendations_csv(report: dict[str, Any], output_path: Path) -> Path:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
@@ -625,10 +648,215 @@ def export_recommendations_csv(report: dict[str, Any], output_path: Path) -> Pat
     return output_path
 
 
+def _excel_number(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(Decimal(str(value)).quantize(Decimal("0.01")))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _primary_statement_rule(item: dict[str, Any]) -> str:
+    open_debt_documents = item.get("open_debt_documents")
+    if isinstance(open_debt_documents, list) and open_debt_documents:
+        first = open_debt_documents[0]
+        if isinstance(first, dict):
+            return _statement_rule_label(first.get("statement_selection_rule"))
+    return _statement_rule_label(item.get("statement_selection_rule"))
+
+
+def _statement_segment_label(item: dict[str, Any]) -> str:
+    return "–".join(
+        chunk
+        for chunk in (
+            _safe(item.get("statement_segment_start_row")),
+            _safe(item.get("statement_segment_end_row")),
+        )
+        if chunk
+    )
+
+
+def export_recommendations_xlsx(report: dict[str, Any], output_path: Path) -> Path:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    workbook = Workbook()
+    summary_sheet = workbook.active
+    summary_sheet.title = "Сводка"
+    data_sheet = workbook.create_sheet("Проверка")
+
+    summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
+    rows = report.get("payload") if isinstance(report.get("payload"), list) else []
+
+    summary_rows = [
+        ("Отчет", "Контроль папок контрагентов по просроченной дебиторке"),
+        ("Дата снапшота", report.get("as_of") or report.get("snapshot_date")),
+        ("Ревизия", report.get("report_revision")),
+        ("Всего в выгрузке", summary.get("total_count", len(rows))),
+        ("К переносу", summary.get("move_recommended_count", 0)),
+        ("На ручную проверку", summary.get("needs_review_count", 0)),
+        ("Скрыто мелких долгов", summary.get("below_min_balance_count", 0)),
+    ]
+    for row in summary_rows:
+        summary_sheet.append(list(row))
+
+    headers = [
+        "Контрагент",
+        "Код клиента",
+        "Текущая папка",
+        "Рекомендуемая папка",
+        "Подразделение долга",
+        "Сумма",
+        "Открытые документы по ведомостной логике 1С",
+        "Основной открытый документ",
+        "Ответственный РТУ",
+        "Правило выбора источника",
+        "Конечный остаток ведомости",
+        "Сегмент ведомости",
+        "Документ витрины дебиторки",
+        "Дата долга",
+        "Просрочка дней",
+        "Глубина кредита",
+        "Дата просрочки",
+        "Источник срока оплаты",
+        "Статус проверки структуры",
+        "Остаток по структуре",
+        "Сумма реализации по структуре",
+        "Закрывающие документы по структуре",
+        "Связанный заказ",
+        "Статус",
+        "Причина проверки",
+        "Причина проверки код",
+        "Менеджер долга",
+        "Текущий менеджер",
+        "Контрагент ref",
+        "Документ ref",
+    ]
+    data_sheet.append(headers)
+    for item in rows:
+        if not isinstance(item, dict):
+            continue
+        debt_document_label = " ".join(
+            chunk
+            for chunk in (
+                _safe(item.get("debt_document_number")),
+                _safe(item.get("debt_document_ref")),
+            )
+            if chunk
+        )
+        legacy_document_label = " ".join(
+            chunk
+            for chunk in (
+                _safe(item.get("origin_document_number")),
+                _safe(item.get("origin_document_ref")),
+            )
+            if chunk
+        )
+        data_sheet.append(
+            [
+                item.get("counterparty_name") or item.get("counterparty_ref"),
+                item.get("counterparty_code"),
+                item.get("current_folder_name"),
+                item.get("recommended_folder_name"),
+                item.get("debt_department_name"),
+                _excel_number(item.get("current_balance")),
+                _format_open_debt_documents(item.get("open_debt_documents")),
+                debt_document_label,
+                _first_present(
+                    item.get("debt_document_responsible_name"),
+                    item.get("origin_manager_name"),
+                ),
+                _primary_statement_rule(item),
+                _excel_number(item.get("statement_balance_after")),
+                _statement_segment_label(item),
+                legacy_document_label,
+                _format_dt(
+                    _first_present(
+                        item.get("debt_document_date"),
+                        item.get("origin_document_date"),
+                    )
+                ),
+                _first_present(item.get("effective_overdue_days"), item.get("overdue_days")),
+                _first_present(
+                    item.get("effective_credit_depth_days"),
+                    item.get("credit_depth_days"),
+                ),
+                _format_dt(_first_present(item.get("effective_due_date"), item.get("due_date"))),
+                _payment_term_source_label(
+                    _first_present(
+                        item.get("effective_payment_term_source"),
+                        item.get("payment_term_source"),
+                    )
+                ),
+                _document_structure_status_label(item.get("document_structure_status")),
+                _excel_number(item.get("document_structure_open_amount")),
+                _excel_number(item.get("document_structure_sale_amount")),
+                _format_linked_documents(item.get("document_structure_linked_documents")),
+                " от ".join(
+                    chunk
+                    for chunk in (
+                        _safe(item.get("document_structure_order_number")),
+                        _format_dt(item.get("document_structure_order_date")),
+                    )
+                    if chunk
+                ),
+                item.get("status"),
+                _review_reason_label(item.get("review_reason")),
+                item.get("review_reason"),
+                item.get("origin_manager_name"),
+                item.get("current_manager_name"),
+                item.get("counterparty_ref"),
+                item.get("debt_document_ref") or item.get("origin_document_ref"),
+            ]
+        )
+
+    header_fill = PatternFill(fill_type="solid", fgColor="1F4E78")
+    stripe_fill = PatternFill(fill_type="solid", fgColor="F7FBFF")
+    header_font = Font(bold=True, color="FFFFFF")
+    border_side = Side(style="thin", color="D9E2F3")
+    cell_border = Border(left=border_side, right=border_side, top=border_side, bottom=border_side)
+
+    for sheet in (summary_sheet, data_sheet):
+        for cell in sheet[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.border = cell_border
+            cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        for row_index in range(2, sheet.max_row + 1):
+            use_stripe = row_index % 2 == 0
+            for column_index in range(1, sheet.max_column + 1):
+                cell = sheet.cell(row=row_index, column=column_index)
+                cell.border = cell_border
+                cell.alignment = Alignment(vertical="top", wrap_text=True)
+                if use_stripe:
+                    cell.fill = stripe_fill
+                if isinstance(cell.value, float):
+                    cell.number_format = "#,##0.00"
+                    cell.alignment = Alignment(horizontal="right", vertical="top")
+        if sheet.max_row > 1:
+            sheet.freeze_panes = "A2"
+        sheet.sheet_view.zoomScale = 90
+        for column_index in range(1, sheet.max_column + 1):
+            width = 10
+            for row_index in range(1, sheet.max_row + 1):
+                value = sheet.cell(row=row_index, column=column_index).value
+                if value is None:
+                    continue
+                width = max(width, len(str(value)) + 2)
+            sheet.column_dimensions[get_column_letter(column_index)].width = min(width, 48)
+
+    if data_sheet.max_row > 1:
+        data_sheet.auto_filter.ref = f"A1:{get_column_letter(data_sheet.max_column)}{data_sheet.max_row}"
+
+    workbook.save(output_path)
+    return output_path
+
+
 def render_bitrix_comment(
     report: dict[str, Any],
     *,
     artifact_path: str,
+    xlsx_path: str | None = None,
+    xlsx_attached: bool = False,
     status: str,
 ) -> str:
     rows = report.get("payload") if isinstance(report.get("payload"), list) else []
@@ -653,9 +881,12 @@ def render_bitrix_comment(
         f"• 🔎 На ручную проверку: {review_count}",
         f"• 🧹 Скрыто мелких долгов ниже {min_balance or 500} ₽: {below_min_count}",
         f"• Ревизия: {report_revision}",
-        f"• 📎 CSV: {artifact_path}",
-        "",
+        f"• 📎 Excel: {'прикреплен к задаче' if xlsx_attached else 'не прикреплен'}",
+        f"• CSV fallback: {artifact_path}",
     ]
+    if xlsx_path:
+        lines.append(f"• XLSX fallback: {xlsx_path}")
+    lines.append("")
     if status == STATUS_MOVE_RECOMMENDED:
         lines.extend(
             [
@@ -688,7 +919,12 @@ def render_bitrix_comment(
             department = _safe(row.get("debt_department_name"))
             document_number = _safe(row.get("debt_document_number"))
             document_date = _format_dt(row.get("debt_document_date"))
-            document_author = _safe(row.get("debt_document_author_name"))
+            document_responsible = _safe(
+                _first_present(
+                    row.get("debt_document_responsible_name"),
+                    row.get("origin_manager_name"),
+                )
+            )
             reason = _review_reason_label(row.get("review_reason"))
             lines.extend(["", _preview_title(row, index)])
             lines.append(f"💰 Сумма: {_csv_number(row.get('current_balance'))} ₽")
@@ -716,8 +952,8 @@ def render_bitrix_comment(
                     "🧾 Открытый документ по ведомостной логике 1С: "
                     f"{' от '.join(document_parts)}"
                 )
-            if document_author:
-                lines.append(f"👤 Автор накладной: {document_author}")
+            if document_responsible:
+                lines.append(f"👤 Ответственный РТУ: {document_responsible}")
             open_debt_documents = row.get("open_debt_documents")
             if isinstance(open_debt_documents, list) and open_debt_documents:
                 first_open_doc = open_debt_documents[0]
@@ -727,6 +963,12 @@ def render_bitrix_comment(
                     )
                     if statement_rule:
                         lines.append(f"🧭 Правило выбора: {statement_rule}")
+            balance_after = _csv_number(row.get("statement_balance_after"))
+            segment_label = _statement_segment_label(row)
+            if balance_after:
+                lines.append(f"📈 Конечный остаток ведомости: {balance_after} ₽")
+            if segment_label:
+                lines.append(f"📍 Сегмент ведомости: строки {segment_label}")
             structure_status = _document_structure_status_label(
                 row.get("document_structure_status")
             )
@@ -769,11 +1011,13 @@ def _maybe_deliver_bitrix(
     status: str,
     report_revision: str,
     artifact_path: str,
+    xlsx_path: str | None,
     task_id: int | None,
     notify_empty: bool,
     dry_run: bool,
     force: bool,
     deliver_comment: Callable[[int, str], int] | None,
+    deliver_attachment: Callable[[int, Path], dict[str, int]] | None = None,
 ) -> dict[str, Any]:
     if task_id is None:
         return action
@@ -803,13 +1047,38 @@ def _maybe_deliver_bitrix(
         action["delivered"] = 0
         return action
 
-    message = render_bitrix_comment(report, artifact_path=artifact_path, status=status)
     if dry_run or deliver_comment is None:
+        message = render_bitrix_comment(
+            report,
+            artifact_path=artifact_path,
+            xlsx_path=xlsx_path,
+            xlsx_attached=False,
+            status=status,
+        )
         action["delivery_action"] = "dry_run"
         action["delivery_message"] = message
+        if xlsx_path:
+            action["xlsx_path"] = xlsx_path
         action["delivered"] = 0
         return action
 
+    xlsx_attached = False
+    attachment_result: dict[str, int] = {}
+    if xlsx_path and deliver_attachment is not None:
+        attachment_result = deliver_attachment(task_id, Path(xlsx_path))
+        xlsx_attached = True
+        action["delivery_attachment_action"] = "attach"
+        action.update(attachment_result)
+    elif xlsx_path:
+        action["delivery_attachment_action"] = "skip_missing_disk_folder"
+
+    message = render_bitrix_comment(
+        report,
+        artifact_path=artifact_path,
+        xlsx_path=xlsx_path,
+        xlsx_attached=xlsx_attached,
+        status=status,
+    )
     comment_id = deliver_comment(task_id, message)
     deliveries[delivery_key] = {
         "delivery_status": "delivered",
@@ -817,8 +1086,10 @@ def _maybe_deliver_bitrix(
         "report_revision": report_revision,
         "status_filter": status,
         "artifact_path": artifact_path,
+        "xlsx_path": xlsx_path,
         "target": target,
         "bitrix_comment_id": comment_id,
+        **attachment_result,
         "delivered_at": _utcnow().isoformat(),
     }
     _save_state(state_path, state)
@@ -841,6 +1112,7 @@ def sync_counterparty_folder_recommendations(
     bitrix_task_id: int | None = None,
     notify_empty: bool = False,
     deliver_comment: Callable[[int, str], int] | None = None,
+    deliver_attachment: Callable[[int, Path], dict[str, int]] | None = None,
 ) -> dict[str, Any]:
     params = {"date": snapshot_date.isoformat(), "status": status}
     if limit is not None:
@@ -883,9 +1155,10 @@ def sync_counterparty_folder_recommendations(
         }
 
     state = _load_state(state_path)
-    key = _state_key(snapshot_date, report_revision)
+    key = _state_key(snapshot_date, status=status, report_revision=report_revision)
     current = (state.get("reports") or {}).get(key)
     if isinstance(current, dict) and current.get("export_status") == "exported" and not force:
+        current_xlsx_path = _safe(current.get("xlsx_path")) or None
         action = {
             "status": "ok",
             "date": snapshot_date.isoformat(),
@@ -893,6 +1166,7 @@ def sync_counterparty_folder_recommendations(
             "action": "noop",
             "reason": "already_exported",
             "artifact_path": current.get("artifact_path"),
+            "xlsx_path": current_xlsx_path,
             "status_filter": status,
             "total_count": _summary_int(report, "total_count"),
             "move_recommended_count": _summary_int(report, "move_recommended_count"),
@@ -911,11 +1185,13 @@ def sync_counterparty_folder_recommendations(
             status=status,
             report_revision=report_revision,
             artifact_path=str(current.get("artifact_path") or ""),
+            xlsx_path=current_xlsx_path,
             task_id=bitrix_task_id,
             notify_empty=notify_empty,
             dry_run=dry_run,
             force=force,
             deliver_comment=deliver_comment,
+            deliver_attachment=deliver_attachment,
         )
 
     artifact_path = (
@@ -923,12 +1199,14 @@ def sync_counterparty_folder_recommendations(
         / snapshot_date.isoformat()
         / f"counterparty-folder-{_safe_path_chunk(status)}-{report_revision}.csv"
     )
+    xlsx_path = artifact_path.with_suffix(".xlsx")
     action = {
         "status": "ok",
         "date": snapshot_date.isoformat(),
         "report_revision": report_revision,
         "action": "dry_run" if dry_run else "export",
         "artifact_path": str(artifact_path),
+        "xlsx_path": str(xlsx_path),
         "status_filter": status,
         "limit": limit,
         "source_snapshot_count": _summary_int(report, "source_snapshot_count"),
@@ -950,14 +1228,17 @@ def sync_counterparty_folder_recommendations(
             status=status,
             report_revision=report_revision,
             artifact_path=str(artifact_path),
+            xlsx_path=str(xlsx_path),
             task_id=bitrix_task_id,
             notify_empty=notify_empty,
             dry_run=dry_run,
             force=force,
             deliver_comment=deliver_comment,
+            deliver_attachment=deliver_attachment,
         )
 
     export_recommendations_csv(report, artifact_path)
+    export_recommendations_xlsx(report, xlsx_path)
     state.setdefault("reports", {})[key] = {
         "export_status": "exported",
         "date": snapshot_date.isoformat(),
@@ -965,6 +1246,7 @@ def sync_counterparty_folder_recommendations(
         "status_filter": status,
         "limit": limit,
         "artifact_path": str(artifact_path),
+        "xlsx_path": str(xlsx_path),
         "exported_at": _utcnow().isoformat(),
     }
     _save_state(state_path, state)
@@ -977,11 +1259,13 @@ def sync_counterparty_folder_recommendations(
         status=status,
         report_revision=report_revision,
         artifact_path=str(artifact_path),
+        xlsx_path=str(xlsx_path),
         task_id=bitrix_task_id,
         notify_empty=notify_empty,
         dry_run=dry_run,
         force=force,
         deliver_comment=deliver_comment,
+        deliver_attachment=deliver_attachment,
     )
 
 
@@ -1008,12 +1292,18 @@ def render_summary(summary: dict[str, Any]) -> str:
         lines.append(f"Ревизия: {summary['report_revision']}")
     if summary.get("artifact_path"):
         lines.append(f"Файл: {summary['artifact_path']}")
+    if summary.get("xlsx_path"):
+        lines.append(f"Excel: {summary['xlsx_path']}")
     if summary.get("reason"):
         lines.append(f"Причина: {summary['reason']}")
     if summary.get("delivery_action"):
         lines.append(f"Доставка: {summary['delivery_action']}")
+    if summary.get("delivery_attachment_action"):
+        lines.append(f"Вложение: {summary['delivery_attachment_action']}")
     if summary.get("bitrix_comment_id"):
         lines.append(f"Комментарий Bitrix: {summary['bitrix_comment_id']}")
+    if summary.get("bitrix_attachment_id"):
+        lines.append(f"Вложение Bitrix: {summary['bitrix_attachment_id']}")
     if summary.get("error"):
         lines.append(f"Ошибка: {summary['error']}")
     return "\n".join(lines)
@@ -1060,6 +1350,12 @@ def main() -> None:
         retries=retries,
         retry_delay=retry_delay,
     )
+    bitrix_base_url = (
+        _bitrix_webhook_base(env)
+        if args.notify_bitrix_task_id and not args.dry_run
+        else ""
+    )
+    disk_folder_id = _to_int(env.get("COUNTERPARTY_FOLDER_RECOMMENDATIONS_B24_DISK_FOLDER_ID"))
 
     summary = sync_counterparty_folder_recommendations(
         fetch_json=fetch_json,
@@ -1078,12 +1374,24 @@ def main() -> None:
         notify_empty=args.notify_empty,
         deliver_comment=(
             (lambda task_id, message: post_bitrix_task_comment(
-                _bitrix_webhook_base(env),
+                bitrix_base_url,
                 task_id=task_id,
                 message=message,
                 timeout=int(env.get("COUNTERPARTY_FOLDER_RECOMMENDATIONS_BITRIX_TIMEOUT_SEC", "30")),
             ))
-            if args.notify_bitrix_task_id
+            if args.notify_bitrix_task_id and not args.dry_run
+            else None
+        ),
+        deliver_attachment=(
+            (
+                lambda task_id, file_path: deliver_bitrix_task_attachment(
+                        bitrix_base_url,
+                        folder_id=disk_folder_id,
+                        task_id=task_id,
+                        file_path=file_path,
+                    )
+            )
+            if args.notify_bitrix_task_id and disk_folder_id is not None and not args.dry_run
             else None
         ),
     )

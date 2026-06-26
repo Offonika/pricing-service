@@ -679,12 +679,17 @@ def upload_zip_to_disk(
     settings: Settings,
     zip_path: Path,
 ) -> BitrixFileResult | None:
-    if not settings.procurement_labels_bitrix_webhook_url:
+    webhook_url = (
+        settings.procurement_labels_bitrix_webhook_url
+        or settings.procurement_bitrix_webhook_url
+        or settings.bitrix_box_webhook_base
+    )
+    if not webhook_url:
         return None
     if not settings.procurement_labels_bitrix_root_folder_id:
         return None
     client = BitrixDiskClient(
-        settings.procurement_labels_bitrix_webhook_url,
+        webhook_url,
         timeout=int(settings.procurement_labels_bitrix_rest_timeout_seconds),
     )
     try:
@@ -759,10 +764,15 @@ def update_bitrix_label_status(
 
 
 def bitrix_client_from_settings(settings: Settings) -> ProcurementLabelsBitrixClient | None:
-    if not settings.procurement_labels_bitrix_webhook_url:
+    webhook_url = (
+        settings.procurement_labels_bitrix_webhook_url
+        or settings.procurement_bitrix_webhook_url
+        or settings.bitrix_box_webhook_base
+    )
+    if not webhook_url:
         return None
     return ProcurementLabelsBitrixClient(
-        settings.procurement_labels_bitrix_webhook_url,
+        webhook_url,
         timeout=settings.procurement_labels_bitrix_rest_timeout_seconds,
     )
 

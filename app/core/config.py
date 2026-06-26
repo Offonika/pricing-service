@@ -353,6 +353,8 @@ class Settings(BaseSettings):
     procurement_labels_bitrix_session_ttl_seconds: int = 3600
     procurement_labels_bitrix_rest_timeout_seconds: float = 6.0
     procurement_labels_bitrix_webhook_url: str | None = None
+    procurement_bitrix_webhook_url: str | None = None
+    bitrix_box_webhook_base: str | None = None
     procurement_labels_bitrix_root_folder_id: int | None = None
     procurement_labels_entity_type_id: int = 1056
     procurement_labels_mapping_path: str = "build/bitrix/procurement_order_mapping.json"

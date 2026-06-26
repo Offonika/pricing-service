@@ -50,7 +50,7 @@ def _report() -> dict[str, Any]:
                         "statement_selection_rule": "statement_unmatched_open_sale",
                     }
                 ],
-                "debt_document_author_name": "Автор СПБ",
+                "debt_document_responsible_name": "Автор СПБ",
                 "origin_document_ref": "doc-old-spb",
                 "origin_document_number": "РТУ-1",
                 "origin_document_date": "2026-05-01T10:00:00",
@@ -107,7 +107,7 @@ def test_counterparty_folder_wrapper_exports_csv_and_dedupes(tmp_path: Path) -> 
     assert "РБ053785" in csv_text
     assert "Источник срока оплаты" in csv_text
     assert "Открытые документы по ведомостной логике 1С" in csv_text
-    assert "Автор накладной" in csv_text
+    assert "Ответственный РТУ" in csv_text
     assert "Автор СПБ" in csv_text
     assert "Правило выбора источника" in csv_text
     assert "открытая РТУ по ведомостной логике" in csv_text
@@ -117,7 +117,8 @@ def test_counterparty_folder_wrapper_exports_csv_and_dedupes(tmp_path: Path) -> 
     assert "открытый остаток подтвержден структурой 1С" in csv_text
     assert "Причина проверки код" in csv_text
     state = json.loads(state_path.read_text(encoding="utf-8"))
-    assert state["reports"]["2026-05-29|abc123"]["export_status"] == "exported"
+    state_key = f"2026-05-29|{STATUS_MOVE_RECOMMENDED}|abc123"
+    assert state["reports"][state_key]["export_status"] == "exported"
 
     second_summary = sync_counterparty_folder_recommendations(
         fetch_json=fetch_json,
@@ -191,7 +192,7 @@ def test_counterparty_folder_wrapper_delivers_non_empty_report_to_bitrix(tmp_pat
         "🧾 Открытые документы по ведомостной логике 1С: Реализация РТУ-OPEN"
         in message
     )
-    assert "👤 Автор накладной: Автор СПБ" in message
+    assert "👤 Ответственный РТУ: Автор СПБ" in message
     assert "🧭 Правило выбора: открытая РТУ по ведомостной логике" in message
     assert "Накладная, выбранная витриной дебиторки" not in message
     assert "🔗 Структура 1С: открытый остаток подтвержден структурой 1С" in message

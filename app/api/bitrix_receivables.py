@@ -4,11 +4,15 @@ import json
 import urllib.parse
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db
+from app.api.receivable_workplace import (
+    ReceivableWorkplaceAuthContext,
+    require_receivable_workplace_access,
+)
 from app.core.config import get_settings
 from app.schemas.bitrix_receivables import (
     BitrixReceivablesSessionRequest,
@@ -17,6 +21,7 @@ from app.schemas.bitrix_receivables import (
 )
 from app.services.bitrix_receivables_auth import (
     create_receivables_session_token,
+    diagnose_receivables_access,
     ensure_bitrix_launch_allowed,
     load_bitrix_current_user,
     resolve_receivables_access,
@@ -136,3 +141,14 @@ def create_bitrix_receivables_session(
         access_level=access.access_level,
         department_refs=sorted(access.department_refs),
     )
+
+
+@router.get("/bitrix/receivables/access-diagnostics")
+def get_bitrix_receivables_access_diagnostics(
+    user_id: str = Query(min_length=1),
+    db: Session = Depends(get_db),
+    access: ReceivableWorkplaceAuthContext = Depends(require_receivable_workplace_access),
+) -> dict:
+    if access.access_level != "full":
+        raise HTTPException(status_code=403, detail="diagnostics require full receivables access")
+    return diagnose_receivables_access(db, bitrix_user_id=user_id, settings=get_settings())

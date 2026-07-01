@@ -114,6 +114,21 @@ cd /opt/MM/pricing-service
   --snapshot-date 2026-04-19
 ```
 
+После пересборки read-model для рабочего места дебиторки нужно обновить кеш
+открытых документов и вкладки `Контроль папок`:
+
+```bash
+cd /opt/MM/pricing-service
+./.venv/bin/python -m tasks.rebuild_receivable_workplace_cache \
+  --date 2026-04-19
+```
+
+В ежедневном `infra/cron/receivable_ledger_sync.sh` этот шаг запускается
+автоматически после `tasks.rebuild_receivable_read_models`. По умолчанию сбой
+кеша не блокирует основной импорт дебиторки, но пишет ошибку в
+`/var/log/pricing/receivable_ledger_sync.log`; строгий режим включается через
+`RECEIVABLE_WORKPLACE_CACHE_REQUIRED=1`.
+
 ## Быстрая загрузка без очистки
 
 Если ledger уже очищен или нужно догрузить поверх текущего состояния:

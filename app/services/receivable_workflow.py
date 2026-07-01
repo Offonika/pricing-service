@@ -46,6 +46,7 @@ WORKPLACE_PAYLOAD_KEYS = {
     "contacted_staff_ref",
     "contacted_staff_name",
     "payment_postponed",
+    "payment_postponed_count",
     "workplace_last_action_at",
 }
 

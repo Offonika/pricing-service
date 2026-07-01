@@ -665,6 +665,7 @@ class AuthoritativeReceivableBalanceRow:
     counterparty_ref: str
     counterparty_name: str | None
     current_balance: Decimal
+    counterparty_code: str | None = None
     current_manager_ref: str | None = None
     current_manager_name: str | None = None
     source: str = "onec_authoritative_balance"
@@ -1487,6 +1488,9 @@ def load_receivable_current_balance_rows(
             counterparty_ref,
             {
                 "counterparty_ref": counterparty_ref,
+                "counterparty_code": (
+                    mapping_item.get("counterparty_code") if mapping_item is not None else None
+                ),
                 "counterparty_name": counterparty_name,
                 "current_balance": Decimal("0.00"),
             },
@@ -1501,6 +1505,7 @@ def load_receivable_current_balance_rows(
     items = [
         AuthoritativeReceivableBalanceRow(
             counterparty_ref=item["counterparty_ref"],
+            counterparty_code=item.get("counterparty_code"),
             counterparty_name=item["counterparty_name"],
             current_balance=_quantize_amount(Decimal(item["current_balance"])),
             source=source,
@@ -1542,6 +1547,7 @@ def fetch_regular_current_balance_rows_from_onec(
     regular_stmt = text(f"""
         SELECT
             {ref_expr} AS counterparty_ref,
+            RTRIM(counterparty._Code) AS counterparty_code,
             counterparty._Description AS counterparty_name,
             CAST(SUM(CAST(t._Fld7562 AS decimal(18, 2))) AS decimal(18, 2)) AS current_balance
         FROM _AccumRgTn7571 AS t {nolock}
@@ -1551,12 +1557,14 @@ def fetch_regular_current_balance_rows_from_onec(
           AND t._Fld7559RRef <> 0x00000000000000000000000000000000
         GROUP BY
             counterparty._IDRRef,
+            counterparty._Code,
             counterparty._Description
         HAVING SUM(CAST(t._Fld7562 AS decimal(18, 2))) <> 0
         """)
     summary_stmt = text(f"""
         SELECT
             {ref_expr} AS counterparty_ref,
+            RTRIM(counterparty._Code) AS counterparty_code,
             counterparty._Description AS counterparty_name,
             CAST(SUM(CAST(t._Fld7620 AS decimal(18, 2))) AS decimal(18, 2)) AS current_balance
         FROM _AccumRgT7622 AS t {nolock}
@@ -1568,6 +1576,7 @@ def fetch_regular_current_balance_rows_from_onec(
           AND t._Fld7619RRef <> 0x00000000000000000000000000000000
         GROUP BY
             counterparty._IDRRef,
+            counterparty._Code,
             counterparty._Description
         HAVING SUM(CAST(t._Fld7620 AS decimal(18, 2))) <> 0
         """)
@@ -1583,6 +1592,7 @@ def fetch_regular_current_balance_rows_from_onec(
                     continue
                 items[counterparty_ref] = AuthoritativeReceivableBalanceRow(
                     counterparty_ref=counterparty_ref,
+                    counterparty_code=_clean_string(row.get("counterparty_code")),
                     counterparty_name=_clean_string(row.get("counterparty_name")),
                     current_balance=_quantize_amount(_to_decimal(row.get("current_balance"))),
                     source="onec_month_end_totals",
@@ -1618,6 +1628,12 @@ def _merge_authoritative_balance_rows(
     for row in rows:
         items[row.counterparty_ref] = AuthoritativeReceivableBalanceRow(
             counterparty_ref=row.counterparty_ref,
+            counterparty_code=row.counterparty_code
+            or (
+                items[row.counterparty_ref].counterparty_code
+                if row.counterparty_ref in items
+                else None
+            ),
             counterparty_name=row.counterparty_name
             or (
                 items[row.counterparty_ref].counterparty_name
@@ -2732,6 +2748,7 @@ def build_receivable_balance_snapshots(
                 ReceivableBalanceSnapshot(
                     snapshot_date=snapshot_date,
                     counterparty_ref=row.counterparty_ref,
+                    counterparty_code=row.counterparty_code,
                     counterparty_name=row.counterparty_name or enrichment.get("counterparty_name"),
                     current_balance=current_balance,
                     origin_event_id=origin_event["id"] if origin_event else None,
@@ -2919,6 +2936,7 @@ def build_receivable_balance_snapshots(
             ReceivableBalanceSnapshot(
                 snapshot_date=snapshot_date,
                 counterparty_ref=state["counterparty_ref"],
+                counterparty_code=state.get("counterparty_code"),
                 counterparty_name=state["counterparty_name"],
                 current_balance=effective_balance,
                 origin_event_id=origin_event["id"] if origin_event else None,
@@ -3021,6 +3039,7 @@ def build_receivable_balance_snapshots(
                 ReceivableBalanceSnapshot(
                     snapshot_date=snapshot_date,
                     counterparty_ref=f"override:{hashlib.sha1(override_key.encode('utf-8')).hexdigest()}",
+                    counterparty_code=None,
                     counterparty_name=(
                         current_balance_override_names.get(override_key)
                         if current_balance_override_names
@@ -3070,6 +3089,7 @@ def build_receivable_balance_snapshots(
                     snapshot_date=snapshot_date,
                     counterparty_ref=counterparty_ref
                     or f"override:{hashlib.sha1(f'employee:{override_key}'.encode()).hexdigest()}",
+                    counterparty_code=None,
                     counterparty_name=(
                         employee_current_balance_override_names.get(override_key)
                         if employee_current_balance_override_names
@@ -3732,6 +3752,7 @@ def build_receivable_cases(
         connection.execute(
             select(
                 snapshot_table.c.counterparty_ref,
+                snapshot_table.c.counterparty_code,
                 snapshot_table.c.counterparty_name,
                 snapshot_table.c.current_balance,
                 snapshot_table.c.aged_bucket,
@@ -3889,6 +3910,7 @@ def build_receivable_cases(
                     owner_type=owner_type,
                     recommendation=recommendation,
                     counterparty_ref=snapshot["counterparty_ref"],
+                    counterparty_code=snapshot["counterparty_code"],
                     counterparty_name=snapshot["counterparty_name"],
                     current_balance=snapshot["current_balance"],
                     aged_bucket=snapshot["aged_bucket"],

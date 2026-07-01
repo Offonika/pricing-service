@@ -4,6 +4,7 @@ import base64
 import hashlib
 import hmac
 import json
+import logging
 import re
 import time
 import urllib.error
@@ -18,7 +19,15 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
-from app.models import TelephonyUserLineSnapshot
+from app.models import (
+    ReceivableBitrixUserAccess,
+    ReceivableCase,
+    StaffMember,
+    TelephonyUserLineSnapshot,
+)
+from app.services.receivable_department_aliases import expand_receivable_department_refs
+
+logger = logging.getLogger(__name__)
 
 _TOKEN_ALG = "HS256"
 _TOKEN_TYP = "MM-RECEIVABLES"
@@ -76,6 +85,10 @@ def _normal_set(values: list[str]) -> set[str]:
 def _normalize_ref(value: Any) -> str | None:
     normalized = str(value or "").strip()
     return normalized or None
+
+
+def _normalize_name(value: Any) -> str:
+    return " ".join(str(value or "").strip().casefold().replace("ё", "е").split())
 
 
 def _ensure_bitrix_enabled(settings: Settings) -> None:
@@ -154,6 +167,83 @@ def _full_access_user_ids(settings: Settings) -> set[str]:
     return _normal_set(settings.receivable_workplace_bitrix_full_access_user_ids)
 
 
+def _table_access_for_user(
+    session: Session,
+    *,
+    bitrix_user_id: str,
+) -> ReceivablesAccess | None:
+    row = session.scalar(
+        select(ReceivableBitrixUserAccess).where(
+            ReceivableBitrixUserAccess.bitrix_user_id == bitrix_user_id,
+            ReceivableBitrixUserAccess.is_active.is_(True),
+        )
+    )
+    if row is None:
+        return None
+    if row.access_level == "full":
+        return ReceivablesAccess(access_level="full", department_refs=frozenset())
+    if row.access_level != "department":
+        logger.warning(
+            "receivables_access_table_invalid_level",
+            extra={"bitrix_user_id": bitrix_user_id, "access_level": row.access_level},
+        )
+        return None
+    department_refs = expand_receivable_department_refs(
+        value for value in (_normalize_ref(item) for item in row.department_refs or []) if value
+    )
+    if not department_refs:
+        logger.info(
+            "receivables_access_table_department_empty",
+            extra={
+                "bitrix_user_id": bitrix_user_id,
+                "access_source": "table",
+                "reason": "department_refs_empty",
+            },
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Не найдено подразделение для доступа: проверьте привязку пользователя к подразделению",
+        )
+    return ReceivablesAccess(access_level="department", department_refs=department_refs)
+
+
+def _resolve_department_refs_by_names(
+    session: Session,
+    *,
+    names: set[str],
+) -> set[str]:
+    if not names:
+        return set()
+    refs: set[str] = set()
+    latest_case_date = session.scalar(select(func.max(ReceivableCase.snapshot_date)))
+    if latest_case_date is not None:
+        case_rows = session.execute(
+            select(ReceivableCase.department_ref, ReceivableCase.department_name).where(
+                ReceivableCase.snapshot_date == latest_case_date,
+                ReceivableCase.department_ref.is_not(None),
+                ReceivableCase.department_name.is_not(None),
+            )
+        ).all()
+        for department_ref, department_name in case_rows:
+            if _normalize_name(department_name) in names and department_ref:
+                refs.add(str(department_ref))
+
+    staff_rows = session.execute(
+        select(
+            StaffMember.department_ref,
+            StaffMember.department_name,
+            StaffMember.store_ref,
+            StaffMember.store_name,
+        ).where(StaffMember.employment_status != "fired")
+    ).all()
+    for department_ref, department_name, store_ref, store_name in staff_rows:
+        if department_ref and _normalize_name(department_name) in names:
+            refs.add(str(department_ref))
+        if store_ref and _normalize_name(store_name) in names:
+            refs.add(str(store_ref))
+    return refs
+
+
 def resolve_receivables_access(
     session: Session,
     *,
@@ -162,6 +252,17 @@ def resolve_receivables_access(
 ) -> ReceivablesAccess:
     settings = settings or get_settings()
     user_id = str(bitrix_user_id).strip()
+    table_access = _table_access_for_user(session, bitrix_user_id=user_id)
+    if table_access is not None:
+        logger.info(
+            "receivables_access_resolved_from_table",
+            extra={
+                "bitrix_user_id": user_id,
+                "access_level": table_access.access_level,
+                "department_ref_count": len(table_access.department_refs),
+            },
+        )
+        return table_access
     if user_id.lower() in _full_access_user_ids(settings):
         return ReceivablesAccess(access_level="full", department_refs=frozenset())
 
@@ -177,7 +278,20 @@ def resolve_receivables_access(
         )
     )
     if latest_snapshot_date is None:
-        raise HTTPException(status_code=403, detail="не найдено подразделение для доступа")
+        logger.info(
+            "receivables_access_snapshot_not_found",
+            extra={
+                "bitrix_user_id": user_id,
+                "access_source": "telephony",
+                "reason": "snapshot_not_found",
+                "raw_department_refs": [],
+                "fallback_department_refs": [],
+            },
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Не найдено подразделение для доступа: проверьте привязку пользователя к подразделению",
+        )
 
     rows = (
         session.execute(
@@ -191,18 +305,155 @@ def resolve_receivables_access(
         .scalars()
         .all()
     )
-    department_refs = frozenset(
+    raw_refs = {
         value
         for row in rows
         for value in (
             _normalize_ref(row.staff_department_ref),
+            _normalize_ref(row.staff_store_ref),
             _normalize_ref(row.department_ref_hex),
+            _normalize_ref(row.store_ref_hex),
         )
         if value
+    }
+    department_names = {
+        value
+        for row in rows
+        for value in (
+            _normalize_name(row.staff_department_name),
+            _normalize_name(row.staff_store_name),
+            _normalize_name(row.department_name),
+            _normalize_name(row.store_name),
+        )
+        if value
+    }
+    fallback_refs = _resolve_department_refs_by_names(session, names=department_names)
+    department_refs = expand_receivable_department_refs(
+        raw_refs | fallback_refs, names=department_names
     )
     if not department_refs:
-        raise HTTPException(status_code=403, detail="не найдено подразделение для доступа")
+        logger.info(
+            "receivables_access_department_not_found",
+            extra={
+                "bitrix_user_id": user_id,
+                "access_source": "telephony",
+                "reason": "department_not_found",
+                "telephony_rows": len(rows),
+                "department_names": sorted(department_names),
+                "raw_department_refs": sorted(raw_refs),
+                "fallback_department_refs": sorted(fallback_refs),
+            },
+        )
+        raise HTTPException(
+            status_code=403,
+            detail="Не найдено подразделение для доступа: проверьте привязку пользователя к подразделению",
+        )
+    logger.info(
+        "receivables_access_resolved",
+        extra={
+            "bitrix_user_id": user_id,
+            "raw_ref_count": len(raw_refs),
+            "fallback_ref_count": len(fallback_refs),
+            "department_ref_count": len(department_refs),
+            "access_source": "telephony",
+            "reason": "resolved",
+        },
+    )
     return ReceivablesAccess(access_level="department", department_refs=department_refs)
+
+
+def diagnose_receivables_access(
+    session: Session,
+    *,
+    bitrix_user_id: str,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    settings = settings or get_settings()
+    user_id = str(bitrix_user_id).strip()
+    table_row = session.scalar(
+        select(ReceivableBitrixUserAccess).where(
+            ReceivableBitrixUserAccess.bitrix_user_id == user_id,
+        )
+    )
+    table_payload = None
+    if table_row is not None:
+        table_payload = {
+            "access_level": table_row.access_level,
+            "department_refs": list(table_row.department_refs or []),
+            "is_active": table_row.is_active,
+        }
+
+    active_user_predicate = or_(
+        TelephonyUserLineSnapshot.employment_status.is_(None),
+        TelephonyUserLineSnapshot.employment_status != "fired",
+    )
+    latest_snapshot_date = session.scalar(
+        select(func.max(TelephonyUserLineSnapshot.snapshot_date)).where(
+            TelephonyUserLineSnapshot.bitrix_user_id == user_id,
+            TelephonyUserLineSnapshot.is_marked.is_(False),
+            active_user_predicate,
+        )
+    )
+    rows = []
+    if latest_snapshot_date is not None:
+        rows = (
+            session.execute(
+                select(TelephonyUserLineSnapshot).where(
+                    TelephonyUserLineSnapshot.snapshot_date == latest_snapshot_date,
+                    TelephonyUserLineSnapshot.bitrix_user_id == user_id,
+                    TelephonyUserLineSnapshot.is_marked.is_(False),
+                    active_user_predicate,
+                )
+            )
+            .scalars()
+            .all()
+        )
+    raw_refs = {
+        value
+        for row in rows
+        for value in (
+            _normalize_ref(row.staff_department_ref),
+            _normalize_ref(row.staff_store_ref),
+            _normalize_ref(row.department_ref_hex),
+            _normalize_ref(row.store_ref_hex),
+        )
+        if value
+    }
+    department_names = {
+        value
+        for row in rows
+        for value in (
+            _normalize_name(row.staff_department_name),
+            _normalize_name(row.staff_store_name),
+            _normalize_name(row.department_name),
+            _normalize_name(row.store_name),
+        )
+        if value
+    }
+    fallback_refs = _resolve_department_refs_by_names(session, names=department_names)
+    resolved_refs = sorted(
+        expand_receivable_department_refs(raw_refs | fallback_refs, names=department_names)
+    )
+    reason = "resolved"
+    if table_row is not None and table_row.is_active:
+        reason = "table"
+    elif user_id.lower() in _full_access_user_ids(settings):
+        reason = "env_full_access"
+    elif not latest_snapshot_date:
+        reason = "telephony_snapshot_not_found"
+    elif not resolved_refs:
+        reason = "department_not_found"
+    return {
+        "bitrix_user_id": user_id,
+        "table_access": table_payload,
+        "env_full_access": user_id.lower() in _full_access_user_ids(settings),
+        "latest_telephony_snapshot_date": latest_snapshot_date,
+        "telephony_rows": len(rows),
+        "raw_department_refs": sorted(raw_refs),
+        "fallback_department_refs": sorted(fallback_refs),
+        "resolved_department_refs": resolved_refs,
+        "reason": reason,
+    }
 
 
 def _b64_encode(raw: bytes) -> str:
@@ -251,7 +502,11 @@ def create_receivables_session_token(
         "user_id": user_id,
         "user_name": user_name,
         "access_level": access.access_level,
-        "department_refs": sorted(access.department_refs),
+        "department_refs": sorted(
+            expand_receivable_department_refs(access.department_refs)
+            if access.access_level == "department"
+            else access.department_refs
+        ),
         "iat": issued_at,
         "exp": expires_at_ts,
     }
@@ -309,13 +564,10 @@ def verify_receivables_session_token(
     access_level = str(payload.get("access_level") or "")
     if access_level not in {"full", "department"}:
         raise HTTPException(status_code=401, detail="invalid receivables session")
-    if access_level == "full" and user_id.lower() not in _full_access_user_ids(settings):
-        raise HTTPException(status_code=403, detail="Bitrix user is not allowed")
-
     raw_department_refs = payload.get("department_refs") or []
     if not isinstance(raw_department_refs, list):
         raise HTTPException(status_code=401, detail="invalid receivables session")
-    department_refs = frozenset(
+    department_refs = expand_receivable_department_refs(
         value for value in (_normalize_ref(item) for item in raw_department_refs) if value
     )
     if access_level == "department" and not department_refs:

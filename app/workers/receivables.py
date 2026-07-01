@@ -344,6 +344,7 @@ def _merge_authoritative_balance_rows(
         if current is None:
             items[row.counterparty_ref] = AuthoritativeReceivableBalanceRow(
                 counterparty_ref=row.counterparty_ref,
+                counterparty_code=row.counterparty_code,
                 counterparty_name=row.counterparty_name,
                 current_balance=Decimal(str(row.current_balance)),
                 current_manager_ref=row.current_manager_ref,
@@ -353,6 +354,7 @@ def _merge_authoritative_balance_rows(
             continue
         items[row.counterparty_ref] = AuthoritativeReceivableBalanceRow(
             counterparty_ref=row.counterparty_ref,
+            counterparty_code=row.counterparty_code or current.counterparty_code,
             counterparty_name=row.counterparty_name or current.counterparty_name,
             current_balance=Decimal(str(current.current_balance))
             + Decimal(str(row.current_balance)),
@@ -433,6 +435,7 @@ def _opening_snapshot_balance_rows(
         rows.append(
             AuthoritativeReceivableBalanceRow(
                 counterparty_ref=item.counterparty_ref,
+                counterparty_code=item.counterparty_code,
                 counterparty_name=item.counterparty_name,
                 current_balance=Decimal(str(item.current_balance)),
                 current_manager_ref=item.current_manager_ref,
@@ -526,6 +529,7 @@ def _project_authoritative_balance_rows_from_onec(
     }
 
     balances: dict[str, Decimal] = {}
+    latest_counterparty_codes: dict[str, tuple[tuple[datetime, int, str], str]] = {}
     latest_counterparty_names: dict[str, tuple[tuple[datetime, int, str], str]] = {}
     latest_managers: dict[str, tuple[tuple[datetime, int, str], str | None, str | None]] = {}
 
@@ -545,6 +549,12 @@ def _project_authoritative_balance_rows_from_onec(
 
             order_key = _projection_row_order_key(row)
 
+            counterparty_code = _projection_string(row.get("counterparty_code"))
+            if counterparty_code is not None:
+                current_code = latest_counterparty_codes.get(counterparty_ref)
+                if current_code is None or order_key >= current_code[0]:
+                    latest_counterparty_codes[counterparty_ref] = (order_key, counterparty_code)
+
             counterparty_name = _projection_string(row.get("counterparty_name"))
             if counterparty_name is not None:
                 current_name = latest_counterparty_names.get(counterparty_ref)
@@ -563,10 +573,12 @@ def _project_authoritative_balance_rows_from_onec(
         if balance == 0:
             continue
         latest_name = latest_counterparty_names.get(counterparty_ref)
+        latest_code = latest_counterparty_codes.get(counterparty_ref)
         latest_manager = latest_managers.get(counterparty_ref)
         rows.append(
             AuthoritativeReceivableBalanceRow(
                 counterparty_ref=counterparty_ref,
+                counterparty_code=latest_code[1] if latest_code is not None else None,
                 counterparty_name=latest_name[1] if latest_name is not None else None,
                 current_balance=balance,
                 current_manager_ref=latest_manager[1] if latest_manager is not None else None,

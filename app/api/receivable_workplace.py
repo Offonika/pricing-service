@@ -22,6 +22,7 @@ from app.schemas.management import (
 from app.schemas.receivable_workplace import (
     ReceivableWorkplaceActionRequest,
     ReceivableWorkplaceActionResponse,
+    ReceivableWorkplaceMetaResponse,
     ReceivableWorkplaceResponse,
 )
 from app.services.bitrix_receivables_auth import verify_receivables_session_token
@@ -35,7 +36,9 @@ from app.services.counterparty_folder_recommendations import (
 from app.services.receivable_workplace import (
     apply_receivable_workplace_action,
     build_receivable_workplace,
+    build_receivable_workplace_meta,
 )
+from app.services.receivable_workplace_cache import load_cached_folder_recommendation_report
 
 router = APIRouter()
 page_router = APIRouter()
@@ -166,6 +169,10 @@ def _filter_folder_report_for_access(
             item.get("debt_department_ref"),
             allowed_department_refs=allowed_department_refs,
         )
+        or _department_allowed(
+            item.get("snapshot_department_ref"),
+            allowed_department_refs=allowed_department_refs,
+        )
     ]
     summary = dict(report["summary"])
     summary.update(
@@ -196,6 +203,24 @@ def _filter_folder_report_for_access(
         }
     )
     return {**report, "summary": summary, "payload": payload}
+
+
+def _folder_candidate_limit(limit: int | None) -> int:
+    requested_limit = limit or 100
+    return min(max(requested_limit * 3, 100), 500)
+
+
+@router.get("/workplace/meta", response_model=ReceivableWorkplaceMetaResponse)
+def get_receivable_workplace_meta(
+    date_value: date | None = Query(default=None, alias="date"),
+    db: Session = Depends(get_db),
+    access: ReceivableWorkplaceAuthContext = Depends(require_receivable_workplace_access),
+) -> ReceivableWorkplaceMetaResponse:
+    return build_receivable_workplace_meta(
+        db,
+        snapshot_date=date_value,
+        allowed_department_refs=access.allowed_department_refs,
+    )
 
 
 @router.get("/workplace", response_model=ReceivableWorkplaceResponse)
@@ -234,36 +259,54 @@ def get_receivable_workplace_folder_recommendations(
     db: Session = Depends(get_db),
     access: ReceivableWorkplaceAuthContext = Depends(require_receivable_workplace_access),
 ) -> CounterpartyFolderRecommendationResponse:
-    onec_engine = _build_onec_engine()
-    try:
-        report = build_counterparty_folder_recommendations(
-            db,
-            onec_engine=onec_engine,
-            snapshot_date=date_value,
-            limit=limit,
-            status=status,
-        )
-    except ValueError as error:
-        raise HTTPException(status_code=400, detail=str(error)) from error
-    except SQLAlchemyError as error:
-        raise HTTPException(status_code=503, detail="1C source is unavailable") from error
-    finally:
-        onec_engine.dispose()
-
-    report = _filter_folder_report_for_access(
-        report,
+    report = load_cached_folder_recommendation_report(
+        db,
+        snapshot_date=date_value,
+        status=status,
+        limit=limit,
         allowed_department_refs=access.allowed_department_refs,
     )
+    if report is None:
+        onec_engine = _build_onec_engine()
+        try:
+            report = build_counterparty_folder_recommendations(
+                db,
+                onec_engine=onec_engine,
+                snapshot_date=date_value,
+                limit=limit,
+                status=status,
+                candidate_limit=_folder_candidate_limit(limit),
+                snapshot_department_refs=access.allowed_department_refs,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except SQLAlchemyError as error:
+            raise HTTPException(status_code=503, detail="1C source is unavailable") from error
+        finally:
+            onec_engine.dispose()
+
+        report = _filter_folder_report_for_access(
+            report,
+            allowed_department_refs=access.allowed_department_refs,
+        )
+        report["source_status"] = "fallback_live"
     payload = [
         CounterpartyFolderRecommendationItem.model_validate(item) for item in report["payload"]
     ]
     source_snapshot_count = int(report["summary"].get("source_snapshot_count") or 0)
+    summary = dict(report["summary"])
+    if report.get("computed_at") is not None:
+        summary["computed_at"] = report["computed_at"]
+    summary["source_status"] = report.get("source_status") or "ready"
+    response_source_status = (
+        str(report.get("source_status") or "ready") if source_snapshot_count else "empty"
+    )
     return CounterpartyFolderRecommendationResponse(
         as_of=report["snapshot_date"],
         freshness_status="fresh" if source_snapshot_count else "missing",
-        source_status="ready" if source_snapshot_count else "empty",
+        source_status=response_source_status,
         report_revision=report["report_revision"],
-        summary=report["summary"],
+        summary=summary,
         payload=payload,
     )
 

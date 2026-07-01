@@ -1958,6 +1958,25 @@
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
 }
 
+.receivables__freshness,
+.receivables__folder-summary,
+.receivables__quick-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  color: #475467;
+  font-size: 12px;
+}
+
+.receivables__freshness span,
+.receivables__folder-summary span {
+  padding: 4px 7px;
+  border: 1px solid #d9e0e8;
+  border-radius: 6px;
+  background: #ffffff;
+}
+
 .receivables__auth-state {
   padding: 14px 16px;
   border: 1px solid #c8d0da;
@@ -1997,6 +2016,10 @@
   gap: 8px;
 }
 
+.receivables__back {
+  flex: 0 0 auto;
+}
+
 .receivables__table-wrap,
 .receivables__folder-tab {
   overflow: auto;
@@ -2009,8 +2032,9 @@
 .receivables__folder-tab table,
 .receivables__documents table {
   width: 100%;
-  min-width: 1660px;
+  min-width: 1420px;
   border-collapse: collapse;
+  table-layout: fixed;
 }
 
 .receivables__folder-tab table {
@@ -2018,7 +2042,7 @@
 }
 
 .receivables__documents table {
-  min-width: 860px;
+  min-width: 1040px;
 }
 
 .receivables__table th,
@@ -2027,10 +2051,10 @@
 .receivables__folder-tab td,
 .receivables__documents th,
 .receivables__documents td {
-  padding: 8px 9px;
+  padding: 6px 7px;
   border-bottom: 1px solid #eef2f6;
   color: #18202a;
-  font-size: 12px;
+  font-size: 11px;
   text-align: left;
   vertical-align: top;
 }
@@ -2046,13 +2070,105 @@
   font-weight: 800;
 }
 
+.receivables__table th:nth-child(1),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(1) {
+  width: 54px;
+}
+
+.receivables__table th:nth-child(2),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(2) {
+  width: 76px;
+}
+
+.receivables__table th:nth-child(3),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(3) {
+  width: 190px;
+}
+
+.receivables__table th:nth-child(4),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(4) {
+  width: 132px;
+}
+
+.receivables__table th:nth-child(5),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(5) {
+  width: 96px;
+}
+
+.receivables__table th:nth-child(6),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(6) {
+  width: 96px;
+}
+
+.receivables__table th:nth-child(7),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(7),
+.receivables__table th:nth-child(8),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(8),
+.receivables__table th:nth-child(9),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(9),
+.receivables__table th:nth-child(10),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(10),
+.receivables__table th:nth-child(13),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(13) {
+  width: 86px;
+}
+
+.receivables__table th:nth-child(11),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(11),
+.receivables__table th:nth-child(12),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(12) {
+  width: 126px;
+}
+
+.receivables__table th:nth-child(14),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(14) {
+  width: 70px;
+}
+
+.receivables__table th:nth-child(15),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(15) {
+  width: 156px;
+}
+
+.receivables__table th:nth-child(16),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(16) {
+  width: 86px;
+}
+
+.receivables__table th:nth-child(-n + 3),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(-n + 3) {
+  position: sticky;
+  z-index: 3;
+  background: #ffffff;
+}
+
+.receivables__table th:nth-child(-n + 3) {
+  z-index: 4;
+  background: #eef2f6;
+}
+
+.receivables__table th:nth-child(1),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(1) {
+  left: 0;
+}
+
+.receivables__table th:nth-child(2),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(2) {
+  left: 54px;
+}
+
+.receivables__table th:nth-child(3),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(3) {
+  left: 130px;
+  box-shadow: 1px 0 0 #d9e0e8;
+}
+
 .receivables__row:hover {
   background: #f8fafc;
 }
 
-.receivables__row--alert {
-  background: #fff7ed;
-  box-shadow: inset 3px 0 0 #f97316;
+.receivables__row:hover td:nth-child(-n + 3) {
+  background: #f8fafc;
 }
 
 .receivables__row strong,
@@ -2124,9 +2240,9 @@
 .receivables__select,
 .receivables__comment {
   width: 100%;
-  min-width: 126px;
-  min-height: 34px;
-  padding: 6px 8px;
+  min-width: 0;
+  min-height: 30px;
+  padding: 5px 6px;
   border: 1px solid #c8d0da;
   border-radius: 6px;
   background: #ffffff;
@@ -2135,8 +2251,7 @@
 }
 
 .receivables__comment {
-  min-width: 190px;
-  height: 42px;
+  height: 34px;
   resize: vertical;
 }
 
@@ -2144,7 +2259,18 @@
   text-align: center;
 }
 
+.receivables__postponed {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-width: 48px;
+  color: #344054;
+  font-weight: 800;
+}
+
 .receivables__details td {
+  position: static;
   background: #f8fafc;
 }
 
@@ -2172,6 +2298,23 @@
   color: #92400e;
   font-size: 12px;
   font-weight: 800;
+}
+
+.receivables__debt-rule,
+.receivables__documents small {
+  display: block;
+  line-height: 1.25;
+}
+
+.receivables__debt-rule {
+  color: #184e77;
+  font-weight: 800;
+}
+
+.receivables__documents small {
+  margin-top: 2px;
+  color: #667085;
+  font-size: 10px;
 }
 
 .receivables__state {

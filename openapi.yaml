@@ -2635,6 +2635,35 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/receivables/access-diagnostics:
+    get:
+      summary: Get Bitrix Receivables Access Diagnostics
+      operationId: get_bitrix_receivables_access_diagnostics_api_bitrix_receivables_access_diagnostics_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: user_id
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          title: User Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Bitrix Receivables Access Diagnostics Api Bitrix Receivables Access Diagnostics Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/management/retail-director-monthly-kpi:
     get:
       summary: Get Retail Director Monthly Kpi
@@ -3483,6 +3512,35 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReceivablesManagerSummaryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/receivables/workplace/meta:
+    get:
+      summary: Get Receivable Workplace Meta
+      operationId: get_receivable_workplace_meta_api_receivables_workplace_meta_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReceivableWorkplaceMetaResponse'
         '422':
           description: Validation Error
           content:
@@ -9543,6 +9601,11 @@ components:
           - type: string
           - type: 'null'
           title: Current Folder Name
+        current_folder_display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Folder Display Name
         recommended_folder_ref:
           anyOf:
           - type: string
@@ -9553,6 +9616,11 @@ components:
           - type: string
           - type: 'null'
           title: Recommended Folder Name
+        recommended_folder_display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Folder Display Name
         debt_department_ref:
           anyOf:
           - type: string
@@ -9563,6 +9631,21 @@ components:
           - type: string
           - type: 'null'
           title: Debt Department Name
+        debt_department_display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Debt Department Display Name
+        snapshot_department_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Snapshot Department Name
+        snapshot_department_display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Snapshot Department Display Name
         debt_document_ref:
           anyOf:
           - type: string
@@ -13603,6 +13686,11 @@ components:
         counterparty_ref:
           type: string
           title: Counterparty Ref
+        counterparty_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Code
         counterparty_name:
           anyOf:
           - type: string
@@ -13720,6 +13808,11 @@ components:
       title: ReceivableCaseItem
     ReceivableWorkplaceActionRequest:
       properties:
+        action_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Action Id
         status:
           anyOf:
           - type: string
@@ -13741,6 +13834,12 @@ components:
             format: date
           - type: 'null'
           title: Promised Payment Date
+        last_contact_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Last Contact At
         next_action_date:
           anyOf:
           - type: string
@@ -13767,11 +13866,48 @@ components:
           additionalProperties: true
           type: object
           title: Event
+        cache_status:
+          additionalProperties:
+            $ref: '#/components/schemas/ReceivableWorkplaceCacheComponent'
+          type: object
+          title: Cache Status
       type: object
       required:
       - item
       - event
       title: ReceivableWorkplaceActionResponse
+    ReceivableWorkplaceCacheComponent:
+      properties:
+        source_status:
+          type: string
+          title: Source Status
+        cached_count:
+          type: integer
+          title: Cached Count
+          default: 0
+        computed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Computed At
+      type: object
+      required:
+      - source_status
+      title: ReceivableWorkplaceCacheComponent
+    ReceivableWorkplaceDepartmentOption:
+      properties:
+        department_ref:
+          type: string
+          title: Department Ref
+        department_name:
+          type: string
+          title: Department Name
+      type: object
+      required:
+      - department_ref
+      - department_name
+      title: ReceivableWorkplaceDepartmentOption
     ReceivableWorkplaceDocument:
       properties:
         document_ref:
@@ -13794,6 +13930,30 @@ components:
           type: string
           pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           title: Amount
+        gross_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Gross Amount
+        open_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Open Amount
+        closing_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Closing Amount
+        return_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Return Amount
         manager_name:
           anyOf:
           - type: string
@@ -13814,6 +13974,28 @@ components:
           type: boolean
           title: Is Overdue
           default: false
+        selection_rule:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Selection Rule
+        statement_balance_after:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Statement Balance After
+        match_details:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Match Details
+        document_structure_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Document Structure Status
       type: object
       required:
       - amount
@@ -13934,6 +14116,10 @@ components:
           type: boolean
           title: Payment Postponed
           default: false
+        payment_postponed_count:
+          type: integer
+          title: Payment Postponed Count
+          default: 0
         comment:
           anyOf:
           - type: string
@@ -13977,6 +14163,26 @@ components:
       - needs_credit_depth_default
       - criticality
       title: ReceivableWorkplaceItem
+    ReceivableWorkplaceMetaResponse:
+      properties:
+        latest_snapshot_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Latest Snapshot Date
+        department_options:
+          items:
+            $ref: '#/components/schemas/ReceivableWorkplaceDepartmentOption'
+          type: array
+          title: Department Options
+        cache_status:
+          additionalProperties:
+            $ref: '#/components/schemas/ReceivableWorkplaceCacheComponent'
+          type: object
+          title: Cache Status
+      type: object
+      title: ReceivableWorkplaceMetaResponse
     ReceivableWorkplaceResponse:
       properties:
         as_of:
@@ -13991,6 +14197,26 @@ components:
           title: Source Status
         summary:
           $ref: '#/components/schemas/ReceivableWorkplaceSummary'
+        total_count:
+          type: integer
+          title: Total Count
+        visible_count:
+          type: integer
+          title: Visible Count
+        summary_scope:
+          type: string
+          title: Summary Scope
+          default: filtered_total
+        department_options:
+          items:
+            $ref: '#/components/schemas/ReceivableWorkplaceDepartmentOption'
+          type: array
+          title: Department Options
+        cache_status:
+          additionalProperties:
+            $ref: '#/components/schemas/ReceivableWorkplaceCacheComponent'
+          type: object
+          title: Cache Status
         status_options:
           items:
             $ref: '#/components/schemas/ReceivableWorkplaceStatusOption'
@@ -14007,6 +14233,8 @@ components:
       - freshness_status
       - source_status
       - summary
+      - total_count
+      - visible_count
       - status_options
       - payload
       title: ReceivableWorkplaceResponse

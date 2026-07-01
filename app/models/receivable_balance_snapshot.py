@@ -28,6 +28,7 @@ class ReceivableBalanceSnapshot(Base):
 
     snapshot_date: Mapped[date] = mapped_column(Date, nullable=False)
     counterparty_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    counterparty_code: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     counterparty_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     current_balance: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     origin_event_id: Mapped[Optional[int]] = mapped_column(

@@ -4,8 +4,11 @@ import { clearApiAuthToken, setApiAuthToken } from "../api/client";
 import {
   fetchCounterpartyFolderRecommendations,
   fetchReceivableWorkplace,
+  fetchReceivableWorkplaceMeta,
   updateReceivableWorkplaceItem,
   type CounterpartyFolderRecommendation,
+  type ReceivableCacheComponent,
+  type ReceivableDepartmentOption,
   type ReceivableStatusOption,
   type ReceivableWorkplaceItem,
   type ReceivableWorkplaceSummary,
@@ -18,10 +21,14 @@ type EditState = {
   status: string;
   contacted_staff_ref: string;
   promised_payment_date: string;
+  last_contact_at: string;
   next_action_date: string;
   payment_postponed: boolean;
   comment: string;
 };
+
+type QuickFilter = "" | "call_today" | "no_phone" | "overdue_30" | "overdue_90" | "postponed";
+type ReceivablesTab = "work" | "folders";
 
 const emptySummary: ReceivableWorkplaceSummary = {
   row_count: 0,
@@ -45,19 +52,42 @@ function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function readInitialDate() {
+  const params = new URLSearchParams(window.location.search);
+  const value = params.get("date") || "";
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : todayIso();
+}
+
 function readInitialToken() {
   window.localStorage.removeItem(RECEIVABLES_TOKEN_LEGACY_KEY);
   return window.sessionStorage.getItem(RECEIVABLES_TOKEN_SESSION_KEY) || "";
 }
 
+function readInitialTab(): ReceivablesTab {
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("tab") === "folders" || window.location.hash === "#folders") return "folders";
+  return "work";
+}
+
+function readDashboardReturnUrl() {
+  const value = new URLSearchParams(window.location.search).get("return_to") || "";
+  if (value.startsWith("/bitrix/executive-dashboard/") || value.startsWith("/executive-dashboard/")) {
+    return value;
+  }
+  return "";
+}
+
 function getErrorMessage(error: unknown, fallback: string) {
-  const status =
-    typeof error === "object" && error !== null && "response" in error
-      ? (error as { response?: { status?: number } }).response?.status
-      : undefined;
+  const status = getErrorStatus(error);
   if (status === 401) return "Сессия не принята или истекла. Обновите страницу и откройте витрину заново.";
-  if (status === 403) return "Нет доступа к этой витрине или не найдено подразделение для доступа.";
+  if (status === 403) return "Нет доступа к рабочему месту: проверьте привязку пользователя к подразделению.";
   return error instanceof Error ? error.message : fallback;
+}
+
+function getErrorStatus(error: unknown) {
+  return typeof error === "object" && error !== null && "response" in error
+    ? (error as { response?: { status?: number } }).response?.status
+    : undefined;
 }
 
 function dateInput(value?: string | null) {
@@ -80,28 +110,89 @@ function formatDate(value?: string | null) {
   return parsed.toLocaleDateString("ru-RU");
 }
 
+function formatDateTime(value?: string | null) {
+  if (!value) return "";
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) return value.replace("T", " ").slice(0, 16);
+  return parsed.toLocaleString("ru-RU", {
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  });
+}
+
+function newActionId() {
+  if ("crypto" in window && typeof window.crypto.randomUUID === "function") {
+    return window.crypto.randomUUID();
+  }
+  return `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 function initialEdit(item: ReceivableWorkplaceItem): EditState {
   return {
     status: item.status,
     contacted_staff_ref: item.contacted_staff_ref || "",
     promised_payment_date: dateInput(item.promised_payment_date),
+    last_contact_at: dateInput(item.last_contact_at),
     next_action_date: dateInput(item.next_action_date),
     payment_postponed: item.payment_postponed,
     comment: item.comment || "",
   };
 }
 
+function debtRuleLabel(value?: string | null) {
+  const labels: Record<string, string> = {
+    statement_direct_payment_match: "закрыто ближайшей оплатой",
+    statement_multi_sale_payment_match: "группа закрыта одной оплатой",
+    statement_bottom_up_balance_cutoff: "подбор от текущего остатка",
+    statement_unmatched_open_sale: "нет закрывающего документа",
+    statement_structure_confirmed_open: "подтверждено структурой 1С",
+    confirmed_open: "подтверждено структурой 1С",
+  };
+  return value ? labels[value] || value : "расчет по открытым документам";
+}
+
+function matchDetailsText(details: Array<Record<string, unknown>>) {
+  return details
+    .map((detail) => {
+      const documentNumber = String(detail.document_number || detail.document_ref || "").trim();
+      const amount = detail.amount ? formatMoney(String(detail.amount)) : "";
+      return [documentNumber, amount].filter(Boolean).join(" ");
+    })
+    .filter(Boolean)
+    .join(", ");
+}
+
+function departmentsFromItems(items: ReceivableWorkplaceItem[]): ReceivableDepartmentOption[] {
+  const byRef = new Map<string, string>();
+  items.forEach((item) => {
+    if (item.department_ref) byRef.set(item.department_ref, item.department_name || item.department_ref);
+  });
+  return [...byRef.entries()]
+    .sort((a, b) => a[1].localeCompare(b[1], "ru"))
+    .map(([department_ref, department_name]) => ({ department_ref, department_name }));
+}
+
 function rowBadges(item: ReceivableWorkplaceItem) {
   const badges: Array<{ label: string; tone: "danger" | "warning" | "info" }> = [];
   if (item.needs_call_today) badges.push({ label: "звонок сегодня", tone: "info" });
-  if (item.no_phone_marker) badges.push({ label: "нет телефона", tone: "danger" });
   if (item.needs_credit_depth_default) badges.push({ label: "7 дней расчетно", tone: "warning" });
   if ((item.effective_overdue_days || 0) >= 90) badges.push({ label: "90+ дней", tone: "danger" });
   else if ((item.effective_overdue_days || 0) >= 30) badges.push({ label: "30+ дней", tone: "warning" });
   return badges;
 }
 
-function ReceivableSummary({ summary }: { summary: ReceivableWorkplaceSummary }) {
+function ReceivableSummary({
+  summary,
+  totalCount,
+  visibleCount,
+}: {
+  summary: ReceivableWorkplaceSummary;
+  totalCount: number;
+  visibleCount: number;
+}) {
   const metrics = [
     ["Общая дебиторка", formatMoney(summary.total_receivable)],
     ["Общая просрочка", formatMoney(summary.total_overdue)],
@@ -110,6 +201,7 @@ function ReceivableSummary({ summary }: { summary: ReceivableWorkplaceSummary })
     ["Позвонить сегодня", formatMoney(summary.need_call_today_amount)],
     ["Без телефона", String(summary.no_phone_count)],
     ["7 дней расчетно", String(summary.credit_depth_default_count)],
+    ["Показано", `${visibleCount} из ${totalCount}`],
   ];
   return (
     <section className="receivables__summary">
@@ -154,7 +246,7 @@ function ReceivableRow({
   }
   return (
     <>
-      <tr className={item.no_phone_marker ? "receivables__row receivables__row--alert" : "receivables__row"}>
+      <tr className="receivables__row">
         <td>
           <button className="receivables__expand" onClick={onToggle} type="button" title="Накладные">
             {expanded ? "−" : "+"}
@@ -190,7 +282,14 @@ function ReceivableRow({
             onChange={(event) => onEdit({ promised_payment_date: event.target.value })}
           />
         </td>
-        <td>{formatDate(item.last_contact_at)}</td>
+        <td>
+          <input
+            className="receivables__input"
+            type="date"
+            value={edit.last_contact_at}
+            onChange={(event) => onEdit({ last_contact_at: event.target.value })}
+          />
+        </td>
         <td>
           <select
             className="receivables__select"
@@ -227,11 +326,14 @@ function ReceivableRow({
           />
         </td>
         <td className="receivables__center">
-          <input
-            checked={edit.payment_postponed}
-            onChange={(event) => onEdit({ payment_postponed: event.target.checked })}
-            type="checkbox"
-          />
+          <label className="receivables__postponed">
+            <input
+              checked={edit.payment_postponed}
+              onChange={(event) => onEdit({ payment_postponed: event.target.checked })}
+              type="checkbox"
+            />
+            <span>{item.payment_postponed_count}</span>
+          </label>
         </td>
         <td>
           <textarea
@@ -263,6 +365,8 @@ function ReceivableRow({
                     <th>Номер</th>
                     <th>Дата</th>
                     <th>Сумма</th>
+                    <th>Остаток</th>
+                    <th>Правило</th>
                     <th>Срок</th>
                     <th>Просрочка</th>
                     <th>Менеджер</th>
@@ -274,6 +378,24 @@ function ReceivableRow({
                       <td>{document.document_number || ""}</td>
                       <td>{formatDate(document.document_date)}</td>
                       <td>{formatMoney(document.amount)}</td>
+                      <td>{formatMoney(document.open_amount || document.amount)}</td>
+                      <td>
+                        <span className="receivables__debt-rule">
+                          {debtRuleLabel(document.selection_rule || document.document_structure_status)}
+                        </span>
+                        {document.closing_amount && (
+                          <small>Закрыто: {formatMoney(document.closing_amount)}</small>
+                        )}
+                        {document.return_amount && (
+                          <small>Возврат: {formatMoney(document.return_amount)}</small>
+                        )}
+                        {document.statement_balance_after && (
+                          <small>Баланс: {formatMoney(document.statement_balance_after)}</small>
+                        )}
+                        {document.match_details?.length > 0 && (
+                          <small>{matchDetailsText(document.match_details)}</small>
+                        )}
+                      </td>
                       <td>{formatDate(document.due_date)}</td>
                       <td>{document.overdue_days || 0} дн.</td>
                       <td>{document.manager_name || ""}</td>
@@ -292,14 +414,32 @@ function ReceivableRow({
 function FolderRecommendations({
   items,
   loading,
+  summary,
+  sourceStatus,
 }: {
   items: CounterpartyFolderRecommendation[];
   loading: boolean;
+  summary: Record<string, unknown>;
+  sourceStatus: string;
 }) {
   if (loading) return <div className="receivables__state">Загрузка вкладки контроля папок...</div>;
-  if (!items.length) return <div className="receivables__state">По текущей дате рекомендаций нет.</div>;
+  const computedAt = typeof summary.computed_at === "string" ? summary.computed_at : "";
+  if (!items.length) {
+    return (
+      <div className="receivables__state">
+        По текущей дате рекомендаций нет.
+        {sourceStatus && <span> Источник: {sourceStatus}.</span>}
+      </div>
+    );
+  }
   return (
     <section className="receivables__folder-tab">
+      <div className="receivables__folder-summary">
+        <span>Строк: {String(summary.total_count ?? items.length)}</span>
+        <span>К пересмотру: {String(summary.needs_review_count ?? 0)}</span>
+        <span>Источник: {sourceStatus || "ready"}</span>
+        {computedAt && <span>Расчет: {formatDateTime(computedAt)}</span>}
+      </div>
       <table>
         <thead>
           <tr>
@@ -317,9 +457,15 @@ function FolderRecommendations({
             <tr key={item.counterparty_ref}>
               <td className="mono">{item.counterparty_code || ""}</td>
               <td>{item.counterparty_name || item.counterparty_ref}</td>
-              <td>{item.current_folder_name || ""}</td>
-              <td>{item.recommended_folder_name || ""}</td>
-              <td>{item.debt_department_name || ""}</td>
+              <td title={item.current_folder_name || ""}>
+                {item.current_folder_display_name || item.current_folder_name || ""}
+              </td>
+              <td title={item.recommended_folder_name || ""}>
+                {item.recommended_folder_display_name || item.recommended_folder_name || ""}
+              </td>
+              <td title={item.debt_department_name || ""}>
+                {item.debt_department_display_name || item.debt_department_name || ""}
+              </td>
               <td>{formatMoney(item.current_balance)}</td>
               <td>{item.status}</td>
             </tr>
@@ -336,20 +482,30 @@ export function ReceivablesWorkplace({
   accessLevel = "full",
 }: ReceivablesWorkplaceProps) {
   const [token, setToken] = useState(() => (bitrixMode ? "" : readInitialToken()));
-  const [date, setDate] = useState(todayIso());
+  const [date, setDate] = useState(readInitialDate);
   const [departmentRef, setDepartmentRef] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [quickFilter, setQuickFilter] = useState<QuickFilter>("");
   const [items, setItems] = useState<ReceivableWorkplaceItem[]>([]);
   const [summary, setSummary] = useState<ReceivableWorkplaceSummary>(emptySummary);
+  const [totalCount, setTotalCount] = useState(0);
+  const [visibleCount, setVisibleCount] = useState(0);
   const [statusOptions, setStatusOptions] = useState<ReceivableStatusOption[]>([]);
+  const [departmentOptions, setDepartmentOptions] = useState<ReceivableDepartmentOption[]>([]);
+  const [cacheStatus, setCacheStatus] = useState<Record<string, ReceivableCacheComponent>>({});
+  const [sourceStatus, setSourceStatus] = useState("");
   const [edits, setEdits] = useState<Record<string, EditState>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [saving, setSaving] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
-  const [tab, setTab] = useState<"work" | "folders">("work");
+  const [tab, setTab] = useState<ReceivablesTab>(() => readInitialTab());
   const [folderItems, setFolderItems] = useState<CounterpartyFolderRecommendation[]>([]);
+  const [folderSummary, setFolderSummary] = useState<Record<string, unknown>>({});
+  const [folderSourceStatus, setFolderSourceStatus] = useState("");
   const [foldersLoading, setFoldersLoading] = useState(false);
+  const [metaLoaded, setMetaLoaded] = useState(false);
+  const dashboardReturnUrl = useMemo(readDashboardReturnUrl, []);
   const normalizedToken = token.trim();
   const hasToken = bitrixMode || normalizedToken.length > 0;
 
@@ -366,16 +522,47 @@ export function ReceivablesWorkplace({
     }
   }, [bitrixMode, normalizedToken]);
 
-  const departments = useMemo(() => {
-    const byRef = new Map<string, string>();
-    items.forEach((item) => {
-      if (item.department_ref) byRef.set(item.department_ref, item.department_name || item.department_ref);
+  useEffect(() => {
+    if (!hasToken) return;
+    let cancelled = false;
+    const requestedDate = metaLoaded ? date || undefined : undefined;
+    fetchReceivableWorkplaceMeta(requestedDate)
+      .then((data) => {
+        if (cancelled) return;
+        setMetaLoaded(true);
+        setDepartmentOptions(data.department_options);
+        setCacheStatus(data.cache_status || {});
+        if (!metaLoaded && data.latest_snapshot_date) setDate(data.latest_snapshot_date);
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setMetaLoaded(true);
+        const status = getErrorStatus(error);
+        if (status === 404 || status === 405) {
+          setSourceStatus("meta_unavailable");
+          return;
+        }
+        setMessage(getErrorMessage(error, "Не удалось загрузить параметры витрины"));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [date, hasToken, metaLoaded]);
+
+  const displayedItems = useMemo(() => {
+    if (!quickFilter) return items;
+    return items.filter((item) => {
+      if (quickFilter === "call_today") return item.needs_call_today;
+      if (quickFilter === "no_phone") return item.no_phone_marker;
+      if (quickFilter === "overdue_30") return (item.effective_overdue_days || 0) >= 30;
+      if (quickFilter === "overdue_90") return (item.effective_overdue_days || 0) >= 90;
+      if (quickFilter === "postponed") return item.payment_postponed_count > 0;
+      return true;
     });
-    return [...byRef.entries()].sort((a, b) => a[1].localeCompare(b[1], "ru"));
-  }, [items]);
+  }, [items, quickFilter]);
 
   const loadWorkplace = useCallback(async () => {
-    if (!hasToken) {
+    if (!hasToken || !date) {
       setItems([]);
       setSummary(emptySummary);
       setStatusOptions([]);
@@ -390,10 +577,18 @@ export function ReceivablesWorkplace({
         department_ref: departmentRef,
         status: statusFilter,
       });
-      setItems(data.payload);
+      const payload = data.payload || [];
+      setItems(payload);
       setSummary(data.summary);
+      setTotalCount(data.total_count ?? data.summary?.row_count ?? payload.length);
+      setVisibleCount(data.visible_count ?? payload.length);
       setStatusOptions(data.status_options);
-      setEdits(Object.fromEntries(data.payload.map((item) => [item.counterparty_ref, initialEdit(item)])));
+      setDepartmentOptions(
+        data.department_options?.length ? data.department_options : departmentsFromItems(payload)
+      );
+      setCacheStatus(data.cache_status || {});
+      setSourceStatus(data.source_status || "ready");
+      setEdits(Object.fromEntries(payload.map((item) => [item.counterparty_ref, initialEdit(item)])));
     } catch (error: unknown) {
       setMessage(getErrorMessage(error, "Не удалось загрузить дебиторку"));
     } finally {
@@ -402,7 +597,7 @@ export function ReceivablesWorkplace({
   }, [date, departmentRef, hasToken, statusFilter]);
 
   const loadFolders = useCallback(async () => {
-    if (!hasToken) {
+    if (!hasToken || !date) {
       setFolderItems([]);
       return;
     }
@@ -410,6 +605,8 @@ export function ReceivablesWorkplace({
     try {
       const data = await fetchCounterpartyFolderRecommendations(date);
       setFolderItems(data.payload);
+      setFolderSummary(data.summary || {});
+      setFolderSourceStatus(data.source_status);
     } catch (error: unknown) {
       setMessage(getErrorMessage(error, "Не удалось загрузить контроль папок"));
     } finally {
@@ -431,10 +628,12 @@ export function ReceivablesWorkplace({
     const staff = item.staff_options.find((option) => option.staff_ref === edit.contacted_staff_ref);
     try {
       const response = await updateReceivableWorkplaceItem(date, item.counterparty_ref, {
+        action_id: newActionId(),
         status: edit.status,
         contacted_staff_ref: edit.contacted_staff_ref || null,
         contacted_staff_name: staff?.staff_name || null,
         promised_payment_date: edit.promised_payment_date || null,
+        last_contact_at: edit.last_contact_at || null,
         next_action_date: edit.next_action_date || null,
         payment_postponed: edit.payment_postponed,
         comment: edit.comment,
@@ -455,17 +654,24 @@ export function ReceivablesWorkplace({
     }
   };
 
+  const openDebtComputedAt = cacheStatus.open_debt?.computed_at;
+
   return (
     <div className="app receivables">
       <header className="app__header receivables__header">
+        {dashboardReturnUrl && (
+          <a className="btn btn--ghost receivables__back" href={dashboardReturnUrl}>
+            Назад в витрину
+          </a>
+        )}
         <h1>Дебиторка покупателей</h1>
         {bitrixMode && bitrixUserName && <span className="app__user">{bitrixUserName}</span>}
         <input className="app__search" type="date" value={date} onChange={(event) => setDate(event.target.value)} />
         <select className="app__select" value={departmentRef} onChange={(event) => setDepartmentRef(event.target.value)}>
           <option value="">{accessLevel === "full" ? "Все подразделения" : "Все доступные подразделения"}</option>
-          {departments.map(([ref, name]) => (
-            <option key={ref} value={ref}>
-              {name}
+          {departmentOptions.map((department) => (
+            <option key={department.department_ref} value={department.department_ref}>
+              {department.department_name}
             </option>
           ))}
         </select>
@@ -490,8 +696,36 @@ export function ReceivablesWorkplace({
           {loading ? "Обновляем..." : "Обновить"}
         </button>
       </header>
+      {hasToken && (
+        <div className="receivables__freshness">
+          <span>Дата витрины: {date || "не выбрана"}</span>
+          <span>Источник: {sourceStatus || cacheStatus.open_debt?.source_status || "ожидает загрузки"}</span>
+          {openDebtComputedAt && <span>Долг рассчитан: {formatDateTime(openDebtComputedAt)}</span>}
+        </div>
+      )}
       {!hasToken && <div className="receivables__auth-state">Введите внутренний токен, чтобы открыть витрину.</div>}
-      {hasToken && <ReceivableSummary summary={summary} />}
+      {hasToken && <ReceivableSummary summary={summary} totalCount={totalCount} visibleCount={visibleCount} />}
+      {hasToken && (
+        <div className="receivables__quick-filters">
+        {[
+          ["", "Все"],
+          ["call_today", "Позвонить сегодня"],
+          ["no_phone", "Нет телефона"],
+          ["overdue_30", "30+"],
+          ["overdue_90", "90+"],
+          ["postponed", "Переносили"],
+        ].map(([value, label]) => (
+          <button
+            className={quickFilter === value ? "btn btn--compact" : "btn btn--compact btn--ghost"}
+            key={value}
+            onClick={() => setQuickFilter(value as QuickFilter)}
+            type="button"
+          >
+            {label}
+          </button>
+        ))}
+        </div>
+      )}
       <nav className="receivables__tabs">
         <button className={tab === "work" ? "btn" : "btn btn--ghost"} onClick={() => setTab("work")} type="button">
           Рабочий список
@@ -528,7 +762,7 @@ export function ReceivablesWorkplace({
                 </tr>
               </thead>
               <tbody>
-                {items.map((item, index) => (
+                {displayedItems.map((item, index) => (
                   <ReceivableRow
                     key={item.counterparty_ref}
                     edit={edits[item.counterparty_ref] || initialEdit(item)}
@@ -560,12 +794,19 @@ export function ReceivablesWorkplace({
               </tbody>
             </table>
           )}
-          {!loading && !items.length && <div className="receivables__state">На выбранную дату строк нет.</div>}
+          {!loading && !displayedItems.length && <div className="receivables__state">На выбранную дату строк нет.</div>}
         </section>
       )}
-      {hasToken && tab === "folders" && <FolderRecommendations items={folderItems} loading={foldersLoading} />}
+      {hasToken && tab === "folders" && (
+        <FolderRecommendations
+          items={folderItems}
+          loading={foldersLoading}
+          sourceStatus={folderSourceStatus}
+          summary={folderSummary}
+        />
+      )}
       <footer className="receivables__legend">
-        <span>Красная строка: нет телефона.</span>
+        <span>Красное "нет" в телефоне: номера нет.</span>
         <span>Желтая метка: расчетный срок 7 дней или просрочка 30+.</span>
         <span>Кнопка + раскрывает накладные клиента.</span>
       </footer>

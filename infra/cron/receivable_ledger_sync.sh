@@ -14,6 +14,9 @@ OPENING_BALANCE_DATE="${RECEIVABLE_LEDGER_OPENING_BALANCE_DATE:-}"
 OPENING_IMPORT_FILE="${RECEIVABLE_LEDGER_OPENING_IMPORT_FILE:-}"
 OPENING_LAYERS="${RECEIVABLE_LEDGER_OPENING_LAYERS:-regular_opening,employee_opening}"
 DAILY_LAYERS="${RECEIVABLE_DAILY_LAYERS:-}"
+WORKPLACE_CACHE_ENABLED="${RECEIVABLE_WORKPLACE_CACHE_REBUILD_ENABLED:-1}"
+WORKPLACE_CACHE_REQUIRED="${RECEIVABLE_WORKPLACE_CACHE_REQUIRED:-0}"
+WORKPLACE_CACHE_INCLUDE_ONEC_OPEN_DEBT="${RECEIVABLE_WORKPLACE_CACHE_INCLUDE_ONEC_OPEN_DEBT:-0}"
 
 mkdir -p "${LOG_DIR}"
 cd "${REPO_DIR}"
@@ -86,6 +89,31 @@ run_step() {
   echo "[$(date -Iseconds)] receivable ledger step finished: ${step_name}" >> "${LOG_FILE}"
 }
 
+run_optional_step() {
+  local step_name="$1"
+  shift
+  local tmp_output
+  tmp_output="$(mktemp)"
+
+  set +e
+  "$@" > "${tmp_output}" 2>&1
+  local exit_code=$?
+  set -e
+
+  cat "${tmp_output}" >> "${LOG_FILE}"
+  rm -f "${tmp_output}"
+
+  if [[ ${exit_code} -ne 0 ]]; then
+    echo "[$(date -Iseconds)] optional receivable ledger step failed: ${step_name} (status=${exit_code})" >> "${LOG_FILE}"
+    if [[ "${WORKPLACE_CACHE_REQUIRED}" == "1" ]]; then
+      return "${exit_code}"
+    fi
+    return 0
+  fi
+
+  echo "[$(date -Iseconds)] optional receivable ledger step finished: ${step_name}" >> "${LOG_FILE}"
+}
+
 if [[ -n "${OPENING_BALANCE_DATE}" || -n "${OPENING_IMPORT_FILE}" ]]; then
   opening_cmd=("${PYTHON_BIN}" -m tasks.sync_receivable_opening)
   if [[ -n "${OPENING_BALANCE_DATE}" ]]; then
@@ -127,6 +155,21 @@ for snapshot_date in "${yesterday}" "${today}"; do
   run_step \
     "read_models:${snapshot_date}" \
     "${rebuild_cmd[@]}"
+
+  if [[ "${WORKPLACE_CACHE_ENABLED}" == "1" ]]; then
+    cache_cmd=(
+      "${PYTHON_BIN}" -m tasks.rebuild_receivable_workplace_cache
+      --date "${snapshot_date}"
+    )
+    if [[ "${WORKPLACE_CACHE_INCLUDE_ONEC_OPEN_DEBT}" == "1" ]]; then
+      cache_cmd+=(--include-onec-open-debt)
+    fi
+    run_optional_step \
+      "workplace_cache:${snapshot_date}" \
+      "${cache_cmd[@]}"
+  else
+    echo "[$(date -Iseconds)] skip workplace_cache:${snapshot_date}; disabled by RECEIVABLE_WORKPLACE_CACHE_REBUILD_ENABLED" >> "${LOG_FILE}"
+  fi
 done
 
 echo "[$(date -Iseconds)] receivable ledger sync job finished successfully" >> "${LOG_FILE}"

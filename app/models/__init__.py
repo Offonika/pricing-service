@@ -78,6 +78,11 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         ReceivableWorkEvent,
         ReceivableWorkItem,
     )
+    from app.models.receivable_workplace_cache import (
+        ReceivableBitrixUserAccess,
+        ReceivableFolderRecommendationCache,
+        ReceivableOpenDebtCache,
+    )
     from app.models.return_scheme_alert_batch import ReturnSchemeAlertBatch
     from app.models.return_scheme_incident import ReturnSchemeIncident
     from app.models.smartphone_release import ReleaseStatus, SmartphoneRelease, SourceType
@@ -191,6 +196,9 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "ReceivableWorkItem",
         "ReceivableWorkEvent",
         "ReceivableSmsLog",
+        "ReceivableOpenDebtCache",
+        "ReceivableFolderRecommendationCache",
+        "ReceivableBitrixUserAccess",
     ]
 else:
     __all__ = ["Base"]

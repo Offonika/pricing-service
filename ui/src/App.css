@@ -2016,10 +2016,6 @@
   gap: 8px;
 }
 
-.receivables__back {
-  flex: 0 0 auto;
-}
-
 .receivables__table-wrap,
 .receivables__folder-tab {
   overflow: auto;

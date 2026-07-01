@@ -69,14 +69,6 @@ function readInitialTab(): ReceivablesTab {
   return "work";
 }
 
-function readDashboardReturnUrl() {
-  const value = new URLSearchParams(window.location.search).get("return_to") || "";
-  if (value.startsWith("/bitrix/executive-dashboard/") || value.startsWith("/executive-dashboard/")) {
-    return value;
-  }
-  return "";
-}
-
 function getErrorMessage(error: unknown, fallback: string) {
   const status = getErrorStatus(error);
   if (status === 401) return "Сессия не принята или истекла. Обновите страницу и откройте витрину заново.";
@@ -505,7 +497,6 @@ export function ReceivablesWorkplace({
   const [folderSourceStatus, setFolderSourceStatus] = useState("");
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [metaLoaded, setMetaLoaded] = useState(false);
-  const dashboardReturnUrl = useMemo(readDashboardReturnUrl, []);
   const normalizedToken = token.trim();
   const hasToken = bitrixMode || normalizedToken.length > 0;
 
@@ -659,11 +650,6 @@ export function ReceivablesWorkplace({
   return (
     <div className="app receivables">
       <header className="app__header receivables__header">
-        {dashboardReturnUrl && (
-          <a className="btn btn--ghost receivables__back" href={dashboardReturnUrl}>
-            Назад в витрину
-          </a>
-        )}
         <h1>Дебиторка покупателей</h1>
         {bitrixMode && bitrixUserName && <span className="app__user">{bitrixUserName}</span>}
         <input className="app__search" type="date" value={date} onChange={(event) => setDate(event.target.value)} />

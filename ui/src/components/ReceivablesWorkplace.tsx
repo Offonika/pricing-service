@@ -445,23 +445,30 @@ function FolderRecommendations({
           </tr>
         </thead>
         <tbody>
-          {items.map((item) => (
-            <tr key={item.counterparty_ref}>
-              <td className="mono">{item.counterparty_code || ""}</td>
-              <td>{item.counterparty_name || item.counterparty_ref}</td>
-              <td title={item.current_folder_name || ""}>
-                {item.current_folder_display_name || item.current_folder_name || ""}
-              </td>
-              <td title={item.recommended_folder_name || ""}>
-                {item.recommended_folder_display_name || item.recommended_folder_name || ""}
-              </td>
-              <td title={item.debt_department_name || ""}>
-                {item.debt_department_display_name || item.debt_department_name || ""}
-              </td>
-              <td>{formatMoney(item.current_balance)}</td>
-              <td>{item.status}</td>
-            </tr>
-          ))}
+          {items.map((item) => {
+            const departmentName =
+              item.debt_department_display_name ||
+              item.debt_department_name ||
+              item.snapshot_department_display_name ||
+              item.snapshot_department_name ||
+              "";
+            const departmentTitle = item.debt_department_name || item.snapshot_department_name || "";
+            return (
+              <tr key={item.counterparty_ref}>
+                <td className="mono">{item.counterparty_code || ""}</td>
+                <td>{item.counterparty_name || item.counterparty_ref}</td>
+                <td title={item.current_folder_name || ""}>
+                  {item.current_folder_display_name || item.current_folder_name || ""}
+                </td>
+                <td title={item.recommended_folder_name || ""}>
+                  {item.recommended_folder_display_name || item.recommended_folder_name || ""}
+                </td>
+                <td title={departmentTitle}>{departmentName}</td>
+                <td>{formatMoney(item.current_balance)}</td>
+                <td>{item.status}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </section>

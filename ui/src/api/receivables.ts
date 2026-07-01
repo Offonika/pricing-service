@@ -142,6 +142,8 @@ export interface CounterpartyFolderRecommendation {
   recommended_folder_display_name?: string | null;
   debt_department_name?: string | null;
   debt_department_display_name?: string | null;
+  snapshot_department_name?: string | null;
+  snapshot_department_display_name?: string | null;
   debt_document_number?: string | null;
   effective_overdue_days?: number | null;
   status: string;

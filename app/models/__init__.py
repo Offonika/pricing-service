@@ -85,9 +85,6 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     )
     from app.models.return_scheme_alert_batch import ReturnSchemeAlertBatch
     from app.models.return_scheme_incident import ReturnSchemeIncident
-    from app.models.smartphone_release import ReleaseStatus, SmartphoneRelease, SourceType
-    from app.models.staff_member import StaffMember
-    from app.models.staffing_snapshot import StaffingSnapshot
     from app.models.site_defect_archive import (
         SiteDefectArchiveCase,
         SiteDefectArchiveFile,
@@ -99,6 +96,9 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         SiteOrderExecutionCase,
         SiteOrderExecutionEvent,
     )
+    from app.models.smartphone_release import ReleaseStatus, SmartphoneRelease, SourceType
+    from app.models.staff_member import StaffMember
+    from app.models.staffing_snapshot import StaffingSnapshot
     from app.models.store_shift_fact import StoreShiftFact
     from app.models.store_shift_plan import StoreShiftPlan
     from app.models.telephony import TelephonyUserLineSnapshot

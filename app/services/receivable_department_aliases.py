@@ -35,7 +35,7 @@ RECEIVABLE_DEPARTMENT_ALIAS_GROUPS = (
     ),
     ReceivableDepartmentAliasGroup(
         key="teply_stan",
-        canonical_display_name="04.Теплый Стан",
+        canonical_display_name="МСК-025 Радиорынок «Электромир»",
         refs=frozenset(
             {
                 TEPLY_STAN_RECEIVABLES_REF,
@@ -51,7 +51,152 @@ RECEIVABLE_DEPARTMENT_ALIAS_GROUPS = (
                 "Радиорынок «Электромир»",
                 "Радиорынок Электромир",
                 'Теплый стан Радиорынок "Электромир" пав. 652',
+                "МСК-025 Радиорынок «Электромир»",
                 "МСК-025 Радиорынок Электромир",
+            }
+        ),
+    ),
+    ReceivableDepartmentAliasGroup(
+        key="spb_prosveshcheniya",
+        canonical_display_name="СПБ-034 Проспект Просвещения",
+        refs=frozenset(),
+        aliases=frozenset(
+            {
+                "10. СПБ Просвещения",
+                "10.СПБ Просвещения",
+                "СПБ Просвещения",
+                "СПБ-034 Проспект Просвещения",
+                "СПБ 034 Проспект Просвещения",
+                "Проспект Просвещения",
+            }
+        ),
+    ),
+    ReceivableDepartmentAliasGroup(
+        key="grand_yug",
+        canonical_display_name="МСК-028 ТЦ Гранд Юг «Электронный рай»",
+        refs=frozenset(),
+        aliases=frozenset(
+            {
+                "06. Гранд Юг",
+                "06.Гранд Юг",
+                "Гранд Юг",
+                "МСК-028 ТЦ Гранд Юг «Электронный рай»",
+                "МСК-028 ТЦ Гранд Юг Электронный рай",
+                "МСК 028 ТЦ Гранд Юг Электронный рай",
+            }
+        ),
+    ),
+    ReceivableDepartmentAliasGroup(
+        key="spb_sadovaya",
+        canonical_display_name="СПБ-029 Садовая",
+        refs=frozenset(),
+        aliases=frozenset(
+            {
+                "09. СПБ Садовая",
+                "09.СПБ Садовая",
+                "СПБ Садовая",
+                "СПБ-029 Садовая",
+                "СПБ 029 Садовая",
+                "Садовая",
+            }
+        ),
+    ),
+    ReceivableDepartmentAliasGroup(
+        key="elektronika_na_presne",
+        canonical_display_name="МСК-027 ТЦ «Электроника на Пресне»",
+        refs=frozenset(),
+        aliases=frozenset(
+            {
+                "07. Электроника на пресне",
+                "07. Электроника на Пресне",
+                "07.Электроника на пресне",
+                "Электроника на пресне",
+                "Электроника на Пресне",
+                "МСК-027 ТЦ «Электроника на Пресне»",
+                "МСК-027 ТЦ Электроника на Пресне",
+                "МСК 027 ТЦ Электроника на Пресне",
+            }
+        ),
+    ),
+    ReceivableDepartmentAliasGroup(
+        key="spb_moskovskaya",
+        canonical_display_name="СПБ-035 Московская",
+        refs=frozenset(),
+        aliases=frozenset(
+            {
+                "13. СПБ Московская",
+                "13.СПБ Московская",
+                "СПБ Московская",
+                "СПБ-035 Московская",
+                "СПБ 035 Московская",
+                "Московская",
+            }
+        ),
+    ),
+    ReceivableDepartmentAliasGroup(
+        key="gorbushkin_dvor",
+        canonical_display_name="МСК-017 Техномолл «Горбушкин Двор»",
+        refs=frozenset(),
+        aliases=frozenset(
+            {
+                "01. Горбушкин Двор",
+                "01.Горбушкин Двор",
+                "Горбушкин Двор",
+                "Горбушка",
+                "МСК-017 Техномолл «Горбушкин Двор»",
+                "МСК-017 Техномолл Горбушкин Двор",
+                "МСК 017 Техномолл Горбушкин Двор",
+            }
+        ),
+    ),
+    ReceivableDepartmentAliasGroup(
+        key="mitino",
+        canonical_display_name="МСК-019 ТК «Митинский радиорынок»",
+        refs=frozenset(),
+        aliases=frozenset(
+            {
+                "03. Митино",
+                "03.Митино",
+                "Митино",
+                "МСК-019 ТК «Митинский радиорынок»",
+                "МСК-019 ТК Митинский радиорынок",
+                "МСК 019 ТК Митинский радиорынок",
+                "Митинский радиорынок",
+            }
+        ),
+    ),
+    ReceivableDepartmentAliasGroup(
+        key="savelovskiy",
+        canonical_display_name="МСК-015 ТК «Савеловский» Мобильный",
+        refs=frozenset(),
+        aliases=frozenset(
+            {
+                "02. Савеловский",
+                "02.Савеловский",
+                "Савеловский",
+                "Савелово",
+                "ТК Савеловский",
+                "МСК-015 ТК «Савеловский» Мобильный",
+                "МСК-015 ТК Савеловский Мобильный",
+                "МСК 015 ТК Савеловский Мобильный",
+            }
+        ),
+    ),
+    ReceivableDepartmentAliasGroup(
+        key="pyatigorsk",
+        canonical_display_name="ПТГ-022 Георгиевская",
+        refs=frozenset(),
+        aliases=frozenset(
+            {
+                "05 Пятигорск",
+                "05. Пятигорск",
+                "05.Пятигорск",
+                "5 .Пятигорск",
+                "5 .Пятигорск (сотрудники)",
+                "Пятигорск",
+                "ПТГ-022 Георгиевская",
+                "ПТГ 022 Георгиевская",
+                "Георгиевская",
             }
         ),
     ),

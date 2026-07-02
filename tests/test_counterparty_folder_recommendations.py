@@ -31,6 +31,10 @@ from app.services.counterparty_folder_snapshots import (
     build_counterparty_folder_changes,
     sync_counterparty_folder_snapshot,
 )
+from app.services.receivable_department_aliases import (
+    receivable_department_display_name,
+    receivable_department_names_equivalent,
+)
 from app.services.receivable_statement_debt import (
     ReceivableStatementEvent,
     resolve_open_debt_documents_by_statement,
@@ -604,8 +608,8 @@ def test_folder_alias_treats_teply_stan_and_elektromir_as_equivalent() -> None:
     )
 
     assert item["status"] == STATUS_OK
-    assert item["current_folder_display_name"] == "04.Теплый Стан"
-    assert item["recommended_folder_display_name"] == "04.Теплый Стан"
+    assert item["current_folder_display_name"] == "МСК-025 Радиорынок «Электромир»"
+    assert item["recommended_folder_display_name"] == "МСК-025 Радиорынок «Электромир»"
 
 
 def test_folder_alias_treats_shchelkovskaya_names_as_equivalent() -> None:
@@ -653,6 +657,27 @@ def test_folder_alias_treats_shchelkovskaya_names_as_equivalent() -> None:
     assert item["status"] == STATUS_OK
     assert item["current_folder_display_name"] == "МСК-033 Щелковская"
     assert item["recommended_folder_display_name"] == "МСК-033 Щелковская"
+
+
+def test_department_aliases_cover_maxim_latest_pairs() -> None:
+    pairs = [
+        ("10. СПБ Просвещения", "СПБ-034 Проспект Просвещения"),
+        ("06. Гранд Юг", "МСК-028 ТЦ Гранд Юг «Электронный рай»"),
+        ("09. СПБ Садовая", "СПБ-029 Садовая"),
+        ("07. Электроника на пресне", "МСК-027 ТЦ «Электроника на Пресне»"),
+        ("13. СПБ Московская", "СПБ-035 Московская"),
+        ("01. Горбушкин Двор", "МСК-017 Техномолл «Горбушкин Двор»"),
+        ("03. Митино", "МСК-019 ТК «Митинский радиорынок»"),
+        ("02. Савеловский", "МСК-015 ТК «Савеловский» Мобильный"),
+        ("05 Пятигорск", "ПТГ-022 Георгиевская"),
+        ("04.Теплый Стан", "МСК-025 Радиорынок «Электромир»"),
+        ("12. Щелковская", "МСК-033 Щелковская"),
+    ]
+
+    for legacy_name, canonical_name in pairs:
+        assert receivable_department_names_equivalent(legacy_name, canonical_name)
+        assert receivable_department_display_name(legacy_name) == canonical_name
+        assert receivable_department_display_name(canonical_name) == canonical_name
 
 
 def _seed_app_db(engine) -> None:

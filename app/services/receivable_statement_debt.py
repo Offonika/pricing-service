@@ -10,11 +10,13 @@ STATEMENT_RULE_MULTI_SALE_PAYMENT = "statement_multi_sale_payment_match"
 STATEMENT_RULE_BOTTOM_UP_BALANCE = "statement_bottom_up_balance_cutoff"
 STATEMENT_RULE_UNMATCHED_OPEN = "statement_unmatched_open_sale"
 STATEMENT_RULE_STRUCTURE_OPEN = "statement_structure_confirmed_open"
+STATEMENT_RULE_RETURN_PKO_RKO_MATCH = "statement_return_pko_rko_match"
+STATEMENT_RULE_RETURN_RKO_WITHOUT_PKO_REVIEW = "statement_return_rko_without_pko_review"
 
 DIRECT_PAYMENT_TOLERANCE = Decimal("50.00")
 MULTI_SALE_PAYMENT_TOLERANCE = Decimal("100.00")
 SAFE_BALANCE_TOLERANCE = Decimal("100.00")
-NEARBY_PAYMENT_ROW_WINDOW = 5
+NEARBY_PAYMENT_ROW_WINDOW = 7
 MULTI_SALE_ROW_WINDOW = 7
 
 
@@ -30,6 +32,12 @@ class ReceivableStatementEvent:
     manager_name: str | None = None
     line_no: int | None = None
     source_layer: str | None = None
+    contract_ref: str | None = None
+    contract_name: str | None = None
+    contract_kind_ref: str | None = None
+    contract_kind_name: str | None = None
+    settlement_document_ref: str | None = None
+    settlement_document_name: str | None = None
 
 
 @dataclass(frozen=True)
@@ -48,6 +56,12 @@ class ReceivableStatementOpenDocument:
     statement_segment_end_row: int | None
     statement_selection_rule: str
     statement_match_details: tuple[dict[str, Any], ...] = ()
+    contract_ref: str | None = None
+    contract_name: str | None = None
+    contract_kind_ref: str | None = None
+    contract_kind_name: str | None = None
+    settlement_document_ref: str | None = None
+    settlement_document_name: str | None = None
 
 
 @dataclass
@@ -56,6 +70,7 @@ class _ClosingLayer:
     amount: Decimal
     row_index: int
     used: bool = False
+    blocks_safe_balance: bool = False
 
 
 @dataclass
@@ -92,8 +107,26 @@ def _distance(left: int, right: int) -> int:
     return abs(left - right)
 
 
+def _text_key(value: Any) -> str:
+    return " ".join(str(value or "").strip().casefold().split())
+
+
 def _is_close(left: Decimal, right: Decimal, tolerance: Decimal) -> bool:
     return abs(_money(left) - _money(right)) <= tolerance
+
+
+def _event_text(event: ReceivableStatementEvent) -> str:
+    return _text_key(f"{event.event_type} {event.document_number or ''} {event.document_ref or ''}")
+
+
+def _is_rko_like(event: ReceivableStatementEvent) -> bool:
+    text = _event_text(event)
+    return event.event_type == "rko" or "рко" in text or "расходн" in text
+
+
+def _is_pko_like(event: ReceivableStatementEvent) -> bool:
+    text = _event_text(event)
+    return event.event_type == "payment" or "пко" in text or "приходн" in text
 
 
 def _closing_detail(closing: _ClosingLayer, *, rule: str) -> dict[str, Any]:
@@ -104,6 +137,17 @@ def _closing_detail(closing: _ClosingLayer, *, rule: str) -> dict[str, Any]:
         "document_number": closing.event.document_number,
         "document_date": closing.event.document_date,
         "amount": _money(-closing.amount),
+    }
+
+
+def _return_detail(return_layer: _ClosingLayer, *, rule: str) -> dict[str, Any]:
+    return {
+        "rule": rule,
+        "document_type": "Возврат товаров от покупателя",
+        "document_ref": return_layer.event.document_ref,
+        "document_number": return_layer.event.document_number,
+        "document_date": return_layer.event.document_date,
+        "amount": _money(-return_layer.amount),
     }
 
 
@@ -178,6 +222,7 @@ def _mark_structure_linked_closings_used(
 def _apply_nearby_returns(
     sale_layers: list[_SaleLayer],
     return_layers: list[_ClosingLayer],
+    payment_layers: list[_ClosingLayer],
 ) -> None:
     for ret in return_layers:
         candidates = [
@@ -192,17 +237,62 @@ def _apply_nearby_returns(
         sale = min(
             candidates, key=lambda item: (_distance(item.row_index, ret.row_index), item.row_index)
         )
-        sale.return_amount = _money(sale.return_amount + ret.amount)
-        sale.match_details.append(
-            {
-                "rule": "statement_nearby_return",
-                "document_type": "Возврат товаров от покупателя",
-                "document_ref": ret.event.document_ref,
-                "document_number": ret.event.document_number,
-                "document_date": ret.event.document_date,
-                "amount": _money(-ret.amount),
-            }
+        nearby_rko = next(
+            (
+                payment
+                for payment in payment_layers
+                if not payment.used
+                and _is_rko_like(payment.event)
+                and _distance(sale.row_index, payment.row_index) <= NEARBY_PAYMENT_ROW_WINDOW
+                and _is_close(ret.amount, payment.amount, DIRECT_PAYMENT_TOLERANCE)
+            ),
+            None,
         )
+        nearby_pko = next(
+            (
+                payment
+                for payment in payment_layers
+                if not payment.used
+                and _is_pko_like(payment.event)
+                and _distance(sale.row_index, payment.row_index) <= NEARBY_PAYMENT_ROW_WINDOW
+                and _is_close(ret.amount, payment.amount, DIRECT_PAYMENT_TOLERANCE)
+            ),
+            None,
+        )
+        if nearby_rko is not None and nearby_pko is None:
+            ret.used = True
+            ret.blocks_safe_balance = True
+            nearby_rko.used = True
+            nearby_rko.blocks_safe_balance = True
+            sale.match_details.append(
+                _return_detail(ret, rule=STATEMENT_RULE_RETURN_RKO_WITHOUT_PKO_REVIEW)
+            )
+            sale.match_details.append(
+                _closing_detail(nearby_rko, rule=STATEMENT_RULE_RETURN_RKO_WITHOUT_PKO_REVIEW)
+            )
+            continue
+        if (
+            nearby_rko is not None
+            and nearby_pko is not None
+            and _is_close(ret.amount, sale.gross_amount, DIRECT_PAYMENT_TOLERANCE)
+        ):
+            ret.used = True
+            nearby_rko.used = True
+            nearby_pko.used = True
+            sale.return_amount = _money(sale.return_amount + ret.amount)
+            sale.closed = True
+            sale.open_amount = Decimal("0.00")
+            sale.selection_rule = STATEMENT_RULE_RETURN_PKO_RKO_MATCH
+            sale.match_details.append(_return_detail(ret, rule=STATEMENT_RULE_RETURN_PKO_RKO_MATCH))
+            sale.match_details.append(
+                _closing_detail(nearby_rko, rule=STATEMENT_RULE_RETURN_PKO_RKO_MATCH)
+            )
+            sale.match_details.append(
+                _closing_detail(nearby_pko, rule=STATEMENT_RULE_RETURN_PKO_RKO_MATCH)
+            )
+            continue
+        sale.return_amount = _money(sale.return_amount + ret.amount)
+        sale.match_details.append(_return_detail(ret, rule="statement_nearby_return"))
         ret.used = True
 
 
@@ -217,6 +307,7 @@ def _apply_direct_payment_matches(
             payment
             for payment in payment_layers
             if not payment.used
+            and not _is_rko_like(payment.event)
             and _distance(sale.row_index, payment.row_index) <= NEARBY_PAYMENT_ROW_WINDOW
             and _is_close(sale.match_amount, payment.amount, DIRECT_PAYMENT_TOLERANCE)
         ]
@@ -256,7 +347,7 @@ def _apply_multi_sale_payment_matches(
     payment_layers: list[_ClosingLayer],
 ) -> None:
     for payment in payment_layers:
-        if payment.used:
+        if payment.used or _is_rko_like(payment.event):
             continue
         candidate_indices = [
             index
@@ -330,10 +421,18 @@ def _last_safe_balance_row(
     *,
     sale_layers: list[_SaleLayer],
     payment_layers: list[_ClosingLayer],
+    return_layers: list[_ClosingLayer] | None = None,
 ) -> int | None:
     payment_by_row = {payment.row_index: payment for payment in payment_layers}
+    blocked_rows = {
+        layer.row_index
+        for layer in [*payment_layers, *(return_layers or [])]
+        if layer.blocks_safe_balance
+    }
     last_safe_row: int | None = None
     for row_index, balance_after in enumerate(balances_after):
+        if row_index in blocked_rows:
+            continue
         if not Decimal("0.00") <= balance_after <= SAFE_BALANCE_TOLERANCE:
             continue
         payment = payment_by_row.get(row_index)
@@ -399,7 +498,73 @@ def _select_open_sales_by_balance(
     return sorted(selected, key=lambda item: (item.event.document_date, item.event.document_ref))
 
 
+def _settlement_group_key(event: ReceivableStatementEvent) -> tuple[str, str, str, str, str, str]:
+    return (
+        _text_key(event.contract_ref),
+        _text_key(event.contract_name),
+        _text_key(event.contract_kind_ref),
+        _text_key(event.contract_kind_name),
+        _text_key(event.settlement_document_ref),
+        _text_key(event.settlement_document_name),
+    )
+
+
+def _has_settlement_grouping(
+    grouped_events: dict[tuple[str, str, str, str, str, str], list[ReceivableStatementEvent]],
+) -> bool:
+    if len(grouped_events) <= 1:
+        return False
+    return any(any(key_part for key_part in key) for key in grouped_events)
+
+
+def _group_balance(events: Sequence[ReceivableStatementEvent]) -> Decimal:
+    return _money(sum((_money(event.amount_delta) for event in events), Decimal("0.00")))
+
+
 def resolve_open_debt_documents_by_statement(
+    events: Sequence[ReceivableStatementEvent],
+    *,
+    current_balance: Decimal,
+    structure_checks: dict[str, Any] | None = None,
+    ref_key=lambda value: str(value or "").strip().casefold(),
+) -> list[ReceivableStatementOpenDocument]:
+    grouped_events: dict[tuple[str, str, str, str, str, str], list[ReceivableStatementEvent]] = {}
+    for event in events:
+        grouped_events.setdefault(_settlement_group_key(event), []).append(event)
+    if not _has_settlement_grouping(grouped_events):
+        return _resolve_open_debt_documents_by_statement_group(
+            events,
+            current_balance=_money(current_balance),
+            structure_checks=structure_checks,
+            ref_key=ref_key,
+        )
+
+    documents: list[ReceivableStatementOpenDocument] = []
+    for group_events in grouped_events.values():
+        group_current_balance = _group_balance(group_events)
+        if group_current_balance <= Decimal("0.00"):
+            continue
+        documents.extend(
+            _resolve_open_debt_documents_by_statement_group(
+                group_events,
+                current_balance=group_current_balance,
+                structure_checks=structure_checks,
+                ref_key=ref_key,
+            )
+        )
+    if documents:
+        return sorted(documents, key=lambda item: (item.document_date, item.document_ref))
+    if _money(current_balance) <= Decimal("0.00"):
+        return []
+    return _resolve_open_debt_documents_by_statement_group(
+        events,
+        current_balance=_money(current_balance),
+        structure_checks=structure_checks,
+        ref_key=ref_key,
+    )
+
+
+def _resolve_open_debt_documents_by_statement_group(
     events: Sequence[ReceivableStatementEvent],
     *,
     current_balance: Decimal,
@@ -464,7 +629,7 @@ def resolve_open_debt_documents_by_statement(
         linked_document_refs=structure_linked_document_refs,
         ref_key=ref_key,
     )
-    _apply_nearby_returns(sale_layers, return_layers)
+    _apply_nearby_returns(sale_layers, return_layers, payment_layers)
     _apply_direct_payment_matches(sale_layers, payment_layers)
     _apply_multi_sale_payment_matches(sale_layers, payment_layers)
 
@@ -472,6 +637,7 @@ def resolve_open_debt_documents_by_statement(
         balances_after,
         sale_layers=sale_layers,
         payment_layers=payment_layers,
+        return_layers=return_layers,
     )
     segment_start_row = 0 if last_safe_row is None else last_safe_row + 1
     segment_end_row = len(sorted_events) - 1 if sorted_events else None
@@ -513,6 +679,12 @@ def resolve_open_debt_documents_by_statement(
                 statement_segment_end_row=sale.statement_segment_end_row,
                 statement_selection_rule=sale.selection_rule,
                 statement_match_details=tuple(sale.match_details),
+                contract_ref=sale.event.contract_ref,
+                contract_name=sale.event.contract_name,
+                contract_kind_ref=sale.event.contract_kind_ref,
+                contract_kind_name=sale.event.contract_kind_name,
+                settlement_document_ref=sale.event.settlement_document_ref,
+                settlement_document_name=sale.event.settlement_document_name,
             )
         )
     return documents

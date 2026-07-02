@@ -40,6 +40,12 @@ export interface ReceivableDocument {
   closing_amount?: string | null;
   return_amount?: string | null;
   manager_name?: string | null;
+  contract_ref?: string | null;
+  contract_name?: string | null;
+  contract_kind_ref?: string | null;
+  contract_kind_name?: string | null;
+  settlement_document_ref?: string | null;
+  settlement_document_name?: string | null;
   due_date?: string | null;
   overdue_days?: number | null;
   is_overdue: boolean;

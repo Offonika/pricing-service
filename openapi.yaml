@@ -13959,6 +13959,36 @@ components:
           - type: string
           - type: 'null'
           title: Manager Name
+        contract_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contract Ref
+        contract_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contract Name
+        contract_kind_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contract Kind Ref
+        contract_kind_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contract Kind Name
+        settlement_document_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Settlement Document Ref
+        settlement_document_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Settlement Document Name
         due_date:
           anyOf:
           - type: string

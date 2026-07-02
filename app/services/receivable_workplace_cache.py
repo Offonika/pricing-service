@@ -182,16 +182,16 @@ def rebuild_open_debt_cache(
     snapshot_date: date,
     onec_engine=None,
     include_onec_enrichment: bool = False,
+    department_refs: Sequence[str] | None = None,
 ) -> dict[str, Any]:
+    conditions = [
+        ReceivableBalanceSnapshot.snapshot_date == snapshot_date,
+        ReceivableBalanceSnapshot.current_balance > Decimal("0"),
+    ]
+    if department_refs:
+        conditions.append(ReceivableBalanceSnapshot.department_ref.in_(list(department_refs)))
     snapshots = (
-        session.execute(
-            select(ReceivableBalanceSnapshot).where(
-                ReceivableBalanceSnapshot.snapshot_date == snapshot_date,
-                ReceivableBalanceSnapshot.current_balance > Decimal("0"),
-            )
-        )
-        .scalars()
-        .all()
+        session.execute(select(ReceivableBalanceSnapshot).where(*conditions)).scalars().all()
     )
     documents_by_counterparty = build_open_debt_documents_by_counterparty(
         session,
@@ -227,6 +227,7 @@ def rebuild_open_debt_cache(
         "snapshot_date": snapshot_date,
         "source_snapshot_count": len(snapshots),
         "updated_count": updated_count,
+        "department_refs": list(department_refs or []),
         "computed_at": now,
     }
 

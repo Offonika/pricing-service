@@ -464,6 +464,10 @@ def fetch_counterparty_ledger_statement_events(
                     ReceivableLedgerEvent.source_layer,
                     ReceivableLedgerEvent.line_no,
                     ReceivableLedgerEvent.amount_delta,
+                    ReceivableLedgerEvent.contract_ref,
+                    ReceivableLedgerEvent.contract_name,
+                    ReceivableLedgerEvent.contract_kind_ref,
+                    ReceivableLedgerEvent.contract_kind_name,
                 )
                 .where(
                     ReceivableLedgerEvent.counterparty_ref.in_(chunk),
@@ -500,6 +504,10 @@ def fetch_counterparty_ledger_statement_events(
                     manager_name=_normalize_ref(row.get("manager_name")) or None,
                     line_no=row.get("line_no"),
                     source_layer=_normalize_ref(row.get("source_layer")) or None,
+                    contract_ref=_normalize_ref(row.get("contract_ref")) or None,
+                    contract_name=_normalize_ref(row.get("contract_name")) or None,
+                    contract_kind_ref=_normalize_ref(row.get("contract_kind_ref")) or None,
+                    contract_kind_name=_normalize_ref(row.get("contract_kind_name")) or None,
                 )
             )
     return rows_by_counterparty
@@ -784,6 +792,8 @@ def _open_debt_documents_for_snapshot(
                 "document_structure_order_number": structure_check.order_number,
                 "document_structure_order_date": structure_check.order_date,
                 "document_structure_linked_documents": list(structure_check.linked_documents),
+                "settlement_document_ref": structure_check.order_ref,
+                "settlement_document_name": structure_check.order_number,
             }
         )
     return documents
@@ -834,6 +844,14 @@ def _open_debt_documents_from_statement(
                 "return_amount": document.return_amount,
                 "manager_ref": document.manager_ref,
                 "manager_name": document.manager_name,
+                "contract_ref": document.contract_ref,
+                "contract_name": document.contract_name,
+                "contract_kind_ref": document.contract_kind_ref,
+                "contract_kind_name": document.contract_kind_name,
+                "settlement_document_ref": document.settlement_document_ref
+                or (structure_check.order_ref if structure_check else None),
+                "settlement_document_name": document.settlement_document_name
+                or (structure_check.order_number if structure_check else None),
                 "document_responsible_ref": (
                     document_row.document_responsible_ref if document_row else None
                 ),

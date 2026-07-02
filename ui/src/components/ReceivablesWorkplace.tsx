@@ -9,6 +9,7 @@ import {
   type CounterpartyFolderRecommendation,
   type ReceivableCacheComponent,
   type ReceivableDepartmentOption,
+  type ReceivableDocument,
   type ReceivableStatusOption,
   type ReceivableWorkplaceItem,
   type ReceivableWorkplaceSummary,
@@ -141,9 +142,21 @@ function debtRuleLabel(value?: string | null) {
     statement_bottom_up_balance_cutoff: "подбор от текущего остатка",
     statement_unmatched_open_sale: "нет закрывающего документа",
     statement_structure_confirmed_open: "подтверждено структурой 1С",
+    statement_return_pko_rko_match: "возврат закрыт связкой ПКО/РКО",
+    statement_return_rko_without_pko_review: "возврат с РКО без ПКО",
     confirmed_open: "подтверждено структурой 1С",
   };
   return value ? labels[value] || value : "расчет по открытым документам";
+}
+
+function documentSettlementText(document: ReceivableDocument) {
+  return [
+    document.contract_name || document.contract_ref || "",
+    document.contract_kind_name || "",
+    document.settlement_document_name || document.settlement_document_ref || "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
 }
 
 function matchDetailsText(details: Array<Record<string, unknown>>) {
@@ -355,6 +368,7 @@ function ReceivableRow({
                 <thead>
                   <tr>
                     <th>Номер</th>
+                    <th>Договор</th>
                     <th>Дата</th>
                     <th>Сумма</th>
                     <th>Остаток</th>
@@ -368,6 +382,7 @@ function ReceivableRow({
                   {item.documents.map((document) => (
                     <tr key={`${document.document_ref || document.document_number}-${document.document_date || ""}`}>
                       <td>{document.document_number || ""}</td>
+                      <td>{documentSettlementText(document) || ""}</td>
                       <td>{formatDate(document.document_date)}</td>
                       <td>{formatMoney(document.amount)}</td>
                       <td>{formatMoney(document.open_amount || document.amount)}</td>

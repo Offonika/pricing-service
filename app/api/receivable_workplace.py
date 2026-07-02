@@ -232,14 +232,25 @@ def get_receivable_workplace(
     db: Session = Depends(get_db),
     access: ReceivableWorkplaceAuthContext = Depends(require_receivable_workplace_access),
 ) -> ReceivableWorkplaceResponse:
-    return build_receivable_workplace(
-        db,
-        snapshot_date=date_value,
-        department_ref=department_ref,
-        status=status,
-        limit=limit,
-        allowed_department_refs=access.allowed_department_refs,
-    )
+    onec_engine = None
+    try:
+        try:
+            onec_engine = _build_onec_engine()
+        except HTTPException as exc:
+            if exc.status_code != 503:
+                raise
+        return build_receivable_workplace(
+            db,
+            snapshot_date=date_value,
+            department_ref=department_ref,
+            status=status,
+            limit=limit,
+            allowed_department_refs=access.allowed_department_refs,
+            onec_engine=onec_engine,
+        )
+    finally:
+        if onec_engine is not None:
+            onec_engine.dispose()
 
 
 @router.get(

@@ -51,7 +51,7 @@ from app.services.receivable_workplace_cache import (
     receivable_department_options,
     workplace_cache_status,
 )
-from app.services.receivables import CASE_BUYERS
+from app.services.receivables import CASE_BUYERS, fetch_counterparty_phones_from_onec
 
 logger = logging.getLogger(__name__)
 
@@ -258,6 +258,12 @@ def _build_documents(
                     or raw.get("manager_name")
                     or case.origin_manager_name
                 ),
+                contract_ref=raw.get("contract_ref"),
+                contract_name=raw.get("contract_name"),
+                contract_kind_ref=raw.get("contract_kind_ref"),
+                contract_kind_name=raw.get("contract_kind_name"),
+                settlement_document_ref=raw.get("settlement_document_ref"),
+                settlement_document_name=raw.get("settlement_document_name"),
                 due_date=due_date,
                 overdue_days=overdue_days,
                 is_overdue=bool(overdue_days and overdue_days > 0),
@@ -426,6 +432,7 @@ def _build_item(
     staff_members: list[StaffMember],
     open_debt_documents: list[dict[str, Any]] | None = None,
     counterparty_code: str | None = None,
+    phone_by_counterparty: dict[str, str] | None = None,
 ) -> ReceivableWorkplaceItem:
     open_debt_documents = _sort_open_debt_documents(open_debt_documents or [])
     primary_open_document = open_debt_documents[0] if open_debt_documents else {}
@@ -446,14 +453,21 @@ def _build_item(
         open_debt_documents=open_debt_documents,
     )
     item_payload = _payload_dict(item)
-    phone = item.phone if item is not None else None
-    phone_status = item.phone_status if item is not None else ("present" if phone else "missing")
+    fallback_phone = (phone_by_counterparty or {}).get(_ref_key(case.counterparty_ref))
+    phone = (item.phone if item is not None and item.phone else None) or fallback_phone
+    phone_status = (
+        item.phone_status
+        if item is not None and item.phone
+        else ("present" if phone else "missing")
+    )
     needs_call = _needs_call_today(
         item=item,
         effective_overdue_days=effective_overdue_days,
         as_of=as_of,
     )
     status = item.status if item is not None else (STATUS_NO_PHONE if not phone else "new_debt")
+    if status == STATUS_NO_PHONE and phone:
+        status = "new_debt"
     responsible_ref = (
         primary_open_document.get("document_responsible_ref")
         or primary_open_document.get("manager_ref")
@@ -567,10 +581,43 @@ def _load_counterparty_codes_from_folder_cache(
     return result
 
 
-def _status_for_case(case: ReceivableCase, item: ReceivableWorkItem | None) -> str:
+def _status_for_case(
+    case: ReceivableCase,
+    item: ReceivableWorkItem | None,
+    *,
+    phone: str | None = None,
+) -> str:
     if item is not None:
+        if item.status == STATUS_NO_PHONE and (item.phone or phone):
+            return "new_debt"
         return item.status
-    return STATUS_NO_PHONE if not (item.phone if item is not None else None) else "new_debt"
+    return STATUS_NO_PHONE if not phone else "new_debt"
+
+
+def _load_counterparty_phones(
+    onec_engine: Any | None,
+    *,
+    cases: list[ReceivableCase],
+    work_items: dict[str, ReceivableWorkItem],
+) -> dict[str, str]:
+    if onec_engine is None or not cases:
+        return {}
+    refs = [
+        case.counterparty_ref
+        for case in cases
+        if not (work_items.get(case.counterparty_ref) and work_items[case.counterparty_ref].phone)
+    ]
+    if not refs:
+        return {}
+    try:
+        phones = fetch_counterparty_phones_from_onec(onec_engine, counterparty_refs=refs)
+    except (SQLAlchemyError, TimeoutError, OSError, ValueError) as exc:
+        logger.warning(
+            "receivable_workplace_phone_fallback_failed",
+            extra={"error_type": type(exc).__name__},
+        )
+        return {}
+    return {_ref_key(ref): phone for ref, phone in phones.items() if phone}
 
 
 def _case_sort_key(
@@ -699,6 +746,8 @@ def build_receivable_workplace(
     status: str | None = None,
     limit: int = 500,
     allowed_department_refs: set[str] | frozenset[str] | None = None,
+    onec_engine: Any | None = None,
+    phone_by_counterparty: dict[str, str] | None = None,
 ) -> ReceivableWorkplaceResponse:
     cases = _load_cases(session, snapshot_date=snapshot_date)
     if allowed_department_refs is not None:
@@ -738,11 +787,26 @@ def build_receivable_workplace(
         snapshot_date=snapshot_date,
         counterparty_refs=[case.counterparty_ref for case in cases],
     )
+    resolved_phones = {
+        _ref_key(ref): phone for ref, phone in (phone_by_counterparty or {}).items() if phone
+    }
+    resolved_phones.update(
+        _load_counterparty_phones(
+            onec_engine,
+            cases=cases,
+            work_items=work_items,
+        )
+    )
     if status:
         cases = [
             case
             for case in cases
-            if _status_for_case(case, work_items.get(case.counterparty_ref)) == status
+            if _status_for_case(
+                case,
+                work_items.get(case.counterparty_ref),
+                phone=resolved_phones.get(_ref_key(case.counterparty_ref)),
+            )
+            == status
         ]
     cases.sort(key=_case_sort_key, reverse=True)
     open_debt_cache = load_cached_open_debt_documents(
@@ -782,6 +846,7 @@ def build_receivable_workplace(
                 [],
             ),
             counterparty_code=counterparty_codes.get(_ref_key(case.counterparty_ref)),
+            phone_by_counterparty=resolved_phones,
         )
         for case in cases
     ]

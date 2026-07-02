@@ -47,6 +47,12 @@ class ReceivableWorkplaceDocument(BaseModel):
     closing_amount: Decimal | None = None
     return_amount: Decimal | None = None
     manager_name: str | None = None
+    contract_ref: str | None = None
+    contract_name: str | None = None
+    contract_kind_ref: str | None = None
+    contract_kind_name: str | None = None
+    settlement_document_ref: str | None = None
+    settlement_document_name: str | None = None
     due_date: datetime | None = None
     overdue_days: int | None = None
     is_overdue: bool = False

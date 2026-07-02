@@ -233,6 +233,26 @@ def test_receivable_workplace_uses_default_credit_depth_without_onec_write(
     assert item.documents[0].document_number == "РБГУ0001"
 
 
+def test_receivable_workplace_uses_counterparty_card_phone_fallback(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 6, 23)
+    db_session.add_all([_case(snapshot_date=as_of), _staff_member()])
+
+    result = build_receivable_workplace(
+        db_session,
+        snapshot_date=as_of,
+        phone_by_counterparty={"cp-1": "+79990000000"},
+    )
+
+    item = result.payload[0]
+    assert item.phone == "+79990000000"
+    assert item.phone_status == "present"
+    assert item.no_phone_marker is False
+    assert item.status == "new_debt"
+    assert result.summary.no_phone_count == 0
+
+
 def test_receivable_workplace_action_survives_daily_workflow_sync(db_session: Session) -> None:
     as_of = date(2026, 6, 23)
     due_date = datetime(2026, 6, 16)
@@ -701,6 +721,33 @@ def test_receivable_workplace_staff_options_use_teply_stan_equivalent_refs_and_r
     }
 
 
+def test_receivable_workplace_staff_options_use_shchelkovskaya_alias(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 6, 23)
+    db_session.add_all(
+        [
+            _case(
+                snapshot_date=as_of,
+                department_ref="dep-shchelkovskaya-old",
+                department_name="12. Щелковская",
+            ),
+            _staff_member(
+                external_ref="manager-shchelkovskaya",
+                full_name="Менеджер Щелковская",
+                department_ref="dep-shchelkovskaya-new",
+                department_name="МСК-033 Щелковская",
+            ),
+        ]
+    )
+
+    result = build_receivable_workplace(db_session, snapshot_date=as_of)
+
+    assert [staff.staff_ref for staff in result.payload[0].staff_options] == [
+        "manager-shchelkovskaya"
+    ]
+
+
 def test_receivable_workplace_manual_last_contact_date_roundtrip(
     db_session: Session,
 ) -> None:
@@ -742,6 +789,10 @@ def test_receivable_workplace_cached_documents_are_sorted_and_explained(
                         "sale_amount": "1000.00",
                         "closing_amount": "-500.00",
                         "return_amount": "0.00",
+                        "contract_ref": "contract-1",
+                        "contract_name": "Основной договор",
+                        "settlement_document_ref": "order-1",
+                        "settlement_document_name": "Заказ РБ-1",
                         "statement_selection_rule": "statement_structure_confirmed_open",
                         "statement_balance_after": "500.00",
                         "statement_match_details": [{"document_number": "ПКО-1", "amount": "-500"}],
@@ -769,6 +820,8 @@ def test_receivable_workplace_cached_documents_are_sorted_and_explained(
     assert item.documents[1].closing_amount == Decimal("-500.00")
     assert item.documents[1].statement_balance_after == Decimal("500.00")
     assert item.documents[1].match_details[0]["document_number"] == "ПКО-1"
+    assert item.documents[1].contract_name == "Основной договор"
+    assert item.documents[1].settlement_document_name == "Заказ РБ-1"
 
 
 def test_receivable_workplace_patch_uses_cache_without_live_open_debt_recompute(

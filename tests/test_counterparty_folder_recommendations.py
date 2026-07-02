@@ -47,6 +47,8 @@ def _statement_event(
     amount: str,
     *,
     line_no: int | None = None,
+    contract_ref: str | None = None,
+    contract_name: str | None = None,
 ) -> ReceivableStatementEvent:
     return ReceivableStatementEvent(
         counterparty_ref="cp-statement",
@@ -56,6 +58,8 @@ def _statement_event(
         document_date=dt,
         amount_delta=Decimal(amount),
         line_no=line_no,
+        contract_ref=contract_ref,
+        contract_name=contract_name,
     )
 
 
@@ -164,6 +168,30 @@ def test_statement_debt_resolver_closes_sale_by_nearby_payment() -> None:
     assert [item.document_number for item in docs] == ["РТУ-2"]
 
 
+def test_statement_debt_resolver_uses_seven_row_direct_payment_window() -> None:
+    base = datetime(2026, 6, 1, 10)
+    docs = resolve_open_debt_documents_by_statement(
+        [
+            _statement_event("sale", "sale-1", "РТУ-1", base, "1000.00"),
+            *[
+                _statement_event(
+                    "comment",
+                    f"noise-{index}",
+                    f"ШУМ-{index}",
+                    base + timedelta(minutes=index + 1),
+                    "0.00",
+                )
+                for index in range(6)
+            ],
+            _statement_event("payment", "pko-1", "ПКО-1", base + timedelta(minutes=8), "-1000.00"),
+            _statement_event("sale", "sale-2", "РТУ-2", datetime(2026, 6, 2, 10), "700.00"),
+        ],
+        current_balance=Decimal("700.00"),
+    )
+
+    assert [item.document_number for item in docs] == ["РТУ-2"]
+
+
 def test_statement_debt_resolver_closes_sale_by_return_adjusted_payment() -> None:
     docs = resolve_open_debt_documents_by_statement(
         [
@@ -190,6 +218,60 @@ def test_statement_debt_resolver_closes_sale_by_return_adjusted_payment() -> Non
     assert [item.document_number for item in docs] == ["РТУ-2"]
 
 
+def test_statement_debt_resolver_keeps_return_rko_without_pko_open() -> None:
+    docs = resolve_open_debt_documents_by_statement(
+        [
+            _statement_event("sale", "sale-1", "РТУ-1", datetime(2026, 6, 1, 10), "1000.00"),
+            _statement_event(
+                "return",
+                "return-1",
+                "ВОЗВ-1",
+                datetime(2026, 6, 1, 11),
+                "-1000.00",
+            ),
+            _statement_event(
+                "settlement",
+                "rko-1",
+                "РКО-1",
+                datetime(2026, 6, 1, 12),
+                "-1000.00",
+            ),
+        ],
+        current_balance=Decimal("1000.00"),
+    )
+
+    assert [item.document_number for item in docs] == ["РТУ-1"]
+    assert docs[0].return_amount == Decimal("0.00")
+    assert docs[0].statement_match_details[0]["rule"] == "statement_return_rko_without_pko_review"
+
+
+def test_statement_debt_resolver_closes_return_rko_with_matching_pko() -> None:
+    docs = resolve_open_debt_documents_by_statement(
+        [
+            _statement_event("sale", "sale-1", "РТУ-1", datetime(2026, 6, 1, 10), "1000.00"),
+            _statement_event(
+                "return",
+                "return-1",
+                "ВОЗВ-1",
+                datetime(2026, 6, 1, 11),
+                "-1000.00",
+            ),
+            _statement_event(
+                "settlement",
+                "rko-1",
+                "РКО-1",
+                datetime(2026, 6, 1, 12),
+                "-1000.00",
+            ),
+            _statement_event("payment", "pko-1", "ПКО-1", datetime(2026, 6, 1, 13), "-1000.00"),
+            _statement_event("sale", "sale-2", "РТУ-2", datetime(2026, 6, 2, 10), "700.00"),
+        ],
+        current_balance=Decimal("700.00"),
+    )
+
+    assert [item.document_number for item in docs] == ["РТУ-2"]
+
+
 def test_statement_debt_resolver_closes_multiple_sales_by_one_payment() -> None:
     docs = resolve_open_debt_documents_by_statement(
         [
@@ -208,6 +290,44 @@ def test_statement_debt_resolver_closes_multiple_sales_by_one_payment() -> None:
     )
 
     assert [item.document_number for item in docs] == ["РТУ-3"]
+
+
+def test_statement_debt_resolver_does_not_mix_contracts() -> None:
+    docs = resolve_open_debt_documents_by_statement(
+        [
+            _statement_event(
+                "sale",
+                "sale-a-1",
+                "РТУ-A1",
+                datetime(2026, 6, 1, 10),
+                "1000.00",
+                contract_ref="contract-a",
+                contract_name="Договор A",
+            ),
+            _statement_event(
+                "payment",
+                "pko-b-1",
+                "ПКО-B1",
+                datetime(2026, 6, 1, 11),
+                "-1000.00",
+                contract_ref="contract-b",
+                contract_name="Договор B",
+            ),
+            _statement_event(
+                "sale",
+                "sale-a-2",
+                "РТУ-A2",
+                datetime(2026, 6, 2, 10),
+                "500.00",
+                contract_ref="contract-a",
+                contract_name="Договор A",
+            ),
+        ],
+        current_balance=Decimal("1500.00"),
+    )
+
+    assert [item.document_number for item in docs] == ["РТУ-A1", "РТУ-A2"]
+    assert {item.contract_ref for item in docs} == {"contract-a"}
 
 
 def test_statement_debt_resolver_skips_intermediate_non_matching_payment() -> None:
@@ -486,6 +606,53 @@ def test_folder_alias_treats_teply_stan_and_elektromir_as_equivalent() -> None:
     assert item["status"] == STATUS_OK
     assert item["current_folder_display_name"] == "04.Теплый Стан"
     assert item["recommended_folder_display_name"] == "04.Теплый Стан"
+
+
+def test_folder_alias_treats_shchelkovskaya_names_as_equivalent() -> None:
+    item = _build_item(
+        _snapshot(
+            "cp-shchelkovskaya",
+            counterparty_name="Клиент Щелковская",
+            balance="1200.00",
+            document_ref="doc-shchelkovskaya",
+            document_number="РТУ-Щ",
+            document_date=datetime(2026, 5, 1, 10, 0),
+            credit_depth_days=7,
+            is_overdue=True,
+            overdue_days=20,
+        ),
+        folder_row=CounterpartyFolderRow(
+            counterparty_ref="cp-shchelkovskaya",
+            counterparty_code="РБ000003",
+            counterparty_name="Клиент Щелковская",
+            current_folder_ref="folder-shchelkovskaya-old",
+            current_folder_name="12. Щелковская",
+        ),
+        document_row=SaleDocumentDepartmentRow(
+            document_ref="doc-shchelkovskaya",
+            document_department_ref="dep-shchelkovskaya",
+            document_department_name="МСК-033 Щелковская",
+            recommended_folder_ref="folder-shchelkovskaya",
+            recommended_folder_name="МСК-033 Щелковская",
+            document_responsible_ref=None,
+            document_responsible_name=None,
+            document_author_ref=None,
+            document_author_name=None,
+        ),
+        open_debt_documents=[
+            {
+                "document_ref": "doc-shchelkovskaya",
+                "document_number": "РТУ-Щ",
+                "document_date": datetime(2026, 5, 1, 10, 0),
+                "open_amount": Decimal("1200.00"),
+                "recommended_folder_name": "МСК-033 Щелковская",
+            }
+        ],
+    )
+
+    assert item["status"] == STATUS_OK
+    assert item["current_folder_display_name"] == "МСК-033 Щелковская"
+    assert item["recommended_folder_display_name"] == "МСК-033 Щелковская"
 
 
 def _seed_app_db(engine) -> None:

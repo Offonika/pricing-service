@@ -55,6 +55,20 @@ RECEIVABLE_DEPARTMENT_ALIAS_GROUPS = (
             }
         ),
     ),
+    ReceivableDepartmentAliasGroup(
+        key="shchelkovskaya",
+        canonical_display_name="МСК-033 Щелковская",
+        refs=frozenset(),
+        aliases=frozenset(
+            {
+                "12. Щелковская",
+                "12.Щелковская",
+                "Щелковская",
+                "МСК-033 Щелковская",
+                "МСК 033 Щелковская",
+            }
+        ),
+    ),
 )
 
 

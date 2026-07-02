@@ -8,12 +8,16 @@ import json
 from datetime import date
 from typing import Any
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.models import ReceivableBalanceSnapshot
 from app.services.counterparty_folder_recommendations import (
     build_counterparty_folder_recommendations,
+)
+from app.services.receivable_department_aliases import (
+    receivable_department_names_equivalent,
 )
 from app.services.receivable_workplace_cache import (
     cache_folder_recommendation_report,
@@ -34,12 +38,56 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="Also enrich open-debt documents from 1C while rebuilding the workplace cache.",
     )
+    parser.add_argument(
+        "--department-ref",
+        action="append",
+        default=[],
+        help="Limit open-debt cache rebuild to one department ref. Can be passed multiple times.",
+    )
+    parser.add_argument(
+        "--department-name",
+        action="append",
+        default=[],
+        help="Limit open-debt cache rebuild to departments matching this visible name/alias.",
+    )
     parser.add_argument("--json", action="store_true", help="Print machine-readable summary.")
     return parser.parse_args()
 
 
 def _engine(url: str):
     return create_engine(url, pool_pre_ping=True)
+
+
+def _resolve_department_refs(
+    session: Session,
+    *,
+    snapshot_date: date,
+    department_refs: list[str],
+    department_names: list[str],
+) -> list[str]:
+    resolved = {str(value or "").strip() for value in department_refs if str(value or "").strip()}
+    if not department_names:
+        return sorted(resolved)
+    rows = session.execute(
+        select(
+            ReceivableBalanceSnapshot.department_ref,
+            ReceivableBalanceSnapshot.department_name,
+        ).where(
+            ReceivableBalanceSnapshot.snapshot_date == snapshot_date,
+            ReceivableBalanceSnapshot.department_ref.is_not(None),
+        )
+    ).all()
+    matched_names: set[str] = set()
+    for requested_name in department_names:
+        for department_ref, department_name in rows:
+            if receivable_department_names_equivalent(requested_name, department_name):
+                if department_ref:
+                    resolved.add(str(department_ref).strip())
+                matched_names.add(requested_name)
+    missing = [name for name in department_names if name not in matched_names]
+    if missing:
+        raise RuntimeError(f"Department names not found for {snapshot_date.isoformat()}: {missing}")
+    return sorted(resolved)
 
 
 def main() -> int:
@@ -61,11 +109,18 @@ def main() -> int:
     summary: dict[str, Any] = {"snapshot_date": snapshot_date.isoformat()}
     try:
         with Session(db_engine) as session:
+            department_refs = _resolve_department_refs(
+                session,
+                snapshot_date=snapshot_date,
+                department_refs=list(args.department_ref or []),
+                department_names=list(args.department_name or []),
+            )
             open_debt_summary = rebuild_open_debt_cache(
                 session,
                 snapshot_date=snapshot_date,
                 onec_engine=onec_engine,
                 include_onec_enrichment=bool(args.include_onec_open_debt),
+                department_refs=department_refs or None,
             )
             summary["open_debt"] = {
                 **open_debt_summary,
@@ -73,6 +128,13 @@ def main() -> int:
                 "computed_at": open_debt_summary["computed_at"].isoformat(),
             }
             if not args.skip_folders:
+                if department_refs:
+                    summary["folder_recommendations"] = {
+                        "skipped": "department_scope_open_debt_only",
+                        "reason": "partial department rebuild must not overwrite global folder cache",
+                    }
+                    session.commit()
+                    return _print_summary(args=args, summary=summary)
                 if onec_engine is None:
                     raise RuntimeError("ONEC_DATABASE_URL is required for folder cache rebuild")
                 report = build_counterparty_folder_recommendations(
@@ -96,6 +158,10 @@ def main() -> int:
         if onec_engine is not None:
             onec_engine.dispose()
 
+    return _print_summary(args=args, summary=summary)
+
+
+def _print_summary(*, args: argparse.Namespace, summary: dict[str, Any]) -> int:
     if args.json:
         print(json.dumps(summary, ensure_ascii=False, indent=2, sort_keys=True))
     else:

@@ -1895,7 +1895,7 @@ def _fetch_open_debt_managers_from_onec(
     manager_ref_expr = _hex_ref_expr("sale._Fld4950RRef", dialect_name=dialect_name)
     sale_tref_expr = "0x000000CB" if dialect_name == "mssql" else ":sale_tref"
     open_debt_managers: dict[str, tuple[str | None, str | None]] = {}
-    chunk_size = 1
+    chunk_size = 100
 
     with onec_engine.connect() as conn:
         for offset in range(0, len(refs), chunk_size):

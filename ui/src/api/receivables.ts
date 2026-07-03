@@ -151,6 +151,7 @@ export interface CounterpartyFolderRecommendation {
   snapshot_department_name?: string | null;
   snapshot_department_display_name?: string | null;
   debt_document_number?: string | null;
+  debt_document_date?: string | null;
   effective_overdue_days?: number | null;
   status: string;
   review_reason?: string | null;

@@ -454,20 +454,16 @@ function FolderRecommendations({
             <th>Клиент</th>
             <th>Текущая папка</th>
             <th>Рекомендованная папка</th>
-            <th>Подразделение долга</th>
+            <th>Долгообразующая накладная</th>
             <th>Долг</th>
             <th>Статус</th>
           </tr>
         </thead>
         <tbody>
           {items.map((item) => {
-            const departmentName =
-              item.debt_department_display_name ||
-              item.debt_department_name ||
-              item.snapshot_department_display_name ||
-              item.snapshot_department_name ||
-              "";
-            const departmentTitle = item.debt_department_name || item.snapshot_department_name || "";
+            const debtDocument = [item.debt_document_number, formatDate(item.debt_document_date)]
+              .filter(Boolean)
+              .join(" от ");
             return (
               <tr key={item.counterparty_ref}>
                 <td className="mono">{item.counterparty_code || ""}</td>
@@ -478,7 +474,7 @@ function FolderRecommendations({
                 <td title={item.recommended_folder_name || ""}>
                   {item.recommended_folder_display_name || item.recommended_folder_name || ""}
                 </td>
-                <td title={departmentTitle}>{departmentName}</td>
+                <td className="mono">{debtDocument}</td>
                 <td>{formatMoney(item.current_balance)}</td>
                 <td>{item.status}</td>
               </tr>

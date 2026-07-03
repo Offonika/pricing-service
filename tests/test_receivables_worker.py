@@ -721,7 +721,6 @@ def test_canonical_summary_uses_full_mutual_statement_register() -> None:
     assert "r._Period >= p.period" in source
     assert "r._Fld7621" not in source
     assert "_AccumRg7614" not in source
-    assert "_fetch_open_debt_managers_from_onec" in source
 
 
 def test_open_debt_manager_uses_sale_that_opened_current_positive_balance() -> None:

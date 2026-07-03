@@ -2113,26 +2113,6 @@ def _fetch_canonical_summary_current_balance_rows_from_onec(
                 )
             )
 
-    open_debt_managers = _fetch_open_debt_managers_from_onec(
-        onec_engine,
-        counterparty_refs=[row.counterparty_ref for row in rows if row.current_balance > 0],
-        movement_end=movement_end,
-    )
-    if open_debt_managers:
-        rows = [
-            AuthoritativeReceivableBalanceRow(
-                counterparty_ref=row.counterparty_ref,
-                counterparty_name=row.counterparty_name,
-                current_balance=row.current_balance,
-                current_manager_ref=open_debt_managers.get(row.counterparty_ref, (None, None))[0]
-                or row.current_manager_ref,
-                current_manager_name=open_debt_managers.get(row.counterparty_ref, (None, None))[1]
-                or row.current_manager_name,
-                source=row.source,
-            )
-            for row in rows
-        ]
-
     meta = {
         "regular_current_override_count": 0,
         "current_import_override_count": 0,

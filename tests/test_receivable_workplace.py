@@ -654,6 +654,37 @@ def test_receivable_workplace_excludes_couriers_from_staff_options(
     assert [staff.staff_ref for staff in result.payload[0].staff_options] == ["staff-1"]
 
 
+def test_receivable_workplace_staff_options_allow_active_staff_without_role(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 6, 23)
+    db_session.add_all(
+        [
+            _case(snapshot_date=as_of),
+            _staff_member(
+                external_ref="staff-without-role",
+                full_name="Тюрнин Вадим Владимирович",
+                role_code=None,
+                role_name=None,
+                department_ref="staff-gorbushkin-dvor",
+                department_name="Техномолл «Горбушкин Двор»",
+            ),
+            _staff_member(
+                external_ref="courier-without-role",
+                full_name="Сотрудник горбушки",
+                role_code=None,
+                role_name=None,
+                department_ref="courier-dep",
+                department_name="Курьеры",
+            ),
+        ]
+    )
+
+    result = build_receivable_workplace(db_session, snapshot_date=as_of)
+
+    assert [staff.staff_ref for staff in result.payload[0].staff_options] == ["staff-without-role"]
+
+
 def test_receivable_workplace_staff_options_use_teply_stan_equivalent_refs_and_roles(
     db_session: Session,
 ) -> None:

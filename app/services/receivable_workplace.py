@@ -328,8 +328,11 @@ def _load_staff_options(session: Session) -> list[StaffMember]:
 
 def _staff_is_courier(staff: StaffMember) -> bool:
     values = (
+        _normalize_name(staff.full_name),
         _normalize_name(staff.role_code),
         _normalize_name(staff.role_name),
+        _normalize_name(staff.department_name),
+        _normalize_name(staff.store_name),
     )
     courier_markers = ("курьер", "courier", "kurer")
     return any(marker in value for value in values for marker in courier_markers)
@@ -342,6 +345,8 @@ def _staff_role_allowed_for_contact(staff: StaffMember) -> bool:
         _normalize_name(staff.role_code),
         _normalize_name(staff.role_name),
     )
+    if not any(values):
+        return True
     allowed_markers = (
         "менедж",
         "manager",

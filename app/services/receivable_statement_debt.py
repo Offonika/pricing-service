@@ -15,7 +15,7 @@ STATEMENT_RULE_RETURN_RKO_WITHOUT_PKO_REVIEW = "statement_return_rko_without_pko
 
 DIRECT_PAYMENT_TOLERANCE = Decimal("50.00")
 MULTI_SALE_PAYMENT_TOLERANCE = Decimal("100.00")
-SAFE_BALANCE_TOLERANCE = Decimal("100.00")
+SAFE_BALANCE_TOLERANCE = Decimal("2000.00")
 NEARBY_PAYMENT_ROW_WINDOW = 7
 MULTI_SALE_ROW_WINDOW = 7
 
@@ -431,11 +431,15 @@ def _last_safe_balance_row(
     }
     last_safe_row: int | None = None
     for row_index, balance_after in enumerate(balances_after):
+        if row_index == len(balances_after) - 1:
+            continue
         if row_index in blocked_rows:
             continue
         if not Decimal("0.00") <= balance_after <= SAFE_BALANCE_TOLERANCE:
             continue
         payment = payment_by_row.get(row_index)
+        if payment is None and balance_after > Decimal("0.00"):
+            continue
         if payment is not None and _closing_belongs_to_following_sale(
             closing=payment,
             sale_layers=sale_layers,
@@ -553,7 +557,20 @@ def resolve_open_debt_documents_by_statement(
             )
         )
     if documents:
-        return sorted(documents, key=lambda item: (item.document_date, item.document_ref))
+        sorted_documents = sorted(
+            documents, key=lambda item: (item.document_date, item.document_ref)
+        )
+        total_open = _money(
+            sum((document.open_amount for document in sorted_documents), Decimal("0.00"))
+        )
+        if total_open <= _money(current_balance) + MULTI_SALE_PAYMENT_TOLERANCE:
+            return sorted_documents
+        return _resolve_open_debt_documents_by_statement_group(
+            events,
+            current_balance=_money(current_balance),
+            structure_checks=structure_checks,
+            ref_key=ref_key,
+        )
     if _money(current_balance) <= Decimal("0.00"):
         return []
     return _resolve_open_debt_documents_by_statement_group(

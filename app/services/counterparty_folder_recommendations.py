@@ -41,6 +41,7 @@ PAYMENT_TERM_SOURCE_FALLBACK = "fallback_7_days_read_only"
 STRUCTURE_CANDIDATE_OLDEST_SALES_PER_COUNTERPARTY = 20
 STRUCTURE_CANDIDATE_AFTER_ORIGIN_SALES_PER_COUNTERPARTY = 40
 STRUCTURE_CANDIDATE_LATEST_SALES_PER_COUNTERPARTY = 60
+ONEC_OPEN_DEBT_STATEMENT_CHUNK_SIZE = 100
 
 STATUS_SORT_ORDER = {
     STATUS_MOVE_RECOMMENDED: 0,
@@ -513,6 +514,234 @@ def fetch_counterparty_ledger_statement_events(
     return rows_by_counterparty
 
 
+def _onec_statement_window_start(snapshot_date: date) -> date:
+    month_start = date(snapshot_date.year, snapshot_date.month, 1)
+    previous_month = month_start - timedelta(days=1)
+    return date(previous_month.year, previous_month.month, 1)
+
+
+def _statement_event_type_from_onec_row(row: dict[str, Any]) -> str:
+    recorder_tref = _normalize_ref(row.get("recorder_tref")).casefold()
+    amount = Decimal(row.get("amount_delta") or 0)
+    if recorder_tref == "0x000000cb" and amount > Decimal("0"):
+        return "sale"
+    if recorder_tref == "0x0000006d" and amount < Decimal("0"):
+        return "return"
+    if recorder_tref in {"0x000000c4", "0x000000ba", "0x000000a9"} and amount < Decimal("0"):
+        return "payment"
+    if recorder_tref == "0x000000c9" and amount < Decimal("0"):
+        return "settlement"
+    return "debt_adjustment"
+
+
+def fetch_counterparty_onec_statement_events(
+    onec_engine,
+    *,
+    counterparty_refs: Sequence[str],
+    snapshot_date: date,
+) -> dict[str, list[ReceivableStatementEvent]]:
+    refs = sorted({_normalize_ref(value) for value in counterparty_refs if _normalize_ref(value)})
+    if not refs:
+        return {}
+
+    dialect_name = onec_engine.dialect.name
+    if dialect_name != "mssql":
+        return {}
+
+    nolock = _with_nolock(dialect_name=dialect_name)
+    counterparty_ref_expr = _hex_ref_expr("cp._IDRRef", dialect_name=dialect_name)
+    manager_ref_expr = _hex_ref_expr("manager._IDRRef", dialect_name=dialect_name)
+    recorder_tref_expr = _hex_ref_expr("r._RecorderTRef", dialect_name=dialect_name)
+    recorder_ref_expr = _hex_ref_expr("r._RecorderRRef", dialect_name=dialect_name)
+    opening_date = _onec_statement_window_start(snapshot_date)
+    window_start = datetime.combine(opening_date, time.min)
+    window_end = datetime.combine(snapshot_date + timedelta(days=1), time.min)
+
+    rows_by_counterparty: dict[str, list[ReceivableStatementEvent]] = {}
+    with onec_engine.connect() as conn:
+        for chunk in _chunked(refs, size=ONEC_OPEN_DEBT_STATEMENT_CHUNK_SIZE):
+            where_clause, _ = _build_ref_filter_clause(
+                dialect_name=dialect_name,
+                refs=chunk,
+                column_name="source_rows.counterparty_rref",
+                prefix="counterparty_ref",
+            )
+            event_where_clause, _ = _build_ref_filter_clause(
+                dialect_name=dialect_name,
+                refs=chunk,
+                column_name="r._Fld7006RRef",
+                prefix="event_counterparty_ref",
+            )
+            stmt = text(f"""
+                WITH
+                latest_opening_period AS (
+                    SELECT MAX(t._Period) AS period
+                    FROM _AccumRgT7009 AS t {nolock}
+                    WHERE t._Period <= :window_start
+                ),
+                opening_source_rows AS (
+                    SELECT
+                        t._Fld7006RRef AS counterparty_rref,
+                        SUM(CAST(t._Fld7008 AS decimal(18, 2))) AS amount
+                    FROM _AccumRgT7009 AS t {nolock}
+                    JOIN latest_opening_period AS p
+                        ON t._Period = p.period
+                    WHERE t._Fld7006RRef <> 0x00000000000000000000000000000000
+                    GROUP BY t._Fld7006RRef
+
+                    UNION ALL
+
+                    SELECT
+                        r._Fld7006RRef AS counterparty_rref,
+                        SUM(
+                            CAST(
+                                CASE
+                                    WHEN r._RecordKind = 0 THEN r._Fld7008
+                                    ELSE -r._Fld7008
+                                END AS decimal(18, 2)
+                            )
+                        ) AS amount
+                    FROM _AccumRg7002 AS r {nolock}
+                    CROSS JOIN latest_opening_period AS p
+                    WHERE r._Active = 0x01
+                      AND r._Fld7006RRef <> 0x00000000000000000000000000000000
+                      AND r._Period >= p.period
+                      AND r._Period < :window_start
+                    GROUP BY r._Fld7006RRef
+                ),
+                opening_rows AS (
+                    SELECT
+                        source_rows.counterparty_rref,
+                        SUM(source_rows.amount) AS amount
+                    FROM opening_source_rows AS source_rows
+                    WHERE {where_clause}
+                    GROUP BY source_rows.counterparty_rref
+                    HAVING SUM(source_rows.amount) <> 0
+                )
+                SELECT
+                    {counterparty_ref_expr} AS counterparty_ref,
+                    CAST('opening_balance' AS nvarchar(32)) AS event_type,
+                    CAST(
+                        'opening-7002|'
+                        + CONVERT(nvarchar(10), CAST(:window_start AS date), 23)
+                        + '|'
+                        + {counterparty_ref_expr}
+                        AS nvarchar(128)
+                    ) AS document_ref,
+                    CAST(
+                        N'Остаток на '
+                        + CONVERT(nvarchar(10), CAST(:window_start AS date), 23)
+                        AS nvarchar(64)
+                    ) AS document_number,
+                    CAST(:window_start AS datetime) AS document_date,
+                    CAST(opening_rows.amount AS decimal(18, 2)) AS amount_delta,
+                    CAST(NULL AS int) AS line_no,
+                    CAST(NULL AS nvarchar(64)) AS recorder_tref,
+                    CAST(NULL AS nvarchar(64)) AS manager_ref,
+                    CAST(NULL AS nvarchar(255)) AS manager_name
+                FROM opening_rows
+                JOIN _Reference54 AS cp {nolock}
+                    ON cp._IDRRef = opening_rows.counterparty_rref
+
+                UNION ALL
+
+                SELECT
+                    {counterparty_ref_expr} AS counterparty_ref,
+                    CAST('movement' AS nvarchar(32)) AS event_type,
+                    {recorder_ref_expr} AS document_ref,
+                    COALESCE(
+                        sale._Number,
+                        ret._Number,
+                        pko._Number,
+                        settlement._Number,
+                        doc186._Number,
+                        doc169._Number
+                    ) AS document_number,
+                    COALESCE(
+                        sale._Date_Time,
+                        ret._Date_Time,
+                        pko._Date_Time,
+                        settlement._Date_Time,
+                        doc186._Date_Time,
+                        doc169._Date_Time,
+                        r._Period
+                    ) AS document_date,
+                    CAST(
+                        CASE
+                            WHEN r._RecordKind = 0 THEN r._Fld7008
+                            ELSE -r._Fld7008
+                        END AS decimal(18, 2)
+                    ) AS amount_delta,
+                    CAST(r._LineNo AS int) AS line_no,
+                    {recorder_tref_expr} AS recorder_tref,
+                    {manager_ref_expr} AS manager_ref,
+                    manager._Description AS manager_name
+                FROM _AccumRg7002 AS r {nolock}
+                JOIN _Reference54 AS cp {nolock}
+                    ON cp._IDRRef = r._Fld7006RRef
+                LEFT JOIN _Document203 AS sale {nolock}
+                    ON r._RecorderTRef = 0x000000CB
+                   AND sale._IDRRef = r._RecorderRRef
+                LEFT JOIN _Document109 AS ret {nolock}
+                    ON r._RecorderTRef = 0x0000006D
+                   AND ret._IDRRef = r._RecorderRRef
+                LEFT JOIN _Document196 AS pko {nolock}
+                    ON r._RecorderTRef = 0x000000C4
+                   AND pko._IDRRef = r._RecorderRRef
+                LEFT JOIN _Document201 AS settlement {nolock}
+                    ON r._RecorderTRef = 0x000000C9
+                   AND settlement._IDRRef = r._RecorderRRef
+                LEFT JOIN _Document186 AS doc186 {nolock}
+                    ON r._RecorderTRef = 0x000000BA
+                   AND doc186._IDRRef = r._RecorderRRef
+                LEFT JOIN _Document169 AS doc169 {nolock}
+                    ON r._RecorderTRef = 0x000000A9
+                   AND doc169._IDRRef = r._RecorderRRef
+                LEFT JOIN _Document203 AS pko_base_sale {nolock}
+                    ON pko._Fld4697_RTRef = 0x000000CB
+                   AND pko_base_sale._IDRRef = pko._Fld4697_RRRef
+                LEFT JOIN _Reference69 AS manager {nolock}
+                    ON manager._IDRRef = COALESCE(sale._Fld4950RRef, pko_base_sale._Fld4950RRef)
+                WHERE r._Active = 0x01
+                  AND r._Period >= :window_start
+                  AND r._Period < :window_end
+                  AND {event_where_clause}
+                ORDER BY
+                    counterparty_ref,
+                    document_date,
+                    line_no,
+                    document_ref
+            """)
+            params = {
+                "window_start": window_start,
+                "window_end": window_end,
+            }
+            for row in conn.execute(stmt, params).mappings():
+                counterparty_ref = _normalize_ref(row.get("counterparty_ref"))
+                document_ref = _normalize_ref(row.get("document_ref"))
+                document_date = _coerce_datetime(row.get("document_date"))
+                if not counterparty_ref or not document_ref or document_date is None:
+                    continue
+                event_type = _normalize_ref(row.get("event_type"))
+                if event_type == "movement":
+                    event_type = _statement_event_type_from_onec_row(dict(row))
+                rows_by_counterparty.setdefault(_ref_key(counterparty_ref), []).append(
+                    ReceivableStatementEvent(
+                        counterparty_ref=counterparty_ref,
+                        event_type=event_type,
+                        document_ref=document_ref,
+                        document_number=_normalize_ref(row.get("document_number")) or None,
+                        document_date=document_date,
+                        amount_delta=Decimal(row.get("amount_delta") or 0),
+                        manager_ref=_normalize_ref(row.get("manager_ref")) or None,
+                        manager_name=_normalize_ref(row.get("manager_name")) or None,
+                        line_no=row.get("line_no"),
+                        source_layer="onec_canonical_mutual_statement_7002",
+                    )
+                )
+    return rows_by_counterparty
+
+
 def _review_reason(
     *,
     debt_document_ref: str | None,
@@ -956,6 +1185,19 @@ def build_open_debt_documents_by_counterparty(
         }
     )
     should_enrich_from_onec = include_onec_enrichment and onec_engine is not None
+    if should_enrich_from_onec:
+        onec_statement_events_by_counterparty = fetch_counterparty_onec_statement_events(
+            onec_engine,
+            counterparty_refs=structure_candidate_refs,
+            snapshot_date=snapshot_date,
+        )
+        for counterparty_key, onec_events in onec_statement_events_by_counterparty.items():
+            has_sale_documents = any(
+                event.event_type == "sale" and event.amount_delta > Decimal("0")
+                for event in onec_events
+            )
+            if has_sale_documents:
+                statement_events_by_counterparty[counterparty_key] = onec_events
     if should_enrich_from_onec and origin_document_refs:
         document_departments.update(
             fetch_sale_document_departments(

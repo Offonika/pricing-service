@@ -391,6 +391,53 @@ def test_statement_debt_resolver_uses_last_safe_balance_segment() -> None:
     assert docs[0].statement_segment_end_row == 3
 
 
+def test_statement_debt_resolver_uses_low_residual_after_large_payment_as_segment() -> None:
+    docs = resolve_open_debt_documents_by_statement(
+        [
+            _statement_event(
+                "opening_balance",
+                "opening-1",
+                "Остаток",
+                datetime(2026, 6, 1),
+                "241750.00",
+            ),
+            _statement_event(
+                "sale",
+                "old-sale",
+                "СТАРАЯ-РТУ",
+                datetime(2026, 6, 20, 10),
+                "5000.00",
+            ),
+            _statement_event(
+                "payment",
+                "large-pko",
+                "ПКО-КРУПНЫЙ",
+                datetime(2026, 6, 21, 19, 41),
+                "-245210.00",
+            ),
+            _statement_event(
+                "sale",
+                "sale-1",
+                "РТУ-1",
+                datetime(2026, 6, 22, 10),
+                "1500.00",
+            ),
+            _statement_event(
+                "sale",
+                "sale-2",
+                "РТУ-2",
+                datetime(2026, 6, 22, 11),
+                "2500.00",
+            ),
+        ],
+        current_balance=Decimal("5540.00"),
+    )
+
+    assert [item.document_number for item in docs] == ["РТУ-1", "РТУ-2"]
+    assert docs[0].statement_balance_after == Decimal("3040.00")
+    assert docs[0].statement_segment_start_row == 4
+
+
 def test_statement_debt_resolver_does_not_cut_segment_when_payment_belongs_to_next_sale() -> None:
     docs = resolve_open_debt_documents_by_statement(
         [
@@ -403,6 +450,44 @@ def test_statement_debt_resolver_does_not_cut_segment_when_payment_belongs_to_ne
 
     assert [item.document_number for item in docs] == ["РТУ-2"]
     assert docs[0].statement_segment_start_row == 1
+
+
+def test_statement_debt_resolver_caps_grouped_documents_to_current_balance() -> None:
+    docs = resolve_open_debt_documents_by_statement(
+        [
+            _statement_event(
+                "sale",
+                "sale-a-1",
+                "РТУ-A1",
+                datetime(2026, 6, 1, 10),
+                "1000.00",
+                contract_ref="contract-a",
+                contract_name="Договор A",
+            ),
+            _statement_event(
+                "sale",
+                "sale-b-1",
+                "РТУ-B1",
+                datetime(2026, 6, 2, 10),
+                "1000.00",
+                contract_ref="contract-b",
+                contract_name="Договор B",
+            ),
+            _statement_event(
+                "sale",
+                "sale-a-2",
+                "РТУ-A2",
+                datetime(2026, 6, 3, 10),
+                "1000.00",
+                contract_ref="contract-a",
+                contract_name="Договор A",
+            ),
+        ],
+        current_balance=Decimal("1000.00"),
+    )
+
+    assert [item.document_number for item in docs] == ["РТУ-A2"]
+    assert sum((item.open_amount for item in docs), Decimal("0.00")) == Decimal("1000.00")
 
 
 def test_statement_debt_resolver_does_not_double_apply_structure_linked_payment() -> None:

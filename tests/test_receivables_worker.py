@@ -717,6 +717,8 @@ def test_canonical_summary_uses_full_mutual_statement_register() -> None:
     assert "_AccumRgT7009" in source
     assert "_AccumRg7002" in source
     assert "r._Fld7008" in source
+    assert "CROSS JOIN latest_opening_period AS p" in source
+    assert "r._Period >= p.period" in source
     assert "r._Fld7621" not in source
     assert "_AccumRg7614" not in source
     assert "_fetch_open_debt_managers_from_onec" in source

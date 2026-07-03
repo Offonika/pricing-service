@@ -1972,7 +1972,6 @@ def _fetch_canonical_summary_current_balance_rows_from_onec(
     """Build one signed balance per counterparty from the 1C mutual-settlement summary."""
 
     opening_cutoff = date(snapshot_date.year, snapshot_date.month, 1)
-    movement_start = datetime.combine(opening_cutoff, time.min)
     movement_end = datetime.combine(snapshot_date + timedelta(days=1), time.min)
 
     stmt = text("""
@@ -2008,9 +2007,10 @@ def _fetch_canonical_summary_current_balance_rows_from_onec(
                     )
                 ) AS amount
             FROM _AccumRg7002 AS r WITH (NOLOCK)
+            CROSS JOIN latest_opening_period AS p
             WHERE r._Active = 0x01
               AND r._Fld7006RRef <> 0x00000000000000000000000000000000
-              AND r._Period >= :movement_start
+              AND r._Period >= p.period
               AND r._Period < :movement_end
             GROUP BY
                 r._Fld7006RRef
@@ -2080,7 +2080,6 @@ def _fetch_canonical_summary_current_balance_rows_from_onec(
         """)
     params = {
         "opening_cutoff": datetime.combine(opening_cutoff, time.min),
-        "movement_start": movement_start,
         "movement_end": movement_end,
     }
 

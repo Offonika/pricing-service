@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from app.api import bitrix_executive_dashboard as executive_dashboard_page
 from app.api.dependencies import get_db
 from app.core.config import Settings
 from app.main import app
@@ -21,6 +22,7 @@ from app.models import (
 )
 from app.services import bitrix_executive_dashboard_auth, executive_dashboard
 from app.services.executive_dashboard import (
+    _resolve_shared_path,
     build_executive_actions_response,
     build_executive_cashflow_period_response,
     build_executive_dashboard,
@@ -626,6 +628,86 @@ def test_dashboard_marks_missing_finance_sources_without_zero_truth(
     assert blocks["debtors"].metrics[0].value == Decimal("12500.00")
     assert blocks["debtors"].drilldown_url == "/bitrix/receivables/?date=2026-06-27"
     assert blocks["receivables_control"].source_status == "partial"
+
+
+def test_dashboard_accepts_yesterday_within_configured_lag(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _override_settings(monkeypatch, _settings(tmp_path / "missing.json"))
+    db_session.add_all(
+        [
+            _receivable_case(date(2026, 6, 27)),
+            _folder_cache(date(2026, 6, 27)),
+        ]
+    )
+    db_session.commit()
+
+    result = build_executive_dashboard(
+        db_session,
+        requested_date=date(2026, 6, 28),
+        access_level="full",
+    )
+
+    blocks = {block.key: block for block in result.blocks}
+    assert blocks["debtors"].source_status == "ready"
+    assert blocks["debtors"].freshness_status == "fresh"
+    assert blocks["receivables_control"].source_status == "ready"
+    assert blocks["receivables_control"].freshness_status == "fresh"
+
+
+def test_executive_dashboard_page_serves_release_local_ui(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    index_path = tmp_path / "index.html"
+    index_path.write_text(
+        '<!doctype html><html><head><script src="./assets/app.js"></script></head><body></body></html>',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(executive_dashboard_page, "_INDEX_PATHS", (index_path,))
+
+    response = client.get("/bitrix/executive-dashboard/")
+
+    assert response.status_code == 200
+    assert 'src="/assets/app.js"' in response.text
+
+
+def test_executive_dashboard_page_returns_503_without_release_ui(
+    client: TestClient,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        executive_dashboard_page,
+        "_INDEX_PATHS",
+        (tmp_path / "missing-index.html",),
+    )
+
+    response = client.get("/bitrix/executive-dashboard/")
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Executive dashboard UI is not built"
+
+
+def test_shared_snapshot_path_is_resolved_from_workspace_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_root = tmp_path / "workspace"
+    snapshot_path = workspace_root / "mm-compensation" / "build" / "snapshot.json"
+    snapshot_path.parent.mkdir(parents=True)
+    snapshot_path.write_text("{}", encoding="utf-8")
+    release_root = tmp_path / "releases" / "pricing-service" / "release-1"
+    release_root.mkdir(parents=True)
+    monkeypatch.chdir(release_root)
+    monkeypatch.setenv("MM_WORKSPACE_ROOT", str(workspace_root))
+
+    resolved = _resolve_shared_path("../mm-compensation/build/snapshot.json")
+
+    assert resolved == snapshot_path
 
 
 def test_profit_loss_block_reads_sales_kpi(
@@ -1352,6 +1434,25 @@ def test_cashflow_period_api_returns_money_for_finance_role(
     assert payload["totals"]["external_net_amount"] == "600.00"
     assert payload["totals"]["quality_issue_count"] == 3
     assert payload["quality_issues"][0]["issue_label"] == "Документ без статьи ДДС"
+
+
+def test_cashflow_period_marks_partial_cache_coverage_as_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path / "finance_snapshot.json")
+    _write_cashflow_period_cache(tmp_path / "cashflow_period_cache.json")
+    _override_settings(monkeypatch, settings)
+
+    result = build_executive_cashflow_period_response(
+        date_from=date(2026, 6, 27),
+        date_to=date(2026, 7, 1),
+    )
+
+    assert result.daily
+    assert result.source_status == "stale"
+    assert result.freshness_status == "stale"
+    assert "выходит за кэш" in (result.note or "")
 
 
 def test_actions_api_forbids_foreign_domain_for_role_policy(

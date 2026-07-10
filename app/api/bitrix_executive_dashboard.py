@@ -4,7 +4,7 @@ import json
 import urllib.parse
 from pathlib import Path
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from app.core.config import get_settings
@@ -23,17 +23,14 @@ from app.services.bitrix_executive_dashboard_auth import (
 router = APIRouter()
 page_router = APIRouter()
 
-_INDEX_PATHS = (
-    Path(__file__).resolve().parents[2] / "ui" / "dist" / "index.html",
-    Path("/var/www/pricing-service/index.html"),
-)
+_INDEX_PATHS = (Path(__file__).resolve().parents[2] / "ui" / "dist" / "index.html",)
 
 
 def _read_index() -> str:
     for path in _INDEX_PATHS:
         if path.exists():
             return _rewrite_index_asset_paths(path.read_text(encoding="utf-8"))
-    return "<!doctype html><html><body>Executive dashboard UI is not built</body></html>"
+    raise HTTPException(status_code=503, detail="Executive dashboard UI is not built")
 
 
 def _rewrite_index_asset_paths(index_html: str) -> str:

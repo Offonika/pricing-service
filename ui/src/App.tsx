@@ -196,13 +196,17 @@ function LogisticsFallbackApp() {
   const [monitor, setMonitor] = useState<LogisticsMonitorItem[]>([]);
   const [message, setMessage] = useState("Загрузка...");
 
-  const refreshMonitor = async (effectiveWarehouseId?: string) => {
+  const refreshMonitorForWarehouse = useCallback(async (effectiveWarehouseId: string) => {
     const params = new URLSearchParams();
-    const warehouse = effectiveWarehouseId || warehouseId;
-    if (warehouse) params.set("warehouse_id", warehouse);
+    if (effectiveWarehouseId) params.set("warehouse_id", effectiveWarehouseId);
     const data = await logisticsFetch<LogisticsMonitorItem[]>(`/monitor?${params.toString()}`);
     setMonitor(data);
-  };
+  }, []);
+
+  const refreshMonitor = useCallback(
+    () => refreshMonitorForWarehouse(warehouseId),
+    [refreshMonitorForWarehouse, warehouseId]
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -221,7 +225,7 @@ function LogisticsFallbackApp() {
         setDropoffWarehouseId(defaultWarehouse);
         setDriverId(String(driverData[0]?.id || ""));
         setMessage("");
-        return refreshMonitor(defaultWarehouse);
+        return refreshMonitorForWarehouse(defaultWarehouse);
       })
       .catch((error: unknown) => {
         if (!cancelled) setMessage(error instanceof Error ? error.message : "Нет web-сессии");
@@ -229,7 +233,7 @@ function LogisticsFallbackApp() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshMonitorForWarehouse]);
 
   const createDraft = async () => {
     try {

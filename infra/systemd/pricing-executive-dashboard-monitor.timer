@@ -1,0 +1,12 @@
+[Unit]
+Description=Run pricing-service executive dashboard live check every five minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+AccuracySec=30s
+Persistent=true
+Unit=pricing-executive-dashboard-monitor.service
+
+[Install]
+WantedBy=timers.target

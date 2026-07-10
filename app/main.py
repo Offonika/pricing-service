@@ -64,10 +64,7 @@ app = FastAPI(
     debug=settings.debug,
 )
 
-_UI_STATIC_ROOTS = (
-    Path(__file__).resolve().parents[1] / "ui" / "dist",
-    Path("/var/www/pricing-service"),
-)
+_UI_STATIC_ROOTS = (Path(__file__).resolve().parents[1] / "ui" / "dist",)
 
 for static_root in _UI_STATIC_ROOTS:
     assets_root = static_root / "assets"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -139,6 +140,47 @@ def _freshness_from_status(source_status: str) -> str:
     return "missing"
 
 
+def _freshness_for_date(
+    *,
+    requested_date: date,
+    source_as_of: date | datetime | None,
+    max_lag_days: int | None = None,
+) -> str:
+    if source_as_of is None:
+        return "missing"
+    source_date = source_as_of.date() if isinstance(source_as_of, datetime) else source_as_of
+    allowed_lag = (
+        get_settings().executive_dashboard_source_max_lag_days
+        if max_lag_days is None
+        else max(int(max_lag_days), 0)
+    )
+    lag_days = max((requested_date - source_date).days, 0)
+    return "fresh" if lag_days <= allowed_lag else "stale"
+
+
+def _apply_date_freshness(
+    source_status: str,
+    *,
+    requested_date: date,
+    source_as_of: date | datetime | None,
+    max_lag_days: int | None = None,
+) -> tuple[str, str]:
+    if source_status in {"source_missing", "source_error"}:
+        return source_status, _freshness_from_status(source_status)
+    freshness = _freshness_for_date(
+        requested_date=requested_date,
+        source_as_of=source_as_of,
+        max_lag_days=max_lag_days,
+    )
+    if freshness == "stale" and source_status == "ready":
+        return "stale", "stale"
+    if freshness == "missing":
+        return source_status, _freshness_from_status(source_status)
+    if source_status == "partial" and freshness == "fresh":
+        return "partial", "partial"
+    return source_status, freshness
+
+
 def _source_statuses(blocks: list[ExecutiveDashboardBlock]) -> tuple[str, str]:
     statuses = {block.source_status for block in blocks}
     if "source_error" in statuses:
@@ -164,11 +206,23 @@ def _source_key_allowed(source_key: str, access_context: ExecutiveDashboardAuthC
     return access_context.allows_block(finance_source_to_block.get(source_key, source_key))
 
 
-def _resolve_snapshot_path() -> Path:
-    configured = Path(get_settings().executive_dashboard_finance_snapshot_path)
+def _resolve_shared_path(configured_value: str) -> Path:
+    configured = Path(configured_value)
     if configured.is_absolute():
         return configured
-    return Path.cwd() / configured
+    cwd_candidate = Path.cwd() / configured
+    if cwd_candidate.exists():
+        return cwd_candidate
+    if configured.parts and configured.parts[0] == "..":
+        workspace_root = Path(os.getenv("MM_WORKSPACE_ROOT", "/opt/MM"))
+        workspace_candidate = workspace_root.joinpath(*configured.parts[1:])
+        if workspace_candidate.exists():
+            return workspace_candidate
+    return cwd_candidate
+
+
+def _resolve_snapshot_path() -> Path:
+    return _resolve_shared_path(get_settings().executive_dashboard_finance_snapshot_path)
 
 
 def _load_finance_snapshot() -> tuple[dict[str, Any] | None, str, str]:
@@ -185,10 +239,7 @@ def _load_finance_snapshot() -> tuple[dict[str, Any] | None, str, str]:
 
 
 def _resolve_cashflow_period_cache_path() -> Path:
-    configured = Path(get_settings().executive_dashboard_cashflow_period_cache_path)
-    if configured.is_absolute():
-        return configured
-    return Path.cwd() / configured
+    return _resolve_shared_path(get_settings().executive_dashboard_cashflow_period_cache_path)
 
 
 def _load_cashflow_period_cache() -> tuple[dict[str, Any] | None, str, str]:
@@ -205,10 +256,7 @@ def _load_cashflow_period_cache() -> tuple[dict[str, Any] | None, str, str]:
 
 
 def _resolve_warehouse_snapshot_path() -> Path:
-    configured = Path(get_settings().executive_dashboard_warehouse_snapshot_path)
-    if configured.is_absolute():
-        return configured
-    return Path.cwd() / configured
+    return _resolve_shared_path(get_settings().executive_dashboard_warehouse_snapshot_path)
 
 
 def _load_warehouse_snapshot() -> tuple[dict[str, Any] | None, str, str]:
@@ -258,6 +306,12 @@ def _profit_loss_expenses_from_cashflow_cache(
             "open_questions": [],
         }
 
+    cache_period = payload.get("period") if isinstance(payload.get("period"), dict) else {}
+    cache_from = _as_date(cache_period.get("date_from"))
+    cache_to = _as_date(cache_period.get("date_to"))
+    period_outside_cache = bool(
+        cache_from is None or cache_to is None or date_from < cache_from or date_to > cache_to
+    )
     rows_source = payload.get("rows") if isinstance(payload.get("rows"), list) else []
     rows = [
         row
@@ -407,17 +461,22 @@ def _profit_loss_expenses_from_cashflow_cache(
     expense_status = str(payload.get("source_status") or source_status or "ready")
     if expense_status == "ready" and (open_questions or review_count):
         expense_status = "partial"
+    if period_outside_cache:
+        expense_status = "stale"
 
     return {
         "source_status": expense_status,
-        "freshness_status": (
-            "partial"
-            if expense_status == "partial"
-            else str(payload.get("freshness_status") or _freshness_from_status(expense_status))
-        ),
+        "freshness_status": _freshness_from_status(expense_status),
         "note": (
             "Расходы определены по исходящим оплатам ДДС. "
             "Это cash-based управленческий срез, не бухгалтерское начисление."
+            + (
+                f" Запрошенный период выходит за кэш "
+                f"{cache_from.isoformat() if cache_from else '?'}.."
+                f"{cache_to.isoformat() if cache_to else '?'}."
+                if period_outside_cache
+                else ""
+            )
         ),
         "totals": {
             "operating_expenses": operating_expenses,
@@ -641,10 +700,11 @@ def _build_receivables_block(
         manager = row.current_manager_name or row.origin_manager_name or "Без ответственного"
         managers[manager] = managers.get(manager, Decimal("0")) + _decimal(row.current_balance)
 
-    source_status = "ready"
-    freshness_status = "fresh" if latest_date == requested_date else "stale"
-    if freshness_status == "stale":
-        source_status = "stale"
+    source_status, freshness_status = _apply_date_freshness(
+        "ready",
+        requested_date=requested_date,
+        source_as_of=latest_date,
+    )
     return ExecutiveDashboardBlock(
         key="debtors",
         title="Дебиторка покупателей",
@@ -754,12 +814,12 @@ def _build_receivables_control_block(
     folder_summary = folder_control["summary"]
     folder_needs_review = int(folder_summary.get("needs_review_count") or 0)
     folder_move_recommended = int(folder_summary.get("move_recommended_count") or 0)
-    source_status = "ready"
-    freshness_status = "fresh"
-    if latest_date != requested_date:
-        source_status = "stale"
-        freshness_status = "stale"
-    elif folder_control["source_status"] == "source_missing":
+    source_status, freshness_status = _apply_date_freshness(
+        "ready",
+        requested_date=requested_date,
+        source_as_of=latest_date,
+    )
+    if freshness_status == "fresh" and folder_control["source_status"] == "source_missing":
         source_status = "partial"
         freshness_status = "partial"
 
@@ -1328,7 +1388,11 @@ def build_executive_profit_loss_period_response(
         )
 
     latest_sales_date = max(row.sales_date for row in rows)
-    sales_source_status = "ready" if latest_sales_date >= date_to else "stale"
+    sales_source_status, _ = _apply_date_freshness(
+        "ready",
+        requested_date=date_to,
+        source_as_of=latest_sales_date,
+    )
     expense_data = _profit_loss_expenses_from_cashflow_cache(
         date_from=date_from,
         date_to=date_to,
@@ -2175,9 +2239,14 @@ def build_executive_cashflow_period_response(
     cache_from = _as_date(cache_period.get("date_from"))
     cache_to = _as_date(cache_period.get("date_to"))
     period_note = None
-    if cache_from and cache_to and (date_from < cache_from or date_to > cache_to):
+    period_outside_cache = bool(
+        cache_from is None or cache_to is None or date_from < cache_from or date_to > cache_to
+    )
+    if period_outside_cache:
         period_note = (
-            f"Запрошенный период выходит за кэш {cache_from.isoformat()}..{cache_to.isoformat()}."
+            "Запрошенный период выходит за кэш "
+            f"{cache_from.isoformat() if cache_from else '?'}.."
+            f"{cache_to.isoformat() if cache_to else '?'}."
         )
     if not rows and not period_note:
         period_note = "В кэше нет движений ДДС по выбранным фильтрам."
@@ -2198,14 +2267,17 @@ def build_executive_cashflow_period_response(
     effective_status = str(payload.get("source_status") or source_status or "ready")
     if not rows:
         effective_status = "source_missing" if effective_status == "ready" else effective_status
+    elif period_outside_cache:
+        effective_status = "stale"
+    effective_freshness = (
+        "stale" if period_outside_cache and rows else _freshness_from_status(effective_status)
+    )
     return ExecutiveCashflowPeriodResponse(
         date_from=date_from,
         date_to=date_to,
         generated_at=_as_datetime(payload.get("generated_at")),
         source_status=effective_status,
-        freshness_status=str(
-            payload.get("freshness_status") or _freshness_from_status(effective_status)
-        ),
+        freshness_status=effective_freshness,
         note=period_note or payload.get("note"),
         totals=totals,
         ratios=_cashflow_ratios(
@@ -2383,15 +2455,19 @@ def _source_freshness(
                 continue
             if not isinstance(item, dict):
                 continue
+            source_as_of = _as_datetime(item.get("as_of")) or _as_date(item.get("as_of"))
+            item_source_status, item_freshness_status = _apply_date_freshness(
+                str(item.get("source_status") or "source_missing"),
+                requested_date=requested_date,
+                source_as_of=source_as_of,
+                max_lag_days=item.get("max_lag_days"),
+            )
             statuses[str(key)] = ExecutiveSourceStatus(
                 source_key=str(key),
                 title=str(item.get("title") or key),
-                source_status=str(item.get("source_status") or "source_missing"),
-                freshness_status=str(
-                    item.get("freshness_status")
-                    or _freshness_from_status(str(item.get("source_status") or "source_missing"))
-                ),
-                as_of=_as_datetime(item.get("as_of")) or _as_date(item.get("as_of")),
+                source_status=item_source_status,
+                freshness_status=item_freshness_status,
+                as_of=source_as_of,
                 max_lag_days=item.get("max_lag_days"),
                 note=item.get("note"),
             )
@@ -2521,6 +2597,12 @@ def build_executive_dashboard(
                 block.summary["warehouse_snapshot_note"] = warehouse_note
 
     blocks = [block for block in blocks if context.allows_block(block.key)]
+    for block in blocks:
+        block.source_status, block.freshness_status = _apply_date_freshness(
+            block.source_status,
+            requested_date=requested_date,
+            source_as_of=block.as_of,
+        )
     freshness_status, source_status = _source_statuses(blocks)
     source_freshness = _source_freshness(
         session,

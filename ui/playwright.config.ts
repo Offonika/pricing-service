@@ -1,4 +1,15 @@
 import { defineConfig, devices } from "@playwright/test";
+
+const localNoProxy = new Set(
+  [process.env.NO_PROXY, process.env.no_proxy, "127.0.0.1", "localhost"]
+    .filter(Boolean)
+    .flatMap((value) => value!.split(","))
+    .map((value) => value.trim())
+    .filter(Boolean),
+);
+process.env.NO_PROXY = [...localNoProxy].join(",");
+process.env.no_proxy = process.env.NO_PROXY;
+
 export default defineConfig({
   testDir: "./tests",
   outputDir: "../.local/design-qa/pricing-ui/test-results",

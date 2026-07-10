@@ -15270,6 +15270,13 @@ components:
         current_status_label:
           type: string
           title: Current Status Label
+        kind:
+          type: string
+          title: Kind
+          default: lifecycle
+        filter_status:
+          type: string
+          title: Filter Status
         reason:
           type: string
           title: Reason
@@ -15288,6 +15295,7 @@ components:
       - product_name
       - current_status
       - current_status_label
+      - filter_status
       - reason
       - recommendation
       - deadline_label
@@ -15320,6 +15328,19 @@ components:
           - type: string
           - type: 'null'
           title: Target Status
+        action_breakdown:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Action Breakdown
+        ready_count:
+          type: integer
+          title: Ready Count
+          default: 0
+        blocked_count:
+          type: integer
+          title: Blocked Count
+          default: 0
         review_count:
           type: integer
           title: Review Count
@@ -15381,6 +15402,11 @@ components:
             $ref: '#/components/schemas/ProcurementDashboardAttentionItem'
           type: array
           title: Attention
+        manual_attention:
+          items:
+            $ref: '#/components/schemas/ProcurementDashboardAttentionItem'
+          type: array
+          title: Manual Attention
       type: object
       required:
       - folder

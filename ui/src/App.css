@@ -4674,7 +4674,7 @@
   position: relative;
   display: grid;
   gap: 10px;
-  min-height: 106px;
+  min-height: 122px;
   padding: 15px;
   overflow: hidden;
   border: 1px solid #dce4ee;
@@ -4743,6 +4743,27 @@
   cursor: default;
 }
 
+.lifecycle-card__targets {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.lifecycle-card__targets span {
+  padding: 4px 7px;
+  border-radius: 6px;
+  background: #f2f6fb;
+  color: #52627a;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.lifecycle-card__blockers {
+  color: #b02b37;
+  font-size: 10px;
+  font-weight: 800;
+}
+
 .manual-status-grid {
   display: grid;
   grid-template-columns: repeat(5, minmax(135px, 1fr)) minmax(220px, 1.8fr);
@@ -4761,6 +4782,35 @@
   border: 1px solid #dce4ee;
   border-radius: 9px;
   background: #ffffff;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+}
+
+.manual-status-card:hover:not(:disabled) {
+  border-color: #8fb5e5;
+  box-shadow: 0 8px 20px rgb(46 67 92 / 10%);
+  transform: translateY(-1px);
+}
+
+.manual-status-card.is-active {
+  border-color: #216ee8;
+  box-shadow: 0 0 0 3px rgb(33 110 232 / 14%);
+}
+
+.manual-status-card:focus-visible,
+.lifecycle-card__total:focus-visible,
+.lifecycle-card__action:focus-visible,
+.attention-action:focus-visible {
+  outline: 3px solid rgb(33 110 232 / 28%);
+  outline-offset: 2px;
+}
+
+.manual-status-card:disabled {
+  cursor: default;
+  opacity: 0.62;
 }
 
 .manual-status-card span {
@@ -4790,6 +4840,20 @@
   display: grid;
   gap: 12px;
   margin-top: 4px;
+}
+
+.attention-action {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #2165c4;
+  cursor: pointer;
+  font: inherit;
+  font-weight: 750;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: rgb(33 101 196 / 30%);
+  text-underline-offset: 3px;
 }
 
 .order-workspace__table-wrap {

@@ -82,6 +82,14 @@ MANUAL_STATUS_LABELS = {
     "do_not_order": "Не закупать",
     "review": "Review / разбор",
 }
+MANUAL_STATUS_RECOMMENDATIONS = {
+    "matrix": "Проверить матрицу и минимальный запас",
+    "on_demand": "Проверить явную клиентскую потребность",
+    "replace_candidate": "Подтвердить товар для замены",
+    "nonliquid": "Проверить остаток и последние продажи",
+    "do_not_order": "Не включать в закупку",
+    "review": "Открыть ручной разбор",
+}
 APPROVAL_RESULT_KEYS = ("approved", "stale", "blocked", "conflict", "failed")
 
 
@@ -228,12 +236,46 @@ def build_dashboard(
             status_counts[code] += 1
         if bool(row.get("manual_review_required")) and code in LIFECYCLE_ORDER:
             review_counts[code] += 1
-    action_counts = Counter(_dashboard_status(item.current_status) for item in transitions)
+    action_counts: Counter[str] = Counter()
+    ready_counts: Counter[str] = Counter()
+    blocked_counts: Counter[str] = Counter()
+    action_breakdowns: dict[str, Counter[str]] = {
+        status_code: Counter() for status_code in LIFECYCLE_ORDER
+    }
+    for item in transitions:
+        current_status = _dashboard_status(item.current_status)
+        if current_status not in action_breakdowns:
+            continue
+        action_counts[current_status] += 1
+        breakdown_key = (
+            "review"
+            if item.action_kind == "review" or not item.target_status
+            else _dashboard_status(item.target_status)
+        )
+        action_breakdowns[current_status][breakdown_key] += 1
+        if item.blockers:
+            blocked_counts[current_status] += 1
+        elif item.action_kind == "transition" and item.target_status:
+            ready_counts[current_status] += 1
     cards: list[dict[str, Any]] = []
     for status_code in LIFECYCLE_ORDER:
         is_working = status_code == "working"
-        target = None if is_working else _next_lifecycle_status(status_code)
         action_count = action_counts[status_code]
+        action_breakdown = {
+            code: action_breakdowns[status_code][code]
+            for code in (*LIFECYCLE_ORDER, "review")
+            if action_breakdowns[status_code][code]
+        }
+        target_codes = [code for code in action_breakdown if code != "review"]
+        target = target_codes[0] if len(action_breakdown) == 1 and len(target_codes) == 1 else None
+        if action_count == 0:
+            action_label = "Решений нет"
+        elif len(action_breakdown) == 1 and "review" in action_breakdown:
+            action_label = "На пересмотр"
+        elif target:
+            action_label = f"→ {_status_label(target)}"
+        else:
+            action_label = "Требует решения"
         cards.append(
             {
                 "status": status_code,
@@ -241,11 +283,21 @@ def build_dashboard(
                 "total_count": status_counts[status_code],
                 "action_count": action_count,
                 "action_kind": "review" if is_working else "transition",
-                "action_label": "На пересмотр" if is_working else "К переходу",
+                "action_label": action_label,
                 "target_status": target,
-                "review_count": review_counts[status_code],
+                "action_breakdown": action_breakdown,
+                "ready_count": ready_counts[status_code],
+                "blocked_count": blocked_counts[status_code],
+                "review_count": max(
+                    review_counts[status_code],
+                    action_breakdowns[status_code]["review"],
+                ),
                 "overdue_count": 0,
-                "urgency": _card_urgency(action_count, review_counts[status_code]),
+                "urgency": _card_urgency(
+                    action_count,
+                    review_counts[status_code],
+                    blocked_counts[status_code],
+                ),
             }
         )
     manual_counts = Counter(str(row.get("status") or "") for row in rows)
@@ -259,7 +311,14 @@ def build_dashboard(
             "product_name": item.product_name,
             "current_status": item.current_status,
             "current_status_label": _status_label(item.current_status),
-            "reason": item.reason,
+            "kind": "lifecycle",
+            "filter_status": _dashboard_status(item.current_status),
+            "reason": _pending_decision_reason(
+                current_status=item.current_status,
+                target_status=item.target_status,
+                action_kind=item.action_kind,
+                reason=item.reason,
+            ),
             "recommendation": (
                 _status_label(item.target_status) if item.target_status else "Открыть разбор"
             ),
@@ -271,6 +330,7 @@ def build_dashboard(
             key=lambda value: (bool(value.blockers), value.created_at or datetime.min),
         )[:5]
     ]
+    manual_attention = _manual_attention_items(rows)
     return {
         "folder": folder,
         "responsible_user_id": settings.procurement_order_formation_display_responsible_user_id,
@@ -281,6 +341,7 @@ def build_dashboard(
         "cards": cards,
         "manual_status_counts": manual_status_counts,
         "attention": attention,
+        "manual_attention": manual_attention,
     }
 
 
@@ -694,7 +755,12 @@ def serialize_transition(
         "target_status": proposal.target_status,
         "target_status_label": _status_label(proposal.target_status),
         "proposal_status": proposal.status,
-        "reason": proposal.reason,
+        "reason": _pending_decision_reason(
+            current_status=proposal.current_status,
+            target_status=proposal.target_status,
+            action_kind=proposal.action_kind,
+            reason=proposal.reason,
+        ),
         "facts": dict(proposal.facts or {}),
         "blockers": list(proposal.blockers or []),
         "risk_codes": list(proposal.risk_codes or []),
@@ -1106,14 +1172,6 @@ def _dashboard_status(status: str) -> str:
     return "newborn" if status == "newborn_need" else status
 
 
-def _next_lifecycle_status(status: str) -> str | None:
-    try:
-        index = LIFECYCLE_ORDER.index(status)
-    except ValueError:
-        return None
-    return LIFECYCLE_ORDER[index + 1] if index + 1 < len(LIFECYCLE_ORDER) else None
-
-
 def _status_label(status: str | None) -> str:
     if status is None:
         return ""
@@ -1121,7 +1179,77 @@ def _status_label(status: str | None) -> str:
     return LIFECYCLE_LABELS.get(normalized) or status_label(normalized) or str(status)
 
 
-def _card_urgency(action_count: int, review_count: int) -> str:
+def _manual_attention_items(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for row in rows:
+        row_status = str(row.get("status") or "")
+        dashboard_status = _dashboard_status(row_status)
+        if row_status in MANUAL_STATUS_ORDER and row_status != "review":
+            filter_status = row_status
+            current_status = row_status
+            current_status_label = MANUAL_STATUS_LABELS[row_status]
+        elif dashboard_status == "working" and bool(row.get("manual_review_required")):
+            filter_status = "review"
+            current_status = "working"
+            current_status_label = LIFECYCLE_LABELS["working"]
+        else:
+            continue
+        blockers = list(row.get("blockers") or []) + list(row.get("export_blockers") or [])
+        has_blockers = bool(blockers)
+        items.append(
+            {
+                "nomenclature_code": str(row.get("nomenclature_code") or ""),
+                "product_name": str(row.get("name") or ""),
+                "current_status": current_status,
+                "current_status_label": current_status_label,
+                "kind": "manual",
+                "filter_status": filter_status,
+                "reason": str(row.get("reason_text") or "Требуется ручная проверка"),
+                "recommendation": MANUAL_STATUS_RECOMMENDATIONS[filter_status],
+                "deadline_label": "блокер" if has_blockers else "контроль",
+                "urgency": "blocked" if has_blockers else "warning",
+            }
+        )
+    order = {status: index for index, status in enumerate(MANUAL_STATUS_ORDER)}
+    return sorted(
+        items,
+        key=lambda item: (
+            order.get(item["filter_status"], len(order)),
+            item["product_name"].casefold(),
+        ),
+    )
+
+
+def _pending_decision_reason(
+    *,
+    current_status: str,
+    target_status: str | None,
+    action_kind: str,
+    reason: str,
+) -> str:
+    text = str(reason or "").strip()
+    if action_kind != "transition" or not target_status:
+        return text or "Требуется ручной разбор"
+    prefix = f"Рекомендуется переход {_status_label(current_status)} → {_status_label(target_status)}."
+    lowered = text.casefold()
+    fact_marker = "по твердым фактам 1с:"
+    marker_index = lowered.find(fact_marker)
+    if marker_index >= 0:
+        detail = text[marker_index + len(fact_marker) :]
+        detail = detail.split(". 1С не менялась", 1)[0].strip(" .")
+        detail = detail.replace("есть cargo/передачи:", "передач в груз —")
+        detail = detail.replace("cargo/передачи:", "передачи в груз —")
+        return f"{prefix} Факты 1С: {detail}." if detail else prefix
+    if lowered.startswith("статус ") and ". " in text:
+        text = text.split(". ", 1)[1].strip()
+    if not text:
+        return prefix
+    return f"{prefix} {text}"
+
+
+def _card_urgency(action_count: int, review_count: int, blocked_count: int = 0) -> str:
+    if blocked_count > 0:
+        return "blocked"
     if action_count > 0:
         return "action"
     if review_count > 0:

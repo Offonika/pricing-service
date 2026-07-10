@@ -87,6 +87,11 @@ def _seed_lifecycle(sqlite_engine) -> int:
             "product_ref": DISPLAY_GUID,
             "manual_status": "working",
         },
+        {
+            "nomenclature_code": "MATRIX-1",
+            "product_ref": DISPLAY_GUID,
+            "manual_status": "matrix",
+        },
     ]
     summaries = [
         {
@@ -125,6 +130,14 @@ def _seed_lifecycle(sqlite_engine) -> int:
             "status_label": "Рабочий",
             "reason_text": "Нужен пересмотр",
             "manual_review_required": True,
+        },
+        {
+            "nomenclature_code": "MATRIX-1",
+            "name": "Дисплей матричный",
+            "folder": "дисплеи",
+            "status": "matrix",
+            "status_label": "Матричный",
+            "reason_text": "Основной товар группы",
         },
     ]
     rows = build_classification_rows(
@@ -174,9 +187,32 @@ def test_dashboard_keeps_lifecycle_order_and_nests_newborn_need(
     working = next(card for card in dashboard["cards"] if card["status"] == "working")
     assert newborn["total_count"] == 2
     assert newborn["action_count"] == 2
+    assert newborn["action_breakdown"] == {"new_item": 1, "review": 1}
     assert fruit["action_count"] == 0
     assert working["action_label"] == "На пересмотр"
     assert working["action_count"] == 1
+    assert dashboard["manual_status_counts"]["matrix"] == 1
+    matrix_attention = next(
+        item
+        for item in dashboard["manual_attention"]
+        if item["filter_status"] == "matrix"
+    )
+    assert matrix_attention == {
+        "nomenclature_code": "MATRIX-1",
+        "product_name": "Дисплей матричный",
+        "current_status": "matrix",
+        "current_status_label": "Матричный",
+        "kind": "manual",
+        "filter_status": "matrix",
+        "reason": "Основной товар группы",
+        "recommendation": "Проверить матрицу и минимальный запас",
+        "deadline_label": "контроль",
+        "urgency": "warning",
+    }
+    assert {item["filter_status"] for item in dashboard["manual_attention"]} == {
+        "matrix",
+        "review",
+    }
     assert summary == {
         "created": 4,
         "updated": 0,
@@ -210,8 +246,14 @@ def test_queue_starts_unselected_and_only_ready_rows_are_selectable(
     assert sum(1 for item in newborn_queue["items"] if item["selectable"]) == 1
     assert all("selected" not in item for item in newborn_queue["items"])
     review = next(item for item in newborn_queue["items"] if item["action_kind"] == "review")
+    transition = next(
+        item for item in newborn_queue["items"] if item["action_kind"] == "transition"
+    )
     assert review["current_status"] == "newborn"
     assert review["target_status"] is None
+    assert transition["reason"].startswith(
+        "Рекомендуется переход Новорожденный → Новинка."
+    )
 
 
 def test_first_supplier_order_moves_fruit_to_newborn_without_approval(

@@ -145,6 +145,9 @@ export interface ProcurementDashboardCard {
   action_kind: "transition" | "review";
   action_label: string;
   target_status?: string | null;
+  action_breakdown: Record<string, number>;
+  ready_count: number;
+  blocked_count: number;
   review_count: number;
   overdue_count: number;
   urgency: string;
@@ -164,6 +167,20 @@ export interface ProcurementDashboard {
     product_name: string;
     current_status: string;
     current_status_label: string;
+    kind: string;
+    filter_status: string;
+    reason: string;
+    recommendation: string;
+    deadline_label: string;
+    urgency: string;
+  }>;
+  manual_attention: Array<{
+    nomenclature_code: string;
+    product_name: string;
+    current_status: string;
+    current_status_label: string;
+    kind: string;
+    filter_status: string;
     reason: string;
     recommendation: string;
     deadline_label: string;

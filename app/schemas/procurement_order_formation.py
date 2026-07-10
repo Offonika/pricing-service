@@ -207,6 +207,9 @@ class ProcurementDashboardCard(BaseModel):
     action_kind: str
     action_label: str
     target_status: str | None = None
+    action_breakdown: dict[str, int] = Field(default_factory=dict)
+    ready_count: int = 0
+    blocked_count: int = 0
     review_count: int = 0
     overdue_count: int = 0
     urgency: str = "neutral"
@@ -217,6 +220,8 @@ class ProcurementDashboardAttentionItem(BaseModel):
     product_name: str
     current_status: str
     current_status_label: str
+    kind: str = "lifecycle"
+    filter_status: str
     reason: str
     recommendation: str
     deadline_label: str
@@ -233,6 +238,7 @@ class ProcurementDashboardResponse(BaseModel):
     cards: list[ProcurementDashboardCard] = Field(default_factory=list)
     manual_status_counts: dict[str, int] = Field(default_factory=dict)
     attention: list[ProcurementDashboardAttentionItem] = Field(default_factory=list)
+    manual_attention: list[ProcurementDashboardAttentionItem] = Field(default_factory=list)
 
 
 class ProcurementLifecycleTransitionRead(BaseModel):

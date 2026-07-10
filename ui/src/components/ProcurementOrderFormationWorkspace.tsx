@@ -224,17 +224,24 @@ function Dashboard({
   data: ProcurementDashboard;
   onOpenLifecycle: (status: string, scope: "action" | "all") => void;
 }) {
+  const [manualFilter, setManualFilter] = useState<string | null>(null);
+  const manualFilterLabel = manualFilter ? MANUAL_STATUS_LABELS[manualFilter] : null;
+  const attentionRows = manualFilter
+    ? data.manual_attention.filter((item) => item.filter_status === manualFilter)
+    : data.attention;
   return (
     <main className="order-workspace__content">
       <section className="order-workspace__section-heading">
         <div>
           <h2>Жизненные статусы</h2>
-          <p>Общее количество открывает все товары, бейдж — очередь решения.</p>
+          <p>Общее количество открывает все товары; кнопка решения показывает куда и сколько.</p>
         </div>
         <span>Обновлено {dateTime(data.updated_at)} · run {data.run_id || "—"}</span>
       </section>
       <section className="lifecycle-cards">
-        {data.cards.map((card) => (
+        {data.cards.map((card) => {
+          const breakdown = Object.entries(card.action_breakdown || {});
+          return (
           <article className={`lifecycle-card lifecycle-card--${card.urgency}`} key={card.status}>
             <button
               className="lifecycle-card__total"
@@ -250,36 +257,70 @@ function Dashboard({
               onClick={() => onOpenLifecycle(card.status, "action")}
               type="button"
             >
-              {card.action_label} {card.action_count}
+              {card.action_count === 0
+                ? "Решений нет"
+                : `${card.action_label} · ${card.action_count}`}
             </button>
+            {breakdown.length > 1 ? (
+              <div className="lifecycle-card__targets" aria-label="Направления решений">
+                {breakdown.map(([target, count]) => (
+                  <span key={target}>
+                    {target === "review" ? "Разбор" : `→ ${LIFECYCLE_STATUS_LABELS[target] || target}`} {count}
+                  </span>
+                ))}
+              </div>
+            ) : null}
+            {card.blocked_count > 0 ? (
+              <small className="lifecycle-card__blockers">С блокерами: {card.blocked_count}</small>
+            ) : null}
           </article>
-        ))}
+          );
+        })}
       </section>
 
       <section className="order-workspace__section-heading order-workspace__section-heading--manual">
         <div>
-          <h2>Ручные решения и очереди</h2>
-          <p>Не меняют заказ автоматически и утверждаются отдельно.</p>
+          <h2>Ручные статусы и контроль</h2>
+          <p>Нажмите карточку, чтобы отфильтровать список ниже.</p>
         </div>
       </section>
       <section className="manual-status-grid">
         {Object.entries(MANUAL_STATUS_LABELS).map(([status, label]) => (
-          <article className={`manual-status-card manual-status-card--${status}`} key={status}>
+          <button
+            aria-label={`Показать товары: ${label}`}
+            aria-pressed={manualFilter === status}
+            className={`manual-status-card manual-status-card--${status}${manualFilter === status ? " is-active" : ""}`}
+            disabled={(data.manual_status_counts[status] || 0) === 0}
+            key={status}
+            onClick={() => setManualFilter((current) => current === status ? null : status)}
+            type="button"
+          >
             <span>{label}</span>
             <strong>{data.manual_status_counts[status] || 0}</strong>
-          </article>
+          </button>
         ))}
       </section>
 
       <section className="attention-panel">
         <div className="order-workspace__section-heading">
           <div>
-            <h2>Требует внимания сегодня</h2>
-            <p>Короткая очередь блокеров и ручных проверок.</p>
+            <h2>{manualFilterLabel ? `Ручной статус: ${manualFilterLabel}` : "Требует решения сегодня"}</h2>
+            <p>
+              {manualFilterLabel
+                ? `Показаны товары выбранного ручного статуса: ${attentionRows.length}.`
+                : "Пять ближайших решений и блокеров из очереди переходов."}
+            </p>
           </div>
+          {manualFilter ? (
+            <button className="btn btn--ghost btn--small" onClick={() => setManualFilter(null)} type="button">
+              Сбросить фильтр
+            </button>
+          ) : null}
         </div>
-        {data.attention.length === 0 ? (
-          <div className="order-workspace__empty">Срочных решений нет.</div>
+        {attentionRows.length === 0 ? (
+          <div className="order-workspace__empty">
+            {manualFilterLabel ? "В выбранном ручном статусе товаров нет." : "Срочных решений нет."}
+          </div>
         ) : (
           <div className="order-workspace__table-wrap">
             <table className="order-workspace__table">
@@ -292,14 +333,24 @@ function Dashboard({
                 </tr>
               </thead>
               <tbody>
-                {data.attention.map((item) => (
-                  <tr key={`${item.nomenclature_code}-${item.current_status}`}>
+                {attentionRows.map((item) => (
+                  <tr key={`${item.kind}-${item.nomenclature_code}-${item.filter_status}`}>
                     <td>
                       <strong>{item.product_name}</strong>
                       <small>{item.nomenclature_code} · {item.current_status_label}</small>
                     </td>
                     <td>{item.reason}</td>
-                    <td>{item.recommendation}</td>
+                    <td>
+                      {item.kind === "lifecycle" ? (
+                        <button
+                          className="attention-action"
+                          onClick={() => onOpenLifecycle(item.current_status, "action")}
+                          type="button"
+                        >
+                          {item.recommendation}
+                        </button>
+                      ) : item.recommendation}
+                    </td>
                     <td><span className={`state-pill state-pill--${item.urgency}`}>{item.deadline_label}</span></td>
                   </tr>
                 ))}

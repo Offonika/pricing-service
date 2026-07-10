@@ -1,0 +1,2 @@
+CRON_TZ=Europe/Moscow
+0 * * * * root /opt/MM/pricing-service/infra/cron/assortment_lifecycle_classification.sh >> /var/log/pricing/assortment_lifecycle_classification.cron.log 2>&1

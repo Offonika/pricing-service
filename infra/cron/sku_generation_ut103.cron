@@ -1,0 +1,6 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+CRON_TZ=Europe/Moscow
+
+# Nightly UT103 enrichment: generate SKU and fill empty SKU/Предмет in 1C.
+30 2 * * * root /opt/MM/pricing-service/infra/cron/sku_generation_ut103.sh >> /var/log/pricing/sku_generation_ut103.cron.log 2>&1

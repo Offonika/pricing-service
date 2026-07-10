@@ -2612,6 +2612,29 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/executive-dashboard/session:
+    post:
+      summary: Create Bitrix Executive Dashboard Session
+      operationId: create_bitrix_executive_dashboard_session_api_bitrix_executive_dashboard_session_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BitrixExecutiveDashboardSessionRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BitrixExecutiveDashboardSessionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/bitrix/receivables/session:
     post:
       summary: Create Bitrix Receivables Session
@@ -2629,6 +2652,242 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/BitrixReceivablesSessionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/bitrix/receivables/access-diagnostics:
+    get:
+      summary: Get Bitrix Receivables Access Diagnostics
+      operationId: get_bitrix_receivables_access_diagnostics_api_bitrix_receivables_access_diagnostics_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: user_id
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          title: User Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+                title: Response Get Bitrix Receivables Access Diagnostics Api Bitrix Receivables Access Diagnostics Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/executive-dashboard:
+    get:
+      summary: Get Executive Dashboard
+      operationId: get_executive_dashboard_api_management_executive_dashboard_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutiveDashboardResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/executive-dashboard/actions:
+    get:
+      summary: List Executive Dashboard Actions
+      operationId: list_executive_dashboard_actions_api_management_executive_dashboard_actions_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          default: open
+          title: Status
+      - name: domain
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Domain
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 200
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutiveDashboardActionsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/executive-dashboard/cashflow-period:
+    get:
+      summary: Get Executive Dashboard Cashflow Period
+      operationId: get_executive_dashboard_cashflow_period_api_management_executive_dashboard_cashflow_period_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date From
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date To
+      - name: dds_group
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          title: Dds Group
+      - name: cash_account_ref
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          title: Cash Account Ref
+      - name: currency
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          title: Currency
+      - name: direction
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: array
+            items:
+              type: string
+          - type: 'null'
+          title: Direction
+      - name: include_internal
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: true
+          title: Include Internal
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutiveCashflowPeriodResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/executive-dashboard/profit-loss-period:
+    get:
+      summary: Get Executive Dashboard Profit Loss Period
+      operationId: get_executive_dashboard_profit_loss_period_api_management_executive_dashboard_profit_loss_period_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date From
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date To
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutiveProfitLossPeriodResponse'
         '422':
           description: Validation Error
           content:
@@ -3483,6 +3742,35 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReceivablesManagerSummaryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/receivables/workplace/meta:
+    get:
+      summary: Get Receivable Workplace Meta
+      operationId: get_receivable_workplace_meta_api_receivables_workplace_meta_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReceivableWorkplaceMetaResponse'
         '422':
           description: Validation Error
           content:
@@ -5130,6 +5418,73 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/logistics/transfer-assistant/candidates:
+    get:
+      summary: List Transfer Assistant Candidates
+      operationId: list_transfer_assistant_candidates_api_logistics_transfer_assistant_candidates_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date From
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date To
+      - name: warehouse_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            minLength: 1
+          - type: 'null'
+          title: Warehouse Id
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 1000
+          minimum: 1
+          default: 100
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/LogisticsTransferAssistantCandidateResponse'
+                title: Response List Transfer Assistant Candidates Api Logistics Transfer Assistant Candidates Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/logistics/route-runs:
     post:
       summary: Create Route Run
@@ -6219,6 +6574,38 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-labels/orders/{item_id}/certification-docs/generate:
+    post:
+      summary: Generate Procurement Certification Docs
+      operationId: generate_procurement_certification_docs_api_procurement_labels_orders__item_id__certification_docs_generate_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Item Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementLabelGenerateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementCertificationDocsGenerateResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/procurement-labels/orders/{item_id}/approve:
     post:
       summary: Approve Procurement Labels
@@ -6239,6 +6626,370 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProcurementLabelApproveResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-labels/orders/{item_id}/send-to-factory:
+    post:
+      summary: Send Procurement Labels To Factory
+      operationId: send_procurement_labels_to_factory_api_procurement_labels_orders__item_id__send_to_factory_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Item Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementLabelApproveResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-assortment/orders/{item_id}/decision:
+    get:
+      summary: Get Procurement Assortment Decision
+      operationId: get_procurement_assortment_decision_api_procurement_assortment_orders__item_id__decision_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Item Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementAssortmentDecision'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    post:
+      summary: Save Procurement Assortment Decision
+      operationId: save_procurement_assortment_decision_api_procurement_assortment_orders__item_id__decision_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Item Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementAssortmentDecisionUpdateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementAssortmentDecisionUpdateResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-assortment/orders/{item_id}/decision/sync:
+    post:
+      summary: Sync Procurement Assortment Decision
+      operationId: sync_procurement_assortment_decision_api_procurement_assortment_orders__item_id__decision_sync_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Item Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementAssortmentDecisionSyncResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/orders/by-bitrix/{item_id}:
+    get:
+      summary: Read Order By Bitrix Item
+      operationId: read_order_by_bitrix_item_api_procurement_order_formation_orders_by_bitrix__item_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: item_id
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Item Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrderFormationRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/orders/{order_id}:
+    get:
+      summary: Read Order
+      operationId: read_order_api_procurement_order_formation_orders__order_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Order Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrderFormationRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      summary: Change Order Conditions
+      operationId: change_order_conditions_api_procurement_order_formation_orders__order_id__patch
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Order Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementOrderConditionsUpdateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrderFormationRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/orders/{order_id}/lines/{line_id}:
+    patch:
+      summary: Change Order Line
+      operationId: change_order_line_api_procurement_order_formation_orders__order_id__lines__line_id__patch
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Order Id
+      - name: line_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Line Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementOrderLineUpdateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrderFormationRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/orders/{order_id}/lines/{line_id}/classification:
+    post:
+      summary: Propose Line Classification
+      operationId: propose_line_classification_api_procurement_order_formation_orders__order_id__lines__line_id__classification_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Order Id
+      - name: line_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Line Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementClassificationCreateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrderFormationRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/orders/{order_id}/lines/{line_id}/classification/{proposal_id}/approve:
+    post:
+      summary: Approve Line Classification
+      operationId: approve_line_classification_api_procurement_order_formation_orders__order_id__lines__line_id__classification__proposal_id__approve_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Order Id
+      - name: line_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Line Id
+      - name: proposal_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Proposal Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementClassificationApprovalResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/orders/{order_id}/approve:
+    post:
+      summary: Approve Current Order Version
+      operationId: approve_current_order_version_api_procurement_order_formation_orders__order_id__approve_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Order Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrderFormationRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/orders/{order_id}/send-to-1c:
+    post:
+      summary: Send Order To Onec
+      operationId: send_order_to_onec_api_procurement_order_formation_orders__order_id__send_to_1c_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Order Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementOrderTransmissionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrderTransmissionResponse'
         '422':
           description: Validation Error
           content:
@@ -7443,6 +8194,87 @@ components:
       - message_id
       - parse_status
       title: BitrixChatMessageIngestResponse
+    BitrixExecutiveDashboardSessionRequest:
+      properties:
+        access_token:
+          type: string
+          minLength: 1
+          title: Access Token
+        domain:
+          type: string
+          minLength: 1
+          title: Domain
+        member_id:
+          type: string
+          minLength: 1
+          title: Member Id
+      type: object
+      required:
+      - access_token
+      - domain
+      - member_id
+      title: BitrixExecutiveDashboardSessionRequest
+    BitrixExecutiveDashboardSessionResponse:
+      properties:
+        session_token:
+          type: string
+          title: Session Token
+        token_type:
+          type: string
+          title: Token Type
+          default: bearer
+        expires_at:
+          type: string
+          format: date-time
+          title: Expires At
+        expires_in:
+          type: integer
+          title: Expires In
+        user:
+          $ref: '#/components/schemas/BitrixExecutiveDashboardUser'
+        access_level:
+          type: string
+          enum:
+          - full
+          - domain
+          title: Access Level
+        roles:
+          items:
+            type: string
+          type: array
+          title: Roles
+        allowed_blocks:
+          items:
+            type: string
+          type: array
+          title: Allowed Blocks
+        allowed_action_domains:
+          items:
+            type: string
+          type: array
+          title: Allowed Action Domains
+      type: object
+      required:
+      - session_token
+      - expires_at
+      - expires_in
+      - user
+      - access_level
+      title: BitrixExecutiveDashboardSessionResponse
+    BitrixExecutiveDashboardUser:
+      properties:
+        user_id:
+          type: string
+          title: User Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+      type: object
+      required:
+      - user_id
+      title: BitrixExecutiveDashboardUser
     BitrixMatchingSessionRequest:
       properties:
         access_token:
@@ -9543,6 +10375,11 @@ components:
           - type: string
           - type: 'null'
           title: Current Folder Name
+        current_folder_display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Folder Display Name
         recommended_folder_ref:
           anyOf:
           - type: string
@@ -9553,6 +10390,11 @@ components:
           - type: string
           - type: 'null'
           title: Recommended Folder Name
+        recommended_folder_display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Folder Display Name
         debt_department_ref:
           anyOf:
           - type: string
@@ -9563,6 +10405,21 @@ components:
           - type: string
           - type: 'null'
           title: Debt Department Name
+        debt_department_display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Debt Department Display Name
+        snapshot_department_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Snapshot Department Name
+        snapshot_department_display_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Snapshot Department Display Name
         debt_document_ref:
           anyOf:
           - type: string
@@ -10110,6 +10967,892 @@ components:
       - model_name
       - id
       title: DeviceModelResponse
+    ExecutiveCashflowDailyRow:
+      properties:
+        business_date:
+          type: string
+          format: date
+          title: Business Date
+        inflow_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Inflow Amount
+          default: '0'
+        outflow_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Outflow Amount
+          default: '0'
+        net_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Net Amount
+          default: '0'
+        external_net_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: External Net Amount
+          default: '0'
+        internal_net_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Internal Net Amount
+          default: '0'
+        movement_count:
+          type: integer
+          title: Movement Count
+          default: 0
+        review_count:
+          type: integer
+          title: Review Count
+          default: 0
+      type: object
+      required:
+      - business_date
+      title: ExecutiveCashflowDailyRow
+    ExecutiveCashflowPeriodBreakdownRow:
+      properties:
+        key:
+          type: string
+          title: Key
+        label:
+          type: string
+          title: Label
+        inflow_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Inflow Amount
+          default: '0'
+        outflow_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Outflow Amount
+          default: '0'
+        net_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Net Amount
+          default: '0'
+        movement_count:
+          type: integer
+          title: Movement Count
+          default: 0
+        review_count:
+          type: integer
+          title: Review Count
+          default: 0
+        meta:
+          additionalProperties: true
+          type: object
+          title: Meta
+      type: object
+      required:
+      - key
+      - label
+      title: ExecutiveCashflowPeriodBreakdownRow
+    ExecutiveCashflowPeriodRatio:
+      properties:
+        key:
+          type: string
+          title: Key
+        label:
+          type: string
+          title: Label
+        value:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Value
+        unit:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Unit
+        tone:
+          type: string
+          title: Tone
+          default: neutral
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+      type: object
+      required:
+      - key
+      - label
+      title: ExecutiveCashflowPeriodRatio
+    ExecutiveCashflowPeriodResponse:
+      properties:
+        date_from:
+          type: string
+          format: date
+          title: Date From
+        date_to:
+          type: string
+          format: date
+          title: Date To
+        generated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Generated At
+        source_status:
+          type: string
+          title: Source Status
+        freshness_status:
+          type: string
+          title: Freshness Status
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+        totals:
+          additionalProperties:
+            anyOf:
+            - type: string
+              pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+            - type: integer
+            - type: 'null'
+          type: object
+          title: Totals
+        ratios:
+          items:
+            $ref: '#/components/schemas/ExecutiveCashflowPeriodRatio'
+          type: array
+          title: Ratios
+        cash_position:
+          additionalProperties: true
+          type: object
+          title: Cash Position
+        daily:
+          items:
+            $ref: '#/components/schemas/ExecutiveCashflowDailyRow'
+          type: array
+          title: Daily
+        by_group:
+          items:
+            $ref: '#/components/schemas/ExecutiveCashflowPeriodBreakdownRow'
+          type: array
+          title: By Group
+        by_article:
+          items:
+            $ref: '#/components/schemas/ExecutiveCashflowPeriodBreakdownRow'
+          type: array
+          title: By Article
+        by_cash_account:
+          items:
+            $ref: '#/components/schemas/ExecutiveCashflowPeriodBreakdownRow'
+          type: array
+          title: By Cash Account
+        by_currency:
+          items:
+            $ref: '#/components/schemas/ExecutiveCashflowPeriodBreakdownRow'
+          type: array
+          title: By Currency
+        quality_issues:
+          items:
+            $ref: '#/components/schemas/ExecutiveCashflowQualityIssue'
+          type: array
+          title: Quality Issues
+        filters:
+          additionalProperties: true
+          type: object
+          title: Filters
+      type: object
+      required:
+      - date_from
+      - date_to
+      - source_status
+      - freshness_status
+      title: ExecutiveCashflowPeriodResponse
+    ExecutiveCashflowQualityIssue:
+      properties:
+        issue_key:
+          type: string
+          title: Issue Key
+        issue_type:
+          type: string
+          title: Issue Type
+        issue_label:
+          type: string
+          title: Issue Label
+        severity:
+          type: string
+          title: Severity
+        business_date:
+          type: string
+          format: date
+          title: Business Date
+        amount_abs:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Amount Abs
+          default: '0'
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        proposed_action:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Proposed Action
+        status:
+          type: string
+          title: Status
+          default: open
+      type: object
+      required:
+      - issue_key
+      - issue_type
+      - issue_label
+      - severity
+      - business_date
+      title: ExecutiveCashflowQualityIssue
+    ExecutiveDashboardAction:
+      properties:
+        stable_key:
+          type: string
+          title: Stable Key
+        business_date:
+          type: string
+          format: date
+          title: Business Date
+        domain:
+          type: string
+          title: Domain
+        severity:
+          type: string
+          title: Severity
+        title:
+          type: string
+          title: Title
+        description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Description
+        amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Amount
+        currency:
+          type: string
+          title: Currency
+          default: RUB
+        responsible_bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Responsible Bitrix User Id
+        deadline_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Deadline At
+        status:
+          type: string
+          title: Status
+          default: open
+        source_system:
+          type: string
+          title: Source System
+        source_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Ref
+        dedupe_key:
+          type: string
+          title: Dedupe Key
+        drilldown_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Drilldown Url
+        payload:
+          additionalProperties: true
+          type: object
+          title: Payload
+      type: object
+      required:
+      - stable_key
+      - business_date
+      - domain
+      - severity
+      - title
+      - source_system
+      - dedupe_key
+      title: ExecutiveDashboardAction
+    ExecutiveDashboardActionsResponse:
+      properties:
+        as_of:
+          type: string
+          format: date
+          title: As Of
+        freshness_status:
+          type: string
+          title: Freshness Status
+        source_status:
+          type: string
+          title: Source Status
+        total_count:
+          type: integer
+          title: Total Count
+        payload:
+          items:
+            $ref: '#/components/schemas/ExecutiveDashboardAction'
+          type: array
+          title: Payload
+      type: object
+      required:
+      - as_of
+      - freshness_status
+      - source_status
+      - total_count
+      - payload
+      title: ExecutiveDashboardActionsResponse
+    ExecutiveDashboardBlock:
+      properties:
+        key:
+          type: string
+          title: Key
+        title:
+          type: string
+          title: Title
+        source_status:
+          type: string
+          title: Source Status
+        freshness_status:
+          type: string
+          title: Freshness Status
+        as_of:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+        summary:
+          additionalProperties: true
+          type: object
+          title: Summary
+        metrics:
+          items:
+            $ref: '#/components/schemas/ExecutiveDashboardMetric'
+          type: array
+          title: Metrics
+        drilldown_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Drilldown Url
+      type: object
+      required:
+      - key
+      - title
+      - source_status
+      - freshness_status
+      title: ExecutiveDashboardBlock
+    ExecutiveDashboardMetric:
+      properties:
+        key:
+          type: string
+          title: Key
+        label:
+          type: string
+          title: Label
+        value:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: integer
+          - type: number
+          - type: string
+          - type: 'null'
+          title: Value
+        unit:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Unit
+        tone:
+          type: string
+          title: Tone
+          default: neutral
+        masked:
+          type: boolean
+          title: Masked
+          default: false
+        source_status:
+          type: string
+          title: Source Status
+          default: ready
+      type: object
+      required:
+      - key
+      - label
+      title: ExecutiveDashboardMetric
+    ExecutiveDashboardResponse:
+      properties:
+        as_of:
+          type: string
+          format: date
+          title: As Of
+        generated_at:
+          type: string
+          format: date-time
+          title: Generated At
+        freshness_status:
+          type: string
+          title: Freshness Status
+        source_status:
+          type: string
+          title: Source Status
+        access_level:
+          type: string
+          enum:
+          - full
+          - domain
+          title: Access Level
+        roles:
+          items:
+            type: string
+          type: array
+          title: Roles
+        allowed_blocks:
+          items:
+            type: string
+          type: array
+          title: Allowed Blocks
+        allowed_action_domains:
+          items:
+            type: string
+          type: array
+          title: Allowed Action Domains
+        blocks:
+          items:
+            $ref: '#/components/schemas/ExecutiveDashboardBlock'
+          type: array
+          title: Blocks
+        source_freshness:
+          items:
+            $ref: '#/components/schemas/ExecutiveSourceStatus'
+          type: array
+          title: Source Freshness
+        top_actions:
+          items:
+            $ref: '#/components/schemas/ExecutiveDashboardAction'
+          type: array
+          title: Top Actions
+        summary:
+          additionalProperties: true
+          type: object
+          title: Summary
+      type: object
+      required:
+      - as_of
+      - generated_at
+      - freshness_status
+      - source_status
+      - access_level
+      - blocks
+      - source_freshness
+      - top_actions
+      title: ExecutiveDashboardResponse
+    ExecutiveProfitLossBreakdownRow:
+      properties:
+        key:
+          type: string
+          title: Key
+        label:
+          type: string
+          title: Label
+        revenue:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Revenue
+          default: '0'
+        cost_of_sales:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Cost Of Sales
+          default: '0'
+        gross_profit:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Gross Profit
+          default: '0'
+        sales_count:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Sales Count
+          default: '0'
+        row_count:
+          type: integer
+          title: Row Count
+          default: 0
+        gross_margin_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Gross Margin Pct
+        meta:
+          additionalProperties: true
+          type: object
+          title: Meta
+      type: object
+      required:
+      - key
+      - label
+      title: ExecutiveProfitLossBreakdownRow
+    ExecutiveProfitLossDailyRow:
+      properties:
+        key:
+          type: string
+          title: Key
+        label:
+          type: string
+          title: Label
+        revenue:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Revenue
+          default: '0'
+        cost_of_sales:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Cost Of Sales
+          default: '0'
+        gross_profit:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Gross Profit
+          default: '0'
+        sales_count:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Sales Count
+          default: '0'
+        row_count:
+          type: integer
+          title: Row Count
+          default: 0
+        gross_margin_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Gross Margin Pct
+        meta:
+          additionalProperties: true
+          type: object
+          title: Meta
+        business_date:
+          type: string
+          format: date
+          title: Business Date
+      type: object
+      required:
+      - key
+      - label
+      - business_date
+      title: ExecutiveProfitLossDailyRow
+    ExecutiveProfitLossExpenseBreakdownRow:
+      properties:
+        key:
+          type: string
+          title: Key
+        label:
+          type: string
+          title: Label
+        amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Amount
+          default: '0'
+        movement_count:
+          type: integer
+          title: Movement Count
+          default: 0
+        review_count:
+          type: integer
+          title: Review Count
+          default: 0
+        source_status:
+          type: string
+          title: Source Status
+          default: ready
+        recognition_method:
+          type: string
+          title: Recognition Method
+          default: cashflow_fallback
+        meta:
+          additionalProperties: true
+          type: object
+          title: Meta
+      type: object
+      required:
+      - key
+      - label
+      title: ExecutiveProfitLossExpenseBreakdownRow
+    ExecutiveProfitLossLineItem:
+      properties:
+        key:
+          type: string
+          title: Key
+        label:
+          type: string
+          title: Label
+        amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Amount
+        unit:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Unit
+          default: RUB
+        line_type:
+          type: string
+          title: Line Type
+          default: metric
+        tone:
+          type: string
+          title: Tone
+          default: neutral
+        source_status:
+          type: string
+          title: Source Status
+          default: ready
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+      type: object
+      required:
+      - key
+      - label
+      title: ExecutiveProfitLossLineItem
+    ExecutiveProfitLossOpenQuestion:
+      properties:
+        key:
+          type: string
+          title: Key
+        label:
+          type: string
+          title: Label
+        amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Amount
+          default: '0'
+        reason:
+          type: string
+          title: Reason
+        proposed_action:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Proposed Action
+        movement_count:
+          type: integer
+          title: Movement Count
+          default: 0
+        review_count:
+          type: integer
+          title: Review Count
+          default: 0
+        source_status:
+          type: string
+          title: Source Status
+          default: partial
+        recognition_method:
+          type: string
+          title: Recognition Method
+          default: cashflow_fallback
+        meta:
+          additionalProperties: true
+          type: object
+          title: Meta
+      type: object
+      required:
+      - key
+      - label
+      - reason
+      title: ExecutiveProfitLossOpenQuestion
+    ExecutiveProfitLossPeriodResponse:
+      properties:
+        date_from:
+          type: string
+          format: date
+          title: Date From
+        date_to:
+          type: string
+          format: date
+          title: Date To
+        generated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Generated At
+        source_status:
+          type: string
+          title: Source Status
+        freshness_status:
+          type: string
+          title: Freshness Status
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+        totals:
+          additionalProperties:
+            anyOf:
+            - type: string
+              pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+            - type: integer
+            - type: 'null'
+          type: object
+          title: Totals
+        ratios:
+          items:
+            $ref: '#/components/schemas/ExecutiveProfitLossRatio'
+          type: array
+          title: Ratios
+        lines:
+          items:
+            $ref: '#/components/schemas/ExecutiveProfitLossLineItem'
+          type: array
+          title: Lines
+        daily:
+          items:
+            $ref: '#/components/schemas/ExecutiveProfitLossDailyRow'
+          type: array
+          title: Daily
+        by_store:
+          items:
+            $ref: '#/components/schemas/ExecutiveProfitLossBreakdownRow'
+          type: array
+          title: By Store
+        by_manager:
+          items:
+            $ref: '#/components/schemas/ExecutiveProfitLossBreakdownRow'
+          type: array
+          title: By Manager
+        expense_source_status:
+          type: string
+          title: Expense Source Status
+          default: source_missing
+        expense_breakdown:
+          items:
+            $ref: '#/components/schemas/ExecutiveProfitLossExpenseBreakdownRow'
+          type: array
+          title: Expense Breakdown
+        expense_open_questions:
+          items:
+            $ref: '#/components/schemas/ExecutiveProfitLossOpenQuestion'
+          type: array
+          title: Expense Open Questions
+        filters:
+          additionalProperties: true
+          type: object
+          title: Filters
+      type: object
+      required:
+      - date_from
+      - date_to
+      - source_status
+      - freshness_status
+      title: ExecutiveProfitLossPeriodResponse
+    ExecutiveProfitLossRatio:
+      properties:
+        key:
+          type: string
+          title: Key
+        label:
+          type: string
+          title: Label
+        value:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Value
+        unit:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Unit
+        tone:
+          type: string
+          title: Tone
+          default: neutral
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+      type: object
+      required:
+      - key
+      - label
+      title: ExecutiveProfitLossRatio
+    ExecutiveSourceStatus:
+      properties:
+        source_key:
+          type: string
+          title: Source Key
+        title:
+          type: string
+          title: Title
+        source_status:
+          type: string
+          title: Source Status
+        freshness_status:
+          type: string
+          title: Freshness Status
+        as_of:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+        max_lag_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Max Lag Days
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+      type: object
+      required:
+      - source_key
+      - title
+      - source_status
+      - freshness_status
+      title: ExecutiveSourceStatus
     ExpertiseCaseActionRequest:
       properties:
         actor_external_id:
@@ -11737,6 +13480,146 @@ components:
       required:
       - telegram_user_id
       title: LogisticsTelegramAuthRequest
+    LogisticsTransferAssistantCandidateResponse:
+      properties:
+        product:
+          $ref: '#/components/schemas/LogisticsTransferAssistantProduct'
+        warehouse:
+          $ref: '#/components/schemas/LogisticsTransferAssistantWarehouse'
+        order:
+          anyOf:
+          - $ref: '#/components/schemas/LogisticsTransferAssistantOrder'
+          - type: 'null'
+        source_document:
+          anyOf:
+          - $ref: '#/components/schemas/LogisticsTransferAssistantSourceDocument'
+          - type: 'null'
+        quantity:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Quantity
+        status:
+          type: string
+          title: Status
+        reason:
+          type: string
+          title: Reason
+        onec_document_keys:
+          additionalProperties:
+            type: string
+          type: object
+          title: Onec Document Keys
+        fact_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Fact Date
+        data_source:
+          type: string
+          title: Data Source
+        measures:
+          additionalProperties:
+            type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          type: object
+          title: Measures
+        pickup_deadline:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Pickup Deadline
+        pickup_deadline_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Pickup Deadline Source
+      type: object
+      required:
+      - product
+      - warehouse
+      - quantity
+      - status
+      - reason
+      - data_source
+      title: LogisticsTransferAssistantCandidateResponse
+    LogisticsTransferAssistantOrder:
+      properties:
+        ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ref
+        number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Number
+        site_order_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Site Order Number
+      type: object
+      title: LogisticsTransferAssistantOrder
+    LogisticsTransferAssistantProduct:
+      properties:
+        ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ref
+        code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Code
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+      type: object
+      title: LogisticsTransferAssistantProduct
+    LogisticsTransferAssistantSourceDocument:
+      properties:
+        type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Type
+        ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ref
+        number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Number
+      type: object
+      title: LogisticsTransferAssistantSourceDocument
+    LogisticsTransferAssistantWarehouse:
+      properties:
+        ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ref
+        code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Code
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+      type: object
+      title: LogisticsTransferAssistantWarehouse
     LogisticsTransferSyncItem:
       properties:
         source_document_type:
@@ -12741,6 +14624,332 @@ components:
       - delta
       - reasons
       title: PriceChangeItem
+    ProcurementAssortmentDecision:
+      properties:
+        item_id:
+          type: string
+          title: Item Id
+        entity_type_id:
+          type: integer
+          title: Entity Type Id
+        title:
+          type: string
+          title: Title
+          default: ''
+        sku_code:
+          type: string
+          title: Sku Code
+          default: ''
+        sku_name:
+          type: string
+          title: Sku Name
+          default: ''
+        status_decision:
+          type: string
+          title: Status Decision
+          default: no_change
+        status_decision_label:
+          type: string
+          title: Status Decision Label
+          default: Без изменения
+        status_reason:
+          type: string
+          title: Status Reason
+          default: ''
+        status_approved_by:
+          type: string
+          title: Status Approved By
+          default: ''
+        status_changed_at:
+          type: string
+          title: Status Changed At
+          default: ''
+        commercial_marks:
+          items:
+            type: string
+          type: array
+          title: Commercial Marks
+        sync_blockers:
+          items:
+            type: string
+          type: array
+          title: Sync Blockers
+        manual_override_preview:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Manual Override Preview
+      type: object
+      required:
+      - item_id
+      - entity_type_id
+      title: ProcurementAssortmentDecision
+    ProcurementAssortmentDecisionSyncResponse:
+      properties:
+        decision:
+          $ref: '#/components/schemas/ProcurementAssortmentDecision'
+        synced:
+          type: boolean
+          title: Synced
+        merge_action:
+          type: string
+          title: Merge Action
+          default: ''
+        manual_overrides_path:
+          type: string
+          title: Manual Overrides Path
+        blockers:
+          items:
+            type: string
+          type: array
+          title: Blockers
+      type: object
+      required:
+      - decision
+      - synced
+      - manual_overrides_path
+      title: ProcurementAssortmentDecisionSyncResponse
+    ProcurementAssortmentDecisionUpdateRequest:
+      properties:
+        status_decision:
+          type: string
+          title: Status Decision
+          default: no_change
+        status_reason:
+          type: string
+          title: Status Reason
+          default: ''
+        status_approved_by:
+          type: string
+          title: Status Approved By
+          default: ''
+        status_changed_at:
+          type: string
+          title: Status Changed At
+          default: ''
+        commercial_marks:
+          items:
+            type: string
+          type: array
+          title: Commercial Marks
+      type: object
+      title: ProcurementAssortmentDecisionUpdateRequest
+    ProcurementAssortmentDecisionUpdateResponse:
+      properties:
+        decision:
+          $ref: '#/components/schemas/ProcurementAssortmentDecision'
+        updated:
+          type: boolean
+          title: Updated
+          default: true
+      type: object
+      required:
+      - decision
+      title: ProcurementAssortmentDecisionUpdateResponse
+    ProcurementCertificationDocsGenerateResponse:
+      properties:
+        preview:
+          $ref: '#/components/schemas/ProcurementLabelOrderPreview'
+        generated:
+          type: boolean
+          title: Generated
+        artifact_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Artifact Version
+        zip_filename:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Zip Filename
+        zip_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Zip Url
+        disk_file_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Disk File Id
+        gtin_rows:
+          type: integer
+          title: Gtin Rows
+          default: 0
+        missing_rows:
+          type: integer
+          title: Missing Rows
+          default: 0
+        document_checklist:
+          items:
+            type: string
+          type: array
+          title: Document Checklist
+      type: object
+      required:
+      - preview
+      - generated
+      title: ProcurementCertificationDocsGenerateResponse
+    ProcurementClassificationApprovalResponse:
+      properties:
+        order:
+          $ref: '#/components/schemas/ProcurementOrderFormationRead'
+        proposal:
+          $ref: '#/components/schemas/ProcurementClassificationProposalRead'
+        mode:
+          type: string
+          title: Mode
+        message_id:
+          type: string
+          title: Message Id
+        xml_preview:
+          type: string
+          title: Xml Preview
+        written_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Written Path
+      type: object
+      required:
+      - order
+      - proposal
+      - mode
+      - message_id
+      - xml_preview
+      title: ProcurementClassificationApprovalResponse
+    ProcurementClassificationCreateRequest:
+      properties:
+        proposed_status:
+          type: string
+          title: Proposed Status
+        reason:
+          type: string
+          maxLength: 4000
+          minLength: 1
+          title: Reason
+        manual_minimum:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Manual Minimum
+        review_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Review Date
+      type: object
+      required:
+      - proposed_status
+      - reason
+      title: ProcurementClassificationCreateRequest
+    ProcurementClassificationProposalRead:
+      properties:
+        id:
+          type: integer
+          title: Id
+        status:
+          type: string
+          title: Status
+        previous_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Previous Status
+        proposed_status:
+          type: string
+          title: Proposed Status
+        proposed_status_label:
+          type: string
+          title: Proposed Status Label
+        reason:
+          type: string
+          title: Reason
+        manual_minimum:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Manual Minimum
+        review_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Review Date
+        blocks_order_line:
+          type: boolean
+          title: Blocks Order Line
+        requested_at:
+          type: string
+          format: date-time
+          title: Requested At
+        requested_by_bitrix_user_id:
+          type: string
+          title: Requested By Bitrix User Id
+        requested_by_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Requested By Name
+        approved_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Approved At
+        approved_by_bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approved By Bitrix User Id
+        approved_by_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approved By Name
+        onec_status:
+          type: string
+          title: Onec Status
+        onec_message_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Message Id
+        onec_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Error
+        bitrix_readback_value:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Readback Value
+        reflected_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Reflected At
+      type: object
+      required:
+      - id
+      - status
+      - proposed_status
+      - proposed_status_label
+      - reason
+      - blocks_order_line
+      - requested_at
+      - requested_by_bitrix_user_id
+      - onec_status
+      title: ProcurementClassificationProposalRead
     ProcurementLabelApproveResponse:
       properties:
         item_id:
@@ -12877,12 +15086,20 @@ components:
         item_name:
           type: string
           title: Item Name
+        article_1c:
+          type: string
+          title: Article 1C
+          default: ''
         sku:
           type: string
           title: Sku
         barcode:
           type: string
           title: Barcode
+        barcode_source:
+          type: string
+          title: Barcode Source
+          default: ''
         unit:
           type: string
           title: Unit
@@ -12906,12 +15123,53 @@ components:
           type: string
           title: Certificate Id
           default: ''
+        certificate_item_id:
+          type: string
+          title: Certificate Item Id
+          default: ''
+        certificate_number:
+          type: string
+          title: Certificate Number
+          default: ''
+        certificate_valid_to:
+          type: string
+          title: Certificate Valid To
+          default: ''
+        certificate_file_id:
+          type: string
+          title: Certificate File Id
+          default: ''
         certificate_status:
           type: string
           title: Certificate Status
         eac_allowed:
           type: boolean
           title: Eac Allowed
+        product_passport_item_id:
+          type: string
+          title: Product Passport Item Id
+          default: ''
+        trade_name:
+          type: string
+          title: Trade Name
+          default: ''
+        tnved:
+          type: string
+          title: Tnved
+          default: ''
+        manufacturer:
+          type: string
+          title: Manufacturer
+          default: ''
+        product_series:
+          type: string
+          title: Product Series
+          default: ''
+        label_warnings:
+          items:
+            type: string
+          type: array
+          title: Label Warnings
         status:
           type: string
           title: Status
@@ -12992,6 +15250,488 @@ components:
       required:
       - user_id
       title: ProcurementLabelsUser
+    ProcurementOrderConditionsUpdateRequest:
+      properties:
+        supplier_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Ref
+        supplier_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Code
+        supplier_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Name
+        contract_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contract Ref
+        contract_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contract Code
+        contract_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contract Name
+        warehouse_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Warehouse Ref
+        warehouse_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Warehouse Code
+        warehouse_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Warehouse Name
+        currency:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Currency
+        procurement_contour:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Procurement Contour
+        route:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Route
+        batch_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Batch Id
+        order_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Order Date
+        responsible_bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Responsible Bitrix User Id
+        responsible_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Responsible Name
+      type: object
+      title: ProcurementOrderConditionsUpdateRequest
+    ProcurementOrderFormationLineRead:
+      properties:
+        id:
+          type: integer
+          title: Id
+        line_number:
+          type: integer
+          title: Line Number
+        version:
+          type: integer
+          title: Version
+        bitrix_product_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Product Id
+        bitrix_product_xml_id:
+          type: string
+          title: Bitrix Product Xml Id
+        nomenclature_ref:
+          type: string
+          title: Nomenclature Ref
+        nomenclature_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Nomenclature Code
+        nomenclature_name:
+          type: string
+          title: Nomenclature Name
+        recommended_quantity:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Recommended Quantity
+        final_quantity:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Final Quantity
+        purchase_price:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Purchase Price
+        amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Amount
+        currency:
+          type: string
+          title: Currency
+        source_kind:
+          type: string
+          title: Source Kind
+        explicit_demand:
+          type: boolean
+          title: Explicit Demand
+        risk_level:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Risk Level
+        risk_codes:
+          items:
+            type: string
+          type: array
+          title: Risk Codes
+        recommendation_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommendation Reason
+        blockers:
+          items:
+            type: string
+          type: array
+          title: Blockers
+        assortment_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Assortment Status
+        lifecycle_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lifecycle Status
+        quality:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Quality
+        procurement_profile:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Procurement Profile
+        manual_minimum:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Manual Minimum
+        removed:
+          type: boolean
+          title: Removed
+        effective_assortment_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Effective Assortment Status
+        effective_assortment_status_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Effective Assortment Status Label
+        latest_classification:
+          anyOf:
+          - $ref: '#/components/schemas/ProcurementClassificationProposalRead'
+          - type: 'null'
+      type: object
+      required:
+      - id
+      - line_number
+      - version
+      - bitrix_product_xml_id
+      - nomenclature_ref
+      - nomenclature_name
+      - recommended_quantity
+      - final_quantity
+      - purchase_price
+      - amount
+      - currency
+      - source_kind
+      - explicit_demand
+      - removed
+      title: ProcurementOrderFormationLineRead
+    ProcurementOrderFormationRead:
+      properties:
+        id:
+          type: integer
+          title: Id
+        stable_key:
+          type: string
+          title: Stable Key
+        status:
+          type: string
+          title: Status
+        version:
+          type: integer
+          title: Version
+        bitrix_entity_type_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Bitrix Entity Type Id
+        bitrix_item_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Item Id
+        bitrix_category_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Bitrix Category Id
+        bitrix_stage_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Stage Id
+        bitrix_item_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Item Url
+        supplier_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Ref
+        supplier_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Code
+        supplier_name:
+          type: string
+          title: Supplier Name
+        contract_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contract Ref
+        contract_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contract Code
+        contract_name:
+          type: string
+          title: Contract Name
+        warehouse_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Warehouse Ref
+        warehouse_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Warehouse Code
+        warehouse_name:
+          type: string
+          title: Warehouse Name
+        currency:
+          type: string
+          title: Currency
+        procurement_contour:
+          type: string
+          title: Procurement Contour
+        route:
+          type: string
+          title: Route
+        batch_id:
+          type: string
+          title: Batch Id
+        order_date:
+          type: string
+          format: date
+          title: Order Date
+        responsible_bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Responsible Bitrix User Id
+        responsible_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Responsible Name
+        calculation_id:
+          type: string
+          title: Calculation Id
+        source_run_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Run Id
+        approved_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Approved Version
+        approved_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Approved At
+        approved_by_bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approved By Bitrix User Id
+        approved_by_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approved By Name
+        onec_status:
+          type: string
+          title: Onec Status
+        onec_message_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Message Id
+        onec_document_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Document Ref
+        onec_document_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Document Number
+        onec_document_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Onec Document Date
+        onec_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Error
+        blockers:
+          items:
+            type: string
+          type: array
+          title: Blockers
+        total_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Total Amount
+          default: '0'
+        lines:
+          items:
+            $ref: '#/components/schemas/ProcurementOrderFormationLineRead'
+          type: array
+          title: Lines
+        manual_status_options:
+          additionalProperties:
+            type: string
+          type: object
+          title: Manual Status Options
+      type: object
+      required:
+      - id
+      - stable_key
+      - status
+      - version
+      - supplier_name
+      - contract_name
+      - warehouse_name
+      - currency
+      - procurement_contour
+      - route
+      - batch_id
+      - order_date
+      - calculation_id
+      - onec_status
+      title: ProcurementOrderFormationRead
+    ProcurementOrderLineUpdateRequest:
+      properties:
+        final_quantity:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Final Quantity
+        purchase_price:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Purchase Price
+        removed:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Removed
+        explicit_demand:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Explicit Demand
+      type: object
+      title: ProcurementOrderLineUpdateRequest
+    ProcurementOrderTransmissionRequest:
+      properties:
+        apply:
+          type: boolean
+          title: Apply
+          default: false
+      type: object
+      title: ProcurementOrderTransmissionRequest
+    ProcurementOrderTransmissionResponse:
+      properties:
+        order:
+          $ref: '#/components/schemas/ProcurementOrderFormationRead'
+        mode:
+          type: string
+          title: Mode
+        message_id:
+          type: string
+          title: Message Id
+        xml_preview:
+          type: string
+          title: Xml Preview
+        written_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Written Path
+      type: object
+      required:
+      - order
+      - mode
+      - message_id
+      - xml_preview
+      title: ProcurementOrderTransmissionResponse
     ProductFacets:
       properties:
         subjects:
@@ -13603,6 +16343,11 @@ components:
         counterparty_ref:
           type: string
           title: Counterparty Ref
+        counterparty_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Code
         counterparty_name:
           anyOf:
           - type: string
@@ -13720,6 +16465,11 @@ components:
       title: ReceivableCaseItem
     ReceivableWorkplaceActionRequest:
       properties:
+        action_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Action Id
         status:
           anyOf:
           - type: string
@@ -13741,6 +16491,12 @@ components:
             format: date
           - type: 'null'
           title: Promised Payment Date
+        last_contact_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Last Contact At
         next_action_date:
           anyOf:
           - type: string
@@ -13767,11 +16523,48 @@ components:
           additionalProperties: true
           type: object
           title: Event
+        cache_status:
+          additionalProperties:
+            $ref: '#/components/schemas/ReceivableWorkplaceCacheComponent'
+          type: object
+          title: Cache Status
       type: object
       required:
       - item
       - event
       title: ReceivableWorkplaceActionResponse
+    ReceivableWorkplaceCacheComponent:
+      properties:
+        source_status:
+          type: string
+          title: Source Status
+        cached_count:
+          type: integer
+          title: Cached Count
+          default: 0
+        computed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Computed At
+      type: object
+      required:
+      - source_status
+      title: ReceivableWorkplaceCacheComponent
+    ReceivableWorkplaceDepartmentOption:
+      properties:
+        department_ref:
+          type: string
+          title: Department Ref
+        department_name:
+          type: string
+          title: Department Name
+      type: object
+      required:
+      - department_ref
+      - department_name
+      title: ReceivableWorkplaceDepartmentOption
     ReceivableWorkplaceDocument:
       properties:
         document_ref:
@@ -13794,6 +16587,30 @@ components:
           type: string
           pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           title: Amount
+        gross_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Gross Amount
+        open_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Open Amount
+        closing_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Closing Amount
+        return_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Return Amount
         manager_name:
           anyOf:
           - type: string
@@ -13814,6 +16631,28 @@ components:
           type: boolean
           title: Is Overdue
           default: false
+        selection_rule:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Selection Rule
+        statement_balance_after:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Statement Balance After
+        match_details:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Match Details
+        document_structure_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Document Structure Status
       type: object
       required:
       - amount
@@ -13840,6 +16679,11 @@ components:
           - type: string
           - type: 'null'
           title: Counterparty Name
+        bitrix_detail_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Detail Url
         department_ref:
           anyOf:
           - type: string
@@ -13934,6 +16778,10 @@ components:
           type: boolean
           title: Payment Postponed
           default: false
+        payment_postponed_count:
+          type: integer
+          title: Payment Postponed Count
+          default: 0
         comment:
           anyOf:
           - type: string
@@ -13977,6 +16825,26 @@ components:
       - needs_credit_depth_default
       - criticality
       title: ReceivableWorkplaceItem
+    ReceivableWorkplaceMetaResponse:
+      properties:
+        latest_snapshot_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Latest Snapshot Date
+        department_options:
+          items:
+            $ref: '#/components/schemas/ReceivableWorkplaceDepartmentOption'
+          type: array
+          title: Department Options
+        cache_status:
+          additionalProperties:
+            $ref: '#/components/schemas/ReceivableWorkplaceCacheComponent'
+          type: object
+          title: Cache Status
+      type: object
+      title: ReceivableWorkplaceMetaResponse
     ReceivableWorkplaceResponse:
       properties:
         as_of:
@@ -13991,6 +16859,26 @@ components:
           title: Source Status
         summary:
           $ref: '#/components/schemas/ReceivableWorkplaceSummary'
+        total_count:
+          type: integer
+          title: Total Count
+        visible_count:
+          type: integer
+          title: Visible Count
+        summary_scope:
+          type: string
+          title: Summary Scope
+          default: filtered_total
+        department_options:
+          items:
+            $ref: '#/components/schemas/ReceivableWorkplaceDepartmentOption'
+          type: array
+          title: Department Options
+        cache_status:
+          additionalProperties:
+            $ref: '#/components/schemas/ReceivableWorkplaceCacheComponent'
+          type: object
+          title: Cache Status
         status_options:
           items:
             $ref: '#/components/schemas/ReceivableWorkplaceStatusOption'
@@ -14007,6 +16895,8 @@ components:
       - freshness_status
       - source_status
       - summary
+      - total_count
+      - visible_count
       - status_options
       - payload
       title: ReceivableWorkplaceResponse

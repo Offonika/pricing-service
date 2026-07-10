@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, Query
+from datetime import date
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, require_logistics_internal_token
@@ -24,6 +26,7 @@ from app.schemas.logistics import (
     LogisticsRouteRunResponse,
     LogisticsSyncResponse,
     LogisticsTelegramAuthRequest,
+    LogisticsTransferAssistantCandidateResponse,
     LogisticsTransferSyncItem,
     LogisticsUnitLookupResponse,
     LogisticsUnitSyncItem,
@@ -33,6 +36,7 @@ from app.schemas.logistics import (
     LogisticsWarehouseSyncItem,
 )
 from app.services import logistics as logistics_service
+from app.services import transfer_assistant as transfer_assistant_service
 
 router = APIRouter(dependencies=[Depends(require_logistics_internal_token)])
 
@@ -210,6 +214,31 @@ def list_monitor(
         with_external_carrier=with_external_carrier,
         manual_review=manual_review,
     )
+
+
+@router.get(
+    "/transfer-assistant/candidates",
+    response_model=list[LogisticsTransferAssistantCandidateResponse],
+)
+def list_transfer_assistant_candidates(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    warehouse_id: str | None = Query(default=None, min_length=1),
+    status: str | None = Query(default=None),
+    limit: int = Query(default=100, ge=1, le=1000),
+):
+    try:
+        return transfer_assistant_service.list_transfer_assistant_candidates(
+            date_from=date_from,
+            date_to=date_to,
+            warehouse_id=warehouse_id,
+            status=status,
+            limit=limit,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @router.post("/route-runs", response_model=LogisticsRouteRunResponse)

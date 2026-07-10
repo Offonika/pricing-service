@@ -10,6 +10,7 @@ from sqlalchemy import text
 
 MSK_TZ = ZoneInfo("Europe/Moscow")
 DEFAULT_EXCHANGE_COUNTERPARTY_CODE = "РБ002085"
+CANONICAL_SUMMARY_COUNTERPARTY_CODES = {"РБ005290"}
 DEFAULT_MOVEMENT_TOLERANCE_RUB = Decimal("100.00")
 DEFAULT_CLOSING_TOLERANCE_RUB = Decimal("10000.00")
 DEFAULT_RATE_MISMATCH_TOLERANCE_RUB = Decimal("1.00")
@@ -70,6 +71,166 @@ def _overall_status(*statuses: str) -> str:
     return "warning" if any(status != "ok" for status in statuses) else "ok"
 
 
+def _uses_canonical_summary_source(counterparty_code: str) -> bool:
+    return str(counterparty_code or "").strip() in CANONICAL_SUMMARY_COUNTERPARTY_CODES
+
+
+def _build_canonical_summary_settlements(
+    onec_engine,
+    *,
+    counterparty_code: str,
+    as_of_naive: datetime,
+    as_of_msk: str,
+    resolved_period_start: date,
+    period_start_dt: datetime,
+    rate_check_start: date,
+    movement_tolerance_rub: Decimal,
+    closing_tolerance_rub: Decimal,
+) -> dict[str, Any]:
+    params = {
+        "counterparty_code": counterparty_code,
+        "period_start": period_start_dt,
+        "as_of": as_of_naive,
+    }
+
+    counterparty_sql = text("""
+        SELECT TOP 1
+            master.dbo.fn_varbintohexstr(c._IDRRef) AS counterparty_ref,
+            RTRIM(c._Code) AS counterparty_code,
+            c._Description AS counterparty_name
+        FROM dbo._Reference54 AS c WITH (NOLOCK)
+        WHERE c._Marked = 0x00
+          AND RTRIM(c._Code) = :counterparty_code
+        """)
+
+    canonical_sql = text("""
+        WITH
+        latest_opening_period AS (
+            SELECT MAX(t._Period) AS period
+            FROM dbo._AccumRgT7009 AS t WITH (NOLOCK)
+            WHERE t._Period <= :period_start
+        ),
+        opening_rows AS (
+            SELECT
+                CAST(t._Fld7008 AS decimal(18, 2)) AS amount
+            FROM dbo._AccumRgT7009 AS t WITH (NOLOCK)
+            JOIN latest_opening_period AS p
+                ON t._Period = p.period
+            JOIN dbo._Reference54 AS counterparty WITH (NOLOCK)
+                ON counterparty._IDRRef = t._Fld7006RRef
+            WHERE RTRIM(counterparty._Code) = :counterparty_code
+        ),
+        movement_rows AS (
+            SELECT
+                CAST(
+                    CASE
+                        WHEN r._RecordKind = 0 THEN r._Fld7008
+                        ELSE -r._Fld7008
+                    END AS decimal(18, 2)
+                ) AS amount,
+                r._Period AS movement_at
+            FROM dbo._AccumRg7002 AS r WITH (NOLOCK)
+            JOIN dbo._Reference54 AS counterparty WITH (NOLOCK)
+                ON counterparty._IDRRef = r._Fld7006RRef
+            WHERE RTRIM(counterparty._Code) = :counterparty_code
+              AND r._Active = 0x01
+              AND r._Period >= :period_start
+              AND r._Period < :as_of
+        )
+        SELECT
+            CAST((SELECT period FROM latest_opening_period) AS date) AS opening_period,
+            CAST(COALESCE((SELECT SUM(amount) FROM opening_rows), 0) AS decimal(18, 2))
+                AS opening_balance_rub,
+            CAST(COALESCE((SELECT SUM(amount) FROM movement_rows), 0) AS decimal(18, 2))
+                AS movement_amount_rub,
+            (SELECT COUNT(*) FROM movement_rows) AS movement_count,
+            (SELECT MAX(movement_at) FROM movement_rows) AS last_movement_at
+        """)
+
+    with onec_engine.connect() as conn:
+        counterparty = conn.execute(counterparty_sql, params).mappings().first()
+        if counterparty is None:
+            return {
+                "status": "missing",
+                "counterparty_code": counterparty_code,
+                "generated_at_msk": as_of_msk,
+                "note": "Контрагент не найден в 1С",
+            }
+        row = conn.execute(canonical_sql, params).mappings().first() or {}
+
+    opening_balance_rub = _money(row.get("opening_balance_rub"))
+    signed_movement_rub = _money(row.get("movement_amount_rub"))
+    current_balance_rub = _money(opening_balance_rub + signed_movement_rub)
+    inflow_amount_rub = signed_movement_rub if signed_movement_rub > 0 else Decimal("0")
+    outflow_amount_rub = -signed_movement_rub if signed_movement_rub < 0 else Decimal("0")
+    movement_diff_rub = Decimal("0.00")
+    movement_status = _control_status(movement_diff_rub, movement_tolerance_rub)
+    closing_status = _control_status(current_balance_rub, closing_tolerance_rub)
+    rub_control_status = _overall_status(movement_status, closing_status)
+    last_movement_at = row.get("last_movement_at")
+    movement_count = int(row.get("movement_count") or 0)
+    opening_period = row.get("opening_period")
+    opening_period_text = opening_period.isoformat() if opening_period else None
+
+    summary_by_currency = [
+        {
+            "contract_currency_code": "643",
+            "contract_currency_name": "руб",
+            "contract_count": 0,
+            "opening_balance": str(opening_balance_rub),
+            "inflow_amount": str(_money(inflow_amount_rub)),
+            "outflow_amount": str(_money(outflow_amount_rub)),
+            "current_balance": str(current_balance_rub),
+            "opening_balance_rub": str(opening_balance_rub),
+            "inflow_amount_rub": str(_money(inflow_amount_rub)),
+            "outflow_amount_rub": str(_money(outflow_amount_rub)),
+            "current_balance_rub": str(current_balance_rub),
+            "effective_rate": "1.000000",
+            "movement_count": movement_count,
+            "last_movement_at": last_movement_at.isoformat() if last_movement_at else None,
+        }
+    ]
+
+    return {
+        "status": "ready",
+        "control_status": rub_control_status,
+        "counterparty_ref": counterparty["counterparty_ref"],
+        "counterparty_code": counterparty["counterparty_code"],
+        "counterparty_name": counterparty["counterparty_name"],
+        "generated_at_msk": as_of_msk,
+        "period_start": resolved_period_start.isoformat(),
+        "period_end_msk": as_of_msk,
+        "source": "1c_mutual_settlements_canonical_summary",
+        "canonical_opening_period": opening_period_text,
+        "summary_by_currency": summary_by_currency,
+        "rub_control": {
+            "rub_inflow": str(_money(inflow_amount_rub)),
+            "foreign_outflow_rub": str(_money(outflow_amount_rub)),
+            "movement_diff_rub": str(_money(movement_diff_rub)),
+            "closing_balance_rub": str(current_balance_rub),
+            "movement_tolerance_rub": str(_money(movement_tolerance_rub)),
+            "closing_balance_tolerance_rub": str(_money(closing_tolerance_rub)),
+            "movement_status": movement_status,
+            "closing_status": closing_status,
+            "status": rub_control_status,
+        },
+        "rate_mismatch_control": {
+            "status": "ok",
+            "check_from": rate_check_start.isoformat(),
+            "check_to_msk": as_of_msk,
+            "mismatch_count": 0,
+            "total_diff_rub": "0.00",
+            "total_abs_diff_rub": "0.00",
+            "tolerance_rub": str(_money(DEFAULT_RATE_MISMATCH_TOLERANCE_RUB)),
+            "returned_count": 0,
+            "items": [],
+        },
+        "contract_balances": [],
+        "detail_rows": [],
+        "movement_count": movement_count,
+    }
+
+
 def build_exchange_counterparty_settlements(
     onec_engine,
     *,
@@ -82,10 +243,24 @@ def build_exchange_counterparty_settlements(
     rate_mismatch_limit: int = DEFAULT_RATE_MISMATCH_LIMIT,
 ) -> dict[str, Any]:
     as_of_naive, as_of_msk = _as_msk_naive(as_of)
+    counterparty_code = str(counterparty_code or "").strip()
     resolved_period_start = period_start or _default_period_start(as_of_naive)
     period_start_dt = datetime.combine(resolved_period_start, time.min)
     rate_check_start = _default_rate_check_start(as_of_naive)
     rate_check_start_dt = datetime.combine(rate_check_start, time.min)
+
+    if _uses_canonical_summary_source(counterparty_code):
+        return _build_canonical_summary_settlements(
+            onec_engine,
+            counterparty_code=counterparty_code,
+            as_of_naive=as_of_naive,
+            as_of_msk=as_of_msk,
+            resolved_period_start=resolved_period_start,
+            period_start_dt=period_start_dt,
+            rate_check_start=rate_check_start,
+            movement_tolerance_rub=movement_tolerance_rub,
+            closing_tolerance_rub=closing_tolerance_rub,
+        )
 
     params = {
         "counterparty_code": counterparty_code,
@@ -325,9 +500,7 @@ def build_exchange_counterparty_settlements(
             state["opening_balance"] + state["inflow_amount"] - state["outflow_amount"]
         )
         current_balance_rub = _money(
-            state["opening_balance_rub"]
-            + state["inflow_amount_rub"]
-            - state["outflow_amount_rub"]
+            state["opening_balance_rub"] + state["inflow_amount_rub"] - state["outflow_amount_rub"]
         )
         currency_code = state["contract_currency_code"]
         currency_name = state["contract_currency_name"]

@@ -189,7 +189,9 @@ def _apply_nearby_returns(
         ]
         if not candidates:
             continue
-        sale = min(candidates, key=lambda item: (_distance(item.row_index, ret.row_index), item.row_index))
+        sale = min(
+            candidates, key=lambda item: (_distance(item.row_index, ret.row_index), item.row_index)
+        )
         sale.return_amount = _money(sale.return_amount + ret.amount)
         sale.match_details.append(
             {
@@ -220,7 +222,9 @@ def _apply_direct_payment_matches(
         ]
         if not candidates:
             continue
-        payment = min(candidates, key=lambda item: (_distance(sale.row_index, item.row_index), item.row_index))
+        payment = min(
+            candidates, key=lambda item: (_distance(sale.row_index, item.row_index), item.row_index)
+        )
         payment.used = True
         sale.closed = True
         sale.open_amount = Decimal("0.00")
@@ -254,45 +258,43 @@ def _apply_multi_sale_payment_matches(
     for payment in payment_layers:
         if payment.used:
             continue
-        for sale_index, sale in enumerate(sale_layers):
-            if sale.closed or sale.match_amount <= Decimal("0.00"):
-                continue
-            if _distance(sale.row_index, payment.row_index) > NEARBY_PAYMENT_ROW_WINDOW:
-                continue
-            for count in range(1, MULTI_SALE_ROW_WINDOW + 1):
-                for direction in (1, -1):
-                    group = _sale_group(
-                        sale_layers,
-                        sale_index,
-                        direction=direction,
-                        count=count,
-                    )
-                    if not group:
-                        continue
-                    if (
-                        min(_distance(item.row_index, payment.row_index) for item in group)
-                        > NEARBY_PAYMENT_ROW_WINDOW
-                    ):
-                        continue
-                    if any(
-                        _distance(item.row_index, payment.row_index) > MULTI_SALE_ROW_WINDOW
-                        for item in group
-                    ):
-                        continue
-                    group_amount = sum((item.match_amount for item in group), Decimal("0.00"))
-                    if not _is_close(group_amount, payment.amount, MULTI_SALE_PAYMENT_TOLERANCE):
-                        continue
-                    payment.used = True
-                    detail = _closing_detail(payment, rule=STATEMENT_RULE_MULTI_SALE_PAYMENT)
-                    detail["matched_sale_count"] = len(group)
-                    for item in group:
-                        item.closed = True
-                        item.open_amount = Decimal("0.00")
-                        item.selection_rule = STATEMENT_RULE_MULTI_SALE_PAYMENT
-                        item.match_details.append(detail)
+        candidate_indices = [
+            index
+            for index, sale in enumerate(sale_layers)
+            if not sale.closed
+            and sale.match_amount > Decimal("0.00")
+            and _distance(sale.row_index, payment.row_index) <= MULTI_SALE_ROW_WINDOW
+        ]
+        candidate_index_set = set(candidate_indices)
+        for sale_index in candidate_indices:
+            group: list[_SaleLayer] = []
+            group_amount = Decimal("0.00")
+            for index in range(
+                sale_index, min(len(sale_layers), sale_index + MULTI_SALE_ROW_WINDOW + 1)
+            ):
+                if index not in candidate_index_set:
                     break
-                if payment.used:
-                    break
+                sale = sale_layers[index]
+                group.append(sale)
+                group_amount += sale.match_amount
+                if len(group) < 2:
+                    continue
+                if (
+                    min(_distance(item.row_index, payment.row_index) for item in group)
+                    > NEARBY_PAYMENT_ROW_WINDOW
+                ):
+                    continue
+                if not _is_close(group_amount, payment.amount, MULTI_SALE_PAYMENT_TOLERANCE):
+                    continue
+                payment.used = True
+                detail = _closing_detail(payment, rule=STATEMENT_RULE_MULTI_SALE_PAYMENT)
+                detail["matched_sale_count"] = len(group)
+                for item in group:
+                    item.closed = True
+                    item.open_amount = Decimal("0.00")
+                    item.selection_rule = STATEMENT_RULE_MULTI_SALE_PAYMENT
+                    item.match_details.append(detail)
+                break
             if payment.used:
                 break
 
@@ -428,7 +430,9 @@ def resolve_open_debt_documents_by_statement(
                     open_amount=amount,
                 )
             )
-        elif event_type in {"payment", "settlement", "debt_adjustment"} and amount < Decimal("0.00"):
+        elif event_type in {"payment", "settlement", "debt_adjustment"} and amount < Decimal(
+            "0.00"
+        ):
             payment_layers.append(_ClosingLayer(event=event, amount=abs(amount), row_index=index))
         elif event_type == "return" and amount < Decimal("0.00"):
             return_layers.append(_ClosingLayer(event=event, amount=abs(amount), row_index=index))
@@ -439,7 +443,12 @@ def resolve_open_debt_documents_by_statement(
         running_balance = _money(running_balance + _money(event.amount_delta))
         balances_after.append(running_balance)
 
-    resolved_structure_checks = structure_checks or {}
+    sorted_event_ref_keys = {ref_key(event.document_ref) for event in sorted_events}
+    resolved_structure_checks = {
+        ref_key(document_ref): check
+        for document_ref, check in (structure_checks or {}).items()
+        if ref_key(document_ref) in sorted_event_ref_keys
+    }
     _apply_structure_checks(sale_layers, resolved_structure_checks, ref_key=ref_key)
     structure_linked_document_refs = _structure_linked_document_refs(
         resolved_structure_checks,

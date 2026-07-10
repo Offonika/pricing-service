@@ -582,7 +582,6 @@ def import_onec_products(engine_app, engine_onec) -> dict:
                 select(Product).where(
                     Product.is_active.is_(True),
                     Product.article.notin_(allowed_articles or {"__none__"}),
-                    (Product.code_1c.isnot(None) | Product.info_system_code.isnot(None)),
                 )
             )
             .scalars()

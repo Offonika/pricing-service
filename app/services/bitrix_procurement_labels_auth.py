@@ -32,6 +32,7 @@ class ProcurementLabelsSession:
     member_id: str
     user_id: str
     expires_at: datetime
+    user_name: str = ""
 
 
 @dataclass(frozen=True)
@@ -235,6 +236,7 @@ def verify_procurement_labels_session_token(
         member_id=member_id,
         user_id=user_id,
         expires_at=datetime.fromtimestamp(expires_at_ts, UTC),
+        user_name=str(payload.get("user_name") or "").strip(),
     )
 
 

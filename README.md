@@ -85,6 +85,35 @@ cd infra && docker-compose up --build
 
 Матчинг цен конкурентов к товарам: `./.venv/bin/python -m tasks.match_competitor_ftp` — сопоставляет `competitor_ftp_record.sku` с `product.article` (нормализует артикул), пишет цены в `competitor_price` и связи в `product_match`, логируя unmatched/ambiguous.
 
+### Ночной контур SKU и Предмета для УТ 10.3
+- Ручной запуск: `./.venv/bin/python -m tasks.generate_product_skus --write --export-existing --write-ready --mode apply --approved-by pricing-service-nightly --message-id sku-nightly-$(date +%Y%m%d%H%M%S) --changed-at $(date +%F)`.
+- Cron wrapper: `infra/cron/sku_generation_ut103.sh`; расписание: `infra/cron/sku_generation_ut103.cron` (`02:30` Europe/Moscow).
+- Контур берёт только активные товары, не помеченные на удаление. Новым товарам рассчитывает `planned_sku`, а уже рассчитанные товары со статусом `missing_in_1c` отправляет в файловый обмен УТ 10.3.
+- Для записи в 1С используется универсальный пакет `nomenclature_property_updates.v1`: `TargetKind=requisite`, `PropertyName=SKU`, `ValueType=string`.
+- Следом этот же cron запускает `tasks.build_missing_onec_subject_updates`: ищет в живой 1С строки с пустым свойством `Предмет`, берёт `subject_generated` или классифицирует по названию и отправляет `PropertyName=Предмет`, `ValueType=property_value`.
+- Ответы 1С по SKU подтягивает `tasks.apply_ut103_sku_results`: успешные `applied/already_actual` обновляют `fact_sku` и `sku_sync_status`, ошибки сохраняются в `sku_sync_error`.
+- Cron wrapper для обратной синхронизации: `infra/cron/sku_result_sync_ut103.sh`; расписание: `infra/cron/sku_result_sync_ut103.cron` (каждый час в `:45` Europe/Moscow).
+- Настройки: `UT103_EXCHANGE_ROOT` или `SKU_GENERATION_UT103_EXCHANGE_ROOT`, `SKU_GENERATION_UT103_MODE` (`apply` по умолчанию), `SKU_GENERATION_UT103_APPROVED_BY`, `SKU_GENERATION_UT103_PROPERTY_NAME`, `SKU_GENERATION_UT103_SUBJECT_ENABLED`, `SKU_GENERATION_UT103_SUBJECT_LIMIT`.
+
+### Ночной контур Статуса ассортимента для УТ 10.3
+- Ручной запуск: `./.venv/bin/python -m tasks.refresh_assortment_lifecycle_classification --write-ready --allow-empty --export-mode apply --approved-by pricing-service-nightly --message-id assortment-lifecycle-nightly-$(date +%Y%m%d%H%M%S) --json`.
+- Cron wrapper: `infra/cron/assortment_lifecycle_ut103_export.sh`; расписание: `infra/cron/assortment_lifecycle_ut103_export.cron` (`03:20` Europe/Moscow).
+- Контур заново рассчитывает жизненный статус ассортимента, обновляет Postgres-снимок и отправляет в 1С готовые свойства через `nomenclature_property_updates.v1`.
+- Пилотный лимит live-выборки по умолчанию: `ASSORTMENT_LIFECYCLE_LIMIT=600`; поднять можно через env или `--limit` после проверки времени 1С-запросов.
+- В пакет попадают `Статус ассортимента`, причина, дата, источник, а также связанные свойства вроде `Профиль закупочного поведения`, `Коммерческие признаки` и реквизиты эксклюзивности, если для них есть проверенные данные.
+- Витрина `procurement_feature_snapshot.v1` обогащается из живой карточки 1С, регистра свойств номенклатуры и `product` / `productcompatibility`; для дисплеев без заполненного свойства из имени восстанавливаются только предмет, бренд и модель, качество остается обязательным контролируемым заполнением.
+- Качество витрины признаков закупки после refresh: `./.venv/bin/python -m tasks.report_procurement_feature_snapshot_quality --folder дисплеи --only-missing --json`. CSV по умолчанию пишется в `reports/assortment_lifecycle/<date>/procurement-feature-snapshot-quality.csv`.
+- Кандидаты на заполнение пустого свойства `Качество`: `./.venv/bin/python -m tasks.build_missing_display_quality_updates --folder дисплеи --allow-empty --json`. Задача пишет review CSV и JSON update-строк; качество из полей карточки 1С берется только при явном маркере и возрасте карточки не больше 183 дней. Если по карточке сначала нужно решить закупочный статус, код исключается через `config/assortment/display-quality-status-review-exclusions.json`; решения по фактам жизни товара фиксируются в `config/assortment/display-fact-status-decisions.json`. Для аудита исключенных строк используйте `--include-status-review-required`.
+- Формат ручного маппинга качества: `{"items":[{"nomenclature_code":"РБ000022719","quality_raw":"Medium","reason":"Проверено ответственным за папку","approved_by":"Омар"}]}`. После проверки можно получить dry-run XML через `--quality-map-json <path> --print-xml`.
+- Настройки: `UT103_EXCHANGE_ROOT` или `ASSORTMENT_LIFECYCLE_UT103_EXCHANGE_ROOT`, `ASSORTMENT_LIFECYCLE_UT103_MODE` (`apply` по умолчанию), `ASSORTMENT_LIFECYCLE_UT103_APPROVED_BY`, `ASSORTMENT_LIFECYCLE_UT103_SOURCE`, `ASSORTMENT_LIFECYCLE_UT103_OVERWRITE`.
+
+### Черновики заказов поставщику для УТ 10.3
+- Ручной запуск: `./.venv/bin/python -m tasks.export_ut103_procurement_supplier_orders --mode apply --approved-by "Омар" --input-json supplier-order.json --json`.
+- Используется тот же файловый корень `UT103_EXCHANGE_ROOT`, что и для свойств номенклатуры; файл пишется как `to_1c/new/procurement_supplier_orders_<message_id>.ready.xml`.
+- Контракт: `procurement_onec_file_exchange.v1`. Сервис передает поставщика, договор, валюту, склад, дату заказа, контур закупки, строки товаров, ссылку на Bitrix-карточку, ID подтверждения и ID расчета.
+- Безопасность: `apply` требует `ApprovedBy`, заказ всегда идет с `DraftOnly=true`; 1С-обработка должна создать только непроведенный черновик `ЗаказПоставщику`.
+- Ответы 1С читаются через `./.venv/bin/python -m tasks.export_ut103_procurement_supplier_orders --exchange-root <path> --list-results`.
+
 ### MVP пайплайна LLM + embeddings (catalog competitor_item)
 1) LLM-разбор атрибутов:
    ```bash

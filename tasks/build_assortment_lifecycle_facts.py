@@ -9,6 +9,7 @@ from typing import Any
 
 from sqlalchemy import create_engine
 
+from app.core.config import get_settings
 from app.services.assortment_lifecycle_facts import (
     DEFAULT_HISTORY_MONTHS,
     RECEIPT_MAPPING_UNRESOLVED,
@@ -16,6 +17,7 @@ from app.services.assortment_lifecycle_facts import (
     DocumentLineMapping,
     build_assortment_lifecycle_fact_records,
     default_history_start,
+    enrich_nomenclature_rows_with_product_snapshot,
     fetch_onec_lifecycle_source_rows,
     normalize_manager_signals,
     normalize_manual_overrides,
@@ -29,6 +31,7 @@ DEFAULT_OUTPUT_PATH = Path("build/assortment/assortment-lifecycle-facts.json")
 def main() -> int:
     load_ut103_env_file()
     args = _parse_args()
+    settings = get_settings()
     warehouse_policy = validate_warehouse_policy(_load_json_object(args.warehouse_policy_json))
     manual_overrides = normalize_manual_overrides(_load_optional_json(args.manual_overrides_json))
     manager_signals = normalize_manager_signals(_load_optional_json(args.manager_signals_json))
@@ -41,7 +44,12 @@ def main() -> int:
                 raw_payload
             )
         else:
-            onec_database_url = args.onec_database_url or os.environ.get("ONEC_DATABASE_URL", "")
+            onec_database_url = (
+                args.onec_database_url
+                or os.environ.get("ONEC_DATABASE_URL", "")
+                or settings.onec_database_url
+                or ""
+            )
             if not onec_database_url:
                 raise SystemExit("ONEC_DATABASE_URL is required unless --input-json is passed")
             supplier_mapping = _load_document_line_mapping(
@@ -66,6 +74,14 @@ def main() -> int:
                 )
             finally:
                 engine.dispose()
+            product_engine = create_engine(settings.database_url, pool_pre_ping=True)
+            try:
+                nomenclature_rows = enrich_nomenclature_rows_with_product_snapshot(
+                    product_engine,
+                    nomenclature_rows,
+                )
+            finally:
+                product_engine.dispose()
     except ValueError as exc:
         if args.json:
             print(
@@ -131,9 +147,9 @@ def _parse_args() -> argparse.Namespace:
         )
     )
     parser.add_argument("--folder", default="дисплеи", help="Pilot folder filter")
-    parser.add_argument("--history-months", type=int, default=DEFAULT_HISTORY_MONTHS)
+    parser.add_argument("--history-months", type=int, default=_default_history_months())
     parser.add_argument("--today", type=_parse_date, default=None)
-    parser.add_argument("--limit", type=int, default=5000)
+    parser.add_argument("--limit", type=int, default=_default_limit())
     parser.add_argument("--onec-database-url", default="")
     parser.add_argument(
         "--input-json",
@@ -153,6 +169,26 @@ def _parse_args() -> argparse.Namespace:
     if args.limit <= 0:
         raise SystemExit("--limit must be positive")
     return args
+
+
+def _default_history_months() -> int:
+    raw_value = os.getenv("ASSORTMENT_LIFECYCLE_HISTORY_MONTHS")
+    if raw_value is None or raw_value == "":
+        return DEFAULT_HISTORY_MONTHS
+    try:
+        return int(raw_value)
+    except ValueError as exc:
+        raise SystemExit("ASSORTMENT_LIFECYCLE_HISTORY_MONTHS must be an integer") from exc
+
+
+def _default_limit() -> int:
+    raw_value = os.getenv("ASSORTMENT_LIFECYCLE_LIMIT")
+    if raw_value is None or raw_value == "":
+        return 3000
+    try:
+        return int(raw_value)
+    except ValueError as exc:
+        raise SystemExit("ASSORTMENT_LIFECYCLE_LIMIT must be an integer") from exc
 
 
 def _load_document_line_mapping(path: Path | None, *, error_code: str) -> DocumentLineMapping:

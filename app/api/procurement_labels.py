@@ -9,6 +9,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 
 from app.core.config import get_settings
 from app.schemas.procurement_labels import (
+    ProcurementCertificationDocsGenerateResponse,
     ProcurementLabelApproveResponse,
     ProcurementLabelGenerateRequest,
     ProcurementLabelGenerateResponse,
@@ -25,7 +26,13 @@ from app.services.bitrix_procurement_labels_auth import (
     load_bitrix_current_user,
     verify_procurement_labels_session,
 )
-from app.services.procurement_labels import approve_zip, build_preview, generate_zip
+from app.services.procurement_labels import (
+    approve_zip,
+    build_preview,
+    generate_certification_docs_zip,
+    generate_zip,
+    send_zip_to_factory,
+)
 
 router = APIRouter()
 page_router = APIRouter()
@@ -184,6 +191,20 @@ def generate_procurement_labels(
 
 
 @router.post(
+    "/procurement-labels/orders/{item_id}/certification-docs/generate",
+    response_model=ProcurementCertificationDocsGenerateResponse,
+)
+def generate_procurement_certification_docs(
+    item_id: str,
+    payload: ProcurementLabelGenerateRequest,
+    request: Request,
+    _session: ProcurementLabelsSession = Depends(verify_procurement_labels_session),
+) -> ProcurementCertificationDocsGenerateResponse:
+    base_url = str(request.base_url).rstrip("/")
+    return generate_certification_docs_zip(item_id, base_url=base_url, dry_run=payload.dry_run)
+
+
+@router.post(
     "/procurement-labels/orders/{item_id}/approve",
     response_model=ProcurementLabelApproveResponse,
 )
@@ -195,6 +216,23 @@ def approve_procurement_labels(
     return ProcurementLabelApproveResponse(
         item_id=item_id,
         status="approved",
+        artifact_version=version,
+        zip_url=zip_url,
+    )
+
+
+@router.post(
+    "/procurement-labels/orders/{item_id}/send-to-factory",
+    response_model=ProcurementLabelApproveResponse,
+)
+def send_procurement_labels_to_factory(
+    item_id: str,
+    _session: ProcurementLabelsSession = Depends(verify_procurement_labels_session),
+) -> ProcurementLabelApproveResponse:
+    version, zip_url = send_zip_to_factory(item_id)
+    return ProcurementLabelApproveResponse(
+        item_id=item_id,
+        status="sent_to_factory",
         artifact_version=version,
         zip_url=zip_url,
     )

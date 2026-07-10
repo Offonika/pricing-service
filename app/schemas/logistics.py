@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from decimal import Decimal
 
 from pydantic import BaseModel, Field, model_validator
 
@@ -329,3 +330,43 @@ class LogisticsManualReadyOverrideRequest(BaseModel):
     reason: str
     lookup_code: str | None = None
     site_order_number: str | None = None
+
+
+class LogisticsTransferAssistantProduct(BaseModel):
+    ref: str | None = None
+    code: str | None = None
+    name: str | None = None
+
+
+class LogisticsTransferAssistantWarehouse(BaseModel):
+    ref: str | None = None
+    code: str | None = None
+    name: str | None = None
+
+
+class LogisticsTransferAssistantOrder(BaseModel):
+    ref: str | None = None
+    number: str | None = None
+    site_order_number: str | None = None
+
+
+class LogisticsTransferAssistantSourceDocument(BaseModel):
+    type: str | None = None
+    ref: str | None = None
+    number: str | None = None
+
+
+class LogisticsTransferAssistantCandidateResponse(BaseModel):
+    product: LogisticsTransferAssistantProduct
+    warehouse: LogisticsTransferAssistantWarehouse
+    order: LogisticsTransferAssistantOrder | None = None
+    source_document: LogisticsTransferAssistantSourceDocument | None = None
+    quantity: Decimal
+    status: str
+    reason: str
+    onec_document_keys: dict[str, str] = Field(default_factory=dict)
+    fact_date: datetime | None = None
+    data_source: str
+    measures: dict[str, Decimal] = Field(default_factory=dict)
+    pickup_deadline: datetime | None = None
+    pickup_deadline_source: str | None = None

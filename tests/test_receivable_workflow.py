@@ -8,7 +8,13 @@ from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
-from app.models import ReceivableCase, ReceivableSmsLog, ReceivableWorkEvent, ReceivableWorkItem
+from app.models import (
+    ReceivableCase,
+    ReceivableOpenDebtCache,
+    ReceivableSmsLog,
+    ReceivableWorkEvent,
+    ReceivableWorkItem,
+)
 from app.services.receivable_workflow import (
     EVENT_DATA_QUALITY,
     SMS_DRY_RUN,
@@ -177,6 +183,27 @@ def test_chain_documents_are_formatted_for_bitrix_without_technical_values() -> 
     assert "event_type" not in formatted
     assert "0xbbdd" not in formatted
     assert "{" not in formatted
+
+
+def test_open_debt_documents_are_formatted_for_bitrix_with_source_details() -> None:
+    formatted = format_chain_documents_for_bitrix(
+        [
+            {
+                "document_ref": "sale-open",
+                "document_number": "РТУ-1",
+                "document_date": "2026-06-10T09:00:00",
+                "open_amount": "12000.00",
+                "sale_amount": "15000.00",
+                "closing_amount": "-3000.00",
+                "statement_selection_rule": "statement_bottom_up_balance_cutoff",
+            }
+        ]
+    )
+
+    assert formatted == (
+        "1. Открытый долг РТУ-1 от 10.06.2026 09:00 на 12 000 руб. "
+        "(исходно 15 000 руб.; закрытия -3 000 руб.; правило: подбор от текущего остатка)"
+    )
 
 
 def test_sms_outbox_is_deduplicated_per_debt_day(db_session: Session) -> None:
@@ -365,6 +392,118 @@ def test_overdue_buyer_gets_one_work_item_and_bitrix_item(db_session: Session) -
             "ref_value": stable_key_for_counterparty("cp-a"),
         }
     ]
+
+
+def test_bitrix_sync_uses_open_debt_cache_for_documents(db_session: Session) -> None:
+    as_of = date(2026, 3, 21)
+    db_session.add_all(
+        [
+            _case(snapshot_date=as_of, segment=CASE_BUYERS, origin_date=datetime(2026, 3, 14)),
+            _case(snapshot_date=as_of, segment=CASE_OVERDUE, origin_date=datetime(2026, 3, 14)),
+            ReceivableOpenDebtCache(
+                snapshot_date=as_of,
+                counterparty_ref="cp-a",
+                department_ref="dep-1",
+                documents=[
+                    {
+                        "document_ref": "sale-open",
+                        "document_number": "РТУ-1",
+                        "document_date": "2026-03-14T10:00:00",
+                        "open_amount": "12000.00",
+                        "sale_amount": "15000.00",
+                        "closing_amount": "-3000.00",
+                        "statement_selection_rule": "statement_bottom_up_balance_cutoff",
+                    }
+                ],
+            ),
+        ]
+    )
+    bitrix = FakeBitrixClient()
+    settings = _settings(
+        receivable_bitrix_field_map={
+            **_settings().receivable_bitrix_field_map,
+            "chain_documents": "UF_CRM_RECEIVABLE_CHAIN_DOCUMENTS",
+        }
+    )
+
+    sync_receivable_workflow(
+        db_session,
+        as_of=as_of,
+        phone_by_counterparty={"cp-a": "+79990000000"},
+        settings=settings,
+        bitrix_client=bitrix,
+    )
+
+    docs_field = bitrix.added[0]["fields"]["UF_CRM_RECEIVABLE_CHAIN_DOCUMENTS"]
+    assert "Открытый долг РТУ-1" in docs_field
+    assert "правило: подбор от текущего остатка" in docs_field
+    assert "Реализация S-001" not in docs_field
+
+
+def test_bitrix_sync_falls_back_to_chain_documents_without_open_debt_cache(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 3, 21)
+    db_session.add_all(
+        [
+            _case(snapshot_date=as_of, segment=CASE_BUYERS, origin_date=datetime(2026, 3, 14)),
+            _case(snapshot_date=as_of, segment=CASE_OVERDUE, origin_date=datetime(2026, 3, 14)),
+        ]
+    )
+    bitrix = FakeBitrixClient()
+    settings = _settings(
+        receivable_bitrix_field_map={
+            **_settings().receivable_bitrix_field_map,
+            "chain_documents": "UF_CRM_RECEIVABLE_CHAIN_DOCUMENTS",
+        }
+    )
+
+    sync_receivable_workflow(
+        db_session,
+        as_of=as_of,
+        phone_by_counterparty={"cp-a": "+79990000000"},
+        settings=settings,
+        bitrix_client=bitrix,
+    )
+
+    docs_field = bitrix.added[0]["fields"]["UF_CRM_RECEIVABLE_CHAIN_DOCUMENTS"]
+    assert "Документ S-001" in docs_field
+    assert "Открытый долг" not in docs_field
+
+
+def test_bitrix_sync_does_not_fall_back_when_open_debt_cache_row_is_empty(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 3, 21)
+    db_session.add_all(
+        [
+            _case(snapshot_date=as_of, segment=CASE_BUYERS, origin_date=datetime(2026, 3, 14)),
+            _case(snapshot_date=as_of, segment=CASE_OVERDUE, origin_date=datetime(2026, 3, 14)),
+            ReceivableOpenDebtCache(
+                snapshot_date=as_of,
+                counterparty_ref="cp-a",
+                department_ref="dep-1",
+                documents=[],
+            ),
+        ]
+    )
+    bitrix = FakeBitrixClient()
+    settings = _settings(
+        receivable_bitrix_field_map={
+            **_settings().receivable_bitrix_field_map,
+            "chain_documents": "UF_CRM_RECEIVABLE_CHAIN_DOCUMENTS",
+        }
+    )
+
+    sync_receivable_workflow(
+        db_session,
+        as_of=as_of,
+        phone_by_counterparty={"cp-a": "+79990000000"},
+        settings=settings,
+        bitrix_client=bitrix,
+    )
+
+    assert bitrix.added[0]["fields"]["UF_CRM_RECEIVABLE_CHAIN_DOCUMENTS"] == ""
 
 
 def test_existing_bitrix_item_is_reused_by_stable_key(db_session: Session) -> None:

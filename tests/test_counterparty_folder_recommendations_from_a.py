@@ -5,6 +5,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
+from openpyxl import load_workbook
+
 from infra.cron.counterparty_folder_recommendations_from_a import (
     REPORT_ENDPOINT,
     STATUS_MOVE_RECOMMENDED,
@@ -46,11 +48,18 @@ def _report() -> dict[str, Any]:
                         "document_date": "2026-05-03T10:00:00",
                         "open_amount": "12000.00",
                         "debt_department_name": "СПБ",
-                        "document_author_name": "Автор СПБ",
+                        "document_responsible_name": "Ответственный СПБ",
                         "statement_selection_rule": "statement_unmatched_open_sale",
+                        "statement_balance_after": "12000.00",
+                        "statement_segment_start_row": 1,
+                        "statement_segment_end_row": 3,
                     }
                 ],
-                "debt_document_responsible_name": "Автор СПБ",
+                "debt_document_responsible_name": "Ответственный СПБ",
+                "statement_balance_after": "12000.00",
+                "statement_segment_start_row": 1,
+                "statement_segment_end_row": 3,
+                "statement_selection_rule": "statement_unmatched_open_sale",
                 "origin_document_ref": "doc-old-spb",
                 "origin_document_number": "РТУ-1",
                 "origin_document_date": "2026-05-01T10:00:00",
@@ -108,14 +117,26 @@ def test_counterparty_folder_wrapper_exports_csv_and_dedupes(tmp_path: Path) -> 
     assert "Источник срока оплаты" in csv_text
     assert "Открытые документы по ведомостной логике 1С" in csv_text
     assert "Ответственный РТУ" in csv_text
-    assert "Автор СПБ" in csv_text
+    assert "Автор накладной" not in csv_text
+    assert "Ответственный СПБ" in csv_text
     assert "Правило выбора источника" in csv_text
+    assert "Конечный остаток ведомости" in csv_text
     assert "открытая РТУ по ведомостной логике" in csv_text
     assert "Документ витрины дебиторки" in csv_text
     assert "РТУ-OPEN" in csv_text
     assert "Статус проверки структуры" in csv_text
     assert "открытый остаток подтвержден структурой 1С" in csv_text
     assert "Причина проверки код" in csv_text
+    xlsx_path = Path(summary["xlsx_path"])
+    assert xlsx_path.exists()
+    workbook = load_workbook(xlsx_path)
+    sheet = workbook["Проверка"]
+    headers = [cell.value for cell in sheet[1]]
+    assert "Ответственный РТУ" in headers
+    assert "Автор накладной" not in headers
+    assert sheet.auto_filter.ref is not None
+    values = [cell.value for cell in sheet[2]]
+    assert "Ответственный СПБ" in values
     state = json.loads(state_path.read_text(encoding="utf-8"))
     state_key = f"2026-05-29|{STATUS_MOVE_RECOMMENDED}|abc123"
     assert state["reports"][state_key]["export_status"] == "exported"
@@ -150,10 +171,12 @@ def test_counterparty_folder_wrapper_dry_run_has_no_side_effects(tmp_path: Path)
     assert summary["exported"] == 0
     assert not state_path.exists()
     assert not Path(summary["artifact_path"]).exists()
+    assert not Path(summary["xlsx_path"]).exists()
 
 
 def test_counterparty_folder_wrapper_delivers_non_empty_report_to_bitrix(tmp_path: Path) -> None:
     comments: list[tuple[int, str]] = []
+    attachments: list[tuple[int, str]] = []
 
     def fetch_json(path: str, params: dict[str, str]) -> dict[str, Any]:
         assert path == REPORT_ENDPOINT
@@ -164,6 +187,10 @@ def test_counterparty_folder_wrapper_delivers_non_empty_report_to_bitrix(tmp_pat
         comments.append((task_id, message))
         return 777
 
+    def deliver_attachment(task_id: int, file_path: Path) -> dict[str, int]:
+        attachments.append((task_id, file_path.name))
+        return {"bitrix_file_object_id": 901, "bitrix_attachment_id": 902}
+
     state_path = tmp_path / "state.json"
     artifact_dir = tmp_path / "artifacts"
     summary = sync_counterparty_folder_recommendations(
@@ -173,12 +200,17 @@ def test_counterparty_folder_wrapper_delivers_non_empty_report_to_bitrix(tmp_pat
         artifact_dir=artifact_dir,
         bitrix_task_id=756,
         deliver_comment=deliver_comment,
+        deliver_attachment=deliver_attachment,
     )
 
     assert summary["delivery_action"] == "deliver"
     assert summary["bitrix_comment_id"] == 777
     assert summary["delivered"] == 1
+    assert summary["delivery_attachment_action"] == "attach"
+    assert summary["bitrix_file_object_id"] == 901
+    assert summary["bitrix_attachment_id"] == 902
     assert len(comments) == 1
+    assert attachments == [(756, "counterparty-folder-move_recommended-abc123.xlsx")]
     task_id, message = comments[0]
     assert task_id == 756
     assert "📌 Отчет по контролю папок контрагентов" in message
@@ -188,12 +220,14 @@ def test_counterparty_folder_wrapper_delivers_non_empty_report_to_bitrix(tmp_pat
     assert "Контрагент из папки Сайт (код клиента: РБ053785)" in message
     assert "• ⏸️ Готовых рекомендаций к переносу: 1" in message
     assert "• 🧹 Скрыто мелких долгов ниже 500.00 ₽: 2" in message
-    assert (
-        "🧾 Открытые документы по ведомостной логике 1С: Реализация РТУ-OPEN"
-        in message
-    )
-    assert "👤 Ответственный РТУ: Автор СПБ" in message
+    assert "• 📎 Excel: прикреплен к задаче" in message
+    assert "• XLSX fallback:" in message
+    assert "🧾 Открытые документы по ведомостной логике 1С: Реализация РТУ-OPEN" in message
+    assert "👤 Ответственный РТУ: Ответственный СПБ" in message
+    assert "Автор накладной" not in message
     assert "🧭 Правило выбора: открытая РТУ по ведомостной логике" in message
+    assert "📈 Конечный остаток ведомости: 12000.00 ₽" in message
+    assert "📍 Сегмент ведомости: строки 1–3" in message
     assert "Накладная, выбранная витриной дебиторки" not in message
     assert "🔗 Структура 1С: открытый остаток подтвержден структурой 1С" in message
 
@@ -204,10 +238,12 @@ def test_counterparty_folder_wrapper_delivers_non_empty_report_to_bitrix(tmp_pat
         artifact_dir=artifact_dir,
         bitrix_task_id=756,
         deliver_comment=deliver_comment,
+        deliver_attachment=deliver_attachment,
     )
     assert second_summary["delivery_action"] == "noop"
     assert second_summary["delivery_reason"] == "already_delivered"
     assert len(comments) == 1
+    assert len(attachments) == 1
 
 
 def test_counterparty_folder_wrapper_mentions_needs_review_reasons(tmp_path: Path) -> None:

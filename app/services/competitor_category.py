@@ -53,7 +53,7 @@ CATEGORY_TOKENS: dict[str, list[str]] = {
     "клей": ["клей", "adhesive", "glue"],
     "флюс": ["флюс", "паяльная паста", "паста паяльная", "solder paste", "flux"],
     "припой": ["припой", "solder", "wood metal", "rose metal", "сплав"],
-    "химия": ["химия", "компаунд", "compound"],
+    "химия": ["химия", "компаунд", "compound", "смазк", "grease", "lubricant"],
     "лента": ["лента"],
     "картридер": ["картридер", "card reader", "cardreader"],
     "пыльник": ["пыльник", "dust cover", "dust cap"],
@@ -1042,10 +1042,30 @@ def rule_classify(text: str) -> str | None:
     stripped = lower.lstrip()
     shleif_context_only = "без шлейф" in lower or "на шлейф" in lower
     has_explicit_shleif = "шлейф" in lower and not shleif_context_only
+    if (
+        stripped.startswith(("дисплей", "lcd дисплей", "экран"))
+        and "рамк" in lower
+        and any(tok in lower for tok in CATEGORY_TOKENS["дисплей"])
+    ):
+        return "дисплей"
+    if stripped.startswith("шлейф"):
+        return "шлейф"
+    if stripped.startswith(("нижняя плата", "плата")):
+        return "плата"
+    if "материнская плата" in lower:
+        return "плата"
+    if stripped.startswith("корпус"):
+        return "корпус"
+    if stripped.startswith(("винт", "винты", "шуруп")):
+        return "винты"
+    if stripped.startswith("вентилятор"):
+        return "вентилятор"
     if re.match(r"^(телефон|смартфон)\b", stripped) or stripped.startswith(
         ("smartphone", "mobile phone")
     ):
         return "смартфоны"
+    if "джойстик" in lower or "джостик" in lower or "joystick" in lower:
+        return "прочее"
     if "sim" in lower or "сим" in lower:
         if "держател" in lower or "лоток" in lower or "tray" in lower:
             return "держатель сим-карты"
@@ -1063,7 +1083,7 @@ def rule_classify(text: str) -> str | None:
         return "крышка"
     if "уплотнител" in lower or "прокладк" in lower:
         return "изолятор"
-    if "коврик" in lower or "мат" in lower or "mat" in lower:
+    if "коврик" in lower or re.search(r"\bмат\b", lower) or re.search(r"\bmat\b", lower):
         return "инструмент"
     if "термопроклад" in lower:
         return "изолятор"
@@ -1150,12 +1170,6 @@ def rule_classify(text: str) -> str | None:
         if "cable" in lower or "шлейф" in lower:
             return "шлейф"
     if lower.lstrip().startswith("шлейф"):
-        if any(tok in lower for tok in DISPLAY_MODULE_TOKENS) or "дисплей" in lower:
-            return "дисплей"
-        if "крышк" in lower:
-            return "крышка"
-        if "джойстик" in lower:
-            return "джойстик"
         return "шлейф"
     if "монопод" in lower or "трипод" in lower or "tripod" in lower or "monopod" in lower:
         return "штатив"
@@ -1218,6 +1232,8 @@ def rule_classify(text: str) -> str | None:
     if any(tok in lower for tok in CATEGORY_TOKENS["скотч"]):
         if lower.lstrip().startswith(("аккумулятор", "акб")):
             return "аккумулятор"
+        if lower.lstrip().startswith("наклейк"):
+            return "наклейка"
         return "скотч"
     if any(tok in lower for tok in CATEGORY_TOKENS["пыльник"]):
         return "пыльник"
@@ -1364,8 +1380,8 @@ def rule_classify(text: str) -> str | None:
             return "дисплей"
         if "крышк" in lower:
             return "крышка"
-        if "джойстик" in lower:
-            return "джойстик"
+        if "джойстик" in lower or "джостик" in lower:
+            return "шлейф"
         return "шлейф"
     if any(tok in lower for tok in CATEGORY_TOKENS["клавиатура"]):
         return "клавиатура"

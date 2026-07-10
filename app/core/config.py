@@ -255,6 +255,33 @@ class Settings(BaseSettings):
     receivable_workplace_bitrix_session_secret: str | None = None
     receivable_workplace_bitrix_session_ttl_seconds: int = 3600
     receivable_workplace_bitrix_rest_timeout_seconds: float = 6.0
+    executive_dashboard_finance_snapshot_path: str = (
+        "../mm-compensation/build/executive_dashboard/finance_snapshot.json"
+    )
+    executive_dashboard_cashflow_period_cache_path: str = (
+        "../mm-compensation/build/executive_dashboard/cashflow_period_cache.json"
+    )
+    executive_dashboard_warehouse_snapshot_path: str = (
+        "../mm-compensation/build/executive_dashboard/warehouse_snapshot.json"
+    )
+    executive_dashboard_source_max_lag_days: int = 1
+    executive_dashboard_bitrix_enabled: bool = False
+    executive_dashboard_bitrix_allowed_domains: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    executive_dashboard_bitrix_allowed_member_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    executive_dashboard_bitrix_full_access_user_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    executive_dashboard_bitrix_domain_access_user_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    executive_dashboard_access_rules_json: str | None = None
+    executive_dashboard_bitrix_session_secret: str | None = None
+    executive_dashboard_bitrix_session_ttl_seconds: int = 3600
+    executive_dashboard_bitrix_rest_timeout_seconds: float = 6.0
     management_receivables_max_lag_days: int = 1
     management_staffing_max_lag_days: int = 1
     management_task_payloads_max_lag_days: int = 1
@@ -270,6 +297,7 @@ class Settings(BaseSettings):
     logistics_bot_webhook_url: str | None = None
     logistics_web_session_secret: str | None = None
     logistics_web_session_ttl_seconds: int = 8 * 60 * 60
+    logistics_transfer_assistant_pickup_hold_days: int = 7
 
     # Embeddings / matching pipeline
     embeddings_model: str = "text-embedding-3-small"
@@ -361,6 +389,35 @@ class Settings(BaseSettings):
     procurement_labels_artifact_dir: str = ".local/procurement-labels"
     procurement_labels_barcode_catalog_path: str = ".local/procurement-labels/barcodes.json"
     procurement_labels_certificate_catalog_path: str = ".local/procurement-labels/certificates.json"
+    procurement_assortment_manual_overrides_path: str = (
+        "config/assortment/display-manual-overrides.json"
+    )
+    procurement_order_formation_entity_type_id: int | None = None
+    procurement_order_formation_mapping_path: str = (
+        "build/bitrix/order_formation_mapping.json"
+    )
+    procurement_order_formation_bitrix_enabled: bool = False
+    procurement_order_formation_bitrix_allowed_domains: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    procurement_order_formation_bitrix_allowed_member_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    procurement_order_formation_bitrix_allowed_user_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["115204", "130757", "4241"]
+    )
+    procurement_order_formation_bitrix_session_secret: str | None = None
+    procurement_order_formation_bitrix_session_ttl_seconds: int = 3600
+    procurement_order_formation_bitrix_rest_timeout_seconds: float = 6.0
+    procurement_order_formation_classification_approver_user_ids: Annotated[
+        list[str], NoDecode
+    ] = Field(default_factory=lambda: ["130757", "4241"])
+    procurement_order_formation_lifecycle_approver_user_ids: Annotated[
+        list[str], NoDecode
+    ] = Field(default_factory=lambda: ["130757", "4241"])
+    procurement_order_formation_display_responsible_user_id: str = "130757"
+    procurement_order_formation_property_apply_enabled: bool = False
+    procurement_order_formation_onec_apply_enabled: bool = False
 
     model_config = SettingsConfigDict(
         env_file=".env", env_prefix="", env_nested_delimiter="__", extra="ignore"
@@ -439,6 +496,10 @@ class Settings(BaseSettings):
         "receivable_workplace_bitrix_allowed_domains",
         "receivable_workplace_bitrix_allowed_member_ids",
         "receivable_workplace_bitrix_full_access_user_ids",
+        "executive_dashboard_bitrix_allowed_domains",
+        "executive_dashboard_bitrix_allowed_member_ids",
+        "executive_dashboard_bitrix_full_access_user_ids",
+        "executive_dashboard_bitrix_domain_access_user_ids",
         mode="before",
     )
     @classmethod
@@ -463,6 +524,14 @@ class Settings(BaseSettings):
         "matching_bitrix_allowed_domains",
         "matching_bitrix_allowed_member_ids",
         "matching_bitrix_allowed_user_ids",
+        "procurement_labels_bitrix_allowed_domains",
+        "procurement_labels_bitrix_allowed_member_ids",
+        "procurement_labels_bitrix_allowed_user_ids",
+        "procurement_order_formation_bitrix_allowed_domains",
+        "procurement_order_formation_bitrix_allowed_member_ids",
+        "procurement_order_formation_bitrix_allowed_user_ids",
+        "procurement_order_formation_classification_approver_user_ids",
+        "procurement_order_formation_lifecycle_approver_user_ids",
         mode="before",
     )
     @classmethod

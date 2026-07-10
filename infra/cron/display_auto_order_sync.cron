@@ -1,0 +1,3 @@
+# Display auto-order dry-run and Bitrix procurement need sync.
+# Policy: config/assortment/display-auto-order-policy.json, responsible=Omar Bocharov (130757).
+20 9 * * * /opt/MM/pricing-service/infra/cron/display_auto_order_sync.sh

@@ -3,18 +3,30 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { CompatibilityMappingSettings } from "./components/CompatibilityMappingSettings";
 import { MatchingLayout } from "./components/MatchingLayout";
+import { ExecutiveDashboard } from "./components/ExecutiveDashboard";
+import { ProcurementAssortmentWorkspace } from "./components/ProcurementAssortmentWorkspace";
+import { ProcurementOrderFormationWorkspace } from "./components/ProcurementOrderFormationWorkspace";
 import { ProcurementLabelsApp } from "./components/ProcurementLabelsApp";
 import { PropertyMappingSettings } from "./components/PropertyMappingSettings";
 import { ReceivablesWorkplace } from "./components/ReceivablesWorkplace";
 import {
+  bindBitrixProcurementLabelsPlacement,
+  getProcurementAssortmentItemId,
   getProcurementLabelsItemId,
+  initializeBitrixExecutiveDashboardSession,
   initializeBitrixMatchingSession,
+  initializeBitrixProcurementAssortmentSession,
+  initializeBitrixProcurementOrderFormationSession,
   initializeBitrixProcurementLabelsSession,
   initializeBitrixReceivablesSession,
+  isBitrixExecutiveDashboardRoute,
   isBitrixMatchingRoute,
+  isBitrixProcurementAssortmentRoute,
+  isBitrixProcurementOrderFormationRoute,
   isBitrixProcurementLabelsRoute,
   isBitrixReceivablesRoute,
   type BitrixReceivablesSessionResponse,
+  type BitrixExecutiveDashboardSessionResponse,
 } from "./api/bitrix";
 import type { ProductFacets, ProductRow, ProductSort } from "./api/types";
 import { useSelectedProduct } from "./store/useSelectionStore";
@@ -100,6 +112,7 @@ function writeProductListPrefs(prefs: ProductListPrefs) {
 
 const isLogisticsFallbackRoute = () => window.location.pathname.startsWith("/logistics/fallback");
 const isReceivablesWorkplaceRoute = () => window.location.pathname.startsWith("/receivables/workplace");
+const isExecutiveDashboardRoute = () => window.location.pathname.startsWith("/executive-dashboard");
 
 type LogisticsProfile = {
   id: number;
@@ -713,12 +726,71 @@ function ReceivablesApp() {
   );
 }
 
+function ExecutiveDashboardApp() {
+  const bitrixMode = isBitrixExecutiveDashboardRoute();
+  const [authState, setAuthState] = useState<{
+    status: "ready" | "loading" | "error";
+    message?: string;
+    session?: BitrixExecutiveDashboardSessionResponse;
+  }>(() => ({ status: bitrixMode ? "loading" : "ready" }));
+
+  useEffect(() => {
+    if (!bitrixMode) return;
+    let cancelled = false;
+    initializeBitrixExecutiveDashboardSession()
+      .then((session) => {
+        if (!cancelled) {
+          setAuthState({ status: "ready", session });
+        }
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "Не удалось открыть Bitrix24-сессию";
+        if (!cancelled) {
+          setAuthState({ status: "error", message });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bitrixMode]);
+
+  if (authState.status !== "ready") {
+    return (
+      <div className="app app--center">
+        <div className="app-state">
+          <h1>Управленческая витрина</h1>
+          {authState.status === "loading" && <p>Подключение к Bitrix24...</p>}
+          {authState.status === "error" && (
+            <>
+              <p>Нет доступа к управленческой витрине.</p>
+              <small>{authState.message}</small>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <ExecutiveDashboard
+      accessLevel={authState.session?.access_level}
+      bitrixMode={bitrixMode}
+      bitrixUserName={authState.session?.user.name}
+    />
+  );
+}
+
 function ProcurementLabelsBitrixApp() {
   const [authState, setAuthState] = useState<{
     status: "ready" | "loading" | "error";
     message?: string;
     userName?: string | null;
   }>({ status: "loading" });
+  const [bindState, setBindState] = useState<{
+    status: "idle" | "loading" | "done" | "error";
+    message?: string;
+  }>({ status: "idle" });
+  const itemId = getProcurementLabelsItemId();
 
   useEffect(() => {
     let cancelled = false;
@@ -740,14 +812,29 @@ function ProcurementLabelsBitrixApp() {
   }, []);
 
   if (authState.status !== "ready") {
+    const openedOutsideBitrix =
+      authState.status === "error" &&
+      (authState.message?.includes("Bitrix24 SDK") || authState.message?.includes("OAuth"));
+
     return (
       <div className="app app--center">
-        <div className="app-state">
+        <div className="app-state app-state--wide">
           <h1>Этикетки ВЭД</h1>
           {authState.status === "loading" && <p>Подключение к Bitrix24...</p>}
           {authState.status === "error" && (
             <>
-              <p>Нет доступа к генерации этикеток.</p>
+              <p>
+                {openedOutsideBitrix
+                  ? "Эту страницу нужно открывать из карточки закупки в Bitrix24."
+                  : "Нет доступа к генерации этикеток."}
+              </p>
+              {openedOutsideBitrix && (
+                <div className="app-state__hint">
+                  <span>Кнопка должна быть во вкладке карточки:</span>
+                  <strong>Закупка/Заказ - Сформировать этикетки</strong>
+                  <span>Прямая ссылка без Bitrix24 не передает ID карточки и сессию пользователя.</span>
+                </div>
+              )}
               <small>{authState.message}</small>
             </>
           )}
@@ -756,12 +843,180 @@ function ProcurementLabelsBitrixApp() {
     );
   }
 
-  return <ProcurementLabelsApp bitrixUserName={authState.userName} itemId={getProcurementLabelsItemId()} />;
+  if (!itemId) {
+    const bindPlacement = async () => {
+      setBindState({ status: "loading", message: "Закрепляем вкладку в карточке закупки..." });
+      try {
+        await bindBitrixProcurementLabelsPlacement();
+        setBindState({
+          status: "done",
+          message: "Вкладка закреплена. Откройте карточку заказа заново и найдите ее рядом с Общие / Товары / Еще.",
+        });
+      } catch (error: unknown) {
+        setBindState({
+          status: "error",
+          message: error instanceof Error ? error.message : "Bitrix24 не дал закрепить вкладку",
+        });
+      }
+    };
+
+    return (
+      <div className="app app--center">
+        <div className="app-state app-state--wide">
+          <h1>Этикетки ВЭД</h1>
+          <p>Приложение открыто из общего меню Bitrix24.</p>
+          <div className="app-state__hint">
+            <span>Для работы из заказа нужна вкладка в карточке:</span>
+            <strong>Закупка/Заказ - Сформировать этикетки</strong>
+            <span>После закрепления откройте карточку закупки, а не это общее меню приложений.</span>
+          </div>
+          <button
+            className="btn"
+            disabled={bindState.status === "loading"}
+            onClick={bindPlacement}
+            type="button"
+          >
+            {bindState.status === "loading" ? "Закрепляем..." : "Закрепить вкладку в карточке"}
+          </button>
+          {bindState.message && (
+            <small className={bindState.status === "error" ? "app-state__error" : "app-state__note"}>
+              {bindState.message}
+            </small>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return <ProcurementLabelsApp bitrixUserName={authState.userName} itemId={itemId} />;
+}
+
+function ProcurementAssortmentBitrixApp() {
+  const [authState, setAuthState] = useState<{
+    status: "ready" | "loading" | "error";
+    message?: string;
+    userName?: string | null;
+  }>({ status: "loading" });
+  const itemId = getProcurementAssortmentItemId();
+
+  useEffect(() => {
+    let cancelled = false;
+    initializeBitrixProcurementAssortmentSession()
+      .then((user) => {
+        if (!cancelled) {
+          setAuthState({ status: "ready", userName: user.name });
+        }
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "Не удалось открыть Bitrix24-сессию";
+        if (!cancelled) {
+          setAuthState({ status: "error", message });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (authState.status !== "ready") {
+    const openedOutsideBitrix =
+      authState.status === "error" &&
+      (authState.message?.includes("Bitrix24 SDK") || authState.message?.includes("OAuth"));
+
+    return (
+      <div className="app app--center">
+        <div className="app-state app-state--wide">
+          <h1>Формирование заказа</h1>
+          {authState.status === "loading" && <p>Подключение к Bitrix24...</p>}
+          {authState.status === "error" && (
+            <>
+              <p>
+                {openedOutsideBitrix
+                  ? "Эту страницу нужно открывать из Bitrix24."
+                  : "Нет доступа к формированию заказа."}
+              </p>
+              {openedOutsideBitrix && (
+                <div className="app-state__hint">
+                  <span>Рабочая вкладка в карточке заказа:</span>
+                  <strong>Заказ и классификация</strong>
+                  <span>Прямая ссылка без Bitrix24 не передает сессию пользователя.</span>
+                </div>
+              )}
+              <small>{authState.message}</small>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  if (!itemId) {
+    return (
+      <div className="app app--center">
+        <div className="app-state app-state--wide">
+          <h1>Legacy-карточка заказа</h1>
+          <p>Этот маршрут сохранён только для отката пилота.</p>
+          <div className="app-state__hint">
+            <span>Рабочий интерфейс находится в отдельном приложении Bitrix24:</span>
+            <strong>Формирование заказа</strong>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return <ProcurementAssortmentWorkspace bitrixUserName={authState.userName} itemId={itemId} />;
+}
+
+function ProcurementOrderFormationBitrixApp() {
+  const [authState, setAuthState] = useState<{
+    status: "ready" | "loading" | "error";
+    message?: string;
+    userName?: string | null;
+  }>({ status: "loading" });
+
+  useEffect(() => {
+    let cancelled = false;
+    initializeBitrixProcurementOrderFormationSession()
+      .then((user) => {
+        if (!cancelled) setAuthState({ status: "ready", userName: user.name });
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "Не удалось открыть Bitrix24-сессию";
+        if (!cancelled) setAuthState({ status: "error", message });
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  if (authState.status !== "ready") {
+    const openedOutsideBitrix =
+      authState.status === "error" &&
+      (authState.message?.includes("Bitrix24 SDK") || authState.message?.includes("OAuth"));
+    return (
+      <div className="app app--center">
+        <div className="app-state app-state--wide">
+          <h1>Формирование заказа</h1>
+          {authState.status === "loading" && <p>Подключение к Bitrix24...</p>}
+          {authState.status === "error" && (
+            <>
+              <p>{openedOutsideBitrix ? "Откройте приложение из меню Bitrix24." : "Нет доступа к формированию заказа."}</p>
+              <small>{authState.message}</small>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return <ProcurementOrderFormationWorkspace bitrixUserName={authState.userName} />;
 }
 
 function App() {
   if (isLogisticsFallbackRoute()) return <LogisticsFallbackApp />;
+  if (isBitrixProcurementOrderFormationRoute()) return <ProcurementOrderFormationBitrixApp />;
+  if (isBitrixProcurementAssortmentRoute()) return <ProcurementAssortmentBitrixApp />;
   if (isBitrixProcurementLabelsRoute()) return <ProcurementLabelsBitrixApp />;
+  if (isBitrixExecutiveDashboardRoute() || isExecutiveDashboardRoute()) return <ExecutiveDashboardApp />;
   if (isBitrixReceivablesRoute() || isReceivablesWorkplaceRoute()) return <ReceivablesApp />;
   return <MatchingApp />;
 }

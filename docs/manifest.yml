@@ -99,12 +99,34 @@ documents:
       - scripts/import_onec_supplier_order_to_procurement.py
       - app/services/procurement_supplier_crm.py
       - app/services/assortment_lifecycle.py
+      - app/services/assortment_lifecycle_classification_store.py
       - app/services/assortment_lifecycle_facts.py
       - app/services/exporters/ut103_exchange.py
       - app/services/exporters/ut103_nomenclature_properties.py
+      - app/services/exporters/ut103_procurement_orders.py
+      - alembic/versions/1b2c3d4e5f60_add_assortment_lifecycle_classification.py
+      - alembic/versions/2c3d4e5f6a70_add_assortment_commercial_marks.py
       - tasks/build_assortment_lifecycle_facts.py
       - tasks/build_assortment_lifecycle_updates.py
+      - tasks/report_display_supplier_lead_time_history.py
+      - tasks/detect_procurement_cargo_dropoff_refresh_needed.py
+      - tasks/refresh_assortment_lifecycle_classification.py
       - tasks/export_ut103_nomenclature_properties.py
+      - tasks/export_ut103_procurement_supplier_orders.py
+      - config/assortment/display-warehouse-policy.json
+      - config/assortment/display-supplier-order-line-mapping.json
+      - config/assortment/display-receipt-line-mapping.json
+      - config/assortment/display-manual-overrides.json
+      - config/assortment/display-manager-signals.json
+      - config/assortment/display-quality-status-review-exclusions.json
+      - config/assortment/display-fact-status-decisions.json
+      - infra/cron/assortment_lifecycle_classification.sh
+      - infra/cron/assortment_lifecycle_classification.cron
+      - infra/cron/assortment_lifecycle_ut103_export.sh
+      - infra/cron/assortment_lifecycle_ut103_export.cron
+      - infra/cron/display_supplier_lead_time_refresh.sh
+      - infra/cron/display_supplier_lead_time_refresh.cron
+      - infra/cron/sync_open_procurement_supplier_orders_to_bitrix.sh
     related_tests:
       - tests/test_procurement_bitrix_process.py
       - tests/test_procurement_supplier_crm.py
@@ -112,10 +134,93 @@ documents:
       - tests/test_assortment_lifecycle_facts.py
       - tests/test_build_assortment_lifecycle_facts_task.py
       - tests/test_build_assortment_lifecycle_updates_task.py
+      - tests/test_report_display_supplier_lead_time_history_task.py
+      - tests/test_detect_procurement_cargo_dropoff_refresh_needed_task.py
+      - tests/test_refresh_assortment_lifecycle_classification_task.py
       - tests/test_ut103_exchange.py
       - tests/test_ut103_nomenclature_properties_exporter.py
       - tests/test_export_ut103_nomenclature_properties_task.py
+      - tests/test_ut103_procurement_orders_exporter.py
+      - tests/test_export_ut103_procurement_supplier_orders_task.py
     keywords: [procurement, supplier-order, decision-contract, roadmap, topcontrol, wechat, bitrix24, onec, akb]
+  - path: docs/specs/procurement-order-auto-order-unified-contour.md
+    title: Procurement Order And Auto Order Unified Contour
+    doc_type: spec
+    domain: procurement
+    status: draft
+    owner: operations
+    source_of_truth: true
+    related_code:
+      - app/api/procurement_assortment_decisions.py
+      - app/schemas/procurement_assortment_decisions.py
+      - app/services/procurement_assortment_decisions.py
+      - ui/src/api/procurementAssortment.ts
+      - ui/src/components/ProcurementAssortmentDecisionApp.tsx
+      - scripts/ensure_procurement_bitrix_process.py
+      - scripts/audit_procurement_onec_bitrix_sync.py
+      - scripts/sync_open_cargo_supplier_orders_to_bitrix.py
+      - scripts/sync_display_auto_order_candidates_to_bitrix.py
+      - scripts/sync_procurement_assortment_status_decisions.py
+      - tasks/build_display_auto_order_dry_run.py
+      - tasks/report_display_auto_order_adaptive_lead_time_comparison.py
+      - tasks/report_display_supplier_lead_time_history.py
+      - tasks/detect_procurement_cargo_dropoff_refresh_needed.py
+      - infra/cron/sync_open_procurement_supplier_orders_to_bitrix.sh
+      - config/assortment/display-auto-order-policy.json
+    related_tests:
+      - tests/test_procurement_assortment_decisions.py
+      - tests/test_procurement_bitrix_process.py
+      - tests/test_sync_open_procurement_supplier_orders.py
+      - tests/test_sync_display_auto_order_candidates.py
+      - tests/test_sync_procurement_assortment_status_decisions.py
+      - tests/test_build_display_auto_order_dry_run_task.py
+      - tests/test_report_display_auto_order_adaptive_lead_time_comparison_task.py
+      - tests/test_report_display_supplier_lead_time_history_task.py
+      - tests/test_detect_procurement_cargo_dropoff_refresh_needed_task.py
+    keywords: [procurement, auto-order, smart-process, display, bitrix24, onec, pilot]
+  - path: docs/specs/procurement-order-formation-smart-process.md
+    title: Procurement Order Formation Smart Process
+    doc_type: spec
+    domain: procurement
+    status: implemented
+    owner: operations
+    source_of_truth: true
+    related_code:
+      - app/models/procurement_order_formation.py
+      - app/api/procurement_order_formation.py
+      - app/services/procurement_order_formation.py
+      - app/services/bitrix_order_formation.py
+      - scripts/ensure_order_formation_bitrix_process.py
+      - tasks/build_procurement_order_formation_dry_run.py
+      - tasks/sync_procurement_order_formation_results.py
+      - ui/src/components/ProcurementOrderFormationApp.tsx
+    related_tests:
+      - tests/test_procurement_order_formation.py
+      - tests/test_procurement_order_formation_dry_run.py
+      - tests/test_order_formation_bitrix_process.py
+    keywords: [procurement, supplier-order, smart-process, bitrix24, onec, catalog, classification]
+  - path: docs/specs/display-auto-order-project-brief.md
+    title: Display Auto Order Project Brief
+    doc_type: spec
+    domain: procurement
+    status: draft
+    owner: operations
+    source_of_truth: false
+    related_code:
+      - app/services/assortment_lifecycle.py
+      - app/services/assortment_lifecycle_facts.py
+      - tasks/build_display_auto_order_dry_run.py
+      - tasks/report_display_auto_order_adaptive_lead_time_comparison.py
+      - tasks/report_display_supplier_lead_time_history.py
+      - tasks/detect_procurement_cargo_dropoff_refresh_needed.py
+    related_tests:
+      - tests/test_assortment_lifecycle.py
+      - tests/test_assortment_lifecycle_facts.py
+      - tests/test_build_display_auto_order_dry_run_task.py
+      - tests/test_report_display_auto_order_adaptive_lead_time_comparison_task.py
+      - tests/test_report_display_supplier_lead_time_history_task.py
+      - tests/test_detect_procurement_cargo_dropoff_refresh_needed_task.py
+    keywords: [display, auto-order, procurement, assortment-lifecycle, lead-time, analogs]
   - path: docs/specs/site-order-fulfillment-control-contour.md
     title: Site Order Fulfillment Control Contour
     doc_type: spec
@@ -154,15 +259,35 @@ documents:
     related_code: [app/api/logistics.py, app/api/logistics_web.py, app/models/logistics.py, app/schemas/logistics.py, app/services/logistics.py, app/services/logistics_onec.py, tasks/apply_logistics_warehouse_alias_overrides.py, tasks/report_logistics_rtu_manual_review.py, tasks/sync_logistics_warehouse_aliases_from_onec.py, tasks/sync_logistics_rtu_from_onec.py, app/telegram/logistics_bot.py]
     related_tests: [tests/test_logistics_api.py, tests/test_logistics_onec.py, tests/test_logistics_bot.py, tests/test_logistics_bot_webhook_api.py, tests/test_order_fulfillment_api.py]
     keywords: [logistics, route-run, rtu, external-carrier, manual-review, web-fallback]
+  - path: docs/specs/transfer-assistant-readonly-v1.md
+    title: Transfer Assistant Readonly V1
+    doc_type: spec
+    domain: logistics
+    status: implemented
+    owner: operations
+    source_of_truth: true
+    related_code:
+      - app/api/logistics.py
+      - app/schemas/logistics.py
+      - app/services/transfer_assistant.py
+      - app/core/config.py
+      - tasks/export_transfer_assistant_candidates.py
+    related_tests:
+      - tests/test_transfer_assistant.py
+      - tests/test_export_transfer_assistant_candidates_task.py
+      - tests/test_logistics_api.py
+      - tests/test_logistics_onec.py
+      - tests/test_order_fulfillment_api.py
+    keywords: [logistics, transfer-assistant, onec, reserve, placement, pickup, readonly]
   - path: docs/specs/receivables-smart-process-workflow.md
     title: Receivables Workplace And Smart Process Workflow
     doc_type: spec
     domain: receivables
     status: draft
     owner: product
-    source_of_truth: false
-    related_code: [app/api/bitrix_receivables.py, app/api/receivables.py, app/api/receivable_workplace.py, app/api/management.py, app/models/receivable_case.py, app/models/receivable_work.py, app/schemas/bitrix_receivables.py, app/schemas/receivable_workplace.py, app/services/bitrix_receivables_auth.py, app/services/receivables.py, app/services/receivable_workplace.py, app/services/receivable_workflow.py, app/services/management_rules.py, ui/src/api/bitrix.ts, ui/src/components/ReceivablesWorkplace.tsx, infra/cron/new_daily_receivables_from_a.py]
-    related_tests: [tests/test_receivables.py, tests/test_receivable_workplace.py, tests/test_receivable_workflow.py, tests/test_management_rules.py, tests/test_management_tasks_api.py, tests/test_new_daily_receivables_from_a.py]
+    source_of_truth: true
+    related_code: [app/api/bitrix_receivables.py, app/api/receivables.py, app/api/receivable_workplace.py, app/api/management.py, app/models/receivable_case.py, app/models/receivable_work.py, app/schemas/bitrix_receivables.py, app/schemas/receivable_workplace.py, app/services/bitrix_receivables_auth.py, app/services/receivables.py, app/services/receivable_credit_profile.py, app/services/receivable_decision_portrait.py, app/services/receivable_decision_onec_metrics.py, app/services/receivable_workplace.py, app/services/receivable_workflow.py, app/services/management_rules.py, ui/src/api/bitrix.ts, ui/src/components/ReceivablesWorkplace.tsx, scripts/build_receivable_decision_blueprint.py, tasks/build_receivable_credit_profiles.py, tasks/build_receivable_decision_portraits.py, infra/cron/new_daily_receivables_from_a.py]
+    related_tests: [tests/test_receivables.py, tests/test_receivable_workplace.py, tests/test_receivable_workflow.py, tests/test_receivable_decision_blueprint.py, tests/test_receivable_credit_profile.py, tests/test_receivable_decision_onec_metrics.py, tests/test_receivable_decision_portrait.py, tests/test_management_rules.py, tests/test_management_tasks_api.py, tests/test_new_daily_receivables_from_a.py]
     keywords: [receivables, bitrix24, smart-process, debt, sms]
   - path: docs/specs/counterparty-folder-recommendations.md
     title: Counterparty Folder Recommendations
@@ -185,19 +310,25 @@ documents:
       - app/services/exporters/ut103_exchange.py
       - app/services/exporters/ut103_forecast.py
       - app/services/exporters/ut103_nomenclature_properties.py
+      - app/services/exporters/ut103_procurement_orders.py
       - tasks/build_assortment_lifecycle_facts.py
       - tasks/build_assortment_lifecycle_updates.py
+      - tasks/refresh_assortment_lifecycle_classification.py
       - tasks/export_ut103_forecast.py
       - tasks/export_ut103_nomenclature_properties.py
+      - tasks/export_ut103_procurement_supplier_orders.py
+      - infra/cron/assortment_lifecycle_ut103_export.sh
     related_tests:
       - tests/test_ut103_exchange.py
       - tests/test_ut103_forecast_exporter.py
       - tests/test_build_assortment_lifecycle_facts_task.py
       - tests/test_build_assortment_lifecycle_updates_task.py
       - tests/test_ut103_nomenclature_properties_exporter.py
+      - tests/test_ut103_procurement_orders_exporter.py
       - tests/test_export_ut103_forecast_task.py
       - tests/test_export_ut103_nomenclature_properties_task.py
-    keywords: [ut103, onec, file-exchange, bot-commands, credit-depth, credit-limit, receivables, nomenclature-properties]
+      - tests/test_export_ut103_procurement_supplier_orders_task.py
+    keywords: [ut103, onec, file-exchange, bot-commands, credit-depth, credit-limit, receivables, nomenclature-properties, supplier-order, procurement]
   - path: docs/specs/exchange-counterparty-daily-settlements.md
     title: Exchange Counterparty Daily Settlements Report
     doc_type: spec
@@ -208,6 +339,25 @@ documents:
     related_code: [app/api/management.py, app/services/exchange_counterparty_settlements.py, app/services/finance_cash_position.py, infra/cron/management_digest_from_a.py]
     related_tests: [tests/test_exchange_counterparty_settlements.py, tests/test_finance_cash_position.py, tests/test_management_digest_from_a.py]
     keywords: [receivables, onec, counterparty, exchange, currency, cash-position, daily-report]
+  - path: docs/specs/executive-management-dashboard-bitrix.md
+    title: Executive Management Dashboard In Bitrix
+    doc_type: spec
+    domain: management
+    status: draft
+    owner: finance
+    source_of_truth: true
+    related_code:
+      - app/api/bitrix_executive_dashboard.py
+      - app/api/management.py
+      - app/models/executive_dashboard.py
+      - app/schemas/executive_dashboard.py
+      - app/services/bitrix_executive_dashboard_auth.py
+      - app/services/executive_dashboard.py
+      - ui/src/api/executiveDashboard.ts
+      - ui/src/components/ExecutiveDashboard.tsx
+    related_tests:
+      - tests/test_executive_dashboard.py
+    keywords: [management, executive-dashboard, bitrix24, finance, payables, receivables]
   - path: docs/specs/weekly-manager-sales-online-demand.md
     title: Weekly Manager Sales Online Demand Block
     doc_type: spec

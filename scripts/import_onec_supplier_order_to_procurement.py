@@ -7,7 +7,7 @@ import argparse
 import json
 import re
 import sys
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
@@ -30,13 +30,14 @@ from scripts.ensure_procurement_bitrix_process import (  # noqa: E402
 
 DEFAULT_INPUT_PATH = REPO_ROOT / "build/bitrix/onec_supplier_orders_input.json"
 DEFAULT_RESULT_PATH = REPO_ROOT / "build/bitrix/onec_supplier_order_import_result.json"
+DEFAULT_CARGO_FINANCE_USER_ID = "130746"
 
 
 class BitrixRestApi:
     def __init__(self, webhook_base: str) -> None:
         self.webhook_base = webhook_base
 
-    def call(self, method: str, params: dict[str, Any] | None = None) -> Any:
+    def call(self, method: str, params: Any = None) -> Any:
         return bitrix_setup.bitrix_call(self.webhook_base, method, params or {})
 
 
@@ -48,6 +49,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--mapping-path", type=Path, default=DEFAULT_MAPPING_PATH)
     parser.add_argument("--result-path", type=Path, default=DEFAULT_RESULT_PATH)
     parser.add_argument("--assigned-by-id", default="")
+    parser.add_argument(
+        "--finance-user-id",
+        default="",
+        help="Bitrix user id for cargo payment task; defaults to env or Karina Avakyan 130746.",
+    )
     parser.add_argument(
         "--supplier-conflict-mode",
         choices=("create_card_with_blocker", "block_import"),
@@ -131,11 +137,60 @@ def formatted_amount(order: dict[str, Any]) -> str:
     return f"{amount_text} {currency}"
 
 
+def first_order_value(order: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        value = order.get(key)
+        if clean_string(value):
+            return value
+    return None
+
+
+def cargo_dropoff_value(order: dict[str, Any]) -> Any:
+    return first_order_value(order, "cargo_dropoff_date", "Сдача в карго")
+
+
+def payment_date_value(order: dict[str, Any]) -> Any:
+    return first_order_value(order, "payment_date", "Оплата")
+
+
+def compact_date(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.strftime("%Y%m%d")
+    if isinstance(value, date):
+        return value.strftime("%Y%m%d")
+    raw = clean_string(value)
+    if not raw:
+        return ""
+    normalized = raw.removesuffix("Z")
+    try:
+        return datetime.fromisoformat(normalized).strftime("%Y%m%d")
+    except ValueError:
+        pass
+    for fmt in ("%d.%m.%Y %H:%M:%S", "%d.%m.%Y %H:%M", "%d.%m.%Y", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%Y%m%d")
+        except ValueError:
+            continue
+    digits = re.sub(r"\D+", "", raw)
+    return digits[:8] if len(digits) >= 8 else ""
+
+
+def base_generated_batch_id(order: dict[str, Any]) -> str:
+    explicit = clean_string(order.get("pilot_batch_id") or order.get("batch_id"))
+    if explicit:
+        return explicit
+    cargo_date = compact_date(cargo_dropoff_value(order))
+    number = source_number(order)
+    if not cargo_date or not number:
+        return ""
+    return f"CARGO-{cargo_date}-{number}"
+
+
 def order_title_prefix(order: dict[str, Any]) -> str:
     contour = clean_string(order.get("procurement_contour") or order.get("КонтурЗакупки"))
     compact = contour.casefold().replace(" ", "").replace("_", "")
     if compact in {"cargo", "карго"}:
-        return "Cargo"
+        return "Карго"
     if compact in {"вэдимпорт", "vedimport"}:
         return "ВЭД импорт"
     return "Закупка"
@@ -182,6 +237,131 @@ def crm_item_rest_field_name(field: str) -> str:
 
 def crm_item_rest_fields(fields: dict[str, Any]) -> dict[str, Any]:
     return {crm_item_rest_field_name(key): value for key, value in fields.items()}
+
+
+def normalized_decimal(value: Any) -> Decimal | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int | float | Decimal):
+        return Decimal(str(value))
+    raw = str(value).strip() if value is not None else ""
+    if not raw:
+        return None
+    number_text = raw.replace(" ", "").replace(",", ".")
+    if not re.fullmatch(r"[+-]?\d+(?:\.\d+)?", number_text):
+        return None
+    unsigned = number_text.lstrip("+-")
+    integer_part = unsigned.split(".", 1)[0]
+    if len(integer_part) > 1 and integer_part.startswith("0"):
+        return None
+    try:
+        return Decimal(number_text)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def normalized_datetime_wall(value: Any) -> str:
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=None, microsecond=0).isoformat(timespec="seconds")
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day).isoformat(timespec="seconds")
+    raw = str(value).strip() if value is not None else ""
+    if not raw:
+        return ""
+    normalized = raw.removesuffix("Z")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized):
+        normalized = f"{normalized}T00:00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return ""
+    return parsed.replace(tzinfo=None, microsecond=0).isoformat(timespec="seconds")
+
+
+def parsed_datetime_value(value: Any) -> tuple[datetime, bool] | None:
+    if isinstance(value, datetime):
+        return value.replace(microsecond=0), value.tzinfo is not None
+    if isinstance(value, date):
+        return datetime(value.year, value.month, value.day), False
+    raw = str(value).strip() if value is not None else ""
+    if not raw:
+        return None
+    normalized = raw.removesuffix("Z")
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", normalized):
+        normalized = f"{normalized}T00:00:00"
+    try:
+        parsed = datetime.fromisoformat(normalized)
+    except ValueError:
+        return None
+    return parsed.replace(microsecond=0), parsed.tzinfo is not None
+
+
+def bitrix_datetimes_match(current: Any, desired: Any) -> bool | None:
+    current_info = parsed_datetime_value(current)
+    desired_info = parsed_datetime_value(desired)
+    if not current_info or not desired_info:
+        return None
+    current_dt, current_has_tz = current_info
+    desired_dt, desired_has_tz = desired_info
+    if current_has_tz and desired_has_tz:
+        return current_dt.astimezone(timezone.utc) == desired_dt.astimezone(timezone.utc)
+    return current_dt.replace(tzinfo=None) == desired_dt.replace(tzinfo=None)
+
+
+def bitrix_values_match(current: Any, desired: Any) -> bool:
+    if isinstance(desired, bool):
+        current_text = clean_string(current).casefold()
+        return (
+            current_text in {"1", "y", "yes", "true"}
+            if desired
+            else current_text
+            in {
+                "",
+                "0",
+                "n",
+                "no",
+                "false",
+            }
+        )
+    current_decimal = normalized_decimal(current)
+    desired_decimal = normalized_decimal(desired)
+    if current_decimal is not None and desired_decimal is not None:
+        return current_decimal == desired_decimal
+    datetime_match = bitrix_datetimes_match(current, desired)
+    if datetime_match is not None:
+        return datetime_match
+    current_datetime = normalized_datetime_wall(current)
+    desired_datetime = normalized_datetime_wall(desired)
+    if current_datetime and desired_datetime:
+        return current_datetime == desired_datetime
+    return clean_string(current) == clean_string(desired)
+
+
+def changed_rest_fields(current_item: dict[str, Any], fields: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in fields.items()
+        if not bitrix_values_match(current_item.get(key), value)
+    }
+
+
+def mapped_stage_id(mapping: dict[str, Any], contour: str, stage_key: str) -> str:
+    return clean_string(((mapping.get("stage_map") or {}).get(contour) or {}).get(stage_key))
+
+
+def enum_value(mapping: dict[str, Any], logical_key: str, xml_id: str) -> str:
+    return (
+        clean_string(((mapping.get("enum_map") or {}).get(logical_key) or {}).get(xml_id)) or xml_id
+    )
+
+
+def get_procurement_item(api: Any, *, entity_type_id: int, item_id: str) -> dict[str, Any]:
+    if not entity_type_id or not item_id:
+        return {}
+    payload = api.call("crm.item.get", {"entityTypeId": entity_type_id, "id": item_id})
+    result = payload.get("result") if isinstance(payload, dict) else payload
+    item = result.get("item") if isinstance(result, dict) else {}
+    return item if isinstance(item, dict) else {}
 
 
 def source_number(order: dict[str, Any]) -> str:
@@ -287,6 +467,9 @@ def add_order_scalar_fields(
         "planned_warehouse": clean_string(order.get("planned_warehouse") or order.get("warehouse")),
         "expects_import_gtd": order.get("expects_import_gtd"),
         "gtd_number": clean_string(order.get("gtd_number")),
+        "payment_task_id": clean_string(order.get("payment_task_id")),
+        "payment_task_status": clean_string(order.get("payment_task_status")),
+        "payment_request_created_at": iso_value(order.get("payment_request_created_at")),
     }
     for logical_key, value in pairs.items():
         if value in ("", None):
@@ -294,6 +477,26 @@ def add_order_scalar_fields(
         target = field_name(mapping, logical_key)
         if target:
             fields[target] = value
+
+
+def payment_field_updates(
+    mapping: dict[str, Any],
+    *,
+    task_id: str = "",
+    status: str = "",
+    created_at: str = "",
+) -> dict[str, Any]:
+    fields: dict[str, Any] = {}
+    task_field = field_name(mapping, "payment_task_id")
+    if task_field and task_id:
+        fields[task_field] = task_id
+    status_field = field_name(mapping, "payment_task_status")
+    if status_field and status:
+        fields[status_field] = enum_value(mapping, "payment_task_status", status)
+    created_at_field = field_name(mapping, "payment_request_created_at")
+    if created_at_field and created_at:
+        fields[created_at_field] = created_at
+    return fields
 
 
 def existing_procurement_item_id(api: Any, order: dict[str, Any], mapping: dict[str, Any]) -> str:
@@ -307,7 +510,13 @@ def existing_procurement_item_id(api: Any, order: dict[str, Any], mapping: dict[
     rest_source_date_field = crm_item_rest_field_name(field_name(mapping, "onec_source_date"))
     select = [
         field
-        for field in ["id", "title", rest_number_field, rest_source_type_field, rest_source_date_field]
+        for field in [
+            "id",
+            "title",
+            rest_number_field,
+            rest_source_type_field,
+            rest_source_date_field,
+        ]
         if field
     ]
     expected_source_type = source_type(order)
@@ -354,6 +563,148 @@ def existing_procurement_item_id(api: Any, order: dict[str, Any], mapping: dict[
     return ""
 
 
+def batch_id_exists(
+    api: Any,
+    *,
+    mapping: dict[str, Any],
+    batch_id: str,
+    exclude_item_id: str = "",
+) -> bool:
+    entity_type_id = int((mapping.get("process") or {}).get("entity_type_id") or 0)
+    batch_field = field_name(mapping, "pilot_batch_id")
+    if not entity_type_id or not batch_field or not batch_id:
+        return False
+    rest_batch_field = crm_item_rest_field_name(batch_field)
+    payload = api.call(
+        "crm.item.list",
+        {
+            "entityTypeId": entity_type_id,
+            "filter": {f"={rest_batch_field}": batch_id},
+            "select": ["id", rest_batch_field],
+        },
+    )
+    result = payload.get("result") if isinstance(payload, dict) else payload
+    items = result.get("items") if isinstance(result, dict) else []
+    if not isinstance(items, list):
+        return False
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        item_id = clean_string(item.get("id"))
+        if item_id and item_id != clean_string(exclude_item_id):
+            return True
+    return False
+
+
+def unique_batch_id(
+    api: Any,
+    order: dict[str, Any],
+    *,
+    mapping: dict[str, Any],
+    apply: bool,
+    existing_item_id: str = "",
+    used_batch_ids: set[str] | None = None,
+) -> str:
+    explicit = clean_string(order.get("pilot_batch_id") or order.get("batch_id"))
+    if explicit:
+        return explicit
+    base = base_generated_batch_id(order)
+    if not base:
+        return ""
+    used_batch_ids = used_batch_ids if used_batch_ids is not None else set()
+    candidate = base
+    suffix = 2
+    while candidate in used_batch_ids or (
+        apply
+        and batch_id_exists(
+            api,
+            mapping=mapping,
+            batch_id=candidate,
+            exclude_item_id=existing_item_id,
+        )
+    ):
+        candidate = f"{base}-{suffix:02d}"
+        suffix += 1
+    used_batch_ids.add(candidate)
+    return candidate
+
+
+def bitrix_item_url(api: Any, *, entity_type_id: int, item_id: str) -> str:
+    webhook_base = clean_string(getattr(api, "webhook_base", ""))
+    portal_base = webhook_base.split("/rest/", 1)[0] if "/rest/" in webhook_base else ""
+    if not portal_base or not entity_type_id or not item_id:
+        return ""
+    return f"{portal_base}/crm/type/{entity_type_id}/details/{item_id}/"
+
+
+def cargo_payment_task_title(order: dict[str, Any], *, batch_id: str) -> str:
+    number = source_number(order) or "без номера"
+    batch = batch_id or "без партии"
+    return f"Оплатить карго-заявку: {number} / {batch}"[:255]
+
+
+def cargo_payment_task_description(
+    order: dict[str, Any],
+    *,
+    batch_id: str,
+    item_url: str,
+) -> str:
+    supplier = order.get("supplier") if isinstance(order.get("supplier"), dict) else {}
+    supplier_title = clean_string(supplier.get("title") or supplier.get("name")) or "не указан"
+    amount = formatted_amount(order) or decimal_string(order.get("amount") or order.get("Сумма"))
+    currency = order_currency(order)
+    lines = [
+        "Автоматическая заявка на оплату по карго.",
+        f"Заказ 1С: {source_number(order) or 'не указан'}",
+        f"Партия: {batch_id or 'не указана'}",
+        f"Поставщик: {supplier_title}",
+        f"Сумма сданного товара: {amount or 'не указана'}",
+        f"Валюта: {currency or 'не указана'}",
+        "Ожидаемые транши: обычно 3 транша по условиям поставщика.",
+    ]
+    if item_url:
+        lines.append(f"Карточка закупки: {item_url}")
+    return "\n".join(lines)
+
+
+def extract_task_id(payload: Any) -> str:
+    result = payload.get("result") if isinstance(payload, dict) else payload
+    if isinstance(result, dict):
+        task = result.get("task") if isinstance(result.get("task"), dict) else result
+        return clean_string(task.get("id") or task.get("ID"))
+    return clean_string(result)
+
+
+def create_cargo_payment_task(
+    api: Any,
+    order: dict[str, Any],
+    *,
+    entity_type_id: int,
+    item_id: str,
+    batch_id: str,
+    finance_user_id: str,
+) -> str:
+    payload = api.call(
+        "tasks.task.add",
+        {
+            "fields": {
+                "TITLE": cargo_payment_task_title(order, batch_id=batch_id),
+                "DESCRIPTION": cargo_payment_task_description(
+                    order,
+                    batch_id=batch_id,
+                    item_url=bitrix_item_url(api, entity_type_id=entity_type_id, item_id=item_id),
+                ),
+                "RESPONSIBLE_ID": finance_user_id,
+                "ALLOW_CHANGE_DEADLINE": "Y",
+            }
+        },
+    )
+    task_id = extract_task_id(payload)
+    if not task_id:
+        raise RuntimeError("Bitrix24 tasks.task.add returned empty result")
+    return task_id
+
+
 def import_order(
     api: Any,
     order: dict[str, Any],
@@ -361,11 +712,34 @@ def import_order(
     mapping: dict[str, Any],
     apply: bool,
     assigned_by_id: str = "",
+    finance_user_id: str = DEFAULT_CARGO_FINANCE_USER_ID,
     supplier_conflict_mode: str = "create_card_with_blocker",
     supplier_result: dict[str, Any] | None = None,
     existing_item_id: str | None = None,
+    used_batch_ids: set[str] | None = None,
 ) -> dict[str, Any]:
     supplier = order.get("supplier") if isinstance(order.get("supplier"), dict) else {}
+    entity_type_id = int((mapping.get("process") or {}).get("entity_type_id") or 0)
+    if existing_item_id is not None:
+        existing_id = clean_string(existing_item_id)
+    else:
+        existing_id = existing_procurement_item_id(api, order, mapping) if apply else ""
+    current_item = (
+        get_procurement_item(api, entity_type_id=entity_type_id, item_id=existing_id)
+        if apply and existing_id
+        else {}
+    )
+    batch_id = unique_batch_id(
+        api,
+        order,
+        mapping=mapping,
+        apply=apply,
+        existing_item_id=existing_id,
+        used_batch_ids=used_batch_ids,
+    )
+    enriched_order = {**order}
+    if batch_id:
+        enriched_order["pilot_batch_id"] = batch_id
     if supplier_result is None:
         supplier_result = sync_supplier_to_crm(
             api,
@@ -375,30 +749,84 @@ def import_order(
             assigned_by_id=assigned_by_id or None,
         )
     payload = build_procurement_order_bitrix_fields(
-        {**order, "supplier": supplier},
+        {**enriched_order, "supplier": supplier},
         supplier_result,
         mapping=mapping,
         on_supplier_conflict=supplier_conflict_mode,
     )
     fields = dict(payload["fields"])
-    add_order_scalar_fields(fields, order, mapping)
+    add_order_scalar_fields(fields, enriched_order, mapping)
     if assigned_by_id and "assignedById" not in fields:
         fields["assignedById"] = assigned_by_id
-    entity_type_id = int((mapping.get("process") or {}).get("entity_type_id") or 0)
-    if existing_item_id is not None:
-        existing_id = clean_string(existing_item_id)
-    else:
-        existing_id = existing_procurement_item_id(api, order, mapping) if apply else ""
+
+    rest_payment_task_field = crm_item_rest_field_name(field_name(mapping, "payment_task_id"))
+    existing_payment_task_id = clean_string(
+        enriched_order.get("payment_task_id")
+        or (current_item.get(rest_payment_task_field) if rest_payment_task_field else "")
+    )
+    has_cargo_dropoff = (
+        bool(cargo_dropoff_value(enriched_order)) and payload["logical_key"] == "cargo"
+    )
+    has_payment_done = (
+        bool(payment_date_value(enriched_order))
+        or clean_string(enriched_order.get("payment_task_status")).casefold() == "done"
+    )
+    payment_stage_id = mapped_stage_id(mapping, payload["logical_key"], "payment_work")
+    payment_task_action = "not_required"
+    payment_task_id = existing_payment_task_id
+    payment_update_fields: dict[str, Any] = {}
+    final_stage_key = clean_string(payload["stage_key"])
+    created_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    if has_cargo_dropoff and has_payment_done:
+        payment_task_action = "skipped_payment_done"
+        payment_update_fields.update(
+            payment_field_updates(mapping, task_id=payment_task_id, status="done")
+        )
+        if payment_stage_id:
+            payment_update_fields["stageId"] = payment_stage_id
+            final_stage_key = "payment_work"
+    elif has_cargo_dropoff and existing_payment_task_id:
+        payment_task_action = "exists"
+        payment_update_fields.update(
+            payment_field_updates(
+                mapping,
+                task_id=existing_payment_task_id,
+                status="created",
+                created_at=iso_value(enriched_order.get("payment_request_created_at")),
+            )
+        )
+        if payment_stage_id:
+            payment_update_fields["stageId"] = payment_stage_id
+            final_stage_key = "payment_work"
+    elif has_cargo_dropoff and not finance_user_id:
+        payment_task_action = "skipped_no_finance_user"
+        payment_update_fields.update(
+            payment_field_updates(mapping, status="skipped", created_at=created_at)
+        )
+    elif has_cargo_dropoff:
+        payment_task_action = "dry_run_create"
+        payment_update_fields.update(
+            payment_field_updates(mapping, status="created", created_at=created_at)
+        )
+        if payment_stage_id:
+            payment_update_fields["stageId"] = payment_stage_id
+            final_stage_key = "payment_work"
+
     action = "dry_run_update_or_create"
     item_id = existing_id
     if apply:
         rest_fields = crm_item_rest_fields(fields)
         if existing_id:
-            api.call(
-                "crm.item.update",
-                {"entityTypeId": entity_type_id, "id": existing_id, "fields": rest_fields},
-            )
-            action = "updated"
+            fields_to_update = changed_rest_fields(current_item, rest_fields)
+            if fields_to_update:
+                api.call(
+                    "crm.item.update",
+                    {"entityTypeId": entity_type_id, "id": existing_id, "fields": fields_to_update},
+                )
+                current_item.update(fields_to_update)
+                action = "updated"
+            else:
+                action = "noop"
         else:
             created = api.call(
                 "crm.item.add", {"entityTypeId": entity_type_id, "fields": rest_fields}
@@ -407,11 +835,68 @@ def import_order(
             item = result.get("item") if isinstance(result, dict) else {}
             item_id = clean_string(item.get("id"))
             action = "created"
+        if payment_task_action == "dry_run_create":
+            try:
+                payment_task_id = create_cargo_payment_task(
+                    api,
+                    enriched_order,
+                    entity_type_id=entity_type_id,
+                    item_id=item_id,
+                    batch_id=batch_id,
+                    finance_user_id=finance_user_id,
+                )
+                payment_task_action = "created"
+                payment_update_fields.update(
+                    payment_field_updates(
+                        mapping,
+                        task_id=payment_task_id,
+                        status="created",
+                        created_at=created_at,
+                    )
+                )
+            except Exception:
+                payment_update_fields.pop("stageId", None)
+                final_stage_key = clean_string(payload["stage_key"])
+                payment_update_fields.update(
+                    payment_field_updates(mapping, status="error", created_at=created_at)
+                )
+                if item_id and payment_update_fields:
+                    payment_rest_fields = crm_item_rest_fields(payment_update_fields)
+                    api.call(
+                        "crm.item.update",
+                        {
+                            "entityTypeId": entity_type_id,
+                            "id": item_id,
+                            "fields": payment_rest_fields,
+                        },
+                    )
+                raise
+        if item_id and payment_update_fields:
+            payment_rest_fields = crm_item_rest_fields(payment_update_fields)
+            if existing_id:
+                payment_rest_fields = changed_rest_fields(current_item, payment_rest_fields)
+            if payment_rest_fields:
+                api.call(
+                    "crm.item.update",
+                    {
+                        "entityTypeId": entity_type_id,
+                        "id": item_id,
+                        "fields": payment_rest_fields,
+                    },
+                )
+                if action == "noop":
+                    action = "updated"
+    fields.update(payment_update_fields)
     return {
         "source_number": source_number(order),
         "action": action,
         "item_id": item_id,
         "contour": payload["logical_key"],
+        "initial_stage_key": payload["stage_key"],
+        "stage_key": final_stage_key,
+        "batch_id": batch_id,
+        "payment_task_action": payment_task_action,
+        "payment_task_id": payment_task_id,
         "blocked_supplier": payload["blocked_supplier"],
         "supplier_status": supplier_result.get("status"),
         "supplier_company_id": supplier_result.get("company_id"),
@@ -430,13 +915,22 @@ def main(argv: list[str] | None = None) -> int:
             or env.get("BITRIX24_BOX_WEBHOOK_URL")
             or ""
         ).strip()
+    else:
+        env = load_env(args.env_file)
     if not webhook_base:
         raise SystemExit(
             f"Bitrix webhook is not configured. Set PROCUREMENT_BITRIX_WEBHOOK_URL "
             f"or BITRIX_BOX_WEBHOOK_BASE in {args.env_file}"
         )
+    finance_user_id = (
+        args.finance_user_id
+        or env.get("PROCUREMENT_CARGO_FINANCE_USER_ID")
+        or env.get("PROCUREMENT_FINANCE_USER_ID")
+        or DEFAULT_CARGO_FINANCE_USER_ID
+    ).strip()
     mapping = load_mapping(args.mapping_path)
     api = BitrixRestApi(webhook_base)
+    used_batch_ids: set[str] = set()
     rows = [
         import_order(
             api,
@@ -444,7 +938,9 @@ def main(argv: list[str] | None = None) -> int:
             mapping=mapping,
             apply=args.apply,
             assigned_by_id=args.assigned_by_id,
+            finance_user_id=finance_user_id,
             supplier_conflict_mode=args.supplier_conflict_mode,
+            used_batch_ids=used_batch_ids,
         )
         for order in load_orders(args.input_json)
     ]

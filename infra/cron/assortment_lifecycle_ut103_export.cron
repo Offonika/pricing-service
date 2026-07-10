@@ -1,0 +1,6 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+CRON_TZ=Europe/Moscow
+
+# Nightly assortment lifecycle export: refresh statuses and send property updates to UT 10.3.
+20 3 * * * root /opt/MM/pricing-service/infra/cron/assortment_lifecycle_ut103_export.sh >> /var/log/pricing/assortment_lifecycle_ut103_export.cron.log 2>&1

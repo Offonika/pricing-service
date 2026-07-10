@@ -59,6 +59,51 @@ def test_build_nomenclature_property_updates_xml_uses_contract() -> None:
     assert root.findtext("Items/Item/Reason") == "Первый заказ поставщику сдан в cargo"
 
 
+def test_build_nomenclature_property_updates_xml_allows_commercial_marks() -> None:
+    message = NomenclaturePropertyUpdateMessage(
+        message_id="nomenclature-properties-commercial-mark-001",
+        mode="dry_run",
+        rows=(
+            NomenclaturePropertyUpdateRow(
+                idempotency_key="nom-prop:РБ000074721:Коммерческие признаки:2026-06-27:r1",
+                nomenclature_code="РБ000074721",
+                property_name="Коммерческие признаки",
+                value_type="string",
+                new_value="exclusive",
+                reason="Единственный товар на рынке",
+            ),
+        ),
+    )
+
+    root = ET.fromstring(build_nomenclature_property_updates_xml(message))
+
+    assert root.findtext("Items/Item/PropertyName") == "Коммерческие признаки"
+    assert root.findtext("Items/Item/NewValue") == "exclusive"
+
+
+def test_build_nomenclature_property_updates_xml_allows_subject_property() -> None:
+    message = NomenclaturePropertyUpdateMessage(
+        message_id="nomenclature-properties-subject-001",
+        mode="dry_run",
+        rows=(
+            NomenclaturePropertyUpdateRow(
+                idempotency_key="nom-prop:РБ000074721:Предмет:2026-06-27:r1",
+                nomenclature_code="РБ000074721",
+                property_name="Предмет",
+                value_type="property_value",
+                new_value_name="дисплей",
+                reason="Автоклассификация пустого свойства Предмет",
+            ),
+        ),
+    )
+
+    root = ET.fromstring(build_nomenclature_property_updates_xml(message))
+
+    assert root.findtext("Items/Item/PropertyName") == "Предмет"
+    assert root.findtext("Items/Item/ValueType") == "property_value"
+    assert root.findtext("Items/Item/NewValueName") == "дисплей"
+
+
 def test_build_nomenclature_property_updates_xml_requires_approval_for_apply() -> None:
     message = NomenclaturePropertyUpdateMessage(
         message_id="nomenclature-properties-test-apply-001",
@@ -79,9 +124,9 @@ def test_build_nomenclature_property_updates_xml_requires_approval_for_apply() -
     assert root.findtext("Header/ApprovedBy") == "Арсений"
 
 
-def test_build_nomenclature_property_updates_xml_rejects_property_outside_whitelist() -> None:
+def test_build_nomenclature_property_updates_xml_allows_any_non_empty_property_name() -> None:
     message = NomenclaturePropertyUpdateMessage(
-        message_id="nomenclature-properties-test-unknown-property-001",
+        message_id="nomenclature-properties-test-any-property-001",
         rows=(
             NomenclaturePropertyUpdateRow(
                 idempotency_key="nom-prop:РБ000074721:Произвольное свойство:2026-06-23:r1",
@@ -93,8 +138,32 @@ def test_build_nomenclature_property_updates_xml_rejects_property_outside_whitel
         ),
     )
 
-    with pytest.raises(ValueError, match="whitelist"):
-        build_nomenclature_property_updates_xml(message)
+    root = ET.fromstring(build_nomenclature_property_updates_xml(message))
+
+    assert root.findtext("Items/Item/PropertyName") == "Произвольное свойство"
+    assert root.findtext("Items/Item/NewValue") == "test"
+
+
+def test_build_nomenclature_property_updates_xml_allows_requisite_target() -> None:
+    message = NomenclaturePropertyUpdateMessage(
+        message_id="nomenclature-requisite-sku-001",
+        rows=(
+            NomenclaturePropertyUpdateRow(
+                idempotency_key="nom-prop:РБ000074721:SKU:2026-07-01:r1",
+                nomenclature_code="РБ000074721",
+                target_kind="requisite",
+                property_name="SKU",
+                value_type="string",
+                new_value="F5-DSP-IPH12-OLD-BLK-CPH",
+            ),
+        ),
+    )
+
+    root = ET.fromstring(build_nomenclature_property_updates_xml(message))
+
+    assert root.findtext("Items/Item/TargetKind") == "requisite"
+    assert root.findtext("Items/Item/PropertyName") == "SKU"
+    assert root.findtext("Items/Item/NewValue") == "F5-DSP-IPH12-OLD-BLK-CPH"
 
 
 def test_write_nomenclature_property_updates_message_places_ready_xml_atomically(
@@ -130,7 +199,7 @@ def test_parse_and_list_property_update_exchange_results(tmp_path: Path) -> None
   <MessageId>nomenclature-properties-test-001</MessageId>
   <Status>success</Status>
   <ProcessedAt>23.06.2026 18:55:02</ProcessedAt>
-  <Loaded>1</Loaded>
+  <Loaded>7 711</Loaded>
   <Failed>0</Failed>
   <Errors></Errors>
   <ItemResults>
@@ -154,7 +223,7 @@ def test_parse_and_list_property_update_exchange_results(tmp_path: Path) -> None
         message_id="nomenclature-properties-test-001",
         status="success",
         processed_at="23.06.2026 18:55:02",
-        loaded=1,
+        loaded=7711,
         failed=0,
         errors="",
         item_results=(

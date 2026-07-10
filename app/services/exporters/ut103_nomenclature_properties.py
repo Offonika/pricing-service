@@ -15,19 +15,8 @@ DEFAULT_TARGET = "1c_ut_10_3"
 XML_ENCODING = "windows-1251"
 
 VALID_MODES = frozenset({"dry_run", "apply"})
+VALID_TARGET_KINDS = frozenset({"property", "requisite"})
 VALID_VALUE_TYPES = frozenset({"property_value", "string", "date", "number", "boolean"})
-ALLOWED_PROPERTY_NAMES = frozenset(
-    {
-        "Статус ассортимента",
-        "Причина статуса ассортимента",
-        "Дата изменения статуса ассортимента",
-        "Источник статуса ассортимента",
-        "Утвердил статус ассортимента",
-        "Профиль закупочного поведения",
-        "Ручной минимальный остаток",
-        "Дата пересмотра правила наличия",
-    }
-)
 
 
 @dataclass(frozen=True)
@@ -36,6 +25,7 @@ class NomenclaturePropertyUpdateRow:
     nomenclature_code: str
     property_name: str
     value_type: str
+    target_kind: str = "property"
     new_value: str | int | float | Decimal | bool | date | None = None
     new_value_name: str = ""
     new_value_tag: str = ""
@@ -105,6 +95,8 @@ def build_nomenclature_property_updates_xml(message: NomenclaturePropertyUpdateM
         item = ET.SubElement(items, "Item")
         _add_text(item, "IdempotencyKey", row.idempotency_key)
         _add_text(item, "NomenclatureCode", row.nomenclature_code)
+        if row.target_kind != "property":
+            _add_text(item, "TargetKind", row.target_kind)
         _add_text(item, "PropertyName", row.property_name)
         _add_text(item, "ValueType", row.value_type)
         if row.new_value is not None:
@@ -207,10 +199,12 @@ def _validate_row(
         raise ValueError("nomenclature_code is required")
     if not row.property_name.strip():
         raise ValueError("property_name is required")
-    if row.property_name.strip() not in ALLOWED_PROPERTY_NAMES:
-        raise ValueError("property_name is outside the UT 10.3 whitelist")
+    if row.target_kind not in VALID_TARGET_KINDS:
+        raise ValueError(f"target_kind must be one of: {', '.join(sorted(VALID_TARGET_KINDS))}")
     if row.value_type not in VALID_VALUE_TYPES:
         raise ValueError(f"value_type must be one of: {', '.join(sorted(VALID_VALUE_TYPES))}")
+    if row.target_kind == "requisite" and row.value_type == "property_value":
+        raise ValueError("requisite rows cannot use property_value")
     if row.value_type == "property_value" and not (
         row.new_value_name.strip() or row.new_value_tag.strip()
     ):
@@ -299,7 +293,8 @@ def _node_text(root: ET.Element, tag: str) -> str:
 
 
 def _parse_int(value: str, field_name: str) -> int:
+    normalized = (value or "0").replace(" ", "").replace("\xa0", "").replace("\u202f", "")
     try:
-        return int(value or "0")
+        return int(normalized)
     except ValueError as error:
         raise ValueError(f"{field_name} must be integer, got: {value}") from error

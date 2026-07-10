@@ -1,0 +1,1623 @@
+{
+  "_description": "Решения по карточкам дисплеев без отношения РММЗ: только факты жизни товара, продажи, остаток, давность продажи и потребности. Файл фиксирует место карточки в структуре статусов.",
+  "items": [
+    {
+      "nomenclature_code": "РБ000045041",
+      "fact_lifecycle_relation": "live_selling_item",
+      "target_status": "sale",
+      "status_action": "keep_computed_status",
+      "order_action": "commercial_check_before_auto_order",
+      "reason": "Живая продажная позиция: поступило 13 шт., продано 10 шт., последняя продажа 2026-07-02, расчетный остаток 3 шт. Место в структуре статусов: ПРОДАЖА. Не неликвид, но автозаказ только после проверки маржи, конкурентности и спроса модели за 6 месяцев.",
+      "evidence": {
+        "receipt_qty_total": 13,
+        "sales_qty_total": 10,
+        "last_sale_at": "2026-07-02",
+        "estimated_balance_qty": 3
+      }
+    },
+    {
+      "nomenclature_code": "РБ000045042",
+      "fact_lifecycle_relation": "new_item_with_confirmed_demand",
+      "target_status": "new_item",
+      "status_action": "keep_computed_status_until_repeat_order",
+      "order_action": "repeat_test_order_after_commercial_check",
+      "reason": "Позиция распродалась за первый цикл: поступило 5 шт., продано 5 шт., последняя продажа 2026-06-24, расчетный остаток 0. Место в структуре статусов: Новинка с подтвержденным спросом; в Рабочий переводить только после следующего цикла.",
+      "evidence": {
+        "receipt_qty_total": 5,
+        "sales_qty_total": 5,
+        "last_sale_at": "2026-06-24",
+        "estimated_balance_qty": 0
+      }
+    },
+    {
+      "nomenclature_code": "РБ000045045",
+      "fact_lifecycle_relation": "live_item_with_remaining_stock",
+      "target_status": "sale",
+      "status_action": "keep_computed_status",
+      "order_action": "do_not_reorder_until_stock_or_new_signal",
+      "reason": "Позиция живая, но остаток еще есть: поступило 14 шт., продано 9 шт., последняя продажа 2026-06-17, расчетный остаток 5 шт. Место в структуре статусов: ПРОДАЖА; новый заказ сейчас не нужен до расхода остатка или нового сигнала.",
+      "evidence": {
+        "receipt_qty_total": 14,
+        "sales_qty_total": 9,
+        "last_sale_at": "2026-06-17",
+        "estimated_balance_qty": 5
+      }
+    },
+    {
+      "nomenclature_code": "РБ000045044",
+      "fact_lifecycle_relation": "weak_demand_with_hanging_stock",
+      "target_status": "nonliquid",
+      "status_action": "manual_override",
+      "order_action": "do_not_reorder",
+      "reason": "Почти мертвый товар: поступило 7 шт., продана 1 шт., последняя продажа 2026-03-06, расчетный остаток 6 шт.; две внутренние складские потребности не считаем рыночным спросом. Место в структуре статусов: Кандидат на неликвид.",
+      "evidence": {
+        "receipt_qty_total": 7,
+        "sales_qty_total": 1,
+        "internal_warehouse_need_count": 2,
+        "last_sale_at": "2026-03-06",
+        "estimated_balance_qty": 6
+      }
+    },
+    {
+      "nomenclature_code": "РБ000032776",
+      "fact_lifecycle_relation": "legacy_without_current_demand",
+      "target_status": "do_not_order",
+      "status_action": "manual_override",
+      "order_action": "manual_return_only",
+      "reason": "Старая историческая позиция без текущей жизни: поступило 8 шт., продано 8 шт., последняя продажа 2021-03-26, текущего спроса и остатка нет. Место в структуре статусов: Не закупать, возврат только ручным решением.",
+      "evidence": {
+        "receipt_qty_total": 8,
+        "sales_qty_total": 8,
+        "last_sale_at": "2021-03-26",
+        "estimated_balance_qty": 0
+      }
+    },
+    {
+      "nomenclature_code": "РБ000016562",
+      "name": "Дисплей для Apple iPhone 4 + тачскрин (белый) (Medium)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 56. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 940,
+        "customer_order_qty_1c": 6257,
+        "supplier_order_count_1c": 205,
+        "cargo_handoff_count_1c": 56,
+        "card_created_at_1c": "2014-01-21"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000022719",
+      "name": "Дисплей для BlackBerry Z30 (в сборе с тачскрином) (черный) (в рамке)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 2. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 20,
+        "customer_order_qty_1c": 40,
+        "supplier_order_count_1c": 19,
+        "cargo_handoff_count_1c": 2,
+        "model_birth_date": "2013-09-18"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000028104",
+      "name": "Дисплей для OPPO Find 5 (X909) + тачскрин (черный) (Medium)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 6. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 49,
+        "customer_order_qty_1c": 71,
+        "supplier_order_count_1c": 20,
+        "cargo_handoff_count_1c": 6,
+        "card_created_at_1c": "2015-03-28"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000029781",
+      "name": "Дисплей для Asus ZenFone 2 (ZE550ML) + тачскрин (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 14. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 100,
+        "customer_order_qty_1c": 204,
+        "supplier_order_count_1c": 25,
+        "cargo_handoff_count_1c": 14,
+        "card_created_at_1c": "2015-09-01"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000029787",
+      "name": "Дисплей для Meizu MX3 + тачскрин (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 9. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 40,
+        "customer_order_qty_1c": 71,
+        "supplier_order_count_1c": 18,
+        "cargo_handoff_count_1c": 9,
+        "card_created_at_1c": "2015-08-29"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030012",
+      "name": "Дисплей для Meizu MX4 + тачскрин (белый)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 8. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 31,
+        "customer_order_qty_1c": 51,
+        "supplier_order_count_1c": 15,
+        "cargo_handoff_count_1c": 8,
+        "card_created_at_1c": "2016-03-18"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030064",
+      "name": "Дисплей для Huawei P8 Lite (ALE-L21) + тачскрин (черный) (Medium)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 32. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 121,
+        "customer_order_qty_1c": 641,
+        "supplier_order_count_1c": 51,
+        "cargo_handoff_count_1c": 32,
+        "card_created_at_1c": "2016-05-07"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030065",
+      "name": "Дисплей для Huawei P8 Lite (ALE-L21) + тачскрин (белый) (Medium)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 23. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 75,
+        "customer_order_qty_1c": 347,
+        "supplier_order_count_1c": 29,
+        "cargo_handoff_count_1c": 23,
+        "card_created_at_1c": "2016-05-07"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030161",
+      "name": "Дисплей для Huawei MediaPad T1 7.0 (T1-701U) + тачскрин (белый)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 29. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 90,
+        "customer_order_qty_1c": 180,
+        "supplier_order_count_1c": 39,
+        "cargo_handoff_count_1c": 29,
+        "card_created_at_1c": "2016-06-24"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030181",
+      "name": "Дисплей для Xiaomi Mi 4s + тачскрин (черный) (COF)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 11. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 62,
+        "customer_order_qty_1c": 150,
+        "supplier_order_count_1c": 19,
+        "cargo_handoff_count_1c": 11,
+        "card_created_at_1c": "2016-06-24"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030296",
+      "name": "Дисплей для Meizu M3 Note (M681H) + тачскрин (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 42. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 392,
+        "customer_order_qty_1c": 784,
+        "supplier_order_count_1c": 61,
+        "cargo_handoff_count_1c": 42,
+        "card_created_at_1c": "2016-08-30"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030362",
+      "name": "Дисплей для Philips Xenium S307 (в сборе с тачскрином) (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 6. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 8,
+        "customer_order_qty_1c": 9,
+        "supplier_order_count_1c": 11,
+        "cargo_handoff_count_1c": 6,
+        "model_birth_date": "2015-09-16"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030607",
+      "name": "Дисплей для Philips Xenium W8510 (в сборе с тачскрином) (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 5. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 7,
+        "customer_order_qty_1c": 7,
+        "supplier_order_count_1c": 9,
+        "cargo_handoff_count_1c": 5,
+        "model_birth_date": "2013-10-01"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030626",
+      "name": "Дисплей для Philips Xenium I908 (в сборе с тачскрином) (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 7. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 12,
+        "customer_order_qty_1c": 13,
+        "supplier_order_count_1c": 12,
+        "cargo_handoff_count_1c": 7,
+        "model_birth_date": "2014-10-01"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030751",
+      "name": "Дисплей для LeEco Le 2 (X520/X526/X527) / Le 2 (X620) (в сборе с тачскрином) (розовый)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 2. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 18,
+        "customer_order_qty_1c": 31,
+        "supplier_order_count_1c": 3,
+        "cargo_handoff_count_1c": 2,
+        "model_birth_date": "2016-04-01"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030752",
+      "name": "Дисплей для LeEco Le 2 (X520/X526/X527) / Le 2 (X620) (в сборе с тачскрином) (белый)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 9. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 19,
+        "customer_order_qty_1c": 32,
+        "supplier_order_count_1c": 11,
+        "cargo_handoff_count_1c": 9,
+        "model_birth_date": "2016-04-01"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030754",
+      "name": "Дисплей для LeEco Le Max 2 (X820) (в сборе с тачскрином) (серебристый)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 3. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 7,
+        "customer_order_qty_1c": 16,
+        "supplier_order_count_1c": 4,
+        "cargo_handoff_count_1c": 3,
+        "model_birth_date": "2016-04-01"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030762",
+      "name": "Дисплей для Meizu U20 + тачскрин (белый)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 29. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 69,
+        "customer_order_qty_1c": 119,
+        "supplier_order_count_1c": 34,
+        "cargo_handoff_count_1c": 29,
+        "card_created_at_1c": "2017-04-10"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030888",
+      "name": "Дисплей для Philips Xenium V377 (в сборе с тачскрином) (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 13. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 23,
+        "customer_order_qty_1c": 36,
+        "supplier_order_count_1c": 17,
+        "cargo_handoff_count_1c": 13,
+        "model_birth_date": "2015-10-01"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030899",
+      "name": "Дисплей для Xiaomi Mi Note + тачскрин (черный) (Medium)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 21. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 32,
+        "customer_order_qty_1c": 32,
+        "supplier_order_count_1c": 30,
+        "cargo_handoff_count_1c": 21,
+        "card_created_at_1c": "2017-05-31"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030929",
+      "name": "Дисплей для Xiaomi Mi 5c + тачскрин (черный) (COF)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 13. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 72,
+        "customer_order_qty_1c": 130,
+        "supplier_order_count_1c": 22,
+        "cargo_handoff_count_1c": 13,
+        "card_created_at_1c": "2017-06-12"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030930",
+      "name": "Дисплей для Xiaomi Mi 5c + тачскрин (белый) (COF)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 15. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 52,
+        "customer_order_qty_1c": 99,
+        "supplier_order_count_1c": 21,
+        "cargo_handoff_count_1c": 15,
+        "card_created_at_1c": "2017-06-12"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030941",
+      "name": "Дисплей для Huawei Y6 II (CAM-L03/CAM-L21) / Honor 5A Plus + тачскрин (белый) (Medium)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 5. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 33,
+        "customer_order_qty_1c": 86,
+        "supplier_order_count_1c": 7,
+        "cargo_handoff_count_1c": 5,
+        "card_created_at_1c": "2017-05-31"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030942",
+      "name": "Дисплей для Huawei Y6 II (CAM-L03/CAM-L21) / Honor 5A Plus + тачскрин (черный) (Medium)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 7. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 63,
+        "customer_order_qty_1c": 151,
+        "supplier_order_count_1c": 12,
+        "cargo_handoff_count_1c": 7,
+        "card_created_at_1c": "2017-05-31"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000031059",
+      "name": "Дисплей для Meizu M3X / Meilan X + тачскрин (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 2. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 20,
+        "customer_order_qty_1c": 23,
+        "supplier_order_count_1c": 5,
+        "cargo_handoff_count_1c": 2,
+        "card_created_at_1c": "2017-12-29"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000031508",
+      "name": "Дисплей для Asus ZenFone 3S Max (ZC521TL) + тачскрин (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 5. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 14,
+        "customer_order_qty_1c": 27,
+        "supplier_order_count_1c": 5,
+        "cargo_handoff_count_1c": 5,
+        "card_created_at_1c": "2017-12-14"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000031509",
+      "name": "Дисплей для Asus ZenFone 3S Max (ZC521TL) + тачскрин (белый)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 4. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 14,
+        "customer_order_qty_1c": 35,
+        "supplier_order_count_1c": 4,
+        "cargo_handoff_count_1c": 4,
+        "card_created_at_1c": "2017-12-14"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000031601",
+      "name": "Дисплей для Huawei P10 Lite (WAS-L03T/WAS-LX1) + тачскрин (белый) (Medium)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 14. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 48,
+        "customer_order_qty_1c": 89,
+        "supplier_order_count_1c": 19,
+        "cargo_handoff_count_1c": 14,
+        "card_created_at_1c": "2017-12-11"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000031642",
+      "name": "Дисплей для Samsung J500 Galaxy J5 + тачскрин (золотистый) (OLED)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 6. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 44,
+        "customer_order_qty_1c": 57,
+        "supplier_order_count_1c": 10,
+        "cargo_handoff_count_1c": 6,
+        "card_created_at_1c": "2017-12-14"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000031731",
+      "name": "Дисплей для Lenovo Tab 8.0 (S8-50) + тачскрин (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 11. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 37,
+        "customer_order_qty_1c": 38,
+        "supplier_order_count_1c": 14,
+        "cargo_handoff_count_1c": 11,
+        "card_created_at_1c": "2018-03-30"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000031758",
+      "name": "Дисплей для Asus ZenFone Go (ZC500TG) + тачскрин (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 3. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 18,
+        "customer_order_qty_1c": 25,
+        "supplier_order_count_1c": 3,
+        "cargo_handoff_count_1c": 3,
+        "card_created_at_1c": "2018-04-10"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000031778",
+      "name": "Дисплей для Huawei Honor V9 Play (JMM-AL00) + тачскрин (черный) (COF)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 6. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 83,
+        "customer_order_qty_1c": 103,
+        "supplier_order_count_1c": 8,
+        "cargo_handoff_count_1c": 6,
+        "card_created_at_1c": "2018-04-27"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000031798",
+      "name": "Дисплей для Huawei P8 Lite (ALE-L21) + тачскрин (золотистый) (Medium)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 11. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 24,
+        "customer_order_qty_1c": 81,
+        "supplier_order_count_1c": 14,
+        "cargo_handoff_count_1c": 11,
+        "card_created_at_1c": "2018-04-27"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000031943",
+      "name": "Дисплей для Xiaomi Mi Note + тачскрин (белый) (Medium)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 15. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 19,
+        "customer_order_qty_1c": 20,
+        "supplier_order_count_1c": 19,
+        "cargo_handoff_count_1c": 15,
+        "card_created_at_1c": "2018-07-31"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000032109",
+      "name": "Дисплей для Asus ZenFone Selfie (ZD551KL) + тачскрин (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 24. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 47,
+        "customer_order_qty_1c": 63,
+        "supplier_order_count_1c": 28,
+        "cargo_handoff_count_1c": 24,
+        "card_created_at_1c": "2018-06-03"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000032172",
+      "name": "Дисплей для Asus ZenFone Go (ZB552KL) + тачскрин (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 11. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 32,
+        "customer_order_qty_1c": 50,
+        "supplier_order_count_1c": 17,
+        "cargo_handoff_count_1c": 11,
+        "card_created_at_1c": "2018-04-10"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000032178",
+      "name": "Дисплей для Xiaomi MiPad + тачскрин (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 17. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 25,
+        "customer_order_qty_1c": 26,
+        "supplier_order_count_1c": 18,
+        "cargo_handoff_count_1c": 17,
+        "card_created_at_1c": "2018-07-05"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000032230",
+      "name": "Дисплей для Lenovo Yoga Tablet 3 10.1 (X50F) + тачскрин (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 26. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 95,
+        "customer_order_qty_1c": 116,
+        "supplier_order_count_1c": 31,
+        "cargo_handoff_count_1c": 26,
+        "card_created_at_1c": "2018-05-06"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000032316",
+      "name": "Дисплей для Meizu M5c + тачскрин (белый)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 7. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 24,
+        "customer_order_qty_1c": 39,
+        "supplier_order_count_1c": 8,
+        "cargo_handoff_count_1c": 7,
+        "card_created_at_1c": "2018-05-20"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000032398",
+      "name": "Дисплей для Philips Xenium S386 (в сборе с тачскрином) (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 9. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 21,
+        "customer_order_qty_1c": 26,
+        "supplier_order_count_1c": 12,
+        "cargo_handoff_count_1c": 9,
+        "model_birth_date": "2017-04-08"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000032465",
+      "name": "Дисплей для Huawei MediaPad T3 8.0 Wi-Fi (KOB-W09) + тачскрин (белый)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 66. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 125,
+        "customer_order_qty_1c": 178,
+        "supplier_order_count_1c": 100,
+        "cargo_handoff_count_1c": 66,
+        "card_created_at_1c": "2018-07-05"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000032777",
+      "name": "Дисплей для LeEco LeTV One 1S (X500 / X501) (в сборе с тачскрином) (белый)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 4. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 1,
+        "customer_order_qty_1c": 1,
+        "supplier_order_count_1c": 5,
+        "cargo_handoff_count_1c": 4,
+        "model_birth_date": "2015-11-03"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000032784",
+      "name": "Дисплей для LeEco Le 2 (X520/X526/X527) / Le 2 (X620) (в сборе с тачскрином) (золотистый)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 23. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 88,
+        "customer_order_qty_1c": 106,
+        "supplier_order_count_1c": 35,
+        "cargo_handoff_count_1c": 23,
+        "model_birth_date": "2016-04-01"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000032911",
+      "name": "Дисплей для ZTE Blade V8c + тачскрин (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 10. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 13,
+        "customer_order_qty_1c": 30,
+        "supplier_order_count_1c": 10,
+        "cargo_handoff_count_1c": 10,
+        "card_created_at_1c": "2019-09-07"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000032945",
+      "name": "Дисплей для LeEco Le 2 (X520/X526/X527) / Le 2 (X620) (в сборе с тачскрином) (серый)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 21. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 89,
+        "customer_order_qty_1c": 111,
+        "supplier_order_count_1c": 27,
+        "cargo_handoff_count_1c": 21,
+        "model_birth_date": "2016-04-01"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000032964",
+      "name": "Дисплей для Motorola Moto E4 (XT1762) + тачскрин (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 11. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 22,
+        "customer_order_qty_1c": 26,
+        "supplier_order_count_1c": 11,
+        "cargo_handoff_count_1c": 11,
+        "card_created_at_1c": "2019-09-07"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000032966",
+      "name": "Дисплей для Motorola Moto X Play (XT1562) + тачскрин (белый)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 8. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 8,
+        "customer_order_qty_1c": 8,
+        "supplier_order_count_1c": 9,
+        "cargo_handoff_count_1c": 8,
+        "card_created_at_1c": "2019-05-02"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000033045",
+      "name": "Дисплей для Philips Xenium S326 (в сборе с тачскрином) (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 6. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 8,
+        "customer_order_qty_1c": 8,
+        "supplier_order_count_1c": 6,
+        "cargo_handoff_count_1c": 6,
+        "model_birth_date": "2016-10-01"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000033058",
+      "name": "Дисплей для Lenovo Tab 4 8.0 (TB-8504) + тачскрин (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 35. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 121,
+        "customer_order_qty_1c": 131,
+        "supplier_order_count_1c": 44,
+        "cargo_handoff_count_1c": 35,
+        "card_created_at_1c": "2019-02-12"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000033068",
+      "name": "Дисплей для Samsung T320 Galaxy Tab Pro 8.4 + тачскрин (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 17. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 59,
+        "customer_order_qty_1c": 70,
+        "supplier_order_count_1c": 20,
+        "cargo_handoff_count_1c": 17,
+        "card_created_at_1c": "2019-12-13"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000033079",
+      "name": "Дисплей для Huawei MediaPad T1 8.0 (S8-701U) + тачскрин (белый)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 22. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 38,
+        "customer_order_qty_1c": 45,
+        "supplier_order_count_1c": 33,
+        "cargo_handoff_count_1c": 22,
+        "card_created_at_1c": "2019-01-31"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000033080",
+      "name": "Дисплей для Huawei MediaPad T1 8.0 (S8-701U) + тачскрин (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 5. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 23,
+        "customer_order_qty_1c": 27,
+        "supplier_order_count_1c": 10,
+        "cargo_handoff_count_1c": 5,
+        "card_created_at_1c": "2019-01-31"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000033088",
+      "name": "Дисплей для Philips Xenium X588 (в сборе с тачскрином) (черный) (в рамке)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 6. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 12,
+        "customer_order_qty_1c": 13,
+        "supplier_order_count_1c": 7,
+        "cargo_handoff_count_1c": 6,
+        "model_birth_date": "2017-03-22"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000033802",
+      "name": "Дисплей для Philips Xenium S327 (в сборе с тачскрином) (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 5. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 9,
+        "customer_order_qty_1c": 9,
+        "supplier_order_count_1c": 6,
+        "cargo_handoff_count_1c": 5,
+        "model_birth_date": "2017-07-31"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000033902",
+      "name": "Дисплей для Acer Z628 Liquid Zest Plus (в сборе с тачскрином) (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 4. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 2,
+        "customer_order_qty_1c": 2,
+        "supplier_order_count_1c": 5,
+        "cargo_handoff_count_1c": 4,
+        "model_birth_date": "2016-05-27"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000034312",
+      "name": "Дисплей для Philips Xenium V526 (в сборе с тачскрином) (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 5. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 4,
+        "customer_order_qty_1c": 4,
+        "supplier_order_count_1c": 5,
+        "cargo_handoff_count_1c": 5,
+        "model_birth_date": "2015-08-01"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000034374",
+      "name": "Дисплей для LeEco Cool1 (в сборе с тачскрином) (золотистый)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 4. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 6,
+        "customer_order_qty_1c": 6,
+        "supplier_order_count_1c": 4,
+        "cargo_handoff_count_1c": 4,
+        "model_birth_date": "2016-08-01"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000034553",
+      "name": "Дисплей для Huawei MediaPad T1 10.0 (T1-A21L) + тачскрин (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 22. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 17,
+        "customer_order_qty_1c": 18,
+        "supplier_order_count_1c": 26,
+        "cargo_handoff_count_1c": 22,
+        "card_created_at_1c": "2022-04-06"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000034807",
+      "name": "Дисплей для Samsung J710 Galaxy J7 (2016) + тачскрин (белый) (In-Cell)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 3. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 14,
+        "customer_order_qty_1c": 14,
+        "supplier_order_count_1c": 5,
+        "cargo_handoff_count_1c": 3,
+        "card_created_at_1c": "2019-11-25"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000035003",
+      "name": "Дисплей для Huawei P8 (GRA-UL00) + тачскрин (черный) (Medium)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 9. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 35,
+        "customer_order_qty_1c": 64,
+        "supplier_order_count_1c": 17,
+        "cargo_handoff_count_1c": 9,
+        "card_created_at_1c": "2019-06-27"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000035161",
+      "name": "Дисплей для Huawei MediaPad X2 7.0 (GEM-701L) + тачскрин (белый)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 20. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 21,
+        "customer_order_qty_1c": 21,
+        "supplier_order_count_1c": 35,
+        "cargo_handoff_count_1c": 20,
+        "card_created_at_1c": "2019-08-31"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000035497",
+      "name": "Дисплей для Huawei P8 (GRA-UL00) + тачскрин (белый) (Medium)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 4. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 17,
+        "customer_order_qty_1c": 22,
+        "supplier_order_count_1c": 11,
+        "cargo_handoff_count_1c": 4,
+        "card_created_at_1c": "2019-06-27"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000035498",
+      "name": "Дисплей для Huawei P8 (GRA-UL00) + тачскрин (золотистый) (Medium)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 4. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 5,
+        "customer_order_qty_1c": 8,
+        "supplier_order_count_1c": 11,
+        "cargo_handoff_count_1c": 4,
+        "card_created_at_1c": "2019-06-27"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000035531",
+      "name": "Дисплей для Lenovo Tab 3 Plus 7.0 (TB-7703X) + тачскрин (черный)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 10. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 22,
+        "customer_order_qty_1c": 26,
+        "supplier_order_count_1c": 11,
+        "cargo_handoff_count_1c": 10,
+        "card_created_at_1c": "2019-07-13"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000035678",
+      "name": "Дисплей для Meizu M8c + тачскрин (белый)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 3. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 8,
+        "customer_order_qty_1c": 8,
+        "supplier_order_count_1c": 4,
+        "cargo_handoff_count_1c": 3,
+        "card_created_at_1c": "2019-12-08"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000036333",
+      "name": "Дисплей для Huawei MediaPad T2 Pro 7.0 (PLE-701L) + тачскрин (белый)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 15. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 10,
+        "customer_order_qty_1c": 10,
+        "supplier_order_count_1c": 19,
+        "cargo_handoff_count_1c": 15,
+        "card_created_at_1c": "2019-11-20"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000036644",
+      "name": "Дисплей для Meizu M3 Max + тачскрин (белый)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 5. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 22,
+        "customer_order_qty_1c": 31,
+        "supplier_order_count_1c": 8,
+        "cargo_handoff_count_1c": 5,
+        "card_created_at_1c": "2019-11-07"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000036981",
+      "name": "Дисплей для Vivo Y93 Lite (1811) + тачскрин (черный) (ORIG)",
+      "fact_lifecycle_relation": "cargo_handoff_confirmed",
+      "target_status": "sales_start",
+      "target_status_label": "СП / Старт продаж",
+      "status_action": "computed_status_rebase",
+      "order_action": "use_lifecycle_status_for_next_rules",
+      "reason": "Статус Плод перенесен в СП / Старт продаж по твердым фактам 1С: есть cargo/передачи: 19. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 20,
+        "customer_order_qty_1c": 24,
+        "supplier_order_count_1c": 22,
+        "cargo_handoff_count_1c": 19,
+        "card_created_at_1c": "2021-05-12"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000030857",
+      "name": "Дисплей для Samsung P3100/P3110 Galaxy Tab 2 7.0 / P6200 Galaxy Tab 7.0 / T210/T211 Galaxy Tab 3 7.0 и др.",
+      "fact_lifecycle_relation": "first_cargo_handoff_confirmed",
+      "target_status": "new_item",
+      "target_status_label": "Новинка",
+      "status_action": "computed_status_rebase",
+      "order_action": "observe_first_cycle_before_repeat_order",
+      "reason": "Статус Плод перенесен в Новинка по твердым фактам 1С: есть первая cargo/передача. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 26,
+        "customer_order_qty_1c": 27,
+        "supplier_order_count_1c": 1,
+        "cargo_handoff_count_1c": 1,
+        "card_created_at_1c": "2018-05-06"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000033087",
+      "name": "Дисплей для Philips Xenium V787 (в сборе с тачскрином) (черный) (в рамке)",
+      "fact_lifecycle_relation": "first_cargo_handoff_confirmed",
+      "target_status": "new_item",
+      "target_status_label": "Новинка",
+      "status_action": "computed_status_rebase",
+      "order_action": "observe_first_cycle_before_repeat_order",
+      "reason": "Статус Плод перенесен в Новинка по твердым фактам 1С: есть первая cargo/передача. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 6,
+        "customer_order_qty_1c": 6,
+        "supplier_order_count_1c": 1,
+        "cargo_handoff_count_1c": 1,
+        "model_birth_date": "2015-12-01"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000033144",
+      "name": "Дисплей для Prestigio Muze C3 Duo PSP3504 (в сборе с тачскрином) (черный)",
+      "fact_lifecycle_relation": "first_cargo_handoff_confirmed",
+      "target_status": "new_item",
+      "target_status_label": "Новинка",
+      "status_action": "computed_status_rebase",
+      "order_action": "observe_first_cycle_before_repeat_order",
+      "reason": "Статус Плод перенесен в Новинка по твердым фактам 1С: есть первая cargo/передача. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 2,
+        "customer_order_qty_1c": 2,
+        "supplier_order_count_1c": 1,
+        "cargo_handoff_count_1c": 1,
+        "model_birth_date": "2015-07-01"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000033146",
+      "name": "Дисплей для Prestigio Muze C3 Duo PSP3504 (в сборе с тачскрином) (золотистый)",
+      "fact_lifecycle_relation": "first_cargo_handoff_confirmed",
+      "target_status": "new_item",
+      "target_status_label": "Новинка",
+      "status_action": "computed_status_rebase",
+      "order_action": "observe_first_cycle_before_repeat_order",
+      "reason": "Статус Плод перенесен в Новинка по твердым фактам 1С: есть первая cargo/передача. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 1,
+        "customer_order_qty_1c": 1,
+        "supplier_order_count_1c": 1,
+        "cargo_handoff_count_1c": 1,
+        "model_birth_date": "2015-07-01"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000033265",
+      "name": "Дисплей для Philips Xenium I928 (в сборе с тачскрином) (черный)",
+      "fact_lifecycle_relation": "first_cargo_handoff_confirmed",
+      "target_status": "new_item",
+      "target_status_label": "Новинка",
+      "status_action": "computed_status_rebase",
+      "order_action": "observe_first_cycle_before_repeat_order",
+      "reason": "Статус Плод перенесен в Новинка по твердым фактам 1С: есть первая cargo/передача. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 2,
+        "customer_order_qty_1c": 2,
+        "supplier_order_count_1c": 1,
+        "cargo_handoff_count_1c": 1,
+        "model_birth_date": "2014-05-01"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000034373",
+      "name": "Дисплей для LeEco Cool1 (в сборе с тачскрином) (белый)",
+      "fact_lifecycle_relation": "first_cargo_handoff_confirmed",
+      "target_status": "new_item",
+      "target_status_label": "Новинка",
+      "status_action": "computed_status_rebase",
+      "order_action": "observe_first_cycle_before_repeat_order",
+      "reason": "Статус Плод перенесен в Новинка по твердым фактам 1С: есть первая cargo/передача. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 3,
+        "customer_order_qty_1c": 3,
+        "supplier_order_count_1c": 1,
+        "cargo_handoff_count_1c": 1,
+        "model_birth_date": "2016-08-01"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000037374",
+      "name": "Дисплей для OPPO R9s (CPH1607) + тачскрин (черный) (в рамке) (In-Cell)",
+      "fact_lifecycle_relation": "first_cargo_handoff_confirmed",
+      "target_status": "new_item",
+      "target_status_label": "Новинка",
+      "status_action": "computed_status_rebase",
+      "order_action": "observe_first_cycle_before_repeat_order",
+      "reason": "Статус Плод перенесен в Новинка по твердым фактам 1С: есть первая cargo/передача. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 8,
+        "customer_order_qty_1c": 17,
+        "supplier_order_count_1c": 1,
+        "cargo_handoff_count_1c": 1,
+        "card_created_at_1c": "2021-05-04"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000023904",
+      "name": "Дисплей для Acer Iconia Tab A100/A101 7.0 / Explay MID-725 / MegaFon Login 2 и др.",
+      "fact_lifecycle_relation": "supplier_order_without_cargo",
+      "target_status": "newborn",
+      "target_status_label": "Новорожденный",
+      "status_action": "computed_status_rebase",
+      "order_action": "manual_review_first_supplier_order",
+      "reason": "Статус Плод перенесен в Новорожденный по твердым фактам 1С: есть заказ поставщику: 6. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 13,
+        "customer_order_qty_1c": 28,
+        "supplier_order_count_1c": 6,
+        "cargo_handoff_count_1c": 0,
+        "model_birth_date": "2011-06-21"
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000072696",
+      "name": "Дисплей для Samsung M566 Galaxy M56 5G + тачскрин (черный) (ORIG100) (SP)",
+      "fact_lifecycle_relation": "supplier_order_without_cargo",
+      "target_status": "newborn",
+      "target_status_label": "Новорожденный",
+      "status_action": "computed_status_rebase",
+      "order_action": "manual_review_first_supplier_order",
+      "reason": "Статус Плод перенесен в Новорожденный по твердым фактам 1С: есть заказ поставщику: 1. 1С не менялась; решение зафиксировано в операционном слое pricing-service.",
+      "evidence": {
+        "customer_order_count_1c": 0,
+        "customer_order_qty_1c": 0,
+        "supplier_order_count_1c": 1,
+        "cargo_handoff_count_1c": 0
+      },
+      "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+      "decided_at": "2026-07-09",
+      "approved_by": "chat_2026-07-09"
+    }
+  ],
+  "_fruit_status_transfer_77_applied_at": "2026-07-09T20:16:57",
+  "_fruit_status_transfer_77_scope": "операционный перенос из Плод по твердым фактам 1С; без записи в 1С",
+  "_fruit_status_transfer_77_source": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
+  "_fruit_status_transfer_77_counts": {
+    "СП / Старт продаж": 68,
+    "Новинка": 7,
+    "Новорожденный": 2
+  }
+}

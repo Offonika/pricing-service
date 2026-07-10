@@ -9,16 +9,22 @@ from pathlib import Path
 from typing import Any
 
 from app.services.assortment_lifecycle import (
+    ASSORTMENT_STATUS_LABELS,
     AssortmentLifecycleDecision,
     AssortmentLifecycleInput,
+    AssortmentStatus,
+    CommercialMarksDecision,
+    CommercialMarksInput,
     ExpensiveProfileDecision,
     ExpensiveProfileInput,
     ManagerNeedSignal,
     WarehouseSalesPointInput,
+    build_commercial_mark_property_update_rows,
     build_procurement_profile_property_update_row,
     build_status_property_update_rows,
     classify_expensive_profile,
     decide_assortment_status,
+    decide_commercial_marks,
     systemic_sales_point_codes,
     validate_manager_need_signal,
 )
@@ -35,6 +41,7 @@ DEFAULT_TASK_SOURCE = os.environ.get(
     "UT103_NOMENCLATURE_PROPERTIES_SOURCE",
     DEFAULT_SOURCE,
 )
+DISPLAY_SCOPE_MARKERS = ("диспле", "матриц")
 
 
 def main() -> int:
@@ -110,16 +117,28 @@ def build_updates_from_records(
             continue
         lifecycle_input = _lifecycle_input_from_record(record)
         status_decision = decide_assortment_status(lifecycle_input)
+        status_decision = _fact_status_decision_from_record(record, status_decision)
+        commercial_decision = decide_commercial_marks(_commercial_marks_input_from_record(record))
         profile_decision = _profile_decision_from_record(record)
         sales_point_codes = systemic_sales_point_codes(_warehouses_from_record(record))
         signal_summaries = _manager_signal_summaries(record, suspicious_quantity_threshold)
 
-        export_blockers = _export_blockers(status_decision)
-        if not export_blockers:
+        status_export_blockers = _status_export_blockers(status_decision)
+        commercial_export_blockers = _commercial_export_blockers(commercial_decision)
+        export_blockers = (*status_export_blockers, *commercial_export_blockers)
+        if not status_export_blockers:
             rows.extend(
                 build_status_property_update_rows(
                     status_decision,
                     source=source,
+                    changed_at=changed_at,
+                )
+            )
+
+        if not commercial_export_blockers:
+            rows.extend(
+                build_commercial_mark_property_update_rows(
+                    commercial_decision,
                     changed_at=changed_at,
                 )
             )
@@ -138,6 +157,7 @@ def build_updates_from_records(
             _item_summary(
                 record,
                 status_decision,
+                commercial_decision,
                 profile_decision,
                 sales_point_codes,
                 signal_summaries,
@@ -203,6 +223,9 @@ def _load_records(path: Path) -> list[dict[str, Any]]:
 
 
 def _lifecycle_input_from_record(record: dict[str, Any]) -> AssortmentLifecycleInput:
+    manual_status = _optional_field(record, "manual_status", "ManualStatus", default=None)
+    if _is_legacy_exclusive_manual_status(manual_status):
+        manual_status = None
     return AssortmentLifecycleInput(
         nomenclature_code=str(_field(record, "nomenclature_code", "NomenclatureCode")),
         created_at=_optional_date_field(record, "created_at", "CreatedAt"),
@@ -230,7 +253,13 @@ def _lifecycle_input_from_record(record: dict[str, Any]) -> AssortmentLifecycleI
             "WorkingConfirmedByFolderResponsible",
             default=False,
         ),
-        manual_status=_optional_field(record, "manual_status", "ManualStatus", default=None),
+        analog_winner_confirmed_by_folder_responsible=_bool_field(
+            record,
+            "analog_winner_confirmed_by_folder_responsible",
+            "AnalogWinnerConfirmedByFolderResponsible",
+            default=False,
+        ),
+        manual_status=manual_status,
         manual_reason=str(_optional_field(record, "manual_reason", "ManualReason", default="")),
         manual_approved_by=str(
             _optional_field(record, "manual_approved_by", "ManualApprovedBy", default="")
@@ -249,6 +278,147 @@ def _lifecycle_input_from_record(record: dict[str, Any]) -> AssortmentLifecycleI
                 "ExclusiveReviewPeriodDays",
                 default=30,
             )
+        ),
+    )
+
+
+def _fact_status_decision_from_record(
+    record: dict[str, Any],
+    fallback: AssortmentLifecycleDecision,
+) -> AssortmentLifecycleDecision:
+    raw = _optional_field(record, "fact_status_decision", "FactStatusDecision", default=None)
+    if raw in (None, ""):
+        return fallback
+    if not isinstance(raw, dict):
+        raise SystemExit("fact_status_decision must be an object")
+
+    raw_status = str(
+        _optional_field(raw, "target_status", "TargetStatus", "status", "Status", default="")
+    ).strip()
+    if not raw_status:
+        return fallback
+    try:
+        status = AssortmentStatus(raw_status)
+    except ValueError as exc:
+        raise SystemExit(f"unsupported fact_status_decision target_status: {raw_status}") from exc
+
+    relation = str(
+        _optional_field(
+            raw,
+            "fact_lifecycle_relation",
+            "FactLifecycleRelation",
+            default="fact_status_decision",
+        )
+    ).strip()
+    reason = str(
+        _optional_field(
+            raw,
+            "reason",
+            "Reason",
+            default=f"Статус задан реестром решений по фактам: {ASSORTMENT_STATUS_LABELS[status]}.",
+        )
+    )
+    approved_by = str(_optional_field(raw, "approved_by", "ApprovedBy", default=""))
+    changed_at = _optional_date_from_value(
+        _optional_field(raw, "decided_at", "DecidedAt", "changed_at", "ChangedAt", default=None)
+    )
+
+    reason_codes = tuple(
+        code
+        for code in ("fact_status_decision", relation)
+        if code and code != "fact_status_decision"
+    )
+    if not reason_codes:
+        reason_codes = ("fact_status_decision",)
+    else:
+        reason_codes = ("fact_status_decision", *reason_codes)
+
+    return AssortmentLifecycleDecision(
+        nomenclature_code=fallback.nomenclature_code,
+        status=status,
+        status_label=ASSORTMENT_STATUS_LABELS[status],
+        reason_codes=reason_codes,
+        reason_text=reason,
+        manual_review_required=status in {AssortmentStatus.NEWBORN},
+        auto_order_allowed=False,
+        blockers=("ut103_export_blocked", "fact_status_decision_requires_1c_approval"),
+        changed_at=changed_at,
+        approved_by=approved_by,
+    )
+
+
+def _commercial_marks_input_from_record(record: dict[str, Any]) -> CommercialMarksInput:
+    marks = _commercial_marks_from_record(record)
+    legacy_exclusive = _is_legacy_exclusive_manual_status(
+        _optional_field(record, "manual_status", "ManualStatus", default=None)
+    )
+    if legacy_exclusive and "exclusive" not in marks:
+        marks = (*marks, "exclusive")
+    return CommercialMarksInput(
+        nomenclature_code=str(_field(record, "nomenclature_code", "NomenclatureCode")),
+        commercial_marks=marks,
+        exclusive_kind=str(_optional_field(record, "exclusive_kind", "ExclusiveKind", default="")),
+        exclusive_confidence=str(
+            _optional_field(record, "exclusive_confidence", "ExclusiveConfidence", default="")
+        ),
+        exclusive_checked_at=(
+            _optional_date_field(record, "exclusive_checked_at", "ExclusiveCheckedAt")
+            or (
+                _optional_date_field(record, "manual_changed_at", "ManualChangedAt")
+                if legacy_exclusive
+                else None
+            )
+        ),
+        exclusive_review_at=_optional_date_field(
+            record,
+            "exclusive_review_at",
+            "ExclusiveReviewAt",
+        ),
+        exclusive_review_period_days=int(
+            _optional_field(
+                record,
+                "exclusive_review_period_days",
+                "ExclusiveReviewPeriodDays",
+                default=30,
+            )
+        ),
+        exclusive_reason=str(
+            _optional_field(
+                record,
+                "exclusive_reason",
+                "ExclusiveReason",
+                default=(
+                    _optional_field(record, "manual_reason", "ManualReason", default="")
+                    if legacy_exclusive
+                    else ""
+                ),
+            )
+        ),
+        exclusive_approved_by=str(
+            _optional_field(
+                record,
+                "exclusive_approved_by",
+                "ExclusiveApprovedBy",
+                default=(
+                    _optional_field(record, "manual_approved_by", "ManualApprovedBy", default="")
+                    if legacy_exclusive
+                    else ""
+                ),
+            )
+        ),
+        exclusive_evidence_refs=_text_tuple(
+            _optional_field(
+                record,
+                "exclusive_evidence_refs",
+                "ExclusiveEvidenceRefs",
+                default=[],
+            )
+        ),
+        exclusive_min_stock_qty=_optional_field(
+            record,
+            "exclusive_min_stock_qty",
+            "ExclusiveMinStockQty",
+            default=None,
         ),
     )
 
@@ -377,6 +547,7 @@ def _manager_signal_summaries(
 def _item_summary(
     record: dict[str, Any],
     status_decision: AssortmentLifecycleDecision,
+    commercial_decision: CommercialMarksDecision,
     profile_decision: ExpensiveProfileDecision | None,
     sales_point_codes: tuple[str, ...],
     signal_summaries: list[dict[str, Any]],
@@ -396,10 +567,26 @@ def _item_summary(
         "blockers": list(status_decision.blockers),
         "export_blockers": list(export_blockers),
         "auto_order_allowed": status_decision.auto_order_allowed,
-        "manual_review_required": status_decision.manual_review_required,
+        "manual_review_required": (
+            status_decision.manual_review_required or commercial_decision.manual_review_required
+        ),
         "sales_point_warehouse_codes": list(sales_point_codes),
         "manager_need_signals": signal_summaries,
+        "commercial_marks": [mark.value for mark in commercial_decision.commercial_marks],
+        "commercial_mark_labels": list(commercial_decision.commercial_mark_labels),
+        "commercial_mark_blockers": list(commercial_decision.blockers),
     }
+    if commercial_decision.exclusive_kind or "exclusive" in summary["commercial_marks"]:
+        summary["exclusive_kind"] = commercial_decision.exclusive_kind
+        summary["exclusive_confidence"] = commercial_decision.exclusive_confidence
+        summary["exclusive_checked_at"] = _json_value(commercial_decision.exclusive_checked_at)
+        summary["exclusive_review_at"] = _json_value(commercial_decision.exclusive_review_at)
+        summary["exclusive_reason"] = commercial_decision.exclusive_reason
+        summary["exclusive_approved_by"] = commercial_decision.exclusive_approved_by
+        summary["exclusive_evidence_refs"] = list(commercial_decision.exclusive_evidence_refs)
+        summary["exclusive_min_stock_qty"] = _json_value(
+            commercial_decision.exclusive_min_stock_qty
+        )
     if profile_decision is not None:
         summary["expensive_profile"] = (
             profile_decision.profile.value if profile_decision.profile else None
@@ -411,10 +598,35 @@ def _item_summary(
     return summary
 
 
-def _export_blockers(decision: AssortmentLifecycleDecision) -> tuple[str, ...]:
-    if decision.status.value in {"exclusive", "matrix", "on_demand", "nonliquid", "do_not_order"}:
+def _status_export_blockers(decision: AssortmentLifecycleDecision) -> tuple[str, ...]:
+    if "ut103_export_blocked" in decision.blockers:
+        return decision.blockers
+    if decision.status.value in {"matrix", "on_demand", "nonliquid", "do_not_order"}:
         return decision.blockers
     return ()
+
+
+def _commercial_export_blockers(decision: CommercialMarksDecision) -> tuple[str, ...]:
+    return decision.blockers
+
+
+def _commercial_marks_from_record(record: dict[str, Any]) -> tuple[str, ...]:
+    value = _optional_field(record, "commercial_marks", "CommercialMarks", default=[])
+    return _text_tuple(value)
+
+
+def _text_tuple(value: Any) -> tuple[str, ...]:
+    if value in (None, ""):
+        return ()
+    if isinstance(value, str):
+        return tuple(part.strip() for part in value.split(",") if part.strip())
+    if isinstance(value, list):
+        return tuple(str(item).strip() for item in value if str(item).strip())
+    raise SystemExit("text list field must be a list or comma-separated string")
+
+
+def _is_legacy_exclusive_manual_status(value: Any) -> bool:
+    return str(value or "").strip().casefold() == "exclusive"
 
 
 def _write_rows_json(path: Path, rows: list[NomenclaturePropertyUpdateRow]) -> None:
@@ -443,7 +655,10 @@ def _row_to_mapping(row: NomenclaturePropertyUpdateRow) -> dict[str, Any]:
 
 def _matches_folder(record: dict[str, Any], folder_filter: str) -> bool:
     needle = folder_filter.casefold().strip()
-    return needle in _folder_text(record).casefold()
+    folder_text = _folder_text(record).casefold()
+    if needle in folder_text:
+        return True
+    return _is_display_scope_text(needle) and _is_display_scope_text(folder_text)
 
 
 def _folder_text(record: dict[str, Any]) -> str:
@@ -453,6 +668,11 @@ def _folder_text(record: dict[str, Any]) -> str:
         _optional_field(record, "folder_path", "FolderPath", default=""),
     ]
     return " / ".join(str(value) for value in values if value)
+
+
+def _is_display_scope_text(value: str) -> bool:
+    normalized = value.casefold()
+    return any(marker in normalized for marker in DISPLAY_SCOPE_MARKERS)
 
 
 def _field(item: dict[str, Any], *names: str) -> Any:
@@ -471,6 +691,10 @@ def _optional_field(item: dict[str, Any], *names: str, default: Any = None) -> A
 
 def _optional_date_field(item: dict[str, Any], *names: str) -> date | None:
     value = _optional_field(item, *names, default=None)
+    return _optional_date_from_value(value)
+
+
+def _optional_date_from_value(value: Any) -> date | None:
     if value in (None, ""):
         return None
     return _parse_date(str(value))

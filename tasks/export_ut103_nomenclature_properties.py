@@ -157,6 +157,7 @@ def _row_from_mapping(item: dict[str, Any]) -> NomenclaturePropertyUpdateRow:
         nomenclature_code=str(_field(item, "nomenclature_code", "NomenclatureCode")),
         property_name=str(_field(item, "property_name", "PropertyName")),
         value_type=str(_field(item, "value_type", "ValueType")),
+        target_kind=str(_optional_field(item, "target_kind", "TargetKind", default="property")),
         new_value=_optional_field(item, "new_value", "NewValue"),
         new_value_name=str(_optional_field(item, "new_value_name", "NewValueName", default="")),
         new_value_tag=str(_optional_field(item, "new_value_tag", "NewValueTag", default="")),

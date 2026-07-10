@@ -13,15 +13,40 @@ export interface ReceivableStaffOption {
   department_name?: string | null;
 }
 
+export interface ReceivableDepartmentOption {
+  department_ref: string;
+  department_name: string;
+}
+
+export interface ReceivableCacheComponent {
+  source_status: string;
+  cached_count: number;
+  computed_at?: string | null;
+}
+
+export interface ReceivableWorkplaceMetaResponse {
+  latest_snapshot_date?: string | null;
+  department_options: ReceivableDepartmentOption[];
+  cache_status: Record<string, ReceivableCacheComponent>;
+}
+
 export interface ReceivableDocument {
   document_ref?: string | null;
   document_number?: string | null;
   document_date?: string | null;
   amount: string;
+  gross_amount?: string | null;
+  open_amount?: string | null;
+  closing_amount?: string | null;
+  return_amount?: string | null;
   manager_name?: string | null;
   due_date?: string | null;
   overdue_days?: number | null;
   is_overdue: boolean;
+  selection_rule?: string | null;
+  statement_balance_after?: string | null;
+  match_details: Array<Record<string, unknown>>;
+  document_structure_status?: string | null;
 }
 
 export interface ReceivableWorkplaceItem {
@@ -30,6 +55,7 @@ export interface ReceivableWorkplaceItem {
   counterparty_ref: string;
   counterparty_code?: string | null;
   counterparty_name?: string | null;
+  bitrix_detail_url?: string | null;
   department_ref?: string | null;
   department_name?: string | null;
   responsible_ref?: string | null;
@@ -50,6 +76,7 @@ export interface ReceivableWorkplaceItem {
   status: string;
   next_action_date?: string | null;
   payment_postponed: boolean;
+  payment_postponed_count: number;
   comment?: string | null;
   needs_call_today: boolean;
   no_phone_marker: boolean;
@@ -75,15 +102,22 @@ export interface ReceivableWorkplaceResponse {
   freshness_status: string;
   source_status: string;
   summary: ReceivableWorkplaceSummary;
+  total_count: number;
+  visible_count: number;
+  summary_scope: string;
+  department_options: ReceivableDepartmentOption[];
+  cache_status: Record<string, ReceivableCacheComponent>;
   status_options: ReceivableStatusOption[];
   payload: ReceivableWorkplaceItem[];
 }
 
 export interface ReceivableWorkplaceActionPayload {
+  action_id?: string | null;
   status?: string | null;
   contacted_staff_ref?: string | null;
   contacted_staff_name?: string | null;
   promised_payment_date?: string | null;
+  last_contact_at?: string | null;
   next_action_date?: string | null;
   payment_postponed?: boolean | null;
   comment?: string | null;
@@ -104,9 +138,17 @@ export interface CounterpartyFolderRecommendation {
   counterparty_name?: string | null;
   current_balance: string;
   current_folder_name?: string | null;
+  current_folder_display_name?: string | null;
   recommended_folder_name?: string | null;
+  recommended_folder_display_name?: string | null;
   debt_department_name?: string | null;
+  debt_department_display_name?: string | null;
+  snapshot_department_name?: string | null;
+  snapshot_department_display_name?: string | null;
   debt_document_number?: string | null;
+  debt_document_date?: string | null;
+  origin_document_number?: string | null;
+  origin_document_date?: string | null;
   effective_overdue_days?: number | null;
   status: string;
   review_reason?: string | null;
@@ -130,8 +172,16 @@ export async function fetchReceivableWorkplace(params: {
     params: {
       date: params.date,
       department_ref: params.department_ref || undefined,
+      limit: 100,
       status: params.status || undefined,
     },
+  });
+  return response.data;
+}
+
+export async function fetchReceivableWorkplaceMeta(date?: string) {
+  const response = await api.get<ReceivableWorkplaceMetaResponse>("/receivables/workplace/meta", {
+    params: { date: date || undefined },
   });
   return response.data;
 }

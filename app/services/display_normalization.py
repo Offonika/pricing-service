@@ -139,7 +139,9 @@ def normalize_display_quality(value: str | None) -> str | None:
             return "Copy Medium"
         return "Copy Medium"
 
-    if any(token in text for token in ("premium", "aaa", "ааа", "hq", "hi-copy", "hicopy")):
+    if any(
+        token in text for token in ("premium", "премиум", "aaa", "ааа", "hq", "hi-copy", "hicopy")
+    ):
         return "Copy High"
     if "аналог" in text:
         return "Copy Medium"
@@ -153,7 +155,13 @@ def normalize_display_quality(value: str | None) -> str | None:
         token in text for token in ("низк", "эконом", "econom", "cheap")
     ):
         return "Copy Low"
-    if "optima" in text or "standard" in text or "стандарт" in text or _has_ascii_word(text, "std"):
+    if (
+        "optima" in text
+        or "оптима" in text
+        or "standard" in text
+        or "стандарт" in text
+        or _has_ascii_word(text, "std")
+    ):
         return "Copy Medium"
 
     return None

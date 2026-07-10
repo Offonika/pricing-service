@@ -45,3 +45,73 @@ def test_rule_classify_connector():
 
 def test_rule_classify_adapter():
     assert rule_classify("Переходник HDMI (F) - VGA (M) Черный") == "адаптер"
+
+
+def test_rule_classify_display_with_frame_stays_display():
+    name = "Дисплей для Samsung S942 Galaxy S26 (в сборе с тачскрином) (черный) (в рамке) (ORIG100) (SP)"
+    assert rule_classify(name) == "дисплей"
+
+
+def test_rule_classify_huawei_mate_is_not_tool():
+    assert (
+        rule_classify("Аккумулятор для Huawei Mate 80 (VYG-AL00) (HB496880EXW-11) (Premium)")
+        == "аккумулятор"
+    )
+    assert (
+        rule_classify("Дисплей для Huawei Mate 80 (VYG-AL00) + тачскрин (черный) (In-Cell)")
+        == "дисплей"
+    )
+
+
+def test_rule_classify_laptop_matrix_is_not_tool():
+    name = "Матрица для Apple MacBook Air 15 M4 Retina A3241 (2025) (AASP)"
+    assert rule_classify(name) == "матрица для ноутбука"
+
+
+def test_rule_classify_silicone_grease_as_chemistry():
+    assert rule_classify("Смазка силиконовая Solins СИ-350 (2 г.)") == "химия"
+
+
+def test_rule_classify_joystick_without_catalog_value_as_other():
+    assert rule_classify("Джостик для Meta Quest 3S VR (черный)") == "прочее"
+
+
+def test_rule_classify_sticker_with_tape_stays_sticker():
+    assert rule_classify("Наклейка для задней крышки iPhone 15 двухсторонний скотч") == "наклейка"
+
+
+def test_rule_classify_bottom_board_with_sim_connector_stays_board():
+    name = "Нижняя плата для Xiaomi 17 Ultra (25128PNA1G) с комп. + разъем зарядки + микрофон + разъем SIM"
+    assert rule_classify(name) == "плата"
+
+
+def test_rule_classify_flex_for_display_stays_flex():
+    name = "Шлейф для Samsung S942 Galaxy S26 с комп. (на дисплей)"
+    assert rule_classify(name) == "шлейф"
+
+
+def test_rule_classify_flex_for_touchpad_stays_flex():
+    name = "Шлейф для Apple MacBook Pro 13 M1 Retina A2338 (с разбора) (на тачпад)"
+    assert rule_classify(name) == "шлейф"
+
+
+def test_rule_classify_case_with_keyboard_stays_case():
+    name = "Корпус для Apple MacBook Pro 13 M1 Retina A2338 (в сборе с клавиатурой и тачбаром)"
+    assert rule_classify(name) == "корпус"
+
+
+def test_rule_classify_screws_with_board_holders_stays_screws():
+    name = (
+        "Винты для Apple MacBook Pro 13 M1 Retina A2338 (на крепление платы) (с держателями платы)"
+    )
+    assert rule_classify(name) == "винты"
+
+
+def test_rule_classify_motherboard_stays_board():
+    name = "Материнская плата для Apple Watch 9 (41 мм) (снятая) (не активированная)"
+    assert rule_classify(name) == "плата"
+
+
+def test_rule_classify_fan_with_cooler_note_stays_fan():
+    name = "Вентилятор (кулер) для Apple MacBook Pro 13 M1 Retina A2338 (с разбора) (ORIG100)"
+    assert rule_classify(name) == "вентилятор"

@@ -11,6 +11,12 @@ from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, require_management_internal_token
 from app.core.config import get_settings
+from app.schemas.executive_dashboard import (
+    ExecutiveCashflowPeriodResponse,
+    ExecutiveDashboardActionsResponse,
+    ExecutiveDashboardResponse,
+    ExecutiveProfitLossPeriodResponse,
+)
 from app.schemas.management import (
     CounterpartyFolderChangeItem,
     CounterpartyFolderChangeResponse,
@@ -43,6 +49,10 @@ from app.schemas.telephony import (
     TelephonyUserLineItem,
     TelephonyUserLineMapResponse,
 )
+from app.services.bitrix_executive_dashboard_auth import (
+    ExecutiveDashboardAuthContext,
+    require_executive_dashboard_access,
+)
 from app.services.counterparty_folder_recommendations import (
     STATUS_MOVE_RECOMMENDED,
     STATUS_NEEDS_REVIEW,
@@ -57,6 +67,12 @@ from app.services.counterparty_folder_snapshots import (
 from app.services.exchange_counterparty_settlements import (
     DEFAULT_EXCHANGE_COUNTERPARTY_CODE,
     build_exchange_counterparty_settlements,
+)
+from app.services.executive_dashboard import (
+    build_executive_actions_response,
+    build_executive_cashflow_period_response,
+    build_executive_dashboard,
+    build_executive_profit_loss_period_response,
 )
 from app.services.finance_cash_position import build_finance_cash_position
 from app.services.management_observability import build_management_health
@@ -91,6 +107,99 @@ from app.services.weekly_manager_sales_reports import (
 )
 
 router = APIRouter()
+
+
+@router.get("/executive-dashboard", response_model=ExecutiveDashboardResponse)
+def get_executive_dashboard(
+    date_value: date | None = Query(default=None, alias="date"),
+    db: Session = Depends(get_db),
+    access: ExecutiveDashboardAuthContext = Depends(require_executive_dashboard_access),
+) -> ExecutiveDashboardResponse:
+    requested_date = date_value or date.today()
+    return build_executive_dashboard(
+        db,
+        requested_date=requested_date,
+        access_context=access,
+    )
+
+
+@router.get(
+    "/executive-dashboard/actions",
+    response_model=ExecutiveDashboardActionsResponse,
+)
+def list_executive_dashboard_actions(
+    date_value: date | None = Query(default=None, alias="date"),
+    status: str | None = Query(default="open"),
+    domain: str | None = Query(default=None),
+    limit: int = Query(default=200, ge=1, le=1000),
+    db: Session = Depends(get_db),
+    access: ExecutiveDashboardAuthContext = Depends(require_executive_dashboard_access),
+) -> ExecutiveDashboardActionsResponse:
+    requested_date = date_value or date.today()
+    if domain and not access.allows_action_domain(domain):
+        raise HTTPException(status_code=403, detail="Нет доступа к домену управленческой витрины")
+    return build_executive_actions_response(
+        db,
+        requested_date=requested_date,
+        status=status,
+        domain=domain,
+        access_context=access,
+        limit=limit,
+    )
+
+
+@router.get(
+    "/executive-dashboard/cashflow-period",
+    response_model=ExecutiveCashflowPeriodResponse,
+)
+def get_executive_dashboard_cashflow_period(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    dds_group: list[str] | None = Query(default=None),
+    cash_account_ref: list[str] | None = Query(default=None),
+    currency: list[str] | None = Query(default=None),
+    direction: list[str] | None = Query(default=None),
+    include_internal: bool = Query(default=True),
+    access: ExecutiveDashboardAuthContext = Depends(require_executive_dashboard_access),
+) -> ExecutiveCashflowPeriodResponse:
+    requested_to = date_to or date.today()
+    requested_from = date_from or requested_to.replace(day=1)
+    if requested_from > requested_to:
+        raise HTTPException(status_code=422, detail="date_from must be before date_to")
+    if not access.allows_block("money_today") or not access.can_view_money_block("money_today"):
+        raise HTTPException(status_code=403, detail="Нет доступа к денежному контуру")
+    return build_executive_cashflow_period_response(
+        date_from=requested_from,
+        date_to=requested_to,
+        dds_group=dds_group,
+        cash_account_ref=cash_account_ref,
+        currency=currency,
+        direction=direction,
+        include_internal=include_internal,
+    )
+
+
+@router.get(
+    "/executive-dashboard/profit-loss-period",
+    response_model=ExecutiveProfitLossPeriodResponse,
+)
+def get_executive_dashboard_profit_loss_period(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    db: Session = Depends(get_db),
+    access: ExecutiveDashboardAuthContext = Depends(require_executive_dashboard_access),
+) -> ExecutiveProfitLossPeriodResponse:
+    requested_to = date_to or date.today()
+    requested_from = date_from or requested_to.replace(day=1)
+    if requested_from > requested_to:
+        raise HTTPException(status_code=422, detail="date_from must be before date_to")
+    if not access.allows_block("profit_loss") or not access.can_view_money_block("profit_loss"):
+        raise HTTPException(status_code=403, detail="Нет доступа к отчету о прибылях и убытках")
+    return build_executive_profit_loss_period_response(
+        db,
+        date_from=requested_from,
+        date_to=requested_to,
+    )
 
 
 def _filter_real_rb_counterparty_codes(mapping: dict[str, str]) -> dict[str, str]:

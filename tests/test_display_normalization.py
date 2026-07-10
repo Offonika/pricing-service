@@ -44,6 +44,8 @@ def test_normalize_display_type(value: str, expected: str) -> None:
         ("copy low", "Copy Low"),
         ("copy", "Copy Medium"),
         ("optima", "Copy Medium"),
+        ("Оптима", "Copy Medium"),
+        ("Премиум", "Copy High"),
         ("Стандарт (COG)", "Copy Medium"),
         ("1-я категория", "Copy Medium"),
     ],

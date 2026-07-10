@@ -653,12 +653,18 @@ def smart_process_userfield_entity_id(type_id: int) -> str:
 
 
 def list_userfields(webhook_base: str, *, entity_id: str) -> list[dict[str, Any]]:
-    response = bitrix_call(
-        webhook_base,
-        "userfieldconfig.list",
-        {"moduleId": "crm", "filter": {"entityId": entity_id}},
-    )
-    return (response.get("result") or {}).get("fields") or []
+    fields: list[dict[str, Any]] = []
+    start: int | None = 0
+    while start is not None:
+        params: dict[str, Any] = {"moduleId": "crm", "filter": {"entityId": entity_id}}
+        if start:
+            params["start"] = start
+        response = bitrix_call(webhook_base, "userfieldconfig.list", params)
+        result = response.get("result") or {}
+        fields.extend(result.get("fields") or [])
+        next_start = response.get("next")
+        start = int(next_start) if str(next_start or "").isdigit() else None
+    return fields
 
 
 def _slug_suffix(value: str) -> str:

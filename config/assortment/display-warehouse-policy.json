@@ -1,0 +1,206 @@
+{
+  "warehouses": [
+    {
+      "warehouse_code": "РБ0000017",
+      "name": "Горбушкин Двор пав. С2-012А",
+      "sells_systematically": true
+    },
+    {
+      "warehouse_code": "РБ0000049",
+      "name": "Гранд Юг В-34",
+      "sells_systematically": true
+    },
+    {
+      "warehouse_code": "РБ0000045",
+      "name": "Люблино 1-2",
+      "sells_systematically": true
+    },
+    {
+      "warehouse_code": "РБ0000026",
+      "name": "Митинский радиорынок пав. 535",
+      "sells_systematically": true
+    },
+    {
+      "warehouse_code": "РБ0000034",
+      "name": "Пятигорск Аргашоковский 8-й ряд пав. 6,7",
+      "sells_systematically": true
+    },
+    {
+      "warehouse_code": "РБ0000014",
+      "name": "Савеловский Мобильный пав. Т-103 | Т-105",
+      "sells_systematically": true
+    },
+    {
+      "warehouse_code": "РБ0000062",
+      "name": "СПБ Московская",
+      "sells_systematically": true
+    },
+    {
+      "warehouse_code": "РБ0000060",
+      "name": "СПБ Просвещения",
+      "sells_systematically": true
+    },
+    {
+      "warehouse_code": "РБ0000051",
+      "name": "СПБ Садовая",
+      "sells_systematically": true
+    },
+    {
+      "warehouse_code": "РБ0000036",
+      "name": "Теплый стан Радиорынок Электромир пав. 652",
+      "sells_systematically": true
+    },
+    {
+      "warehouse_code": "РБ0000055",
+      "name": "Щелковская",
+      "sells_systematically": true
+    },
+    {
+      "warehouse_code": "РБ0000046",
+      "name": "Электроника на Пресне В-46",
+      "sells_systematically": true
+    },
+    {
+      "warehouse_code": "РБ0000048",
+      "name": "Сайт",
+      "sells_systematically": true
+    },
+    {
+      "warehouse_code": "РБ0000050",
+      "name": "Онлайн склад",
+      "sells_systematically": true
+    },
+    {
+      "warehouse_code": "РБ0000019",
+      "name": "Оптовый склад",
+      "sells_systematically": true
+    },
+    {
+      "warehouse_code": "РБ0000047",
+      "name": "Новый центральный",
+      "sells_systematically": false,
+      "is_central": true
+    },
+    {
+      "warehouse_code": "РБ0000035",
+      "name": "Склад Закупка",
+      "sells_systematically": false,
+      "is_central": true
+    },
+    {
+      "warehouse_code": "РБ0000030",
+      "name": "Резерв Оптовый склад",
+      "sells_systematically": false,
+      "is_non_systematic_sale": true
+    },
+    {
+      "warehouse_code": "РБ0000043",
+      "name": "Брак для восстановление",
+      "sells_systematically": false,
+      "is_defect_warehouse": true
+    },
+    {
+      "warehouse_code": "РБ0000015",
+      "name": "Браки Центральный",
+      "sells_systematically": false,
+      "is_defect_warehouse": true
+    },
+    {
+      "warehouse_code": "РБ0000040",
+      "name": "Ежедневно Браки",
+      "sells_systematically": false,
+      "is_defect_warehouse": true
+    },
+    {
+      "warehouse_code": "РБ0000031",
+      "name": "Уценка",
+      "sells_systematically": false,
+      "is_defect_warehouse": true
+    },
+    {
+      "warehouse_code": "РБ0000059",
+      "name": "Переклейка Донор",
+      "sells_systematically": false,
+      "is_non_systematic_sale": true
+    },
+    {
+      "warehouse_code": "РБ0000058",
+      "name": "Переклейка Списание",
+      "sells_systematically": false,
+      "is_non_systematic_sale": true
+    },
+    {
+      "warehouse_code": "РБ0000057",
+      "name": "Переклейка",
+      "sells_systematically": false,
+      "is_non_systematic_sale": true
+    },
+    {
+      "warehouse_code": "РБ0000038",
+      "name": "Оборудование для переклейки",
+      "sells_systematically": false,
+      "is_non_systematic_sale": true
+    },
+    {
+      "warehouse_code": "РБ0000054",
+      "name": "АХО",
+      "sells_systematically": false,
+      "is_non_systematic_sale": true
+    },
+    {
+      "warehouse_code": "РБ0000042",
+      "name": "Торговый представитель",
+      "sells_systematically": false,
+      "is_non_systematic_sale": true
+    },
+    {
+      "warehouse_code": "РБ0000010",
+      "name": "Сдэк Склад",
+      "sells_systematically": false,
+      "is_transit": true
+    },
+    {
+      "warehouse_code": "РБ0000052",
+      "name": "Сдэк Приемка Склад",
+      "sells_systematically": false,
+      "is_transit": true
+    },
+    {
+      "warehouse_code": "РБ0000011",
+      "name": "Склад Китай полученные обмены",
+      "sells_systematically": false,
+      "is_transit": true
+    },
+    {
+      "warehouse_code": "РБ0000027",
+      "name": "Транзит для Москвы",
+      "sells_systematically": false,
+      "is_transit": true
+    },
+    {
+      "warehouse_code": "РБ0000037",
+      "name": "Транзит для Браков",
+      "sells_systematically": false,
+      "is_transit": true,
+      "is_defect_warehouse": true
+    },
+    {
+      "warehouse_code": "РБ0000056",
+      "name": "Ошибки Транзит",
+      "sells_systematically": false,
+      "is_transit": true
+    },
+    {
+      "warehouse_code": "РБ0000041",
+      "name": "утерянный карго",
+      "sells_systematically": false,
+      "is_transit": true
+    },
+    {
+      "warehouse_code": "РБ0000063",
+      "name": "Склад Фото съемки",
+      "sells_systematically": false,
+      "is_non_systematic_sale": true
+    }
+  ]
+}

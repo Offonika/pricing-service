@@ -313,13 +313,21 @@ def test_import_onec_products_filters_to_general_catalog_branch() -> None:
                 """))
 
     with Session(app_engine) as session:
-        session.add(
-            Product(
-                article="30002",
-                name="Старый товар вне общего каталога",
-                code_1c="C4",
-                is_active=True,
-            )
+        session.add_all(
+            [
+                Product(
+                    article="30002",
+                    name="Старый товар вне общего каталога",
+                    code_1c="C4",
+                    is_active=True,
+                ),
+                Product(
+                    article="30003",
+                    name="Старый товар без кода вне общего каталога",
+                    planned_sku="OEM-BAT-OLD-1000",
+                    is_active=True,
+                ),
+            ]
         )
         session.commit()
 
@@ -327,13 +335,15 @@ def test_import_onec_products_filters_to_general_catalog_branch() -> None:
 
     assert result["rows"] == 1
     assert result["created"] == 1
-    assert result["deactivated_out_of_scope"] == 1
+    assert result["deactivated_out_of_scope"] == 2
     with Session(app_engine) as session:
         imported = session.query(Product).filter_by(article="30001").one()
         assert imported.name == "Дисплей для Apple iPhone 11"
         assert imported.color == "черный"
         out_of_scope = session.query(Product).filter_by(article="30002").one()
         assert out_of_scope.is_active is False
+        out_of_scope_without_code = session.query(Product).filter_by(article="30003").one()
+        assert out_of_scope_without_code.is_active is False
 
 
 def test_product_compatibility_sync_report_is_dry_run() -> None:

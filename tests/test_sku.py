@@ -83,6 +83,27 @@ def test_generate_display_sku_from_subject(db_session) -> None:
     assert result.planned_sku == "F5-DSP-SMG-J510-OLD-BLK-CPH"
 
 
+def test_generate_touchscreen_only_display_sku_has_touch_marker(db_session) -> None:
+    product = Product(
+        article="1001-touch-only",
+        name="Тачскрин для Apple iPad Air 2 (A1566/A1567) (черный)",
+        subject="Тачскрин",
+        category="Дисплеи",
+        color="черный",
+        quality="Medium",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.category_code == "DSP"
+    assert result.key_code == "BLK-CPM-TCH"
+    assert result.planned_sku == "OEM-DSP-IPDA2-BLK-CPM-TCH"
+
+
 def test_generate_display_sku_uses_series_as_rev(db_session) -> None:
     product = Product(
         article="1001-jk",
@@ -212,6 +233,71 @@ def test_generate_display_sku_detects_dismantled_grade(db_session) -> None:
     assert result.planned_sku == "OEM-DSP-IPH11-BLK-BTK"
 
 
+def test_generate_f5_display_keeps_soft_oled_service_variants(db_session) -> None:
+    existing = Product(
+        article="079824",
+        name=(
+            "Дисплей для Apple iPhone 14 Plus + тачскрин (черный) "
+            "(F5ENERGY) (Ultra Soft Oled) (площадка под IC)"
+        ),
+        manufacturer="F5ENERGY",
+        subject="Дисплей",
+        color="черный",
+    )
+    db_session.add(existing)
+    db_session.flush()
+    db_session.add(
+        ProductSkuPlan(
+            product_id=existing.id,
+            planned_sku="F5-DSP-IPH14PL-SLD-BLK",
+            status="generated",
+            is_active=True,
+        )
+    )
+    products = [
+        Product(
+            article="079825",
+            name=(
+                "Дисплей для Apple iPhone 14 Plus + тачскрин (черный) "
+                "(F5ENERGY) (Ultra Soft Oled) (с верификацией)"
+            ),
+            manufacturer="F5ENERGY",
+            subject="Дисплей",
+            color="черный",
+        ),
+        Product(
+            article="081705",
+            name=(
+                "Дисплей для Apple iPhone 14 Plus + тачскрин (черный) "
+                "(F5ENERGY) (Soft Oled) (с верификацией) (REGULAR)"
+            ),
+            manufacturer="F5ENERGY",
+            subject="Дисплей",
+            color="черный",
+        ),
+        Product(
+            article="081706",
+            name=(
+                "Дисплей для Apple iPhone 14 Plus + тачскрин (черный) "
+                "(F5ENERGY) (Soft Oled) (площадка под IC) (REGULAR)"
+            ),
+            manufacturer="F5ENERGY",
+            subject="Дисплей",
+            color="черный",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["079825"].planned_sku == "F5-DSP-IPH14PL-SLD-BLK-USO-VER"
+    assert results["081705"].planned_sku == "F5-DSP-IPH14PL-SLD-BLK-REG-VER"
+    assert results["081706"].planned_sku == "F5-DSP-IPH14PL-SLD-BLK-REG-ICP"
+
+
 def test_generate_display_sku_uses_multi_model_count_in_rev(db_session) -> None:
     product = Product(
         article="1001-multi",
@@ -247,6 +333,79 @@ def test_generate_apple_ipad_display_uses_compact_device_code(db_session) -> Non
     assert result.status == "generated"
     assert result.device_code == "IPDP105"
     assert result.planned_sku == "OEM-DSP-IPDP105-BLK-CPM"
+
+
+def test_generate_touchscreen_keeps_ipad_generation_and_bundle_modifiers(
+    db_session,
+) -> None:
+    products = [
+        Product(
+            article="057827",
+            name="Тачскрин для Apple iPad 9 10.2 (2021) (A2602/A2603/A2604) (черный) (Premium)",
+            subject="тачскрин",
+            category="Тачскрины для планшетов",
+        ),
+        Product(
+            article="067785",
+            name="Тачскрин для Apple iPad 7 10.2 (2019) (A2197/A2198/A2200) / iPad 8 10.2 (2020) (A2428/A2429/A2270) + кнопка Home (черный) (Musttby) (Premium)",
+            subject="тачскрин",
+            category="Тачскрины для планшетов",
+        ),
+        Product(
+            article="081479",
+            name="Тачскрин для Apple iPad 7 10.2 (2019) (A2197/A2198/A2200) / 8 10.2 (2020) (A2428/A2429/A2270) + OCA (черный) (медный) (Feaglet)",
+            subject="тачскрин",
+            category="Тачскрины для планшетов",
+            quality_raw="Premium",
+        ),
+        Product(
+            article="038546",
+            name="Тачскрин для Apple iPad mini 3 (A1599/A1600) + коннектор (черный) (Premium)",
+            subject="тачскрин",
+            category="Тачскрины для планшетов",
+        ),
+        Product(
+            article="052124",
+            name="Тачскрин для Apple iPad mini (A1432/A1454/A1455) / iPad mini 2 (A1489/A1490/A1491) (под пайку) (черный) (Premium)",
+            subject="тачскрин",
+            category="Тачскрины для планшетов",
+        ),
+        Product(
+            article="081473",
+            name="Тачскрин для Apple iPad mini 6 (A2567/A2568) + OCA (черный) (медный) (Feaglet)",
+            subject="тачскрин",
+            category="Тачскрины для планшетов",
+            quality_raw="Premium",
+        ),
+        Product(
+            article="060807",
+            name="Тачскрин для Apple iPhone 11 + OCA + коннектор (без микросхемы) (черный) (Medium)",
+            subject="тачскрин",
+            category="Тачскрины для телефонов",
+        ),
+        Product(
+            article="068157",
+            name="Тачскрин для Apple iPhone 11 + OCA + коннектор (черный) (Musttby)",
+            subject="тачскрин",
+            category="Тачскрины для телефонов",
+            quality_raw="Medium",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["057827"].planned_sku == "OEM-DSP-IPD9102-BLK-CPH-TCH"
+    assert results["067785"].planned_sku == "OEM-DSP-IPD78102-BLK-CPH-HOME-MST"
+    assert results["081479"].planned_sku == "OEM-DSP-IPD78102-BLK-CPH-OCA-FEA"
+    assert results["038546"].planned_sku == "OEM-DSP-IPDMN3-BLK-CPH-CON"
+    assert results["052124"].planned_sku == "OEM-DSP-IPDMN12-BLK-CPH-SOLD"
+    assert results["081473"].planned_sku == "OEM-DSP-IPDMN6-BLK-CPH-OCA-FEA"
+    assert results["060807"].planned_sku == "OEM-DSP-IPH11-BLK-CPM-OCA-CON-NOIC"
+    assert results["068157"].planned_sku == "OEM-DSP-IPH11-BLK-CPM-OCA-CON-MST"
 
 
 def test_generate_apple_legacy_iphone_xs_max_uses_compact_device_code(db_session) -> None:
@@ -340,6 +499,2537 @@ def test_generate_flex_for_display_cable_name(db_session) -> None:
     result = generate_sku_for_product(db_session, product)
 
     assert result.category_code == "FLX"
+
+
+def test_generate_sim_tray_key_from_name(db_session) -> None:
+    product = Product(
+        article="flex-simtray-vivo",
+        name="Держатель сим-карты для Vivo V25 Pro 5G (V2158) (черный)",
+        subject="держатель сим-карты",
+        category="Держатели сим-карт для телефонов",
+        vid_nomenklatury="Шлейфы/разъёмы/мелкие узлы",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.category_code == "FLX"
+    assert result.key_code == "SIMTRAY-BLK"
+    assert result.planned_sku == "OEM-FLX-VVO-V25P-SIMTRAY-BLK"
+
+
+def test_generate_back_cover_key_from_name(db_session) -> None:
+    product = Product(
+        article="part-back-cover-iphone",
+        name="Задняя крышка для Apple iPhone Xs Max (золотистый) (Premium)",
+        subject="крышка",
+        category="Задние крышки для Apple iPhone",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.category_code == "PRT"
+    assert result.key_code == "BCOV-GLD-PR"
+    assert result.planned_sku == "OEM-PRT-IPHXSM-BCOV-GLD-PR"
+
+
+def test_generate_back_cover_prefers_part_category_with_camera_glass_text(db_session) -> None:
+    product = Product(
+        article="part-back-cover-camera-glass",
+        name="Задняя крышка для Samsung A025 Galaxy A02s (черный) (в сборе со стеклом камеры)",
+        subject="крышка",
+        category="Задние крышки для телефонов",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.category_code == "PRT"
+    assert result.key_code == "BCOV-BLK-CG"
+    assert result.planned_sku == "OEM-PRT-SMG-A025-BCOV-BLK-CG"
+
+
+def test_generate_camera_glass_back_cover_uses_short_cg_flag(db_session) -> None:
+    product = Product(
+        article="part-iphone-camera-glass-cover",
+        name=(
+            "Задняя крышка для Apple iPhone 15 Pro Max (черный) "
+            "(в сборе со стеклом камеры) (Premium)"
+        ),
+        subject="крышка",
+        category="Задние крышки для телефонов",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.category_code == "PRT"
+    assert result.key_code == "BCOV-BLK-PR-CG"
+    assert result.planned_sku == "OEM-PRT-IPH15PM-BCOV-BLK-PR-CG"
+
+
+def test_generate_phone_loudspeaker_key_from_category(db_session) -> None:
+    product = Product(
+        article="part-phone-speaker",
+        name="Динамик (полифонический) для Apple iPhone 12 Pro Max",
+        subject="динамик",
+        category="Динамики для телефонов",
+        vid_nomenklatury="Акустика/вибро",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.category_code == "PRT"
+    assert result.key_code == "SPK"
+    assert result.planned_sku == "OEM-PRT-IPH12PM-SPK"
+
+
+def test_generate_phone_earpiece_key_from_name(db_session) -> None:
+    product = Product(
+        article="part-phone-earpiece",
+        name="Динамик (слуховой) для Apple iPhone 13 Pro",
+        subject="динамик",
+        category="Динамики для телефонов",
+        vid_nomenklatury="Акустика/вибро",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.category_code == "PRT"
+    assert result.key_code == "EARSPK"
+    assert result.planned_sku == "OEM-PRT-IPH13P-EARSPK"
+
+
+def test_generate_speaker_mesh_key_from_name(db_session) -> None:
+    product = Product(
+        article="part-speaker-mesh",
+        name="Сеточка динамика (полифонический) для Apple iPhone 12 Pro с комп.",
+        subject="сетка динамика",
+        category="Сеточки динамиков для телефонов",
+        vid_nomenklatury="Акустика/вибро",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.category_code == "PRT"
+    assert result.key_code == "SPK-MESH-POLY-KIT"
+    assert result.planned_sku == "OEM-PRT-IPH12P-SPK-MESH-POLY-KIT"
+
+
+def test_generate_back_cover_adhesive_key_from_name(db_session) -> None:
+    product = Product(
+        article="part-back-cover-adhesive",
+        name="Проклейка задней крышки для Apple iPhone 15 Pro",
+        subject="наклейка",
+        category="Проклейки задних крышек для телефонов",
+        vid_nomenklatury="Шлейфы/разъёмы/мелкие узлы",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.category_code == "PRT"
+    assert result.key_code == "BCOV-ADH"
+    assert result.planned_sku == "OEM-PRT-IPH15P-BCOV-ADH"
+
+
+def test_generate_front_camera_gasket_key_even_with_back_cover_category(db_session) -> None:
+    product = Product(
+        article="part-front-camera-gasket",
+        name="Прокладка передней камеры и датчика сенсора для Apple iPhone 11 Pro Max",
+        subject="изолятор",
+        category="Проклейки задних крышек для телефонов",
+        vid_nomenklatury="Шлейфы/разъёмы/мелкие узлы",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.category_code == "PRT"
+    assert result.key_code == "FCAM-GSK"
+    assert result.planned_sku == "OEM-PRT-IPH11PM-FCAM-GSK"
+
+
+def test_generate_apple_watch_ultra_adhesive_uses_watch_device_code(db_session) -> None:
+    product = Product(
+        article="watch-ultra-adhesive",
+        name="Проклейка дисплейного модуля для Apple Watch Ultra 2 (49 мм)",
+        subject="наклейка",
+        category="Проклейки дисплейных модулей для смарт-часов",
+        vid_nomenklatury="Шлейфы/разъёмы/мелкие узлы",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.category_code == "PRT"
+    assert result.device_code == "IPHWU249"
+    assert result.key_code == "DSP-ADH"
+    assert result.planned_sku == "OEM-PRT-IPHWU249-DSP-ADH"
+
+
+def test_generate_cooler_uses_name_and_category_despite_bad_speaker_subject(
+    db_session,
+) -> None:
+    product = Product(
+        article="bad-subject-cooler",
+        name="Вентилятор (кулер) для Apple MacBook Pro 13 A1278",
+        subject="динамик",
+        category="Кулеры для ноутбуков",
+        vid_nomenklatury="Акустика/вибро",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.planned_sku == "OEM-PRT-MBP13A1278-FAN"
+
+
+def test_generate_chip_key_from_parenthesized_code(db_session) -> None:
+    product = Product(
+        article="chip-power-controller",
+        name="Микросхема контроллер питания (BQ24157A) для Huawei Honor 7C (AUM-L41)",
+        subject="микросхема",
+        category="Микросхемы для Android",
+        vid_nomenklatury="Платы и электронные компоненты",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.category_code == "IC"
+    assert result.key_code == "BQ24157A"
+    assert result.planned_sku == "OEM-IC-HWE-H7C-BQ24157A"
+
+
+def test_generate_battery_repair_flex_prefers_flex_category(db_session) -> None:
+    product = Product(
+        article="flex-battery-repair",
+        name="Шлейф для восстановления аккумулятора Apple iPhone 15 Pro / iPhone 15 Pro Max (JCID) (в сборе с коннектором)",
+        subject="шлейф",
+        category="Шлейфы для телефонов",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.category_code == "FLX"
+    assert result.key_code == "BAT-JCID-CON"
+    assert result.planned_sku == "OEM-FLX-IPH15PM-BAT-JCID-CON"
+
+
+def test_generate_iphone_repair_flex_uses_specific_purpose_key(db_session) -> None:
+    products = [
+        Product(
+            article="067504",
+            name="Шлейф для восстановления передней камеры Apple iPhone 14 Pro Max (JCID) (в сборе с коннектором)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="062074",
+            name="Шлейф для восстановления задней камеры Apple iPhone 13 Pro / iPhone 13 Pro Max (JCID) (в сборе с коннектором)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="073426",
+            name="Шлейф для восстановления Face ID Apple iPhone 14 Pro Max (JCID) (в сборе с коннектором)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="067512",
+            name="Шлейф для восстановления сенсора Apple iPhone 14 Pro Max (JCID)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="052414",
+            name="Шлейф для Apple iPhone 13 mini с комп. + вспышка (ORIG100)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="065826",
+            name="Шлейф для Apple iPhone 15 Plus с комп. + считыватель eSIM (US Version) (ORIG100)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="059720",
+            name="Шлейф для Apple iPhone 11 с комп. (усилитель сигнала Wi-Fi)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["067504"].key_code == "FCAM-JCID-CON"
+    assert results["067504"].planned_sku == "OEM-FLX-IPH14PM-FCAM-JCID-CON"
+    assert results["062074"].key_code == "RCAM-JCID-CON"
+    assert results["062074"].planned_sku == "OEM-FLX-IPH13PM-RCAM-JCID-CON"
+    assert results["073426"].key_code == "FACEID-JCID-CON"
+    assert results["073426"].planned_sku == "OEM-FLX-IPH14PM-FACEID-JCID-CON"
+    assert results["067512"].key_code == "SENS-JCID"
+    assert results["067512"].planned_sku == "OEM-FLX-IPH14PM-SENS-JCID"
+    assert results["052414"].key_code == "FLASH"
+    assert results["052414"].planned_sku == "OEM-FLX-IPH13MN-FLASH"
+    assert results["065826"].key_code == "ESIM"
+    assert results["065826"].planned_sku == "OEM-FLX-IPH15PL-ESIM"
+    assert results["059720"].key_code == "WFIAMP"
+    assert results["059720"].planned_sku == "OEM-FLX-IPH11-WFIAMP"
+
+
+def test_generate_iphone_repair_flex_keeps_quality_and_connector_variants(
+    db_session,
+) -> None:
+    products = [
+        Product(
+            article="059923",
+            name="Шлейф для Apple iPhone 14 Pro с комп. + сенсор (ORIG100)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="067511",
+            name="Шлейф для восстановления сенсора Apple iPhone 14 Pro (JCID)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="078181",
+            name="Шлейф для Apple iPhone 14 Pro с комп. + сенсор",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="054718",
+            name="Шлейф для восстановления Face ID Apple iPhone 11 (JCID)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="060084",
+            name="Шлейф для восстановления Face ID Apple iPhone 11 (JCID) (в сборе с коннектором)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="068643",
+            name="Шлейф для Apple iPhone 11 с комп. (усилитель сигнала Wi-Fi) (ORIG100)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="054731",
+            name="Шлейф для восстановления аккумулятора Apple iPhone 11 Pro Max (JCID)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="054733",
+            name="Шлейф для восстановления аккумулятора Apple iPhone 11 Pro / iPhone 11 Pro Max (JCID) (в сборе с коннектором)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="067506",
+            name="Шлейф для восстановления передней камеры Apple iPhone 15 (JCID) (в сборе с коннектором)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="068147",
+            name="Шлейф для восстановления передней камеры Apple iPhone 15 (JCID)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["059923"].planned_sku == "OEM-FLX-IPH14P-SENS-OR1"
+    assert results["067511"].planned_sku == "OEM-FLX-IPH14P-SENS-JCID"
+    assert results["078181"].planned_sku == "OEM-FLX-IPH14P-SENS"
+    assert results["054718"].planned_sku == "OEM-FLX-IPH11-FACEID-JCID"
+    assert results["060084"].planned_sku == "OEM-FLX-IPH11-FACEID-JCID-CON"
+    assert results["068643"].planned_sku == "OEM-FLX-IPH11-WFIAMP-OR1"
+    assert results["054731"].planned_sku == "OEM-FLX-IPH11PM-BAT-JCID"
+    assert results["054733"].planned_sku == "OEM-FLX-IPH11PM-BAT-JCID-CON"
+    assert results["067506"].planned_sku == "OEM-FLX-IPH15-FCAM-JCID-CON"
+    assert results["068147"].planned_sku == "OEM-FLX-IPH15-FCAM-JCID"
+
+
+def test_generate_iphone_antenna_uses_signal_type(db_session) -> None:
+    products = [
+        Product(
+            article="038017",
+            name="Антенна Wi-Fi для Apple iPhone 6",
+            subject="антенна",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="038550",
+            name="Антенна GSM для Apple iPhone 6",
+            subject="антенна",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="042110",
+            name="Антенна NFC для Apple iPhone 6",
+            subject="антенна",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="044974",
+            name="Антенна GPS для Apple iPhone 6 Plus",
+            subject="антенна",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="047565",
+            name="Антенна NFC/Bluetooth для Apple iPhone 8 Plus",
+            subject="антенна",
+            category="Шлейфы для телефонов",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["038017"].key_code == "ANTWIFI"
+    assert results["038017"].planned_sku == "OEM-FLX-IPH6-ANTWIFI"
+    assert results["038550"].key_code == "ANTGSM"
+    assert results["038550"].planned_sku == "OEM-FLX-IPH6-ANTGSM"
+    assert results["042110"].key_code == "ANTNFC"
+    assert results["042110"].planned_sku == "OEM-FLX-IPH6-ANTNFC"
+    assert results["044974"].key_code == "ANTGPS"
+    assert results["044974"].planned_sku == "OEM-FLX-IPH6PL-ANTGPS"
+    assert results["047565"].key_code == "ANTNFCBT"
+    assert results["047565"].planned_sku == "OEM-FLX-IPH8PL-ANTNFCBT"
+
+
+def test_generate_iphone_sim_parts_keep_version_and_precise_color(db_session) -> None:
+    products = [
+        Product(
+            article="040081",
+            name="Держатель сим-карты для Apple iPhone Xr (желтый)",
+            subject="держатель сим-карты",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="040083",
+            name="Держатель сим-карты для Apple iPhone Xr (коралловый)",
+            subject="держатель сим-карты",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="040358",
+            name="Держатель сим-карты для Apple iPhone 7 (черный глянец)",
+            subject="держатель сим-карты",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="026277",
+            name="Держатель сим-карты для Apple iPhone 5 (серебристый)",
+            subject="держатель сим-карты",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="032089",
+            name="Держатель сим-карты для Apple iPhone 5s / iPhone SE (серебристый)",
+            subject="держатель сим-карты",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="078014",
+            name="Разъем SIM для Apple iPhone 15 / iPhone 15 Plus (1 SIM Version)",
+            subject="разъем sim",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="081697",
+            name="Держатель сим-карты для Apple iPhone 15 Pro / iPhone 15 Pro Max (титановый) (2 SIM Version)",
+            subject="держатель сим-карты",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="075599",
+            name="Шлейф для Apple Watch Ultra (49 мм) с комп. + Digital Crown (титановый) (ORIG100)",
+            subject="шлейф",
+            category="Шлейфы для часов",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["040081"].key_code == "SIMTRAY-YLW"
+    assert results["040081"].planned_sku == "OEM-FLX-IPHXR-SIMTRAY-YLW"
+    assert results["040083"].key_code == "SIMTRAY-COR"
+    assert results["040083"].planned_sku == "OEM-FLX-IPHXR-SIMTRAY-COR"
+    assert results["040358"].key_code == "SIMTRAY-BLKGL"
+    assert results["040358"].planned_sku == "OEM-FLX-IPH7-SIMTRAY-BLKGL"
+    assert results["026277"].key_code == "SIMTRAY-IP5-SLV"
+    assert results["026277"].planned_sku == "OEM-FLX-IPH5-SIMTRAY-IP5-SLV"
+    assert results["032089"].key_code == "SIMTRAY-SLV"
+    assert results["032089"].planned_sku == "OEM-FLX-IPH5-SIMTRAY-SLV"
+    assert results["078014"].key_code == "SIMCON-1SIM"
+    assert results["078014"].planned_sku == "OEM-FLX-IPH15PL-SIMCON-1SIM"
+    assert results["081697"].key_code == "SIMTRAY-2SIM-TIT"
+    assert results["081697"].planned_sku == "OEM-FLX-IPH15PM-SIMTRAY-2SIM-TIT"
+    assert results["075599"].key_code == "DCRWN-TIT"
+    assert results["075599"].planned_sku == "OEM-FLX-IPHWU49-DCRWN-TIT"
+
+
+def test_generate_tester_uses_tester_category(db_session) -> None:
+    product = Product(
+        article="069954",
+        name="Тестер DL400 Pro + шлейфы iPhone X - 16 Pro Max",
+        subject="тестер",
+        category="Инструменты для ремонта",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.category_code == "TST"
+    assert result.device_code == "UNV"
+    assert result.key_code == "DL400"
+    assert result.planned_sku == "OEM-TST-UNV-DL400"
+
+
+def test_generate_tester_key_keeps_device_and_purpose_variants(db_session) -> None:
+    products = [
+        Product(article="077130", name="Тестер плат XZZ iPhone 11 / 11 Pro / 11 Pro Max"),
+        Product(article="077131", name="Тестер плат XZZ iPhone 12 / 12 mini / 12 Pro / 12 Pro Max"),
+        Product(article="077132", name="Тестер плат XZZ iPhone 13 / 13 mini / 13 Pro / 13 Pro Max"),
+        Product(article="077133", name="Тестер плат XZZ iPhone 14 / 14 Plus / 14 Pro / 14 Pro Max"),
+        Product(
+            article="077134",
+            name="Тестер плат XZZ iPhone 15 / 15 Plus / 15 Pro / 15 Pro Max (SIM Version)",
+        ),
+        Product(article="077135", name="Тестер плат XZZ iPhone 16 / 16 Plus / 16 Pro / 16 Pro Max"),
+        Product(article="067606", name="Тестер для проверки зарядного гнезда Relife XA1"),
+        Product(article="057229", name="Тестер для проверки дисплеев S300"),
+        Product(article="051985", name="Тестер Home (Версия 2) + Насадки"),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["077130"].planned_sku == "OEM-TST-UNV-XZZ-IP11"
+    assert results["077131"].planned_sku == "OEM-TST-UNV-XZZ-IP12"
+    assert results["077132"].planned_sku == "OEM-TST-UNV-XZZ-IP13"
+    assert results["077133"].planned_sku == "OEM-TST-UNV-XZZ-IP14"
+    assert results["077134"].planned_sku == "OEM-TST-UNV-XZZ-IP15-SIM"
+    assert results["077135"].planned_sku == "OEM-TST-UNV-XZZ-IP16"
+    assert results["067606"].planned_sku == "OEM-TST-UNV-XA1-CHG"
+    assert results["057229"].planned_sku == "OEM-TST-UNV-S300-DSP"
+    assert results["051985"].planned_sku == "OEM-TST-UNV-HOME-V2"
+
+
+def test_generate_camera_key_from_name(db_session) -> None:
+    product = Product(
+        article="cam-vivo-rear",
+        name="Камера для Vivo V25 Pro 5G (V2158) (задняя) (ORIG100)",
+        subject="камера",
+        category="Камеры для телефонов",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.category_code == "CAM"
+    assert result.key_code == "RCAM-OR1"
+    assert result.planned_sku == "OEM-CAM-VVO-V25P-RCAM-OR1"
+
+
+def test_generate_camera_category_wins_over_pad_pd_text(db_session) -> None:
+    products = [
+        Product(
+            article="cam-oneplus-pad-rear",
+            name="Камера для OnePlus Pad (OPD2203) (13 MP) (задняя)",
+            subject="камера",
+            category="Камеры для планшетов",
+            vid_nomenklatury="Камеры",
+        ),
+        Product(
+            article="cam-oneplus-pad-front",
+            name="Камера для OnePlus Pad (OPD2203) (передняя)",
+            subject="камера",
+            category="Камеры для планшетов",
+            vid_nomenklatury="Камеры",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["cam-oneplus-pad-rear"].category_code == "CAM"
+    assert results["cam-oneplus-pad-rear"].planned_sku == "OEM-CAM-ONE-PAD-RCAM-13MP"
+    assert results["cam-oneplus-pad-front"].category_code == "CAM"
+    assert results["cam-oneplus-pad-front"].planned_sku == "OEM-CAM-ONE-PAD-FCAM"
+
+
+def test_generate_protective_glass_key_from_name(db_session) -> None:
+    product = Product(
+        article="glass-rem-gl86",
+        name="Защитное стекло Remax Corning Glass GL-86 для Apple iPhone 14 Pro Max (антибликовое) (черный)",
+        subject="защитное стекло",
+        category="Защитные стекла для телефонов",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.category_code == "GLS"
+    assert result.key_code == "PROT-GL86-AG-BLK"
+    assert result.planned_sku == "OEM-GLS-IPH14PM-PROT-GL86-AG-BLK"
+
+
+def test_generate_realme_3_in_1_glass_keeps_real_model_code(db_session) -> None:
+    products = [
+        Product(
+            article="051405",
+            name="Защитное стекло OG Glass (3 в 1) для Realme X50 Pro 5G (RMX2071) (черный)",
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="077051",
+            name="Защитное стекло OG Glass (3 в 1) для Realme 15T (RMX5111) (черный)",
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="077884",
+            name="Защитное стекло OG Glass (3 в 1) для Realme P3 (RMX5079) (черный)",
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="077901",
+            name="Защитное стекло OG Glass (3 в 1) для Realme P3 Ultra (RMX5031) (черный)",
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="081074",
+            name="Защитное стекло OG Glass (3 в 1) для Realme 16 (RMX5171) (черный)",
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="082124",
+            name="Защитное стекло OG Glass (3 в 1) для Realme C100i (RMX5377) (черный)",
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["051405"].device_code == "RLM-X50P5"
+    assert results["051405"].planned_sku == "OEM-GLS-RLM-X50P5-PROT-3IN1-BLK"
+    assert results["077051"].device_code == "RLM-15T"
+    assert results["077051"].planned_sku == "OEM-GLS-RLM-15T-PROT-3IN1-BLK"
+    assert results["077884"].device_code == "RLM-P3"
+    assert results["077884"].planned_sku == "OEM-GLS-RLM-P3-PROT-3IN1-BLK"
+    assert results["077901"].device_code == "RLM-P3U"
+    assert results["077901"].planned_sku == "OEM-GLS-RLM-P3U-PROT-3IN1-BLK"
+    assert results["081074"].device_code == "RLM-16"
+    assert results["081074"].planned_sku == "OEM-GLS-RLM-16-PROT-3IN1-BLK"
+    assert results["082124"].device_code == "RLM-C100I"
+    assert results["082124"].planned_sku == "OEM-GLS-RLM-C100I-PROT-3IN1-BLK"
+
+
+def test_generate_nothing_cmf_phone_glass_uses_short_device_code(db_session) -> None:
+    product = Product(
+        article="066075",
+        name="Защитное стекло OG Glass (3 в 1) для Nothing CMF Phone 1 (A015) (черный)",
+        subject="защитное стекло",
+        category="Защитные стекла для телефонов",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.device_code == "NOT-CMF1"
+    assert result.key_code == "PROT-3IN1-BLK"
+    assert result.planned_sku == "OEM-GLS-NOT-CMF1-PROT-3IN1-BLK"
+
+
+def test_generate_samsung_note_module_glass_keeps_note_variant_and_feaglet(
+    db_session,
+) -> None:
+    products = [
+        Product(
+            article="057479",
+            name="Стекло модуля для Samsung N970 Galaxy Note 10 + OCA (черный)",
+            subject="стекло модуля",
+            category="Стекла модуля для телефонов",
+        ),
+        Product(
+            article="057480",
+            name="Стекло модуля для Samsung N975 Galaxy Note 10+ + OCA (черный)",
+            subject="стекло модуля",
+            category="Стекла модуля для телефонов",
+        ),
+        Product(
+            article="081600",
+            name="Стекло модуля для Samsung N770 Galaxy Note 10 Lite + OCA (черный) (Feaglet)",
+            subject="стекло модуля",
+            category="Стекла модуля для телефонов",
+        ),
+        Product(
+            article="081618",
+            name="Стекло модуля для Samsung N970 Galaxy Note 10 + OCA (черный) (Feaglet)",
+            subject="стекло модуля",
+            category="Стекла модуля для телефонов",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["057479"].planned_sku == "OEM-GLS-SMG-N10-MODG-OCA-BLK"
+    assert results["057480"].planned_sku == "OEM-GLS-SMG-N10P-MODG-OCA-BLK"
+    assert results["081600"].planned_sku == "OEM-GLS-SMG-N10LT-MODG-OCA-FEA-BLK"
+    assert results["081618"].planned_sku == "OEM-GLS-SMG-N10-MODG-OCA-FEA-BLK"
+
+
+def test_generate_otao_protective_glass_keeps_series(db_session) -> None:
+    products = [
+        Product(
+            article="082303",
+            name="Защитное стекло OTAO Rock Glass для Apple iPhone 16 Pro / iPhone 17 (ультрапрочное)",
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="082307",
+            name="Защитное стекло OTAO Sapphire Glass для Apple iPhone 16 Pro / iPhone 17 (сапфировое)",
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="082311",
+            name="Защитное стекло OTAO Edge Armor для Apple iPhone 16 Pro / iPhone 17 (металлическая рамка)",
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="082315",
+            name="Защитное стекло OTAO Dragon Armor для Apple iPhone 16 Pro / iPhone 17 (устойчивое к царапинам)",
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["082303"].planned_sku == "OEM-GLS-IPH17-PROT-ROCK"
+    assert results["082307"].planned_sku == "OEM-GLS-IPH17-PROT-SAPH"
+    assert results["082311"].planned_sku == "OEM-GLS-IPH17-PROT-EDGE"
+    assert results["082315"].planned_sku == "OEM-GLS-IPH17-PROT-DRAG"
+
+
+def test_generate_bottom_board_key_from_name(db_session) -> None:
+    product = Product(
+        article="board-vivo-bottom",
+        name="Нижняя плата для Vivo V25 Pro 5G (V2158) с комп. + разъем зарядки + микрофон",
+        subject="плата",
+        category="Нижние платы для телефонов",
+        vid_nomenklatury="Платы и электронные компоненты",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.category_code == "IC"
+    assert result.key_code == "SUB-CHG-MIC"
+    assert result.planned_sku == "OEM-IC-VVO-V25P-SUB-CHG-MIC"
+
+
+def test_generate_bottom_board_name_overrides_wrong_sim_holder_subject(db_session) -> None:
+    product = Product(
+        article="078972",
+        name=(
+            "Нижняя плата для Infinix Note 60 (X6879) с комп. "
+            "+ разъем зарядки + микрофон + разъем SIM (ORIG100)"
+        ),
+        subject="держатель сим-карты",
+        category="Нижние платы для телефонов",
+        vid_nomenklatury="Шлейфы/разъёмы/мелкие узлы",
+        quality_raw="ORIG100",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.category_code == "IC"
+    assert result.planned_sku == "OEM-IC-INF-N60-SUB-CHG-MIC-SIM-OR1"
+
+
+def test_generate_bottom_board_keeps_orig100_with_compact_long_key(db_session) -> None:
+    product = Product(
+        article="070694",
+        name=(
+            "Нижняя плата для Huawei Honor 400 Lite (ABR-NX1) с комп. "
+            "+ разъем зарядки + микрофон + разъем SIM (ORIG100)"
+        ),
+        subject="плата",
+        category="Нижние платы для телефонов",
+        quality_raw="ORIG100",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.planned_sku == "OEM-IC-HWE-H400LT-SUB-CHG-M-SIM-OR1"
+
+
+def test_generate_lenovo_legion_y700_board_uses_compact_device_code(db_session) -> None:
+    product = Product(
+        article="1001-lenovo-y700-board",
+        name=(
+            "Нижняя плата для Lenovo Legion Y700 5 (TB323FC/TB323FU) с комп. "
+            "+ разъем зарядки + микрофон"
+        ),
+        subject="плата",
+        category="Нижние платы для планшетов",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.device_code == "LEN-Y700G5"
+    assert result.key_code == "SUB-CHG-MIC"
+    assert result.planned_sku == "OEM-IC-LEN-Y700G5-SUB-CHG-MIC"
+
+
+def test_generate_bottom_board_keeps_model_quality_and_pro_variants(db_session) -> None:
+    products = [
+        Product(
+            article="080887",
+            name=(
+                "Нижняя плата для Nothing Phone 4a (A069) с комп. "
+                "+ разъем зарядки + микрофон + разъем SIM"
+            ),
+            subject="плата",
+            category="Нижние платы для телефонов",
+        ),
+        Product(
+            article="080888",
+            name=(
+                "Нижняя плата для Nothing Phone 4a (A069) с комп. "
+                "+ разъем зарядки + микрофон + разъем SIM (ORIG100)"
+            ),
+            subject="плата",
+            category="Нижние платы для телефонов",
+            quality_raw="ORIG100",
+        ),
+        Product(
+            article="080912",
+            name=(
+                "Нижняя плата для Nothing Phone 4a Pro (A069P) с комп. "
+                "+ разъем зарядки + микрофон + разъем SIM"
+            ),
+            subject="плата",
+            category="Нижние платы для телефонов",
+        ),
+        Product(
+            article="080913",
+            name=(
+                "Нижняя плата для Nothing Phone 4a Pro (A069P) с комп. "
+                "+ разъем зарядки + микрофон + разъем SIM (ORIG100)"
+            ),
+            subject="плата",
+            category="Нижние платы для телефонов",
+            quality_raw="ORIG100",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["080887"].planned_sku == "OEM-IC-NOT-PH4A-SUB-CHG-MIC-SIM"
+    assert results["080888"].planned_sku == "OEM-IC-NOT-PH4A-SUB-CHG-MIC-SIM-OR1"
+    assert results["080912"].planned_sku == "OEM-IC-NOT-PH4P-SUB-CHG-MIC-SIM"
+    assert results["080913"].planned_sku == "OEM-IC-NOT-PH4P-SUB-CHG-MIC-SIM-OR1"
+
+
+def test_generate_bottom_board_keeps_exact_device_variants(db_session) -> None:
+    products = [
+        Product(
+            article="040477",
+            name=(
+                "Нижняя плата для Asus ZenFone 3 Max (ZC553KL) с комп. "
+                "+ разъем зарядки + микрофон"
+            ),
+            subject="плата",
+            category="Нижние платы для телефонов",
+        ),
+        Product(
+            article="043759",
+            name=(
+                "Нижняя плата для Asus ZenFone 3 Deluxe (ZS550KL) с комп. "
+                "+ разъем зарядки + микрофон"
+            ),
+            subject="плата",
+            category="Нижние платы для телефонов",
+        ),
+        Product(
+            article="069497",
+            name=(
+                "Нижняя плата для Huawei Honor Magic 7 Pro (PTP-N49) с комп. "
+                "+ разъем зарядки + микрофон + разъем SIM (ORIG100)"
+            ),
+            subject="плата",
+            category="Нижние платы для телефонов",
+            quality_raw="ORIG100",
+        ),
+        Product(
+            article="069547",
+            name=(
+                "Нижняя плата для Huawei Honor X9c Smart (BRC-NX1) с комп. "
+                "+ разъем зарядки + микрофон + разъем SIM (ORIG100)"
+            ),
+            subject="плата",
+            category="Нижние платы для телефонов",
+            quality_raw="ORIG100",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["040477"].planned_sku == "OEM-IC-ASU-ZF3M-SUB-CHG-MIC"
+    assert results["043759"].planned_sku == "OEM-IC-ASU-ZF3D-SUB-CHG-MIC"
+    assert results["069497"].planned_sku == "OEM-IC-HWE-HM7P-SUB-CHG-MIC-SIM-OR1"
+    assert results["069547"].planned_sku == "OEM-IC-HWE-HX9S-SUB-CHG-MIC-SIM-OR1"
+
+
+def test_generate_tecno_and_xiaomi_board_and_flex_variants(db_session) -> None:
+    products = [
+        Product(
+            article="063532",
+            name="Шлейф для Tecno Phantom V Fold (AD10) с комп. (межплатный) (вертикальный)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="066672",
+            name="Шлейф для Tecno Phantom V Fold 2 5G (AE10) с комп. (межплатный)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="068358",
+            name=(
+                "Шлейф для Tecno Phantom V Fold (AD10) с комп. "
+                "(межплатный) (горизонтальный) (тип 2)"
+            ),
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="064952",
+            name=(
+                "Нижняя плата для Tecno Camon 30 5G (CL7) с комп. "
+                "+ разъем зарядки + микрофон (ORIG100)"
+            ),
+            subject="плата",
+            category="Нижние платы для телефонов",
+            quality_raw="ORIG100",
+        ),
+        Product(
+            article="077984",
+            name=(
+                "Нижняя плата для Xiaomi Poco Pad M1 (2509ARPBDG) с комп. "
+                "+ разъем зарядки + разъем гарнитуры (ORIG100)"
+            ),
+            subject="плата",
+            category="Нижние платы для планшетов",
+            quality_raw="ORIG100",
+        ),
+        Product(
+            article="080647",
+            name=(
+                "Нижняя плата для Xiaomi Poco X8 Pro Max (2602BPC18G) с комп. "
+                "+ разъем зарядки + разъем SIM + микрофон (ORIG100)"
+            ),
+            subject="плата",
+            category="Нижние платы для телефонов",
+            quality_raw="ORIG100",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["063532"].planned_sku == "OEM-FLX-TEC-PVF-SUB-VERT"
+    assert results["066672"].planned_sku == "OEM-FLX-TEC-PVF2-SUB"
+    assert results["068358"].planned_sku == "OEM-FLX-TEC-PVF-SUB-HOR-T2"
+    assert results["064952"].planned_sku == "OEM-IC-TEC-C305-SUB-CHG-MIC-OR1"
+    assert results["077984"].planned_sku == "OEM-IC-XMI-PPADM1-SUB-CHG-AUX-OR1"
+    assert results["080647"].planned_sku == "OEM-IC-XMI-PX8M-SUB-CHG-MIC-SIM-OR1"
+
+
+def test_generate_flex_keeps_year_quality_position_and_dark_color(db_session) -> None:
+    products = [
+        Product(
+            article="063814",
+            name="Шлейф для Huawei MatePad 11 (2023) (DBR-W09) с комп. (на дисплей)",
+            subject="шлейф",
+            category="Шлейфы для планшетов",
+        ),
+        Product(
+            article="063880",
+            name=("Шлейф для Huawei MatePad 11 2021 (DBY-W09) с комп. " "(на дисплей) (Rev.C)"),
+            subject="шлейф",
+            category="Шлейфы для планшетов",
+        ),
+        Product(
+            article="082363",
+            name=(
+                "Шлейф для Apple iPad 4 (A1458/A1459/A1460) с комп. " "+ разъем зарядки (ORIG100)"
+            ),
+            subject="шлейф",
+            category="Шлейфы для планшетов",
+            quality_raw="ORIG100",
+        ),
+        Product(
+            article="057751",
+            name="Шлейф для Sony Xperia Tablet Z3 Compact 8.0 с комп. (на нижний микрофон)",
+            subject="шлейф",
+            category="Шлейфы для планшетов",
+        ),
+        Product(
+            article="053642",
+            name=(
+                "Шлейф для Infinix Hot 12i (X665B) / Hot 12 Play NFC (X6816D) "
+                "/ Hot 20i (X665E) и др. с комп. + сканер отпечатка пальца "
+                "(темно-зеленый)"
+            ),
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["063814"].planned_sku == "OEM-FLX-HWE-MP1123-DSP"
+    assert results["063880"].planned_sku == "OEM-FLX-HWE-MP1121-DSP"
+    assert results["082363"].planned_sku == "OEM-FLX-IPD4-CHG-OR1"
+    assert results["057751"].planned_sku == "OEM-FLX-SON-XTZ3C8-MIC-LOW"
+    assert results["053642"].planned_sku == "OEM-FLX-INF-H12PLN-FPR-DGR"
+
+
+def test_generate_remaining_duplicate_groups_keep_visible_variants(db_session) -> None:
+    products = [
+        Product(
+            article="054554",
+            name="Шлейф для Huawei P50 (ABR-LX9) с комп. (межплатный) (HN1AMBFL)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="057755",
+            name="Шлейф для Huawei P50 (ABR-LX9) с комп. (межплатный) (HL2ABRFU)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="078624",
+            name=(
+                "Шлейф для Apple iPad Pro 12.9 (2018) (A1876/A1895/A2014) "
+                "с комп. + микрофон (ORIG100)"
+            ),
+            subject="шлейф",
+            category="Шлейфы для планшетов",
+            quality_raw="ORIG100",
+        ),
+        Product(
+            article="078629",
+            name=(
+                "Шлейф для Apple iPad Pro 12.9 (2020) (A2069/A2229/A2232) "
+                "с комп. + микрофон (ORIG100)"
+            ),
+            subject="шлейф",
+            category="Шлейфы для планшетов",
+            quality_raw="ORIG100",
+        ),
+        Product(
+            article="078636",
+            name=(
+                "Шлейф для Apple iPad Pro 11.0 (2021) (A2301/A2377) / "
+                "iPad Pro 12.9 (2021) (A2379/A2461) с комп. "
+                "(на кнопку включения) (Cellular Version) (ORIG100)"
+            ),
+            subject="шлейф",
+            category="Шлейфы для планшетов",
+            quality_raw="ORIG100",
+        ),
+        Product(
+            article="078644",
+            name=(
+                "Шлейф для Apple iPad Pro 12.9 (2022) (A2436/A2437/A2764) "
+                "с комп. (на кнопку включения) (Cellular Version) (ORIG100)"
+            ),
+            subject="шлейф",
+            category="Шлейфы для планшетов",
+            quality_raw="ORIG100",
+        ),
+        Product(
+            article="061382",
+            name="Шлейф для Realme C35 (RMX3511) / Narzo 50A Prime (RMX3516) с комп. (на кнопку включения)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="054409",
+            name="Шлейф для Realme Narzo 50A (RMX3430) с комп. (на кнопку включения)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="075279",
+            name="Стекло модуля для Google Pixel 10 (GK2MP/GLBW0/GL066) + OCA (черный) (Musttby) (Premium)",
+            subject="стекло",
+            category="Стекла камер",
+        ),
+        Product(
+            article="078327",
+            name="Стекло модуля для Google Pixel 9 Pro XL (GGX8B/GZC4K/GQ57S) + OCA (черный) (Musttby) (Premium)",
+            subject="стекло",
+            category="Стекла камер",
+        ),
+        Product(
+            article="079177",
+            name="Защитное стекло для Lenovo Legion Go 2 / Y700 Gen.5 (25 шт)",
+            subject="стекло",
+            category="Защитные стекла",
+        ),
+        Product(
+            article="081608",
+            name="Стекло модуля для Samsung G977 Galaxy S10 5G + OCA (черный) (Feaglet)",
+            subject="стекло",
+            category="Стекла камер",
+        ),
+        Product(
+            article="047641",
+            name=(
+                "Стекло задней камеры для Huawei Honor 30S (CDY-NX9A) / "
+                "P40 Lite 5G (CDY-NX9A) (без рамки) (черный)"
+            ),
+            subject="стекло",
+            category="Стекла камер",
+        ),
+        Product(
+            article="059913",
+            name="Стекло задней камеры для Infinix Note 12 Turbo (G96) (X670) (без рамки) (черный)",
+            subject="стекло",
+            category="Стекла камер",
+        ),
+        Product(
+            article="038883",
+            name="Стекло модуля для Apple iPhone 5 + OCA + Polaris (черный) (в рамке)",
+            subject="стекло",
+            category="Стекла модулей",
+        ),
+        Product(
+            article="064411",
+            name="Стекло задней камеры для Xiaomi Redmi Pad Wi-Fi (22081283G) (без рамки) (черный)",
+            subject="стекло",
+            category="Стекла камер",
+        ),
+        Product(
+            article="066595",
+            name="Стекло задней камеры для Xiaomi Redmi Pad Wi-Fi (22081283G) (черный) (в рамке)",
+            subject="стекло",
+            category="Стекла камер",
+        ),
+        Product(
+            article="040449",
+            name="Нижняя плата для Asus ZenFone 4 Max (ZC554KL) с комп. + разъем зарядки + микрофон + вибро",
+            subject="плата",
+            category="Нижние платы для ASUS",
+        ),
+        Product(
+            article="054299",
+            name=(
+                "Нижняя плата для Xiaomi Poco F4 GT (21121210G) с комп. "
+                "+ разъем зарядки + микрофон (ORIG100)"
+            ),
+            subject="плата",
+            category="Нижние платы для телефонов",
+            quality_raw="ORIG100",
+        ),
+        Product(
+            article="079156",
+            name="Кнопки A / B / X / Y для ASUS ROG Ally X 2024 (цветные)",
+            subject="кнопки",
+            category="Кнопки для ASUS",
+        ),
+        Product(
+            article="079159",
+            name="Кнопки RB / LB для ASUS ROG Ally X 2024 (черные)",
+            subject="кнопки",
+            category="Кнопки для ASUS",
+        ),
+        Product(
+            article="081645",
+            name=(
+                "Задняя крышка для Huawei Honor 400 Pro China (DNP-AN00) "
+                "(черный) (в сборе со стеклом камеры) (ORIG100)"
+            ),
+            subject="крышка",
+            category="Задние крышки для телефонов",
+            color="черный",
+            quality_raw="ORIG100",
+        ),
+        Product(
+            article="075575",
+            name=(
+                "Средняя часть для Apple Watch Ultra 2 (49 мм) (титановый) "
+                "(в сборе) (ORIG100) (Снятый) (возможен дефект ЛКП)"
+            ),
+            subject="корпус",
+            category="Средние части для смарт-часов",
+            color="черный",
+            quality_raw="ORIG100",
+        ),
+        Product(
+            article="048045",
+            name="Задняя крышка для Apple iPhone Xr (желтый) (с широким отверстием) (Premium)",
+            subject="крышка",
+            category="Задние крышки для Apple iPhone",
+            color="желтый",
+        ),
+        Product(
+            article="053087",
+            name=(
+                "Клавиатура для Apple MacBook Air 11 A1370 / MacBook Air 11 A1465 "
+                "(MID 2011 - EARLY 2017) (вертикальный Enter / русская раскладка)"
+            ),
+            subject="клавиатура",
+            category="Клавиатуры для Apple",
+        ),
+        Product(
+            article="053088",
+            name=(
+                "Клавиатура для Apple MacBook Air 11 A1370 / MacBook Air 11 A1465 "
+                "(MID 2011 - MID 2017) (горизонтальный Enter / русская раскладка)"
+            ),
+            subject="клавиатура",
+            category="Клавиатуры для Apple",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["054554"].planned_sku == "OEM-FLX-HWE-P50-SUB-HN1AMBFL"
+    assert results["057755"].planned_sku == "OEM-FLX-HWE-P50-SUB-HL2ABRFU"
+    assert results["078624"].planned_sku == "OEM-FLX-IPDP12918-MIC-OR1"
+    assert results["078629"].planned_sku == "OEM-FLX-IPDP12920-MIC-OR1"
+    assert results["078636"].planned_sku == "OEM-FLX-IPDP12921-PWRBTN-CEL-OR1"
+    assert results["078644"].planned_sku == "OEM-FLX-IPDP12922-PWRBTN-CEL-OR1"
+    assert results["061382"].planned_sku == "OEM-FLX-RLM-C35-PWRBTN"
+    assert results["054409"].planned_sku == "OEM-FLX-RLM-NZ50A-PWRBTN"
+    assert results["075279"].planned_sku == "OEM-GLS-GGL-PIXEL10-MODG-MST-BLK-PR"
+    assert results["078327"].planned_sku == "OEM-GLS-GGL-PIXEL9PX-MG-MST-BLK-PR"
+    assert results["079177"].planned_sku == "OEM-GLS-LEN-LGO2Y700G5-PROT-Q25"
+    assert results["081608"].planned_sku == "OEM-GLS-SMG-S105G-MODG-OCA-FEA-BLK"
+    assert results["047641"].planned_sku == "OEM-GLS-HWE-P40LT5-CAMG-NFR-BLK"
+    assert results["059913"].planned_sku == "OEM-GLS-INF-N12T-CAMG-NFR-BLK"
+    assert results["038883"].planned_sku == "OEM-GLS-IPH5-MODG-FR-POL-BLK"
+    assert results["064411"].planned_sku == "OEM-GLS-XMI-RPADW-CAMG-NFR-BLK"
+    assert results["066595"].planned_sku == "OEM-GLS-XMI-RPADW-CAMG-FR-BLK"
+    assert results["040449"].planned_sku == "OEM-IC-ASU-ZF4-SUB-CHG-MIC-VIB"
+    assert results["054299"].planned_sku == "OEM-IC-XMI-PF4GT-SUB-CHG-MIC-OR1"
+    assert results["079156"].planned_sku == "OEM-PRT-ASU-ALLYX24-BTN-ABXY"
+    assert results["079159"].planned_sku == "OEM-PRT-ASU-ALLYX24-BTN-RBLB"
+    assert results["081645"].planned_sku == "OEM-PRT-HWE-H400PCN-BCOV-BLK-OR1-CG"
+    assert results["075575"].planned_sku == "OEM-PRT-IPHWU249-MID-TIT-OR1-ASM"
+    assert results["048045"].planned_sku == "OEM-PRT-IPHXR-BCOV-YLW-PR-WIDE"
+    assert results["053087"].planned_sku == "OEM-PRT-MBA11A1465-KBD-VERT"
+    assert results["053088"].planned_sku == "OEM-PRT-MBA11A1465-KBD-HOR"
+
+
+def test_generate_accessory_parts_and_universal_batteries(db_session) -> None:
+    products = [
+        Product(article="068842", name="Батарейки Kodak AA 4 шт.", subject="аккумулятор"),
+        Product(
+            article="063293",
+            name="Батарейки Duracell LR6 AA 4 шт.",
+            subject="аккумулятор",
+        ),
+        Product(
+            article="063970",
+            name="Батарейки GP Lithium CR2032 5 шт.",
+            subject="аккумулятор",
+        ),
+        Product(
+            article="064199",
+            name="Аккумулятор универсальный 60 mAh (4*10*21 mm) (401021P)",
+            subject="аккумулятор",
+        ),
+        Product(
+            article="064185",
+            name="Аккумулятор универсальный 60 mAh (5*10*12 mm) (501012P)",
+            subject="аккумулятор",
+        ),
+        Product(
+            article="053049",
+            name="Вентилятор (кулер) для Apple MacBook Pro 13 A1278 / MacBook 13 A1342 (MID 2009 - MID 2012)",
+            subject="динамик",
+            category="Кулеры для ноутбуков",
+        ),
+        Product(
+            article="053052",
+            name="Вентилятор (кулер) для Apple MacBook Pro 15 A1286 (левый) (LATE 2008 - MID 2012)",
+            subject="динамик",
+            category="Кулеры для ноутбуков",
+        ),
+        Product(
+            article="079108",
+            name="Вентилятор охлаждения для Sony PS5 (17 лопастей)",
+            subject="динамик",
+            category="Кулеры для Sony",
+        ),
+        Product(
+            article="065231",
+            name="Матрица для Apple MacBook Pro 13 Retina A1502 (LATE 2013 - EARLY 2014) (AASP)",
+            subject="матрица для ноутбука",
+            category="Матрицы для ноутбуков",
+            color="черный",
+        ),
+        Product(
+            article="058431",
+            name="Матрица в сборе для Apple MacBook Air 13 M1 Retina A2337 (LATE 2020) (серебристый) (AASP)",
+            subject="матрица для ноутбука",
+            category="Матрицы для ноутбуков",
+        ),
+        Product(
+            article="066379",
+            name="Матрица для Apple MacBook Air 13 M1 Retina A2337 (LATE 2020) (OEM)",
+            subject="матрица для ноутбука",
+            category="Матрицы для ноутбуков",
+            color="черный",
+        ),
+        Product(
+            article="065499",
+            name="Форма дисплея для Apple iPad mini 4 (A1538/A1550) / iPad mini 5 (2019) (A2126/A2124/A2133)",
+            subject="форма",
+            category="Формы дисплеев",
+        ),
+        Product(
+            article="065166",
+            name="Форма дисплея Apple iPhone 13 / 13 Pro (металлическая)",
+            subject="форма",
+            category="Формы дисплеев",
+        ),
+        Product(
+            article="051707",
+            name="Форма вакуумного подогрева Apple iPhone 11 Pro (пластиковая)",
+            subject="форма",
+            category="Формы дисплеев",
+        ),
+        Product(
+            article="038234",
+            name="Подсветка дисплея для Apple iPhone 5c / iPhone 5s",
+            subject="подсветка дисплея",
+            category="Подсветки дисплеев",
+        ),
+        Product(
+            article="050852",
+            name="Подсветка дисплея для Apple iPhone 6s (без функции 3D Touch)",
+            subject="подсветка дисплея",
+            category="Подсветки дисплеев",
+        ),
+        Product(
+            article="053083",
+            name=(
+                "Резиновые ножки для Apple MacBook Air 13 A1369 / MacBook Air 11 "
+                "A1370 / MacBook Air 11 A1465 и др. (LATE 2010 - MID 2017) "
+                "(комплект 4 шт.)"
+            ),
+            subject="запчасть",
+            category="Запчасти для ноутбуков",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["068842"].planned_sku == "OEM-BAT-UNV-AA-4-KODAK"
+    assert results["063293"].planned_sku == "OEM-BAT-UNV-AA-4-DURACELL"
+    assert results["063970"].planned_sku == "OEM-BAT-UNV-CR2032-5-GP"
+    assert results["064199"].planned_sku == "OEM-BAT-UNV-60-401021P"
+    assert results["064185"].planned_sku == "OEM-BAT-UNV-60-501012P"
+    assert results["053049"].planned_sku == "OEM-PRT-MBP13A1342-FAN"
+    assert results["053052"].planned_sku == "OEM-PRT-MBP15A1286-FAN-L"
+    assert results["079108"].planned_sku == "OEM-PRT-SON-PS5-FAN-B17"
+    assert results["065231"].planned_sku == "OEM-DSP-MBP13A1502-BLK-ASP-Y1314"
+    assert results["058431"].planned_sku == "OEM-DSP-MBA13A2337-SLV-ASP-ASM-Y20"
+    assert results["066379"].planned_sku == "OEM-DSP-MBA13A2337-MAT-BLK-OEM-Y20"
+    assert results["065499"].planned_sku == "OEM-PRT-IPDMN5-DSPMOLD"
+    assert results["065166"].planned_sku == "OEM-PRT-IPH13-DSPMOLD-MET"
+    assert results["051707"].planned_sku == "OEM-PRT-IPH11P-VACMOLD-PL"
+    assert results["038234"].planned_sku == "OEM-PRT-IPH5C-BKL"
+    assert results["050852"].planned_sku == "OEM-PRT-IPH6S-BKL-N3D"
+    assert results["053083"].planned_sku == "OEM-PRT-MBA13A1465-FEET-K4"
+
+
+def test_generate_game_console_and_vr_accessory_sku(db_session) -> None:
+    products = [
+        Product(
+            article="079051",
+            name="Кабель для Meta Quest 2 VR (переключатель камеры) (нижний) (левый)",
+            subject="кабель",
+            category="Кабели для Meta",
+        ),
+        Product(
+            article="079067",
+            name="Дисплей для Meta Quest 3 VR",
+            subject="дисплей",
+            category="Дисплеи для Meta",
+        ),
+        Product(
+            article="079120",
+            name="Дисплей для Nintendo Switch 2 + тачскрин (черный)",
+            subject="дисплей",
+            category="Дисплеи для Nintendo",
+        ),
+        Product(
+            article="079193",
+            name="Шлейф для Nintendo Switch Joy-Con + слайдер (2 шт.) (левый + правый)",
+            subject="шлейф",
+            category="Шлейфы для Nintendo",
+        ),
+        Product(
+            article="079149",
+            name="Док-станция YCE-V279 для Steam Deck (10 в 1) + разъем M.2 SSD + вентилятор (синий)",
+            subject="зарядка",
+            category="Док-станции для Steam Deck",
+        ),
+        Product(
+            article="079347",
+            name="Комплект кнопок и стиков для контроллера Xbox Series X (черный)",
+            subject="микросхема",
+            category="Кнопки для Xbox",
+        ),
+        Product(
+            article="079363",
+            name="Набор для замены кнопок для Sony PS5 V3 (L1 , R1 , L2 , R2, Стики)",
+            subject="неизвестно",
+            category="Кнопки для Sony",
+        ),
+        Product(
+            article="079278",
+            name=(
+                "Беспроводной геймпад GameSir Nova Lite T4N для Nintendo Switch "
+                "(темно-фиолетовый)"
+            ),
+            subject="неизвестно",
+            category="Джостики для Nintendo",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["079051"].planned_sku == "OEM-CBL-META-Q2-CAMSW-DN-L"
+    assert results["079067"].planned_sku == "OEM-DSP-META-Q3-STD"
+    assert results["079120"].planned_sku == "OEM-DSP-NIN-SW2-BLK-TCH"
+    assert results["079193"].planned_sku == "OEM-FLX-NIN-SW-JC-SLD-L-R-Q2"
+    assert results["079149"].planned_sku == "OEM-CHR-STM-DECK-DOCK-YCEV279-BLU"
+    assert results["079347"].planned_sku == "OEM-PRT-XBX-SX-BTNSTK-BLK"
+    assert results["079363"].planned_sku == "OEM-PRT-SON-PS5-BTNSTK-V3"
+    assert results["079278"].planned_sku == "OEM-PRT-NIN-SW-GPAD-GNLT4N-DPR-WL"
+
+
+def test_generate_touchpad_magsafe_films_and_macbook_flex(db_session) -> None:
+    products = [
+        Product(
+            article="044935",
+            name=("Поляризационная пленка для Apple iPhone Xs Max / " "iPhone 11 Pro Max"),
+            subject="пленка",
+            category="Пленки для дисплеев",
+        ),
+        Product(
+            article="052011",
+            name="Пленка OCA для проклейки дисплея Apple iPhone 11 / iPhone Xr (150UM)",
+            subject="пленка",
+            category="Пленки для дисплеев",
+        ),
+        Product(
+            article="055129",
+            name="Пленка OCA для Apple iPhone Xs Max",
+            subject="пленка",
+            category="Пленки для дисплеев",
+        ),
+        Product(
+            article="053055",
+            name=(
+                "Тачпад для Apple MacBook Pro 13 Retina A1502 "
+                "(LATE 2013 - MID 2014) (в сборе со шлейфом)"
+            ),
+            subject="тачпад",
+            category="Тачпады для ноутбуков",
+        ),
+        Product(
+            article="058457",
+            name=(
+                "Тачпад для Apple MacBook Pro 13 Retina A1706/A1708/A1989/A2159 "
+                "(LATE 2016, MID 2019) (серебристый)"
+            ),
+            subject="тачпад",
+            category="Тачпады для ноутбуков",
+        ),
+        Product(
+            article="065436",
+            name=("Тачпад для Apple MacBook Pro 13 M1 Retina A2338 " "(MID 2022) (серый)"),
+            subject="тачпад",
+            category="Тачпады для ноутбуков",
+        ),
+        Product(
+            article="065151",
+            name="Магнит MagSafe для Apple iPhone 12 mini",
+            subject="магнит",
+            category="Запчасти для телефонов",
+        ),
+        Product(
+            article="065152",
+            name="Магнит MagSafe для Apple iPhone 13",
+            subject="магнит",
+            category="Запчасти для телефонов",
+        ),
+        Product(
+            article="053058",
+            name=(
+                "Шлейф для Apple MacBook 12 Retina A1534 "
+                "(EARLY 2016 - MID 2017) с комп. (на тачпад)"
+            ),
+            subject="шлейф",
+            category="Шлейфы для ноутбуков",
+        ),
+        Product(
+            article="053062",
+            name=(
+                "Шлейф для Apple MacBook Pro 13 A1278 "
+                "(MID 2009 - MID 2010) с комп. (на жесткий диск)"
+            ),
+            subject="шлейф",
+            category="Шлейфы для ноутбуков",
+        ),
+        Product(
+            article="053064",
+            name=("Шлейф для Apple MacBook Pro 13 A1278 " "(MID 2012) с комп. (на жесткий диск)"),
+            subject="шлейф",
+            category="Шлейфы для ноутбуков",
+        ),
+        Product(
+            article="053075",
+            name=(
+                "Шлейф для Apple MacBook Air 13 A1466 "
+                "(MID 2013 - MID 2017) (на I/O плату ввода/вывода)"
+            ),
+            subject="шлейф",
+            category="Шлейфы для ноутбуков",
+        ),
+        Product(
+            article="053077",
+            name=(
+                "Шлейф для Apple MacBook Air 13 A1369 / MacBook Air 13 A1466 "
+                "(MID 2011 - MID 2012) с комп. (на тачпад)"
+            ),
+            subject="шлейф",
+            category="Шлейфы для ноутбуков",
+        ),
+        Product(
+            article="053078",
+            name=("Шлейф для Apple MacBook Air 13 A1466 " "(MID 2012) (на I/O плату ввода/вывода)"),
+            subject="шлейф",
+            category="Шлейфы для ноутбуков",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["044935"].planned_sku == "OEM-PRT-IPHXSM-POLFLM"
+    assert results["052011"].planned_sku == "OEM-PRT-IPHXR-OCA-150UM"
+    assert results["055129"].planned_sku == "OEM-PRT-IPHXSM-OCA"
+    assert results["053055"].planned_sku == "OEM-PRT-MBP13A1502-TPD-ASM-Y1314"
+    assert results["058457"].planned_sku == "OEM-PRT-MBP13A2159-TPD-SLV-Y1619"
+    assert results["065436"].planned_sku == "OEM-PRT-MBP13A2338-TPD-GRY-Y22"
+    assert results["065151"].planned_sku == "OEM-PRT-IPH12MN-MAGSAFE"
+    assert results["065152"].planned_sku == "OEM-PRT-IPH13-MAGSAFE"
+    assert results["053058"].planned_sku == "OEM-FLX-MB12A1534-TPD-Y1617"
+    assert results["053062"].planned_sku == "OEM-FLX-MBP13A1278-HDD-Y0910"
+    assert results["053064"].planned_sku == "OEM-FLX-MBP13A1278-HDD-Y12"
+    assert results["053075"].planned_sku == "OEM-FLX-MBA13A1466-IO-Y1317"
+    assert results["053077"].planned_sku == "OEM-FLX-MBA13A1466-TPD-Y1112"
+    assert results["053078"].planned_sku == "OEM-FLX-MBA13A1466-IO-Y12"
+
+
+def test_generate_matrix_film_and_mold_duplicate_pairs(db_session) -> None:
+    products = [
+        Product(
+            article="065230",
+            name="Матрица для Apple MacBook Pro 13 Retina A1502 (EARLY 2015) (AASP)",
+            subject="матрица для ноутбука",
+            category="Матрицы для ноутбуков",
+            color="черный",
+        ),
+        Product(
+            article="065231",
+            name=(
+                "Матрица для Apple MacBook Pro 13 Retina A1502 " "(LATE 2013 - EARLY 2014) (AASP)"
+            ),
+            subject="матрица для ноутбука",
+            category="Матрицы для ноутбуков",
+            color="черный",
+        ),
+        Product(
+            article="053038",
+            name=(
+                "Матрица в сборе для Apple MacBook Pro 13 Retina A1502 "
+                "(EARLY 2015) (серебристый) (AASP)"
+            ),
+            subject="матрица для ноутбука",
+            category="Матрицы для ноутбуков",
+        ),
+        Product(
+            article="064003",
+            name=(
+                "Матрица в сборе для Apple MacBook Pro 13 Retina A1502 "
+                "(LATE 2013 - EARLY 2014) (серебристый) (AASP)"
+            ),
+            subject="матрица для ноутбука",
+            category="Матрицы для ноутбуков",
+        ),
+        Product(
+            article="063989",
+            name=(
+                "Матрица в сборе для Apple MacBook 12 Retina A1534 " "(EARLY 2015) (серый) (AASP)"
+            ),
+            subject="матрица для ноутбука",
+            category="Матрицы для ноутбуков",
+        ),
+        Product(
+            article="063993",
+            name=(
+                "Матрица в сборе для Apple MacBook 12 Retina A1534 "
+                "(EARLY 2016 - MID 2017) (серый) (AASP)"
+            ),
+            subject="матрица для ноутбука",
+            category="Матрицы для ноутбуков",
+        ),
+        Product(
+            article="063990",
+            name=(
+                "Матрица в сборе для Apple MacBook 12 Retina A1534 "
+                "(EARLY 2015) (золотистый) (AASP)"
+            ),
+            subject="матрица для ноутбука",
+            category="Матрицы для ноутбуков",
+        ),
+        Product(
+            article="063994",
+            name=(
+                "Матрица в сборе для Apple MacBook 12 Retina A1534 "
+                "(EARLY 2016 - MID 2017) (золотистый) (AASP)"
+            ),
+            subject="матрица для ноутбука",
+            category="Матрицы для ноутбуков",
+        ),
+        Product(
+            article="063991",
+            name=(
+                "Матрица в сборе для Apple MacBook 12 Retina A1534 "
+                "(EARLY 2015) (серебристый) (AASP)"
+            ),
+            subject="матрица для ноутбука",
+            category="Матрицы для ноутбуков",
+        ),
+        Product(
+            article="063992",
+            name=(
+                "Матрица в сборе для Apple MacBook 12 Retina A1534 "
+                "(EARLY 2016 - MID 2017) (серебристый) (AASP)"
+            ),
+            subject="матрица для ноутбука",
+            category="Матрицы для ноутбуков",
+        ),
+        Product(
+            article="066743",
+            name="Матрица для Apple MacBook 12 Retina A1534 (EARLY 2015) (AASP)",
+            subject="матрица для ноутбука",
+            category="Матрицы для ноутбуков",
+            color="черный",
+        ),
+        Product(
+            article="066744",
+            name=("Матрица для Apple MacBook 12 Retina A1534 " "(EARLY 2016 - MID 2017) (AASP)"),
+            subject="матрица для ноутбука",
+            category="Матрицы для ноутбуков",
+            color="черный",
+        ),
+        Product(
+            article="051483",
+            name=(
+                "Поляризационная пленка для Apple iPad Air 2 12.9 " "(A1566 / A1567) (90 градусов)"
+            ),
+            subject="пленка",
+            category="Пленки для дисплеев",
+        ),
+        Product(
+            article="050865",
+            name=("Поляризационная пленка для Apple iPad Air 2 9.7 " "(A1566/A1567) (90 градусов)"),
+            subject="пленка",
+            category="Пленки для дисплеев",
+        ),
+        Product(
+            article="051026",
+            name="Форма для склеивания дисплея и стекла Apple iPhone 11 Pro (резиновая)",
+            subject="форма",
+            category="Формы дисплеев",
+        ),
+        Product(
+            article="051036",
+            name="Форма склеивания дисплеев для Apple iPhone 11 Pro",
+            subject="форма",
+            category="Формы дисплеев",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["065230"].planned_sku == "OEM-DSP-MBP13A1502-MAT-BLK-ASP-Y15"
+    assert results["065231"].planned_sku == "OEM-DSP-MBP13A1502-BLK-ASP-Y1314"
+    assert results["053038"].planned_sku == "OEM-DSP-MBP13A1502-SLV-ASP-ASM-Y15"
+    assert results["064003"].planned_sku == "OEM-DSP-MBP13A1502-SLV-ASM-Y1314"
+    assert results["063989"].planned_sku == "OEM-DSP-MB12A1534-GRY-ASP-ASM-Y15"
+    assert results["063993"].planned_sku == "OEM-DSP-MB12A1534-GRY-ASP-ASM-Y1617"
+    assert results["063990"].planned_sku == "OEM-DSP-MB12A1534-GLD-ASP-ASM-Y15"
+    assert results["063994"].planned_sku == "OEM-DSP-MB12A1534-GLD-ASP-ASM-Y1617"
+    assert results["063991"].planned_sku == "OEM-DSP-MB12A1534-SLV-ASP-ASM-Y15"
+    assert results["063992"].planned_sku == "OEM-DSP-MB12A1534-SLV-ASP-ASM-Y1617"
+    assert results["066743"].planned_sku == "OEM-DSP-MB12A1534-MAT-BLK-ASP-Y15"
+    assert results["066744"].planned_sku == "OEM-DSP-MB12A1534-MAT-BLK-ASP-Y1617"
+    assert results["051483"].planned_sku == "OEM-PRT-IPDA2-POLFLM-D90-S129"
+    assert results["050865"].planned_sku == "OEM-PRT-IPDA2-POLFLM-D90-S97"
+    assert results["051026"].planned_sku == "OEM-PRT-IPH11P-MOLD-RUB"
+    assert results["051036"].planned_sku == "OEM-PRT-IPH11P-MOLD"
+
+
+def test_generate_top_conflict_disambiguators(db_session) -> None:
+    products = [
+        Product(
+            article="028645",
+            name="Винты для Apple iPhone 5 (комплект 2 шт.) (серебристый)",
+            subject="винты",
+            category="Запчасти для телефонов",
+        ),
+        Product(
+            article="052056",
+            name="Винты для Apple iPhone 5с (комплект) (серебристый)",
+            subject="винты",
+            category="Запчасти для телефонов",
+        ),
+        Product(
+            article="059028",
+            name=(
+                "Защитное стекло OG Glass (3 в 1) для Xiaomi 13 "
+                "(2211133G) / 14 (23127PN0CG) (черный)"
+            ),
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="068035",
+            name="Защитное стекло OG Glass (3 в 1) для Xiaomi 15 (24129PN74G) (черный)",
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="075388",
+            name="Корпус для Apple iPhone 17 Pro Max (eSIM) (синий) (Premium)",
+            subject="корпус",
+            category="Корпусы",
+        ),
+        Product(
+            article="081795",
+            name=(
+                "Корпус для Apple iPhone 14 Pro Max в дизайне Apple "
+                "iPhone 17 Pro Max (синий) (Premium)"
+            ),
+            subject="корпус",
+            category="Корпусы",
+        ),
+        Product(
+            article="078425",
+            name="Корпус для Apple iPhone 17 Pro Max (SIM + eSIM) (бирюзовый) (Premium)",
+            subject="корпус",
+            category="Корпусы",
+        ),
+        Product(
+            article="081802",
+            name="Корпус для Apple iPhone 17 Pro Max (SIM + eSIM) (коричневый) (Premium)",
+            subject="корпус",
+            category="Корпусы",
+        ),
+        Product(
+            article="078926",
+            name=(
+                "Материнская плата для Apple iPhone 14 / 14 Plus "
+                "(SIM + eSIM) (без микросхем) (нижняя)"
+            ),
+            subject="плата",
+            category="Платы и электронные компоненты",
+        ),
+        Product(
+            article="078927",
+            name=("Материнская плата для Apple iPhone 14 (SIM + eSIM) " "(128 Гб) (iCloud locked)"),
+            subject="плата",
+            category="Платы и электронные компоненты",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["028645"].planned_sku == "OEM-PRT-IPH5-SCR-SLV-K2"
+    assert results["052056"].planned_sku == "OEM-PRT-IPH5C-SCR-SLV"
+    assert results["059028"].planned_sku == "OEM-GLS-XMI-13-PROT-3IN1-BLK"
+    assert results["068035"].planned_sku == "OEM-GLS-XMI-15-PROT-3IN1-BLK"
+    assert results["075388"].planned_sku == "OEM-PRT-IPH17PM-HOUS-BLU-PR-ESIM"
+    assert results["081795"].planned_sku == "OEM-PRT-IPH14PM-HOUS-BLU-PR-D17PM"
+    assert results["078425"].planned_sku == "OEM-PRT-IPH17PM-HOUS-TRQ-PR-SIME"
+    assert results["081802"].planned_sku == "OEM-PRT-IPH17PM-HOUS-BRN-PR-SIME"
+    assert results["078926"].planned_sku == "OEM-IC-IPH14-PCB-SIM-NOIC"
+    assert results["078927"].planned_sku == "OEM-IC-IPH14-PCB-SIM-128G-ICL"
+
+
+def test_generate_remaining_visible_conflict_markers(db_session) -> None:
+    products = [
+        Product(
+            article="058915",
+            name=("Рамка сенсорного экрана для Apple iPad Air 2 " "(A1566/A1567) (версия: Wi-Fi)"),
+            subject="рамка",
+            category="Рамки дисплеев",
+        ),
+        Product(
+            article="058916",
+            name=("Рамка сенсорного экрана для Apple iPad Air 2 " "(A1566/A1567) (версия: 4G)"),
+            subject="рамка",
+            category="Рамки дисплеев",
+        ),
+        Product(
+            article="046335",
+            name="Камера для Xiaomi Redmi Note 8T (M1908C3XG) (задняя) (2)",
+            subject="камера",
+            category="Камеры для телефонов",
+        ),
+        Product(
+            article="050519",
+            name="Камера для Xiaomi Redmi Note 8T (M1908C3XG) (задняя) (1)",
+            subject="камера",
+            category="Камеры для телефонов",
+        ),
+        Product(
+            article="050951",
+            name="Стекло модуля для Apple iPhone X / iPhone Xs (high copy)",
+            subject="стекло модуля",
+            category="Стекла модулей",
+        ),
+        Product(
+            article="050952",
+            name="Стекло модуля для Apple iPhone X / iPhone Xs (high copy+)",
+            subject="стекло модуля",
+            category="Стекла модулей",
+        ),
+        Product(
+            article="057988",
+            name="Защитное стекло UV для Samsung S918 Galaxy S23 Ultra",
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="076959",
+            name="Защитное стекло MOSSILY Full Glue для Samsung S918 Galaxy S23 Ultra",
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="061139",
+            name="Задняя крышка для Realme 9 5G (India) (белый)",
+            subject="задняя крышка",
+            category="Задние крышки",
+        ),
+        Product(
+            article="053707",
+            name="Задняя крышка для OnePlus 7T Pro (синий)",
+            subject="задняя крышка",
+            category="Задние крышки",
+        ),
+        Product(
+            article="053520",
+            name="Держатель сим-карты для ZTE Blade V30 (синий)",
+            subject="держатель сим-карты",
+            category="Держатели SIM-карт",
+        ),
+        Product(
+            article="053535",
+            name="Держатель сим-карты для ZTE Blade V30 Vita (синий)",
+            subject="держатель сим-карты",
+            category="Держатели SIM-карт",
+        ),
+        Product(
+            article="053944",
+            name="Задняя крышка для Tecno Camon 19 Neo (CH6i) (зеленый)",
+            subject="задняя крышка",
+            category="Задние крышки",
+        ),
+        Product(
+            article="060207",
+            name="Задняя крышка для Infinix Note 30 VIP (X6710) (голубой)",
+            subject="задняя крышка",
+            category="Задние крышки",
+        ),
+        Product(
+            article="054550",
+            name="Держатель сим-карты для Huawei P50 Pocket (BAL-L49) (черный)",
+            subject="держатель сим-карты",
+            category="Держатели SIM-карт",
+        ),
+        Product(
+            article="061828",
+            name="Задняя крышка для Infinix Hot 30 (X6831) (белый) (Low)",
+            subject="задняя крышка",
+            category="Задние крышки",
+        ),
+        Product(
+            article="081004",
+            name="Проклейка дисплейного модуля для Apple iPhone 12 Pro Max (2UUL) (комплект 5 шт.)",
+            subject="проклейка",
+            category="Проклейки дисплейных модулей",
+        ),
+        Product(
+            article="043398",
+            name="Задняя крышка для Huawei Mate 20 Pro (LYA-L29) (синий-сумеречный)",
+            subject="задняя крышка",
+            category="Задние крышки",
+        ),
+        Product(
+            article="040751",
+            name="Корпус для Apple iPhone 7 Plus (красно-черный)",
+            subject="корпус",
+            category="Корпусы",
+        ),
+        Product(
+            article="061764",
+            name="Задняя крышка для Samsung G780 Galaxy S20 FE (темно-красный)",
+            subject="задняя крышка",
+            category="Задние крышки",
+        ),
+        Product(
+            article="035257",
+            name="Задняя крышка для Sony D5503 Xperia Z1 Compact (белый)",
+            subject="задняя крышка",
+            category="Задние крышки",
+        ),
+        Product(
+            article="052250",
+            name="Защитное стекло тех. пак. для Sony E5803/E5823 Xperia Z5 Compact",
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="050928",
+            name="Сеточка динамика (слуховой) для Apple iPhone 11",
+            subject="сетка динамика",
+            category="Сеточки динамика",
+        ),
+        Product(
+            article="063070",
+            name="Сеточка динамика (полифонический) для Apple iPhone 11 с комп.",
+            subject="сетка динамика",
+            category="Сеточки динамика",
+        ),
+        Product(
+            article="062999",
+            name=(
+                "Защитное стекло на заднюю камеру для Apple iPhone 14 Pro / "
+                "iPhone 14 Pro Max (черный)"
+            ),
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="060284",
+            name=(
+                "Защитное стекло 3D тех. пак. для Google Pixel 7A "
+                "(GWKK3/GHL1X/G0DZQ/G82U8) (черный)"
+            ),
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="046584",
+            name="Держатель сим-карты для Huawei P40 Pro+ (ELS-N39) (черный)",
+            subject="держатель сим-карты",
+            category="Держатели SIM-карт",
+        ),
+        Product(
+            article="040878",
+            name="Держатель сим-карты для Huawei Nova 2 Plus (золотой)",
+            subject="держатель сим-карты",
+            category="Держатели SIM-карт",
+        ),
+        Product(
+            article="060793",
+            name="Держатель сим-карты для Vivo X70 Pro Plus (V2145A) (черный)",
+            subject="держатель сим-карты",
+            category="Держатели SIM-карт",
+        ),
+        Product(
+            article="060757",
+            name="Шлейф для Google Pixel 5 (межплатный) (тип 2)",
+            subject="шлейф",
+            category="Шлейфы для телефонов",
+        ),
+        Product(
+            article="069061",
+            name="Рамка дисплея для OPPO A96 (China Version) (черный)",
+            subject="рамка дисплея",
+            category="Рамки дисплеев",
+        ),
+        Product(
+            article="050353",
+            name="Задняя крышка для Nokia 7.1 Plus (черный)",
+            subject="задняя крышка",
+            category="Задние крышки",
+        ),
+        Product(
+            article="068232",
+            name="Держатель сим-карты для Infinix Zero X Pro (X6811) (голубой)",
+            subject="держатель сим-карты",
+            category="Держатели SIM-карт",
+            color="черный",
+        ),
+        Product(
+            article="047934",
+            name="Держатель сим-карты для Xiaomi Mi 10T Lite 5G (M2007J17G) (синий)",
+            subject="держатель сим-карты",
+            category="Держатели SIM-карт",
+        ),
+        Product(
+            article="051675",
+            name="Держатель сим-карты для Xiaomi Redmi Note 10T 5G (M2103K19Y) (синий)",
+            subject="держатель сим-карты",
+            category="Держатели SIM-карт",
+        ),
+        Product(
+            article="076350",
+            name="Держатель сим-карты для OnePlus Nord CE 5 (CPH2719) (черный)",
+            subject="держатель сим-карты",
+            category="Держатели SIM-карт",
+        ),
+        Product(
+            article="081141",
+            name="Защитное стекло OG Glass (3 в 1) для Vivo V70 FE (V2550) (черный)",
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="080610",
+            name="Стекло модуля для Tecno Camon 50 Ultra (CN7c) + OCA (черный) (Premium)",
+            subject="стекло модуля",
+            category="Стекла модулей",
+        ),
+        Product(
+            article="052147",
+            name="Задняя крышка для OnePlus 8 Pro (зеленый матовый)",
+            subject="задняя крышка",
+            category="Задние крышки",
+        ),
+        Product(
+            article="065204",
+            name="Задняя крышка для OnePlus 8 Pro (зеленый глянец)",
+            subject="задняя крышка",
+            category="Задние крышки",
+        ),
+        Product(
+            article="050593",
+            name="Винты для Apple iPhone 7 / iPhone 7 Plus (комплект 2 шт.) (серебристый)",
+            subject="винты",
+            category="Винты",
+        ),
+        Product(
+            article="076885",
+            name="Комплект креплений платы для Apple iPhone 17 (SIM + eSIM)",
+            subject="крепление",
+            category="Крепления плат",
+        ),
+        Product(
+            article="076884",
+            name="Комплект креплений платы для Apple iPhone 17 (eSIM)",
+            subject="крепление",
+            category="Крепления плат",
+        ),
+        Product(
+            article="078183",
+            name="Средняя часть для Apple iPhone 17 (eSIM) (зеленый)",
+            subject="корпус",
+            category="Средние части",
+        ),
+        Product(
+            article="082287",
+            name="Защитное стекло OTAO 360° Privacy для Apple iPhone 16 Pro / iPhone 17 (антишпион)",
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="082275",
+            name="Защитное стекло OTAO 28° Privacy для Apple iPhone 16 Pro / iPhone 17 (антишпион)",
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="082334",
+            name="Защитное стекло для машинки OTAO Clear Glass для Apple iPhone 16 Pro / iPhone 17 (5 шт.)",
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="069387",
+            name="Защитное стекло OG Glass (3 в 1) для Nothing Phone 3a Lite (A001T) (черный)",
+            subject="защитное стекло",
+            category="Защитные стекла для телефонов",
+        ),
+        Product(
+            article="077347",
+            name="Стекло модуля для Huawei MatePad 11.5S PaperMatte Edition (TGR-W09) + OCA (черный) (Premium)",
+            subject="стекло модуля",
+            category="Стекла модулей",
+        ),
+        Product(
+            article="072786",
+            name="Задняя крышка для Apple iPhone 16 Pro (золотистый) (в сборе) (ORIG100) (SP)",
+            subject="задняя крышка",
+            category="Задние крышки",
+        ),
+        Product(
+            article="079674",
+            name="Дисплей для Huawei Honor Pad X9a 11.5 (ELN2-W29) + тачскрин (черный) (матовый) (ORIG)",
+            subject="дисплей",
+            category="Дисплеи",
+        ),
+        Product(
+            article="076645",
+            name="Держатель сим-карты для Huawei Honor X9d (MTN-NX1) (золотистый глянцевый)",
+            subject="держатель сим-карты",
+            category="Держатели SIM-карт",
+        ),
+        Product(
+            article="072836",
+            name="Динамик для Apple MacBook Pro 13 Retina A1706 (2016) правый малый (с разбора) (ORIG)",
+            subject="динамик",
+            category="Динамики для ноутбуков",
+        ),
+        Product(
+            article="072827",
+            name="Динамик для Apple MacBook Pro 13 A1278 (2011-2012) левый + правый с сабвуфером (ORIG)",
+            subject="динамик",
+            category="Динамики для ноутбуков",
+        ),
+        Product(
+            article="080933",
+            name=(
+                "Корпус для Apple Watch 9 (45 мм) (черный) "
+                "(в сборе с материнской платой) (ORIG100) (Снятый)"
+            ),
+            subject="корпус",
+            category="Корпусы",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["058915"].planned_sku == "OEM-PRT-IPDA2-FRM-WFI"
+    assert results["058916"].planned_sku == "OEM-PRT-IPDA2-FRM-CEL"
+    assert results["046335"].planned_sku == "OEM-CAM-XMI-RN8T-RCAM-N2"
+    assert results["050519"].planned_sku == "OEM-CAM-XMI-RN8T-RCAM-N1"
+    assert results["050951"].planned_sku == "OEM-GLS-IPHXS-MODG-HC"
+    assert results["050952"].planned_sku == "OEM-GLS-IPHXS-MODG-HCP"
+    assert results["057988"].planned_sku == "OEM-GLS-SMG-S23U-PROT-UV"
+    assert results["076959"].planned_sku == "OEM-GLS-SMG-S23U-PROT-MOS-FGL"
+    assert results["061139"].planned_sku == "OEM-PRT-RLM-95I-BCOV-WHT"
+    assert results["053707"].planned_sku == "OEM-PRT-ONE-7TP-BCOV-BLU"
+    assert results["053520"].planned_sku == "OEM-FLX-ZTE-BV30-SIMTRAY-BLU"
+    assert results["053535"].planned_sku == "OEM-FLX-ZTE-BV30V-SIMTRAY-BLU"
+    assert results["053944"].planned_sku == "OEM-PRT-TEC-C19N-BCOV-GRN"
+    assert results["060207"].planned_sku == "OEM-PRT-INF-N30V-BCOV-CYN"
+    assert results["054550"].planned_sku == "OEM-FLX-HWE-P50PK-SIMTRAY-BLK"
+    assert results["061828"].planned_sku == "OEM-PRT-INF-H30-BCOV-WHT-LOW"
+    assert results["081004"].planned_sku == "OEM-PRT-IPH12PM-DSP-ADH-2UUL-K5"
+    assert results["043398"].planned_sku == "OEM-PRT-HWE-M20P-BCOV-TBLU"
+    assert results["040751"].planned_sku == "OEM-PRT-IPH7PL-HOUS-RDBK"
+    assert results["061764"].planned_sku == "OEM-PRT-SMG-S20FE-BCOV-DRED"
+    assert results["035257"].planned_sku == "OEM-PRT-SON-Z1C-BCOV-WHT"
+    assert results["052250"].planned_sku == "OEM-GLS-SON-Z5C-PROT-TPK"
+    assert results["050928"].planned_sku == "OEM-PRT-IPH11-SPK-MESH-EAR"
+    assert results["063070"].planned_sku == "OEM-PRT-IPH11-SPK-MESH-POLY-KIT"
+    assert results["062999"].planned_sku == "OEM-GLS-IPH14PM-CAMG-BLK"
+    assert results["060284"].planned_sku == "OEM-GLS-GGL-PIXEL7A-PROT-TPK-BLK"
+    assert results["046584"].planned_sku == "OEM-FLX-HWE-P40PP-SIMTRAY-BLK"
+    assert results["040878"].planned_sku == "OEM-FLX-HWE-N2P-SIMTRAY-GLD"
+    assert results["060793"].planned_sku == "OEM-FLX-VVO-X70PP-SIMTRAY-BLK"
+    assert results["060757"].planned_sku == "OEM-FLX-GGL-PIXEL5-SUB-T2"
+    assert results["069061"].planned_sku == "OEM-PRT-OPP-A96-DFRM-BLK-CN"
+    assert results["050353"].planned_sku == "OEM-PRT-NOK-71P-BCOV-BLK"
+    assert results["068232"].planned_sku == "OEM-FLX-INF-X6811-SIMTRAY-CYN"
+    assert results["047934"].planned_sku == "OEM-FLX-XMI-M10TL5-SIMTRAY-BLU"
+    assert results["051675"].planned_sku == "OEM-FLX-XMI-RN10T5-SIMTRAY-BLU"
+    assert results["076350"].planned_sku == "OEM-FLX-ONE-NCE5-SIMTRAY-BLK"
+    assert results["081141"].planned_sku == "OEM-GLS-VVO-V70FE-PROT-3IN1-BLK"
+    assert results["080610"].planned_sku == "OEM-GLS-TEC-C50U-MODG-OCA-BLK-PR"
+    assert results["052147"].planned_sku == "OEM-PRT-ONE-8P-BCOV-GRN-MAT"
+    assert results["065204"].planned_sku == "OEM-PRT-ONE-8P-BCOV-GRN-GLS"
+    assert results["050593"].planned_sku == "OEM-PRT-IPH7PL-SCR-SLV-K2"
+    assert results["076885"].planned_sku == "OEM-PRT-IPH17-MNT-SIME"
+    assert results["076884"].planned_sku == "OEM-PRT-IPH17-MNT-ESIM"
+    assert results["078183"].planned_sku == "OEM-PRT-IPH17-MID-GRN-ESIM"
+    assert results["082287"].planned_sku == "OEM-GLS-IPH17-PROT-PRV-D360"
+    assert results["082275"].planned_sku == "OEM-GLS-IPH17-PROT-PRV-D28"
+    assert results["082334"].planned_sku == "OEM-GLS-IPH17-PROT-Q5-CLR"
+    assert results["069387"].planned_sku == "OEM-GLS-NOT-PH3AL-PROT-3IN1-BLK"
+    assert results["077347"].planned_sku == "OEM-GLS-HWE-MP115SPM-MG-OCA-BLK-PR"
+    assert results["072786"].planned_sku == "OEM-PRT-IPH16P-BCOV-GLD-OR1-ASM-SP"
+    assert results["079674"].planned_sku == "OEM-DSP-HWE-HPX9A-BLK-OR-MAT"
+    assert results["076645"].planned_sku == "OEM-FLX-HWE-HX9D-SIMTRAY-GLD-GLS"
+    assert results["072836"].planned_sku == "OEM-PRT-MBP13A1706-SPK-R-OR-SM"
+    assert results["072827"].planned_sku == "OEM-PRT-MBP13A1278-SPK-L-OR-LR-SUB"
+    assert results["080933"].planned_sku == "OEM-PRT-IPHW945-HOU-BLK-OR1-ASM-PCB"
+
+
+def test_generate_ipad_home_button_uses_short_ipad_device_code(db_session) -> None:
+    product = Product(
+        article="1001-ipad3-home",
+        name="Кнопка (толкатель) Home для Apple iPad 3 (A1416/A1430) (черный)",
+        subject="кнопки",
+        category="Кнопки HOME для Apple iPad",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.category_code == "PRT"
+    assert result.device_code == "IPD3"
+    assert result.planned_sku == "OEM-PRT-IPD3-BTN-BLK"
+
+
+def test_generate_macbook_protective_glass_ignores_accessory_brand_words(db_session) -> None:
+    product = Product(
+        article="1001-macbook-otao",
+        name=(
+            "Защитное стекло магнитное OTAO Anti-Blue Light для Apple Macbook Air 15.3 "
+            "(A2941/A3114)"
+        ),
+        subject="защитное стекло",
+        category="Защитные стекла для телефонов",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.device_code == "MBA153"
+    assert result.planned_sku == "OEM-GLS-MBA153-PROT-BLU"
+
+
+def test_generate_oneplus_ace_2v_glass_uses_compact_device_code(db_session) -> None:
+    product = Product(
+        article="1001-oneplus-ace2v-glass",
+        name="Защитное стекло OG Glass (3 в 1) для OnePlus Ace 2V (PHP110) (черный)",
+        subject="защитное стекло",
+        category="Защитные стекла для телефонов",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.device_code == "ONE-A2V"
+    assert result.planned_sku == "OEM-GLS-ONE-A2V-PROT-3IN1-BLK"
+
+
+def test_generate_huawei_y8p_camera_keeps_model_out_of_camera_specs(db_session) -> None:
+    product = Product(
+        article="1001-huawei-y8p-camera",
+        name="Камера для Huawei Y8p (AQM-LX1) (48 MP) (задняя) (ORIG100)",
+        subject="камера",
+        category="Камеры для телефонов",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.device_code == "HWE-Y8P"
+    assert result.planned_sku == "OEM-CAM-HWE-Y8P-RCAM-48MP-OR1"
+
+
+def test_generate_sony_tablet_z3_flex_uses_compact_device_code(db_session) -> None:
+    product = Product(
+        article="1001-sony-z3-flex",
+        name="Шлейф для Sony Xperia Tablet Z3 Compact 8.0 с комп. + микрофон",
+        subject="шлейф",
+        category="Шлейфы для планшетов",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.device_code == "SON-XTZ3C8"
+    assert result.key_code == "MIC"
+    assert result.planned_sku == "OEM-FLX-SON-XTZ3C8-MIC"
+
+
+def test_generate_itel_vision_board_uses_compact_device_code(db_session) -> None:
+    product = Product(
+        article="1001-itel-vision3-board",
+        name="Нижняя плата для Itel Vision 3 (S661LPN) с комп. + разъем зарядки + микрофон",
+        subject="плата",
+        category="Нижние платы для телефонов",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.device_code == "ITE-V3"
+    assert result.planned_sku == "OEM-IC-ITE-V3-SUB-CHG-MIC"
+
+
+def test_generate_multi_brand_chip_uses_universal_device_code(db_session) -> None:
+    product = Product(
+        article="038364",
+        name="Микросхема контроллер заряда (SMB1360) для Asus / Sony / Xiaomi (ORIG100)",
+        subject="микросхема",
+        category="Микросхемы для телефонов",
+        vid_nomenklatury="Платы и электронные компоненты",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.device_code == "UNV"
+    assert result.key_code == "SMB1360-OR1"
+    assert result.planned_sku == "OEM-IC-UNV-SMB1360-OR1"
+
+
+def test_generate_asus_f52_k72_keyboard_uses_family_device_code(db_session) -> None:
+    product = Product(
+        article="049713",
+        name=(
+            "Клавиатура для Asus F52 / F90 / K50 / K51 / K60I / K60IJ / K61 / K62 / "
+            "K70 / K71 / K72 / P50 / X5DIJ (черный) (в рамке)"
+        ),
+        subject="клавиатура",
+        category="Клавиатуры для ноутбуков",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.device_code == "ASU-F52K72"
+    assert result.key_code == "KBD-FR-BLK"
+    assert result.planned_sku == "OEM-PRT-ASU-F52K72-KBD-FR-BLK"
+
+
+def test_generate_asus_k52_n60_keyboard_uses_family_device_code(db_session) -> None:
+    product = Product(
+        article="049837",
+        name=(
+            "Клавиатура для Asus K52 / K53 / K54 / N50 / N51 / N52 / N53 / "
+            "N60 и др. (черный) (в рамке)"
+        ),
+        subject="клавиатура",
+        category="Клавиатуры для ноутбуков",
+    )
+    db_session.add(product)
+    db_session.commit()
+    db_session.refresh(product)
+
+    result = generate_sku_for_product(db_session, product)
+
+    assert result.status == "generated"
+    assert result.device_code == "ASU-K52N60"
+    assert result.key_code == "KBD-FR-BLK"
+    assert result.planned_sku == "OEM-PRT-ASU-K52N60-KBD-FR-BLK"
 
 
 def test_generate_display_sku_marks_duplicate_card_for_review(db_session) -> None:
@@ -2176,6 +4866,81 @@ def test_generate_cable_and_charger_sku_without_device_model(db_session) -> None
     assert charger_result.planned_sku == "F5-CHR-65W-GAN-EU"
 
 
+def test_generate_retail_cable_and_charger_sku_from_name(db_session) -> None:
+    products = [
+        Product(
+            article="039550",
+            name=(
+                "Дата-кабель Apple USB-Lightning, 1.0 м "
+                "(с поддержкой быстрой зарядки) (белый) (ORIG100)"
+            ),
+            category="Кабели для телефонов",
+            subject="кабель",
+        ),
+        Product(
+            article="061730",
+            name=(
+                "Дата-кабель Remax RC-C061 C-L Type-C-Lightning 20W (2.4 А), "
+                "1.2 м (с поддержкой быстрой зарядки) (плетеный) (черный)"
+            ),
+            category="Кабели для телефонов",
+            subject="кабель",
+        ),
+        Product(
+            article="068309",
+            name="Адаптер питания 2 USB-C 45 Вт + Кабель Type-C-Type-C (Premium)",
+            category="Зарядки сетевые для телефонов",
+            subject="зарядка",
+        ),
+        Product(
+            article="066370",
+            name="Накопитель для телефона Remax RPP-107 (5000 мАч) (ультратонкий) (MagSafe)",
+            subject="пауэрбанк",
+        ),
+        Product(
+            article="075473",
+            name="Дата-кабель Baseus Cafule USB - TypeC 1 м (плетеный) (черный)",
+            subject="кабель",
+        ),
+        Product(
+            article="075481",
+            name="Дата-кабель Baseus New Braided USB - TypeC 1 м (плетеный) (черный)",
+            subject="кабель",
+        ),
+        Product(
+            article="079641",
+            name="Сетевое зарядное устройство Hoco N72 TypeC 20W + кабель TypeC - Lightning (черный)",
+            subject="зарядка",
+        ),
+        Product(
+            article="075516",
+            name="Автомобильное зарядное устройство Baseus Tiny Star  USB + TypeC 30W (черный)",
+            subject="зарядка",
+        ),
+        Product(
+            article="075518",
+            name="Автомобильное зарядное устройство Baseus Circular USB + TypeC 30W (черный)",
+            subject="зарядка",
+        ),
+    ]
+    db_session.add_all(products)
+    db_session.commit()
+
+    results = {
+        product.article: generate_sku_for_product(db_session, product) for product in products
+    }
+
+    assert results["039550"].planned_sku == "OEM-CBL-USBA-LTN-1M-WHT-FCH-OR1"
+    assert results["061730"].planned_sku == "OEM-CBL-USBC-LTN-1-2M-RCC061-20W"
+    assert results["068309"].planned_sku == "OEM-CHR-45W-2USBC-CTC-PR"
+    assert results["066370"].planned_sku == "OEM-CHR-5000MAH-MGS-RPP107"
+    assert results["075473"].planned_sku == "OEM-CBL-USBA-USBC-1M-BLK-CAF"
+    assert results["075481"].planned_sku == "OEM-CBL-USBA-USBC-1M-BLK-NBR"
+    assert results["079641"].planned_sku == "OEM-CHR-20W-USBC-N72-BLK-CLTN"
+    assert results["075516"].planned_sku == "OEM-CHR-30W-USBC-TSTAR-BLK"
+    assert results["075518"].planned_sku == "OEM-CHR-30W-USBC-CIRC-BLK"
+
+
 def test_generate_sku_marks_manual_review_when_missing_fields(db_session) -> None:
     product = Product(
         article="1005", name="Шлейф без модели", category="Шлейфы", manufacturer="F5ENERGY"
@@ -2270,6 +5035,63 @@ def test_generate_sku_batch_dry_run_and_write(db_session) -> None:
     )
     assert active_plan.planned_sku == "F5-DSP-IPH12-OLD-BLK-CPH"
     assert active_plan.status == "generated"
+
+
+def test_generate_sku_batch_skips_inactive_and_deleted_by_default(db_session) -> None:
+    products = [
+        Product(
+            article="1008-active",
+            name="Дисплей для Apple iPhone 12",
+            brand="Apple",
+            manufacturer="F5ENERGY",
+            category="Дисплеи",
+            display_type="OLED",
+            display_quality="Copy High",
+            color="Black",
+        ),
+        Product(
+            article="1008-inactive",
+            name="Дисплей для Apple iPhone 12",
+            brand="Apple",
+            manufacturer="F5ENERGY",
+            category="Дисплеи",
+            display_type="OLED",
+            display_quality="Copy High",
+            color="Black",
+            is_active=False,
+        ),
+        Product(
+            article="1008-deleted",
+            name="Дисплей для Apple iPhone 12",
+            brand="Apple",
+            manufacturer="F5ENERGY",
+            category="Дисплеи",
+            display_type="OLED",
+            display_quality="Copy High",
+            color="Black",
+            is_marked_for_deletion=True,
+        ),
+    ]
+    phone_model = PhoneModel(brand="apple", model_name="iphone 12", variant=None)
+    db_session.add_all([*products, phone_model])
+    db_session.flush()
+    for product in products:
+        db_session.add(
+            ProductPhoneModel(product_id=product.id, phone_model_id=phone_model.id, source="onec")
+        )
+    db_session.commit()
+
+    default_result = generate_sku_batch(db_session, dry_run=True)
+    assert default_result["generated"] == 1
+    assert [item["article"] for item in default_result["items"]] == ["1008-active"]
+
+    all_result = generate_sku_batch(db_session, dry_run=True, active_only=False)
+    assert all_result["generated"] == 3
+    assert {item["article"] for item in all_result["items"]} == {
+        "1008-active",
+        "1008-inactive",
+        "1008-deleted",
+    }
 
 
 def test_apply_sku_generation_result_updates_product(db_session) -> None:

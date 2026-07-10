@@ -30,6 +30,7 @@ from scripts.ensure_procurement_bitrix_process import (  # noqa: E402
     load_env,
 )
 from scripts.import_onec_supplier_order_to_procurement import (  # noqa: E402
+    DEFAULT_CARGO_FINANCE_USER_ID,
     BitrixRestApi,
     crm_item_rest_field_name,
     field_name,
@@ -51,12 +52,12 @@ OPEN_BALANCE_PERIOD = "3999-11-01T00:00:00"
 DEFAULT_CONTOUR_KEYS = ("cargo", "ved_import")
 CONTOUR_BY_ENUM_ORDER = {
     0: "Обычный",
-    1: "Cargo",
+    1: "Карго",
     2: "ВЭДИмпорт",
 }
 CONTOUR_TITLE_PREFIX = {
     "ordinary": "Закупка",
-    "cargo": "Cargo",
+    "cargo": "Карго",
     "ved_import": "ВЭД импорт",
 }
 READ_ONLY_BITRIX_METHODS = {
@@ -94,6 +95,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--input-json", type=Path, default=DEFAULT_INPUT_PATH)
     parser.add_argument("--result-path", type=Path, default=DEFAULT_RESULT_PATH)
     parser.add_argument("--assigned-by-id", default="")
+    parser.add_argument(
+        "--finance-user-id",
+        default="",
+        help="Bitrix user id for cargo payment task; defaults to env or Karina Avakyan 130746.",
+    )
     parser.add_argument("--limit", type=int, default=300)
     parser.add_argument("--date-from", help="Filter 1C order date from YYYY-MM-DD.")
     parser.add_argument("--date-to", help="Filter 1C order date through YYYY-MM-DD.")
@@ -101,6 +107,11 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--contours",
         default=",".join(DEFAULT_CONTOUR_KEYS),
         help="Comma-separated procurement contours to sync: cargo, ved_import, ordinary.",
+    )
+    parser.add_argument(
+        "--blank-contour-cargo-dropoff-only",
+        action="store_true",
+        help="Only sync open orders with empty КонтурЗакупки and filled Сдача в карго.",
     )
     parser.add_argument("--skip-bitrix", action="store_true", help="Only export 1C input JSON.")
     parser.add_argument("--apply", action="store_true", help="Write Bitrix changes.")
@@ -185,10 +196,12 @@ def order_from_open_supplier_order_row(
 ) -> dict[str, Any] | None:
     contour = contour_value(row)
     currency = clean(row.get("currency_name"))
+    cargo_dropoff_date = normalize_onec_date(row.get("cargo_dropoff_date"))
     logical_key = normalize_procurement_contour(
         contour,
         is_open_supplier_order=True,
         currency=currency,
+        has_cargo_dropoff=bool(cargo_dropoff_date),
     )
     if logical_key not in allowed_contours:
         return None
@@ -212,7 +225,7 @@ def order_from_open_supplier_order_row(
         "amount": row.get("open_amount"),
         "planned_warehouse": clean(row.get("store_name")),
         "supplier_dispatch_date": normalize_onec_date(row.get("supplier_dispatch_date")),
-        "cargo_dropoff_date": normalize_onec_date(row.get("cargo_dropoff_date")),
+        "cargo_dropoff_date": cargo_dropoff_date,
         "expected_receipt_date": normalize_onec_date(row.get("expected_receipt_date")),
         "payment_date": normalize_onec_date(row.get("payment_date")),
         "open_qty": row.get("open_qty"),
@@ -234,6 +247,7 @@ def fetch_open_supplier_orders(
     date_from: str,
     date_to: str,
     contours: set[str],
+    blank_contour_cargo_dropoff_only: bool = False,
 ) -> list[dict[str, Any]]:
     limit = max(1, min(limit, 5000))
     filters = [
@@ -247,9 +261,12 @@ def fetch_open_supplier_orders(
     if date_to:
         filters.append("doc._Date_Time < :date_to")
         params["date_to"] = datetime.fromisoformat(date_to)
+    if blank_contour_cargo_dropoff_only:
+        filters.append("contour._EnumOrder IS NULL")
+        filters.append("doc._Fld8852 > :empty_onec_date")
+        params["empty_onec_date"] = datetime.combine(ONEC_EMPTY_DATE, datetime.min.time())
     where_sql = " AND ".join(f"({part})" for part in filters)
-    sql = text(
-        f"""
+    sql = text(f"""
         WITH open_balance AS (
             SELECT
                 bal._Fld7149RRef AS order_ref,
@@ -300,8 +317,7 @@ def fetch_open_supplier_orders(
             ON contour._IDRRef = doc._Fld10092RRef
         WHERE {where_sql}
         ORDER BY doc._Date_Time DESC
-        """
-    )
+        """)
     params["balance_period"] = datetime.fromisoformat(OPEN_BALANCE_PERIOD)
     engine = create_engine(onec_database_url, pool_pre_ping=True)
     with engine.connect() as conn:
@@ -415,11 +431,13 @@ def run_bitrix_import(
     mapping: dict[str, Any],
     apply: bool,
     assigned_by_id: str,
+    finance_user_id: str,
 ) -> list[dict[str, Any]]:
     base_api = BitrixRestApi(webhook_base)
     api = base_api if apply else CachedBitrixApi(base_api)
     existing_items = list_existing_procurement_items(api, mapping)
     supplier_results: dict[str, dict[str, Any]] = {}
+    used_batch_ids: set[str] = set()
     rows: list[dict[str, Any]] = []
     for order in orders:
         try:
@@ -443,8 +461,10 @@ def run_bitrix_import(
                 mapping=mapping,
                 apply=apply,
                 assigned_by_id=assigned_by_id,
+                finance_user_id=finance_user_id,
                 supplier_result=supplier_result,
                 existing_item_id=existing_id,
+                used_batch_ids=used_batch_ids,
             )
             if not apply:
                 row["existing_item_id"] = existing_id
@@ -470,7 +490,9 @@ def summarize(orders: list[dict[str, Any]], result_rows: list[dict[str, Any]]) -
         "contours": dict(Counter(clean(order.get("procurement_contour_key")) for order in orders)),
         "stages": dict(Counter(clean(order.get("procurement_stage_key")) for order in orders)),
         "currencies": dict(Counter(clean(order.get("currency")) for order in orders)),
-        "bitrix_actions": dict(Counter(clean(row.get("would_action") or row.get("action")) for row in result_rows)),
+        "bitrix_actions": dict(
+            Counter(clean(row.get("would_action") or row.get("action")) for row in result_rows)
+        ),
         "blocked": sum(1 for row in result_rows if clean(row.get("action")) == "blocked"),
     }
 
@@ -488,8 +510,13 @@ def main(argv: list[str] | None = None) -> int:
         date_from=clean(args.date_from),
         date_to=clean(args.date_to),
         contours=contours,
+        blank_contour_cargo_dropoff_only=bool(args.blank_contour_cargo_dropoff_only),
     )
-    input_payload = {"contours": sorted(contours), "orders": orders}
+    input_payload = {
+        "contours": sorted(contours),
+        "blank_contour_cargo_dropoff_only": bool(args.blank_contour_cargo_dropoff_only),
+        "orders": orders,
+    }
     write_json(args.input_json, input_payload)
 
     result_rows: list[dict[str, Any]] = []
@@ -502,18 +529,26 @@ def main(argv: list[str] | None = None) -> int:
                 f"or BITRIX_BOX_WEBHOOK_BASE in {args.env_file}"
             )
         mapping = load_mapping(args.mapping_path)
+        finance_user_id = (
+            clean(args.finance_user_id)
+            or clean(env.get("PROCUREMENT_CARGO_FINANCE_USER_ID"))
+            or clean(env.get("PROCUREMENT_FINANCE_USER_ID"))
+            or DEFAULT_CARGO_FINANCE_USER_ID
+        )
         result_rows = run_bitrix_import(
             orders,
             webhook_base=webhook_base,
             mapping=mapping,
             apply=bool(args.apply),
             assigned_by_id=clean(args.assigned_by_id),
+            finance_user_id=finance_user_id,
         )
         mode = "apply" if args.apply else "dry-run"
 
     result = {
         "mode": mode,
         "contours": sorted(contours),
+        "blank_contour_cargo_dropoff_only": bool(args.blank_contour_cargo_dropoff_only),
         "input_json": str(args.input_json),
         "rows": result_rows,
         "summary": summarize(orders, result_rows),

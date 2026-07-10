@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from collections.abc import Generator
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -65,6 +66,46 @@ def _bitrix_settings() -> Settings:
         matching_bitrix_session_secret="test-matching-session-secret",
         matching_bitrix_session_ttl_seconds=3600,
     )
+
+
+def test_bitrix_matching_page_inlines_built_assets(
+    matching_client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    assets_dir = tmp_path / "assets"
+    assets_dir.mkdir()
+    (assets_dir / "index-test.js").write_text(
+        'console.log("matching loaded");',
+        encoding="utf-8",
+    )
+    (assets_dir / "index-test.css").write_text(
+        ".matching-root{display:block}",
+        encoding="utf-8",
+    )
+    index_path = tmp_path / "index.html"
+    index_path.write_text(
+        "\n".join(
+            [
+                "<!doctype html>",
+                "<html><head>",
+                '<script type="module" crossorigin src="./assets/index-test.js"></script>',
+                '<link rel="stylesheet" crossorigin href="./assets/index-test.css">',
+                '</head><body><div id="root"></div></body></html>',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(bitrix_matching_api, "_INDEX_PATHS", (index_path,))
+
+    response = matching_client.get("/bitrix/matching/")
+
+    assert response.status_code == 200
+    assert 'src="./assets/' not in response.text
+    assert 'href="./assets/' not in response.text
+    assert '<script type="module">console.log("matching loaded");</script>' in response.text
+    assert "<style>.matching-root{display:block}</style>" in response.text
+    assert "window.__MM_BITRIX_LAUNCH__" in response.text
 
 
 class _FakeBitrixResponse:

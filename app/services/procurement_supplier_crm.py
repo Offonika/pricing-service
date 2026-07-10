@@ -760,10 +760,16 @@ def sync_supplier_to_crm(
 
 
 def normalize_procurement_contour(
-    value: Any, *, is_open_supplier_order: bool = False, currency: Any = None
+    value: Any,
+    *,
+    is_open_supplier_order: bool = False,
+    currency: Any = None,
+    has_cargo_dropoff: bool = False,
 ) -> str:
     raw_value = clean_string(value)
     if not raw_value:
+        if has_cargo_dropoff:
+            return "cargo"
         if is_foreign_currency(currency):
             return "cargo"
         if is_ruble_currency(currency):
@@ -799,29 +805,37 @@ def order_has_value(onec_order: dict[str, Any], *keys: str) -> bool:
     return any(clean_string(onec_order.get(key)) for key in keys)
 
 
-def procurement_stage_key(logical_key: str, onec_order: dict[str, Any]) -> str:
-    explicit = clean_string(
-        onec_order.get("procurement_stage_key") or onec_order.get("stage_key")
+def order_is_posted(onec_order: dict[str, Any]) -> bool:
+    return truthy_order_value(onec_order.get("posted")) or truthy_order_value(
+        onec_order.get("is_posted")
     )
+
+
+def procurement_stage_key(logical_key: str, onec_order: dict[str, Any]) -> str:
+    explicit = clean_string(onec_order.get("procurement_stage_key") or onec_order.get("stage_key"))
     if explicit:
-        return explicit
+        return "supplier_order" if explicit == "need" else explicit
     if logical_key == "ved_import":
         if order_has_value(onec_order, "expected_receipt_date", "Поступление"):
             return "receiving"
-        if truthy_order_value(onec_order.get("posted") or onec_order.get("is_posted")):
-            return "docs_collection"
-        return "need"
+        return "supplier_order"
     if logical_key != "cargo":
-        return "need"
+        return "supplier_order"
+    if order_has_value(onec_order, "payment_task_id") or clean_string(
+        onec_order.get("payment_task_status")
+    ).casefold() in {"created", "done"}:
+        return "payment_work"
+    if order_has_value(onec_order, "payment_date", "Оплата"):
+        return "payment_work"
     if order_has_value(onec_order, "cargo_dropoff_date", "Сдача в карго"):
         return "cargo_dropoff"
     if order_has_value(onec_order, "supplier_dispatch_date", "Отправка постав."):
-        return "supplier_dispatch"
-    if order_has_value(onec_order, "payment_date", "Оплата"):
-        return "payment_request"
-    if truthy_order_value(onec_order.get("posted") or onec_order.get("is_posted")):
+        # In 1C "Отправка постав." means the supplier order was sent for
+        # price/availability discussion; it belongs to the supplier-order block.
         return "supplier_order"
-    return "need"
+    if order_is_posted(onec_order):
+        return "supplier_order"
+    return "supplier_order"
 
 
 def build_procurement_order_bitrix_fields(
@@ -835,13 +849,14 @@ def build_procurement_order_bitrix_fields(
         onec_order.get("procurement_contour") or onec_order.get("КонтурЗакупки"),
         is_open_supplier_order=bool(onec_order.get("is_open_supplier_order")),
         currency=onec_order.get("currency") or onec_order.get("Валюта"),
+        has_cargo_dropoff=order_has_value(onec_order, "cargo_dropoff_date", "Сдача в карго"),
     )
     category = (mapping.get("category_map") or {}).get(logical_key) or {}
     stage_map = (mapping.get("stage_map") or {}).get(logical_key) or {}
     enum_map = (mapping.get("enum_map") or {}).get("procurement_contour") or {}
     category_id = category.get("id")
     stage_key = procurement_stage_key(logical_key, onec_order)
-    stage_id = stage_map.get(stage_key) or stage_map.get("need") or next(iter(stage_map.values()), "")
+    stage_id = stage_map.get(stage_key)
     contour_field = procurement_field(mapping, "procurement_contour")
     contour_enum_id = enum_map.get(logical_key)
     missing = [

@@ -15,6 +15,13 @@ STATUS_CHANGED_AT_PROPERTY_NAME = "Дата изменения статуса а
 STATUS_SOURCE_PROPERTY_NAME = "Источник статуса ассортимента"
 STATUS_APPROVED_BY_PROPERTY_NAME = "Утвердил статус ассортимента"
 PROCUREMENT_PROFILE_PROPERTY_NAME = "Профиль закупочного поведения"
+COMMERCIAL_MARKS_PROPERTY_NAME = "Коммерческие признаки"
+EXCLUSIVE_KIND_PROPERTY_NAME = "Тип эксклюзивности"
+EXCLUSIVE_REASON_PROPERTY_NAME = "Причина эксклюзивности"
+EXCLUSIVE_CHECKED_AT_PROPERTY_NAME = "Дата проверки эксклюзивности"
+EXCLUSIVE_REVIEW_AT_PROPERTY_NAME = "Дата пересмотра эксклюзивности"
+EXCLUSIVE_APPROVED_BY_PROPERTY_NAME = "Утвердил эксклюзивность"
+EXCLUSIVE_EVIDENCE_PROPERTY_NAME = "Доказательства эксклюзивности"
 MANUAL_MIN_STOCK_PROPERTY_NAME = "Ручной минимальный остаток"
 AVAILABILITY_RULE_REVIEW_AT_PROPERTY_NAME = "Дата пересмотра правила наличия"
 
@@ -47,10 +54,17 @@ class ProcurementBehaviorProfile(StrEnum):
     SLOW_EXPENSIVE = "slow_expensive"
 
 
+class CommercialMark(StrEnum):
+    EXCLUSIVE = "exclusive"
+    OWN_BRAND = "own_brand"
+    RARE_MARKET_ITEM = "rare_market_item"
+    FLAGSHIP = "flagship"
+
+
 ASSORTMENT_STATUS_LABELS = {
     AssortmentStatus.FRUIT: "Плод",
     AssortmentStatus.NEWBORN: "Новорожденный",
-    AssortmentStatus.NEWBORN_NEED: "ПН / Потребность новорожденного",
+    AssortmentStatus.NEWBORN_NEED: "ДН / Добор новорожденного",
     AssortmentStatus.NEW_ITEM: "Новинка",
     AssortmentStatus.SALES_START: "СП / Старт продаж",
     AssortmentStatus.SALE: "ПРОДАЖА",
@@ -68,11 +82,28 @@ PROCUREMENT_PROFILE_LABELS = {
     ProcurementBehaviorProfile.SLOW_EXPENSIVE: "Дорогой медленный",
 }
 
+COMMERCIAL_MARK_LABELS = {
+    CommercialMark.EXCLUSIVE: "Эксклюзив",
+    CommercialMark.OWN_BRAND: "Собственная марка",
+    CommercialMark.RARE_MARKET_ITEM: "Редкий товар",
+    CommercialMark.FLAGSHIP: "Флагман",
+}
+
+EXCLUSIVE_KINDS = frozenset(
+    {
+        "only_in_country",
+        "only_among_competitors",
+        "own_import",
+        "supplier_agreement",
+        "own_brand",
+    }
+)
+
 MANUAL_ASSORTMENT_STATUSES = frozenset(
     {
-        AssortmentStatus.EXCLUSIVE,
         AssortmentStatus.MATRIX,
         AssortmentStatus.ON_DEMAND,
+        AssortmentStatus.REPLACE_CANDIDATE,
         AssortmentStatus.NONLIQUID,
         AssortmentStatus.DO_NOT_ORDER,
     }
@@ -88,6 +119,7 @@ class AssortmentLifecycleInput:
     receipt_dates: tuple[date, ...] = ()
     has_need_signal: bool = False
     working_confirmed_by_folder_responsible: bool = False
+    analog_winner_confirmed_by_folder_responsible: bool = False
     manual_status: AssortmentStatus | str | None = None
     manual_reason: str = ""
     manual_approved_by: str = ""
@@ -168,6 +200,38 @@ class ManagerNeedSignalDecision:
     issues: tuple[str, ...] = ()
 
 
+@dataclass(frozen=True)
+class CommercialMarksInput:
+    nomenclature_code: str
+    commercial_marks: tuple[CommercialMark | str, ...] = ()
+    exclusive_kind: str = ""
+    exclusive_confidence: str = ""
+    exclusive_checked_at: date | None = None
+    exclusive_review_at: date | None = None
+    exclusive_review_period_days: int = DEFAULT_EXCLUSIVE_REVIEW_PERIOD_DAYS
+    exclusive_reason: str = ""
+    exclusive_approved_by: str = ""
+    exclusive_evidence_refs: tuple[str, ...] = ()
+    exclusive_min_stock_qty: Decimal | int | str | None = None
+
+
+@dataclass(frozen=True)
+class CommercialMarksDecision:
+    nomenclature_code: str
+    commercial_marks: tuple[CommercialMark, ...]
+    commercial_mark_labels: tuple[str, ...]
+    blockers: tuple[str, ...] = ()
+    manual_review_required: bool = False
+    exclusive_kind: str = ""
+    exclusive_confidence: str = ""
+    exclusive_checked_at: date | None = None
+    exclusive_review_at: date | None = None
+    exclusive_reason: str = ""
+    exclusive_approved_by: str = ""
+    exclusive_evidence_refs: tuple[str, ...] = ()
+    exclusive_min_stock_qty: Decimal | None = None
+
+
 def decide_assortment_status(item: AssortmentLifecycleInput) -> AssortmentLifecycleDecision:
     """Return the v1 assortment lifecycle status from immutable product events."""
 
@@ -175,6 +239,21 @@ def decide_assortment_status(item: AssortmentLifecycleInput) -> AssortmentLifecy
     manual_status = _normalize_status(item.manual_status)
     if manual_status is not None:
         return _manual_status_decision(item, manual_status)
+
+    if item.analog_winner_confirmed_by_folder_responsible:
+        reason = (
+            item.manual_reason.strip()
+            or "Лучший аналог группы подтвержден ответственным за папку как рабочий товар."
+        )
+        return _decision(
+            item,
+            AssortmentStatus.WORKING,
+            "analog_winner_confirmed",
+            reason_text=reason,
+            auto_order_allowed=True,
+            changed_at=item.manual_changed_at,
+            approved_by=item.manual_approved_by.strip(),
+        )
 
     cargo_dates = tuple(sorted(item.supplier_order_cargo_handoff_dates))
     receipt_dates = tuple(sorted(item.receipt_dates))
@@ -194,6 +273,8 @@ def decide_assortment_status(item: AssortmentLifecycleInput) -> AssortmentLifecy
                     f"{len(working_receipts)} поступлений, ответственный за папку подтвердил Рабочий."
                 ),
                 auto_order_allowed=True,
+                changed_at=item.manual_changed_at,
+                approved_by=item.manual_approved_by.strip(),
             )
         if reached_working:
             fallback_status = _post_cargo_status(second_cargo_at, receipt_dates)
@@ -352,6 +433,69 @@ def validate_manager_need_signal(
     )
 
 
+def decide_commercial_marks(item: CommercialMarksInput) -> CommercialMarksDecision:
+    """Return commercial marks that work next to, not instead of, lifecycle status."""
+
+    _require_nomenclature_code(item.nomenclature_code)
+    marks = _normalize_commercial_marks(item.commercial_marks)
+    labels = tuple(COMMERCIAL_MARK_LABELS[mark] for mark in marks)
+    blockers: list[str] = []
+
+    exclusive_kind = item.exclusive_kind.strip()
+    exclusive_confidence = item.exclusive_confidence.strip()
+    exclusive_reason = item.exclusive_reason.strip()
+    exclusive_approved_by = item.exclusive_approved_by.strip()
+    exclusive_evidence_refs = tuple(
+        ref.strip() for ref in item.exclusive_evidence_refs if ref.strip()
+    )
+    exclusive_min_stock_qty: Decimal | None = None
+    exclusive_review_at = item.exclusive_review_at
+
+    if CommercialMark.EXCLUSIVE in marks:
+        if not exclusive_kind:
+            blockers.append("exclusive_kind_required")
+        elif exclusive_kind not in EXCLUSIVE_KINDS:
+            blockers.append("exclusive_kind_unsupported")
+        if item.exclusive_checked_at is None:
+            blockers.append("exclusive_checked_at_required")
+        if not exclusive_reason:
+            blockers.append("exclusive_reason_required")
+        if not exclusive_approved_by:
+            blockers.append("exclusive_approved_by_required")
+        if not exclusive_evidence_refs:
+            blockers.append("exclusive_evidence_required")
+        if item.exclusive_review_period_days <= 0:
+            blockers.append("exclusive_review_period_must_be_positive")
+        if item.exclusive_min_stock_qty is None:
+            blockers.append("exclusive_min_stock_required")
+        else:
+            exclusive_min_stock_qty = _to_decimal(
+                item.exclusive_min_stock_qty, "exclusive_min_stock_qty"
+            )
+            if exclusive_min_stock_qty <= 0:
+                blockers.append("exclusive_min_stock_must_be_positive")
+        if exclusive_review_at is None and item.exclusive_checked_at is not None:
+            exclusive_review_at = item.exclusive_checked_at + timedelta(
+                days=item.exclusive_review_period_days
+            )
+
+    return CommercialMarksDecision(
+        nomenclature_code=item.nomenclature_code,
+        commercial_marks=marks,
+        commercial_mark_labels=labels,
+        blockers=tuple(blockers),
+        manual_review_required=bool(blockers),
+        exclusive_kind=exclusive_kind,
+        exclusive_confidence=exclusive_confidence,
+        exclusive_checked_at=item.exclusive_checked_at,
+        exclusive_review_at=exclusive_review_at,
+        exclusive_reason=exclusive_reason,
+        exclusive_approved_by=exclusive_approved_by,
+        exclusive_evidence_refs=exclusive_evidence_refs,
+        exclusive_min_stock_qty=exclusive_min_stock_qty,
+    )
+
+
 def build_status_property_update_rows(
     decision: AssortmentLifecycleDecision,
     *,
@@ -433,39 +577,137 @@ def build_status_property_update_rows(
                 approved_by=approved_by,
             )
         )
-    if decision.status == AssortmentStatus.EXCLUSIVE:
-        if decision.exclusive_min_stock_qty is not None:
-            rows.append(
-                NomenclaturePropertyUpdateRow(
-                    idempotency_key=_idempotency_key(
-                        decision.nomenclature_code,
-                        MANUAL_MIN_STOCK_PROPERTY_NAME,
-                        suffix,
-                    ),
-                    nomenclature_code=decision.nomenclature_code,
-                    property_name=MANUAL_MIN_STOCK_PROPERTY_NAME,
-                    value_type="number",
-                    new_value=decision.exclusive_min_stock_qty,
-                    reason=reason,
-                    approved_by=approved_by,
-                )
-            )
-        if decision.exclusive_review_at is not None:
-            rows.append(
-                NomenclaturePropertyUpdateRow(
-                    idempotency_key=_idempotency_key(
-                        decision.nomenclature_code,
-                        AVAILABILITY_RULE_REVIEW_AT_PROPERTY_NAME,
-                        suffix,
-                    ),
-                    nomenclature_code=decision.nomenclature_code,
-                    property_name=AVAILABILITY_RULE_REVIEW_AT_PROPERTY_NAME,
-                    value_type="date",
-                    new_value=decision.exclusive_review_at,
-                    reason=reason,
-                    approved_by=approved_by,
-                )
-            )
+    return tuple(rows)
+
+
+def build_commercial_mark_property_update_rows(
+    decision: CommercialMarksDecision,
+    *,
+    changed_at: date | None = None,
+) -> tuple[NomenclaturePropertyUpdateRow, ...]:
+    if not decision.commercial_marks:
+        return ()
+    if decision.blockers:
+        return ()
+    effective_date = changed_at or date.today()
+    mark_tags = ", ".join(mark.value for mark in decision.commercial_marks)
+    mark_labels = ", ".join(decision.commercial_mark_labels)
+    suffix = f"{effective_date.isoformat()}:{mark_tags}"
+    reason = decision.exclusive_reason or f"Коммерческие признаки: {mark_labels}"
+    approved_by = decision.exclusive_approved_by
+    rows = [
+        NomenclaturePropertyUpdateRow(
+            idempotency_key=_idempotency_key(
+                decision.nomenclature_code,
+                COMMERCIAL_MARKS_PROPERTY_NAME,
+                suffix,
+            ),
+            nomenclature_code=decision.nomenclature_code,
+            property_name=COMMERCIAL_MARKS_PROPERTY_NAME,
+            value_type="string",
+            new_value=mark_tags,
+            reason=reason,
+            approved_by=approved_by,
+        )
+    ]
+    if CommercialMark.EXCLUSIVE not in decision.commercial_marks:
+        return tuple(rows)
+
+    rows.extend(
+        [
+            NomenclaturePropertyUpdateRow(
+                idempotency_key=_idempotency_key(
+                    decision.nomenclature_code,
+                    EXCLUSIVE_KIND_PROPERTY_NAME,
+                    suffix,
+                ),
+                nomenclature_code=decision.nomenclature_code,
+                property_name=EXCLUSIVE_KIND_PROPERTY_NAME,
+                value_type="string",
+                new_value=decision.exclusive_kind,
+                reason=reason,
+                approved_by=approved_by,
+            ),
+            NomenclaturePropertyUpdateRow(
+                idempotency_key=_idempotency_key(
+                    decision.nomenclature_code,
+                    EXCLUSIVE_REASON_PROPERTY_NAME,
+                    suffix,
+                ),
+                nomenclature_code=decision.nomenclature_code,
+                property_name=EXCLUSIVE_REASON_PROPERTY_NAME,
+                value_type="string",
+                new_value=decision.exclusive_reason,
+                reason=reason,
+                approved_by=approved_by,
+            ),
+            NomenclaturePropertyUpdateRow(
+                idempotency_key=_idempotency_key(
+                    decision.nomenclature_code,
+                    EXCLUSIVE_CHECKED_AT_PROPERTY_NAME,
+                    suffix,
+                ),
+                nomenclature_code=decision.nomenclature_code,
+                property_name=EXCLUSIVE_CHECKED_AT_PROPERTY_NAME,
+                value_type="date",
+                new_value=decision.exclusive_checked_at,
+                reason=reason,
+                approved_by=approved_by,
+            ),
+            NomenclaturePropertyUpdateRow(
+                idempotency_key=_idempotency_key(
+                    decision.nomenclature_code,
+                    EXCLUSIVE_REVIEW_AT_PROPERTY_NAME,
+                    suffix,
+                ),
+                nomenclature_code=decision.nomenclature_code,
+                property_name=EXCLUSIVE_REVIEW_AT_PROPERTY_NAME,
+                value_type="date",
+                new_value=decision.exclusive_review_at,
+                reason=reason,
+                approved_by=approved_by,
+            ),
+            NomenclaturePropertyUpdateRow(
+                idempotency_key=_idempotency_key(
+                    decision.nomenclature_code,
+                    EXCLUSIVE_APPROVED_BY_PROPERTY_NAME,
+                    suffix,
+                ),
+                nomenclature_code=decision.nomenclature_code,
+                property_name=EXCLUSIVE_APPROVED_BY_PROPERTY_NAME,
+                value_type="string",
+                new_value=decision.exclusive_approved_by,
+                reason=reason,
+                approved_by=approved_by,
+            ),
+            NomenclaturePropertyUpdateRow(
+                idempotency_key=_idempotency_key(
+                    decision.nomenclature_code,
+                    EXCLUSIVE_EVIDENCE_PROPERTY_NAME,
+                    suffix,
+                ),
+                nomenclature_code=decision.nomenclature_code,
+                property_name=EXCLUSIVE_EVIDENCE_PROPERTY_NAME,
+                value_type="string",
+                new_value="; ".join(decision.exclusive_evidence_refs),
+                reason=reason,
+                approved_by=approved_by,
+            ),
+            NomenclaturePropertyUpdateRow(
+                idempotency_key=_idempotency_key(
+                    decision.nomenclature_code,
+                    MANUAL_MIN_STOCK_PROPERTY_NAME,
+                    suffix,
+                ),
+                nomenclature_code=decision.nomenclature_code,
+                property_name=MANUAL_MIN_STOCK_PROPERTY_NAME,
+                value_type="number",
+                new_value=decision.exclusive_min_stock_qty,
+                reason=reason,
+                approved_by=approved_by,
+            ),
+        ]
+    )
     return tuple(rows)
 
 
@@ -512,24 +754,6 @@ def _manual_status_decision(
     if item.manual_changed_at is None:
         blockers.append("manual_changed_at_required")
 
-    exclusive_min_stock_qty: Decimal | None = None
-    exclusive_review_at: date | None = None
-    if manual_status == AssortmentStatus.EXCLUSIVE:
-        if item.exclusive_review_period_days <= 0:
-            blockers.append("exclusive_review_period_must_be_positive")
-        if item.exclusive_min_stock_qty is None:
-            blockers.append("exclusive_min_stock_required")
-        else:
-            exclusive_min_stock_qty = _to_decimal(
-                item.exclusive_min_stock_qty, "exclusive_min_stock_qty"
-            )
-            if exclusive_min_stock_qty <= 0:
-                blockers.append("exclusive_min_stock_must_be_positive")
-        if item.manual_changed_at is not None and item.exclusive_review_period_days > 0:
-            exclusive_review_at = item.manual_changed_at + timedelta(
-                days=item.exclusive_review_period_days
-            )
-
     status_label = ASSORTMENT_STATUS_LABELS[manual_status]
     reason = item.manual_reason.strip() or f"Ручное решение: {status_label}."
     return AssortmentLifecycleDecision(
@@ -540,12 +764,17 @@ def _manual_status_decision(
         reason_text=reason,
         requires_human_approval=True,
         manual_review_required=bool(blockers),
-        auto_order_allowed=not blockers and manual_status not in {AssortmentStatus.DO_NOT_ORDER},
+        auto_order_allowed=not blockers
+        and manual_status
+        not in {
+            AssortmentStatus.ON_DEMAND,
+            AssortmentStatus.REPLACE_CANDIDATE,
+            AssortmentStatus.NONLIQUID,
+            AssortmentStatus.DO_NOT_ORDER,
+        },
         blockers=tuple(blockers),
         changed_at=item.manual_changed_at,
         approved_by=item.manual_approved_by.strip(),
-        exclusive_review_at=exclusive_review_at,
-        exclusive_min_stock_qty=exclusive_min_stock_qty,
     )
 
 
@@ -598,6 +827,8 @@ def _decision(
     manual_review_required: bool = False,
     auto_order_allowed: bool = False,
     blockers: tuple[str, ...] = (),
+    changed_at: date | None = None,
+    approved_by: str = "",
 ) -> AssortmentLifecycleDecision:
     return AssortmentLifecycleDecision(
         nomenclature_code=item.nomenclature_code,
@@ -610,6 +841,8 @@ def _decision(
         manual_review_required=manual_review_required,
         auto_order_allowed=auto_order_allowed,
         blockers=blockers,
+        changed_at=changed_at,
+        approved_by=approved_by,
     )
 
 
@@ -622,6 +855,21 @@ def _normalize_status(value: AssortmentStatus | str | None) -> AssortmentStatus 
         return AssortmentStatus(str(value))
     except ValueError as error:
         raise ValueError(f"unknown assortment status: {value}") from error
+
+
+def _normalize_commercial_marks(
+    values: Iterable[CommercialMark | str],
+) -> tuple[CommercialMark, ...]:
+    marks: list[CommercialMark] = []
+    seen: set[CommercialMark] = set()
+    for value in values:
+        if value is None or value == "":
+            continue
+        mark = value if isinstance(value, CommercialMark) else CommercialMark(str(value).strip())
+        if mark not in seen:
+            marks.append(mark)
+            seen.add(mark)
+    return tuple(marks)
 
 
 def _normalize_profile(

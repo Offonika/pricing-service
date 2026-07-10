@@ -20,15 +20,40 @@ class ReceivableWorkplaceStaffOption(BaseModel):
     department_name: str | None = None
 
 
+class ReceivableWorkplaceDepartmentOption(BaseModel):
+    department_ref: str
+    department_name: str
+
+
+class ReceivableWorkplaceCacheComponent(BaseModel):
+    source_status: str
+    cached_count: int = 0
+    computed_at: datetime | None = None
+
+
+class ReceivableWorkplaceMetaResponse(BaseModel):
+    latest_snapshot_date: date | None = None
+    department_options: list[ReceivableWorkplaceDepartmentOption] = Field(default_factory=list)
+    cache_status: dict[str, ReceivableWorkplaceCacheComponent] = Field(default_factory=dict)
+
+
 class ReceivableWorkplaceDocument(BaseModel):
     document_ref: str | None = None
     document_number: str | None = None
     document_date: datetime | None = None
     amount: Decimal
+    gross_amount: Decimal | None = None
+    open_amount: Decimal | None = None
+    closing_amount: Decimal | None = None
+    return_amount: Decimal | None = None
     manager_name: str | None = None
     due_date: datetime | None = None
     overdue_days: int | None = None
     is_overdue: bool = False
+    selection_rule: str | None = None
+    statement_balance_after: Decimal | None = None
+    match_details: list[dict[str, Any]] = Field(default_factory=list)
+    document_structure_status: str | None = None
 
 
 class ReceivableWorkplaceItem(BaseModel):
@@ -37,6 +62,7 @@ class ReceivableWorkplaceItem(BaseModel):
     counterparty_ref: str
     counterparty_code: str | None = None
     counterparty_name: str | None = None
+    bitrix_detail_url: str | None = None
     department_ref: str | None = None
     department_name: str | None = None
     responsible_ref: str | None = None
@@ -57,6 +83,7 @@ class ReceivableWorkplaceItem(BaseModel):
     status: str
     next_action_date: datetime | None = None
     payment_postponed: bool = False
+    payment_postponed_count: int = 0
     comment: str | None = None
     needs_call_today: bool
     no_phone_marker: bool
@@ -82,15 +109,22 @@ class ReceivableWorkplaceResponse(BaseModel):
     freshness_status: str
     source_status: str
     summary: ReceivableWorkplaceSummary
+    total_count: int
+    visible_count: int
+    summary_scope: str = "filtered_total"
+    department_options: list[ReceivableWorkplaceDepartmentOption] = Field(default_factory=list)
+    cache_status: dict[str, ReceivableWorkplaceCacheComponent] = Field(default_factory=dict)
     status_options: list[ReceivableWorkplaceStatusOption]
     payload: list[ReceivableWorkplaceItem]
 
 
 class ReceivableWorkplaceActionRequest(BaseModel):
+    action_id: str | None = None
     status: str | None = None
     contacted_staff_ref: str | None = None
     contacted_staff_name: str | None = None
     promised_payment_date: date | None = None
+    last_contact_at: date | None = None
     next_action_date: date | None = None
     payment_postponed: bool | None = None
     comment: str | None = None
@@ -99,3 +133,4 @@ class ReceivableWorkplaceActionRequest(BaseModel):
 class ReceivableWorkplaceActionResponse(BaseModel):
     item: ReceivableWorkplaceItem
     event: dict[str, Any]
+    cache_status: dict[str, ReceivableWorkplaceCacheComponent] = Field(default_factory=dict)

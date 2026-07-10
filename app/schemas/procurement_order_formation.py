@@ -1,0 +1,425 @@
+from __future__ import annotations
+
+from datetime import date, datetime
+from decimal import Decimal
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class ProcurementOrderFormationSessionRequest(BaseModel):
+    access_token: str = Field(min_length=1)
+    domain: str = Field(min_length=1)
+    member_id: str = Field(min_length=1)
+
+
+class ProcurementOrderFormationUser(BaseModel):
+    user_id: str
+    name: str | None = None
+
+
+class ProcurementOrderFormationSessionResponse(BaseModel):
+    session_token: str
+    token_type: str = "bearer"
+    expires_at: datetime
+    expires_in: int
+    user: ProcurementOrderFormationUser
+
+
+class ProcurementClassificationProposalRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    status: str
+    previous_status: str | None = None
+    proposed_status: str
+    proposed_status_label: str
+    reason: str
+    manual_minimum: Decimal | None = None
+    review_date: date | None = None
+    blocks_order_line: bool
+    requested_at: datetime
+    requested_by_bitrix_user_id: str
+    requested_by_name: str | None = None
+    approved_at: datetime | None = None
+    approved_by_bitrix_user_id: str | None = None
+    approved_by_name: str | None = None
+    onec_status: str
+    onec_message_id: str | None = None
+    onec_error: str | None = None
+    bitrix_readback_value: str | None = None
+    reflected_at: datetime | None = None
+
+
+class ProcurementOrderFormationLineRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    line_number: int
+    version: int
+    bitrix_product_id: str | None = None
+    bitrix_product_xml_id: str
+    nomenclature_ref: str
+    nomenclature_code: str | None = None
+    nomenclature_name: str
+    recommended_quantity: Decimal
+    final_quantity: Decimal
+    purchase_price: Decimal
+    amount: Decimal
+    currency: str
+    source_kind: str
+    explicit_demand: bool
+    risk_level: str | None = None
+    risk_codes: list[str] = Field(default_factory=list)
+    recommendation_reason: str | None = None
+    blockers: list[str] = Field(default_factory=list)
+    assortment_status: str | None = None
+    lifecycle_status: str | None = None
+    quality: str | None = None
+    procurement_profile: str | None = None
+    manual_minimum: Decimal | None = None
+    removed: bool
+    effective_assortment_status: str | None = None
+    effective_assortment_status_label: str | None = None
+    latest_classification: ProcurementClassificationProposalRead | None = None
+
+
+class ProcurementOrderFormationRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    stable_key: str
+    status: str
+    version: int
+    bitrix_entity_type_id: int | None = None
+    bitrix_item_id: str | None = None
+    bitrix_category_id: int | None = None
+    bitrix_stage_id: str | None = None
+    bitrix_item_url: str | None = None
+    supplier_ref: str | None = None
+    supplier_code: str | None = None
+    supplier_name: str
+    contract_ref: str | None = None
+    contract_code: str | None = None
+    contract_name: str
+    warehouse_ref: str | None = None
+    warehouse_code: str | None = None
+    warehouse_name: str
+    currency: str
+    procurement_contour: str
+    route: str
+    batch_id: str
+    order_date: date
+    responsible_bitrix_user_id: str | None = None
+    responsible_name: str | None = None
+    calculation_id: str
+    source_run_id: str | None = None
+    approved_version: int | None = None
+    approved_at: datetime | None = None
+    approved_by_bitrix_user_id: str | None = None
+    approved_by_name: str | None = None
+    onec_status: str
+    onec_message_id: str | None = None
+    onec_document_ref: str | None = None
+    onec_document_number: str | None = None
+    onec_document_date: date | None = None
+    onec_error: str | None = None
+    blockers: list[str] = Field(default_factory=list)
+    total_amount: Decimal = Decimal("0")
+    lines: list[ProcurementOrderFormationLineRead] = Field(default_factory=list)
+    manual_status_options: dict[str, str] = Field(default_factory=dict)
+
+
+class ProcurementOrderLineUpdateRequest(BaseModel):
+    expected_order_version: int = Field(ge=1)
+    expected_line_version: int = Field(ge=1)
+    final_quantity: Decimal | None = Field(default=None, ge=0)
+    purchase_price: Decimal | None = Field(default=None, ge=0)
+    removed: bool | None = None
+    explicit_demand: bool | None = None
+
+    @model_validator(mode="after")
+    def ensure_update_present(self) -> ProcurementOrderLineUpdateRequest:
+        if all(
+            value is None
+            for value in (
+                self.final_quantity,
+                self.purchase_price,
+                self.removed,
+                self.explicit_demand,
+            )
+        ):
+            raise ValueError("at least one line field must be provided")
+        return self
+
+
+class ProcurementOrderConditionsUpdateRequest(BaseModel):
+    expected_order_version: int = Field(ge=1)
+    supplier_ref: str | None = None
+    supplier_code: str | None = None
+    supplier_name: str | None = None
+    contract_ref: str | None = None
+    contract_code: str | None = None
+    contract_name: str | None = None
+    warehouse_ref: str | None = None
+    warehouse_code: str | None = None
+    warehouse_name: str | None = None
+    currency: str | None = None
+    procurement_contour: str | None = None
+    route: str | None = None
+    batch_id: str | None = None
+    order_date: date | None = None
+    responsible_bitrix_user_id: str | None = None
+    responsible_name: str | None = None
+
+
+class ProcurementClassificationCreateRequest(BaseModel):
+    expected_order_version: int = Field(ge=1)
+    expected_line_version: int = Field(ge=1)
+    proposed_status: str
+    reason: str = Field(min_length=1, max_length=4000)
+    manual_minimum: Decimal | None = Field(default=None, ge=0)
+    review_date: date | None = None
+
+
+class ProcurementOrderTransmissionResponse(BaseModel):
+    order: ProcurementOrderFormationRead
+    mode: str
+    message_id: str
+    xml_preview: str
+    written_path: str | None = None
+
+
+class ProcurementClassificationApprovalResponse(BaseModel):
+    order: ProcurementOrderFormationRead
+    proposal: ProcurementClassificationProposalRead
+    mode: str
+    message_id: str
+    xml_preview: str
+    written_path: str | None = None
+
+
+class ProcurementDashboardCard(BaseModel):
+    status: str
+    label: str
+    total_count: int = 0
+    action_count: int = 0
+    action_kind: str
+    action_label: str
+    target_status: str | None = None
+    review_count: int = 0
+    overdue_count: int = 0
+    urgency: str = "neutral"
+
+
+class ProcurementDashboardAttentionItem(BaseModel):
+    nomenclature_code: str
+    product_name: str
+    current_status: str
+    current_status_label: str
+    reason: str
+    recommendation: str
+    deadline_label: str
+    urgency: str
+
+
+class ProcurementDashboardResponse(BaseModel):
+    folder: str
+    responsible_user_id: str
+    responsible_name: str
+    run_id: int | None = None
+    run_key: str | None = None
+    updated_at: datetime | None = None
+    cards: list[ProcurementDashboardCard] = Field(default_factory=list)
+    manual_status_counts: dict[str, int] = Field(default_factory=dict)
+    attention: list[ProcurementDashboardAttentionItem] = Field(default_factory=list)
+
+
+class ProcurementLifecycleTransitionRead(BaseModel):
+    proposal_id: int | None = None
+    nomenclature_code: str
+    nomenclature_ref: str | None = None
+    product_guid: str | None = None
+    product_name: str
+    folder: str
+    action_kind: str
+    current_status: str
+    current_status_label: str
+    target_status: str | None = None
+    target_status_label: str | None = None
+    proposal_status: str
+    reason: str
+    facts: dict[str, Any] = Field(default_factory=dict)
+    blockers: list[str] = Field(default_factory=list)
+    risk_codes: list[str] = Field(default_factory=list)
+    run_id: int
+    run_key: str
+    facts_hash: str
+    responsible_bitrix_user_id: str | None = None
+    responsible_name: str | None = None
+    ready: bool = False
+    selectable: bool = False
+    stale: bool = False
+    created_at: datetime | None = None
+
+
+class ProcurementLifecycleTransitionList(BaseModel):
+    status: str
+    scope: str
+    total: int
+    page: int
+    page_size: int
+    ready_count: int
+    blocked_count: int
+    stale_count: int
+    items: list[ProcurementLifecycleTransitionRead] = Field(default_factory=list)
+
+
+class ProcurementLifecycleTransitionApprovalItem(BaseModel):
+    proposal_id: int
+    expected_run_id: int
+    expected_current_status: str
+    facts_hash: str = Field(min_length=64, max_length=64)
+
+
+class ProcurementLifecycleTransitionApprovalRequest(BaseModel):
+    idempotency_key: str = Field(min_length=8, max_length=255)
+    items: list[ProcurementLifecycleTransitionApprovalItem] = Field(
+        min_length=1,
+        max_length=100,
+    )
+
+
+class ProcurementLifecycleTransitionApprovalResult(BaseModel):
+    proposal_id: int
+    result: str
+    message: str = ""
+
+
+class ProcurementLifecycleTransitionApprovalSummary(BaseModel):
+    approved: int = 0
+    stale: int = 0
+    blocked: int = 0
+    conflict: int = 0
+    failed: int = 0
+
+
+class ProcurementLifecycleTransitionApprovalResponse(BaseModel):
+    mode: str
+    message_id: str | None = None
+    xml_preview: str = ""
+    written_path: str | None = None
+    summary: ProcurementLifecycleTransitionApprovalSummary
+    items: list[ProcurementLifecycleTransitionApprovalResult]
+
+
+class ProcurementOrderListItem(BaseModel):
+    id: int
+    stable_key: str
+    status: str
+    version: int
+    supplier_name: str
+    contract_name: str
+    warehouse_name: str
+    currency: str
+    route: str
+    batch_id: str
+    order_date: date
+    responsible_name: str | None = None
+    source_run_id: str | None = None
+    onec_status: str
+    onec_document_number: str | None = None
+    onec_error: str | None = None
+    line_count: int
+    total_quantity: Decimal
+    total_amount: Decimal
+    blockers: list[str] = Field(default_factory=list)
+    updated_at: datetime
+
+
+class ProcurementOrderListSummary(BaseModel):
+    orders: int = 0
+    lines: int = 0
+    quantity: Decimal = Decimal("0")
+    amount: Decimal = Decimal("0")
+
+
+class ProcurementOrderListResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    summary: ProcurementOrderListSummary
+    items: list[ProcurementOrderListItem] = Field(default_factory=list)
+
+
+class ProcurementClassificationQueueItem(BaseModel):
+    proposal: ProcurementClassificationProposalRead
+    order_id: int
+    order_version: int
+    line_id: int
+    line_version: int
+    nomenclature_code: str | None = None
+    nomenclature_ref: str
+    product_name: str
+    supplier_name: str
+    effective_status: str | None = None
+
+
+class ProcurementClassificationQueueResponse(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    pending: int
+    approved_today: int
+    readback_conflicts: int
+    items: list[ProcurementClassificationQueueItem] = Field(default_factory=list)
+
+
+class ProcurementOrderFormationEventRead(BaseModel):
+    id: int
+    order_id: int | None = None
+    entity_type: str
+    entity_id: str
+    event_type: str
+    actor: str
+    bitrix_user_id: str | None = None
+    user_name: str | None = None
+    before: dict[str, Any] = Field(default_factory=dict)
+    after: dict[str, Any] = Field(default_factory=dict)
+    payload: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
+
+
+class ProcurementOrderFormationEventList(BaseModel):
+    total: int
+    page: int
+    page_size: int
+    items: list[ProcurementOrderFormationEventRead] = Field(default_factory=list)
+
+
+class ProcurementOrderImportRequest(BaseModel):
+    stable_key: str
+    bitrix_entity_type_id: int | None = None
+    bitrix_item_id: str | None = None
+    bitrix_category_id: int | None = None
+    bitrix_stage_id: str | None = None
+    bitrix_item_url: str | None = None
+    supplier_ref: str | None = None
+    supplier_code: str | None = None
+    supplier_name: str
+    contract_ref: str | None = None
+    contract_code: str | None = None
+    contract_name: str
+    warehouse_ref: str | None = None
+    warehouse_code: str | None = None
+    warehouse_name: str
+    currency: str = "RUB"
+    procurement_contour: str = "ordinary"
+    route: str = "ordinary"
+    batch_id: str
+    order_date: date
+    responsible_bitrix_user_id: str | None = None
+    responsible_name: str | None = None
+    calculation_id: str
+    source_run_id: str | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)

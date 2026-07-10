@@ -74,6 +74,7 @@ class ReceivableWorkItem(Base):
     last_contact_comment: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     promised_payment_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     next_action_date: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    last_contact_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     last_manager_update_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
     escalated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)

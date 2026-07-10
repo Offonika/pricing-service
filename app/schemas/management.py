@@ -50,6 +50,7 @@ class ReceivableCaseItem(BaseModel):
     owner_type: str
     recommendation: str
     counterparty_ref: str
+    counterparty_code: str | None = None
     counterparty_name: str | None = None
     current_balance: Decimal
     aged_bucket: str
@@ -85,10 +86,15 @@ class CounterpartyFolderRecommendationItem(BaseModel):
     current_balance: Decimal
     current_folder_ref: str | None = None
     current_folder_name: str | None = None
+    current_folder_display_name: str | None = None
     recommended_folder_ref: str | None = None
     recommended_folder_name: str | None = None
+    recommended_folder_display_name: str | None = None
     debt_department_ref: str | None = None
     debt_department_name: str | None = None
+    debt_department_display_name: str | None = None
+    snapshot_department_name: str | None = None
+    snapshot_department_display_name: str | None = None
     debt_document_ref: str | None = None
     debt_document_number: str | None = None
     debt_document_date: datetime | None = None

@@ -10,25 +10,30 @@ related_code:
   - app/services/exporters/ut103_exchange.py
   - app/services/exporters/ut103_forecast.py
   - app/services/exporters/ut103_nomenclature_properties.py
+  - app/services/exporters/ut103_procurement_orders.py
   - tasks/build_assortment_lifecycle_updates.py
   - tasks/export_ut103_forecast.py
   - tasks/export_ut103_nomenclature_properties.py
+  - tasks/export_ut103_procurement_supplier_orders.py
 related_tests:
   - tests/test_ut103_exchange.py
   - tests/test_ut103_forecast_exporter.py
   - tests/test_build_assortment_lifecycle_updates_task.py
   - tests/test_ut103_nomenclature_properties_exporter.py
+  - tests/test_ut103_procurement_orders_exporter.py
   - tests/test_export_ut103_forecast_task.py
   - tests/test_export_ut103_nomenclature_properties_task.py
+  - tests/test_export_ut103_procurement_supplier_orders_task.py
 contracts:
   - app/services/exporters/ut103_exchange.py
   - app/services/exporters/ut103_forecast.py
   - app/services/exporters/ut103_nomenclature_properties.py
+  - app/services/exporters/ut103_procurement_orders.py
 depends_on:
   - docs/specs/counterparty-folder-recommendations.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-06-25"
+updated_at: "2026-07-05"
 ---
 
 # Назначение
@@ -75,7 +80,9 @@ updated_at: "2026-06-25"
 `app/services/exporters/ut103_forecast.py`. Новый прикладной пакет для закупки и
 ассортимента - `nomenclature_property_updates.v1` в
 `app/services/exporters/ut103_nomenclature_properties.py`; прогноз продаж больше
-не развиваем как целевой процесс.
+не развиваем как целевой процесс. Для создания непроведенных черновиков
+`ЗаказПоставщику` используется пакет `procurement_onec_file_exchange.v1` в
+`app/services/exporters/ut103_procurement_orders.py`.
 
 Фактически найденный Windows-контур `УТ 10.3` использует папку
 `E:\MMExchange\UT103`. Старый `run_forecast_import.vbs` рядом с этой папкой
@@ -253,19 +260,18 @@ UT103_EXCHANGE_ROOT/
 Поддержанные типы v1: `property_value`, `string`, `date`, `number`, `boolean`.
 В `apply` обязателен `ApprovedBy` в шапке или строке пакета.
 
-Whitelist v1:
-
-- `Статус ассортимента`;
-- `Причина статуса ассортимента`;
-- `Дата изменения статуса ассортимента`;
-- `Источник статуса ассортимента`;
-- `Утвердил статус ассортимента`;
-- `Профиль закупочного поведения`;
+Список имен свойств в XML не ограничивается whitelist: экспортёр проверяет, что
+`PropertyName` заполнен, а 1С-обработка уже на своей стороне проверяет, что
+такое свойство реально существует в `ПланыВидовХарактеристик.СвойстваОбъектов`.
+Для `property_value` значение также должно существовать в 1С у выбранного
+свойства по имени или `Тэг`.
 - `Ручной минимальный остаток`;
 - `Дата пересмотра правила наличия`.
 
 Статус ассортимента хранит машинный код в поле `Тэг` значения свойства, поэтому
 отдельное свойство для кода статуса на первом этапе не нужно.
+`Эксклюзив` передается не как статус ассортимента, а как строковый коммерческий
+признак `exclusive` в свойстве `Коммерческие признаки`.
 
 Python CLI:
 
@@ -283,6 +289,64 @@ python -m tasks.export_ut103_nomenclature_properties \
 ```bash
 UT103_EXCHANGE_ROOT=/opt/MM/pricing-service/.local/ut103_exchange/UT103
 ```
+
+## XML Черновиков Заказа Поставщику `procurement_onec_file_exchange.v1`
+
+Для закупочного контура используется отдельный пакет в тех же папках обмена:
+
+```text
+UT103_EXCHANGE_ROOT/
+  to_1c/new/procurement_supplier_orders_<message_id>.ready.xml
+  from_1c/new/procurement_supplier_orders_<message_id>.result.xml
+```
+
+Минимальный заказ:
+
+```xml
+<SupplierOrder>
+  <IdempotencyKey>proc-order:DISPLAY-AUTO-203-RB1:r1</IdempotencyKey>
+  <DraftOnly>true</DraftOnly>
+  <OrderDate>2026-07-05</OrderDate>
+  <ProcurementContour>Обычный</ProcurementContour>
+  <Currency>RUB</Currency>
+  <Supplier>
+    <Code>SUP-001</Code>
+  </Supplier>
+  <Contract>
+    <Ref>0xcontract</Ref>
+  </Contract>
+  <Warehouse>
+    <Code>MAIN</Code>
+  </Warehouse>
+  <BitrixItemUrl>https://master.bitrix24.ru/crm/type/1132/details/777/</BitrixItemUrl>
+  <ConfirmationId>bitrix-approval-777</ConfirmationId>
+  <CalculationId>display-auto-order-run-203</CalculationId>
+  <Lines>
+    <Line>
+      <LineNumber>1</LineNumber>
+      <Nomenclature>
+        <Code>РБ000074721</Code>
+      </Nomenclature>
+      <Quantity>5</Quantity>
+      <Price>1250.50</Price>
+      <Currency>RUB</Currency>
+    </Line>
+  </Lines>
+</SupplierOrder>
+```
+
+Python CLI:
+
+```bash
+python -m tasks.export_ut103_procurement_supplier_orders \
+  --mode apply \
+  --approved-by "Омар" \
+  --input-json supplier-order.json
+```
+
+В `apply` обязателен `ApprovedBy`, `ConfirmationId` и `DraftOnly=true`. 1С должна
+создать только непроведенный черновик и вернуть result-файл с номером/ссылкой
+или понятной ошибкой по заказу.
 
 ## XML Результата
 
@@ -330,6 +394,8 @@ UT103_EXCHANGE_ROOT=/opt/MM/pricing-service/.local/ut103_exchange/UT103
   завершился с ошибкой.
 - Пакет `nomenclature_property_updates.v1` не использует `forecast_sales.v1`;
   общий только технический паттерн файлового обмена.
+- Пакет `procurement_onec_file_exchange.v1` не проводит заказ поставщику:
+  допускается только непроведенный черновик.
 
 # Errors / Edge Cases
 
@@ -347,6 +413,7 @@ UT103_EXCHANGE_ROOT=/opt/MM/pricing-service/.local/ut103_exchange/UT103
 До реализации:
 - unit: генерация XML `onec_commands.v1` в `windows-1251`;
 - unit: генерация XML `nomenclature_property_updates.v1` в `windows-1251`;
+- unit: генерация XML `procurement_onec_file_exchange.v1` в `windows-1251`;
 - unit: атомарная запись `*.ready.xml` в `to_1c/new`;
 - unit: парсинг `*.result.xml` из `from_1c/new`;
 - unit: запрет `apply` без `ApprovedBy`;
@@ -375,14 +442,20 @@ UT103_EXCHANGE_ROOT=/opt/MM/pricing-service/.local/ut103_exchange/UT103
 
 # Changelog
 
+- 2026-07-05 - added `procurement_onec_file_exchange.v1` exporter/CLI for
+  draft supplier-order creation through the existing `UT103_EXCHANGE_ROOT`.
 - 2026-06-26 - clarified production cutover: reuse `E:\MMExchange\UT103` after
   disabling the test scheduler and switching the local VBS `OneCRef` to the
   production UT 10.3 database.
 - 2026-06-25 - added `tasks/build_assortment_lifecycle_updates.py` as the
   dry-run builder from normalized assortment facts to
   `nomenclature_property_updates.v1` rows.
+- 2026-06-28 - removed hardcoded property-name whitelist from
+  `nomenclature_property_updates.v1`; 1C now accepts any existing
+  nomenclature property while keeping `dry_run`/`apply`, `ApprovedBy`, type
+  and current-value checks.
 - 2026-06-23 - added `nomenclature_property_updates.v1` exporter/CLI for
-  whitelist updates of 1C nomenclature properties; `forecast_sales.v1` remains
+  updates of 1C nomenclature properties; `forecast_sales.v1` remains
   only as legacy exchange sample.
 - 2026-05-29 - draft created; закреплено использование существующего
   `UT103_EXCHANGE_ROOT` вместо нового канала обмена.

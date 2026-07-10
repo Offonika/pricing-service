@@ -7,14 +7,17 @@ from app.services.assortment_lifecycle import (
     AssortmentLifecycleDecision,
     AssortmentLifecycleInput,
     AssortmentStatus,
+    CommercialMark,
+    CommercialMarksInput,
     ExpensiveProfileInput,
     ManagerNeedSignal,
     ProcurementBehaviorProfile,
     WarehouseSalesPointInput,
+    build_commercial_mark_property_update_rows,
     build_procurement_profile_property_update_row,
-    build_status_property_update_rows,
     classify_expensive_profile,
     decide_assortment_status,
+    decide_commercial_marks,
     systemic_sales_point_codes,
     validate_manager_need_signal,
 )
@@ -70,46 +73,100 @@ def test_working_requires_five_receipts_in_180_days_and_folder_confirmation() ->
         supplier_order_cargo_handoff_dates=(date(2026, 1, 20), date(2026, 2, 20)),
         receipt_dates=receipt_dates,
         working_confirmed_by_folder_responsible=True,
+        manual_approved_by="Омар",
+        manual_changed_at=date(2026, 7, 4),
     )
 
     assert confirmed.status == AssortmentStatus.WORKING
     assert confirmed.auto_order_allowed
+    assert confirmed.approved_by == "Омар"
+    assert confirmed.changed_at == date(2026, 7, 4)
 
 
-def test_exclusive_requires_reason_approver_date_and_manual_min_stock() -> None:
-    missing = _decision(
-        manual_status=AssortmentStatus.EXCLUSIVE,
-        manual_reason="",
-        manual_approved_by="",
-        manual_changed_at=None,
-        exclusive_min_stock_qty=None,
+def test_analog_winner_confirmation_promotes_to_working_without_five_receipts() -> None:
+    decision = _decision(
+        supplier_order_cargo_handoff_dates=(date(2026, 1, 20), date(2026, 2, 20)),
+        receipt_dates=(date(2026, 2, 25),),
+        analog_winner_confirmed_by_folder_responsible=True,
+        manual_reason="Лучший аналог группы, расчетная потребность 12 шт.",
+        manual_approved_by="Омар",
+        manual_changed_at=date(2026, 7, 4),
     )
 
-    assert missing.status == AssortmentStatus.EXCLUSIVE
+    assert decision.status == AssortmentStatus.WORKING
+    assert decision.reason_codes == ("analog_winner_confirmed",)
+    assert decision.auto_order_allowed
+    assert decision.approved_by == "Омар"
+    assert decision.changed_at == date(2026, 7, 4)
+
+
+def test_manual_nonliquid_blocks_auto_order() -> None:
+    decision = _decision(
+        manual_status="nonliquid",
+        manual_reason="Слабый спрос, остаток распродаем вручную.",
+        manual_approved_by="Омар",
+        manual_changed_at=date(2026, 7, 3),
+    )
+
+    assert decision.status == AssortmentStatus.NONLIQUID
+    assert not decision.auto_order_allowed
+    assert decision.blockers == ()
+
+
+def test_manual_replace_candidate_blocks_auto_order() -> None:
+    decision = _decision(
+        manual_status="replace_candidate",
+        manual_reason="Есть более сильный аналог, текущий товар не докупаем.",
+        manual_approved_by="Омар",
+        manual_changed_at=date(2026, 7, 6),
+    )
+
+    assert decision.status == AssortmentStatus.REPLACE_CANDIDATE
+    assert not decision.auto_order_allowed
+    assert decision.blockers == ()
+
+
+def test_exclusive_is_commercial_mark_with_required_evidence() -> None:
+    missing = decide_commercial_marks(
+        CommercialMarksInput(
+            nomenclature_code="РБ0001",
+            commercial_marks=("exclusive",),
+        )
+    )
+
+    assert missing.commercial_marks == (CommercialMark.EXCLUSIVE,)
     assert set(missing.blockers) == {
-        "manual_reason_required",
-        "manual_approved_by_required",
-        "manual_changed_at_required",
+        "exclusive_kind_required",
+        "exclusive_checked_at_required",
+        "exclusive_reason_required",
+        "exclusive_approved_by_required",
+        "exclusive_evidence_required",
         "exclusive_min_stock_required",
     }
     assert missing.manual_review_required
 
-    valid = _decision(
-        manual_status=AssortmentStatus.EXCLUSIVE,
-        manual_reason="Эксклюзивная позиция, держать наличие",
-        manual_approved_by="Омар",
-        manual_changed_at=date(2026, 6, 25),
-        exclusive_min_stock_qty="2",
+    valid = decide_commercial_marks(
+        CommercialMarksInput(
+            nomenclature_code="РБ0001",
+            commercial_marks=("exclusive",),
+            exclusive_kind="only_in_country",
+            exclusive_checked_at=date(2026, 6, 25),
+            exclusive_reason="Эксклюзивная позиция, держать наличие",
+            exclusive_approved_by="Омар",
+            exclusive_evidence_refs=("parser:2026-06-25",),
+            exclusive_min_stock_qty="2",
+        )
     )
 
     assert valid.blockers == ()
     assert valid.exclusive_min_stock_qty == Decimal("2")
     assert valid.exclusive_review_at == date(2026, 7, 25)
-    rows = build_status_property_update_rows(valid, changed_at=date(2026, 6, 25))
+    rows = build_commercial_mark_property_update_rows(valid, changed_at=date(2026, 6, 25))
     properties = {row.property_name: row for row in rows}
-    assert properties["Статус ассортимента"].new_value_tag == "exclusive"
+    assert properties["Коммерческие признаки"].new_value == "exclusive"
+    assert properties["Тип эксклюзивности"].new_value == "only_in_country"
     assert properties["Ручной минимальный остаток"].new_value == Decimal("2")
-    assert properties["Дата пересмотра правила наличия"].new_value == date(2026, 7, 25)
+    assert properties["Дата пересмотра эксклюзивности"].new_value == date(2026, 7, 25)
 
 
 def test_expensive_profile_uses_top_quartile_and_route_days() -> None:

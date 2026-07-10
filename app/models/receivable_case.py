@@ -29,6 +29,7 @@ class ReceivableCase(Base):
     owner_type: Mapped[str] = mapped_column(String(32), nullable=False)
     recommendation: Mapped[str] = mapped_column(String(255), nullable=False)
     counterparty_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    counterparty_code: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
     counterparty_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     current_balance: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     aged_bucket: Mapped[str] = mapped_column(String(16), nullable=False)

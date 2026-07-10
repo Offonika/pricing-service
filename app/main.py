@@ -12,6 +12,10 @@ from app.api.agents import router as agents_router
 from app.api.analytics import router as analytics_router
 from app.api.bank_payments import router as bank_payments_router
 from app.api.bi import router as bi_router
+from app.api.bitrix_executive_dashboard import (
+    page_router as bitrix_executive_dashboard_page_router,
+)
+from app.api.bitrix_executive_dashboard import router as bitrix_executive_dashboard_router
 from app.api.bitrix_matching import page_router as bitrix_matching_page_router
 from app.api.bitrix_matching import router as bitrix_matching_router
 from app.api.bitrix_receivables import page_router as bitrix_receivables_page_router
@@ -28,8 +32,16 @@ from app.api.logistics_web import router as logistics_web_router
 from app.api.management import router as management_router
 from app.api.matching import router as matching_router
 from app.api.order_fulfillment import router as order_fulfillment_router
+from app.api.procurement_assortment_decisions import (
+    page_router as procurement_assortment_page_router,
+)
+from app.api.procurement_assortment_decisions import router as procurement_assortment_router
 from app.api.procurement_labels import page_router as procurement_labels_page_router
 from app.api.procurement_labels import router as procurement_labels_router
+from app.api.procurement_order_formation import (
+    page_router as procurement_order_formation_page_router,
+)
+from app.api.procurement_order_formation import router as procurement_order_formation_router
 from app.api.receivable_workplace import page_router as receivable_workplace_page_router
 from app.api.receivable_workplace import router as receivable_workplace_router
 from app.api.receivables import router as receivables_router
@@ -118,11 +130,14 @@ async def log_requests(request: Request, call_next: Callable[[Request], Response
 
 app.include_router(health_router)
 app.include_router(bitrix_matching_page_router)
+app.include_router(bitrix_executive_dashboard_page_router)
 app.include_router(bitrix_receivables_page_router)
 app.include_router(logistics_web_page_router)
 app.include_router(site_defect_archive_page_router)
 app.include_router(receivable_workplace_page_router)
 app.include_router(procurement_labels_page_router)
+app.include_router(procurement_assortment_page_router)
+app.include_router(procurement_order_formation_page_router)
 app.include_router(recommendations_router, prefix="/api")
 app.include_router(reports_router, prefix="/api/reports")
 app.include_router(bi_router, prefix="/api/bi")
@@ -132,6 +147,7 @@ app.include_router(analytics_router, prefix="/api")
 app.include_router(bank_payments_router, prefix="/api")
 app.include_router(matching_router, prefix="/api")
 app.include_router(bitrix_matching_router, prefix="/api")
+app.include_router(bitrix_executive_dashboard_router, prefix="/api")
 app.include_router(bitrix_receivables_router, prefix="/api")
 app.include_router(management_router, prefix="/api/management")
 app.include_router(receivables_router, prefix="/api/receivables")
@@ -147,3 +163,5 @@ app.include_router(logistics_bot_router, prefix="/api/logistics/bot")
 app.include_router(logistics_web_router, prefix="/api/logistics/web")
 app.include_router(order_fulfillment_router, prefix="/api/order-fulfillment")
 app.include_router(procurement_labels_router, prefix="/api")
+app.include_router(procurement_assortment_router, prefix="/api")
+app.include_router(procurement_order_formation_router, prefix="/api")

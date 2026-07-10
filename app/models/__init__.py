@@ -34,6 +34,11 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     )
     from app.models.device_model import Keyword, KeywordDemand, PhoneModel, PhoneModelAlias
     from app.models.expertise import ExpertiseCase, ExpertiseCaseAttachment, ExpertiseCaseEvent
+    from app.models.executive_dashboard import (
+        ExecutiveActionItem,
+        ExecutiveDashboardSnapshot,
+        ExecutiveSourceFreshness,
+    )
     from app.models.logistics import (
         LogisticsBotSession,
         LogisticsBotSessionPhoto,
@@ -69,6 +74,13 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.product_phone_model import ProductPhoneModel
     from app.models.product_sku_plan import ProductSkuPlan
     from app.models.product_stock import ProductStock
+    from app.models.procurement_order_formation import (
+        ProcurementClassificationProposal,
+        ProcurementLifecycleTransitionProposal,
+        ProcurementOrderFormation,
+        ProcurementOrderFormationEvent,
+        ProcurementOrderFormationLine,
+    )
     from app.models.receivable_balance_snapshot import ReceivableBalanceSnapshot
     from app.models.receivable_case import ReceivableCase
     from app.models.receivable_ledger_event import ReceivableLedgerEvent
@@ -78,11 +90,13 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         ReceivableWorkEvent,
         ReceivableWorkItem,
     )
+    from app.models.receivable_workplace_cache import (
+        ReceivableBitrixUserAccess,
+        ReceivableFolderRecommendationCache,
+        ReceivableOpenDebtCache,
+    )
     from app.models.return_scheme_alert_batch import ReturnSchemeAlertBatch
     from app.models.return_scheme_incident import ReturnSchemeIncident
-    from app.models.smartphone_release import ReleaseStatus, SmartphoneRelease, SourceType
-    from app.models.staff_member import StaffMember
-    from app.models.staffing_snapshot import StaffingSnapshot
     from app.models.site_defect_archive import (
         SiteDefectArchiveCase,
         SiteDefectArchiveFile,
@@ -94,6 +108,9 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         SiteOrderExecutionCase,
         SiteOrderExecutionEvent,
     )
+    from app.models.smartphone_release import ReleaseStatus, SmartphoneRelease, SourceType
+    from app.models.staff_member import StaffMember
+    from app.models.staffing_snapshot import StaffingSnapshot
     from app.models.store_shift_fact import StoreShiftFact
     from app.models.store_shift_plan import StoreShiftPlan
     from app.models.telephony import TelephonyUserLineSnapshot
@@ -107,6 +124,9 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "Base",
         "Product",
         "ProductStock",
+        "ProcurementOrderFormation",
+        "ProcurementOrderFormationLine",
+        "ProcurementClassificationProposal",
         "ProductCompatibility",
         "Competitor",
         "CompetitorPrice",
@@ -135,6 +155,9 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "ExpertiseCase",
         "ExpertiseCaseEvent",
         "ExpertiseCaseAttachment",
+        "ExecutiveDashboardSnapshot",
+        "ExecutiveActionItem",
+        "ExecutiveSourceFreshness",
         "LogisticsWarehouse",
         "LogisticsDriver",
         "LogisticsUser",
@@ -191,6 +214,9 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "ReceivableWorkItem",
         "ReceivableWorkEvent",
         "ReceivableSmsLog",
+        "ReceivableOpenDebtCache",
+        "ReceivableFolderRecommendationCache",
+        "ReceivableBitrixUserAccess",
     ]
 else:
     __all__ = ["Base"]

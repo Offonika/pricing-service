@@ -30,6 +30,8 @@ DEFAULT_PROCESS_CODE = "procurement_order"
 ONEC_CONTOUR_REQUISITE = "КонтурЗакупки"
 CRM_SUPPLIER_ORIGINATOR_ID = "mm_onec_supplier"
 VED_SUPPLIER_PROCESS_TITLE = "Поставщик (ВЭД)"
+CERTIFICATE_PROCESS_TITLE = "Сертификаты"
+PRODUCT_PASSPORT_PROCESS_TITLE = "Паспорт товара (ВЭД)"
 PROCUREMENT_TYPE_REQUIRED_FLAGS = {
     "isLinkWithProductsEnabled": True,
 }
@@ -44,7 +46,8 @@ CONTOUR_CONTRACT = [
     {
         "logical_key": "cargo",
         "onec_values": ["Cargo", "Карго"],
-        "bitrix_value": "Cargo",
+        "bitrix_value": "Карго",
+        "bitrix_aliases": ["Cargo"],
         "default": False,
     },
     {
@@ -60,6 +63,7 @@ CONTOUR_ENUM = [
         "xml_id": item["logical_key"],
         "value": item["bitrix_value"],
         **({"default": True} if item.get("default") else {}),
+        **({"aliases": item["bitrix_aliases"]} if item.get("bitrix_aliases") else {}),
     }
     for item in CONTOUR_CONTRACT
 ]
@@ -69,6 +73,57 @@ LABEL_STATUS_ENUM = [
     {"value": "Заблокировано", "xml_id": "blocked"},
     {"value": "Утверждено", "xml_id": "approved"},
     {"value": "Отправлено фабрике", "xml_id": "sent_to_factory"},
+]
+
+CERTIFICATION_DOCS_STATUS_ENUM = [
+    {"value": "Черновик", "xml_id": "draft"},
+    {"value": "Нужны данные", "xml_id": "needs_data"},
+    {"value": "Заблокировано", "xml_id": "blocked"},
+    {"value": "Пакет готов", "xml_id": "ready"},
+    {"value": "GTIN заказан", "xml_id": "gtin_requested"},
+    {"value": "Передано сертификатору", "xml_id": "sent_to_certifier"},
+]
+
+PAYMENT_TASK_STATUS_ENUM = [
+    {"value": "Создана", "xml_id": "created"},
+    {"value": "Исполнена", "xml_id": "done"},
+    {"value": "Пропущена", "xml_id": "skipped"},
+    {"value": "Ошибка", "xml_id": "error"},
+]
+
+AUTO_ORDER_DECISION_ENUM = [
+    {"value": "К заказу", "xml_id": "order"},
+    {"value": "Ручная проверка", "xml_id": "manual_review"},
+    {"value": "Не заказывать", "xml_id": "do_not_order"},
+]
+
+ASSORTMENT_STATUS_DECISION_ENUM = [
+    {"value": "Без изменения", "xml_id": "no_change", "default": True},
+    {"value": "Матричный", "xml_id": "matrix"},
+    {"value": "Рабочий", "xml_id": "working"},
+    {"value": "Под заказ", "xml_id": "on_demand"},
+    {"value": "Кандидат на замену", "xml_id": "replace_candidate"},
+    {"value": "Неликвид", "xml_id": "nonliquid"},
+    {"value": "Не закупать", "xml_id": "do_not_order"},
+]
+
+CERTIFICATE_STATUS_ENUM = [
+    {"value": "Найдено", "xml_id": "found"},
+    {"value": "Проверено", "xml_id": "verified"},
+    {"value": "Требует обновления", "xml_id": "needs_update"},
+    {"value": "Истекло", "xml_id": "expired"},
+]
+
+CERTIFICATE_DOCUMENT_TYPE_ENUM = [
+    {"value": "ДС ЕАЭС", "xml_id": "declaration_eaeu"},
+    {"value": "ДС ГОСТ Р", "xml_id": "declaration_gost_r"},
+    {"value": "Мастер-таблица ДС", "xml_id": "declaration_master_register"},
+    {"value": "GTIN/EAN-13", "xml_id": "gtin_ean13"},
+    {"value": "RoHS", "xml_id": "rohs"},
+    {"value": "MSDS", "xml_id": "msds"},
+    {"value": "UN38.3", "xml_id": "un38_3"},
+    {"value": "CE-EMC", "xml_id": "ce_emc"},
+    {"value": "Другое", "xml_id": "other"},
 ]
 
 CRM_SYNC_FIELD_SPECS = [
@@ -195,6 +250,165 @@ VED_SUPPLIER_PASSPORT_FIELD_SPECS = [
     },
 ]
 
+CERTIFICATE_FIELD_SPECS = [
+    {
+        "logical_key": "document_type",
+        "title": "Тип документа",
+        "type": "enumeration",
+        "enum": CERTIFICATE_DOCUMENT_TYPE_ENUM,
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "declaration_number",
+        "title": "Номер ДС",
+        "type": "string",
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "verification_status",
+        "title": "Статус проверки",
+        "type": "enumeration",
+        "enum": CERTIFICATE_STATUS_ENUM,
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "valid_from",
+        "title": "Действует с",
+        "type": "datetime",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "applicant",
+        "title": "Заявитель",
+        "type": "string",
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "manufacturer",
+        "title": "Изготовитель",
+        "type": "string",
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "brand",
+        "title": "Бренд",
+        "type": "string",
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "product_series",
+        "title": "Серия/бренд",
+        "type": "string",
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "tnved",
+        "title": "ТН ВЭД",
+        "type": "string",
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "technical_regulations",
+        "title": "Техрегламенты",
+        "type": "text",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "test_report_number",
+        "title": "Номер протокола",
+        "type": "string",
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "covered_skus",
+        "title": "Покрытые SKU",
+        "type": "text",
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "eac_allowed",
+        "title": "EAC разрешен",
+        "type": "boolean",
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+]
+
+PRODUCT_PASSPORT_FIELD_SPECS = [
+    {
+        "logical_key": "manufacturer",
+        "title": "Изготовитель",
+        "type": "string",
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "product_series",
+        "title": "Серия/бренд",
+        "type": "string",
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+]
+
+CERTIFICATE_TITLE_ALIASES = {
+    "document_type": ("Тип документа",),
+    "declaration_number": ("Номер ДС",),
+    "verification_status": ("Статус проверки",),
+    "valid_from": ("Действует с",),
+    "valid_to": ("Действует до",),
+    "file": ("Файл ДС",),
+    "applicant": ("Заявитель",),
+    "manufacturer": ("Изготовитель",),
+    "brand": ("Бренд",),
+    "product_series": ("Серия/бренд",),
+    "tnved": ("ТН ВЭД",),
+    "technical_regulations": ("Техрегламенты",),
+    "test_report_number": ("Номер протокола",),
+    "covered_skus": ("Покрытые SKU",),
+    "eac_allowed": ("EAC разрешен",),
+}
+
+PRODUCT_PASSPORT_TITLE_ALIASES = {
+    "trade_name": ("Trade name", "Торговое наименование", "Наименование для этикетки"),
+    "sku": ("Артикул", "SKU"),
+    "onec_item_code": ("Код 1С", "1С код", "Заводской код"),
+    "factory_code": ("Заводской код",),
+    "barcode_gtin": ("Barcode/GTIN", "Штрихкод", "Штрихкод 1С"),
+    "tnved": ("ТН ВЭД",),
+    "gs1_gtin": ("GTIN (GS1)",),
+    "internal_barcode": ("Внутренний штрихкод", "Штрихкод 1С"),
+    "manufacturer": ("Изготовитель",),
+    "product_series": ("Серия/бренд",),
+}
+
 CONTOUR_ALIASES = {
     "": "ordinary",
     "ordinary": "ordinary",
@@ -227,30 +441,23 @@ CATEGORY_SPECS = [
         "sort": 100,
         "reuse_default": False,
         "stages": [
-            {"logical_key": "need", "code": "NEED", "name": "Потребность", "sort": 100},
-            {
-                "logical_key": "supplier_terms",
-                "code": "TERMS",
-                "name": "Согласование условий",
-                "sort": 200,
-            },
             {
                 "logical_key": "supplier_order",
-                "code": "ORDER",
+                "code": "NEW",
                 "name": "Заказ поставщику",
-                "sort": 300,
+                "sort": 100,
             },
             {
                 "logical_key": "waiting_delivery",
                 "code": "WAITING",
                 "name": "Ожидаем поставку",
-                "sort": 400,
+                "sort": 200,
             },
             {
                 "logical_key": "receiving",
                 "code": "RECEIVING",
                 "name": "Приемка на склад",
-                "sort": 500,
+                "sort": 300,
             },
             {
                 "logical_key": "closed",
@@ -270,72 +477,89 @@ CATEGORY_SPECS = [
     },
     {
         "logical_key": "cargo",
-        "name": "Cargo",
+        "name": "Карго",
+        "aliases": ["Cargo"],
         "sort": 200,
         "reuse_default": False,
         "stages": [
-            {"logical_key": "need", "code": "NEED", "name": "Потребность", "sort": 100},
-            {
-                "logical_key": "supplier_terms",
-                "code": "TERMS",
-                "name": "Согласование с поставщиком",
-                "sort": 200,
-            },
-            {
-                "logical_key": "prices_confirmed",
-                "code": "PRICES",
-                "name": "Цены подтверждены",
-                "sort": 300,
-            },
-            {
-                "logical_key": "payment_request",
-                "code": "PAYREQ",
-                "name": "Заявка на оплату",
-                "sort": 400,
-            },
-            {
-                "logical_key": "payment_confirmed",
-                "code": "PAYOK",
-                "name": "Оплачено / чек поставщику",
-                "sort": 500,
-            },
             {
                 "logical_key": "supplier_order",
-                "code": "ORDER",
-                "name": "Заказан товар",
-                "sort": 600,
+                "code": "NEW",
+                "name": "Заказ поставщику",
+                "sort": 100,
             },
             {
-                "logical_key": "supplier_dispatch",
-                "code": "SUPPLIER_DISPATCH",
-                "name": "Отправка поставщиком",
-                "sort": 700,
+                "logical_key": "ready_for_cargo",
+                "code": "CLIENT",
+                "name": "Товар готов к сдаче в карго",
+                "sort": 200,
             },
             {
                 "logical_key": "cargo_dropoff",
                 "code": "CARGO",
                 "name": "Сдано в карго",
+                "sort": 300,
+            },
+            {
+                "logical_key": "payment_work",
+                "code": "PAYREQ",
+                "name": "Заявка на оплату / оплата в работе",
+                "sort": 400,
+            },
+            {
+                "logical_key": "in_transit",
+                "code": "TRANSIT",
+                "name": "Товар в пути",
+                "sort": 500,
+            },
+            {
+                "logical_key": "own_delivery",
+                "code": "SUPPLIER_DISPATCH",
+                "name": "Доставка своими силами",
+                "sort": 700,
+            },
+            {
+                "logical_key": "unpacking",
+                "code": "UNPACKING",
+                "name": "Зона разборки",
                 "sort": 800,
             },
-            {"logical_key": "in_transit", "code": "TRANSIT", "name": "В пути", "sort": 900},
             {
                 "logical_key": "receiving",
                 "code": "RECEIVING",
-                "name": "Приемка на склад",
+                "name": "Приемка товара",
+                "sort": 900,
+            },
+            {
+                "logical_key": "onec_receipt",
+                "code": "ONEC_RECEIPT",
+                "name": "Поступление в 1С",
                 "sort": 1000,
+            },
+            {
+                "logical_key": "barcode",
+                "code": "BARCODE",
+                "name": "Штрихкодирование",
+                "sort": 1100,
+            },
+            {
+                "logical_key": "placement",
+                "code": "PLACEMENT",
+                "name": "Зона раскладки",
+                "sort": 1200,
             },
             {
                 "logical_key": "closed",
                 "code": "CLOSED",
-                "name": "Закрыто",
-                "sort": 1100,
+                "name": "Раскладка завершена",
+                "sort": 1300,
                 "semantics": "S",
             },
             {
                 "logical_key": "exception",
                 "code": "EXCEPTION",
                 "name": "Проблема / отмена",
-                "sort": 1200,
+                "sort": 1400,
                 "semantics": "F",
             },
         ],
@@ -346,7 +570,12 @@ CATEGORY_SPECS = [
         "sort": 300,
         "reuse_default": True,
         "stages": [
-            {"logical_key": "need", "code": "NEED", "name": "Потребность", "sort": 100},
+            {
+                "logical_key": "supplier_order",
+                "code": "NEW",
+                "name": "Заказ поставщику",
+                "sort": 100,
+            },
             {
                 "logical_key": "docs_collection",
                 "code": "DOCS",
@@ -360,34 +589,28 @@ CATEGORY_SPECS = [
                 "sort": 300,
             },
             {
-                "logical_key": "supplier_order",
-                "code": "ORDER",
-                "name": "Заказ поставщику",
-                "sort": 400,
-            },
-            {
                 "logical_key": "payment_agent",
                 "code": "PAYMENT",
                 "name": "Оплата / платежный агент",
-                "sort": 500,
+                "sort": 400,
             },
             {
                 "logical_key": "logistics_customs",
                 "code": "LOGISTICS",
                 "name": "Логистика / таможня",
-                "sort": 600,
+                "sort": 500,
             },
             {
                 "logical_key": "customs_clearance",
                 "code": "CUSTOMS",
                 "name": "Растаможка",
-                "sort": 700,
+                "sort": 600,
             },
             {
                 "logical_key": "receiving",
                 "code": "RECEIVING",
                 "name": "Приемка на склад",
-                "sort": 800,
+                "sort": 700,
             },
             {
                 "logical_key": "closed",
@@ -407,10 +630,53 @@ CATEGORY_SPECS = [
     },
 ]
 
+OBSOLETE_STAGE_MERGES = {
+    "ordinary": [
+        {
+            "old_codes": ["PREPARATION", "TERMS"],
+            "old_names": ["Согласование условий"],
+            "target_code": "NEW",
+            "reason": "supplier_terms moved to order_formation; procurement starts at supplier_order",
+        },
+        {
+            "old_codes": ["CLIENT", "ORDER"],
+            "old_names": ["Заказ поставщику"],
+            "target_code": "NEW",
+            "reason": "supplier_order merged into system start stage",
+        },
+    ],
+    "cargo": [
+        {
+            "old_codes": ["PREPARATION"],
+            "target_code": "NEW",
+            "reason": "supplier_assembly moved to order_formation; procurement starts at supplier_order",
+        },
+        {
+            "old_codes": ["ORDER"],
+            "old_names": ["Заказ поставщику"],
+            "target_code": "NEW",
+            "reason": "supplier_order merged into system start stage",
+        },
+        {
+            "old_codes": ["PAYOK"],
+            "target_code": "SUPPLIER_DISPATCH",
+            "reason": "arrived is an action before own_delivery, not a separate stage",
+        },
+    ],
+    "ved_import": [
+        {
+            "old_codes": ["ORDER", "UC_OW8QYB"],
+            "old_names": ["Заказ поставщику"],
+            "target_code": "NEW",
+            "reason": "supplier_order merged into system start stage",
+        },
+    ],
+}
+
 CUSTOM_FIELD_SPECS = [
     {
         "logical_key": "procurement_contour",
-        "title": "Контур закупки",
+        "title": "Вид транспортной отправки",
         "type": "enumeration",
         "enum": CONTOUR_ENUM,
         "required": True,
@@ -545,7 +811,7 @@ CUSTOM_FIELD_SPECS = [
     },
     {
         "logical_key": "supplier_dispatch_date",
-        "title": "Отправка поставщиком",
+        "title": "Отправка поставщику на обсуждение",
         "type": "datetime",
         "required": False,
         "searchable": False,
@@ -617,6 +883,14 @@ CUSTOM_FIELD_SPECS = [
         "edit_in_list": True,
     },
     {
+        "logical_key": "label_generation_disk_file_id",
+        "title": "Этикетки: Disk file id",
+        "type": "string",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": False,
+    },
+    {
         "logical_key": "label_generation_errors",
         "title": "Этикетки: ошибки",
         "type": "text",
@@ -628,6 +902,242 @@ CUSTOM_FIELD_SPECS = [
         "logical_key": "label_generation_approved_at",
         "title": "Этикетки: утверждено",
         "type": "datetime",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "label_generation_sent_to_factory_at",
+        "title": "Этикетки: отправлено фабрике",
+        "type": "datetime",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "certification_docs_status",
+        "title": "Сертификация: статус",
+        "type": "enumeration",
+        "enum": CERTIFICATION_DOCS_STATUS_ENUM,
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "certification_docs_version",
+        "title": "Сертификация: версия пакета",
+        "type": "integer",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "certification_docs_zip_url",
+        "title": "Сертификация: ZIP",
+        "type": "url",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "certification_docs_disk_file_id",
+        "title": "Сертификация: Disk file id",
+        "type": "string",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": False,
+    },
+    {
+        "logical_key": "certification_docs_errors",
+        "title": "Сертификация: ошибки/что дозаполнить",
+        "type": "text",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "certification_docs_generated_at",
+        "title": "Сертификация: пакет собран",
+        "type": "datetime",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "payment_task_id",
+        "title": "Задача оплаты: ID",
+        "type": "string",
+        "required": False,
+        "searchable": True,
+        "edit_in_list": False,
+    },
+    {
+        "logical_key": "payment_task_status",
+        "title": "Задача оплаты: статус",
+        "type": "enumeration",
+        "enum": PAYMENT_TASK_STATUS_ENUM,
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "payment_request_created_at",
+        "title": "Заявка оплаты создана",
+        "type": "datetime",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "auto_order_source",
+        "title": "Автозаказ: источник",
+        "type": "string",
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "auto_order_run_id",
+        "title": "Автозаказ: run id",
+        "type": "integer",
+        "required": False,
+        "searchable": True,
+        "edit_in_list": False,
+    },
+    {
+        "logical_key": "auto_order_sku_code",
+        "title": "Автозаказ: код номенклатуры",
+        "type": "string",
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "auto_order_sku_name",
+        "title": "Автозаказ: номенклатура",
+        "type": "string",
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "auto_order_decision",
+        "title": "Автозаказ: решение",
+        "type": "enumeration",
+        "enum": AUTO_ORDER_DECISION_ENUM,
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "auto_order_recommended_qty",
+        "title": "Автозаказ: рекомендовано, шт.",
+        "type": "double",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "auto_order_raw_qty",
+        "title": "Автозаказ: расчет до лимита, шт.",
+        "type": "double",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "auto_order_target_stock_qty",
+        "title": "Автозаказ: целевой остаток, шт.",
+        "type": "double",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "auto_order_free_stock_qty",
+        "title": "Автозаказ: свободно, шт.",
+        "type": "double",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "auto_order_incoming_qty",
+        "title": "Автозаказ: в пути, шт.",
+        "type": "double",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "auto_order_reason",
+        "title": "Автозаказ: объяснение",
+        "type": "text",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "auto_order_warnings",
+        "title": "Автозаказ: предупреждения",
+        "type": "text",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "auto_order_blockers",
+        "title": "Автозаказ: блокеры",
+        "type": "text",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "auto_order_calculated_at",
+        "title": "Автозаказ: рассчитано",
+        "type": "datetime",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "assortment_status_decision",
+        "title": "Статус ассортимента: решение",
+        "type": "enumeration",
+        "enum": ASSORTMENT_STATUS_DECISION_ENUM,
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "assortment_status_reason",
+        "title": "Статус ассортимента: причина",
+        "type": "text",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "assortment_status_approved_by",
+        "title": "Статус ассортимента: утвердил",
+        "type": "string",
+        "required": False,
+        "searchable": True,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "assortment_status_changed_at",
+        "title": "Статус ассортимента: дата решения",
+        "type": "datetime",
+        "required": False,
+        "searchable": False,
+        "edit_in_list": True,
+    },
+    {
+        "logical_key": "assortment_commercial_marks",
+        "title": "Статус ассортимента: коммерческие признаки",
+        "type": "text",
         "required": False,
         "searchable": False,
         "edit_in_list": True,
@@ -648,8 +1158,14 @@ DETAIL_SECTION_SPECS = [
             "title",
             "stage",
             "assigned_by",
-            "procurement_contour",
             "pilot_batch_id",
+        ],
+    },
+    {
+        "name": "transport",
+        "title": "Вид транспортной отправки",
+        "elements": [
+            "procurement_contour",
         ],
     },
     {
@@ -685,9 +1201,43 @@ DETAIL_SECTION_SPECS = [
         "elements": [
             "currency",
             "amount",
+            "payment_task_id",
+            "payment_task_status",
+            "payment_request_created_at",
             "expects_import_gtd",
             "gtd_number",
             "blocker_comment",
+        ],
+    },
+    {
+        "name": "auto_order",
+        "title": "Автозаказ",
+        "elements": [
+            "auto_order_source",
+            "auto_order_run_id",
+            "auto_order_sku_code",
+            "auto_order_sku_name",
+            "auto_order_decision",
+            "auto_order_recommended_qty",
+            "auto_order_raw_qty",
+            "auto_order_target_stock_qty",
+            "auto_order_free_stock_qty",
+            "auto_order_incoming_qty",
+            "auto_order_reason",
+            "auto_order_warnings",
+            "auto_order_blockers",
+            "auto_order_calculated_at",
+        ],
+    },
+    {
+        "name": "assortment_status",
+        "title": "Статус ассортимента",
+        "elements": [
+            "assortment_status_decision",
+            "assortment_status_reason",
+            "assortment_status_approved_by",
+            "assortment_status_changed_at",
+            "assortment_commercial_marks",
         ],
     },
     {
@@ -697,8 +1247,22 @@ DETAIL_SECTION_SPECS = [
             "label_generation_status",
             "label_generation_version",
             "label_generation_zip_url",
+            "label_generation_disk_file_id",
             "label_generation_errors",
             "label_generation_approved_at",
+            "label_generation_sent_to_factory_at",
+        ],
+    },
+    {
+        "name": "certification_docs",
+        "title": "Сертификация / GTIN",
+        "elements": [
+            "certification_docs_status",
+            "certification_docs_version",
+            "certification_docs_zip_url",
+            "certification_docs_disk_file_id",
+            "certification_docs_errors",
+            "certification_docs_generated_at",
         ],
     },
 ]
@@ -723,12 +1287,18 @@ def _is_foreign_currency(value: Any) -> bool:
 
 
 def normalize_onec_procurement_contour(
-    value: Any, *, is_open_supplier_order: bool = False, currency: Any = None
+    value: Any,
+    *,
+    is_open_supplier_order: bool = False,
+    currency: Any = None,
+    has_cargo_dropoff: bool = False,
 ) -> str:
     """Map 1C ЗаказПоставщику.КонтурЗакупки to a stable integration key."""
 
     raw_value = str(value or "").strip()
     if not raw_value:
+        if has_cargo_dropoff:
+            return "cargo"
         if _is_foreign_currency(currency):
             return "cargo"
         if _is_ruble_currency(currency):
@@ -895,6 +1465,239 @@ def desired_stage_specs(category_spec: dict[str, Any]) -> list[dict[str, Any]]:
     return rows
 
 
+def move_terminal_stages_after_process_steps(
+    webhook_base: str,
+    *,
+    entity_type_id: int,
+    category_id: int,
+    stage_specs: list[dict[str, Any]],
+) -> None:
+    """Bitrix refuses adding process stages after an existing success stage."""
+
+    max_process_sort = max(
+        (int(spec["sort"]) for spec in stage_specs if spec.get("semantics") is None),
+        default=0,
+    )
+    terminal_sorts = {
+        str(spec.get("semantics")): int(spec["sort"])
+        for spec in stage_specs
+        if spec.get("semantics") in {"S", "F"}
+    }
+    terminal_names = {
+        str(spec.get("semantics")): str(spec["name"])
+        for spec in stage_specs
+        if spec.get("semantics") in {"S", "F"}
+    }
+    if not max_process_sort or not terminal_sorts:
+        return
+    stages = bitrix_setup.list_stages(
+        webhook_base,
+        entity_type_id=entity_type_id,
+        category_id=category_id,
+    )
+    for stage in stages:
+        semantics = str(stage.get("SEMANTICS") or "")
+        target_sort = terminal_sorts.get(semantics)
+        if not target_sort:
+            continue
+        current_sort = int(stage.get("SORT") or 0)
+        if current_sort > max_process_sort:
+            continue
+        bitrix_setup.bitrix_call(
+            webhook_base,
+            "crm.status.update",
+            {
+                "id": stage["ID"],
+                "fields": {
+                    "NAME": terminal_names[semantics],
+                    "SORT": target_sort,
+                    "SEMANTICS": semantics,
+                },
+            },
+        )
+
+
+def precreate_missing_process_stages_before_success(
+    webhook_base: str,
+    *,
+    entity_type_id: int,
+    category_id: int,
+    stage_specs: list[dict[str, Any]],
+) -> None:
+    """Create new process stages before success, then let ensure_stages sort them."""
+
+    stages = bitrix_setup.list_stages(
+        webhook_base,
+        entity_type_id=entity_type_id,
+        category_id=category_id,
+    )
+    status_ids = {str(stage.get("STATUS_ID") or "") for stage in stages}
+    success_sorts = [
+        int(stage.get("SORT") or 0) for stage in stages if stage.get("SEMANTICS") == "S"
+    ]
+    if not success_sorts:
+        return
+    success_sort = min(success_sorts)
+    missing_after_success = []
+    for spec in stage_specs:
+        if spec.get("semantics") is not None or int(spec["sort"]) <= success_sort:
+            continue
+        status_id = f"DT{entity_type_id}_{category_id}:{spec['code']}"
+        if status_id not in status_ids:
+            missing_after_success.append((spec, status_id))
+    if not missing_after_success:
+        return
+    entity_id = f"DYNAMIC_{entity_type_id}_STAGE_{category_id}"
+    start_sort = max(1, success_sort - len(missing_after_success))
+    for index, (spec, status_id) in enumerate(missing_after_success):
+        bitrix_setup.bitrix_call(
+            webhook_base,
+            "crm.status.add",
+            {
+                "fields": {
+                    "ENTITY_ID": entity_id,
+                    "STATUS_ID": status_id,
+                    "NAME": spec["name"],
+                    "SORT": start_sort + index,
+                }
+            },
+        )
+
+
+def list_stage_item_ids(
+    webhook_base: str,
+    *,
+    entity_type_id: int,
+    category_id: int,
+    stage_id: str,
+) -> list[int]:
+    item_ids: list[int] = []
+    start: int | None = 0
+    while True:
+        params: dict[str, Any] = {
+            "entityTypeId": entity_type_id,
+            "filter": {"categoryId": category_id, "stageId": stage_id},
+            "select": ["id"],
+        }
+        if start is not None:
+            params["start"] = start
+        response = bitrix_setup.bitrix_call(webhook_base, "crm.item.list", params)
+        result = response.get("result") or {}
+        items = result.get("items") or []
+        for item in items:
+            try:
+                item_ids.append(int(item.get("id")))
+            except (TypeError, ValueError):
+                continue
+        next_start = response.get("next")
+        if next_start is None or not items:
+            break
+        start = int(next_start)
+    return item_ids
+
+
+def merge_and_delete_obsolete_stages(
+    webhook_base: str,
+    *,
+    entity_type_id: int,
+    category_id: int,
+    category_key: str,
+) -> list[dict[str, Any]]:
+    actions: list[dict[str, Any]] = []
+    merges = OBSOLETE_STAGE_MERGES.get(category_key) or []
+    if not merges:
+        return actions
+    stages = bitrix_setup.list_stages(
+        webhook_base,
+        entity_type_id=entity_type_id,
+        category_id=category_id,
+    )
+    for merge in merges:
+        target_stage_id = f"DT{entity_type_id}_{category_id}:{merge['target_code']}"
+        old_codes = list(merge.get("old_codes") or [])
+        if merge.get("old_code"):
+            old_codes.append(str(merge["old_code"]))
+        old_stage_ids = {f"DT{entity_type_id}_{category_id}:{old_code}" for old_code in old_codes}
+        old_names = {
+            str(name).strip() for name in merge.get("old_names") or [] if str(name).strip()
+        }
+        old_stages: list[dict[str, Any]] = []
+        for stage in stages:
+            stage_id = str(stage.get("STATUS_ID") or "")
+            stage_name = str(stage.get("NAME") or "").strip()
+            if stage_id == target_stage_id:
+                continue
+            if stage_id in old_stage_ids or (old_names and stage_name in old_names):
+                old_stages.append(stage)
+        for old_stage in old_stages:
+            old_stage_id = str(old_stage.get("STATUS_ID") or "")
+            item_ids = list_stage_item_ids(
+                webhook_base,
+                entity_type_id=entity_type_id,
+                category_id=category_id,
+                stage_id=old_stage_id,
+            )
+            for item_id in item_ids:
+                bitrix_setup.bitrix_call(
+                    webhook_base,
+                    "crm.item.update",
+                    {
+                        "entityTypeId": entity_type_id,
+                        "id": item_id,
+                        "fields": {"stageId": target_stage_id},
+                    },
+                )
+            bitrix_setup.bitrix_call(
+                webhook_base,
+                "crm.status.delete",
+                {"id": old_stage["ID"], "FORCED": "Y"},
+            )
+            actions.append(
+                {
+                    "old_stage_id": old_stage_id,
+                    "target_stage_id": target_stage_id,
+                    "moved_items": len(item_ids),
+                    "reason": merge["reason"],
+                }
+            )
+    return actions
+
+
+def obsolete_stage_merge_plan(
+    stages: list[dict[str, Any]],
+    *,
+    entity_type_id: int,
+    category_id: int,
+    category_key: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for merge in OBSOLETE_STAGE_MERGES.get(category_key) or []:
+        target_stage_id = f"DT{entity_type_id}_{category_id}:{merge['target_code']}"
+        old_codes = list(merge.get("old_codes") or [])
+        if merge.get("old_code"):
+            old_codes.append(str(merge["old_code"]))
+        old_stage_ids = {f"DT{entity_type_id}_{category_id}:{old_code}" for old_code in old_codes}
+        old_names = {
+            str(name).strip() for name in merge.get("old_names") or [] if str(name).strip()
+        }
+        for stage in stages:
+            stage_id = str(stage.get("STATUS_ID") or "")
+            stage_name = str(stage.get("NAME") or "").strip()
+            if stage_id == target_stage_id:
+                continue
+            if stage_id in old_stage_ids or (old_names and stage_name in old_names):
+                rows.append(
+                    {
+                        "old_stage_id": stage_id,
+                        "old_stage_name": stage_name,
+                        "target_stage_id": target_stage_id,
+                        "action": "merge_then_delete",
+                        "reason": merge["reason"],
+                    }
+                )
+    return rows
+
+
 def list_categories(webhook_base: str, *, entity_type_id: int) -> list[dict[str, Any]]:
     response = bitrix_setup.bitrix_call(
         webhook_base,
@@ -912,7 +1715,10 @@ def ensure_category_for_spec(
 ) -> dict[str, Any]:
     categories = list_categories(webhook_base, entity_type_id=entity_type_id)
     name = str(category_spec["name"])
-    existing = next((item for item in categories if str(item.get("name") or "") == name), None)
+    match_names = category_match_names(category_spec)
+    existing = next(
+        (item for item in categories if str(item.get("name") or "") in match_names), None
+    )
     if existing is None and category_spec.get("reuse_default"):
         existing = next(
             (item for item in categories if str(item.get("isDefault") or "") == "Y"), None
@@ -953,8 +1759,13 @@ def category_plan(
     category_spec: dict[str, Any],
 ) -> dict[str, Any]:
     name = str(category_spec["name"])
-    existing = next((item for item in categories if str(item.get("name") or "") == name), None)
+    match_names = category_match_names(category_spec)
+    existing = next(
+        (item for item in categories if str(item.get("name") or "") in match_names), None
+    )
     source = "name"
+    if existing is not None and str(existing.get("name") or "") != name:
+        source = "alias"
     if existing is None and category_spec.get("reuse_default"):
         existing = next(
             (item for item in categories if str(item.get("isDefault") or "") == "Y"), None
@@ -983,6 +1794,14 @@ def category_plan(
                 "isDefault": existing.get("isDefault"),
             }
         ),
+    }
+
+
+def category_match_names(category_spec: dict[str, Any]) -> set[str]:
+    return {
+        str(value).strip()
+        for value in [category_spec.get("name"), *(category_spec.get("aliases") or [])]
+        if str(value or "").strip()
     }
 
 
@@ -1126,10 +1945,34 @@ def enum_map_for_spec(spec: dict[str, Any], field: dict[str, Any]) -> dict[str, 
     result: dict[str, str] = {}
     for option in desired_enum_options(spec):
         current = current_by_value.get(option["value"])
+        if current is None:
+            source_option = next(
+                (
+                    item
+                    for item in spec.get("enum") or []
+                    if str(item.get("xml_id") or item.get("xmlId") or "") == option["xmlId"]
+                ),
+                {},
+            )
+            for alias in source_option.get("aliases") or []:
+                current = current_by_value.get(str(alias).strip())
+                if current is not None:
+                    break
         enum_id = (current or {}).get("id") or (current or {}).get("ID")
         if enum_id:
             result[option["xmlId"]] = str(enum_id)
     return result
+
+
+def field_with_enum_options(webhook_base: str, current: dict[str, Any]) -> dict[str, Any]:
+    if current.get("enum") or not current.get("id"):
+        return current
+    response = bitrix_setup.bitrix_call(
+        webhook_base,
+        "userfieldconfig.get",
+        {"moduleId": "crm", "id": current["id"]},
+    )
+    return (response.get("result") or {}).get("field") or current
 
 
 def enum_options_for_update(spec: dict[str, Any], current: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1138,8 +1981,15 @@ def enum_options_for_update(spec: dict[str, Any], current: dict[str, Any]) -> li
         for item in current.get("enum") or []
     }
     rows: list[dict[str, Any]] = []
-    for option in desired_enum_options(spec):
+    for source_option, option in zip(
+        spec.get("enum") or [], desired_enum_options(spec), strict=True
+    ):
         existing = current_by_value.get(option["value"])
+        if existing is None:
+            for alias in source_option.get("aliases") or []:
+                existing = current_by_value.get(str(alias).strip())
+                if existing is not None:
+                    break
         if existing:
             enum_id = existing.get("id") or existing.get("ID")
             if enum_id:
@@ -1162,7 +2012,7 @@ def build_contour_contract(
         logical_key = str(item["logical_key"])
         category = categories.get(logical_key) or {}
         stages = category_stages.get(logical_key) or {}
-        default_stage = stages.get("need") or next(iter(stages.values()), {})
+        default_stage = stages.get("supplier_order") or next(iter(stages.values()), {})
         contours[logical_key] = {
             "onec_requisite": ONEC_CONTOUR_REQUISITE,
             "onec_values": list(item["onec_values"]),
@@ -1171,15 +2021,18 @@ def build_contour_contract(
             "bitrix_enum_id": procurement_contour_enum_map.get(logical_key),
             "category_key": logical_key,
             "category_id": int(category["id"]) if category.get("id") else None,
-            "initial_stage_key": "need",
+            "initial_stage_key": "supplier_order",
             "initial_stage_id": str(
                 default_stage.get("STATUS_ID") or default_stage.get("statusId") or ""
             ),
         }
     return {
         "onec_document": "ЗаказПоставщику",
+        "pre_onec_process": "Формирование заказа",
+        "legacy_need_stage_policy": "system_new_stage_is_renamed_to_supplier_order",
         "onec_requisite": ONEC_CONTOUR_REQUISITE,
         "blank_value_policy": "foreign_currency_cargo_rub_ordinary_otherwise_open_supplier_order",
+        "blank_cargo_dropoff_date_policy": "cargo",
         "blank_foreign_currency_policy": "cargo",
         "blank_rub_currency_policy": "ordinary",
         "blank_open_supplier_order_policy": "cargo",
@@ -1197,14 +2050,18 @@ def bitrix_contour_payload_for_onec_value(
     value: Any,
     *,
     mapping: dict[str, Any],
-    initial_stage_key: str = "need",
+    initial_stage_key: str = "supplier_order",
     is_open_supplier_order: bool = False,
+    currency: Any = None,
+    has_cargo_dropoff: bool = False,
 ) -> dict[str, Any]:
     """Return category/stage/enum payload for a 1C procurement contour value."""
 
     logical_key = normalize_onec_procurement_contour(
         value,
         is_open_supplier_order=is_open_supplier_order,
+        currency=currency,
+        has_cargo_dropoff=has_cargo_dropoff,
     )
     category = (mapping.get("category_map") or {}).get(logical_key) or {}
     stage_map = (mapping.get("stage_map") or {}).get(logical_key) or {}
@@ -1212,7 +2069,7 @@ def bitrix_contour_payload_for_onec_value(
     enum_map = (mapping.get("enum_map") or {}).get("procurement_contour") or {}
 
     category_id = category.get("id")
-    stage_id = stage_map.get(initial_stage_key) or stage_map.get("need")
+    stage_id = stage_map.get(initial_stage_key)
     field_name = field_map.get("procurement_contour")
     enum_id = enum_map.get(logical_key)
     missing = [
@@ -1249,6 +2106,7 @@ def ensure_procurement_custom_fields(
     webhook_base: str,
     *,
     process_type: dict[str, Any],
+    update_existing: bool = True,
 ) -> list[dict[str, Any]]:
     type_id = int(process_type["id"])
     entity_id = bitrix_setup.smart_process_userfield_entity_id(type_id)
@@ -1279,6 +2137,9 @@ def ensure_procurement_custom_fields(
                 "editInList": "Y" if bitrix_setup._spec_edit_in_list(spec) else "N",
                 "sort": 100 + index * 10,
                 "settings": settings,
+                "editFormLabel": {"ru": title},
+                "listColumnLabel": {"ru": title},
+                "listFilterLabel": {"ru": title},
             }
             if user_type_id == "enumeration":
                 field["enum"] = desired_enum_options(spec)
@@ -1289,6 +2150,22 @@ def ensure_procurement_custom_fields(
             )
             current = (response.get("result") or {}).get("field") or {}
             action = "created"
+        elif not update_existing:
+            action = "exists"
+            rows.append(
+                {
+                    "logical_key": spec["logical_key"],
+                    "title": title,
+                    "field_name": current.get("fieldName") or field_name,
+                    "field_id": current.get("id"),
+                    "xml_id": xml_id,
+                    "enum_map": (
+                        enum_map_for_spec(spec, current) if user_type_id == "enumeration" else {}
+                    ),
+                    "action": action,
+                }
+            )
+            continue
         else:
             action = "updated"
 
@@ -1379,6 +2256,7 @@ def ensure_smart_process_fields(
     process_type: dict[str, Any],
     field_specs: list[dict[str, Any]],
     xml_prefix: str,
+    update_existing: bool = True,
 ) -> list[dict[str, Any]]:
     type_id = int(process_type["id"])
     entity_id = bitrix_setup.smart_process_userfield_entity_id(type_id)
@@ -1409,6 +2287,9 @@ def ensure_smart_process_fields(
                 "editInList": "Y" if bitrix_setup._spec_edit_in_list(spec) else "N",
                 "sort": 100 + index * 10,
                 "settings": settings,
+                "editFormLabel": {"ru": title},
+                "listColumnLabel": {"ru": title},
+                "listFilterLabel": {"ru": title},
             }
             if user_type_id == "enumeration":
                 field["enum"] = desired_enum_options(spec)
@@ -1419,6 +2300,22 @@ def ensure_smart_process_fields(
             )
             current = (response.get("result") or {}).get("field") or {}
             action = "created"
+        elif not update_existing:
+            action = "exists"
+            rows.append(
+                {
+                    "logical_key": spec["logical_key"],
+                    "title": title,
+                    "field_name": current.get("fieldName") or field_name,
+                    "field_id": current.get("id"),
+                    "xml_id": xml_id,
+                    "enum_map": (
+                        enum_map_for_spec(spec, current) if user_type_id == "enumeration" else {}
+                    ),
+                    "action": action,
+                }
+            )
+            continue
         else:
             action = "updated"
 
@@ -1463,7 +2360,11 @@ def ensure_smart_process_fields(
     return rows
 
 
-def ensure_ved_supplier_passport_fields(webhook_base: str) -> dict[str, Any]:
+def ensure_ved_supplier_passport_fields(
+    webhook_base: str,
+    *,
+    update_existing: bool = True,
+) -> dict[str, Any]:
     process_type = bitrix_setup.find_type_by_title(webhook_base, VED_SUPPLIER_PROCESS_TITLE)
     if process_type is None:
         return {"process": {"title": VED_SUPPLIER_PROCESS_TITLE, "action": "missing"}, "fields": []}
@@ -1479,7 +2380,142 @@ def ensure_ved_supplier_passport_fields(webhook_base: str) -> dict[str, Any]:
             process_type=process_type,
             field_specs=VED_SUPPLIER_PASSPORT_FIELD_SPECS,
             xml_prefix="UF_CRM_VED_SUPPLIER",
+            update_existing=update_existing,
         ),
+    }
+
+
+def crm_item_fields_by_title(webhook_base: str, *, entity_type_id: int) -> dict[str, str]:
+    response = bitrix_setup.bitrix_call(
+        webhook_base,
+        "crm.item.fields",
+        {"entityTypeId": entity_type_id},
+    )
+    result = response.get("result") or {}
+    fields = result.get("fields") if isinstance(result, dict) else {}
+    if not isinstance(fields, dict):
+        return {}
+    rows: dict[str, str] = {}
+    for field_name, field in fields.items():
+        if not isinstance(field, dict):
+            continue
+        titles = [
+            field.get("title"),
+            field.get("formLabel"),
+            field.get("listLabel"),
+            field.get("filterLabel"),
+        ]
+        labels = field.get("labels")
+        if isinstance(labels, dict):
+            titles.extend(labels.values())
+        for title in titles:
+            title_value = str(title or "").strip()
+            if title_value and title_value not in rows:
+                rows[title_value] = str(field_name)
+    return rows
+
+
+def field_map_from_titles(
+    fields_by_title: dict[str, str],
+    aliases: dict[str, tuple[str, ...]],
+    ensured_fields: list[dict[str, Any]] | None = None,
+) -> dict[str, str]:
+    field_map: dict[str, str] = {}
+    for row in ensured_fields or []:
+        logical_key = str(row.get("logical_key") or "").strip()
+        field_name = str(row.get("field_name") or "").strip()
+        if logical_key and field_name:
+            field_map[logical_key] = field_name
+    for logical_key, titles in aliases.items():
+        if field_map.get(logical_key):
+            continue
+        for title in titles:
+            field_name = fields_by_title.get(title)
+            if field_name:
+                field_map[logical_key] = field_name
+                break
+    return field_map
+
+
+def ensure_certificate_process_fields(
+    webhook_base: str,
+    *,
+    update_existing: bool = True,
+) -> dict[str, Any]:
+    process_type = bitrix_setup.find_type_by_title(webhook_base, CERTIFICATE_PROCESS_TITLE)
+    if process_type is None:
+        return {
+            "process": {"title": CERTIFICATE_PROCESS_TITLE, "action": "missing"},
+            "fields": [],
+            "field_map": {},
+            "enum_map": {},
+        }
+    fields = ensure_smart_process_fields(
+        webhook_base,
+        process_type=process_type,
+        field_specs=CERTIFICATE_FIELD_SPECS,
+        xml_prefix="UF_CRM_CERTIFICATE",
+        update_existing=update_existing,
+    )
+    fields_by_title = crm_item_fields_by_title(
+        webhook_base,
+        entity_type_id=int(process_type["entityTypeId"]),
+    )
+    return {
+        "process": {
+            "title": process_type.get("title"),
+            "type_id": int(process_type["id"]),
+            "entity_type_id": int(process_type["entityTypeId"]),
+            "action": "update",
+        },
+        "fields": fields,
+        "field_map": field_map_from_titles(
+            fields_by_title,
+            CERTIFICATE_TITLE_ALIASES,
+            fields,
+        ),
+        "enum_map": {row["logical_key"]: row["enum_map"] for row in fields if row.get("enum_map")},
+    }
+
+
+def ensure_product_passport_process_fields(
+    webhook_base: str,
+    *,
+    update_existing: bool = True,
+) -> dict[str, Any]:
+    process_type = bitrix_setup.find_type_by_title(webhook_base, PRODUCT_PASSPORT_PROCESS_TITLE)
+    if process_type is None:
+        return {
+            "process": {"title": PRODUCT_PASSPORT_PROCESS_TITLE, "action": "missing"},
+            "fields": [],
+            "field_map": {},
+            "enum_map": {},
+        }
+    fields = ensure_smart_process_fields(
+        webhook_base,
+        process_type=process_type,
+        field_specs=PRODUCT_PASSPORT_FIELD_SPECS,
+        xml_prefix="UF_CRM_PRODUCT_PASSPORT",
+        update_existing=update_existing,
+    )
+    fields_by_title = crm_item_fields_by_title(
+        webhook_base,
+        entity_type_id=int(process_type["entityTypeId"]),
+    )
+    return {
+        "process": {
+            "title": process_type.get("title"),
+            "type_id": int(process_type["id"]),
+            "entity_type_id": int(process_type["entityTypeId"]),
+            "action": "update",
+        },
+        "fields": fields,
+        "field_map": field_map_from_titles(
+            fields_by_title,
+            PRODUCT_PASSPORT_TITLE_ALIASES,
+            fields,
+        ),
+        "enum_map": {row["logical_key"]: row["enum_map"] for row in fields if row.get("enum_map")},
     }
 
 
@@ -1521,6 +2557,176 @@ def smart_process_field_plan(
     return rows
 
 
+def discover_process_fields(
+    webhook_base: str,
+    *,
+    process_type: dict[str, Any],
+    field_specs: list[dict[str, Any]],
+    xml_prefix: str | None = None,
+) -> list[dict[str, Any]]:
+    entity_id = bitrix_setup.smart_process_userfield_entity_id(int(process_type["id"]))
+    fields = bitrix_setup.list_userfields(webhook_base, entity_id=entity_id)
+    by_name = {str(item.get("fieldName") or ""): item for item in fields}
+    by_xml_id = {str(item.get("xmlId") or ""): item for item in fields if item.get("xmlId")}
+    rows: list[dict[str, Any]] = []
+    for spec in field_specs:
+        field_name = bitrix_setup._field_name_for_spec(entity_id, spec)
+        xml_id = (
+            smart_process_field_xml_id(xml_prefix, spec)
+            if xml_prefix
+            else field_xml_id_for_spec(spec)
+        )
+        current = by_xml_id.get(xml_id) or by_name.get(field_name)
+        user_type_id, _ = field_config_for_spec(spec)
+        if current and user_type_id == "enumeration":
+            current = field_with_enum_options(webhook_base, current)
+        rows.append(
+            {
+                "logical_key": spec["logical_key"],
+                "title": spec["title"],
+                "field_name": (current or {}).get("fieldName") or field_name,
+                "field_id": (current or {}).get("id"),
+                "xml_id": xml_id,
+                "enum_map": (
+                    enum_map_for_spec(spec, current or {}) if user_type_id == "enumeration" else {}
+                ),
+                "action": "found" if current else "missing",
+            }
+        )
+    return rows
+
+
+def patch_mapping_process_fields(
+    mapping: dict[str, Any],
+    *,
+    process_type: dict[str, Any],
+    custom_fields: list[dict[str, Any]],
+    certificate_process: dict[str, Any],
+    product_passport_process: dict[str, Any],
+) -> dict[str, Any]:
+    field_map = dict(mapping.get("field_map") or BUILTIN_FIELD_MAPPING)
+    for row in custom_fields:
+        if row.get("field_name"):
+            field_map[str(row["logical_key"])] = str(row["field_name"])
+    enum_map = dict(mapping.get("enum_map") or {})
+    for row in custom_fields:
+        if row.get("enum_map"):
+            enum_map[str(row["logical_key"])] = row["enum_map"]
+    mapping["generated_at"] = datetime.now(timezone.utc).isoformat()
+    mapping["process"] = {
+        "title": process_type.get("title"),
+        "code": process_type.get("code"),
+        "type_id": int(process_type["id"]),
+        "entity_type_id": int(process_type["entityTypeId"]),
+    }
+    mapping["field_map"] = field_map
+    mapping["enum_map"] = enum_map
+    env = dict(mapping.get("env") or {})
+    env["PROCUREMENT_BITRIX_ENTITY_TYPE_ID"] = int(process_type["entityTypeId"])
+    env["PROCUREMENT_BITRIX_FIELD_MAP"] = json.dumps(field_map, ensure_ascii=False)
+    env["PROCUREMENT_BITRIX_ENUM_MAP"] = json.dumps(enum_map, ensure_ascii=False)
+    mapping["env"] = env
+    mapping["certificate_process"] = {
+        "entity_type_id": (certificate_process.get("process") or {}).get("entity_type_id"),
+        "field_map": certificate_process.get("field_map") or {},
+        "enum_map": certificate_process.get("enum_map") or {},
+        "fields": certificate_process.get("fields") or [],
+    }
+    mapping["product_passport_process"] = {
+        "entity_type_id": (product_passport_process.get("process") or {}).get("entity_type_id"),
+        "field_map": product_passport_process.get("field_map") or {},
+        "enum_map": product_passport_process.get("enum_map") or {},
+        "fields": product_passport_process.get("fields") or [],
+    }
+    return mapping
+
+
+def ensure_procurement_details_configurations(
+    webhook_base: str,
+    *,
+    mapping: dict[str, Any],
+    details_config_path: Path,
+) -> dict[str, str]:
+    entity_type_id = int((mapping.get("process") or {}).get("entity_type_id") or 0)
+    if not entity_type_id:
+        return {}
+    details_paths = dict(mapping.get("details_configuration_paths") or {})
+    for logical_key, category in (mapping.get("category_map") or {}).items():
+        category_id = int((category or {}).get("id") or 0)
+        if not category_id:
+            continue
+        details_mapping = {
+            "process": {
+                "entity_type_id": entity_type_id,
+                "category_id": category_id,
+            },
+            "fields": mapping.get("field_map") or {},
+        }
+        path = details_config_path.with_name(
+            f"{details_config_path.stem}_{logical_key}{details_config_path.suffix}"
+        )
+        _, saved_path = bitrix_setup.ensure_common_details_configuration(
+            webhook_base,
+            mapping=details_mapping,
+            path=path,
+        )
+        details_paths[str(logical_key)] = str(saved_path)
+    return details_paths
+
+
+def apply_fields_only_setup(
+    webhook_base: str,
+    *,
+    title: str,
+    mapping_path: Path,
+    details_config_path: Path,
+    skip_details_config: bool = False,
+) -> dict[str, Any]:
+    configure_generic_setup()
+    process_type = bitrix_setup.find_type_by_title(webhook_base, title)
+    if process_type is None:
+        raise RuntimeError(f"Bitrix process {title!r} is not found")
+    ensure_procurement_custom_fields(
+        webhook_base,
+        process_type=process_type,
+        update_existing=False,
+    )
+    certificate_process = ensure_certificate_process_fields(
+        webhook_base,
+        update_existing=False,
+    )
+    product_passport_process = ensure_product_passport_process_fields(
+        webhook_base,
+        update_existing=False,
+    )
+    custom_fields = discover_process_fields(
+        webhook_base,
+        process_type=process_type,
+        field_specs=CUSTOM_FIELD_SPECS,
+    )
+    mapping = {}
+    if mapping_path.exists():
+        mapping = json.loads(mapping_path.read_text(encoding="utf-8"))
+        if not isinstance(mapping, dict):
+            mapping = {}
+    mapping = patch_mapping_process_fields(
+        mapping,
+        process_type=process_type,
+        custom_fields=custom_fields,
+        certificate_process=certificate_process,
+        product_passport_process=product_passport_process,
+    )
+    if not skip_details_config:
+        mapping["details_configuration_paths"] = ensure_procurement_details_configurations(
+            webhook_base,
+            mapping=mapping,
+            details_config_path=details_config_path,
+        )
+    mapping_path.parent.mkdir(parents=True, exist_ok=True)
+    mapping_path.write_text(json.dumps(mapping, ensure_ascii=False, indent=2), encoding="utf-8")
+    return mapping
+
+
 def build_read_only_plan(
     webhook_base: str,
     *,
@@ -1528,6 +2734,11 @@ def build_read_only_plan(
 ) -> dict[str, Any]:
     process_type = bitrix_setup.find_type_by_title(webhook_base, title)
     ved_supplier_type = bitrix_setup.find_type_by_title(webhook_base, VED_SUPPLIER_PROCESS_TITLE)
+    certificate_type = bitrix_setup.find_type_by_title(webhook_base, CERTIFICATE_PROCESS_TITLE)
+    product_passport_type = bitrix_setup.find_type_by_title(
+        webhook_base,
+        PRODUCT_PASSPORT_PROCESS_TITLE,
+    )
     if process_type is None:
         return {
             "generated_at": datetime.now(timezone.utc).isoformat(),
@@ -1548,12 +2759,37 @@ def build_read_only_plan(
                     xml_prefix="UF_CRM_VED_SUPPLIER",
                 ),
             },
+            "certificate_process": {
+                "process": {
+                    "title": CERTIFICATE_PROCESS_TITLE,
+                    "action": "missing" if certificate_type is None else "update",
+                },
+                "fields": smart_process_field_plan(
+                    webhook_base,
+                    process_type=certificate_type,
+                    field_specs=CERTIFICATE_FIELD_SPECS,
+                    xml_prefix="UF_CRM_CERTIFICATE",
+                ),
+            },
+            "product_passport_process": {
+                "process": {
+                    "title": PRODUCT_PASSPORT_PROCESS_TITLE,
+                    "action": "missing" if product_passport_type is None else "update",
+                },
+                "fields": smart_process_field_plan(
+                    webhook_base,
+                    process_type=product_passport_type,
+                    field_specs=PRODUCT_PASSPORT_FIELD_SPECS,
+                    xml_prefix="UF_CRM_PRODUCT_PASSPORT",
+                ),
+            },
         }
 
     entity_type_id = int(process_type["entityTypeId"])
     categories = list_categories(webhook_base, entity_type_id=entity_type_id)
     category_plans = [category_plan(categories, category_spec=item) for item in CATEGORY_SPECS]
     stage_plans: dict[str, list[dict[str, Any]]] = {}
+    obsolete_stage_plans: dict[str, list[dict[str, Any]]] = {}
     for spec, plan in zip(CATEGORY_SPECS, category_plans, strict=True):
         existing = plan.get("existing")
         if not existing:
@@ -1567,12 +2803,19 @@ def build_read_only_plan(
                 }
                 for item in desired_stage_specs(spec)
             ]
+            obsolete_stage_plans[spec["logical_key"]] = []
             continue
         category_id = int(existing["id"])
         stages = bitrix_setup.list_stages(
             webhook_base,
             entity_type_id=entity_type_id,
             category_id=category_id,
+        )
+        obsolete_stage_plans[spec["logical_key"]] = obsolete_stage_merge_plan(
+            stages,
+            entity_type_id=entity_type_id,
+            category_id=category_id,
+            category_key=spec["logical_key"],
         )
         stage_plans[spec["logical_key"]] = stage_plan(
             stages,
@@ -1593,6 +2836,7 @@ def build_read_only_plan(
         "categories": category_plans,
         "fields": field_plan(webhook_base, process_type=process_type),
         "stages": stage_plans,
+        "obsolete_stage_merges": obsolete_stage_plans,
         "crm_sync_fields": CRM_SYNC_FIELD_SPECS,
         "ved_supplier_passport": {
             "process": {
@@ -1606,6 +2850,30 @@ def build_read_only_plan(
                 xml_prefix="UF_CRM_VED_SUPPLIER",
             ),
         },
+        "certificate_process": {
+            "process": {
+                "title": CERTIFICATE_PROCESS_TITLE,
+                "action": "missing" if certificate_type is None else "update",
+            },
+            "fields": smart_process_field_plan(
+                webhook_base,
+                process_type=certificate_type,
+                field_specs=CERTIFICATE_FIELD_SPECS,
+                xml_prefix="UF_CRM_CERTIFICATE",
+            ),
+        },
+        "product_passport_process": {
+            "process": {
+                "title": PRODUCT_PASSPORT_PROCESS_TITLE,
+                "action": "missing" if product_passport_type is None else "update",
+            },
+            "fields": smart_process_field_plan(
+                webhook_base,
+                process_type=product_passport_type,
+                field_specs=PRODUCT_PASSPORT_FIELD_SPECS,
+                xml_prefix="UF_CRM_PRODUCT_PASSPORT",
+            ),
+        },
     }
 
 
@@ -1615,6 +2883,8 @@ def build_mapping(
     categories: dict[str, dict[str, Any]],
     category_stages: dict[str, dict[str, dict[str, Any]]],
     custom_fields: list[dict[str, Any]],
+    certificate_process: dict[str, Any],
+    product_passport_process: dict[str, Any],
     details_paths: dict[str, str],
 ) -> dict[str, Any]:
     field_map = dict(BUILTIN_FIELD_MAPPING)
@@ -1651,6 +2921,16 @@ def build_mapping(
         },
         "field_map": field_map,
         "enum_map": enum_map,
+        "certificate_process": {
+            "entity_type_id": (certificate_process.get("process") or {}).get("entity_type_id"),
+            "field_map": certificate_process.get("field_map") or {},
+            "enum_map": certificate_process.get("enum_map") or {},
+        },
+        "product_passport_process": {
+            "entity_type_id": (product_passport_process.get("process") or {}).get("entity_type_id"),
+            "field_map": product_passport_process.get("field_map") or {},
+            "enum_map": product_passport_process.get("enum_map") or {},
+        },
         "onec_contour_contract": contour_contract,
         "crm_supplier_sync_contract": {
             "originator_id": CRM_SUPPLIER_ORIGINATOR_ID,
@@ -1729,6 +3009,7 @@ def apply_setup(
     mapping_path: Path,
     details_config_path: Path,
     skip_details_config: bool,
+    fast_field_create: bool,
 ) -> dict[str, Any]:
     configure_generic_setup()
     process_type = bitrix_setup.ensure_type(webhook_base, title=title, code=code)
@@ -1750,26 +3031,64 @@ def apply_setup(
         )
         logical_key = str(category_spec["logical_key"])
         categories[logical_key] = category
-        bitrix_setup.STAGE_SPECS = desired_stage_specs(category_spec)
+        stage_specs = desired_stage_specs(category_spec)
+        bitrix_setup.STAGE_SPECS = stage_specs
         category_id = int(category["id"])
+        merge_and_delete_obsolete_stages(
+            webhook_base,
+            entity_type_id=entity_type_id,
+            category_id=category_id,
+            category_key=logical_key,
+        )
+        precreate_missing_process_stages_before_success(
+            webhook_base,
+            entity_type_id=entity_type_id,
+            category_id=category_id,
+            stage_specs=stage_specs,
+        )
+        move_terminal_stages_after_process_steps(
+            webhook_base,
+            entity_type_id=entity_type_id,
+            category_id=category_id,
+            stage_specs=stage_specs,
+        )
         category_stages[logical_key] = bitrix_setup.ensure_stages(
             webhook_base,
             entity_type_id=entity_type_id,
             category_id=category_id,
         )
 
-    custom_fields = ensure_procurement_custom_fields(webhook_base, process_type=process_type)
+    custom_fields = ensure_procurement_custom_fields(
+        webhook_base,
+        process_type=process_type,
+        update_existing=not fast_field_create,
+    )
     crm_sync_fields = ensure_crm_sync_userfields(webhook_base)
-    ved_supplier_passport = ensure_ved_supplier_passport_fields(webhook_base)
+    ved_supplier_passport = ensure_ved_supplier_passport_fields(
+        webhook_base,
+        update_existing=not fast_field_create,
+    )
+    certificate_process = ensure_certificate_process_fields(
+        webhook_base,
+        update_existing=not fast_field_create,
+    )
+    product_passport_process = ensure_product_passport_process_fields(
+        webhook_base,
+        update_existing=not fast_field_create,
+    )
     mapping = build_mapping(
         process_type=process_type,
         categories=categories,
         category_stages=category_stages,
         custom_fields=custom_fields,
+        certificate_process=certificate_process,
+        product_passport_process=product_passport_process,
         details_paths=details_paths,
     )
     mapping["crm_supplier_sync_fields"] = crm_sync_fields
     mapping["ved_supplier_passport"] = ved_supplier_passport
+    mapping["certificate_process"]["fields"] = certificate_process.get("fields") or []
+    mapping["product_passport_process"]["fields"] = product_passport_process.get("fields") or []
 
     if not skip_details_config:
         for logical_key, category in categories.items():
@@ -1807,6 +3126,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--result-path", type=Path, default=DEFAULT_RESULT_PATH)
     parser.add_argument("--skip-details-config", action="store_true")
     parser.add_argument(
+        "--fast-field-create",
+        action="store_true",
+        help="Create only missing fields and do not refresh/update existing field configs.",
+    )
+    parser.add_argument(
+        "--fields-only",
+        action="store_true",
+        help="Only ensure procurement label/certificate fields and rewrite mapping.",
+    )
+    parser.add_argument(
         "--apply", action="store_true", help="Update Bitrix. Default is read-only plan."
     )
     return parser.parse_args()
@@ -1830,7 +3159,20 @@ def main() -> int:
         )
 
     configure_generic_setup()
-    if args.apply:
+    if args.apply and args.fields_only:
+        mapping = apply_fields_only_setup(
+            webhook_base,
+            title=args.title,
+            mapping_path=args.mapping_path,
+            details_config_path=args.details_config_path,
+            skip_details_config=args.skip_details_config,
+        )
+        result = {
+            "mode": "apply-fields-only",
+            "mapping_path": str(args.mapping_path),
+            "mapping": mapping,
+        }
+    elif args.apply:
         mapping = apply_setup(
             webhook_base,
             title=args.title,
@@ -1838,6 +3180,7 @@ def main() -> int:
             mapping_path=args.mapping_path,
             details_config_path=args.details_config_path,
             skip_details_config=args.skip_details_config,
+            fast_field_create=args.fast_field_create,
         )
         result = {"mode": "apply", "mapping_path": str(args.mapping_path), "mapping": mapping}
     else:

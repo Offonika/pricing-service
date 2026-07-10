@@ -7,7 +7,27 @@ from pathlib import Path
 
 from sqlalchemy import create_engine, text
 
+from tasks.build_assortment_lifecycle_facts import _default_history_months, _default_limit
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_build_assortment_lifecycle_facts_task_reads_history_months_from_env(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ASSORTMENT_LIFECYCLE_HISTORY_MONTHS", "48")
+
+    assert _default_history_months() == 48
+
+
+def test_build_assortment_lifecycle_facts_task_uses_safe_default_limit(
+    monkeypatch,
+) -> None:
+    monkeypatch.delenv("ASSORTMENT_LIFECYCLE_LIMIT", raising=False)
+    assert _default_limit() == 3000
+
+    monkeypatch.setenv("ASSORTMENT_LIFECYCLE_LIMIT", "1200")
+    assert _default_limit() == 1200
 
 
 def test_build_assortment_lifecycle_facts_task_feeds_updates_task(tmp_path: Path) -> None:

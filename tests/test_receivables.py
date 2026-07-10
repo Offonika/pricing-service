@@ -278,6 +278,7 @@ def _setup_onec_regular_current_totals(engine) -> None:
         conn.execute(text("""
                 CREATE TABLE _Reference54 (
                     _IDRRef TEXT,
+                    _Code TEXT,
                     _Description TEXT
                 )
                 """))
@@ -303,10 +304,10 @@ def _setup_onec_regular_current_totals(engine) -> None:
                 )
                 """))
         conn.execute(text("""
-                INSERT INTO _Reference54 (_IDRRef, _Description) VALUES
-                    ('cp-regular', 'ООО \"АйТех Сервис\"'),
-                    ('cp-summary', 'ИП ЕВТУШЕНКО-КУДИНА ЮЛИЯ НИКОЛАЕВНА'),
-                    ('cp-employee', 'Сотрудник Тестовый')
+                INSERT INTO _Reference54 (_IDRRef, _Code, _Description) VALUES
+                    ('cp-regular', 'РБ000001', 'ООО \"АйТех Сервис\"'),
+                    ('cp-summary', 'РБ000002', 'ИП ЕВТУШЕНКО-КУДИНА ЮЛИЯ НИКОЛАЕВНА'),
+                    ('cp-employee', 'РБ000003', 'Сотрудник Тестовый')
                 """))
         conn.execute(text("""
                 INSERT INTO _Reference37 (_IDRRef, _Fld515RRef) VALUES

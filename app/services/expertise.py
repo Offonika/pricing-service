@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import inspect, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import Settings, get_settings
@@ -496,6 +496,40 @@ class _SyncCounters:
     updated: int = 0
 
 
+SYNCED_CASE_COLUMN_KEYS = (
+    "external_id",
+    "onec_expertise_ref",
+    "onec_expertise_number",
+    "created_at_source",
+    "organization_ref",
+    "contract_ref",
+    "linked_sale_ref",
+    "linked_sale_number",
+    "store_external_id",
+    "store_name",
+    "customer_name",
+    "customer_phone",
+    "problem_summary",
+    "current_status",
+    "decision_code",
+    "decision_label",
+    "decision_comment",
+    "linked_customer_order_ref",
+    "linked_customer_order_number",
+    "client_notified",
+    "due_at",
+    "owner_user_external_id",
+    "payload",
+)
+
+
+def _case_has_synced_field_changes(case_row: ExpertiseCase) -> bool:
+    state = inspect(case_row)
+    return any(
+        state.attrs[field_name].history.has_changes() for field_name in SYNCED_CASE_COLUMN_KEYS
+    )
+
+
 def _latest_event_at(
     session: Session,
     *,
@@ -684,8 +718,6 @@ def sync_cases(session: Session, items: list[dict]) -> dict:
             )
             session.add(row)
             counters.created += 1
-        else:
-            counters.updated += 1
 
         previous_bitrix_entity_id = row.bitrix_entity_id
         row.external_id = item["external_id"]
@@ -745,6 +777,7 @@ def sync_cases(session: Session, items: list[dict]) -> dict:
             row.decision_label = _decision_label_from_code(row.decision_code)
 
         _replace_attachments(row, item.get("attachments"))
+        changed_before_flush = is_created or _case_has_synced_field_changes(row)
         session.flush()
         if _apply_synced_decision_transition(
             session,
@@ -761,7 +794,11 @@ def sync_cases(session: Session, items: list[dict]) -> dict:
             explicit_due_at=item.get("due_at"),
             explicit_due_at_provided="due_at" in item,
         )
-        touched_case_ids.append(row.id)
+        should_sync_to_bitrix = changed_before_flush or _case_has_synced_field_changes(row)
+        if not is_created and should_sync_to_bitrix:
+            counters.updated += 1
+        if should_sync_to_bitrix:
+            touched_case_ids.append(row.id)
 
         _append_event(
             session,

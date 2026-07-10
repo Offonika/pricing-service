@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.models import ReceivableCase, ReceivableSmsLog, ReceivableWorkEvent, ReceivableWorkItem
 from app.services.expertise_bitrix import BitrixRestClient
+from app.services.receivable_workplace_cache import load_cached_open_debt_documents
 from app.services.receivables import CASE_BUYERS, CASE_OVERDUE
 
 STATUS_NEW_DEBT = "new_debt"
@@ -46,6 +47,7 @@ WORKPLACE_PAYLOAD_KEYS = {
     "contacted_staff_ref",
     "contacted_staff_name",
     "payment_postponed",
+    "payment_postponed_count",
     "workplace_last_action_at",
 }
 
@@ -532,20 +534,74 @@ def _chain_document_label(event_type: str | None) -> str:
     }.get(str(event_type or ""), "Документ")
 
 
+def _open_debt_rule_label(value: Any) -> str:
+    labels = {
+        "statement_direct_payment_match": "закрыто ближайшей оплатой",
+        "statement_multi_sale_payment_match": "группа закрыта одной оплатой",
+        "statement_bottom_up_balance_cutoff": "подбор от текущего остатка",
+        "statement_unmatched_open_sale": "нет закрывающего документа",
+        "statement_structure_confirmed_open": "подтверждено структурой 1С",
+        "confirmed_open": "подтверждено структурой 1С",
+    }
+    raw = str(value or "").strip()
+    return labels.get(raw, raw)
+
+
 def format_chain_documents_for_bitrix(documents: list[dict[str, Any]] | None) -> str:
     if not documents:
         return ""
     lines: list[str] = []
     for index, document in enumerate(documents, start=1):
-        label = _chain_document_label(document.get("event_type"))
+        has_open_debt_shape = any(
+            key in document
+            for key in (
+                "open_amount",
+                "sale_amount",
+                "gross_amount",
+                "closing_amount",
+                "return_amount",
+                "statement_selection_rule",
+            )
+        )
+        label = (
+            _chain_document_label(document.get("event_type"))
+            if document.get("event_type")
+            else ("Открытый долг" if has_open_debt_shape else "Документ")
+        )
         number = document.get("document_number") or "без номера"
         document_date = _format_document_date(document.get("document_date"))
-        amount = _format_money(document.get("amount_delta"))
+        amount = _format_money(
+            document.get("amount_delta")
+            or document.get("open_amount")
+            or document.get("sale_amount")
+            or document.get("gross_amount")
+        )
         parts = [f"{index}. {label} {number}"]
         if document_date:
             parts.append(f"от {document_date}")
         if amount:
             parts.append(f"на {amount} руб.")
+        if has_open_debt_shape:
+            gross_amount = _format_money(
+                document.get("gross_amount") or document.get("sale_amount")
+            )
+            closing_amount = _format_money(document.get("closing_amount"))
+            return_amount = _format_money(document.get("return_amount"))
+            rule = _open_debt_rule_label(
+                document.get("statement_selection_rule")
+                or document.get("document_structure_status")
+            )
+            details = []
+            if gross_amount:
+                details.append(f"исходно {gross_amount} руб.")
+            if closing_amount:
+                details.append(f"закрытия {closing_amount} руб.")
+            if return_amount:
+                details.append(f"возвраты {return_amount} руб.")
+            if rule:
+                details.append(f"правило: {rule}")
+            if details:
+                parts.append(f"({'; '.join(details)})")
         lines.append(" ".join(parts))
     return "\n".join(lines)
 
@@ -554,6 +610,7 @@ def _build_bitrix_fields(
     *,
     item: ReceivableWorkItem,
     settings: Settings,
+    bitrix_documents: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     fields: dict[str, Any] = {}
 
@@ -588,7 +645,12 @@ def _build_bitrix_fields(
     put("next_action_date", item.next_action_date)
     put("last_contact_comment", item.last_contact_comment)
     put_enum("escalation_level", item.escalation_level)
-    put("chain_documents", format_chain_documents_for_bitrix(item.chain_documents))
+    put(
+        "chain_documents",
+        format_chain_documents_for_bitrix(
+            item.chain_documents if bitrix_documents is None else bitrix_documents
+        ),
+    )
     put("source", "pricing-service")
 
     fields.setdefault("title", _item_title(item))
@@ -613,10 +675,15 @@ def _sync_bitrix_item(
     client: ReceivableBitrixClient | None,
     summary: ReceivableWorkflowSummary,
     dry_run_bitrix: bool,
+    bitrix_documents: list[dict[str, Any]] | None = None,
 ) -> None:
     if dry_run_bitrix or client is None or settings.receivable_bitrix_entity_type_id is None:
         return
-    fields = _build_bitrix_fields(item=item, settings=settings)
+    fields = _build_bitrix_fields(
+        item=item,
+        settings=settings,
+        bitrix_documents=bitrix_documents,
+    )
     try:
         if item.bitrix_item_id:
             client.update_smart_process_item(
@@ -840,6 +907,11 @@ def sync_receivable_workflow(
     )
     allow_stale_closure = bool(cases)
     grouped = _group_cases(cases)
+    open_debt_documents_by_counterparty = load_cached_open_debt_documents(
+        session,
+        snapshot_date=as_of,
+        counterparty_refs=list(grouped),
+    ).documents_by_counterparty
     active_refs: set[str] = set()
     protected_stable_keys: set[str] = set()
     for counterparty_ref, counterparty_cases in grouped.items():
@@ -924,6 +996,9 @@ def sync_receivable_workflow(
             client=bitrix_client,
             summary=summary,
             dry_run_bitrix=dry_run_bitrix,
+            bitrix_documents=open_debt_documents_by_counterparty.get(
+                str(counterparty_ref or "").strip().casefold()
+            ),
         )
         if item.bitrix_last_error:
             _append_event(

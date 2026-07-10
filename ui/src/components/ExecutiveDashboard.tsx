@@ -1299,8 +1299,9 @@ function CashflowPeriodPanel({ asOf }: { asOf: string }) {
       })
       .catch((error: unknown) => {
         if (cancelled) return;
+        console.error("Не удалось загрузить управленческую витрину", errorMessage(error));
         setStatus("error");
-        setMessage(errorMessage(error));
+        setMessage("Проверьте доступ к источнику и повторите загрузку.");
       });
     return () => {
       cancelled = true;

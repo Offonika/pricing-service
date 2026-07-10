@@ -5,6 +5,7 @@ from datetime import UTC, date, datetime
 import pytest
 from sqlalchemy import func, select
 
+import app.services.bitrix_order_formation as bitrix_order_service
 from app.core.config import Settings
 from app.models.procurement_order_formation import (
     ProcurementLifecycleTransitionProposal,
@@ -15,6 +16,7 @@ from app.services.assortment_lifecycle_classification_store import (
     build_classification_rows,
     persist_classification_rows,
 )
+from app.services.bitrix_order_formation import BitrixCatalogProduct
 from app.services.bitrix_procurement_order_formation_auth import (
     ProcurementOrderFormationSession,
 )
@@ -65,14 +67,14 @@ def _seed_lifecycle(sqlite_engine) -> int:
             "nomenclature_code": "FRUIT-1",
             "product_ref": DISPLAY_GUID.replace("-", ""),
             "manual_status": "fruit",
-            "created_at": date(2026, 7, 1),
-            "first_supplier_order_at": date(2026, 7, 10),
+            "created_at": date(2026, 7, 1).isoformat(),
+            "first_supplier_order_at": date(2026, 7, 10).isoformat(),
         },
         {
             "nomenclature_code": "NEWBORN-NEED-1",
             "product_ref": DISPLAY_GUID,
-            "created_at": date(2026, 7, 1),
-            "first_supplier_order_at": date(2026, 7, 8),
+            "created_at": date(2026, 7, 1).isoformat(),
+            "first_supplier_order_at": date(2026, 7, 8).isoformat(),
             "has_need_signal": True,
         },
         {
@@ -85,16 +87,17 @@ def _seed_lifecycle(sqlite_engine) -> int:
         {
             "nomenclature_code": "FRUIT-1",
             "name": "Дисплей Fruit",
-            "folder": "Дисплеи",
+            "folder": "дисплеи",
             "status": "newborn",
             "status_label": "Новорожденный",
+            "recommended_status": "newborn",
             "reason_text": "Создан первый заказ поставщику",
             "export_blockers": ["fact_status_decision_requires_1c_approval"],
         },
         {
             "nomenclature_code": "NEWBORN-NEED-1",
             "name": "Дисплей ДН",
-            "folder": "Дисплеи",
+            "folder": "дисплеи",
             "status": "newborn_need",
             "status_label": "ДН / Добор новорождённого",
             "reason_text": "Есть явная потребность",
@@ -103,7 +106,7 @@ def _seed_lifecycle(sqlite_engine) -> int:
         {
             "nomenclature_code": "WORKING-1",
             "name": "Дисплей рабочий",
-            "folder": "Дисплеи",
+            "folder": "дисплеи",
             "status": "working",
             "status_label": "Рабочий",
             "reason_text": "Нужен пересмотр",
@@ -120,7 +123,7 @@ def _seed_lifecycle(sqlite_engine) -> int:
         sqlite_engine,
         rows=rows,
         run_key="display-test-run-1",
-        folder="Дисплеи",
+        folder="дисплеи",
         source="test",
         started_at=now,
         finished_at=now,
@@ -153,9 +156,11 @@ def test_dashboard_keeps_lifecycle_order_and_nests_newborn_need(
 
     assert [card["status"] for card in dashboard["cards"]] == list(LIFECYCLE_ORDER)
     newborn = next(card for card in dashboard["cards"] if card["status"] == "newborn")
+    fruit = next(card for card in dashboard["cards"] if card["status"] == "fruit")
     working = next(card for card in dashboard["cards"] if card["status"] == "working")
     assert newborn["total_count"] == 2
-    assert newborn["action_count"] == 2
+    assert newborn["action_count"] == 1
+    assert fruit["action_count"] == 1
     assert working["action_label"] == "На пересмотр"
     assert working["action_count"] == 1
     assert summary == {"created": 3, "updated": 0, "stale": 0, "run_id": run_id}
@@ -172,13 +177,18 @@ def test_queue_starts_unselected_and_only_ready_rows_are_selectable(
         settings=_settings(),
     )
 
-    queue = list_lifecycle_transitions(lifecycle_db, status="newborn", scope="action")
+    queue = list_lifecycle_transitions(lifecycle_db, status="fruit", scope="action")
+    newborn_queue = list_lifecycle_transitions(
+        lifecycle_db,
+        status="newborn",
+        scope="action",
+    )
 
-    assert queue["total"] == 2
+    assert queue["total"] == 1
     assert queue["ready_count"] == 1
     assert sum(1 for item in queue["items"] if item["selectable"]) == 1
     assert all("selected" not in item for item in queue["items"])
-    review = next(item for item in queue["items"] if item["action_kind"] == "review")
+    review = next(item for item in newborn_queue["items"] if item["action_kind"] == "review")
     assert review["current_status"] == "newborn"
     assert review["target_status"] is None
 
@@ -278,3 +288,51 @@ def test_batch_limit_is_100(lifecycle_db) -> None:
             session=_session("130757", "Омар"),
             settings=_settings(),
         )
+
+
+def test_commerceml_readback_reflects_lifecycle_transition(
+    lifecycle_db,
+    monkeypatch,
+) -> None:
+    proposal = ProcurementLifecycleTransitionProposal(
+        nomenclature_code="SALE-READBACK",
+        nomenclature_ref=DISPLAY_GUID,
+        product_guid=DISPLAY_GUID,
+        product_name="Дисплей readback",
+        folder="дисплеи",
+        action_kind="transition",
+        current_status="sale",
+        target_status="working",
+        status="applied",
+        reason="Подтверждено",
+        facts={},
+        blockers=[],
+        risk_codes=[],
+        run_id=1,
+        run_key="readback-run",
+        facts_hash="b" * 64,
+        idempotency_key="readback-transition-test",
+    )
+    lifecycle_db.add(proposal)
+    lifecycle_db.commit()
+    monkeypatch.setattr(bitrix_order_service, "load_order_formation_mapping", lambda _settings: {})
+    monkeypatch.setattr(
+        bitrix_order_service,
+        "resolve_catalog_product_by_xml_id",
+        lambda *_args, **_kwargs: BitrixCatalogProduct(
+            product_id="1646",
+            name="Дисплей readback",
+            xml_id=DISPLAY_GUID,
+            assortment_status="Рабочий",
+        ),
+    )
+
+    summary = bitrix_order_service.reflect_classifications_from_bitrix(
+        lifecycle_db,
+        settings=Settings(),
+    )
+
+    lifecycle_db.refresh(proposal)
+    assert summary == {"reflected": 1, "pending": 0, "missing": 0}
+    assert proposal.status == "reflected"
+    assert proposal.bitrix_readback_value == "Рабочий"

@@ -200,6 +200,7 @@ def update_order_conditions(
     values: dict[str, Any],
 ) -> ProcurementOrderFormation:
     order = get_order(db, order_id)
+    ensure_order_editable(order)
     expected_order_version = values.pop("expected_order_version", None)
     if expected_order_version is not None and order.version != int(expected_order_version):
         raise VersionConflictError("order version changed; refresh the order")
@@ -242,6 +243,7 @@ def update_order_line(
     values: dict[str, Any],
 ) -> ProcurementOrderFormation:
     order = get_order(db, order_id)
+    ensure_order_editable(order)
     line = _line_from_order(order, line_id)
     expected_order_version = values.pop("expected_order_version", None)
     expected_line_version = values.pop("expected_line_version", None)
@@ -281,6 +283,7 @@ def create_classification_proposal(
     session: ProcurementOrderFormationSession,
 ) -> ProcurementOrderFormation:
     order = get_order(db, order_id)
+    ensure_order_editable(order)
     line = _line_from_order(order, line_id)
     expected_order_version = values.pop("expected_order_version", None)
     expected_line_version = values.pop("expected_line_version", None)
@@ -749,6 +752,14 @@ def invalidate_order_approval(order: ProcurementOrderFormation) -> None:
         order.onec_status = "not_sent"
         order.onec_message_id = None
         order.onec_error = None
+
+
+def ensure_order_editable(order: ProcurementOrderFormation) -> None:
+    if order.status in {"transmitting", "transmitted"} or order.onec_status in {
+        "pending",
+        "transmitted",
+    }:
+        raise ValueError("transmitted order is read-only; create a new version")
 
 
 def ensure_classification_approver(user_id: str, *, settings: Settings) -> None:

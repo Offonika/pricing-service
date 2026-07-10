@@ -177,9 +177,7 @@ def read_lifecycle_transitions(
 def approve_lifecycle_transition_batch(
     payload: ProcurementLifecycleTransitionApprovalRequest,
     db: Session = Depends(get_db),
-    session: ProcurementOrderFormationSession = Depends(
-        verify_procurement_order_formation_session
-    ),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
 ) -> ProcurementLifecycleTransitionApprovalResponse:
     try:
         return ProcurementLifecycleTransitionApprovalResponse.model_validate(
@@ -315,9 +313,7 @@ def change_order_conditions(
     order_id: int,
     payload: ProcurementOrderConditionsUpdateRequest,
     db: Session = Depends(get_db),
-    session: ProcurementOrderFormationSession = Depends(
-        verify_procurement_order_formation_session
-    ),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
 ) -> ProcurementOrderFormationRead:
     try:
         before = serialize_order(get_order(db, order_id))
@@ -348,9 +344,7 @@ def change_order_line(
     line_id: int,
     payload: ProcurementOrderLineUpdateRequest,
     db: Session = Depends(get_db),
-    session: ProcurementOrderFormationSession = Depends(
-        verify_procurement_order_formation_session
-    ),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
 ) -> ProcurementOrderFormationRead:
     try:
         before = serialize_order(get_order(db, order_id))
@@ -386,9 +380,7 @@ def propose_line_classification(
     line_id: int,
     payload: ProcurementClassificationCreateRequest,
     db: Session = Depends(get_db),
-    session: ProcurementOrderFormationSession = Depends(
-        verify_procurement_order_formation_session
-    ),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
 ) -> ProcurementOrderFormationRead:
     try:
         order = create_classification_proposal(
@@ -422,9 +414,7 @@ def approve_line_classification(
     line_id: int,
     proposal_id: int,
     db: Session = Depends(get_db),
-    session: ProcurementOrderFormationSession = Depends(
-        verify_procurement_order_formation_session
-    ),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
 ) -> ProcurementClassificationApprovalResponse:
     try:
         order, proposal, mode, xml_preview, written_path = approve_classification_proposal(
@@ -467,9 +457,7 @@ def approve_line_classification(
 def approve_current_order_version(
     order_id: int,
     db: Session = Depends(get_db),
-    session: ProcurementOrderFormationSession = Depends(
-        verify_procurement_order_formation_session
-    ),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
 ) -> ProcurementOrderFormationRead:
     try:
         return ProcurementOrderFormationRead.model_validate(
@@ -486,9 +474,7 @@ def approve_current_order_version(
 def send_order_to_onec(
     order_id: int,
     db: Session = Depends(get_db),
-    session: ProcurementOrderFormationSession = Depends(
-        verify_procurement_order_formation_session
-    ),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
 ) -> ProcurementOrderTransmissionResponse:
     try:
         order, mode, message_id, xml_preview, written_path = transmit_order(

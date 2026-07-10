@@ -357,9 +357,7 @@ def reflect_classifications_from_bitrix(
             missing += 1
             continue
         proposal.bitrix_readback_value = product.assortment_status
-        if normalize_status(product.assortment_status) == normalize_status(
-            proposal.target_status
-        ):
+        if normalize_status(product.assortment_status) == normalize_status(proposal.target_status):
             proposal.status = "reflected"
             proposal.reflected_at = datetime.now(UTC).replace(tzinfo=None)
             reflected += 1

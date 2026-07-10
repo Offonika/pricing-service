@@ -324,7 +324,9 @@ def _load_or_build_fact_records(
                 or settings_onec_database_url
             )
             if not onec_database_url:
-                raise ValueError("ONEC_DATABASE_URL is required unless --source-rows-json is passed")
+                raise ValueError(
+                    "ONEC_DATABASE_URL is required unless --source-rows-json is passed"
+                )
             supplier_mapping = DocumentLineMapping.from_mapping(
                 _load_json_object(args.supplier_order_mapping_json)
             )

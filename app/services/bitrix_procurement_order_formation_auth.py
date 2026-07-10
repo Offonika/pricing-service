@@ -171,9 +171,7 @@ def create_procurement_order_formation_session_token(
     settings = settings or get_settings()
     _ensure_enabled(settings)
     issued_at = int(now if now is not None else time.time())
-    expires_at_ts = issued_at + int(
-        settings.procurement_order_formation_bitrix_session_ttl_seconds
-    )
+    expires_at_ts = issued_at + int(settings.procurement_order_formation_bitrix_session_ttl_seconds)
     payload: dict[str, Any] = {
         "sub": f"bitrix:{member_id}:{user_id}",
         "scope": _TOKEN_SCOPE,
@@ -186,9 +184,7 @@ def create_procurement_order_formation_session_token(
     if user_name:
         payload["user_name"] = user_name
     header_raw = _b64_encode(
-        json.dumps({"alg": _TOKEN_ALG, "typ": _TOKEN_TYP}, separators=(",", ":")).encode(
-            "utf-8"
-        )
+        json.dumps({"alg": _TOKEN_ALG, "typ": _TOKEN_TYP}, separators=(",", ":")).encode("utf-8")
     )
     payload_raw = _b64_encode(json.dumps(payload, separators=(",", ":")).encode("utf-8"))
     signing_input = f"{header_raw}.{payload_raw}"
@@ -241,7 +237,7 @@ def verify_procurement_order_formation_session_token(
 
 
 def verify_procurement_order_formation_session(
-    credentials: HTTPAuthorizationCredentials | None = Security(security),
+    credentials: HTTPAuthorizationCredentials | None = Security(security),  # noqa: B008
 ) -> ProcurementOrderFormationSession:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=401, detail="unauthorized")

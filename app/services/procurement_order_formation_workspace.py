@@ -8,7 +8,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import Settings, get_settings
@@ -21,7 +21,6 @@ from app.models.procurement_order_formation import (
 )
 from app.services.assortment_lifecycle import (
     AssortmentLifecycleInput,
-    AssortmentStatus,
     decide_assortment_status,
 )
 from app.services.assortment_lifecycle_classification_store import (
@@ -276,15 +275,12 @@ def list_lifecycle_transitions(
                 ProcurementLifecycleTransitionProposal.created_at,
             )
         ).all()
-        serialized = [
-            serialize_transition(item, latest_run_id=latest_run_id) for item in proposals
-        ]
+        serialized = [serialize_transition(item, latest_run_id=latest_run_id) for item in proposals]
     if search_key:
         serialized = [
             item
             for item in serialized
-            if search_key
-            in f"{item['nomenclature_code']} {item['product_name']}".casefold()
+            if search_key in f"{item['nomenclature_code']} {item['product_name']}".casefold()
         ]
     if readiness != "all":
         serialized = [
@@ -346,9 +342,7 @@ def approve_lifecycle_transitions(
             results.append(_approval_result(proposal_id, "failed", "Предложение не найдено"))
             continue
         if proposal.status != "pending":
-            results.append(
-                _approval_result(proposal_id, "conflict", "Предложение уже обработано")
-            )
+            results.append(_approval_result(proposal_id, "conflict", "Предложение уже обработано"))
             continue
         if proposal.action_kind != "transition" or not proposal.target_status:
             results.append(
@@ -365,9 +359,7 @@ def approve_lifecycle_transitions(
             continue
         expected_status = normalize_status(raw.get("expected_current_status"))
         if normalize_status(proposal.current_status) != expected_status:
-            results.append(
-                _approval_result(proposal_id, "conflict", "Текущий статус изменился")
-            )
+            results.append(_approval_result(proposal_id, "conflict", "Текущий статус изменился"))
             continue
         if proposal.blockers:
             results.append(
@@ -391,9 +383,7 @@ def approve_lifecycle_transitions(
                 continue
         approved.append(proposal)
 
-    mode = (
-        "apply" if settings.procurement_order_formation_property_apply_enabled else "dry_run"
-    )
+    mode = "apply" if settings.procurement_order_formation_property_apply_enabled else "dry_run"
     message_id: str | None = None
     xml_preview = ""
     written_path: Path | None = None
@@ -840,8 +830,7 @@ def _transition_candidate(
     blockers = [
         str(item)
         for item in list(row.get("blockers") or []) + list(row.get("export_blockers") or [])
-        if str(item)
-        not in {"ut103_export_blocked", "fact_status_decision_requires_1c_approval"}
+        if str(item) not in {"ut103_export_blocked", "fact_status_decision_requires_1c_approval"}
     ]
     if action_kind == "transition" and not product_guid:
         blockers.append("catalog_guid_missing")

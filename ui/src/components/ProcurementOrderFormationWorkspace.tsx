@@ -548,7 +548,13 @@ function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number) => voi
     }
   }, [blockers, search, status]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    let cancelled = false;
+    fetchProcurementOrders({ search, status, blockers, page_size: 100 })
+      .then((response) => { if (!cancelled) setData(response); })
+      .catch((requestError) => { if (!cancelled) setError(errorText(requestError)); });
+    return () => { cancelled = true; };
+  }, [blockers, search, status]);
 
   if (error) return <ErrorState message={error} onRetry={() => void load()} />;
   if (!data) return <LoadingState message="Загрузка заказов..." />;
@@ -618,7 +624,13 @@ function ClassificationQueue() {
     }
   }, [status]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    let cancelled = false;
+    fetchProcurementClassifications({ status, page_size: 100 })
+      .then((response) => { if (!cancelled) setData(response); })
+      .catch((requestError) => { if (!cancelled) setError(errorText(requestError)); });
+    return () => { cancelled = true; };
+  }, [status]);
 
   const approve = async (item: ProcurementClassificationQueue["items"][number]) => {
     setLoadingId(item.proposal.id);
@@ -692,7 +704,13 @@ function EventHistory() {
       setError(errorText(requestError));
     }
   }, [eventType]);
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    let cancelled = false;
+    fetchProcurementEvents({ event_type: eventType, page_size: 100 })
+      .then((response) => { if (!cancelled) setData(response); })
+      .catch((requestError) => { if (!cancelled) setError(errorText(requestError)); });
+    return () => { cancelled = true; };
+  }, [eventType]);
   if (error) return <ErrorState message={error} onRetry={() => void load()} />;
   if (!data) return <LoadingState message="Загрузка истории..." />;
   return (
@@ -726,6 +744,10 @@ export function ProcurementOrderFormationWorkspace({ bitrixUserName }: Props) {
   const [orderError, setOrderError] = useState("");
 
   const navigate = useCallback((next: WorkspaceRoute, replace = false) => {
+    if (next.kind === "order") {
+      setOrder(null);
+      setOrderError("");
+    }
     window.history[replace ? "replaceState" : "pushState"]({}, "", routeUrl(next));
     setRoute(next);
   }, []);
@@ -746,18 +768,19 @@ export function ProcurementOrderFormationWorkspace({ bitrixUserName }: Props) {
   }, []);
 
   useEffect(() => {
-    if (route.kind === "tab" && route.tab === "dashboard") void loadDashboard();
-  }, [loadDashboard, route]);
+    if (route.kind !== "tab" || route.tab !== "dashboard") return;
+    let cancelled = false;
+    fetchProcurementDashboard()
+      .then((response) => { if (!cancelled) setDashboard(response); })
+      .catch((requestError) => {
+        if (!cancelled) setDashboardError(errorText(requestError));
+      });
+    return () => { cancelled = true; };
+  }, [route]);
 
   useEffect(() => {
-    if (route.kind !== "order") {
-      setOrder(null);
-      setOrderError("");
-      return;
-    }
+    if (route.kind !== "order") return;
     let cancelled = false;
-    setOrder(null);
-    setOrderError("");
     fetchProcurementOrder(route.orderId)
       .then((response) => { if (!cancelled) setOrder(response); })
       .catch((requestError) => { if (!cancelled) setOrderError(errorText(requestError)); });

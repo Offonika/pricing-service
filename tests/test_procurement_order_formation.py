@@ -28,6 +28,7 @@ from app.services.exporters.ut103_procurement_orders import (
     build_procurement_supplier_orders_xml,
 )
 from app.services.procurement_order_formation import (
+    VersionConflictError,
     approve_classification_proposal,
     approve_order,
     build_classification_update_message,
@@ -37,6 +38,7 @@ from app.services.procurement_order_formation import (
     line_blockers,
     normalize_guid,
     onec_binary_ref_to_guid,
+    order_blockers,
     record_order_exchange_result,
     record_property_update_exchange_result,
     transmit_order,
@@ -123,6 +125,30 @@ def test_onec_binary_reference_matches_commerceml_guid() -> None:
     assert normalize_guid(ONEC_REF) == PRODUCT_GUID
 
 
+def test_catalog_lookup_uses_normalized_guid_only(monkeypatch) -> None:
+    calls: list[dict[str, object]] = []
+
+    def fake_call(_method, params, **_kwargs):
+        calls.append(params)
+        return {"result": [{"ID": "1646", "NAME": "Дисплей тест", "XML_ID": PRODUCT_GUID}]}
+
+    monkeypatch.setattr(bitrix_order_service, "bitrix_call", fake_call)
+    product = bitrix_order_service.resolve_catalog_product_by_xml_id(
+        ONEC_REF,
+        settings=Settings(),
+        mapping={
+            "catalog": {
+                "product_id": "ID",
+                "name": "NAME",
+                "xml_id": "XML_ID",
+            }
+        },
+    )
+
+    assert product is not None
+    assert calls[0]["filter"] == {"XML_ID": PRODUCT_GUID}
+
+
 def test_line_blockers_require_exact_guid_and_catalog_product(db_session) -> None:
     order = _order(db_session)
     line = order.lines[0]
@@ -148,6 +174,30 @@ def test_line_change_increments_version_and_revokes_approval(db_session) -> None
     assert updated.status == "draft"
     assert updated.approved_version is None
     assert updated.lines[0].amount == Decimal("805.00")
+
+
+def test_line_change_rejects_stale_expected_version(db_session) -> None:
+    order = _order(db_session)
+
+    with pytest.raises(VersionConflictError, match="order version changed"):
+        update_order_line(
+            db_session,
+            order.id,
+            order.lines[0].id,
+            {
+                "expected_order_version": 2,
+                "expected_line_version": 1,
+                "final_quantity": Decimal("7"),
+            },
+        )
+
+
+def test_order_does_not_require_legacy_bitrix_card_url(db_session) -> None:
+    order = _order(db_session)
+    order.bitrix_item_url = None
+    order.bitrix_item_id = None
+
+    assert "bitrix_item_url_missing" not in order_blockers(order)
 
 
 def test_manual_minimum_requires_review_date(db_session) -> None:
@@ -253,6 +303,37 @@ def test_supplier_order_contract_has_one_header_and_multiple_draft_lines(db_sess
     assert len(supplier_orders) == 1
     assert supplier_orders[0].findtext("DraftOnly") == "true"
     assert len(supplier_orders[0].findall("Lines/Line")) == 2
+
+
+def test_repeated_transmission_of_same_version_is_idempotent(db_session) -> None:
+    order = _order(db_session)
+    settings = Settings(procurement_order_formation_onec_apply_enabled=False)
+
+    first = transmit_order(db_session, order.id, _session(), settings=settings)
+    second = transmit_order(db_session, order.id, _session(), settings=settings)
+
+    assert second[1] == first[1] == "dry_run"
+    assert second[2] == first[2] == f"proc-order-{order.id}-v1"
+    assert second[3] == first[3]
+
+
+def test_transmitted_order_is_read_only(db_session) -> None:
+    order = _order(db_session)
+    order.status = "transmitted"
+    order.onec_status = "transmitted"
+    db_session.commit()
+
+    with pytest.raises(ValueError, match="read-only"):
+        update_order_line(
+            db_session,
+            order.id,
+            order.lines[0].id,
+            {
+                "expected_order_version": order.version,
+                "expected_line_version": order.lines[0].version,
+                "final_quantity": Decimal("7"),
+            },
+        )
 
 
 def test_bitrix_product_rows_use_purchase_price_and_catalog_id(db_session) -> None:

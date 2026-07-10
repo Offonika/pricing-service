@@ -48,6 +48,8 @@ function money(value: string, currency: string) {
 }
 
 function errorText(error: unknown) {
+  const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+  if (detail) return detail;
   return error instanceof Error ? error.message : "Операция не выполнена";
 }
 
@@ -237,7 +239,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                       {proposal?.status === "proposed" && (
                         <button
                           className="btn btn--small"
-                          disabled={Boolean(loadingKey)}
+                          disabled={Boolean(loadingKey) || locked}
                           onClick={() => approveClassification(line)}
                           type="button"
                         >

@@ -6741,26 +6741,274 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/procurement-order-formation/orders/by-bitrix/{item_id}:
-    get:
-      summary: Read Order By Bitrix Item
-      operationId: read_order_by_bitrix_item_api_procurement_order_formation_orders_by_bitrix__item_id__get
-      security:
-      - HTTPBearer: []
-      parameters:
-      - name: item_id
-        in: path
+  /api/procurement-order-formation/session:
+    post:
+      summary: Create Bitrix Procurement Order Formation Session
+      operationId: create_bitrix_procurement_order_formation_session_api_procurement_order_formation_session_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementOrderFormationSessionRequest'
         required: true
-        schema:
-          type: string
-          title: Item Id
       responses:
         '200':
           description: Successful Response
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/ProcurementOrderFormationRead'
+                $ref: '#/components/schemas/ProcurementOrderFormationSessionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/dashboard:
+    get:
+      summary: Read Dashboard
+      operationId: read_dashboard_api_procurement_order_formation_dashboard_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementDashboardResponse'
+      security:
+      - HTTPBearer: []
+  /api/procurement-order-formation/lifecycle/transitions:
+    get:
+      summary: Read Lifecycle Transitions
+      operationId: read_lifecycle_transitions_api_procurement_order_formation_lifecycle_transitions_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: status
+        in: query
+        required: true
+        schema:
+          type: string
+          title: Status
+      - name: scope
+        in: query
+        required: false
+        schema:
+          type: string
+          default: action
+          title: Scope
+      - name: readiness
+        in: query
+        required: false
+        schema:
+          type: string
+          default: all
+          title: Readiness
+      - name: search
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Search
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Page Size
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementLifecycleTransitionList'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/lifecycle/transitions/approve:
+    post:
+      summary: Approve Lifecycle Transition Batch
+      operationId: approve_lifecycle_transition_batch_api_procurement_order_formation_lifecycle_transitions_approve_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementLifecycleTransitionApprovalRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementLifecycleTransitionApprovalResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/procurement-order-formation/orders:
+    get:
+      summary: Read Orders
+      operationId: read_orders_api_procurement_order_formation_orders_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: search
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Search
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Status
+      - name: supplier
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Supplier
+      - name: blockers
+        in: query
+        required: false
+        schema:
+          type: string
+          default: all
+          title: Blockers
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Page Size
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrderListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/classification-proposals:
+    get:
+      summary: Read Classification Proposals
+      operationId: read_classification_proposals_api_procurement_order_formation_classification_proposals_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Status
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Page Size
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementClassificationQueueResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/events:
+    get:
+      summary: Read Events
+      operationId: read_events_api_procurement_order_formation_events_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: order_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Order Id
+      - name: event_type
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Event Type
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          default: 50
+          title: Page Size
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrderFormationEventList'
         '422':
           description: Validation Error
           content:
@@ -6938,32 +7186,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
-  /api/procurement-order-formation/orders/{order_id}/approve:
-    post:
-      summary: Approve Current Order Version
-      operationId: approve_current_order_version_api_procurement_order_formation_orders__order_id__approve_post
-      security:
-      - HTTPBearer: []
-      parameters:
-      - name: order_id
-        in: path
-        required: true
-        schema:
-          type: integer
-          title: Order Id
-      responses:
-        '200':
-          description: Successful Response
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ProcurementOrderFormationRead'
-        '422':
-          description: Validation Error
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/HTTPValidationError'
   /api/procurement-order-formation/orders/{order_id}/send-to-1c:
     post:
       summary: Send Order To Onec
@@ -6977,12 +7199,6 @@ paths:
         schema:
           type: integer
           title: Order Id
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ProcurementOrderTransmissionRequest'
       responses:
         '200':
           description: Successful Response
@@ -14822,6 +15038,14 @@ components:
       title: ProcurementClassificationApprovalResponse
     ProcurementClassificationCreateRequest:
       properties:
+        expected_order_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Order Version
+        expected_line_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Line Version
         proposed_status:
           type: string
           title: Proposed Status
@@ -14846,6 +15070,8 @@ components:
           title: Review Date
       type: object
       required:
+      - expected_order_version
+      - expected_line_version
       - proposed_status
       - reason
       title: ProcurementClassificationCreateRequest
@@ -14950,6 +15176,217 @@ components:
       - requested_by_bitrix_user_id
       - onec_status
       title: ProcurementClassificationProposalRead
+    ProcurementClassificationQueueItem:
+      properties:
+        proposal:
+          $ref: '#/components/schemas/ProcurementClassificationProposalRead'
+        order_id:
+          type: integer
+          title: Order Id
+        order_version:
+          type: integer
+          title: Order Version
+        line_id:
+          type: integer
+          title: Line Id
+        line_version:
+          type: integer
+          title: Line Version
+        nomenclature_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Nomenclature Code
+        nomenclature_ref:
+          type: string
+          title: Nomenclature Ref
+        product_name:
+          type: string
+          title: Product Name
+        supplier_name:
+          type: string
+          title: Supplier Name
+        effective_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Effective Status
+      type: object
+      required:
+      - proposal
+      - order_id
+      - order_version
+      - line_id
+      - line_version
+      - nomenclature_ref
+      - product_name
+      - supplier_name
+      title: ProcurementClassificationQueueItem
+    ProcurementClassificationQueueResponse:
+      properties:
+        total:
+          type: integer
+          title: Total
+        page:
+          type: integer
+          title: Page
+        page_size:
+          type: integer
+          title: Page Size
+        pending:
+          type: integer
+          title: Pending
+        approved_today:
+          type: integer
+          title: Approved Today
+        readback_conflicts:
+          type: integer
+          title: Readback Conflicts
+        items:
+          items:
+            $ref: '#/components/schemas/ProcurementClassificationQueueItem'
+          type: array
+          title: Items
+      type: object
+      required:
+      - total
+      - page
+      - page_size
+      - pending
+      - approved_today
+      - readback_conflicts
+      title: ProcurementClassificationQueueResponse
+    ProcurementDashboardAttentionItem:
+      properties:
+        nomenclature_code:
+          type: string
+          title: Nomenclature Code
+        product_name:
+          type: string
+          title: Product Name
+        current_status:
+          type: string
+          title: Current Status
+        current_status_label:
+          type: string
+          title: Current Status Label
+        reason:
+          type: string
+          title: Reason
+        recommendation:
+          type: string
+          title: Recommendation
+        deadline_label:
+          type: string
+          title: Deadline Label
+        urgency:
+          type: string
+          title: Urgency
+      type: object
+      required:
+      - nomenclature_code
+      - product_name
+      - current_status
+      - current_status_label
+      - reason
+      - recommendation
+      - deadline_label
+      - urgency
+      title: ProcurementDashboardAttentionItem
+    ProcurementDashboardCard:
+      properties:
+        status:
+          type: string
+          title: Status
+        label:
+          type: string
+          title: Label
+        total_count:
+          type: integer
+          title: Total Count
+          default: 0
+        action_count:
+          type: integer
+          title: Action Count
+          default: 0
+        action_kind:
+          type: string
+          title: Action Kind
+        action_label:
+          type: string
+          title: Action Label
+        target_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Status
+        review_count:
+          type: integer
+          title: Review Count
+          default: 0
+        overdue_count:
+          type: integer
+          title: Overdue Count
+          default: 0
+        urgency:
+          type: string
+          title: Urgency
+          default: neutral
+      type: object
+      required:
+      - status
+      - label
+      - action_kind
+      - action_label
+      title: ProcurementDashboardCard
+    ProcurementDashboardResponse:
+      properties:
+        folder:
+          type: string
+          title: Folder
+        responsible_user_id:
+          type: string
+          title: Responsible User Id
+        responsible_name:
+          type: string
+          title: Responsible Name
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        run_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Run Key
+        updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Updated At
+        cards:
+          items:
+            $ref: '#/components/schemas/ProcurementDashboardCard'
+          type: array
+          title: Cards
+        manual_status_counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Manual Status Counts
+        attention:
+          items:
+            $ref: '#/components/schemas/ProcurementDashboardAttentionItem'
+          type: array
+          title: Attention
+      type: object
+      required:
+      - folder
+      - responsible_user_id
+      - responsible_name
+      title: ProcurementDashboardResponse
     ProcurementLabelApproveResponse:
       properties:
         item_id:
@@ -15250,8 +15687,285 @@ components:
       required:
       - user_id
       title: ProcurementLabelsUser
+    ProcurementLifecycleTransitionApprovalItem:
+      properties:
+        proposal_id:
+          type: integer
+          title: Proposal Id
+        expected_run_id:
+          type: integer
+          title: Expected Run Id
+        expected_current_status:
+          type: string
+          title: Expected Current Status
+        facts_hash:
+          type: string
+          maxLength: 64
+          minLength: 64
+          title: Facts Hash
+      type: object
+      required:
+      - proposal_id
+      - expected_run_id
+      - expected_current_status
+      - facts_hash
+      title: ProcurementLifecycleTransitionApprovalItem
+    ProcurementLifecycleTransitionApprovalRequest:
+      properties:
+        idempotency_key:
+          type: string
+          maxLength: 255
+          minLength: 8
+          title: Idempotency Key
+        items:
+          items:
+            $ref: '#/components/schemas/ProcurementLifecycleTransitionApprovalItem'
+          type: array
+          maxItems: 100
+          minItems: 1
+          title: Items
+      type: object
+      required:
+      - idempotency_key
+      - items
+      title: ProcurementLifecycleTransitionApprovalRequest
+    ProcurementLifecycleTransitionApprovalResponse:
+      properties:
+        mode:
+          type: string
+          title: Mode
+        message_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Message Id
+        xml_preview:
+          type: string
+          title: Xml Preview
+          default: ''
+        written_path:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Written Path
+        summary:
+          $ref: '#/components/schemas/ProcurementLifecycleTransitionApprovalSummary'
+        items:
+          items:
+            $ref: '#/components/schemas/ProcurementLifecycleTransitionApprovalResult'
+          type: array
+          title: Items
+      type: object
+      required:
+      - mode
+      - summary
+      - items
+      title: ProcurementLifecycleTransitionApprovalResponse
+    ProcurementLifecycleTransitionApprovalResult:
+      properties:
+        proposal_id:
+          type: integer
+          title: Proposal Id
+        result:
+          type: string
+          title: Result
+        message:
+          type: string
+          title: Message
+          default: ''
+      type: object
+      required:
+      - proposal_id
+      - result
+      title: ProcurementLifecycleTransitionApprovalResult
+    ProcurementLifecycleTransitionApprovalSummary:
+      properties:
+        approved:
+          type: integer
+          title: Approved
+          default: 0
+        stale:
+          type: integer
+          title: Stale
+          default: 0
+        blocked:
+          type: integer
+          title: Blocked
+          default: 0
+        conflict:
+          type: integer
+          title: Conflict
+          default: 0
+        failed:
+          type: integer
+          title: Failed
+          default: 0
+      type: object
+      title: ProcurementLifecycleTransitionApprovalSummary
+    ProcurementLifecycleTransitionList:
+      properties:
+        status:
+          type: string
+          title: Status
+        scope:
+          type: string
+          title: Scope
+        total:
+          type: integer
+          title: Total
+        page:
+          type: integer
+          title: Page
+        page_size:
+          type: integer
+          title: Page Size
+        ready_count:
+          type: integer
+          title: Ready Count
+        blocked_count:
+          type: integer
+          title: Blocked Count
+        stale_count:
+          type: integer
+          title: Stale Count
+        items:
+          items:
+            $ref: '#/components/schemas/ProcurementLifecycleTransitionRead'
+          type: array
+          title: Items
+      type: object
+      required:
+      - status
+      - scope
+      - total
+      - page
+      - page_size
+      - ready_count
+      - blocked_count
+      - stale_count
+      title: ProcurementLifecycleTransitionList
+    ProcurementLifecycleTransitionRead:
+      properties:
+        proposal_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Proposal Id
+        nomenclature_code:
+          type: string
+          title: Nomenclature Code
+        nomenclature_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Nomenclature Ref
+        product_guid:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Product Guid
+        product_name:
+          type: string
+          title: Product Name
+        folder:
+          type: string
+          title: Folder
+        action_kind:
+          type: string
+          title: Action Kind
+        current_status:
+          type: string
+          title: Current Status
+        current_status_label:
+          type: string
+          title: Current Status Label
+        target_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Status
+        target_status_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Target Status Label
+        proposal_status:
+          type: string
+          title: Proposal Status
+        reason:
+          type: string
+          title: Reason
+        facts:
+          additionalProperties: true
+          type: object
+          title: Facts
+        blockers:
+          items:
+            type: string
+          type: array
+          title: Blockers
+        risk_codes:
+          items:
+            type: string
+          type: array
+          title: Risk Codes
+        run_id:
+          type: integer
+          title: Run Id
+        run_key:
+          type: string
+          title: Run Key
+        facts_hash:
+          type: string
+          title: Facts Hash
+        responsible_bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Responsible Bitrix User Id
+        responsible_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Responsible Name
+        ready:
+          type: boolean
+          title: Ready
+          default: false
+        selectable:
+          type: boolean
+          title: Selectable
+          default: false
+        stale:
+          type: boolean
+          title: Stale
+          default: false
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+      type: object
+      required:
+      - nomenclature_code
+      - product_name
+      - folder
+      - action_kind
+      - current_status
+      - current_status_label
+      - proposal_status
+      - reason
+      - run_id
+      - run_key
+      - facts_hash
+      title: ProcurementLifecycleTransitionRead
     ProcurementOrderConditionsUpdateRequest:
       properties:
+        expected_order_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Order Version
         supplier_ref:
           anyOf:
           - type: string
@@ -15334,7 +16048,88 @@ components:
           - type: 'null'
           title: Responsible Name
       type: object
+      required:
+      - expected_order_version
       title: ProcurementOrderConditionsUpdateRequest
+    ProcurementOrderFormationEventList:
+      properties:
+        total:
+          type: integer
+          title: Total
+        page:
+          type: integer
+          title: Page
+        page_size:
+          type: integer
+          title: Page Size
+        items:
+          items:
+            $ref: '#/components/schemas/ProcurementOrderFormationEventRead'
+          type: array
+          title: Items
+      type: object
+      required:
+      - total
+      - page
+      - page_size
+      title: ProcurementOrderFormationEventList
+    ProcurementOrderFormationEventRead:
+      properties:
+        id:
+          type: integer
+          title: Id
+        order_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Order Id
+        entity_type:
+          type: string
+          title: Entity Type
+        entity_id:
+          type: string
+          title: Entity Id
+        event_type:
+          type: string
+          title: Event Type
+        actor:
+          type: string
+          title: Actor
+        bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix User Id
+        user_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: User Name
+        before:
+          additionalProperties: true
+          type: object
+          title: Before
+        after:
+          additionalProperties: true
+          type: object
+          title: After
+        payload:
+          additionalProperties: true
+          type: object
+          title: Payload
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+      type: object
+      required:
+      - id
+      - entity_type
+      - entity_id
+      - event_type
+      - actor
+      - created_at
+      title: ProcurementOrderFormationEventRead
     ProcurementOrderFormationLineRead:
       properties:
         id:
@@ -15669,8 +16464,75 @@ components:
       - calculation_id
       - onec_status
       title: ProcurementOrderFormationRead
+    ProcurementOrderFormationSessionRequest:
+      properties:
+        access_token:
+          type: string
+          minLength: 1
+          title: Access Token
+        domain:
+          type: string
+          minLength: 1
+          title: Domain
+        member_id:
+          type: string
+          minLength: 1
+          title: Member Id
+      type: object
+      required:
+      - access_token
+      - domain
+      - member_id
+      title: ProcurementOrderFormationSessionRequest
+    ProcurementOrderFormationSessionResponse:
+      properties:
+        session_token:
+          type: string
+          title: Session Token
+        token_type:
+          type: string
+          title: Token Type
+          default: bearer
+        expires_at:
+          type: string
+          format: date-time
+          title: Expires At
+        expires_in:
+          type: integer
+          title: Expires In
+        user:
+          $ref: '#/components/schemas/ProcurementOrderFormationUser'
+      type: object
+      required:
+      - session_token
+      - expires_at
+      - expires_in
+      - user
+      title: ProcurementOrderFormationSessionResponse
+    ProcurementOrderFormationUser:
+      properties:
+        user_id:
+          type: string
+          title: User Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+      type: object
+      required:
+      - user_id
+      title: ProcurementOrderFormationUser
     ProcurementOrderLineUpdateRequest:
       properties:
+        expected_order_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Order Version
+        expected_line_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Line Version
         final_quantity:
           anyOf:
           - type: number
@@ -15698,15 +16560,155 @@ components:
           - type: 'null'
           title: Explicit Demand
       type: object
+      required:
+      - expected_order_version
+      - expected_line_version
       title: ProcurementOrderLineUpdateRequest
-    ProcurementOrderTransmissionRequest:
+    ProcurementOrderListItem:
       properties:
-        apply:
-          type: boolean
-          title: Apply
-          default: false
+        id:
+          type: integer
+          title: Id
+        stable_key:
+          type: string
+          title: Stable Key
+        status:
+          type: string
+          title: Status
+        version:
+          type: integer
+          title: Version
+        supplier_name:
+          type: string
+          title: Supplier Name
+        contract_name:
+          type: string
+          title: Contract Name
+        warehouse_name:
+          type: string
+          title: Warehouse Name
+        currency:
+          type: string
+          title: Currency
+        route:
+          type: string
+          title: Route
+        batch_id:
+          type: string
+          title: Batch Id
+        order_date:
+          type: string
+          format: date
+          title: Order Date
+        responsible_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Responsible Name
+        source_run_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Run Id
+        onec_status:
+          type: string
+          title: Onec Status
+        onec_document_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Document Number
+        onec_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Error
+        line_count:
+          type: integer
+          title: Line Count
+        total_quantity:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Total Quantity
+        total_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Total Amount
+        blockers:
+          items:
+            type: string
+          type: array
+          title: Blockers
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
       type: object
-      title: ProcurementOrderTransmissionRequest
+      required:
+      - id
+      - stable_key
+      - status
+      - version
+      - supplier_name
+      - contract_name
+      - warehouse_name
+      - currency
+      - route
+      - batch_id
+      - order_date
+      - onec_status
+      - line_count
+      - total_quantity
+      - total_amount
+      - updated_at
+      title: ProcurementOrderListItem
+    ProcurementOrderListResponse:
+      properties:
+        total:
+          type: integer
+          title: Total
+        page:
+          type: integer
+          title: Page
+        page_size:
+          type: integer
+          title: Page Size
+        summary:
+          $ref: '#/components/schemas/ProcurementOrderListSummary'
+        items:
+          items:
+            $ref: '#/components/schemas/ProcurementOrderListItem'
+          type: array
+          title: Items
+      type: object
+      required:
+      - total
+      - page
+      - page_size
+      - summary
+      title: ProcurementOrderListResponse
+    ProcurementOrderListSummary:
+      properties:
+        orders:
+          type: integer
+          title: Orders
+          default: 0
+        lines:
+          type: integer
+          title: Lines
+          default: 0
+        quantity:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Quantity
+          default: '0'
+        amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Amount
+          default: '0'
+      type: object
+      title: ProcurementOrderListSummary
     ProcurementOrderTransmissionResponse:
       properties:
         order:

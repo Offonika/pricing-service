@@ -179,7 +179,7 @@ documents:
       - tests/test_detect_procurement_cargo_dropoff_refresh_needed_task.py
     keywords: [procurement, auto-order, smart-process, display, bitrix24, onec, pilot]
   - path: docs/specs/procurement-order-formation-smart-process.md
-    title: Procurement Order Formation Smart Process
+    title: Procurement Order Formation Bitrix App
     doc_type: spec
     domain: procurement
     status: implemented
@@ -189,16 +189,19 @@ documents:
       - app/models/procurement_order_formation.py
       - app/api/procurement_order_formation.py
       - app/services/procurement_order_formation.py
+      - app/services/procurement_order_formation_workspace.py
+      - app/services/bitrix_procurement_order_formation_auth.py
       - app/services/bitrix_order_formation.py
-      - scripts/ensure_order_formation_bitrix_process.py
       - tasks/build_procurement_order_formation_dry_run.py
       - tasks/sync_procurement_order_formation_results.py
       - ui/src/components/ProcurementOrderFormationApp.tsx
+      - ui/src/components/ProcurementOrderFormationWorkspace.tsx
     related_tests:
       - tests/test_procurement_order_formation.py
+      - tests/test_procurement_order_formation_workspace.py
+      - tests/test_procurement_order_formation_api.py
       - tests/test_procurement_order_formation_dry_run.py
-      - tests/test_order_formation_bitrix_process.py
-    keywords: [procurement, supplier-order, smart-process, bitrix24, onec, catalog, classification]
+    keywords: [procurement, supplier-order, oauth-app, bitrix24, onec, catalog, lifecycle]
   - path: docs/specs/display-auto-order-project-brief.md
     title: Display Auto Order Project Brief
     doc_type: spec

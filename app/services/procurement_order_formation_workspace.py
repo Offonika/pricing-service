@@ -129,10 +129,12 @@ def sync_lifecycle_transition_proposals(
                 == candidate["idempotency_key"]
             )
         )
+        applied_automatically = False
         if proposal is None:
             db.add(ProcurementLifecycleTransitionProposal(**candidate))
             created += 1
             automatic += int(is_automatic)
+            applied_automatically = is_automatic
         elif proposal.status == "pending":
             for key in (
                 "nomenclature_ref",
@@ -156,7 +158,27 @@ def sync_lifecycle_transition_proposals(
                 proposal.approved_by_name = candidate["approved_by_name"]
                 proposal.onec_status = candidate["onec_status"]
                 automatic += 1
+                applied_automatically = True
             updated += 1
+        elif is_automatic and proposal.status == "auto_applied":
+            applied_automatically = True
+        if applied_automatically:
+            record_event(
+                db,
+                entity_type="lifecycle_transition",
+                entity_id=candidate["nomenclature_code"],
+                event_type="lifecycle_transition_auto_applied",
+                idempotency_key=f"{candidate['idempotency_key']}:auto",
+                actor="system:onec-facts",
+                before={"status": candidate["current_status"]},
+                after={"status": candidate["target_status"]},
+                payload={
+                    "run_id": candidate["run_id"],
+                    "run_key": candidate["run_key"],
+                    "reason": candidate["reason"],
+                    "facts_hash": candidate["facts_hash"],
+                },
+            )
 
     pending_rows = db.scalars(
         select(ProcurementLifecycleTransitionProposal).where(

@@ -83,6 +83,7 @@ const EVENT_LABELS: Record<string, string> = {
   classification_proposed: "Предложено изменение свойства",
   classification_approved: "Изменение свойства утверждено",
   lifecycle_transitions_approved: "Утверждён пакет переходов",
+  lifecycle_transition_auto_applied: "Жизненный статус изменён автоматически",
 };
 
 function errorText(error: unknown) {

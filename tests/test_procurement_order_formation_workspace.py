@@ -236,6 +236,27 @@ def test_first_supplier_order_moves_fruit_to_newborn_without_approval(
     assert proposal.target_status == "newborn"
     assert proposal.status == "auto_applied"
     assert proposal.approved_by_actor == "system:onec-facts"
+    event = lifecycle_db.scalar(
+        select(ProcurementOrderFormationEvent).where(
+            ProcurementOrderFormationEvent.event_type
+            == "lifecycle_transition_auto_applied"
+        )
+    )
+    assert event is not None
+    assert event.entity_id == "FRUIT-1"
+    assert event.before == {"status": "fruit"}
+    assert event.after == {"status": "newborn"}
+    sync_lifecycle_transition_proposals(
+        lifecycle_db,
+        run_id=run_id,
+        settings=_settings(),
+    )
+    assert lifecycle_db.scalar(
+        select(func.count(ProcurementOrderFormationEvent.id)).where(
+            ProcurementOrderFormationEvent.event_type
+            == "lifecycle_transition_auto_applied"
+        )
+    ) == 1
 
 
 def test_batch_approval_returns_partial_result_and_is_idempotent(
@@ -284,7 +305,11 @@ def test_batch_approval_returns_partial_result_and_is_idempotent(
     assert first["summary"]["approved"] == 1
     assert first["summary"]["blocked"] == 1
     assert second == first
-    assert lifecycle_db.scalar(select(func.count(ProcurementOrderFormationEvent.id))) == 1
+    assert lifecycle_db.scalar(
+        select(func.count(ProcurementOrderFormationEvent.id)).where(
+            ProcurementOrderFormationEvent.event_type == "lifecycle_transitions_approved"
+        )
+    ) == 1
 
 
 def test_sale_to_working_is_omar_only(lifecycle_db, sqlite_engine) -> None:

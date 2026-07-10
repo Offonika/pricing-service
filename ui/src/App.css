@@ -262,6 +262,7 @@
 
 .executive {
   display: grid;
+  align-content: start;
   gap: 12px;
   background: var(--color-background);
 }
@@ -293,6 +294,28 @@
   font-size: 13px;
 }
 
+.executive__controls {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: flex-end;
+  gap: var(--space-2);
+}
+
+.executive__date-field {
+  display: grid;
+  gap: 3px;
+}
+
+.executive__date-field > span {
+  margin: 0;
+  color: var(--color-text-muted);
+  font-size: 11px;
+  font-weight: 750;
+  line-height: 1.2;
+}
+
 .executive__date {
   width: 160px;
 }
@@ -318,7 +341,7 @@
 }
 
 .executive-tabs__item {
-  min-height: 36px;
+  min-height: 44px;
   padding: 8px 11px;
   border: 0;
   border-bottom: 2px solid transparent;
@@ -337,6 +360,16 @@
 
 .executive-tabs__item--active {
   border-bottom-color: var(--color-primary);
+}
+
+.executive-tabs__item:focus-visible,
+.executive-flow__node:focus-visible,
+.executive-sources-panel__summary:focus-visible,
+.executive-block__drilldown:focus-visible,
+.executive-actions__table a:focus-visible,
+.executive__date:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--color-primary) 28%, transparent);
+  outline-offset: 2px;
 }
 
 .executive-state {
@@ -360,7 +393,7 @@
 
 .executive__topline {
   display: grid;
-  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  grid-template-columns: repeat(4, minmax(160px, 1fr));
   gap: 8px;
 }
 
@@ -392,6 +425,12 @@
   gap: 10px;
   overflow-x: auto;
   padding: 2px 0 4px;
+}
+
+.executive-flow--compact {
+  grid-template-columns: repeat(auto-fit, minmax(160px, 220px));
+  justify-content: start;
+  overflow-x: visible;
 }
 
 .executive-flow__node {
@@ -1691,6 +1730,31 @@
   background: #f8fafc;
 }
 
+.executive-sources-panel__summary:disabled {
+  cursor: default;
+}
+
+.executive-sources-panel__summary:disabled:hover {
+  border-color: var(--color-border);
+  background: var(--color-surface);
+}
+
+.executive-sources-panel__summary:disabled em {
+  color: var(--color-text-muted);
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .executive-sources {
   display: grid;
   grid-template-columns: repeat(4, minmax(180px, 1fr));
@@ -1753,6 +1817,10 @@
 }
 
 @media (max-width: 1180px) {
+  .executive__topline {
+    grid-template-columns: repeat(2, minmax(180px, 1fr));
+  }
+
   .executive-flow {
     grid-template-columns: repeat(8, minmax(160px, 1fr));
   }
@@ -1801,6 +1869,21 @@
   .executive-grid,
   .executive-sources {
     grid-template-columns: 1fr;
+  }
+
+  .executive__controls {
+    display: grid;
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .executive__date-field {
+    grid-column: 1 / -1;
+  }
+
+  .executive__date,
+  .executive__controls button {
+    width: 100%;
   }
 
   .executive-tab-kpi--placeholder {

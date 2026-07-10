@@ -18,7 +18,7 @@ import {
   type ExecutiveProfitLossRatio,
   type ExecutiveSourceStatus,
 } from "../api/executiveDashboard";
-import { ErrorState, LoadingState, PageShell } from "./ui";
+import { Button, ErrorState, LoadingState, PageShell } from "./ui";
 
 type ExecutiveDashboardProps = {
   bitrixMode?: boolean;
@@ -190,6 +190,7 @@ function monthStartIso(value: string) {
 
 function statusLabel(status: string) {
   const labels: Record<string, string> = {
+    fresh: "актуально",
     ready: "готово",
     partial: "частично",
     stale: "устарело",
@@ -277,7 +278,11 @@ function errorMessage(error: unknown) {
       : undefined;
   if (status === 401) return "Сессия не принята или истекла. Обновите страницу в Bitrix24.";
   if (status === 403) return "Нет доступа к управленческой витрине.";
-  return error instanceof Error ? error.message : "Не удалось загрузить витрину";
+  if (status && status >= 500) return "Источник временно недоступен. Повторите загрузку через минуту.";
+  if (error instanceof Error && /network|failed to fetch|timeout/i.test(error.message)) {
+    return "Нет связи с витриной. Проверьте подключение и повторите загрузку.";
+  }
+  return "Не удалось загрузить витрину. Повторите попытку.";
 }
 
 function moneyBlock(data: ExecutiveDashboardResponse | null) {
@@ -599,7 +604,10 @@ function FlowMap({
   const blockByKey = new Map(data.blocks.map((block) => [block.key, block]));
   const visibleSteps = FLOW_STEPS.filter((step) => blockByKey.has(step.key));
   return (
-    <section className="executive-flow" aria-label="Линия управленческой витрины">
+    <section
+      className={visibleSteps.length <= 4 ? "executive-flow executive-flow--compact" : "executive-flow"}
+      aria-label="Линия управленческой витрины"
+    >
       {visibleSteps.map((step, index) => {
         const block = blockByKey.get(step.key);
         const metric = metricForStep(block, step.metricKeys);
@@ -617,6 +625,7 @@ function FlowMap({
               .join(" ")}
             key={step.key}
             onClick={() => onSelect(targetTab)}
+            aria-pressed={isActive}
             type="button"
           >
             <span className="executive-flow__number">{index + 1}</span>
@@ -1007,23 +1016,27 @@ function SourceFreshness({ sources }: { sources: ExecutiveSourceStatus[] }) {
   const [expanded, setExpanded] = useState(false);
   const issueSources = sources.filter((source) => source.source_status !== "ready");
   const summaryText =
-    issueSources.length === 0
+    sources.length === 0
+      ? "Источники пока не переданы"
+      : issueSources.length === 0
       ? `Все источники готовы: ${sources.length}`
       : `Проблемных источников: ${issueSources.length} из ${sources.length}`;
   return (
     <section className="executive-sources-panel">
       <button
         aria-expanded={expanded}
+        aria-controls={sources.length > 0 ? "executive-source-details" : undefined}
         className="executive-sources-panel__summary"
+        disabled={sources.length === 0}
         onClick={() => setExpanded((value) => !value)}
         type="button"
       >
         <span>Источники данных</span>
         <strong>{summaryText}</strong>
-        <em>{expanded ? "Свернуть" : "Показать детали"}</em>
+        <em>{sources.length === 0 ? "Нет деталей" : expanded ? "Свернуть" : "Показать детали"}</em>
       </button>
       {expanded && (
-        <div className="executive-sources">
+        <div className="executive-sources" id="executive-source-details">
           {sources.map((source) => (
             <div className={`executive-source executive-source--${source.source_status}`} key={source.source_key}>
               <strong>{source.title}</strong>
@@ -1691,11 +1704,16 @@ function ProfitLossPeriodPanel({ asOf }: { asOf: string }) {
 
 function ActionTable({ actions }: { actions: ExecutiveDashboardAction[] }) {
   if (actions.length === 0) {
-    return <div className="executive-actions__empty">На выбранный день нет открытых решений.</div>;
+    return (
+      <div className="executive-actions__empty">
+        На выбранный день нет открытых решений. Проверьте источники ниже или выберите другой раздел.
+      </div>
+    );
   }
   return (
     <div className="executive-actions__table-wrap">
       <table className="executive-actions__table">
+        <caption className="visually-hidden">Решения руководителя на выбранный день</caption>
         <thead>
           <tr>
             <th>Важность</th>
@@ -1748,6 +1766,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
   const [message, setMessage] = useState("");
   const [data, setData] = useState<ExecutiveDashboardResponse | null>(null);
   const [actions, setActions] = useState<ExecutiveDashboardAction[]>([]);
+  const [refreshNonce, setRefreshNonce] = useState(0);
 
   const navigateDashboard = useCallback(
     (next: { date?: string; tab?: string }, mode: "push" | "replace" = "push") => {
@@ -1807,13 +1826,15 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
       })
       .catch((error: unknown) => {
         if (cancelled) return;
+        setData(null);
+        setActions([]);
         setStatus("error");
         setMessage(errorMessage(error));
       });
     return () => {
       cancelled = true;
     };
-  }, [date, navigateDashboard, tab]);
+  }, [date, navigateDashboard, refreshNonce, tab]);
 
   const blocks = useMemo(() => visibleBlocks(data, tab), [data, tab]);
   const tabs = useMemo(() => tabsForData(data), [data]);
@@ -1823,9 +1844,10 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
     return blocks[0] || null;
   }, [blocks, data, tab]);
   const currentAccess = accessLevel || data?.access_level;
+  const refreshDashboard = useCallback(() => setRefreshNonce((value) => value + 1), []);
 
   return (
-    <PageShell className="app executive">
+    <PageShell aria-busy={status === "loading"} className="app executive">
       <header className="executive__header">
         <div>
           <h1>Единая управленческая витрина</h1>
@@ -1835,21 +1857,28 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
             {currentAccess === "domain" ? " · доменный доступ" : ""}
           </span>
         </div>
-        <input
-          aria-label="Дата управленческой витрины"
-          className="app__select executive__date"
-          onChange={(event) => navigateDashboard({ date: event.target.value })}
-          type="date"
-          value={date}
-        />
-        <button
-          className="btn"
-          disabled={status === "loading"}
-          onClick={() => navigateDashboard({ date: todayIso() })}
-          type="button"
-        >
-          Сегодня
-        </button>
+        <div className="executive__controls">
+          <label className="executive__date-field">
+            <span>Дата</span>
+            <input
+              aria-label="Дата управленческой витрины"
+              className="app__select executive__date"
+              onChange={(event) => navigateDashboard({ date: event.target.value })}
+              type="date"
+              value={date}
+            />
+          </label>
+          <Button
+            disabled={status === "loading"}
+            onClick={() => navigateDashboard({ date: todayIso() })}
+            variant="secondary"
+          >
+            Сегодня
+          </Button>
+          <Button disabled={status === "loading"} onClick={refreshDashboard}>
+            {status === "loading" ? "Обновляем..." : "Обновить"}
+          </Button>
+        </div>
       </header>
 
       {tab !== "today" && (
@@ -1865,6 +1894,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
         {tabs.map((item) => (
           <button
             className={tab === item.key ? "executive-tabs__item executive-tabs__item--active" : "executive-tabs__item"}
+            aria-current={tab === item.key ? "page" : undefined}
             key={item.key}
             onClick={() => navigateDashboard({ tab: item.key })}
             type="button"
@@ -1874,16 +1904,27 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
         ))}
       </nav>
 
-      {status === "error" && <ErrorState description={message} title="Витрина не загрузилась" />}
+      {status === "error" && (
+        <ErrorState
+          actionLabel="Повторить загрузку"
+          description={message}
+          onAction={refreshDashboard}
+          title="Витрина не загрузилась"
+        />
+      )}
 
-      {status === "loading" && <LoadingState title="Загрузка данных..." />}
+      {status === "loading" && !data && <LoadingState title="Загрузка данных..." />}
 
       {data && (
         <>
-          <section className="executive__topline">
+          <section aria-label="Состояние витрины" aria-live="polite" className="executive__topline">
             <div>
-              <span>Статус</span>
+              <span>Данные</span>
               <strong>{statusLabel(data.source_status)}</strong>
+            </div>
+            <div>
+              <span>Свежесть</span>
+              <strong>{statusLabel(data.freshness_status)}</strong>
             </div>
             <div>
               <span>Собрано</span>

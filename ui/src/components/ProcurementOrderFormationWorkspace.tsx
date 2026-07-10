@@ -57,6 +57,25 @@ const ORDER_STATUS_LABELS: Record<string, string> = {
   error: "Ошибка",
 };
 
+const LIFECYCLE_STATUS_LABELS: Record<string, string> = {
+  fruit: "Плод",
+  newborn: "Новорожденный",
+  new_item: "Новинка",
+  sales_start: "СП / Старт продаж",
+  sale: "ПРОДАЖА",
+  working: "Рабочий",
+};
+
+const LIFECYCLE_FACT_LABELS: Record<string, string> = {
+  customer_order_count_1c: "Заказов покупателей",
+  customer_order_qty_1c: "Количество в заказах",
+  supplier_order_count_1c: "Заказов поставщику",
+  supplier_order_qty_1c: "Количество у поставщика",
+  cargo_handoff_count_1c: "Передач в груз",
+  card_created_at_1c: "Карточка создана",
+  model_birth_date: "Модель на рынке с",
+};
+
 const EVENT_LABELS: Record<string, string> = {
   order_conditions_changed: "Изменены условия заказа",
   order_line_changed: "Изменена строка заказа",
@@ -101,6 +120,16 @@ function dateTime(value?: string | null) {
         hour: "2-digit",
         minute: "2-digit",
       }).format(parsed);
+}
+
+function lifecycleFactLabel(key: string) {
+  return LIFECYCLE_FACT_LABELS[key] || key.replaceAll("_", " ");
+}
+
+function lifecycleFactValue(value: unknown) {
+  if (value === null || value === undefined || value === "") return "—";
+  if (typeof value === "boolean") return value ? "Да" : "Нет";
+  return String(value);
 }
 
 function routeFromLocation(): WorkspaceRoute {
@@ -337,11 +366,15 @@ function LifecycleQueue({
     [data, selected]
   );
   const first = data?.items[0];
-  const title = first
-    ? first.action_kind === "review"
-      ? `${first.current_status_label} · разбор`
-      : `${first.current_status_label} → ${first.target_status_label || "решение"}`
-    : "Очередь переходов";
+  const statusLabel = LIFECYCLE_STATUS_LABELS[status] || first?.current_status_label || status;
+  const title = scope === "all"
+    ? `${statusLabel}: все товары`
+    : status === "working"
+      ? "Рабочий: товары на пересмотр"
+      : `${statusLabel}: требуется решение`;
+  const subtitle = scope === "all"
+    ? "Полный список товаров выбранного жизненного статуса"
+    : "Только товары, где недостаточно автоматических фактов и нужен человек";
 
   const selectReady = () => {
     setSelected(new Set(readyRows.slice(0, 100).map((item) => item.proposal_id as number)));
@@ -369,17 +402,26 @@ function LifecycleQueue({
       <header className="lifecycle-queue__header">
         <div>
           <h1>{title}</h1>
-          <p>Расчёт {first?.run_key || "—"} · всего в очереди {data?.total ?? "—"}</p>
+          <p>{subtitle} · расчёт {first?.run_key || "—"} · товаров {data?.total ?? "—"}</p>
         </div>
         <button className="lifecycle-queue__close" onClick={onClose} type="button">
           Закрыть
         </button>
       </header>
       <main className="lifecycle-queue__body">
+        {scope === "action" ? (
+          <section className="queue-explainer">
+            <strong>Что здесь?</strong>
+            <span>
+              Список исключений для быстрой проверки. Однозначные переходы по фактам 1С
+              выполняются автоматически и остаются только в истории.
+            </span>
+          </section>
+        ) : null}
         <section className="queue-summary">
-          <div><span>К действию</span><strong>{data?.ready_count || 0}</strong></div>
-          <div><span>С блокерами</span><strong>{data?.blocked_count || 0}</strong></div>
-          <div><span>Устарело</span><strong>{data?.stale_count || 0}</strong></div>
+          <div><span>Можно подтвердить</span><strong>{data?.ready_count || 0}</strong></div>
+          <div><span>Нужна проверка</span><strong>{data?.blocked_count || 0}</strong></div>
+          <div><span>Данные устарели</span><strong>{data?.stale_count || 0}</strong></div>
           <div><span>Выбрано</span><strong>{selected.size}</strong></div>
         </section>
         <section className="queue-toolbar">
@@ -397,10 +439,10 @@ function LifecycleQueue({
             }}
             value={readiness}
           >
-            <option value="all">Все строки</option>
-            <option value="ready">Готовые без блокеров</option>
-            <option value="blocked">С блокерами</option>
-            <option value="stale">Устаревшие</option>
+            <option value="all">Все требующие решения</option>
+            <option value="ready">Можно подтвердить</option>
+            <option value="blocked">Нужна проверка</option>
+            <option value="stale">Обновить данные</option>
           </select>
           <button className="btn btn--ghost" disabled={readyRows.length === 0} onClick={selectReady} type="button">
             Выбрать готовые на странице
@@ -410,11 +452,24 @@ function LifecycleQueue({
         {error ? <ErrorState message={error} onRetry={() => void load()} /> : null}
         {loading && !data ? <LoadingState /> : null}
         {data && data.items.length === 0 ? (
-          <div className="order-workspace__empty">В этой очереди строк нет.</div>
+          <div className="order-workspace__empty">
+            {scope === "action"
+              ? "Решений не требуется: переходы выполнены автоматически или подходящих товаров нет."
+              : "В выбранном статусе товаров нет."}
+          </div>
         ) : null}
         {data && data.items.length > 0 ? (
           <div className="order-workspace__table-wrap">
             <table className="order-workspace__table lifecycle-queue__table">
+              <colgroup>
+                <col className="lifecycle-queue__col-select" />
+                <col className="lifecycle-queue__col-product" />
+                <col className="lifecycle-queue__col-transition" />
+                <col className="lifecycle-queue__col-reason" />
+                <col className="lifecycle-queue__col-facts" />
+                <col className="lifecycle-queue__col-risk" />
+                <col className="lifecycle-queue__col-action" />
+              </colgroup>
               <thead>
                 <tr>
                   <th>Выбор</th>
@@ -462,16 +517,22 @@ function LifecycleQueue({
                             : `${item.current_status_label} → ${item.target_status_label}`}
                         </span>
                       </td>
-                      <td>
+                      <td className="queue-reason">
                         <strong>{item.reason || "Нужна проверка фактов"}</strong>
-                        <small>run {item.run_key}</small>
+                        <span>Основание расчёта</span>
+                        <small>Расчёт: {item.run_key}</small>
                       </td>
                       <td>
-                        {facts && Object.keys(facts).length > 0
-                          ? Object.entries(facts).slice(0, 3).map(([key, value]) => (
-                              <small key={key}>{key}: {String(value)}</small>
-                            ))
-                          : <small>Факты зафиксированы в расчёте</small>}
+                        <div className="queue-facts">
+                          {facts && Object.keys(facts).length > 0
+                            ? Object.entries(facts).slice(0, 4).map(([key, value]) => (
+                                <div className="queue-facts__item" key={key}>
+                                  <span>{lifecycleFactLabel(key)}</span>
+                                  <strong>{lifecycleFactValue(value)}</strong>
+                                </div>
+                              ))
+                            : <small>Факты зафиксированы в расчёте</small>}
+                        </div>
                       </td>
                       <td>
                         {item.blockers.length > 0 ? (
@@ -479,13 +540,13 @@ function LifecycleQueue({
                         ) : item.stale ? (
                           <span className="state-pill state-pill--warning">данные изменились</span>
                         ) : (
-                          <span className="state-pill state-pill--ready">нет</span>
+                          <span className="state-pill state-pill--ready">Нет блокеров</span>
                         )}
                       </td>
                       <td>
                         {item.selectable ? (
                           <button className="btn btn--small" disabled={loading} onClick={() => void approve([item])} type="button">
-                            Утвердить переход
+                            Подтвердить
                           </button>
                         ) : (
                           <button className="btn btn--ghost btn--small" disabled type="button">
@@ -513,7 +574,7 @@ function LifecycleQueue({
       </main>
       <footer className="lifecycle-queue__footer">
         <div>
-          <strong>Выбрано: {selected.size}</strong>
+          <strong>Выбрано товаров: {selected.size}</strong>
           <small>В пакет попадают только актуальные строки без блокеров. Максимум 100.</small>
         </div>
         <div>

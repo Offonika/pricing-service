@@ -7,7 +7,7 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -85,8 +85,18 @@ def main() -> int:
                 finished_at=utcnow_naive(),
                 dry_run=args.dry_run,
             )
-            transition_sync = {"created": 0, "updated": 0, "stale": 0, "run_id": 0}
-            if result.run_id is not None and not args.dry_run:
+            transition_sync = {
+                "created": 0,
+                "updated": 0,
+                "automatic": 0,
+                "stale": 0,
+                "run_id": 0,
+            }
+            if (
+                result.run_id is not None
+                and not args.dry_run
+                and inspect(engine).has_table("procurement_lifecycle_transition_proposal")
+            ):
                 with Session(engine) as db:
                     transition_sync = sync_lifecycle_transition_proposals(
                         db,

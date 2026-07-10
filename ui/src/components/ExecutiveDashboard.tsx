@@ -18,6 +18,7 @@ import {
   type ExecutiveProfitLossRatio,
   type ExecutiveSourceStatus,
 } from "../api/executiveDashboard";
+import { ErrorState, LoadingState, PageShell } from "./ui";
 
 type ExecutiveDashboardProps = {
   bitrixMode?: boolean;
@@ -1823,7 +1824,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
   const currentAccess = accessLevel || data?.access_level;
 
   return (
-    <div className="app executive">
+    <PageShell className="app executive">
       <header className="executive__header">
         <div>
           <h1>Единая управленческая витрина</h1>
@@ -1834,6 +1835,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
           </span>
         </div>
         <input
+          aria-label="Дата управленческой витрины"
           className="app__select executive__date"
           onChange={(event) => navigateDashboard({ date: event.target.value })}
           type="date"
@@ -1871,18 +1873,9 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
         ))}
       </nav>
 
-      {status === "error" && (
-        <section className="executive-state executive-state--error">
-          <strong>Витрина не загрузилась</strong>
-          <span>{message}</span>
-        </section>
-      )}
+      {status === "error" && <ErrorState description={message} title="Витрина не загрузилась" />}
 
-      {status === "loading" && (
-        <section className="executive-state">
-          <strong>Загрузка данных...</strong>
-        </section>
-      )}
+      {status === "loading" && <LoadingState title="Загрузка данных..." />}
 
       {data && (
         <>
@@ -1942,6 +1935,6 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
           <SourceFreshness sources={data.source_freshness} />
         </>
       )}
-    </div>
+    </PageShell>
   );
 }

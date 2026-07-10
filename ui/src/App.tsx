@@ -1014,7 +1014,11 @@ function ProcurementOrderFormationBitrixApp() {
 function App() {
   if (isLogisticsFallbackRoute()) return <LogisticsFallbackApp />;
   if (isBitrixProcurementOrderFormationRoute()) return <ProcurementOrderFormationBitrixApp />;
-  if (isBitrixProcurementAssortmentRoute()) return <ProcurementAssortmentBitrixApp />;
+  if (isBitrixProcurementAssortmentRoute()) {
+    return new URLSearchParams(window.location.search).get("legacy") === "1"
+      ? <ProcurementAssortmentBitrixApp />
+      : <ProcurementOrderFormationBitrixApp />;
+  }
   if (isBitrixProcurementLabelsRoute()) return <ProcurementLabelsBitrixApp />;
   if (isBitrixExecutiveDashboardRoute() || isExecutiveDashboardRoute()) return <ExecutiveDashboardApp />;
   if (isBitrixReceivablesRoute() || isReceivablesWorkplaceRoute()) return <ReceivablesApp />;

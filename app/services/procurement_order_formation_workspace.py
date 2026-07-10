@@ -95,16 +95,34 @@ def sync_lifecycle_transition_proposals(
     settings = settings or get_settings()
     run = _load_run(db, folder=folder, run_id=run_id)
     if run is None:
-        return {"created": 0, "updated": 0, "stale": 0, "run_id": 0}
+        return {"created": 0, "updated": 0, "automatic": 0, "stale": 0, "run_id": 0}
     rows = _snapshot_rows(db, folder=folder, run_id=int(run["id"]))
     created = 0
     updated = 0
-    active_codes: set[str] = set()
+    automatic = 0
+    active_keys: set[str] = set()
     for row in rows:
         candidate = _transition_candidate(row, run=run, settings=settings)
         if candidate is None:
             continue
-        active_codes.add(candidate["nomenclature_code"])
+        is_automatic = _is_automatic_lifecycle_transition(row, candidate)
+        active_keys.add(candidate["idempotency_key"])
+        if is_automatic:
+            approved_at = datetime.now(UTC).replace(tzinfo=None)
+            candidate.update(
+                {
+                    "status": "auto_applied",
+                    "approved_at": approved_at,
+                    "approved_by_actor": "system:onec-facts",
+                    "approved_by_name": "Автоматически по фактам 1С",
+                    "onec_status": "not_required",
+                    "payload": {
+                        **candidate["payload"],
+                        "automatic": True,
+                        "automatic_reason": "first_supplier_order_created",
+                    },
+                }
+            )
         proposal = db.scalar(
             select(ProcurementLifecycleTransitionProposal).where(
                 ProcurementLifecycleTransitionProposal.idempotency_key
@@ -114,6 +132,7 @@ def sync_lifecycle_transition_proposals(
         if proposal is None:
             db.add(ProcurementLifecycleTransitionProposal(**candidate))
             created += 1
+            automatic += int(is_automatic)
         elif proposal.status == "pending":
             for key in (
                 "nomenclature_ref",
@@ -130,15 +149,27 @@ def sync_lifecycle_transition_proposals(
                 "payload",
             ):
                 setattr(proposal, key, candidate[key])
+            if is_automatic:
+                proposal.status = candidate["status"]
+                proposal.approved_at = candidate["approved_at"]
+                proposal.approved_by_actor = candidate["approved_by_actor"]
+                proposal.approved_by_name = candidate["approved_by_name"]
+                proposal.onec_status = candidate["onec_status"]
+                automatic += 1
             updated += 1
 
-    stale_rows = db.scalars(
+    pending_rows = db.scalars(
         select(ProcurementLifecycleTransitionProposal).where(
             ProcurementLifecycleTransitionProposal.folder.ilike(f"%{folder}%"),
             ProcurementLifecycleTransitionProposal.status == "pending",
-            ProcurementLifecycleTransitionProposal.run_id != int(run["id"]),
         )
     ).all()
+    stale_rows = [
+        proposal
+        for proposal in pending_rows
+        if proposal.run_id != int(run["id"])
+        or proposal.idempotency_key not in active_keys
+    ]
     for proposal in stale_rows:
         proposal.status = "stale"
         proposal.payload = {**(proposal.payload or {}), "stale_reason": "new_run_available"}
@@ -146,6 +177,7 @@ def sync_lifecycle_transition_proposals(
     return {
         "created": created,
         "updated": updated,
+        "automatic": automatic,
         "stale": len(stale_rows),
         "run_id": int(run["id"]),
     }
@@ -269,6 +301,7 @@ def list_lifecycle_transitions(
                 ProcurementLifecycleTransitionProposal.current_status.in_(
                     _status_query_values(normalized_status)
                 ),
+                ProcurementLifecycleTransitionProposal.status.in_(("pending", "stale")),
             )
             .order_by(
                 ProcurementLifecycleTransitionProposal.status,
@@ -869,6 +902,26 @@ def _transition_candidate(
         "responsible_name": DISPLAY_RESPONSIBLE_NAME,
         "payload": {"snapshot_id": row.get("id")},
     }
+
+
+def _is_automatic_lifecycle_transition(
+    row: Mapping[str, Any],
+    candidate: Mapping[str, Any],
+) -> bool:
+    if candidate.get("current_status") != "fruit" or candidate.get("target_status") != "newborn":
+        return False
+    reason_codes = {str(item) for item in row.get("reason_codes") or []}
+    source = dict(row.get("source_record") or {})
+    evidence = dict((source.get("fact_status_decision") or {}).get("evidence") or {})
+    try:
+        supplier_order_count = int(evidence.get("supplier_order_count_1c") or 0)
+    except (TypeError, ValueError):
+        supplier_order_count = 0
+    return (
+        "supplier_order_without_cargo" in reason_codes
+        or bool(source.get("first_supplier_order_at"))
+        or supplier_order_count > 0
+    )
 
 
 def _fact_target_from_source(source: Mapping[str, Any], nomenclature_code: str) -> str | None:

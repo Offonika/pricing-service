@@ -26,6 +26,7 @@ coverage.xml
 # Build / packaging
 build/
 dist/
+storybook-static/
 *.egg-info/
 
 # Editors / IDE

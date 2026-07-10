@@ -5,9 +5,14 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "tokens:build": "node style-dictionary.config.mjs",
+    "build": "npm run tokens:build && tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "vitest run",
+    "storybook": "storybook dev -p 6007",
+    "build-storybook": "storybook build",
+    "test:a11y": "playwright test tests/accessibility.spec.ts"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.90.12",
@@ -21,17 +26,29 @@
     "zustand": "^5.0.9"
   },
   "devDependencies": {
+    "@axe-core/playwright": "^4.12.1",
     "@eslint/js": "^9.39.1",
+    "@playwright/test": "^1.61.1",
+    "@storybook/addon-a11y": "^10.5.0",
+    "@storybook/addon-vitest": "^10.5.0",
+    "@storybook/react-vite": "^10.5.0",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
     "@types/node": "^24.10.1",
     "@types/react": "^19.2.5",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
+    "@vitest/browser-playwright": "^4.1.10",
     "eslint": "^9.39.1",
     "eslint-plugin-react-hooks": "^7.0.1",
     "eslint-plugin-react-refresh": "^0.4.24",
     "globals": "^16.5.0",
+    "jsdom": "^27.4.0",
+    "storybook": "^10.5.0",
+    "style-dictionary": "^4.4.0",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.46.4",
-    "vite": "^7.2.4"
+    "vite": "^7.2.4",
+    "vitest": "^4.1.10"
   }
 }

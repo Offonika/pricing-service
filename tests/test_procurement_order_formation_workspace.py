@@ -78,6 +78,11 @@ def _seed_lifecycle(sqlite_engine) -> int:
             "has_need_signal": True,
         },
         {
+            "nomenclature_code": "NEWBORN-1",
+            "product_ref": DISPLAY_GUID,
+            "manual_status": "newborn",
+        },
+        {
             "nomenclature_code": "WORKING-1",
             "product_ref": DISPLAY_GUID,
             "manual_status": "working",
@@ -102,6 +107,15 @@ def _seed_lifecycle(sqlite_engine) -> int:
             "status_label": "ДН / Добор новорождённого",
             "reason_text": "Есть явная потребность",
             "manual_review_required": True,
+        },
+        {
+            "nomenclature_code": "NEWBORN-1",
+            "name": "Дисплей к Новинке",
+            "folder": "дисплеи",
+            "status": "new_item",
+            "status_label": "Новинка",
+            "recommended_status": "new_item",
+            "reason_text": "Первый груз передан перевозчику",
         },
         {
             "nomenclature_code": "WORKING-1",
@@ -159,11 +173,17 @@ def test_dashboard_keeps_lifecycle_order_and_nests_newborn_need(
     fruit = next(card for card in dashboard["cards"] if card["status"] == "fruit")
     working = next(card for card in dashboard["cards"] if card["status"] == "working")
     assert newborn["total_count"] == 2
-    assert newborn["action_count"] == 1
-    assert fruit["action_count"] == 1
+    assert newborn["action_count"] == 2
+    assert fruit["action_count"] == 0
     assert working["action_label"] == "На пересмотр"
     assert working["action_count"] == 1
-    assert summary == {"created": 3, "updated": 0, "stale": 0, "run_id": run_id}
+    assert summary == {
+        "created": 4,
+        "updated": 0,
+        "automatic": 1,
+        "stale": 0,
+        "run_id": run_id,
+    }
 
 
 def test_queue_starts_unselected_and_only_ready_rows_are_selectable(
@@ -184,13 +204,38 @@ def test_queue_starts_unselected_and_only_ready_rows_are_selectable(
         scope="action",
     )
 
-    assert queue["total"] == 1
-    assert queue["ready_count"] == 1
-    assert sum(1 for item in queue["items"] if item["selectable"]) == 1
-    assert all("selected" not in item for item in queue["items"])
+    assert queue["total"] == 0
+    assert newborn_queue["total"] == 2
+    assert newborn_queue["ready_count"] == 1
+    assert sum(1 for item in newborn_queue["items"] if item["selectable"]) == 1
+    assert all("selected" not in item for item in newborn_queue["items"])
     review = next(item for item in newborn_queue["items"] if item["action_kind"] == "review")
     assert review["current_status"] == "newborn"
     assert review["target_status"] is None
+
+
+def test_first_supplier_order_moves_fruit_to_newborn_without_approval(
+    lifecycle_db,
+    sqlite_engine,
+) -> None:
+    run_id = _seed_lifecycle(sqlite_engine)
+
+    sync_lifecycle_transition_proposals(
+        lifecycle_db,
+        run_id=run_id,
+        settings=_settings(),
+    )
+
+    proposal = lifecycle_db.scalar(
+        select(ProcurementLifecycleTransitionProposal).where(
+            ProcurementLifecycleTransitionProposal.nomenclature_code == "FRUIT-1"
+        )
+    )
+    assert proposal is not None
+    assert proposal.current_status == "fruit"
+    assert proposal.target_status == "newborn"
+    assert proposal.status == "auto_applied"
+    assert proposal.approved_by_actor == "system:onec-facts"
 
 
 def test_batch_approval_returns_partial_result_and_is_idempotent(
@@ -208,8 +253,16 @@ def test_batch_approval_returns_partial_result_and_is_idempotent(
             ProcurementLifecycleTransitionProposal.id
         )
     ).all()
-    ready = next(item for item in proposals if item.action_kind == "transition")
-    review = next(item for item in proposals if item.action_kind == "review")
+    ready = next(
+        item
+        for item in proposals
+        if item.action_kind == "transition" and item.status == "pending"
+    )
+    review = next(
+        item
+        for item in proposals
+        if item.action_kind == "review" and item.status == "pending"
+    )
     request_items = [_approval_item(ready), _approval_item(review)]
 
     first = approve_lifecycle_transitions(

@@ -1,10 +1,13 @@
+@import "./styles/generated/tokens.css";
+
 * {
   box-sizing: border-box;
 }
 
 body {
   margin: 0;
-  background: #f4f6f8;
+  color: var(--color-text);
+  background: var(--color-background);
 }
 
 #root {

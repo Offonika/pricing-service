@@ -10,7 +10,10 @@ from app.services.procurement_b2b_customer_demand import (
 from tasks.build_display_auto_order_dry_run import (
     DemandUpliftRule,
     OrderRoundingRule,
+    PriceBatchRule,
     SpeedHorizonRule,
+    SupportedAnalogPolicy,
+    apply_supported_analog_and_price_batch_policies,
     build_dry_run_rows,
     build_summary,
     fetch_reserved_totals,
@@ -664,6 +667,243 @@ def test_display_auto_order_dry_run_blocks_order_for_review_only_sale_row() -> N
     assert rows[0]["recommended_order_qty"] == "0"
     assert rows[0]["analog_group_recommended_order_qty"] == "5"
     assert "not_auto_order_allowed" in rows[0]["warnings"]
+
+
+def test_supported_analog_gets_network_minimum_then_low_price_batch() -> None:
+    rows = build_dry_run_rows(
+        [
+            {
+                "nomenclature_code": "РБ000041515",
+                "name": "Дисплей для Samsung T295 Galaxy Tab A 8.0 + тачскрин (черный)",
+                "status": "working",
+                "status_label": "Рабочий",
+                "auto_order_allowed": True,
+                "brand_compatibility": "Samsung",
+                "model_compatibility": "Samsung T295 Galaxy Tab A 8.0",
+                "quality_raw": "Аналог",
+                "price_segment": "mid_low",
+            },
+            {
+                "nomenclature_code": "РБ000041516",
+                "name": "Дисплей для Samsung T295 Galaxy Tab A 8.0 + тачскрин (белый)",
+                "status": "sale",
+                "status_label": "ПРОДАЖА",
+                "auto_order_allowed": False,
+                "brand_compatibility": "Samsung",
+                "model_compatibility": "Samsung T295 Galaxy Tab A 8.0",
+                "quality_raw": "Аналог",
+                "price_segment": "mid_low",
+            },
+        ],
+        facts={
+            "stock": {
+                "РБ000041515": {"sellable_stock_qty": Decimal("23")},
+                "РБ000041516": {"sellable_stock_qty": Decimal("8")},
+            },
+            "reserve": {},
+            "incoming": {},
+            "sales": {
+                "РБ000041515": {
+                    "sales_qty_window": Decimal("59"),
+                    "sales_doc_count": 68,
+                    "sales_warehouse_count": 12,
+                    "last_sale_at": date(2026, 7, 10),
+                },
+                "РБ000041516": {
+                    "sales_qty_window": Decimal("13"),
+                    "sales_doc_count": 17,
+                    "sales_warehouse_count": 9,
+                    "last_sale_at": date(2026, 6, 18),
+                },
+            },
+            "returns": {},
+            "purchase": {
+                "РБ000041515": {"latest_purchase_price": Decimal("53")},
+                "РБ000041516": {"latest_purchase_price": Decimal("53")},
+            },
+        },
+        source_errors={},
+        target_days=14,
+        sales_window_days=180,
+        speed_horizon_rules=(
+            SpeedHorizonRule(
+                tier="normal",
+                min_group_avg_daily_sales_qty=Decimal("0.25"),
+                max_effective_target_days=82,
+                safety_stock_days=14,
+            ),
+        ),
+        supported_analog_policy=SupportedAnalogPolicy(
+            enabled=True,
+            applies_to_statuses=("ПРОДАЖА", "Рабочий"),
+            active_store_count=11,
+            site_reserve_qty=1,
+            min_network_stock_qty=12,
+            min_recent_sales_pct_of_store_count=Decimal("10"),
+            max_days_since_last_sale=180,
+        ),
+        price_batch_rules=(
+            PriceBatchRule(
+                speed_tier="normal",
+                price_segments=("economy", "mid_low"),
+                minimum_batch_qty=10,
+                max_automatic_excess_coverage_days=21,
+            ),
+        ),
+        price_batch_applies_to_statuses=("ПРОДАЖА", "Рабочий"),
+        price_batch_applies_to_analog_roles=(
+            "single_sku",
+            "primary_analog",
+            "supported_analog",
+        ),
+        as_of=date(2026, 7, 11),
+    )
+
+    by_code = {row["nomenclature_code"]: row for row in rows}
+    black = by_code["РБ000041515"]
+    white = by_code["РБ000041516"]
+    assert black["analog_role"] == "primary_analog"
+    assert black["recommended_order_qty"] == "0"
+    assert white["analog_role"] == "supported_analog"
+    assert white["supported_analog_min_stock_qty"] == 12
+    assert white["supported_analog_floor_need_qty"] == "4"
+    assert white["recommended_order_qty_raw"] == "4"
+    assert white["recommended_order_qty"] == "10"
+    assert white["dry_run_decision"] == "order"
+    assert white["price_batch_decision"] == "rounded_to_price_minimum"
+    assert white["price_batch_excess_qty"] == "6"
+    assert white["price_batch_excess_coverage_days"] == "15"
+    assert white["analog_group_recommended_order_qty"] == "10"
+
+
+def test_price_batch_excess_above_limit_goes_to_manual_review_with_exact_need() -> None:
+    rows = build_dry_run_rows(
+        [
+            {
+                "nomenclature_code": "RB-PRICE-REVIEW",
+                "name": "Дисплей тестовый",
+                "status": "working",
+                "status_label": "Рабочий",
+                "auto_order_allowed": True,
+                "quality_raw": "Аналог",
+                "price_segment": "mid_low",
+            }
+        ],
+        facts={
+            "stock": {"RB-PRICE-REVIEW": {"sellable_stock_qty": Decimal("20")}},
+            "reserve": {},
+            "incoming": {},
+            "sales": {"RB-PRICE-REVIEW": {"sales_qty_window": Decimal("45")}},
+            "returns": {},
+        },
+        source_errors={},
+        target_days=82,
+        sales_window_days=180,
+        speed_horizon_rules=(
+            SpeedHorizonRule(
+                tier="normal",
+                min_group_avg_daily_sales_qty=Decimal("0.25"),
+                max_effective_target_days=82,
+                safety_stock_days=14,
+            ),
+        ),
+        price_batch_rules=(
+            PriceBatchRule(
+                speed_tier="normal",
+                price_segments=("mid_low",),
+                minimum_batch_qty=10,
+                max_automatic_excess_coverage_days=21,
+            ),
+        ),
+        price_batch_applies_to_statuses=("Рабочий",),
+        price_batch_applies_to_analog_roles=("single_sku",),
+    )
+
+    row = rows[0]
+    assert row["recommended_order_qty_raw"] == "1"
+    assert row["recommended_order_qty"] == "1"
+    assert row["dry_run_decision"] == "manual_review"
+    assert row["price_batch_decision"] == "manual_review_excess"
+    assert "price_batch_excess_manual_review" in row["warnings"]
+
+
+def test_supported_slow_variant_shows_need_but_stays_manual_review() -> None:
+    rows = [
+        {
+            "nomenclature_code": "PRIMARY",
+            "name": "Дисплей для Samsung T295 + тачскрин (черный)",
+            "status_label": "Рабочий",
+            "_assortment_status": "working",
+            "_auto_order_allowed": True,
+            "quality_raw": "Аналог",
+            "analog_model_tokens": "samsung:code:t295",
+            "analog_group_id": "analog-t295",
+            "analog_role": "primary_analog",
+            "analog_group_recommended_order_qty_raw": "4",
+            "analog_group_target_stock_qty": "35",
+            "analog_group_free_stock_qty": "31",
+            "analog_group_incoming_qty": "0",
+            "free_stock_qty": "23",
+            "incoming_qty": "0",
+            "net_sales_qty_window": "59",
+            "last_sale_at": "2026-07-10",
+            "speed_tier": "slow",
+            "speed_group_avg_daily_sales_qty": "0.1",
+            "blockers": "",
+            "warnings": "",
+            "data_sources": "",
+        },
+        {
+            "nomenclature_code": "SUPPORTED",
+            "name": "Дисплей для Samsung T295 + тачскрин (белый)",
+            "status_label": "ПРОДАЖА",
+            "_assortment_status": "sale",
+            "_auto_order_allowed": False,
+            "quality_raw": "Аналог",
+            "analog_model_tokens": "samsung:code:t295",
+            "analog_group_id": "analog-t295",
+            "analog_role": "transition_to_better_analog",
+            "analog_group_recommended_order_qty_raw": "4",
+            "analog_group_target_stock_qty": "35",
+            "analog_group_free_stock_qty": "31",
+            "analog_group_incoming_qty": "0",
+            "free_stock_qty": "8",
+            "incoming_qty": "0",
+            "net_sales_qty_window": "13",
+            "last_sale_at": "2026-06-18",
+            "speed_tier": "slow",
+            "speed_group_avg_daily_sales_qty": "0.1",
+            "blockers": "",
+            "warnings": "",
+            "data_sources": "",
+        },
+    ]
+
+    apply_supported_analog_and_price_batch_policies(
+        rows,
+        supported_analog_policy=SupportedAnalogPolicy(
+            enabled=True,
+            applies_to_statuses=("ПРОДАЖА", "Рабочий"),
+            active_store_count=11,
+            site_reserve_qty=1,
+            min_network_stock_qty=12,
+            min_recent_sales_pct_of_store_count=Decimal("10"),
+            max_days_since_last_sale=180,
+        ),
+        price_batch_rules=(),
+        price_batch_applies_to_statuses=(),
+        price_batch_applies_to_analog_roles=(),
+        as_of=date(2026, 7, 11),
+        min_order_qty=1,
+        max_order_qty=None,
+        order_rounding_rules=(),
+    )
+
+    supported = next(row for row in rows if row["nomenclature_code"] == "SUPPORTED")
+    assert supported["analog_role"] == "supported_analog"
+    assert supported["recommended_order_qty"] == "4"
+    assert supported["dry_run_decision"] == "manual_review"
+    assert supported["price_batch_decision"] == "manual_review_slow"
 
 
 def test_display_auto_order_dry_run_does_not_group_by_short_marketing_model_only() -> None:

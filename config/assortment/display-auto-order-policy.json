@@ -89,8 +89,19 @@
     ]
   },
   "price_segment_schedule_policy": {
-    "status": "proposal",
+    "status": "approved",
+    "approved_at": "2026-07-11",
+    "implementation_status": "wired_in_dry_run",
     "description": "Ценовой слой корректирует график и партию: дешевые товары можно заказывать реже и крупнее, дорогие - чаще и меньшими партиями.",
+    "applies_to_statuses": [
+      "ПРОДАЖА",
+      "Рабочий"
+    ],
+    "applies_to_analog_roles": [
+      "single_sku",
+      "primary_analog",
+      "supported_analog"
+    ],
     "history_window_days": 180,
     "source_report": "reports/assortment_lifecycle/2026-07-06/display-order-schedule-price-batch-analysis.md",
     "quantity_basis": {
@@ -107,7 +118,9 @@
           "mid_low"
         ],
         "cadence": "weekly_with_stockout_guard",
-        "batch_basis": "median_to_p75"
+        "batch_basis": "median_to_p75",
+        "minimum_batch_qty": 20,
+        "max_automatic_excess_coverage_days": 7
       },
       {
         "speed_tier": "super_fast",
@@ -117,6 +130,7 @@
         ],
         "cadence": "twice_weekly",
         "batch_basis": "p25_to_median",
+        "rounding_mode": "exact_need",
         "manual_review_above": "p75_qty"
       },
       {
@@ -126,7 +140,9 @@
           "mid_low"
         ],
         "cadence": "biweekly",
-        "batch_basis": "median_to_p75"
+        "batch_basis": "median_to_p75",
+        "minimum_batch_qty": 12,
+        "max_automatic_excess_coverage_days": 14
       },
       {
         "speed_tier": "fast",
@@ -136,6 +152,7 @@
         ],
         "cadence": "weekly_or_10_days",
         "batch_basis": "p25_to_median",
+        "rounding_mode": "exact_need",
         "manual_review_above": "p75_qty"
       },
       {
@@ -145,7 +162,9 @@
           "mid_low"
         ],
         "cadence": "every_3_weeks",
-        "batch_basis": "median_to_p75"
+        "batch_basis": "median_to_p75",
+        "minimum_batch_qty": 10,
+        "max_automatic_excess_coverage_days": 21
       },
       {
         "speed_tier": "normal",
@@ -155,8 +174,32 @@
         ],
         "cadence": "biweekly",
         "batch_basis": "p25_to_median",
+        "rounding_mode": "exact_need",
         "manual_review_above": "p75_qty"
       }
+    ]
+  },
+  "supported_analog_policy": {
+    "status": "approved",
+    "approved_at": "2026-07-11",
+    "implementation_status": "wired_in_dry_run",
+    "description": "Продающийся цветовой вариант того же дисплея и качества не обнуляем только потому, что в группе есть более ходовой цвет: сохраняем сетевой минимум для магазинов и сайта.",
+    "applies_to_statuses": [
+      "ПРОДАЖА",
+      "Рабочий"
+    ],
+    "active_store_count": 11,
+    "site_reserve_qty": 1,
+    "min_network_stock_qty": 12,
+    "min_recent_sales_pct_of_store_count": 10,
+    "max_days_since_last_sale": 180,
+    "rules": [
+      "вариант должен отличаться от основного только цветом и иметь то же качество; другие качества и поставщицкие версии не получают сетевой минимум",
+      "за 180 дней должно быть не меньше 10% от числа действующих магазинов, то есть минимум 2 чистые продажи",
+      "должна быть продажа в последние 180 дней",
+      "остаток Новый плюс товар в пути доводим до 12 штук: 11 магазинов плюс сайт",
+      "сначала выделяем потребность поддерживаемому аналогу, остаток общей потребности группы отдаем основному аналогу",
+      "после распределения применяется ценовое округление"
     ]
   },
   "auto_order_policy": {

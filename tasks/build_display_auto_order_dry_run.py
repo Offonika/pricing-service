@@ -38,6 +38,11 @@ DEFAULT_POLICY_JSON = Path("config/assortment/display-auto-order-policy.json")
 ONEC_EMPTY_DATE = date(1753, 1, 1)
 OPEN_SUPPLIER_ORDER_BALANCE_PERIOD = datetime.fromisoformat("3999-11-01T00:00:00")
 MIN_PURCHASE_PRICE_FOR_ANALOG_SCORE = Decimal("5")
+SUPPORTED_VARIANT_COLOR_RE = re.compile(
+    r"(?:черн|бел|син|красн|зелен|зелён|сер|розов|фиолетов|голуб|золот|"
+    r"black|white|blue|red|green|grey|gray|pink|purple|gold|silver)",
+    re.IGNORECASE,
+)
 
 CSV_COLUMNS = [
     "nomenclature_code",
@@ -63,6 +68,9 @@ CSV_COLUMNS = [
     "analog_group_recommended_order_qty",
     "analog_model_tokens",
     "analog_decision_reason_ru",
+    "supported_analog_min_stock_qty",
+    "supported_analog_floor_need_qty",
+    "supported_analog_rule_applied",
     "sellable_stock_qty",
     "reserved_qty",
     "free_stock_qty",
@@ -120,6 +128,10 @@ CSV_COLUMNS = [
     "min_order_qty",
     "order_rounding_rule",
     "order_rounding_multiple",
+    "price_batch_min_qty",
+    "price_batch_excess_qty",
+    "price_batch_excess_coverage_days",
+    "price_batch_decision",
     "target_stock_qty",
     "recommended_order_qty_raw",
     "recommended_order_qty",
@@ -216,6 +228,67 @@ class SpeedHorizonRule:
 
 
 @dataclass(frozen=True)
+class PriceBatchRule:
+    speed_tier: str
+    price_segments: tuple[str, ...]
+    minimum_batch_qty: int | None = None
+    max_automatic_excess_coverage_days: int | None = None
+    rounding_mode: str = ""
+
+    def validate(self) -> None:
+        if not self.speed_tier:
+            raise SystemExit("price batch rule must have speed_tier")
+        if not self.price_segments:
+            raise SystemExit("price batch rule must have price_segments")
+        if self.minimum_batch_qty is not None and self.minimum_batch_qty <= 0:
+            raise SystemExit("price batch minimum_batch_qty must be positive")
+        if (
+            self.max_automatic_excess_coverage_days is not None
+            and self.max_automatic_excess_coverage_days < 0
+        ):
+            raise SystemExit("price batch max_automatic_excess_coverage_days must be non-negative")
+
+
+@dataclass(frozen=True)
+class SupportedAnalogPolicy:
+    enabled: bool = False
+    applies_to_statuses: tuple[str, ...] = ()
+    active_store_count: int = 0
+    site_reserve_qty: int = 0
+    min_network_stock_qty: int = 0
+    min_recent_sales_pct_of_store_count: Decimal = Decimal("0")
+    max_days_since_last_sale: int = 0
+
+    @property
+    def min_recent_sales_qty(self) -> Decimal:
+        if self.active_store_count <= 0:
+            return Decimal("0")
+        return _ceil_decimal(
+            Decimal(str(self.active_store_count))
+            * self.min_recent_sales_pct_of_store_count
+            / Decimal("100")
+        )
+
+    def validate(self) -> None:
+        if not self.enabled:
+            return
+        if not self.applies_to_statuses:
+            raise SystemExit("supported analog policy must have applies_to_statuses")
+        if self.active_store_count <= 0:
+            raise SystemExit("supported analog active_store_count must be positive")
+        if self.site_reserve_qty < 0:
+            raise SystemExit("supported analog site_reserve_qty must be non-negative")
+        if self.min_network_stock_qty <= 0:
+            raise SystemExit("supported analog min_network_stock_qty must be positive")
+        if self.min_recent_sales_pct_of_store_count < 0:
+            raise SystemExit(
+                "supported analog min_recent_sales_pct_of_store_count must be non-negative"
+            )
+        if self.max_days_since_last_sale <= 0:
+            raise SystemExit("supported analog max_days_since_last_sale must be positive")
+
+
+@dataclass(frozen=True)
 class AutoOrderPolicy:
     sales_window_days: int = 180
     target_days: int = 14
@@ -233,6 +306,10 @@ class AutoOrderPolicy:
     speed_horizon_rules: tuple[SpeedHorizonRule, ...] = ()
     onec_catalog_analog_candidate_model_tokens: tuple[str, ...] = ()
     demand_uplift_rules: tuple[DemandUpliftRule, ...] = ()
+    price_batch_rules: tuple[PriceBatchRule, ...] = ()
+    price_batch_applies_to_statuses: tuple[str, ...] = ()
+    price_batch_applies_to_analog_roles: tuple[str, ...] = ()
+    supported_analog_policy: SupportedAnalogPolicy = SupportedAnalogPolicy()
 
     @property
     def lead_time_days(self) -> int:
@@ -272,6 +349,10 @@ class AutoOrderPolicy:
                 self.onec_catalog_analog_candidate_model_tokens
             ),
             "demand_uplift_rules": self.demand_uplift_rules,
+            "price_batch_rules": self.price_batch_rules,
+            "price_batch_applies_to_statuses": self.price_batch_applies_to_statuses,
+            "price_batch_applies_to_analog_roles": self.price_batch_applies_to_analog_roles,
+            "supported_analog_policy": self.supported_analog_policy,
         }
         values.update({key: value for key, value in overrides.items() if value is not None})
         return AutoOrderPolicy(**values)
@@ -293,6 +374,9 @@ class AutoOrderPolicy:
             rule.validate()
         for rule in self.speed_horizon_rules:
             rule.validate()
+        for rule in self.price_batch_rules:
+            rule.validate()
+        self.supported_analog_policy.validate()
         for field_name in [
             "order_cadence_days",
             "supplier_prepare_days",
@@ -432,6 +516,10 @@ def main() -> int:
         order_rounding_rules=auto_order_policy.order_rounding_rules,
         speed_horizon_rules=auto_order_policy.speed_horizon_rules,
         demand_uplift_rules=auto_order_policy.demand_uplift_rules,
+        price_batch_rules=auto_order_policy.price_batch_rules,
+        price_batch_applies_to_statuses=auto_order_policy.price_batch_applies_to_statuses,
+        price_batch_applies_to_analog_roles=(auto_order_policy.price_batch_applies_to_analog_roles),
+        supported_analog_policy=auto_order_policy.supported_analog_policy,
         b2b_customer_demand_profiles=b2b_customer_demand_profiles,
         b2b_customer_demand_error=b2b_customer_demand_error,
         as_of=args.as_of,
@@ -493,9 +581,9 @@ def load_auto_order_items(
 
 def load_warehouse_policy(path: Path) -> WarehousePolicy:
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
-    usable_stock_quality_names = _string_tuple(
-        payload.get("usable_stock_quality_names")
-    ) or ("Новый",)
+    usable_stock_quality_names = _string_tuple(payload.get("usable_stock_quality_names")) or (
+        "Новый",
+    )
     raw_warehouses = payload.get("warehouses")
     if not isinstance(raw_warehouses, list):
         raise SystemExit("warehouse policy must contain warehouses list")
@@ -538,6 +626,16 @@ def load_auto_order_policy(path: Path) -> AutoOrderPolicy:
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
     if not isinstance(payload, Mapping):
         return AutoOrderPolicy()
+    price_policy = (
+        payload.get("price_segment_schedule_policy")
+        if isinstance(payload.get("price_segment_schedule_policy"), Mapping)
+        else {}
+    )
+    supported_analog_raw = (
+        payload.get("supported_analog_policy")
+        if isinstance(payload.get("supported_analog_policy"), Mapping)
+        else {}
+    )
     raw = (
         payload.get("auto_order_policy")
         if isinstance(payload.get("auto_order_policy"), Mapping)
@@ -567,6 +665,16 @@ def load_auto_order_policy(path: Path) -> AutoOrderPolicy:
             raw.get("onec_catalog_analog_candidate_model_tokens")
         ),
         demand_uplift_rules=_demand_uplift_rules(raw.get("demand_uplift_rules")),
+        price_batch_rules=(
+            _price_batch_rules(price_policy.get("rules"))
+            if _clean(price_policy.get("status")).casefold() == "approved"
+            else ()
+        ),
+        price_batch_applies_to_statuses=_string_tuple(price_policy.get("applies_to_statuses")),
+        price_batch_applies_to_analog_roles=_string_tuple(
+            price_policy.get("applies_to_analog_roles")
+        ),
+        supported_analog_policy=_supported_analog_policy(supported_analog_raw),
     )
 
 
@@ -901,11 +1009,16 @@ def build_dry_run_rows(
     order_rounding_rules: Sequence[OrderRoundingRule] = (),
     speed_horizon_rules: Sequence[SpeedHorizonRule] = (),
     demand_uplift_rules: Sequence[DemandUpliftRule] = (),
+    price_batch_rules: Sequence[PriceBatchRule] = (),
+    price_batch_applies_to_statuses: Sequence[str] = (),
+    price_batch_applies_to_analog_roles: Sequence[str] = (),
+    supported_analog_policy: SupportedAnalogPolicy | None = None,
     b2b_customer_demand_profiles: Mapping[str, B2BSkuDemandProfile] | None = None,
     b2b_customer_demand_error: str = "",
     as_of: date | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    supported_analog_policy = supported_analog_policy or SupportedAnalogPolicy()
     if supplier_assembly_days:
         supplier_prepare_days = supplier_assembly_days
     if delivery_days:
@@ -1054,6 +1167,9 @@ def build_dry_run_rows(
                 "analog_group_recommended_order_qty": "",
                 "analog_model_tokens": "; ".join(_analog_model_tokens(item)),
                 "analog_decision_reason_ru": "Одиночная расчетная строка: надежной группы аналогов не найдено.",
+                "supported_analog_min_stock_qty": "",
+                "supported_analog_floor_need_qty": "",
+                "supported_analog_rule_applied": "",
                 "sellable_stock_qty": _out_decimal(sellable_stock_qty),
                 "reserved_qty": _out_decimal(reserved_qty),
                 "free_stock_qty": _out_decimal(free_stock_qty),
@@ -1100,6 +1216,10 @@ def build_dry_run_rows(
                 "order_rounding_multiple": (
                     order_rounding_rule.round_to if order_rounding_rule else ""
                 ),
+                "price_batch_min_qty": "",
+                "price_batch_excess_qty": "",
+                "price_batch_excess_coverage_days": "",
+                "price_batch_decision": "",
                 "target_stock_qty": _out_decimal(target_stock_qty),
                 "recommended_order_qty_raw": _out_decimal(recommended_order_qty_raw),
                 "recommended_order_qty": _out_decimal(recommended_order_qty),
@@ -1130,6 +1250,17 @@ def build_dry_run_rows(
         order_rounding_rules=order_rounding_rules,
         speed_horizon_rules=speed_horizon_rules,
     )
+    apply_supported_analog_and_price_batch_policies(
+        rows,
+        supported_analog_policy=supported_analog_policy,
+        price_batch_rules=price_batch_rules,
+        price_batch_applies_to_statuses=price_batch_applies_to_statuses,
+        price_batch_applies_to_analog_roles=price_batch_applies_to_analog_roles,
+        as_of=as_of,
+        min_order_qty=min_order_qty,
+        max_order_qty=max_order_qty,
+        order_rounding_rules=order_rounding_rules,
+    )
     apply_b2b_customer_demand_advisory(
         rows,
         profiles=b2b_customer_demand_profiles or {},
@@ -1140,7 +1271,493 @@ def build_dry_run_rows(
         max_order_qty=max_order_qty,
         order_rounding_rules=order_rounding_rules,
     )
+    apply_b2b_final_order_policies(
+        rows,
+        price_batch_rules=price_batch_rules,
+        price_batch_applies_to_statuses=price_batch_applies_to_statuses,
+        price_batch_applies_to_analog_roles=price_batch_applies_to_analog_roles,
+        min_order_qty=min_order_qty,
+        max_order_qty=max_order_qty,
+        order_rounding_rules=order_rounding_rules,
+    )
     return rows
+
+
+def apply_supported_analog_and_price_batch_policies(
+    rows: list[dict[str, Any]],
+    *,
+    supported_analog_policy: SupportedAnalogPolicy,
+    price_batch_rules: Sequence[PriceBatchRule],
+    price_batch_applies_to_statuses: Sequence[str],
+    price_batch_applies_to_analog_roles: Sequence[str],
+    as_of: date | None,
+    min_order_qty: int,
+    max_order_qty: int | None,
+    order_rounding_rules: Sequence[OrderRoundingRule],
+) -> None:
+    if not supported_analog_policy.enabled and not price_batch_rules:
+        return
+
+    grouped_row_ids: set[int] = set()
+    for group_rows in _analog_groups(rows):
+        if len(group_rows) < 2:
+            continue
+        grouped_row_ids.update(id(row) for row in group_rows)
+        primary = next(
+            (row for row in group_rows if _clean(row.get("analog_role")) == "primary_analog"),
+            None,
+        )
+        if primary is None:
+            continue
+
+        original_group_raw = max(
+            (_decimal(row.get("analog_group_recommended_order_qty_raw")) for row in group_rows),
+            default=Decimal("0"),
+        )
+        supported_rows: list[dict[str, Any]] = []
+        support_floor_by_id: dict[int, Decimal] = {}
+        if supported_analog_policy.enabled:
+            for row in group_rows:
+                if row is primary or not _is_supported_analog_candidate(
+                    row,
+                    primary=primary,
+                    policy=supported_analog_policy,
+                    as_of=as_of,
+                ):
+                    continue
+                floor_need = _ceil_decimal(
+                    max(
+                        Decimal("0"),
+                        Decimal(str(supported_analog_policy.min_network_stock_qty))
+                        - _decimal(row.get("free_stock_qty"))
+                        - _decimal(row.get("incoming_qty")),
+                    )
+                )
+                row["analog_role"] = "supported_analog"
+                row["supported_analog_min_stock_qty"] = (
+                    supported_analog_policy.min_network_stock_qty
+                )
+                row["supported_analog_floor_need_qty"] = _out_decimal(floor_need)
+                row["supported_analog_rule_applied"] = "yes"
+                _remove_warning(row, "analog_transition_to_better_item")
+                _append_warning(row, "supported_analog_network_minimum")
+                _append_data_source(row, "config:supported_analog_policy")
+                supported_rows.append(row)
+                support_floor_by_id[id(row)] = floor_need
+
+        total_support_floor = sum(support_floor_by_id.values(), Decimal("0"))
+        group_raw = max(original_group_raw, total_support_floor)
+        allocations: dict[int, Decimal] = {
+            id(row): support_floor_by_id.get(id(row), Decimal("0")) for row in group_rows
+        }
+        allocations[id(primary)] = max(Decimal("0"), group_raw - total_support_floor)
+
+        _apply_allocations_and_price_batch(
+            group_rows,
+            allocations=allocations,
+            supported_rows=supported_rows,
+            group_target_stock_qty=_decimal(primary.get("analog_group_target_stock_qty")),
+            group_free_stock_qty=_decimal(primary.get("analog_group_free_stock_qty")),
+            group_incoming_qty=_decimal(primary.get("analog_group_incoming_qty")),
+            group_avg_daily_sales_qty=_decimal(primary.get("speed_group_avg_daily_sales_qty")),
+            price_batch_rules=price_batch_rules,
+            price_batch_applies_to_statuses=price_batch_applies_to_statuses,
+            price_batch_applies_to_analog_roles=price_batch_applies_to_analog_roles,
+            min_order_qty=min_order_qty,
+            max_order_qty=max_order_qty,
+            order_rounding_rules=order_rounding_rules,
+        )
+
+    for row in rows:
+        if id(row) in grouped_row_ids:
+            continue
+        if _clean(row.get("dry_run_decision")) != "order":
+            continue
+        raw_qty = _decimal(row.get("recommended_order_qty_raw"))
+        if raw_qty <= 0:
+            continue
+        _apply_allocations_and_price_batch(
+            [row],
+            allocations={id(row): raw_qty},
+            supported_rows=[],
+            group_target_stock_qty=_decimal(row.get("target_stock_qty")),
+            group_free_stock_qty=_decimal(row.get("free_stock_qty")),
+            group_incoming_qty=_decimal(row.get("incoming_qty")),
+            group_avg_daily_sales_qty=_decimal(row.get("avg_daily_sales_qty")),
+            price_batch_rules=price_batch_rules,
+            price_batch_applies_to_statuses=price_batch_applies_to_statuses,
+            price_batch_applies_to_analog_roles=price_batch_applies_to_analog_roles,
+            min_order_qty=min_order_qty,
+            max_order_qty=max_order_qty,
+            order_rounding_rules=order_rounding_rules,
+        )
+
+
+def _is_supported_analog_candidate(
+    row: Mapping[str, Any],
+    *,
+    primary: Mapping[str, Any],
+    policy: SupportedAnalogPolicy,
+    as_of: date | None,
+) -> bool:
+    configured_statuses = {status.casefold() for status in policy.applies_to_statuses}
+    row_statuses = {
+        _clean(row.get("_assortment_status")).casefold(),
+        _clean(row.get("status_label")).casefold(),
+    }
+    if not configured_statuses.intersection(row_statuses):
+        return False
+    if _clean(row.get("blockers")):
+        return False
+    row_quality = _clean(row.get("quality_normalized") or row.get("quality_raw")).casefold()
+    primary_quality = _clean(
+        primary.get("quality_normalized") or primary.get("quality_raw")
+    ).casefold()
+    if row_quality != primary_quality:
+        return False
+    row_variant_key = _supported_variant_key(row.get("name"))
+    if not row_variant_key or row_variant_key != _supported_variant_key(primary.get("name")):
+        return False
+    if _decimal(row.get("net_sales_qty_window")) < policy.min_recent_sales_qty:
+        return False
+    last_sale_at = _date_value(row.get("last_sale_at"))
+    if as_of is not None:
+        if last_sale_at is None:
+            return False
+        days_since_last_sale = (as_of - last_sale_at).days
+        if days_since_last_sale < 0 or days_since_last_sale > policy.max_days_since_last_sale:
+            return False
+    return True
+
+
+def _supported_variant_key(value: Any) -> str:
+    text_value = _clean(value).casefold().replace("ё", "е")
+
+    def remove_color_parentheses(match: re.Match[str]) -> str:
+        content = match.group(1)
+        return " " if SUPPORTED_VARIANT_COLOR_RE.search(content) else match.group(0)
+
+    text_value = re.sub(r"\(([^()]*)\)", remove_color_parentheses, text_value)
+    text_value = SUPPORTED_VARIANT_COLOR_RE.sub(" ", text_value)
+    return re.sub(r"[^a-zа-я0-9]+", " ", text_value).strip()
+
+
+def _apply_allocations_and_price_batch(
+    group_rows: Sequence[dict[str, Any]],
+    *,
+    allocations: Mapping[int, Decimal],
+    supported_rows: Sequence[dict[str, Any]],
+    group_target_stock_qty: Decimal,
+    group_free_stock_qty: Decimal,
+    group_incoming_qty: Decimal,
+    group_avg_daily_sales_qty: Decimal,
+    price_batch_rules: Sequence[PriceBatchRule],
+    price_batch_applies_to_statuses: Sequence[str],
+    price_batch_applies_to_analog_roles: Sequence[str],
+    min_order_qty: int,
+    max_order_qty: int | None,
+    order_rounding_rules: Sequence[OrderRoundingRule],
+) -> None:
+    supported_ids = {id(row) for row in supported_rows}
+    final_by_id: dict[int, Decimal] = {}
+    review_by_id: set[int] = set()
+    for row in group_rows:
+        raw_qty = allocations.get(id(row), Decimal("0"))
+        final_by_id[id(row)] = rounded_order_qty(
+            raw_qty,
+            min_order_qty=min_order_qty,
+            max_order_qty=max_order_qty,
+            order_rounding_rules=order_rounding_rules,
+        )
+
+    for row in group_rows:
+        raw_qty = allocations.get(id(row), Decimal("0"))
+        if raw_qty <= 0:
+            continue
+        price_rule = _price_batch_rule_for_row(
+            row,
+            rules=price_batch_rules,
+            applies_to_statuses=price_batch_applies_to_statuses,
+            applies_to_analog_roles=price_batch_applies_to_analog_roles,
+        )
+        if price_rule is None:
+            continue
+        _append_data_source(row, "config:price_segment_schedule_policy")
+        if price_rule.minimum_batch_qty is None:
+            row["price_batch_decision"] = "exact_need"
+            continue
+        row["price_batch_min_qty"] = price_rule.minimum_batch_qty
+        candidate_qty = rounded_order_qty(
+            max(raw_qty, Decimal(str(price_rule.minimum_batch_qty))),
+            min_order_qty=min_order_qty,
+            max_order_qty=max_order_qty,
+            order_rounding_rules=order_rounding_rules,
+        )
+        candidate_total = (
+            sum(final_by_id.values(), Decimal("0")) - final_by_id[id(row)] + candidate_qty
+        )
+        candidate_excess = max(
+            Decimal("0"),
+            group_free_stock_qty + group_incoming_qty + candidate_total - group_target_stock_qty,
+        )
+        candidate_excess_days = (
+            candidate_excess / group_avg_daily_sales_qty
+            if group_avg_daily_sales_qty > 0
+            else Decimal("999999") if candidate_excess > 0 else Decimal("0")
+        )
+        row["price_batch_excess_qty"] = _out_decimal(candidate_excess)
+        row["price_batch_excess_coverage_days"] = _out_decimal(
+            candidate_excess_days,
+            places=2,
+        )
+        max_excess_days = price_rule.max_automatic_excess_coverage_days
+        if max_excess_days is not None and candidate_excess_days > Decimal(str(max_excess_days)):
+            row["price_batch_decision"] = "manual_review_excess"
+            review_by_id.add(id(row))
+            _append_warning(row, "price_batch_excess_manual_review")
+            continue
+        final_by_id[id(row)] = candidate_qty
+        row["price_batch_decision"] = "rounded_to_price_minimum"
+        if candidate_qty > raw_qty:
+            _append_warning(row, "price_batch_minimum_applied")
+
+    final_group_qty = sum(final_by_id.values(), Decimal("0"))
+    final_group_excess = max(
+        Decimal("0"),
+        group_free_stock_qty + group_incoming_qty + final_group_qty - group_target_stock_qty,
+    )
+    final_group_excess_days = (
+        final_group_excess / group_avg_daily_sales_qty
+        if group_avg_daily_sales_qty > 0
+        else Decimal("999999") if final_group_excess > 0 else Decimal("0")
+    )
+    raw_group_qty = sum(allocations.values(), Decimal("0"))
+
+    for row in group_rows:
+        raw_qty = allocations.get(id(row), Decimal("0"))
+        final_qty = final_by_id[id(row)]
+        if len(group_rows) > 1:
+            row["analog_group_recommended_order_qty_raw"] = _out_decimal(raw_group_qty)
+            row["analog_group_recommended_order_qty"] = _out_decimal(final_group_qty)
+        if raw_qty <= 0:
+            row["recommended_order_qty_raw"] = "0"
+            row["recommended_order_qty"] = "0"
+            if not _clean(row.get("blockers")) and _clean(row.get("speed_tier")) != "slow":
+                row["dry_run_decision"] = "do_not_order"
+            if id(row) in supported_ids:
+                row["analog_decision_reason_ru"] = (
+                    "Поддерживаемый аналог уже закрывает сетевой минимум; отдельный заказ "
+                    "сейчас не нужен."
+                )
+                row["reason_ru"] = row["analog_decision_reason_ru"]
+            elif (
+                _clean(row.get("analog_role")) == "primary_analog"
+                and supported_rows
+                and raw_group_qty > 0
+            ):
+                row["analog_decision_reason_ru"] = (
+                    "Потребность группы полностью направлена поддерживаемому аналогу, "
+                    "которому не хватает товара до сетевого минимума. Основной аналог "
+                    "отдельно сейчас не заказываем."
+                )
+                row["reason_ru"] = row["analog_decision_reason_ru"]
+            continue
+
+        row["recommended_order_qty_raw"] = _out_decimal(raw_qty)
+        row["recommended_order_qty"] = _out_decimal(final_qty)
+        rounding_rule = _order_rounding_rule_for_qty(
+            max(raw_qty, _decimal(row.get("price_batch_min_qty"))),
+            order_rounding_rules,
+        )
+        row["order_rounding_rule"] = _order_rounding_rule_text(rounding_rule)
+        row["order_rounding_multiple"] = rounding_rule.round_to if rounding_rule else ""
+        row["price_batch_excess_qty"] = _out_decimal(final_group_excess)
+        row["price_batch_excess_coverage_days"] = _out_decimal(
+            final_group_excess_days,
+            places=2,
+        )
+        if id(row) in review_by_id:
+            row["dry_run_decision"] = "manual_review"
+        elif _clean(row.get("speed_tier")) == "slow":
+            row["dry_run_decision"] = "manual_review"
+            row["price_batch_decision"] = "manual_review_slow"
+            _append_warning(row, "speed_tier_manual_review")
+        elif id(row) in supported_ids or bool(row.get("_auto_order_allowed")):
+            row["dry_run_decision"] = "order"
+        if id(row) in supported_ids:
+            row["analog_decision_reason_ru"] = (
+                f"Поддерживаемый продающийся аналог: до сетевого минимума "
+                f"{row['supported_analog_min_stock_qty']} шт. не хватает {raw_qty} шт.; "
+                f"после ценового правила рекомендация {final_qty} шт."
+            )
+            row["reason_ru"] = row["analog_decision_reason_ru"]
+        elif _clean(row.get("price_batch_decision")) == "rounded_to_price_minimum":
+            row["reason_ru"] = (
+                f"Расчетная потребность {raw_qty} шт.; по классу "
+                f"{_clean(row.get('speed_tier'))} + {_clean(row.get('price_segment'))} "
+                f"заказ округлен до {final_qty} шт. Излишек группы "
+                f"{final_group_excess} шт. ({_out_decimal(final_group_excess_days, places=2)} "
+                "дня спроса)."
+            )
+
+
+def _price_batch_rule_for_row(
+    row: Mapping[str, Any],
+    *,
+    rules: Sequence[PriceBatchRule],
+    applies_to_statuses: Sequence[str],
+    applies_to_analog_roles: Sequence[str],
+) -> PriceBatchRule | None:
+    configured_statuses = {status.casefold() for status in applies_to_statuses}
+    row_statuses = {
+        _clean(row.get("_assortment_status")).casefold(),
+        _clean(row.get("status_label")).casefold(),
+    }
+    if configured_statuses and not configured_statuses.intersection(row_statuses):
+        return None
+    configured_roles = {role.casefold() for role in applies_to_analog_roles}
+    if configured_roles and _clean(row.get("analog_role")).casefold() not in configured_roles:
+        return None
+    speed_tier = _clean(row.get("speed_tier")).casefold()
+    price_segment = _clean(row.get("price_segment")).casefold()
+    return next(
+        (
+            rule
+            for rule in rules
+            if rule.speed_tier.casefold() == speed_tier
+            and price_segment in {segment.casefold() for segment in rule.price_segments}
+        ),
+        None,
+    )
+
+
+def apply_b2b_final_order_policies(
+    rows: list[dict[str, Any]],
+    *,
+    price_batch_rules: Sequence[PriceBatchRule],
+    price_batch_applies_to_statuses: Sequence[str],
+    price_batch_applies_to_analog_roles: Sequence[str],
+    min_order_qty: int,
+    max_order_qty: int | None,
+    order_rounding_rules: Sequence[OrderRoundingRule],
+) -> None:
+    if not any(_clean(row.get("b2b_replacement_decision")) for row in rows):
+        return
+
+    grouped_row_ids: set[int] = set()
+    for group_rows in _analog_groups(rows):
+        if len(group_rows) < 2:
+            continue
+        if not any(_clean(row.get("b2b_replacement_decision")) for row in group_rows):
+            continue
+        grouped_row_ids.update(id(row) for row in group_rows)
+        primary = next(
+            (row for row in group_rows if _clean(row.get("analog_role")) == "primary_analog"),
+            None,
+        )
+        if primary is None:
+            continue
+        group_target = max(
+            (_decimal(row.get("b2b_replacement_target_stock_qty")) for row in group_rows),
+            default=Decimal("0"),
+        )
+        group_free = sum((_decimal(row.get("free_stock_qty")) for row in group_rows), Decimal("0"))
+        group_incoming = sum(
+            (_decimal(row.get("incoming_qty")) for row in group_rows), Decimal("0")
+        )
+        group_raw = _ceil_decimal(max(Decimal("0"), group_target - group_free - group_incoming))
+        supported_rows = [
+            row for row in group_rows if _clean(row.get("analog_role")) == "supported_analog"
+        ]
+        support_floor = {
+            _clean(row.get("nomenclature_code")): _decimal(
+                row.get("supported_analog_floor_need_qty")
+            )
+            for row in supported_rows
+        }
+        total_support_floor = sum(support_floor.values(), Decimal("0"))
+        total_raw = max(group_raw, total_support_floor)
+
+        temp_rows = [dict(row) for row in group_rows]
+        temp_by_code = {_clean(row.get("nomenclature_code")): row for row in temp_rows}
+        temp_primary = temp_by_code[_clean(primary.get("nomenclature_code"))]
+        temp_supported = [
+            temp_by_code[_clean(row.get("nomenclature_code"))] for row in supported_rows
+        ]
+        allocations = {
+            id(temp): support_floor.get(_clean(temp.get("nomenclature_code")), Decimal("0"))
+            for temp in temp_rows
+        }
+        allocations[id(temp_primary)] = max(Decimal("0"), total_raw - total_support_floor)
+        _apply_allocations_and_price_batch(
+            temp_rows,
+            allocations=allocations,
+            supported_rows=temp_supported,
+            group_target_stock_qty=group_target,
+            group_free_stock_qty=group_free,
+            group_incoming_qty=group_incoming,
+            group_avg_daily_sales_qty=_decimal(primary.get("speed_group_avg_daily_sales_qty")),
+            price_batch_rules=price_batch_rules,
+            price_batch_applies_to_statuses=price_batch_applies_to_statuses,
+            price_batch_applies_to_analog_roles=price_batch_applies_to_analog_roles,
+            min_order_qty=min_order_qty,
+            max_order_qty=max_order_qty,
+            order_rounding_rules=order_rounding_rules,
+        )
+        for row in group_rows:
+            temp = temp_by_code[_clean(row.get("nomenclature_code"))]
+            qty = _decimal(temp.get("recommended_order_qty"))
+            decision = _clean(temp.get("dry_run_decision"))
+            row["b2b_replacement_recommended_order_qty"] = _out_decimal(qty)
+            row["b2b_replacement_decision"] = decision
+            row["b2b_order_delta_qty"] = _out_decimal(
+                qty - _decimal(row.get("recommended_order_qty"))
+            )
+            row["b2b_reason_ru"] = (
+                _clean(row.get("b2b_reason_ru"))
+                + " После клиентского прогноза повторно применены сетевой минимум "
+                "поддерживаемого аналога и ценовое округление."
+            ).strip()
+
+    for row in rows:
+        if id(row) in grouped_row_ids:
+            continue
+        if _clean(row.get("b2b_replacement_decision")) != "order":
+            continue
+        raw_qty = _ceil_decimal(
+            max(
+                Decimal("0"),
+                _decimal(row.get("b2b_replacement_target_stock_qty"))
+                - _decimal(row.get("free_stock_qty"))
+                - _decimal(row.get("incoming_qty")),
+            )
+        )
+        if raw_qty <= 0:
+            continue
+        temp = dict(row)
+        _apply_allocations_and_price_batch(
+            [temp],
+            allocations={id(temp): raw_qty},
+            supported_rows=[],
+            group_target_stock_qty=_decimal(row.get("b2b_replacement_target_stock_qty")),
+            group_free_stock_qty=_decimal(row.get("free_stock_qty")),
+            group_incoming_qty=_decimal(row.get("incoming_qty")),
+            group_avg_daily_sales_qty=_decimal(row.get("avg_daily_sales_qty")),
+            price_batch_rules=price_batch_rules,
+            price_batch_applies_to_statuses=price_batch_applies_to_statuses,
+            price_batch_applies_to_analog_roles=price_batch_applies_to_analog_roles,
+            min_order_qty=min_order_qty,
+            max_order_qty=max_order_qty,
+            order_rounding_rules=order_rounding_rules,
+        )
+        qty = _decimal(temp.get("recommended_order_qty"))
+        row["b2b_replacement_recommended_order_qty"] = _out_decimal(qty)
+        row["b2b_replacement_decision"] = _clean(temp.get("dry_run_decision"))
+        row["b2b_order_delta_qty"] = _out_decimal(qty - _decimal(row.get("recommended_order_qty")))
+        row["b2b_reason_ru"] = (
+            _clean(row.get("b2b_reason_ru"))
+            + " После клиентского прогноза повторно применено ценовое округление."
+        ).strip()
 
 
 def apply_b2b_customer_demand_advisory(
@@ -1184,9 +1801,7 @@ def apply_b2b_customer_demand_advisory(
             as_of=calculation_date,
             horizon_days=planning_horizon_days,
         )
-        client_forecast_qty = _ceil_decimal(
-            active_daily_rate * Decimal(str(planning_horizon_days))
-        )
+        client_forecast_qty = _ceil_decimal(active_daily_rate * Decimal(str(planning_horizon_days)))
 
         row.update(
             {
@@ -1242,9 +1857,7 @@ def apply_b2b_customer_demand_advisory(
         ordinary_forecast_qty = _ceil_decimal(
             ordinary_daily_rate * Decimal(str(planning_horizon_days))
         )
-        ordinary_safety_qty = _ceil_decimal(
-            ordinary_daily_rate * Decimal(str(safety_stock_days))
-        )
+        ordinary_safety_qty = _ceil_decimal(ordinary_daily_rate * Decimal(str(safety_stock_days)))
         replacement_target_stock_qty = (
             ordinary_forecast_qty + ordinary_safety_qty + client_forecast_qty
         )
@@ -1281,13 +1894,9 @@ def apply_b2b_customer_demand_advisory(
             {
                 "b2b_managed_sales_qty_window": _out_decimal(managed_sales_qty),
                 "b2b_ordinary_net_sales_qty_window": _out_decimal(ordinary_net_sales_qty),
-                "b2b_replacement_target_stock_qty": _out_decimal(
-                    replacement_target_stock_qty
-                ),
+                "b2b_replacement_target_stock_qty": _out_decimal(replacement_target_stock_qty),
                 "b2b_replacement_decision": replacement_decision,
-                "b2b_replacement_recommended_order_qty": _out_decimal(
-                    replacement_order_qty
-                ),
+                "b2b_replacement_recommended_order_qty": _out_decimal(replacement_order_qty),
                 "b2b_order_delta_qty": _out_decimal(order_delta_qty),
                 "b2b_reason_ru": (
                     f"Пилот без двойного счета: из чистого спроса {net_sales_qty} шт. "
@@ -1323,9 +1932,11 @@ def apply_b2b_customer_demand_advisory(
             continue
         group_target_stock_qty = sum(
             (
-                _decimal(row.get("b2b_replacement_target_stock_qty"))
-                if _clean(row.get("b2b_demand_mode")) == "advisory_only"
-                else _decimal(row.get("target_stock_qty"))
+                (
+                    _decimal(row.get("b2b_replacement_target_stock_qty"))
+                    if _clean(row.get("b2b_demand_mode")) == "advisory_only"
+                    else _decimal(row.get("target_stock_qty"))
+                )
                 for row in group_rows
             ),
             Decimal("0"),
@@ -1363,21 +1974,13 @@ def apply_b2b_customer_demand_advisory(
             winner["b2b_profile_as_of_exclusive"] = profiled_rows[0].get(
                 "b2b_profile_as_of_exclusive", ""
             )
-            winner["b2b_profile_age_days"] = profiled_rows[0].get(
-                "b2b_profile_age_days", ""
-            )
+            winner["b2b_profile_age_days"] = profiled_rows[0].get("b2b_profile_age_days", "")
             _append_warning(winner, "b2b_customer_demand_advisory")
             _append_data_source(winner, "report:b2b_customer_demand_profile")
-        winner["b2b_replacement_target_stock_qty"] = _out_decimal(
-            group_target_stock_qty
-        )
+        winner["b2b_replacement_target_stock_qty"] = _out_decimal(group_target_stock_qty)
         winner["b2b_replacement_decision"] = group_replacement_decision
-        winner["b2b_replacement_recommended_order_qty"] = _out_decimal(
-            group_order_qty
-        )
-        winner["b2b_order_delta_qty"] = _out_decimal(
-            group_order_qty - winner_current_order_qty
-        )
+        winner["b2b_replacement_recommended_order_qty"] = _out_decimal(group_order_qty)
+        winner["b2b_order_delta_qty"] = _out_decimal(group_order_qty - winner_current_order_qty)
         winner["b2b_reason_ru"] = (
             f"B2B-потребность группы аналогов {group_id} собрана в SKU-победитель "
             f"{_clean(winner.get('nomenclature_code'))}: цель группы "
@@ -1393,9 +1996,7 @@ def apply_b2b_customer_demand_advisory(
             row["b2b_replacement_target_stock_qty"] = "0"
             row["b2b_replacement_decision"] = "manual_review"
             row["b2b_replacement_recommended_order_qty"] = "0"
-            row["b2b_order_delta_qty"] = _out_decimal(
-                -_decimal(row.get("recommended_order_qty"))
-            )
+            row["b2b_order_delta_qty"] = _out_decimal(-_decimal(row.get("recommended_order_qty")))
             row["b2b_reason_ru"] = (
                 f"B2B-потребность строки перенесена в SKU-победитель "
                 f"{_clean(winner.get('nomenclature_code'))} группы аналогов {group_id}; "
@@ -1823,9 +2424,7 @@ def build_summary(
         _clean(row.get("speed_tier")) for row in rows if _clean(row.get("speed_tier"))
     )
     b2b_demand_modes = Counter(
-        _clean(row.get("b2b_demand_mode"))
-        for row in rows
-        if _clean(row.get("b2b_demand_mode"))
+        _clean(row.get("b2b_demand_mode")) for row in rows if _clean(row.get("b2b_demand_mode"))
     )
     b2b_dependency_classes = Counter(
         _clean(row.get("b2b_dependency_class"))
@@ -1839,6 +2438,11 @@ def build_summary(
     )
     analog_roles = Counter(_clean(row.get("analog_role")) for row in rows)
     analog_roles.pop("", None)
+    price_batch_decisions = Counter(
+        _clean(row.get("price_batch_decision"))
+        for row in rows
+        if _clean(row.get("price_batch_decision"))
+    )
     analog_group_ids = {
         _clean(row.get("analog_group_id"))
         for row in rows
@@ -1847,11 +2451,27 @@ def build_summary(
     total_recommended = sum(
         (_decimal(row.get("recommended_order_qty")) for row in rows), Decimal("0")
     )
-    total_b2b_replacement_recommended = sum(
+    total_raw_recommended = sum(
+        (_decimal(row.get("recommended_order_qty_raw")) for row in rows), Decimal("0")
+    )
+    total_automatic_order = sum(
         (
-            _decimal(row.get("b2b_replacement_recommended_order_qty"))
+            _decimal(row.get("recommended_order_qty"))
             for row in rows
+            if _clean(row.get("dry_run_decision")) == "order"
         ),
+        Decimal("0"),
+    )
+    total_manual_review_qty = sum(
+        (
+            _decimal(row.get("recommended_order_qty"))
+            for row in rows
+            if _clean(row.get("dry_run_decision")) == "manual_review"
+        ),
+        Decimal("0"),
+    )
+    total_b2b_replacement_recommended = sum(
+        (_decimal(row.get("b2b_replacement_recommended_order_qty")) for row in rows),
         Decimal("0"),
     )
     total_b2b_order_delta = sum(
@@ -1876,17 +2496,20 @@ def build_summary(
         "effective_target_days": int(_decimal(horizon_row.get("effective_target_days"))),
         "decision_counts": dict(sorted(decisions.items())),
         "analog_role_counts": dict(sorted(analog_roles.items())),
+        "price_batch_decision_counts": dict(sorted(price_batch_decisions.items())),
         "analog_group_count": len(analog_group_ids),
         "demand_adjustment_rule_counts": dict(sorted(demand_rules.items())),
         "speed_tier_counts": dict(sorted(speed_tiers.items())),
         "b2b_demand_mode_counts": dict(sorted(b2b_demand_modes.items())),
         "b2b_dependency_class_counts": dict(sorted(b2b_dependency_classes.items())),
-        "b2b_replacement_decision_counts": dict(
-            sorted(b2b_replacement_decisions.items())
-        ),
+        "b2b_replacement_decision_counts": dict(sorted(b2b_replacement_decisions.items())),
         "warning_counts": dict(sorted(warnings.items())),
         "blocker_counts": dict(sorted(blockers.items())),
         "total_recommended_order_qty": _out_decimal(total_recommended),
+        "total_recommended_order_qty_raw": _out_decimal(total_raw_recommended),
+        "total_rounding_delta_qty": _out_decimal(total_recommended - total_raw_recommended),
+        "total_automatic_order_qty": _out_decimal(total_automatic_order),
+        "total_manual_review_qty": _out_decimal(total_manual_review_qty),
         "total_b2b_replacement_recommended_order_qty": _out_decimal(
             total_b2b_replacement_recommended
         ),
@@ -2583,6 +3206,54 @@ def _speed_horizon_rules(value: Any) -> tuple[SpeedHorizonRule, ...]:
     )
 
 
+def _price_batch_rules(value: Any) -> tuple[PriceBatchRule, ...]:
+    if value in (None, ""):
+        return ()
+    if not isinstance(value, Sequence) or isinstance(value, (str, bytes)):
+        raise SystemExit(f"price batch rules must be a list, got: {value!r}")
+    rules: list[PriceBatchRule] = []
+    for raw in value:
+        if not isinstance(raw, Mapping):
+            raise SystemExit(f"price batch rule must be an object, got: {raw!r}")
+        rules.append(
+            PriceBatchRule(
+                speed_tier=_clean(raw.get("speed_tier")),
+                price_segments=_string_tuple(raw.get("price_segments")),
+                minimum_batch_qty=_optional_int_value(raw.get("minimum_batch_qty")),
+                max_automatic_excess_coverage_days=_optional_int_value(
+                    raw.get("max_automatic_excess_coverage_days")
+                ),
+                rounding_mode=_clean(raw.get("rounding_mode")),
+            )
+        )
+    return tuple(rules)
+
+
+def _supported_analog_policy(value: Any) -> SupportedAnalogPolicy:
+    if not isinstance(value, Mapping):
+        return SupportedAnalogPolicy()
+    enabled = _clean(value.get("status")).casefold() == "approved" and _clean(
+        value.get("implementation_status")
+    ).casefold() not in {"disabled", "documented_not_wired"}
+    active_store_count = _int_value(value.get("active_store_count"), 0)
+    site_reserve_qty = _int_value(value.get("site_reserve_qty"), 0)
+    return SupportedAnalogPolicy(
+        enabled=enabled,
+        applies_to_statuses=_string_tuple(value.get("applies_to_statuses")),
+        active_store_count=active_store_count,
+        site_reserve_qty=site_reserve_qty,
+        min_network_stock_qty=_int_value(
+            value.get("min_network_stock_qty"),
+            active_store_count + site_reserve_qty,
+        ),
+        min_recent_sales_pct_of_store_count=_decimal_value(
+            value.get("min_recent_sales_pct_of_store_count"),
+            Decimal("10"),
+        ),
+        max_days_since_last_sale=_int_value(value.get("max_days_since_last_sale"), 180),
+    )
+
+
 def _optional_env_int(*names: str) -> int | None:
     for name in names:
         if name in os.environ and os.environ[name] != "":
@@ -2640,9 +3311,7 @@ def _parse_args() -> argparse.Namespace:
         "--b2b-customer-demand-as-of",
         type=_parse_date,
         default=None,
-        help=(
-            "Exclusive profile date. If omitted, it is inferred from the profile filename."
-        ),
+        help=("Exclusive profile date. If omitted, it is inferred from the profile filename."),
     )
     parser.add_argument("--as-of", type=_parse_date, default=date.today())
     parser.add_argument(

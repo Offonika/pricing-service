@@ -271,6 +271,7 @@ def build_grouped_orders(
             blockers.append("catalog_xml_id_mismatch")
         quantity = _decimal(row.get("recommended_order_qty")) or Decimal("0")
         price = _decimal(row.get("latest_purchase_price")) or Decimal("0")
+        b2b_customer_demand = _b2b_customer_demand_payload(row)
         if price <= 0:
             blockers.append("purchase_price_missing")
         groups[key].append(
@@ -301,6 +302,11 @@ def build_grouped_orders(
                     str(product.manual_minimum)
                     if product and product.manual_minimum is not None
                     else None
+                ),
+                "payload": (
+                    {"b2b_customer_demand": b2b_customer_demand}
+                    if b2b_customer_demand
+                    else {}
                 ),
             }
         )
@@ -585,6 +591,7 @@ def persist_grouped_orders(db: Session, orders: Sequence[Mapping[str, Any]]) -> 
                     if line_payload.get("manual_minimum") not in (None, "")
                     else None
                 ),
+                "payload": dict(line_payload.get("payload") or {}),
                 "removed": False,
             }
             for field_name, value in values.items():
@@ -671,6 +678,41 @@ def _decimal(value: Any) -> Decimal | None:
 
 def _split_codes(value: Any) -> list[str]:
     return [item.strip() for item in _clean(value).replace(",", ";").split(";") if item.strip()]
+
+
+def _b2b_customer_demand_payload(row: Mapping[str, Any]) -> dict[str, Any]:
+    mode = _clean(row.get("b2b_demand_mode"))
+    if not mode:
+        return {}
+    return {
+        "mode": mode,
+        "profile_as_of_exclusive": _clean(row.get("b2b_profile_as_of_exclusive")),
+        "profile_age_days": _integer(row.get("b2b_profile_age_days")),
+        "dependency_class": _clean(row.get("b2b_dependency_class")),
+        "active_customer_count": _integer(row.get("b2b_active_customer_count")),
+        "passive_customer_count": _integer(row.get("b2b_passive_customer_count")),
+        "due_customer_count": _integer(row.get("b2b_due_customer_count")),
+        "managed_sales_qty_window": _clean(row.get("b2b_managed_sales_qty_window")),
+        "active_daily_rate": _clean(row.get("b2b_active_daily_rate")),
+        "client_forecast_qty": _clean(row.get("b2b_client_forecast_qty")),
+        "ordinary_net_sales_qty_window": _clean(
+            row.get("b2b_ordinary_net_sales_qty_window")
+        ),
+        "replacement_target_stock_qty": _clean(
+            row.get("b2b_replacement_target_stock_qty")
+        ),
+        "replacement_decision": _clean(row.get("b2b_replacement_decision")),
+        "replacement_recommended_order_qty": _clean(
+            row.get("b2b_replacement_recommended_order_qty")
+        ),
+        "order_delta_qty": _clean(row.get("b2b_order_delta_qty")),
+        "reason_ru": _clean(row.get("b2b_reason_ru")),
+    }
+
+
+def _integer(value: Any) -> int | None:
+    decimal_value = _decimal(value)
+    return int(decimal_value) if decimal_value is not None else None
 
 
 def _risk_level(row: Mapping[str, Any], blockers: Sequence[str]) -> str:

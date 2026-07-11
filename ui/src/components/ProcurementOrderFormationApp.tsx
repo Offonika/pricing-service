@@ -220,6 +220,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                 const edit = lineEdit(line);
                 const classification = classificationEdit(line);
                 const proposal = line.latest_classification;
+                const b2bDemand = line.payload?.b2b_customer_demand;
                 return (
                   <tr key={line.id} className={line.blockers.length ? "order-formation__row--blocked" : ""}>
                     <td>
@@ -309,6 +310,31 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                     <td>
                       <strong>{line.recommended_quantity}</strong>
                       {line.recommendation_reason && <small>{line.recommendation_reason}</small>}
+                      {b2bDemand && (
+                        <div className="order-formation__b2b-advisory">
+                          <strong>
+                            Клиенты 3/4/5: {b2bDemand.replacement_recommended_order_qty || "0"} шт.
+                          </strong>
+                          <small>
+                            Альтернативный расчёт, основной заказ не изменён
+                            {b2bDemand.order_delta_qty
+                              ? ` · разница ${Number(b2bDemand.order_delta_qty) > 0 ? "+" : ""}${b2bDemand.order_delta_qty} шт.`
+                              : ""}
+                          </small>
+                          <small>
+                            Активных: {b2bDemand.active_customer_count ?? 0} · пассивных:{" "}
+                            {b2bDemand.passive_customer_count ?? 0} · ожидаются к сроку:{" "}
+                            {b2bDemand.due_customer_count ?? 0}
+                          </small>
+                          {b2bDemand.dependency_class && <small>{b2bDemand.dependency_class}</small>}
+                          {b2bDemand.reason_ru && (
+                            <details>
+                              <summary>Почему так рассчитано</summary>
+                              <small>{b2bDemand.reason_ru}</small>
+                            </details>
+                          )}
+                        </div>
+                      )}
                       {line.risk_codes.map((risk) => (
                         <small key={risk} title={risk}>
                           Сигнал: {procurementRiskLabel(risk)}

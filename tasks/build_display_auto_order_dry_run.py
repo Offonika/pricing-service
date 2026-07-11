@@ -19,6 +19,10 @@ from app.core.config import get_settings
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
 )
+from app.services.procurement_b2b_customer_demand import (
+    B2BSkuDemandProfile,
+    load_b2b_customer_demand_profiles,
+)
 
 DEFAULT_OUTPUT_CSV = (
     Path("reports/assortment_lifecycle")
@@ -83,6 +87,22 @@ CSV_COLUMNS = [
     "demand_adjustment_rule_id",
     "demand_adjustment_multiplier",
     "demand_adjustment_reason_ru",
+    "b2b_profile_as_of_exclusive",
+    "b2b_profile_age_days",
+    "b2b_demand_mode",
+    "b2b_dependency_class",
+    "b2b_active_customer_count",
+    "b2b_passive_customer_count",
+    "b2b_due_customer_count",
+    "b2b_managed_sales_qty_window",
+    "b2b_active_daily_rate",
+    "b2b_client_forecast_qty",
+    "b2b_ordinary_net_sales_qty_window",
+    "b2b_replacement_target_stock_qty",
+    "b2b_replacement_decision",
+    "b2b_replacement_recommended_order_qty",
+    "b2b_order_delta_qty",
+    "b2b_reason_ru",
     "target_days",
     "order_cadence_days",
     "supplier_prepare_days",
@@ -332,6 +352,16 @@ def main() -> int:
         "returns": {},
         "purchase": {},
     }
+    b2b_customer_demand_profiles: dict[str, B2BSkuDemandProfile] = {}
+    b2b_customer_demand_error = ""
+    if args.b2b_customer_demand_csv:
+        try:
+            b2b_customer_demand_profiles = load_b2b_customer_demand_profiles(
+                args.b2b_customer_demand_csv,
+                profile_as_of_exclusive=args.b2b_customer_demand_as_of,
+            )
+        except Exception as exc:  # noqa: BLE001 - optional advisory must not block base dry-run.
+            b2b_customer_demand_error = f"{type(exc).__name__}: {exc}"
     if onec_database_url:
         onec_engine = create_engine(onec_database_url, pool_pre_ping=True)
         try:
@@ -401,6 +431,8 @@ def main() -> int:
         order_rounding_rules=auto_order_policy.order_rounding_rules,
         speed_horizon_rules=auto_order_policy.speed_horizon_rules,
         demand_uplift_rules=auto_order_policy.demand_uplift_rules,
+        b2b_customer_demand_profiles=b2b_customer_demand_profiles,
+        b2b_customer_demand_error=b2b_customer_demand_error,
         as_of=args.as_of,
     )
     write_csv(args.output_csv, rows)
@@ -861,6 +893,8 @@ def build_dry_run_rows(
     order_rounding_rules: Sequence[OrderRoundingRule] = (),
     speed_horizon_rules: Sequence[SpeedHorizonRule] = (),
     demand_uplift_rules: Sequence[DemandUpliftRule] = (),
+    b2b_customer_demand_profiles: Mapping[str, B2BSkuDemandProfile] | None = None,
+    b2b_customer_demand_error: str = "",
     as_of: date | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
@@ -1088,7 +1122,278 @@ def build_dry_run_rows(
         order_rounding_rules=order_rounding_rules,
         speed_horizon_rules=speed_horizon_rules,
     )
+    apply_b2b_customer_demand_advisory(
+        rows,
+        profiles=b2b_customer_demand_profiles or {},
+        profile_error=b2b_customer_demand_error,
+        as_of=as_of,
+        sales_window_days=sales_window_days,
+        min_order_qty=min_order_qty,
+        max_order_qty=max_order_qty,
+        order_rounding_rules=order_rounding_rules,
+    )
     return rows
+
+
+def apply_b2b_customer_demand_advisory(
+    rows: list[dict[str, Any]],
+    *,
+    profiles: Mapping[str, B2BSkuDemandProfile],
+    profile_error: str,
+    as_of: date | None,
+    sales_window_days: int,
+    min_order_qty: int,
+    max_order_qty: int | None,
+    order_rounding_rules: Sequence[OrderRoundingRule],
+) -> None:
+    if profile_error:
+        for row in rows:
+            row["b2b_demand_mode"] = "source_error"
+            row["b2b_reason_ru"] = (
+                "Клиентский B2B-профиль не применен: источник недоступен или имеет "
+                f"неверный формат ({profile_error}). Базовый dry-run не заблокирован."
+            )
+            _append_warning(row, "b2b_customer_demand_source_error")
+        return
+    if not profiles:
+        return
+
+    for row in rows:
+        code = _clean(row.get("nomenclature_code"))
+        profile = profiles.get(code)
+        if profile is None:
+            continue
+        calculation_date = as_of or profile.profile_as_of_exclusive
+        profile_age_days = (calculation_date - profile.profile_as_of_exclusive).days
+        effective_target_days = int(_decimal(row.get("effective_target_days")))
+        safety_stock_days = int(_decimal(row.get("safety_stock_days")))
+        planning_horizon_days = max(0, effective_target_days - safety_stock_days)
+        due_customer_count = profile.due_customer_count(
+            as_of=calculation_date,
+            horizon_days=planning_horizon_days,
+        )
+        active_daily_rate = profile.active_daily_rate_due(
+            as_of=calculation_date,
+            horizon_days=planning_horizon_days,
+        )
+        client_forecast_qty = _ceil_decimal(
+            active_daily_rate * Decimal(str(planning_horizon_days))
+        )
+
+        row.update(
+            {
+                "b2b_profile_as_of_exclusive": profile.profile_as_of_exclusive.isoformat(),
+                "b2b_profile_age_days": profile_age_days,
+                "b2b_demand_mode": "advisory_only",
+                "b2b_dependency_class": profile.dependency_class,
+                "b2b_active_customer_count": profile.active_customer_count,
+                "b2b_passive_customer_count": profile.passive_customer_count,
+                "b2b_due_customer_count": due_customer_count,
+                "b2b_active_daily_rate": _out_decimal(active_daily_rate, places=5),
+                "b2b_client_forecast_qty": _out_decimal(client_forecast_qty),
+            }
+        )
+        _append_warning(row, "b2b_customer_demand_advisory")
+        _append_data_source(row, "report:b2b_customer_demand_profile")
+        if profile.dependency_class == "Только активные клиенты 3/4/5":
+            _append_warning(row, "b2b_client_only_sku")
+        if profile.passive_customer_count:
+            _append_warning(row, "b2b_passive_reactivation_not_calibrated")
+        if profile_age_days < 0 or profile_age_days > 2:
+            _append_warning(row, "b2b_customer_demand_profile_stale")
+
+        if sales_window_days == 180:
+            managed_sales_qty = profile.managed_sales_qty_180
+        elif sales_window_days == 270:
+            managed_sales_qty = profile.managed_sales_qty_270
+        else:
+            row["b2b_managed_sales_qty_window"] = ""
+            row["b2b_reason_ru"] = (
+                "Клиентский B2B-профиль показан справочно, но альтернативное количество "
+                f"не рассчитано: окно базового спроса {sales_window_days} дней не совпадает "
+                "с сохраненными окнами 180/270 дней."
+            )
+            _append_warning(row, "b2b_sales_window_not_supported")
+            continue
+
+        net_sales_qty = _decimal(row.get("net_sales_qty_window"))
+        ordinary_net_sales_qty = max(
+            Decimal("0"),
+            net_sales_qty - managed_sales_qty,
+        )
+        demand_multiplier = max(
+            Decimal("1"),
+            _decimal(row.get("demand_adjustment_multiplier")),
+        )
+        adjusted_ordinary_sales_qty = ordinary_net_sales_qty * demand_multiplier
+        ordinary_daily_rate = (
+            adjusted_ordinary_sales_qty / Decimal(str(sales_window_days))
+            if sales_window_days > 0
+            else Decimal("0")
+        )
+        ordinary_forecast_qty = _ceil_decimal(
+            ordinary_daily_rate * Decimal(str(planning_horizon_days))
+        )
+        ordinary_safety_qty = _ceil_decimal(
+            ordinary_daily_rate * Decimal(str(safety_stock_days))
+        )
+        replacement_target_stock_qty = (
+            ordinary_forecast_qty + ordinary_safety_qty + client_forecast_qty
+        )
+        min_display_qty = int(_decimal(row.get("min_display_qty")))
+        if min_display_qty and (ordinary_net_sales_qty > 0 or client_forecast_qty > 0):
+            replacement_target_stock_qty = max(
+                replacement_target_stock_qty,
+                Decimal(str(min_display_qty)),
+            )
+        free_stock_qty = _decimal(row.get("free_stock_qty"))
+        incoming_qty = _decimal(row.get("incoming_qty"))
+        replacement_order_qty_raw = _ceil_decimal(
+            max(
+                Decimal("0"),
+                replacement_target_stock_qty - free_stock_qty - incoming_qty,
+            )
+        )
+        replacement_order_qty = rounded_order_qty(
+            replacement_order_qty_raw,
+            min_order_qty=min_order_qty,
+            max_order_qty=max_order_qty,
+            order_rounding_rules=order_rounding_rules,
+        )
+        replacement_decision = (
+            "manual_review"
+            if _clean(row.get("dry_run_decision")) == "manual_review"
+            else "order" if replacement_order_qty > 0 else "do_not_order"
+        )
+        if replacement_decision == "manual_review":
+            replacement_order_qty = Decimal("0")
+        current_order_qty = _decimal(row.get("recommended_order_qty"))
+        order_delta_qty = replacement_order_qty - current_order_qty
+        row.update(
+            {
+                "b2b_managed_sales_qty_window": _out_decimal(managed_sales_qty),
+                "b2b_ordinary_net_sales_qty_window": _out_decimal(ordinary_net_sales_qty),
+                "b2b_replacement_target_stock_qty": _out_decimal(
+                    replacement_target_stock_qty
+                ),
+                "b2b_replacement_decision": replacement_decision,
+                "b2b_replacement_recommended_order_qty": _out_decimal(
+                    replacement_order_qty
+                ),
+                "b2b_order_delta_qty": _out_decimal(order_delta_qty),
+                "b2b_reason_ru": (
+                    f"Пилот без двойного счета: из чистого спроса {net_sales_qty} шт. "
+                    f"выделено {managed_sales_qty} шт. продаж управляемых клиентов 3/4/5; "
+                    f"обычный спрос {ordinary_net_sales_qty} шт. Активных клиентов "
+                    f"{profile.active_customer_count}, в горизонт {planning_horizon_days} дней "
+                    f"попадают {due_customer_count}; их клиентский прогноз "
+                    f"{client_forecast_qty} шт. Альтернативная цель "
+                    f"{replacement_target_stock_qty} шт., заказ {replacement_order_qty} шт. "
+                    f"вместо текущих {current_order_qty} шт., разница "
+                    f"{order_delta_qty} шт., решение {replacement_decision}. "
+                    "Режим advisory_only: основное количество не изменено."
+                ),
+            }
+        )
+
+    grouped_rows: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        group_id = _clean(row.get("analog_group_id"))
+        if group_id:
+            grouped_rows.setdefault(group_id, []).append(row)
+    for group_id, group_rows in grouped_rows.items():
+        profiled_rows = [
+            row for row in group_rows if _clean(row.get("b2b_demand_mode")) == "advisory_only"
+        ]
+        if not profiled_rows:
+            continue
+        winner = next(
+            (row for row in group_rows if _clean(row.get("analog_role")) == "primary_analog"),
+            None,
+        )
+        if winner is None:
+            continue
+        group_target_stock_qty = sum(
+            (
+                _decimal(row.get("b2b_replacement_target_stock_qty"))
+                if _clean(row.get("b2b_demand_mode")) == "advisory_only"
+                else _decimal(row.get("target_stock_qty"))
+                for row in group_rows
+            ),
+            Decimal("0"),
+        )
+        group_free_stock_qty = sum(
+            (_decimal(row.get("free_stock_qty")) for row in group_rows),
+            Decimal("0"),
+        )
+        group_incoming_qty = sum(
+            (_decimal(row.get("incoming_qty")) for row in group_rows),
+            Decimal("0"),
+        )
+        group_order_qty_raw = _ceil_decimal(
+            max(
+                Decimal("0"),
+                group_target_stock_qty - group_free_stock_qty - group_incoming_qty,
+            )
+        )
+        group_order_qty = rounded_order_qty(
+            group_order_qty_raw,
+            min_order_qty=min_order_qty,
+            max_order_qty=max_order_qty,
+            order_rounding_rules=order_rounding_rules,
+        )
+        group_replacement_decision = (
+            "manual_review"
+            if _clean(winner.get("dry_run_decision")) == "manual_review"
+            else "order" if group_order_qty > 0 else "do_not_order"
+        )
+        if group_replacement_decision == "manual_review":
+            group_order_qty = Decimal("0")
+        winner_current_order_qty = _decimal(winner.get("recommended_order_qty"))
+        if not _clean(winner.get("b2b_demand_mode")):
+            winner["b2b_demand_mode"] = "advisory_only_group_context"
+            winner["b2b_profile_as_of_exclusive"] = profiled_rows[0].get(
+                "b2b_profile_as_of_exclusive", ""
+            )
+            winner["b2b_profile_age_days"] = profiled_rows[0].get(
+                "b2b_profile_age_days", ""
+            )
+            _append_warning(winner, "b2b_customer_demand_advisory")
+            _append_data_source(winner, "report:b2b_customer_demand_profile")
+        winner["b2b_replacement_target_stock_qty"] = _out_decimal(
+            group_target_stock_qty
+        )
+        winner["b2b_replacement_decision"] = group_replacement_decision
+        winner["b2b_replacement_recommended_order_qty"] = _out_decimal(
+            group_order_qty
+        )
+        winner["b2b_order_delta_qty"] = _out_decimal(
+            group_order_qty - winner_current_order_qty
+        )
+        winner["b2b_reason_ru"] = (
+            f"B2B-потребность группы аналогов {group_id} собрана в SKU-победитель "
+            f"{_clean(winner.get('nomenclature_code'))}: цель группы "
+            f"{group_target_stock_qty} шт., свободно {group_free_stock_qty} шт., "
+            f"в пути {group_incoming_qty} шт., альтернативный заказ "
+            f"{group_order_qty} шт. вместо {winner_current_order_qty} шт., решение "
+            f"{group_replacement_decision}. "
+            "Режим advisory_only: основное количество не изменено."
+        )
+        for row in profiled_rows:
+            if row is winner:
+                continue
+            row["b2b_replacement_target_stock_qty"] = "0"
+            row["b2b_replacement_decision"] = "manual_review"
+            row["b2b_replacement_recommended_order_qty"] = "0"
+            row["b2b_order_delta_qty"] = _out_decimal(
+                -_decimal(row.get("recommended_order_qty"))
+            )
+            row["b2b_reason_ru"] = (
+                f"B2B-потребность строки перенесена в SKU-победитель "
+                f"{_clean(winner.get('nomenclature_code'))} группы аналогов {group_id}; "
+                "отдельный заказ этой строки равен 0. Режим advisory_only: "
+                "основное количество не изменено."
+            )
 
 
 def apply_analog_group_decisions(
@@ -1509,6 +1814,21 @@ def build_summary(
     speed_tiers = Counter(
         _clean(row.get("speed_tier")) for row in rows if _clean(row.get("speed_tier"))
     )
+    b2b_demand_modes = Counter(
+        _clean(row.get("b2b_demand_mode"))
+        for row in rows
+        if _clean(row.get("b2b_demand_mode"))
+    )
+    b2b_dependency_classes = Counter(
+        _clean(row.get("b2b_dependency_class"))
+        for row in rows
+        if _clean(row.get("b2b_dependency_class"))
+    )
+    b2b_replacement_decisions = Counter(
+        _clean(row.get("b2b_replacement_decision"))
+        for row in rows
+        if _clean(row.get("b2b_replacement_decision"))
+    )
     analog_roles = Counter(_clean(row.get("analog_role")) for row in rows)
     analog_roles.pop("", None)
     analog_group_ids = {
@@ -1518,6 +1838,17 @@ def build_summary(
     }
     total_recommended = sum(
         (_decimal(row.get("recommended_order_qty")) for row in rows), Decimal("0")
+    )
+    total_b2b_replacement_recommended = sum(
+        (
+            _decimal(row.get("b2b_replacement_recommended_order_qty"))
+            for row in rows
+        ),
+        Decimal("0"),
+    )
+    total_b2b_order_delta = sum(
+        (_decimal(row.get("b2b_order_delta_qty")) for row in rows),
+        Decimal("0"),
     )
     horizon_row = rows[0] if rows else {}
     return {
@@ -1540,9 +1871,18 @@ def build_summary(
         "analog_group_count": len(analog_group_ids),
         "demand_adjustment_rule_counts": dict(sorted(demand_rules.items())),
         "speed_tier_counts": dict(sorted(speed_tiers.items())),
+        "b2b_demand_mode_counts": dict(sorted(b2b_demand_modes.items())),
+        "b2b_dependency_class_counts": dict(sorted(b2b_dependency_classes.items())),
+        "b2b_replacement_decision_counts": dict(
+            sorted(b2b_replacement_decisions.items())
+        ),
         "warning_counts": dict(sorted(warnings.items())),
         "blocker_counts": dict(sorted(blockers.items())),
         "total_recommended_order_qty": _out_decimal(total_recommended),
+        "total_b2b_replacement_recommended_order_qty": _out_decimal(
+            total_b2b_replacement_recommended
+        ),
+        "total_b2b_order_delta_qty": _out_decimal(total_b2b_order_delta),
         "source_errors": dict(source_errors),
     }
 
@@ -1978,6 +2318,13 @@ def _append_warning(row: dict[str, Any], warning: str) -> None:
     row["warnings"] = "; ".join(warnings)
 
 
+def _append_data_source(row: dict[str, Any], source: str) -> None:
+    sources = [item for item in _clean(row.get("data_sources")).split("; ") if item]
+    if source not in sources:
+        sources.append(source)
+    row["data_sources"] = "; ".join(sources)
+
+
 def _remove_warning(row: dict[str, Any], warning: str) -> None:
     row["warnings"] = "; ".join(
         item for item in _clean(row.get("warnings")).split("; ") if item and item != warning
@@ -2267,6 +2614,27 @@ def _parse_args() -> argparse.Namespace:
         "--warehouse-policy-json",
         type=Path,
         default=Path("config/assortment/display-warehouse-policy.json"),
+    )
+    parser.add_argument(
+        "--b2b-customer-demand-csv",
+        type=Path,
+        default=(
+            Path(os.environ["DISPLAY_AUTO_ORDER_B2B_CUSTOMER_DEMAND_CSV"])
+            if os.environ.get("DISPLAY_AUTO_ORDER_B2B_CUSTOMER_DEMAND_CSV")
+            else None
+        ),
+        help=(
+            "Optional customer-SKU profile for price types 3/4/5. The profile adds "
+            "an advisory replacement calculation and never changes the base order quantity."
+        ),
+    )
+    parser.add_argument(
+        "--b2b-customer-demand-as-of",
+        type=_parse_date,
+        default=None,
+        help=(
+            "Exclusive profile date. If omitted, it is inferred from the profile filename."
+        ),
     )
     parser.add_argument("--as-of", type=_parse_date, default=date.today())
     parser.add_argument(

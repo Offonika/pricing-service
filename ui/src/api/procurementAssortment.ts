@@ -78,6 +78,25 @@ export interface ProcurementClassificationProposal {
   onec_message_id?: string | null;
 }
 
+export interface ProcurementB2BCustomerDemand {
+  mode: "advisory_only" | string;
+  profile_as_of_exclusive?: string;
+  profile_age_days?: number | null;
+  dependency_class?: string;
+  active_customer_count?: number | null;
+  passive_customer_count?: number | null;
+  due_customer_count?: number | null;
+  managed_sales_qty_window?: string;
+  active_daily_rate?: string;
+  client_forecast_qty?: string;
+  ordinary_net_sales_qty_window?: string;
+  replacement_target_stock_qty?: string;
+  replacement_decision?: string;
+  replacement_recommended_order_qty?: string;
+  order_delta_qty?: string;
+  reason_ru?: string;
+}
+
 export interface ProcurementOrderFormationLine {
   id: number;
   line_number: number;
@@ -103,6 +122,10 @@ export interface ProcurementOrderFormationLine {
   quality?: string | null;
   procurement_profile?: string | null;
   manual_minimum?: string | null;
+  payload?: {
+    b2b_customer_demand?: ProcurementB2BCustomerDemand;
+    [key: string]: unknown;
+  };
   removed: boolean;
   effective_assortment_status?: string | null;
   effective_assortment_status_label?: string | null;

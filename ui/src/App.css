@@ -4855,6 +4855,38 @@
   background: #f8fafc;
 }
 
+.order-formation__b2b-advisory {
+  display: grid;
+  gap: 4px;
+  margin: 10px 0;
+  padding: 10px;
+  border: 1px solid #bfdbfe;
+  border-radius: 10px;
+  background: #eff6ff;
+}
+
+.order-formation__b2b-advisory > strong {
+  color: #1e3a8a;
+}
+
+.order-formation__b2b-advisory small {
+  display: block;
+}
+
+.order-formation__b2b-advisory details {
+  color: #334155;
+  font-size: 12px;
+}
+
+.order-formation__b2b-advisory summary {
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.order-formation__b2b-advisory details small {
+  margin-top: 6px;
+}
+
 .btn--small {
   margin: 4px 4px 0 0;
   padding: 6px 10px;

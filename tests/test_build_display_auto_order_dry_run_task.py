@@ -3,6 +3,10 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
+from app.services.procurement_b2b_customer_demand import (
+    B2BCustomerDemandComponent,
+    B2BSkuDemandProfile,
+)
 from tasks.build_display_auto_order_dry_run import (
     DemandUpliftRule,
     OrderRoundingRule,
@@ -12,6 +16,145 @@ from tasks.build_display_auto_order_dry_run import (
     load_auto_order_policy,
     rounded_order_qty,
 )
+
+
+def test_display_auto_order_b2b_customer_demand_is_advisory_only() -> None:
+    rows = build_dry_run_rows(
+        [
+            {
+                "nomenclature_code": "RB_B2B",
+                "name": "Display B2B",
+                "status_label": "Рабочий",
+                "quality_raw": "Medium",
+            }
+        ],
+        facts={
+            "stock": {"RB_B2B": {"sellable_stock_qty": Decimal("0")}},
+            "reserve": {},
+            "incoming": {},
+            "sales": {"RB_B2B": {"sales_qty_window": Decimal("180")}},
+            "returns": {},
+        },
+        source_errors={},
+        target_days=14,
+        sales_window_days=180,
+        b2b_customer_demand_profiles={
+            "RB_B2B": B2BSkuDemandProfile(
+                nomenclature_code="RB_B2B",
+                profile_as_of_exclusive=date(2026, 7, 10),
+                managed_sales_qty_180=Decimal("90"),
+                managed_sales_qty_270=Decimal("120"),
+                dependency_class="Только активные клиенты 3/4/5",
+                active_high_tier_share_pct=Decimal("75"),
+                components=(
+                    B2BCustomerDemandComponent(
+                        counterparty_ref="C1",
+                        activity_status="Активный",
+                        expected_purchase_date=date(2026, 7, 15),
+                        daily_rate=Decimal("0.2"),
+                    ),
+                    B2BCustomerDemandComponent(
+                        counterparty_ref="C2",
+                        activity_status="Пассивный",
+                        expected_purchase_date=date(2026, 6, 1),
+                        daily_rate=Decimal("0.1"),
+                    ),
+                ),
+            )
+        },
+        as_of=date(2026, 7, 10),
+    )
+
+    row = rows[0]
+    assert row["recommended_order_qty"] == "14"
+    assert row["target_stock_qty"] == "14"
+    assert row["b2b_demand_mode"] == "advisory_only"
+    assert row["b2b_active_customer_count"] == 1
+    assert row["b2b_passive_customer_count"] == 1
+    assert row["b2b_due_customer_count"] == 1
+    assert row["b2b_managed_sales_qty_window"] == "90"
+    assert row["b2b_ordinary_net_sales_qty_window"] == "90"
+    assert row["b2b_client_forecast_qty"] == "3"
+    assert row["b2b_replacement_target_stock_qty"] == "10"
+    assert row["b2b_replacement_decision"] == "order"
+    assert row["b2b_replacement_recommended_order_qty"] == "10"
+    assert row["b2b_order_delta_qty"] == "-4"
+    assert "основное количество не изменено" in row["b2b_reason_ru"]
+    assert "b2b_customer_demand_advisory" in row["warnings"]
+    assert "b2b_client_only_sku" in row["warnings"]
+    assert "b2b_passive_reactivation_not_calibrated" in row["warnings"]
+
+
+def test_display_auto_order_b2b_customer_demand_consolidates_analog_group() -> None:
+    items = [
+        {
+            "nomenclature_code": "RB_ORIG",
+            "name": "Дисплей для Apple iPhone 11 + тачскрин ORIG",
+            "status_label": "Рабочий",
+            "brand_compatibility": "Apple",
+            "model_compatibility": "iPhone 11",
+            "quality_raw": "ORIG",
+        },
+        {
+            "nomenclature_code": "RB_COPY",
+            "name": "Дисплей для Apple iPhone 11 + тачскрин Medium",
+            "status_label": "Рабочий",
+            "brand_compatibility": "Apple",
+            "model_compatibility": "iPhone 11",
+            "quality_raw": "Medium",
+        },
+    ]
+    profiles = {
+        code: B2BSkuDemandProfile(
+            nomenclature_code=code,
+            profile_as_of_exclusive=date(2026, 7, 10),
+            managed_sales_qty_180=Decimal("90"),
+            managed_sales_qty_270=Decimal("120"),
+            dependency_class="Смешанный спрос",
+            active_high_tier_share_pct=Decimal("25"),
+            components=(
+                B2BCustomerDemandComponent(
+                    counterparty_ref=f"C-{code}",
+                    activity_status="Активный",
+                    expected_purchase_date=date(2026, 7, 15),
+                    daily_rate=Decimal("0.2"),
+                ),
+            ),
+        )
+        for code in ("RB_ORIG", "RB_COPY")
+    }
+
+    rows = build_dry_run_rows(
+        items,
+        facts={
+            "stock": {
+                "RB_ORIG": {"sellable_stock_qty": Decimal("0")},
+                "RB_COPY": {"sellable_stock_qty": Decimal("0")},
+            },
+            "reserve": {},
+            "incoming": {},
+            "sales": {
+                "RB_ORIG": {"sales_qty_window": Decimal("180")},
+                "RB_COPY": {"sales_qty_window": Decimal("180")},
+            },
+            "returns": {},
+        },
+        source_errors={},
+        target_days=14,
+        sales_window_days=180,
+        b2b_customer_demand_profiles=profiles,
+        as_of=date(2026, 7, 10),
+    )
+
+    winner = next(row for row in rows if row["analog_role"] == "primary_analog")
+    loser = next(row for row in rows if row["analog_role"] == "transition_to_better_analog")
+    assert winner["recommended_order_qty"] == "28"
+    assert winner["b2b_replacement_target_stock_qty"] == "20"
+    assert winner["b2b_replacement_recommended_order_qty"] == "20"
+    assert winner["b2b_order_delta_qty"] == "-8"
+    assert loser["recommended_order_qty"] == "0"
+    assert loser["b2b_replacement_recommended_order_qty"] == "0"
+    assert "перенесена в SKU-победитель" in loser["b2b_reason_ru"]
 
 
 def test_display_auto_order_dry_run_caps_recommended_order_qty() -> None:

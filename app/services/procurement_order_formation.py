@@ -162,6 +162,7 @@ def serialize_line(line: ProcurementOrderFormationLine) -> dict[str, Any]:
         "quality": line.quality,
         "procurement_profile": line.procurement_profile,
         "manual_minimum": line.manual_minimum,
+        "payload": dict(line.payload or {}),
         "removed": line.removed,
         "effective_assortment_status": effective_status,
         "effective_assortment_status_label": status_label(effective_status),

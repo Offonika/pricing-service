@@ -16312,6 +16312,10 @@ components:
             pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Manual Minimum
+        payload:
+          additionalProperties: true
+          type: object
+          title: Payload
         removed:
           type: boolean
           title: Removed

@@ -78,6 +78,7 @@ class ProcurementOrderFormationLineRead(BaseModel):
     quality: str | None = None
     procurement_profile: str | None = None
     manual_minimum: Decimal | None = None
+    payload: dict[str, Any] = Field(default_factory=dict)
     removed: bool
     effective_assortment_status: str | None = None
     effective_assortment_status_label: str | None = None

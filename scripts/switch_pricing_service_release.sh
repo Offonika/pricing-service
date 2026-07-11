@@ -5,6 +5,7 @@ RELEASE_DIR="${1:?usage: switch_pricing_service_release.sh /absolute/release/dir
 ACTIVE_LINK="${PRICING_SERVICE_ACTIVE_LINK:-/opt/MM/pricing-service-task43-current}"
 PYTHON_BIN="${PRICING_SERVICE_PYTHON_BIN:-/opt/MM/pricing-service/.venv/bin/python}"
 SERVICE_NAME="${PRICING_SERVICE_SERVICE_NAME:-pricing-service.service}"
+STATIC_ROOT="${PRICING_SERVICE_STATIC_ROOT:-/var/www/pricing-service}"
 
 if [[ "$RELEASE_DIR" != /* ]] || [[ ! -d "$RELEASE_DIR" ]]; then
   echo "release directory must be an existing absolute path: $RELEASE_DIR" >&2
@@ -17,6 +18,13 @@ previous_target="$(readlink -f "$ACTIVE_LINK" 2>/dev/null || true)"
   cd "$RELEASE_DIR"
   PYTHONPATH="$RELEASE_DIR" "$PYTHON_BIN" scripts/validate_executive_dashboard_release.py
 )
+
+if [[ -d "$RELEASE_DIR/ui/dist" ]]; then
+  chmod -R a+rX "$RELEASE_DIR/ui/dist"
+fi
+if [[ -d "$STATIC_ROOT" ]]; then
+  chmod -R a+rX "$STATIC_ROOT"
+fi
 
 next_link="${ACTIVE_LINK}.next.$$"
 ln -s "$RELEASE_DIR" "$next_link"

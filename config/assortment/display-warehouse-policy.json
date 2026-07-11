@@ -1,4 +1,7 @@
 {
+  "usable_stock_quality_names": [
+    "Новый"
+  ],
   "warehouses": [
     {
       "warehouse_code": "РБ0000017",

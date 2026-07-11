@@ -141,6 +141,7 @@ CSV_COLUMNS = [
 
 @dataclass(frozen=True)
 class WarehousePolicy:
+    usable_stock_quality_names: tuple[str, ...]
     sellable_codes: tuple[str, ...]
     central_codes: tuple[str, ...]
     defect_codes: tuple[str, ...]
@@ -492,6 +493,9 @@ def load_auto_order_items(
 
 def load_warehouse_policy(path: Path) -> WarehousePolicy:
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
+    usable_stock_quality_names = _string_tuple(
+        payload.get("usable_stock_quality_names")
+    ) or ("Новый",)
     raw_warehouses = payload.get("warehouses")
     if not isinstance(raw_warehouses, list):
         raise SystemExit("warehouse policy must contain warehouses list")
@@ -519,6 +523,7 @@ def load_warehouse_policy(path: Path) -> WarehousePolicy:
     if not sellable:
         raise SystemExit("warehouse policy has no sellable warehouses")
     return WarehousePolicy(
+        usable_stock_quality_names=usable_stock_quality_names,
         sellable_codes=tuple(sellable),
         central_codes=tuple(central),
         defect_codes=tuple(defect),
@@ -574,14 +579,19 @@ def fetch_stock_totals(
         """
         SELECT
             NULLIF(LTRIM(RTRIM(product._Code)), N'') AS code,
-            SUM(CASE WHEN NULLIF(LTRIM(RTRIM(warehouse._Code)), N'') IN :sellable_codes
+            SUM(CASE WHEN NULLIF(LTRIM(RTRIM(quality._Description)), N'')
+                    IN :usable_stock_quality_names
                 THEN CAST(stock._Fld7743 AS decimal(18, 3)) ELSE 0 END) AS sellable_stock_qty,
-            SUM(CASE WHEN NULLIF(LTRIM(RTRIM(warehouse._Code)), N'') IN :central_codes
+            SUM(CASE WHEN NULLIF(LTRIM(RTRIM(quality._Description)), N'')
+                    IN :usable_stock_quality_names
+                    AND NULLIF(LTRIM(RTRIM(warehouse._Code)), N'') IN :central_codes
                 THEN CAST(stock._Fld7743 AS decimal(18, 3)) ELSE 0 END) AS central_stock_qty,
             SUM(CAST(stock._Fld7743 AS decimal(18, 3))) AS total_stock_qty
         FROM dbo._AccumRgT7745 AS stock WITH (NOLOCK)
         JOIN dbo._Reference62 AS product WITH (NOLOCK)
             ON product._IDRRef = stock._Fld7738RRef
+        JOIN dbo._Reference48 AS quality WITH (NOLOCK)
+            ON quality._IDRRef = stock._Fld7741RRef
         JOIN dbo._Reference80 AS warehouse WITH (NOLOCK)
             ON warehouse._IDRRef = stock._Fld7742RRef
         WHERE stock._Fld7743 <> 0
@@ -590,7 +600,7 @@ def fetch_stock_totals(
         GROUP BY NULLIF(LTRIM(RTRIM(product._Code)), N'')
         """,
         codes=codes,
-        sellable_codes=policy.sellable_codes,
+        usable_stock_quality_names=policy.usable_stock_quality_names,
         central_codes=policy.central_codes or ("__none__",),
     ).bindparams(bindparam("balance_period", value=OPEN_SUPPLIER_ORDER_BALANCE_PERIOD))
     with engine.connect() as conn:
@@ -606,8 +616,7 @@ def fetch_reserved_totals(
         """
         SELECT
             NULLIF(LTRIM(RTRIM(product._Code)), N'') AS code,
-            SUM(CASE WHEN NULLIF(LTRIM(RTRIM(warehouse._Code)), N'') IN :sellable_codes
-                THEN CAST(reserve._Fld7659 AS decimal(18, 3)) ELSE 0 END) AS reserved_qty
+            SUM(CAST(reserve._Fld7659 AS decimal(18, 3))) AS reserved_qty
         FROM dbo._AccumRgT7662 AS reserve WITH (NOLOCK)
         JOIN dbo._Reference62 AS product WITH (NOLOCK)
             ON product._IDRRef = reserve._Fld7655RRef
@@ -620,7 +629,6 @@ def fetch_reserved_totals(
         GROUP BY NULLIF(LTRIM(RTRIM(product._Code)), N'')
         """,
         codes=codes,
-        sellable_codes=policy.sellable_codes,
     ).bindparams(bindparam("balance_period", value=OPEN_SUPPLIER_ORDER_BALANCE_PERIOD))
     with engine.connect() as conn:
         return {_clean(row["code"]): dict(row) for row in conn.execute(sql).mappings()}

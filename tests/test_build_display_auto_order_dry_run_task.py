@@ -13,9 +13,66 @@ from tasks.build_display_auto_order_dry_run import (
     SpeedHorizonRule,
     build_dry_run_rows,
     build_summary,
+    fetch_reserved_totals,
+    fetch_stock_totals,
     load_auto_order_policy,
+    load_warehouse_policy,
     rounded_order_qty,
 )
+
+
+class _EmptyMappingsResult:
+    def mappings(self):
+        return self
+
+    def __iter__(self):
+        return iter(())
+
+
+class _CaptureConnection:
+    def __init__(self, statements: list[str]) -> None:
+        self.statements = statements
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def execute(self, statement):
+        self.statements.append(str(statement))
+        return _EmptyMappingsResult()
+
+
+class _CaptureEngine:
+    def __init__(self) -> None:
+        self.statements: list[str] = []
+
+    def connect(self):
+        return _CaptureConnection(self.statements)
+
+
+def test_stock_query_filters_by_onec_quality_not_warehouse(tmp_path) -> None:
+    policy_path = tmp_path / "warehouse-policy.json"
+    policy_path.write_text(
+        '{"usable_stock_quality_names":["Новый"],"warehouses":'
+        '[{"warehouse_code":"SALE","sells_systematically":true},'
+        '{"warehouse_code":"TRANSIT","is_transit":true}]}',
+        encoding="utf-8",
+    )
+    policy = load_warehouse_policy(policy_path)
+    engine = _CaptureEngine()
+
+    fetch_stock_totals(engine, codes=["RB1"], policy=policy)
+    fetch_reserved_totals(engine, codes=["RB1"], policy=policy)
+
+    stock_sql, reserve_sql = engine.statements
+    assert policy.usable_stock_quality_names == ("Новый",)
+    assert "_Reference48 AS quality" in stock_sql
+    assert "stock._Fld7741RRef" in stock_sql
+    assert "usable_stock_quality_names" in stock_sql
+    assert "sellable_codes" not in stock_sql
+    assert "sellable_codes" not in reserve_sql
 
 
 def test_display_auto_order_b2b_customer_demand_is_advisory_only() -> None:

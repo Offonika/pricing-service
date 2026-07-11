@@ -2403,6 +2403,94 @@ def list_executive_actions(
     return [_to_action(row, access_context=context) for row in rows[:limit]]
 
 
+def _procurement_attention_actions(
+    finance_payload: dict[str, Any] | None,
+    *,
+    requested_date: date,
+    status: str | None,
+    domain: str | None,
+    access_context: ExecutiveDashboardAuthContext,
+) -> list[ExecutiveDashboardAction]:
+    if status not in {None, "open"}:
+        return []
+    if domain not in {None, "procurement_import"}:
+        return []
+    if not access_context.allows_action_domain("procurement_import"):
+        return []
+
+    section = _finance_section(finance_payload, "procurement_import")
+    source_date = _as_date(section.get("as_of"))
+    if source_date is None or source_date > requested_date:
+        return []
+    raw_items = section.get("attention_items")
+    if not isinstance(raw_items, list):
+        return []
+
+    actions: list[ExecutiveDashboardAction] = []
+    for raw_item in raw_items:
+        if not isinstance(raw_item, dict):
+            continue
+        onec_ref = str(raw_item.get("onec_ref") or "").strip()
+        source_number = str(raw_item.get("onec_source_number") or "").strip()
+        if not onec_ref or not source_number:
+            continue
+        reason_code = str(raw_item.get("reason_code") or "manual_review").strip()
+        stable_key = f"procurement_import:{reason_code}:{onec_ref}"
+        supplier_title = str(raw_item.get("supplier_title") or "").strip()
+        reason = str(raw_item.get("reason") or "Требуется проверка заказа.").strip()
+        recommendation = str(raw_item.get("recommendation") or "").strip()
+        amount = _decimal(raw_item.get("amount_rub"))
+        if not access_context.can_view_money_block("procurement_import"):
+            amount = None
+        description = " · ".join(part for part in (supplier_title, reason) if part)
+        actions.append(
+            ExecutiveDashboardAction(
+                stable_key=stable_key,
+                business_date=source_date,
+                domain="procurement_import",
+                severity="high",
+                title=f"Заказ {source_number}: заполнить «Сдача в карго»",
+                description=description,
+                amount=amount,
+                currency="RUB",
+                status="open",
+                source_system=str(raw_item.get("source_system") or "1C"),
+                source_ref=onec_ref,
+                dedupe_key=stable_key,
+                payload={
+                    **raw_item,
+                    "correction_system": "1C",
+                    "correction_document": "Заказ поставщику",
+                    "correction_field": "Сдача в карго",
+                    "recommendation": recommendation,
+                },
+            )
+        )
+    return actions
+
+
+def _action_sort_key(action: ExecutiveDashboardAction) -> tuple[int, float, str]:
+    deadline = action.deadline_at
+    if deadline is None:
+        deadline_value = float("inf")
+    else:
+        if deadline.tzinfo is None:
+            deadline = deadline.replace(tzinfo=UTC)
+        deadline_value = deadline.timestamp()
+    return (_SEVERITY_RANK.get(action.severity, 9), deadline_value, action.stable_key)
+
+
+def _merge_executive_actions(
+    *groups: list[ExecutiveDashboardAction],
+    limit: int,
+) -> list[ExecutiveDashboardAction]:
+    by_stable_key: dict[str, ExecutiveDashboardAction] = {}
+    for group in groups:
+        for action in group:
+            by_stable_key.setdefault(action.stable_key, action)
+    return sorted(by_stable_key.values(), key=_action_sort_key)[:limit]
+
+
 def _latest_persisted_snapshot(
     session: Session,
     *,
@@ -2549,11 +2637,23 @@ def build_executive_dashboard(
     finance_payload, finance_source_status, finance_note = _load_finance_snapshot()
     warehouse_payload, warehouse_source_status, warehouse_note = _load_warehouse_snapshot()
     persisted = _latest_persisted_snapshot(session, requested_date=requested_date)
-    top_actions = list_executive_actions(
+    persisted_actions = list_executive_actions(
         session,
         requested_date=requested_date,
         status="open",
         access_context=context,
+        limit=10,
+    )
+    procurement_actions = _procurement_attention_actions(
+        finance_payload,
+        requested_date=requested_date,
+        status="open",
+        domain=None,
+        access_context=context,
+    )
+    top_actions = _merge_executive_actions(
+        persisted_actions,
+        procurement_actions,
         limit=10,
     )
 
@@ -2660,12 +2760,25 @@ def build_executive_actions_response(
         access_level=access_level,
         bitrix_user_id=bitrix_user_id,
     )
-    actions = list_executive_actions(
+    finance_payload, _, _ = _load_finance_snapshot()
+    persisted_actions = list_executive_actions(
         session,
         requested_date=requested_date,
         status=status,
         domain=domain,
         access_context=context,
+        limit=limit,
+    )
+    procurement_actions = _procurement_attention_actions(
+        finance_payload,
+        requested_date=requested_date,
+        status=status,
+        domain=domain,
+        access_context=context,
+    )
+    actions = _merge_executive_actions(
+        persisted_actions,
+        procurement_actions,
         limit=limit,
     )
     return ExecutiveDashboardActionsResponse(

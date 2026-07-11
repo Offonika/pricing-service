@@ -1252,6 +1252,65 @@ def test_actions_filter_for_domain_user_and_status(
     assert {item.stable_key for item in result.payload} == {"a-visible", "a-public"}
 
 
+def test_procurement_snapshot_attention_becomes_clickable_action_and_disappears_after_fix(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_path = tmp_path / "finance_snapshot.json"
+    snapshot = {
+        "as_of": "2026-07-11",
+        "source_status": "partial",
+        "procurement_import": {
+            "as_of": "2026-07-11",
+            "source_status": "ready",
+            "attention_items": [
+                {
+                    "onec_ref": "0x01",
+                    "onec_source_number": "РБГУ0001",
+                    "supplier_title": "Поставщик",
+                    "amount_rub": "1000.00",
+                    "currency": "RMB",
+                    "reason_code": "missing_cargo_handoff_date",
+                    "reason": "Не заполнена дата «Сдача в карго».",
+                    "recommendation": "Заполнить поле в документе 1С.",
+                    "source_system": "1C",
+                }
+            ],
+        },
+    }
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    _override_settings(monkeypatch, _settings(snapshot_path))
+
+    result = build_executive_actions_response(
+        db_session,
+        requested_date=date(2026, 7, 11),
+        status="open",
+        domain="procurement_import",
+        access_level="full",
+    )
+
+    assert result.total_count == 1
+    action = result.payload[0]
+    assert action.title == "Заказ РБГУ0001: заполнить «Сдача в карго»"
+    assert action.amount == Decimal("1000.00")
+    assert action.source_ref == "0x01"
+    assert action.payload["correction_system"] == "1C"
+    assert action.payload["correction_field"] == "Сдача в карго"
+
+    snapshot["procurement_import"]["attention_items"] = []
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    resolved = build_executive_actions_response(
+        db_session,
+        requested_date=date(2026, 7, 11),
+        status="open",
+        domain="procurement_import",
+        access_level="full",
+    )
+    assert resolved.total_count == 0
+    assert resolved.source_status == "empty"
+
+
 def test_cashflow_period_response_aggregates_period_cache(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

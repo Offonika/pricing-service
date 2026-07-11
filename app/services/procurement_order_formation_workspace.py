@@ -377,15 +377,21 @@ def list_lifecycle_transitions(
             if _dashboard_status(str(row.get("status") or "")) == normalized_status
         ]
     else:
+        proposal_status = "stale" if readiness == "stale" else "pending"
+        proposal_filters = [
+            ProcurementLifecycleTransitionProposal.folder.ilike(f"%{folder}%"),
+            ProcurementLifecycleTransitionProposal.current_status.in_(
+                _status_query_values(normalized_status)
+            ),
+            ProcurementLifecycleTransitionProposal.status == proposal_status,
+        ]
+        if proposal_status == "pending" and latest_run_id:
+            proposal_filters.append(
+                ProcurementLifecycleTransitionProposal.run_id == latest_run_id
+            )
         proposals = db.scalars(
             select(ProcurementLifecycleTransitionProposal)
-            .where(
-                ProcurementLifecycleTransitionProposal.folder.ilike(f"%{folder}%"),
-                ProcurementLifecycleTransitionProposal.current_status.in_(
-                    _status_query_values(normalized_status)
-                ),
-                ProcurementLifecycleTransitionProposal.status.in_(("pending", "stale")),
-            )
+            .where(*proposal_filters)
             .order_by(
                 ProcurementLifecycleTransitionProposal.status,
                 ProcurementLifecycleTransitionProposal.created_at,

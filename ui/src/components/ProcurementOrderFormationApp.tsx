@@ -8,6 +8,7 @@ import {
   type ProcurementOrderFormation,
   type ProcurementOrderFormationLine,
 } from "../api/procurementAssortment";
+import { procurementRiskLabel } from "../utils/procurementRiskLabels";
 
 interface Props {
   bitrixUserName?: string | null;
@@ -192,7 +193,11 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
       {order.blockers.length > 0 && (
         <section className="order-formation__alert">
           <strong>Передача заблокирована</strong>
-          <ul>{order.blockers.map((blocker) => <li key={blocker}>{blocker}</li>)}</ul>
+          <ul>
+            {order.blockers.map((blocker) => (
+              <li key={blocker} title={blocker}>{procurementRiskLabel(blocker)}</li>
+            ))}
+          </ul>
         </section>
       )}
 
@@ -304,7 +309,11 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                     <td>
                       <strong>{line.recommended_quantity}</strong>
                       {line.recommendation_reason && <small>{line.recommendation_reason}</small>}
-                      {line.risk_codes.map((risk) => <small key={risk}>Риск: {risk}</small>)}
+                      {line.risk_codes.map((risk) => (
+                        <small key={risk} title={risk}>
+                          Сигнал: {procurementRiskLabel(risk)}
+                        </small>
+                      ))}
                     </td>
                     <td>
                       <input

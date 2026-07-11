@@ -18,6 +18,7 @@ import {
   type ProcurementOrderFormation,
   type ProcurementOrderList,
 } from "../api/procurementAssortment";
+import { procurementRiskLabel } from "../utils/procurementRiskLabels";
 import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
 
 interface Props {
@@ -308,7 +309,7 @@ function Dashboard({
             <p>
               {manualFilterLabel
                 ? `Показаны товары выбранного ручного статуса: ${attentionRows.length}.`
-                : "Пять ближайших решений и блокеров из очереди переходов."}
+                : "Пять ближайших решений и блокеров. Нажмите строку, чтобы открыть очередь."}
             </p>
           </div>
           {manualFilter ? (
@@ -334,7 +335,13 @@ function Dashboard({
               </thead>
               <tbody>
                 {attentionRows.map((item) => (
-                  <tr key={`${item.kind}-${item.nomenclature_code}-${item.filter_status}`}>
+                  <tr
+                    className={item.kind === "lifecycle" ? "attention-row attention-row--clickable" : "attention-row"}
+                    key={`${item.kind}-${item.nomenclature_code}-${item.filter_status}`}
+                    onClick={item.kind === "lifecycle"
+                      ? () => onOpenLifecycle(item.current_status, "action")
+                      : undefined}
+                  >
                     <td>
                       <strong>{item.product_name}</strong>
                       <small>{item.nomenclature_code} · {item.current_status_label}</small>
@@ -344,10 +351,13 @@ function Dashboard({
                       {item.kind === "lifecycle" ? (
                         <button
                           className="attention-action"
-                          onClick={() => onOpenLifecycle(item.current_status, "action")}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            onOpenLifecycle(item.current_status, "action");
+                          }}
                           type="button"
                         >
-                          {item.recommendation}
+                          Открыть: {item.recommendation}
                         </button>
                       ) : item.recommendation}
                     </td>
@@ -419,12 +429,16 @@ function LifecycleQueue({
   );
   const first = data?.items[0];
   const statusLabel = LIFECYCLE_STATUS_LABELS[status] || first?.current_status_label || status;
-  const title = scope === "all"
+  const title = readiness === "stale"
+    ? `${statusLabel}: архив прошлых расчётов`
+    : scope === "all"
     ? `${statusLabel}: все товары`
     : status === "working"
       ? "Рабочий: товары на пересмотр"
       : `${statusLabel}: требуется решение`;
-  const subtitle = scope === "all"
+  const subtitle = readiness === "stale"
+    ? "Старые предложения сохранены для истории и недоступны для утверждения"
+    : scope === "all"
     ? "Полный список товаров выбранного жизненного статуса"
     : "Только товары, где недостаточно автоматических фактов и нужен человек";
 
@@ -470,10 +484,9 @@ function LifecycleQueue({
             </span>
           </section>
         ) : null}
-        <section className="queue-summary">
+        <section className="queue-summary queue-summary--three">
           <div><span>Можно подтвердить</span><strong>{data?.ready_count || 0}</strong></div>
           <div><span>Нужна проверка</span><strong>{data?.blocked_count || 0}</strong></div>
-          <div><span>Данные устарели</span><strong>{data?.stale_count || 0}</strong></div>
           <div><span>Выбрано</span><strong>{selected.size}</strong></div>
         </section>
         <section className="queue-toolbar">
@@ -494,7 +507,7 @@ function LifecycleQueue({
             <option value="all">Все требующие решения</option>
             <option value="ready">Можно подтвердить</option>
             <option value="blocked">Нужна проверка</option>
-            <option value="stale">Обновить данные</option>
+            <option value="stale">Архив прошлых расчётов</option>
           </select>
           <button className="btn btn--ghost" disabled={readyRows.length === 0} onClick={selectReady} type="button">
             Выбрать готовые на странице
@@ -506,7 +519,9 @@ function LifecycleQueue({
         {data && data.items.length === 0 ? (
           <div className="order-workspace__empty">
             {scope === "action"
-              ? "Решений не требуется: переходы выполнены автоматически или подходящих товаров нет."
+              ? readiness === "stale"
+                ? "В архиве прошлых расчётов строк нет."
+                : "Решений не требуется: переходы выполнены автоматически или подходящих товаров нет."
               : "В выбранном статусе товаров нет."}
           </div>
         ) : null}
@@ -588,7 +603,11 @@ function LifecycleQueue({
                       </td>
                       <td>
                         {item.blockers.length > 0 ? (
-                          item.blockers.map((blocker) => <span className="state-pill state-pill--blocked" key={blocker}>{blocker}</span>)
+                          item.blockers.map((blocker) => (
+                            <span className="state-pill state-pill--blocked" key={blocker} title={blocker}>
+                              {procurementRiskLabel(blocker)}
+                            </span>
+                          ))
                         ) : item.stale ? (
                           <span className="state-pill state-pill--warning">данные изменились</span>
                         ) : (

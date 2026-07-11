@@ -6,6 +6,7 @@ ACTIVE_LINK="${PRICING_SERVICE_ACTIVE_LINK:-/opt/MM/pricing-service-task43-curre
 PYTHON_BIN="${PRICING_SERVICE_PYTHON_BIN:-/opt/MM/pricing-service/.venv/bin/python}"
 SERVICE_NAME="${PRICING_SERVICE_SERVICE_NAME:-pricing-service.service}"
 STATIC_ROOT="${PRICING_SERVICE_STATIC_ROOT:-/var/www/pricing-service}"
+RSYNC_BIN="${PRICING_SERVICE_RSYNC_BIN:-$(command -v rsync)}"
 
 if [[ "$RELEASE_DIR" != /* ]] || [[ ! -d "$RELEASE_DIR" ]]; then
   echo "release directory must be an existing absolute path: $RELEASE_DIR" >&2
@@ -21,8 +22,8 @@ previous_target="$(readlink -f "$ACTIVE_LINK" 2>/dev/null || true)"
 
 if [[ -d "$RELEASE_DIR/ui/dist" ]]; then
   chmod -R a+rX "$RELEASE_DIR/ui/dist"
-fi
-if [[ -d "$STATIC_ROOT" ]]; then
+  mkdir -p "$STATIC_ROOT"
+  "$RSYNC_BIN" -a --delete "$RELEASE_DIR/ui/dist/" "$STATIC_ROOT/"
   chmod -R a+rX "$STATIC_ROOT"
 fi
 

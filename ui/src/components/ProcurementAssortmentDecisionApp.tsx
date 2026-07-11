@@ -7,6 +7,7 @@ import {
   type ProcurementAssortmentDecision,
   type ProcurementAssortmentDecisionUpdate,
 } from "../api/procurementAssortment";
+import { procurementRiskLabel } from "../utils/procurementRiskLabels";
 
 interface ProcurementAssortmentDecisionAppProps {
   bitrixUserName?: string | null;
@@ -22,14 +23,6 @@ const STATUS_OPTIONS = [
   { value: "nonliquid", label: "Неликвид" },
   { value: "do_not_order", label: "Не закупать" },
 ];
-
-const BLOCKER_LABELS: Record<string, string> = {
-  status_decision_required: "Выберите решение по статусу",
-  nomenclature_code_required: "В карточке нет кода номенклатуры для правила",
-  manual_reason_required: "Заполните причину решения",
-  manual_approved_by_required: "Укажите, кто утвердил решение",
-  manual_changed_at_required: "Укажите дату решения",
-};
 
 interface DecisionForm {
   status_decision: string;
@@ -48,10 +41,6 @@ function splitMarks(value: string) {
     .split(/[,\n;]/)
     .map((item) => item.trim())
     .filter(Boolean);
-}
-
-function blockerLabel(value: string) {
-  return BLOCKER_LABELS[value] || value;
 }
 
 function statusLabel(value: string) {
@@ -161,7 +150,7 @@ export function ProcurementAssortmentDecisionApp({
             : "Правило добавлено в ручные решения."
         );
       } else {
-        setMessage(`Не применено: ${synced.blockers.map(blockerLabel).join("; ")}`);
+        setMessage(`Не применено: ${synced.blockers.map(procurementRiskLabel).join("; ")}`);
       }
     } catch (error: unknown) {
       setMessage(error instanceof Error ? error.message : "Не удалось применить решение");
@@ -292,7 +281,7 @@ export function ProcurementAssortmentDecisionApp({
           {blockers.length > 0 && (
             <ul className="assortment-decision__blockers">
               {blockers.map((blocker) => (
-                <li key={blocker}>{blockerLabel(blocker)}</li>
+                <li key={blocker} title={blocker}>{procurementRiskLabel(blocker)}</li>
               ))}
             </ul>
           )}

@@ -256,6 +256,59 @@ def test_queue_starts_unselected_and_only_ready_rows_are_selectable(
     )
 
 
+def test_action_queue_hides_stale_runs_until_archive_filter(
+    lifecycle_db,
+    sqlite_engine,
+) -> None:
+    run_id = _seed_lifecycle(sqlite_engine)
+    sync_lifecycle_transition_proposals(
+        lifecycle_db,
+        run_id=run_id,
+        settings=_settings(),
+    )
+    stale = ProcurementLifecycleTransitionProposal(
+        nomenclature_code="FRUIT-STALE",
+        nomenclature_ref=DISPLAY_GUID,
+        product_guid=DISPLAY_GUID,
+        product_name="Дисплей из прошлого расчёта",
+        folder="дисплеи",
+        action_kind="transition",
+        current_status="fruit",
+        target_status="sales_start",
+        status="stale",
+        reason="Старое предложение",
+        facts={},
+        blockers=[],
+        risk_codes=[],
+        run_id=run_id - 1,
+        run_key="display-old-run",
+        facts_hash="b" * 64,
+        idempotency_key="fruit-stale-test",
+        responsible_bitrix_user_id="130757",
+        responsible_name="Омар",
+    )
+    lifecycle_db.add(stale)
+    lifecycle_db.commit()
+
+    current_queue = list_lifecycle_transitions(
+        lifecycle_db,
+        status="fruit",
+        scope="action",
+    )
+    archive_queue = list_lifecycle_transitions(
+        lifecycle_db,
+        status="fruit",
+        scope="action",
+        readiness="stale",
+    )
+
+    assert current_queue["total"] == 0
+    assert current_queue["stale_count"] == 0
+    assert archive_queue["total"] == 1
+    assert archive_queue["stale_count"] == 1
+    assert archive_queue["items"][0]["nomenclature_code"] == "FRUIT-STALE"
+
+
 def test_first_supplier_order_moves_fruit_to_newborn_without_approval(
     lifecycle_db,
     sqlite_engine,

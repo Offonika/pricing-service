@@ -1702,7 +1702,22 @@ function ProfitLossPeriodPanel({ asOf }: { asOf: string }) {
   );
 }
 
-function ActionTable({ actions }: { actions: ExecutiveDashboardAction[] }) {
+const ACTION_PREVIEW_LIMIT = 10;
+
+function actionPayloadText(action: ExecutiveDashboardAction, key: string) {
+  const value = action.payload[key];
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+export function ActionTable({
+  actions,
+  onOpen,
+}: {
+  actions: ExecutiveDashboardAction[];
+  onOpen: (action: ExecutiveDashboardAction) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const visibleActions = expanded ? actions : actions.slice(0, ACTION_PREVIEW_LIMIT);
   if (actions.length === 0) {
     return (
       <div className="executive-actions__empty">
@@ -1726,7 +1741,7 @@ function ActionTable({ actions }: { actions: ExecutiveDashboardAction[] }) {
           </tr>
         </thead>
         <tbody>
-          {actions.map((action) => (
+          {visibleActions.map((action) => (
             <tr key={action.stable_key}>
               <td>
                 <span className={`executive-severity executive-severity--${action.severity}`}>
@@ -1735,8 +1750,15 @@ function ActionTable({ actions }: { actions: ExecutiveDashboardAction[] }) {
               </td>
               <td>{DOMAIN_LABELS[action.domain] || action.domain}</td>
               <td>
-                <strong>{action.title}</strong>
-                {action.description && <span>{action.description}</span>}
+                <button
+                  aria-label={`Открыть решение: ${action.title}`}
+                  className="executive-actions__open"
+                  onClick={() => onOpen(action)}
+                  type="button"
+                >
+                  <strong>{action.title}</strong>
+                  {action.description && <span>{action.description}</span>}
+                </button>
               </td>
               <td>{action.amount ? formatMoney(action.amount, action.currency) : ""}</td>
               <td>{action.responsible_bitrix_user_id || ""}</td>
@@ -1754,6 +1776,95 @@ function ActionTable({ actions }: { actions: ExecutiveDashboardAction[] }) {
           ))}
         </tbody>
       </table>
+      {actions.length > ACTION_PREVIEW_LIMIT && (
+        <button
+          className="executive-actions__expand"
+          onClick={() => setExpanded((value) => !value)}
+          type="button"
+        >
+          {expanded ? "Свернуть список" : `Показать все ${actions.length}`}
+        </button>
+      )}
+    </div>
+  );
+}
+
+export function ActionDetail({
+  action,
+  onClose,
+}: {
+  action: ExecutiveDashboardAction;
+  onClose: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const sourceNumber = actionPayloadText(action, "onec_source_number") || action.source_ref || "";
+  const recommendation =
+    actionPayloadText(action, "recommendation") || action.description || "Проверить источник и устранить причину.";
+  const correctionSystem = actionPayloadText(action, "correction_system") || action.source_system;
+  const correctionDocument = actionPayloadText(action, "correction_document");
+  const correctionField = actionPayloadText(action, "correction_field");
+
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [onClose]);
+
+  const copySourceNumber = async () => {
+    if (!sourceNumber) return;
+    await navigator.clipboard.writeText(sourceNumber);
+    setCopied(true);
+  };
+
+  return (
+    <div className="executive-action-detail__overlay" onMouseDown={onClose} role="presentation">
+      <section
+        aria-labelledby="executive-action-detail-title"
+        aria-modal="true"
+        className="executive-action-detail"
+        onMouseDown={(event) => event.stopPropagation()}
+        role="dialog"
+      >
+        <header>
+          <div>
+            <span>{DOMAIN_LABELS[action.domain] || action.domain}</span>
+            <h2 id="executive-action-detail-title">{action.title}</h2>
+          </div>
+          <button aria-label="Закрыть карточку решения" onClick={onClose} type="button">×</button>
+        </header>
+
+        <dl>
+          {sourceNumber && <><dt>Номер заказа</dt><dd>{sourceNumber}</dd></>}
+          <dt>Система факта</dt><dd>{correctionSystem}</dd>
+          {correctionDocument && <><dt>Документ</dt><dd>{correctionDocument}</dd></>}
+          {correctionField && <><dt>Поле</dt><dd>{correctionField}</dd></>}
+          {action.amount && <><dt>Сумма</dt><dd>{formatMoney(action.amount, action.currency)}</dd></>}
+        </dl>
+
+        <div className="executive-action-detail__instruction">
+          <strong>Что сделать</strong>
+          <p>{recommendation}</p>
+          {action.domain === "procurement_import" && (
+            <small>Действие исчезнет после следующего обновления, когда исправление подтвердится в 1С.</small>
+          )}
+        </div>
+
+        <footer>
+          {sourceNumber && (
+            <button className="btn btn--secondary" onClick={copySourceNumber} type="button">
+              {copied ? "Номер скопирован" : "Скопировать номер для 1С"}
+            </button>
+          )}
+          {action.drilldown_url && (
+            <a className="btn btn--primary" href={action.drilldown_url} rel="noreferrer" target="_blank">
+              Открыть источник
+            </a>
+          )}
+          <button className="btn btn--ghost" onClick={onClose} type="button">Закрыть</button>
+        </footer>
+      </section>
     </div>
   );
 }
@@ -1766,6 +1877,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
   const [message, setMessage] = useState("");
   const [data, setData] = useState<ExecutiveDashboardResponse | null>(null);
   const [actions, setActions] = useState<ExecutiveDashboardAction[]>([]);
+  const [selectedAction, setSelectedAction] = useState<ExecutiveDashboardAction | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
 
   const navigateDashboard = useCallback(
@@ -1971,10 +2083,11 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
                 <span>5-10 действий с ответственным, сроком и ссылкой на источник</span>
               </div>
             </header>
-            <ActionTable actions={actions} />
+            <ActionTable actions={actions} onOpen={setSelectedAction} />
           </section>
 
           <SourceFreshness sources={data.source_freshness} />
+          {selectedAction && <ActionDetail action={selectedAction} onClose={() => setSelectedAction(null)} />}
         </>
       )}
     </PageShell>

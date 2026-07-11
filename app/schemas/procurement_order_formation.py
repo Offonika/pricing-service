@@ -215,13 +215,24 @@ class ProcurementDashboardCard(BaseModel):
     urgency: str = "neutral"
 
 
+class ProcurementDashboardDecisionSummary(BaseModel):
+    ready_count: int = 0
+    review_count: int = 0
+    blocked_count: int = 0
+
+
 class ProcurementDashboardAttentionItem(BaseModel):
+    proposal_id: int | None = None
     nomenclature_code: str
     product_name: str
     current_status: str
     current_status_label: str
     kind: str = "lifecycle"
     filter_status: str
+    action_label: str
+    fact_summary: str
+    decision_state: str
+    decision_state_label: str
     reason: str
     recommendation: str
     deadline_label: str
@@ -236,6 +247,9 @@ class ProcurementDashboardResponse(BaseModel):
     run_key: str | None = None
     updated_at: datetime | None = None
     cards: list[ProcurementDashboardCard] = Field(default_factory=list)
+    decision_summary: ProcurementDashboardDecisionSummary = Field(
+        default_factory=ProcurementDashboardDecisionSummary
+    )
     manual_status_counts: dict[str, int] = Field(default_factory=dict)
     attention: list[ProcurementDashboardAttentionItem] = Field(default_factory=list)
     manual_attention: list[ProcurementDashboardAttentionItem] = Field(default_factory=list)
@@ -263,6 +277,7 @@ class ProcurementLifecycleTransitionRead(BaseModel):
     facts_hash: str
     responsible_bitrix_user_id: str | None = None
     responsible_name: str | None = None
+    decision_state: str = "view"
     ready: bool = False
     selectable: bool = False
     stale: bool = False
@@ -276,6 +291,7 @@ class ProcurementLifecycleTransitionList(BaseModel):
     page: int
     page_size: int
     ready_count: int
+    review_count: int
     blocked_count: int
     stale_count: int
     items: list[ProcurementLifecycleTransitionRead] = Field(default_factory=list)

@@ -1460,6 +1460,92 @@
   font-size: 11px;
 }
 
+.executive-block--payables {
+  grid-column: span 2;
+}
+
+.executive-payables {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.executive-payables__title {
+  color: #475467;
+  font-size: 12px;
+}
+
+.executive-payables__list {
+  display: grid;
+  gap: 6px;
+}
+
+.executive-payables__row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  width: 100%;
+  padding: 8px;
+  border: 1px solid #eef2f6;
+  border-left: 4px solid #f79009;
+  border-radius: 6px;
+  background: #fff;
+  color: #18202a;
+  cursor: pointer;
+  text-align: left;
+}
+
+.executive-payables__row:hover {
+  border-color: #b2ddff;
+  border-left-color: #2e90fa;
+  background: #f5faff;
+}
+
+.executive-payables__row > span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.executive-payables__row span strong,
+.executive-payables__row span em,
+.executive-payables__row > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.executive-payables__row span strong {
+  font-size: 12px;
+  line-height: 1.25;
+}
+
+.executive-payables__row span em {
+  color: #667085;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.executive-payables__row > strong {
+  color: #175cd3;
+  font-size: 13px;
+  text-align: right;
+}
+
+.executive-payables__expand {
+  justify-self: start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #175cd3;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 800;
+}
+
 .executive-currency-table {
   display: grid;
   gap: 6px;
@@ -5078,6 +5164,66 @@
   margin-top: 4px;
 }
 
+.attention-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.attention-summary__item {
+  display: grid;
+  gap: 5px;
+  min-height: 82px;
+  padding: 15px 18px;
+  border: 1px solid #dce4ee;
+  border-radius: 10px;
+  background: #eef5ff;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+}
+
+.attention-summary__item:hover:not(:disabled) {
+  border-color: #8fb5e5;
+  box-shadow: 0 8px 20px rgb(46 67 92 / 10%);
+  transform: translateY(-1px);
+}
+
+.attention-summary__item:focus-visible {
+  outline: 3px solid rgb(33 110 232 / 28%);
+  outline-offset: 2px;
+}
+
+.attention-summary__item:disabled {
+  cursor: default;
+  opacity: 0.62;
+}
+
+.attention-summary__item span {
+  color: #58677e;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.attention-summary__item strong {
+  font-size: 26px;
+  line-height: 1;
+}
+
+.attention-summary__item--ready {
+  background: #e9fbf1;
+}
+
+.attention-summary__item--review {
+  background: #fff8e5;
+}
+
+.attention-summary__item--blocked {
+  background: #fff0f1;
+}
+
 .attention-action {
   display: inline-flex;
   padding: 7px 10px;
@@ -5582,6 +5728,7 @@
 
   .lifecycle-cards,
   .manual-status-grid,
+  .attention-summary,
   .registry-summary,
   .registry-summary--three,
   .queue-summary {

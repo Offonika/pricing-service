@@ -621,13 +621,63 @@ def test_dashboard_marks_missing_finance_sources_without_zero_truth(
     assert blocks["creditors_payables"].source_status == "source_missing"
     assert (
         blocks["creditors_payables"].summary["source_anchor"]
-        == "1C: Заказ поставщику -> Платежный календарь"
+        == "1C: Задолженность поставщикам товаров / Поставщики; "
+        "Взаиморасчеты с контрагентами / СОТРУДНИКИ"
     )
     assert blocks["debtors"].source_status == "ready"
     assert blocks["debtors"].title == "Дебиторка покупателей"
     assert blocks["debtors"].metrics[0].value == Decimal("12500.00")
     assert blocks["debtors"].drilldown_url == "/bitrix/receivables/?date=2026-06-27"
     assert blocks["receivables_control"].source_status == "partial"
+
+
+def test_payables_block_separates_suppliers_and_employees(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_path = tmp_path / "finance_snapshot.json"
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "as_of": "2026-07-11",
+                "creditors_payables": {
+                    "source_status": "ready",
+                    "freshness_status": "fresh",
+                    "as_of": "2026-07-11",
+                    "total_payable": "150.00",
+                    "supplier_payable": "100.00",
+                    "employee_payable": "50.00",
+                    "counterparty_count": 2,
+                    "reverse_balance": "20.00",
+                    "counterparties": [
+                        {"counterparty_name": "Поставщик", "payable_amount": "100.00"},
+                        {"counterparty_name": "Сотрудник", "payable_amount": "50.00"},
+                    ],
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    _override_settings(monkeypatch, _settings(snapshot_path))
+
+    result = build_executive_dashboard(
+        db_session,
+        requested_date=date(2026, 7, 11),
+        access_level="full",
+    )
+
+    block = next(item for item in result.blocks if item.key == "creditors_payables")
+    metrics = {metric.key: metric.value for metric in block.metrics}
+    assert block.title == "Кредиторская задолженность"
+    assert metrics == {
+        "total_payable": Decimal("150.00"),
+        "supplier_payable": Decimal("100.00"),
+        "employee_payable": Decimal("50.00"),
+        "counterparty_count": 2,
+    }
+    assert block.summary["reverse_balance"] == "20.00"
 
 
 def test_dashboard_accepts_yesterday_within_configured_lag(

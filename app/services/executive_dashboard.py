@@ -1620,50 +1620,55 @@ def _build_payables_block(
     section = _finance_section(finance_payload, "creditors_payables")
     source_status = str(section.get("source_status") or "source_missing")
     masked = _mask_finance("creditors_payables", access_context)
-    anchor = section.get("source_anchor") or "1C: Заказ поставщику -> Платежный календарь"
+    anchor = (
+        section.get("source_anchor")
+        or "1C: Задолженность поставщикам товаров / Поставщики; "
+        "Взаиморасчеты с контрагентами / СОТРУДНИКИ"
+    )
     return ExecutiveDashboardBlock(
         key="creditors_payables",
-        title="Кредиторка / оплаты поставщикам",
+        title="Кредиторская задолженность",
         source_status=source_status,
         freshness_status=_freshness_from_status(source_status),
         as_of=_as_date(section.get("as_of")),
         summary={
             "source_anchor": anchor,
             "note": section.get("note")
-            or "Платежи поставщикам должны приходить из 1C платежного календаря, не из закупочного прогноза",
-            "calendar_rows": int(section.get("calendar_rows") or 0),
+            or "Долг компании перед поставщиками товаров и сотрудниками по read-only данным 1С.",
+            "counterparty_count": int(section.get("counterparty_count") or 0),
+            "reverse_balance": str(section.get("reverse_balance") or "0"),
+            "counterparties": section.get("counterparties") or [],
+            "groups": section.get("groups") or [],
         },
         metrics=[
             _metric(
                 "total_payable",
-                "К оплате",
+                "Всего",
                 _decimal(section.get("total_payable")),
                 unit="RUB",
                 masked=masked,
                 source_status=source_status,
             ),
             _metric(
-                "due_today",
-                "Сегодня",
-                _decimal(section.get("due_today")),
+                "supplier_payable",
+                "Поставщики",
+                _decimal(section.get("supplier_payable")),
                 unit="RUB",
                 masked=masked,
-                tone="warning",
                 source_status=source_status,
             ),
             _metric(
-                "overdue",
-                "Просрочено",
-                _decimal(section.get("overdue")),
+                "employee_payable",
+                "Сотрудники",
+                _decimal(section.get("employee_payable")),
                 unit="RUB",
                 masked=masked,
-                tone="danger",
                 source_status=source_status,
             ),
             _metric(
-                "ready_to_pay_count",
-                "Готово к оплате",
-                int(section.get("ready_to_pay_count") or 0),
+                "counterparty_count",
+                "Контрагентов",
+                int(section.get("counterparty_count") or 0),
                 source_status=source_status,
             ),
         ],

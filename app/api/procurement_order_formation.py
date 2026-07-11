@@ -147,6 +147,7 @@ def read_lifecycle_transitions(
     scope: str = "action",
     readiness: str = "all",
     search: str = "",
+    proposal_id: int | None = None,
     page: int = 1,
     page_size: int = 50,
     db: Session = Depends(get_db),
@@ -162,6 +163,7 @@ def read_lifecycle_transitions(
                 scope=scope,
                 readiness=readiness,
                 search=search,
+                proposal_id=proposal_id,
                 page=page,
                 page_size=page_size,
             )

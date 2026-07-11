@@ -64,6 +64,16 @@ type ReconciliationReportDelivery = {
   modes?: string[];
 };
 
+type PayablesCounterparty = {
+  counterparty_ref?: string;
+  counterparty_code?: string;
+  counterparty_name?: string;
+  payable_amount?: string | number | null;
+  group_key?: string;
+  group_title?: string;
+  source_report?: string;
+};
+
 const MONEY_TAB_KEY = "money_today";
 const PROFIT_LOSS_TAB_KEY = "profit_loss";
 const ODDS_CASHFLOW_TAB_KEY = "odds_cashflow";
@@ -75,7 +85,7 @@ const TAB_DEFINITIONS = [
   { key: ODDS_CASHFLOW_TAB_KEY, label: "ОДДС CashFlow" },
   { key: "debtors", label: "Дебиторка покупателей" },
   { key: "receivables_control", label: "Контроль" },
-  { key: "creditors_payables", label: "Кредиторка" },
+  { key: "creditors_payables", label: "Кредиторская задолженность" },
   { key: "procurement_import", label: "Закупки" },
   { key: "warehouse_operations", label: "Склад" },
   { key: "reconciliation", label: "Сверки" },
@@ -90,7 +100,7 @@ const DOMAIN_LABELS: Record<string, string> = {
   odds_cashflow: "ОДДС CashFlow",
   debtors: "Дебиторка покупателей",
   receivables_control: "Контроль дебиторки",
-  creditors_payables: "Кредиторка",
+  creditors_payables: "Кредиторская задолженность",
   procurement_import: "Закупки",
   warehouse_operations: "Склад",
   reconciliation: "Сверки",
@@ -103,7 +113,7 @@ const FLOW_STEPS = [
   { key: "profit_loss", label: "Прибыли / убытки", metricKeys: ["gross_profit", "gross_margin_pct"] },
   { key: "debtors", label: "Покупатели", metricKeys: ["total_receivable"] },
   { key: "receivables_control", label: "Контроль", metricKeys: ["folder_needs_review_count", "need_call_today_count"] },
-  { key: "creditors_payables", label: "Кредиторка", metricKeys: ["due_today", "total_payable"] },
+  { key: "creditors_payables", label: "Кредиторская задолженность", metricKeys: ["total_payable", "supplier_payable"] },
   { key: "procurement_import", label: "Закупки", metricKeys: ["open_supplier_orders"] },
   { key: "warehouse_operations", label: "Склад", metricKeys: ["pieces_picked", "avg_need_fact"] },
   { key: "reconciliation", label: "Сверки", metricKeys: ["unmatched_count"] },
@@ -871,6 +881,9 @@ function BlockCard({
   if (block.key === "reconciliation") {
     return <ReconciliationBlockCard block={block} drilldownHref={drilldownHref} />;
   }
+  if (block.key === "creditors_payables") {
+    return <PayablesBlockCard block={block} drilldownHref={drilldownHref} />;
+  }
   if (block.key === "warehouse_operations") {
     return <WarehouseBlockCard block={block} drilldownHref={drilldownHref} />;
   }
@@ -915,6 +928,128 @@ function BlockCard({
             </a>
           )}
         </footer>
+      )}
+    </section>
+  );
+}
+
+export function PayablesBlockCard({
+  block,
+  drilldownHref,
+}: {
+  block: ExecutiveDashboardBlock;
+  drilldownHref?: string | null;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [selected, setSelected] = useState<PayablesCounterparty | null>(null);
+  const counterparties = summaryArray<PayablesCounterparty>(block.summary, "counterparties");
+  const sourceAnchor = summaryString(block.summary, "source_anchor");
+  const note = summaryString(block.summary, "note");
+  const visibleMetrics = visibleMetricsForBlock(block);
+  const visibleCounterparties = expanded ? counterparties : counterparties.slice(0, 5);
+  const selectedName = selected?.counterparty_name || "Контрагент";
+
+  return (
+    <section className={`executive-block executive-block--payables executive-block--${block.source_status}`}>
+      <header className="executive-block__header">
+        <div>
+          <h2>{block.title}</h2>
+          {block.as_of && <span>на {formatDate(block.as_of)}</span>}
+        </div>
+        <em>{statusLabel(block.source_status)}</em>
+      </header>
+      {blockUsesPlaceholder(block) ? (
+        <div className="executive-block__placeholder">
+          <strong>{sourceAnchor || statusLabel(block.source_status)}</strong>
+          <span>{note || "Источник пока не подключен к витрине."}</span>
+        </div>
+      ) : (
+        <>
+          <div className="executive-block__metrics">
+            {visibleMetrics.map((metric) => (
+              <div className={`executive-metric executive-metric--${metric.tone}`} key={metric.key}>
+                <span>{metric.label}</span>
+                <strong>{metricDisplay(metric)}</strong>
+              </div>
+            ))}
+          </div>
+          {counterparties.length > 0 && (
+            <div className="executive-payables" aria-label="Контрагенты с кредиторской задолженностью">
+              <strong className="executive-payables__title">Кому должны</strong>
+              <div className="executive-payables__list">
+                {visibleCounterparties.map((counterparty, index) => {
+                  const name = counterparty.counterparty_name || "Контрагент без наименования";
+                  const key = counterparty.counterparty_ref || `${name}-${index}`;
+                  return (
+                    <button
+                      className="executive-payables__row"
+                      key={key}
+                      onClick={() => setSelected(counterparty)}
+                      type="button"
+                    >
+                      <span>
+                        <strong>{name}</strong>
+                        <em>{counterparty.group_title || "Кредиторская задолженность"}</em>
+                      </span>
+                      <strong>{formatMoney(counterparty.payable_amount)}</strong>
+                    </button>
+                  );
+                })}
+              </div>
+              {counterparties.length > 5 && (
+                <button
+                  className="executive-payables__expand"
+                  onClick={() => setExpanded((value) => !value)}
+                  type="button"
+                >
+                  {expanded ? "Свернуть список" : `Показать всех ${counterparties.length}`}
+                </button>
+              )}
+            </div>
+          )}
+        </>
+      )}
+      {(sourceAnchor || note || drilldownHref) && (
+        <footer className="executive-block__footer">
+          {!blockUsesPlaceholder(block) && sourceAnchor && <strong>{sourceAnchor}</strong>}
+          {!blockUsesPlaceholder(block) && note && <span>{note}</span>}
+          {drilldownHref && (
+            <a className="executive-block__drilldown" href={drilldownHref}>
+              Открыть источник
+            </a>
+          )}
+        </footer>
+      )}
+      {selected && (
+        <div className="executive-action-detail__overlay" onMouseDown={() => setSelected(null)} role="presentation">
+          <section
+            aria-labelledby="executive-payables-detail-title"
+            aria-modal="true"
+            className="executive-action-detail"
+            onMouseDown={(event) => event.stopPropagation()}
+            role="dialog"
+          >
+            <header>
+              <div>
+                <span>{selected.group_title || "Кредиторская задолженность"}</span>
+                <h2 id="executive-payables-detail-title">{selectedName}</h2>
+              </div>
+              <button aria-label="Закрыть карточку контрагента" onClick={() => setSelected(null)} type="button">×</button>
+            </header>
+            <dl>
+              {selected.counterparty_code && <><dt>Код 1С</dt><dd>{selected.counterparty_code}</dd></>}
+              <dt>Сумма долга</dt><dd>{formatMoney(selected.payable_amount)}</dd>
+              <dt>Источник</dt><dd>{selected.source_report || sourceAnchor || "1С"}</dd>
+            </dl>
+            <div className="executive-action-detail__instruction">
+              <strong>Режим просмотра</strong>
+              <p>Витрина показывает факт из 1С и не создаёт платежи и не меняет данные.</p>
+            </div>
+            <footer>
+              <button className="btn btn--ghost" onClick={() => setSelected(null)} type="button">Закрыть</button>
+            </footer>
+          </section>
+        </div>
       )}
     </section>
   );

@@ -153,6 +153,24 @@ export interface ProcurementDashboardCard {
   urgency: string;
 }
 
+export interface ProcurementDashboardAttentionItem {
+  proposal_id?: number | null;
+  nomenclature_code: string;
+  product_name: string;
+  current_status: string;
+  current_status_label: string;
+  kind: string;
+  filter_status: string;
+  action_label: string;
+  fact_summary: string;
+  decision_state: string;
+  decision_state_label: string;
+  reason: string;
+  recommendation: string;
+  deadline_label: string;
+  urgency: string;
+}
+
 export interface ProcurementDashboard {
   folder: string;
   responsible_user_id: string;
@@ -161,31 +179,14 @@ export interface ProcurementDashboard {
   run_key?: string | null;
   updated_at?: string | null;
   cards: ProcurementDashboardCard[];
+  decision_summary: {
+    ready_count: number;
+    review_count: number;
+    blocked_count: number;
+  };
   manual_status_counts: Record<string, number>;
-  attention: Array<{
-    nomenclature_code: string;
-    product_name: string;
-    current_status: string;
-    current_status_label: string;
-    kind: string;
-    filter_status: string;
-    reason: string;
-    recommendation: string;
-    deadline_label: string;
-    urgency: string;
-  }>;
-  manual_attention: Array<{
-    nomenclature_code: string;
-    product_name: string;
-    current_status: string;
-    current_status_label: string;
-    kind: string;
-    filter_status: string;
-    reason: string;
-    recommendation: string;
-    deadline_label: string;
-    urgency: string;
-  }>;
+  attention: ProcurementDashboardAttentionItem[];
+  manual_attention: ProcurementDashboardAttentionItem[];
 }
 
 export interface ProcurementLifecycleTransition {
@@ -210,6 +211,7 @@ export interface ProcurementLifecycleTransition {
   facts_hash: string;
   responsible_bitrix_user_id?: string | null;
   responsible_name?: string | null;
+  decision_state: string;
   ready: boolean;
   selectable: boolean;
   stale: boolean;
@@ -223,6 +225,7 @@ export interface ProcurementLifecycleTransitionList {
   page: number;
   page_size: number;
   ready_count: number;
+  review_count: number;
   blocked_count: number;
   stale_count: number;
   items: ProcurementLifecycleTransition[];
@@ -339,8 +342,9 @@ export async function fetchProcurementDashboard() {
 export async function fetchProcurementLifecycleTransitions(params: {
   status: string;
   scope?: "action" | "all";
-  readiness?: "all" | "ready" | "blocked" | "stale";
+  readiness?: "all" | "ready" | "review" | "blocked" | "stale";
   search?: string;
+  proposal_id?: number;
   page?: number;
   page_size?: number;
 }) {

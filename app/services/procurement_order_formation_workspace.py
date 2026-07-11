@@ -90,6 +90,34 @@ MANUAL_STATUS_RECOMMENDATIONS = {
     "do_not_order": "Не включать в закупку",
     "review": "Открыть ручной разбор",
 }
+DECISION_STATE_LABELS = {
+    "ready": "Готово к подтверждению",
+    "review": "Нужен разбор",
+    "blocked": "Есть блокер",
+    "control": "Контроль",
+    "stale": "Расчёт устарел",
+    "view": "Только просмотр",
+}
+DECISION_STATE_URGENCY = {
+    "ready": "ready",
+    "review": "warning",
+    "blocked": "blocked",
+    "control": "warning",
+    "stale": "warning",
+    "view": "neutral",
+}
+DECISION_STATE_PRIORITY = {
+    "review": 0,
+    "blocked": 1,
+    "ready": 2,
+}
+ATTENTION_FACTS = (
+    ("cargo_handoff_count_1c", "Передач в груз"),
+    ("customer_order_count_1c", "Заказов покупателей"),
+    ("customer_order_qty_1c", "Количество в заказах покупателей"),
+    ("supplier_order_count_1c", "Заказов поставщику"),
+    ("supplier_order_qty_1c", "Количество в заказах поставщику"),
+)
 APPROVAL_RESULT_KEYS = ("approved", "stale", "blocked", "conflict", "failed")
 
 
@@ -197,8 +225,7 @@ def sync_lifecycle_transition_proposals(
     stale_rows = [
         proposal
         for proposal in pending_rows
-        if proposal.run_id != int(run["id"])
-        or proposal.idempotency_key not in active_keys
+        if proposal.run_id != int(run["id"]) or proposal.idempotency_key not in active_keys
     ]
     for proposal in stale_rows:
         proposal.status = "stale"
@@ -221,13 +248,17 @@ def build_dashboard(
 ) -> dict[str, Any]:
     settings = settings or get_settings()
     run = _load_run(db, folder=folder)
-    rows = _snapshot_rows(db, folder=folder, run_id=int(run["id"]) if run else None)
-    transitions = db.scalars(
-        select(ProcurementLifecycleTransitionProposal).where(
-            ProcurementLifecycleTransitionProposal.folder.ilike(f"%{folder}%"),
-            ProcurementLifecycleTransitionProposal.status == "pending",
+    latest_run_id = int(run["id"]) if run else 0
+    rows = _snapshot_rows(db, folder=folder, run_id=latest_run_id or None)
+    transition_query = select(ProcurementLifecycleTransitionProposal).where(
+        ProcurementLifecycleTransitionProposal.folder.ilike(f"%{folder}%"),
+        ProcurementLifecycleTransitionProposal.status == "pending",
+    )
+    if latest_run_id:
+        transition_query = transition_query.where(
+            ProcurementLifecycleTransitionProposal.run_id == latest_run_id
         )
-    ).all()
+    transitions = db.scalars(transition_query).all()
     status_counts: Counter[str] = Counter()
     review_counts: Counter[str] = Counter()
     for row in rows:
@@ -253,9 +284,10 @@ def build_dashboard(
             else _dashboard_status(item.target_status)
         )
         action_breakdowns[current_status][breakdown_key] += 1
-        if item.blockers:
+        decision_state = _decision_state(item, latest_run_id=latest_run_id)
+        if decision_state == "blocked":
             blocked_counts[current_status] += 1
-        elif item.action_kind == "transition" and item.target_status:
+        elif decision_state == "ready":
             ready_counts[current_status] += 1
     cards: list[dict[str, Any]] = []
     for status_code in LIFECYCLE_ORDER:
@@ -305,29 +337,20 @@ def build_dashboard(
         code: (review_counts["working"] if code == "review" else manual_counts[code])
         for code in MANUAL_STATUS_ORDER
     }
+    decision_summary = Counter(
+        _decision_state(item, latest_run_id=latest_run_id) for item in transitions
+    )
     attention = [
-        {
-            "nomenclature_code": item.nomenclature_code,
-            "product_name": item.product_name,
-            "current_status": item.current_status,
-            "current_status_label": _status_label(item.current_status),
-            "kind": "lifecycle",
-            "filter_status": _dashboard_status(item.current_status),
-            "reason": _pending_decision_reason(
-                current_status=item.current_status,
-                target_status=item.target_status,
-                action_kind=item.action_kind,
-                reason=item.reason,
-            ),
-            "recommendation": (
-                _status_label(item.target_status) if item.target_status else "Открыть разбор"
-            ),
-            "deadline_label": "сегодня" if not item.blockers else "блокер",
-            "urgency": "action" if not item.blockers else "blocked",
-        }
+        _dashboard_attention_item(item, latest_run_id=latest_run_id)
         for item in sorted(
             transitions,
-            key=lambda value: (bool(value.blockers), value.created_at or datetime.min),
+            key=lambda value: (
+                DECISION_STATE_PRIORITY.get(
+                    _decision_state(value, latest_run_id=latest_run_id),
+                    len(DECISION_STATE_PRIORITY),
+                ),
+                value.created_at or datetime.max,
+            ),
         )[:5]
     ]
     manual_attention = _manual_attention_items(rows)
@@ -339,6 +362,11 @@ def build_dashboard(
         "run_key": str(run["run_key"]) if run else None,
         "updated_at": run.get("finished_at") if run else None,
         "cards": cards,
+        "decision_summary": {
+            "ready_count": decision_summary["ready"],
+            "review_count": decision_summary["review"],
+            "blocked_count": decision_summary["blocked"],
+        },
         "manual_status_counts": manual_status_counts,
         "attention": attention,
         "manual_attention": manual_attention,
@@ -352,16 +380,19 @@ def list_lifecycle_transitions(
     scope: str = "action",
     readiness: str = "all",
     search: str = "",
+    proposal_id: int | None = None,
     page: int = 1,
     page_size: int = 50,
     folder: str = DISPLAY_FOLDER,
 ) -> dict[str, Any]:
-    normalized_status = _dashboard_status(normalize_status(status) or status)
-    if normalized_status not in LIFECYCLE_ORDER:
+    normalized_status = (
+        "all" if status == "all" else _dashboard_status(normalize_status(status) or status)
+    )
+    if normalized_status != "all" and normalized_status not in LIFECYCLE_ORDER:
         raise ValueError("unsupported lifecycle status")
     if scope not in {"action", "all"}:
         raise ValueError("scope must be action or all")
-    if readiness not in {"all", "ready", "blocked", "stale"}:
+    if readiness not in {"all", "ready", "review", "blocked", "stale"}:
         raise ValueError("unsupported readiness filter")
     page = max(page, 1)
     page_size = min(max(page_size, 1), 100)
@@ -374,21 +405,25 @@ def list_lifecycle_transitions(
         serialized = [
             _serialize_snapshot_row(row, run=latest_run)
             for row in rows
-            if _dashboard_status(str(row.get("status") or "")) == normalized_status
+            if normalized_status == "all"
+            or _dashboard_status(str(row.get("status") or "")) == normalized_status
         ]
     else:
         proposal_status = "stale" if readiness == "stale" else "pending"
         proposal_filters = [
             ProcurementLifecycleTransitionProposal.folder.ilike(f"%{folder}%"),
-            ProcurementLifecycleTransitionProposal.current_status.in_(
-                _status_query_values(normalized_status)
-            ),
             ProcurementLifecycleTransitionProposal.status == proposal_status,
         ]
-        if proposal_status == "pending" and latest_run_id:
+        if normalized_status != "all":
             proposal_filters.append(
-                ProcurementLifecycleTransitionProposal.run_id == latest_run_id
+                ProcurementLifecycleTransitionProposal.current_status.in_(
+                    _status_query_values(normalized_status)
+                )
             )
+        if proposal_status == "pending" and latest_run_id:
+            proposal_filters.append(ProcurementLifecycleTransitionProposal.run_id == latest_run_id)
+        if proposal_id is not None:
+            proposal_filters.append(ProcurementLifecycleTransitionProposal.id == proposal_id)
         proposals = db.scalars(
             select(ProcurementLifecycleTransitionProposal)
             .where(*proposal_filters)
@@ -405,18 +440,7 @@ def list_lifecycle_transitions(
             if search_key in f"{item['nomenclature_code']} {item['product_name']}".casefold()
         ]
     if readiness != "all":
-        serialized = [
-            item
-            for item in serialized
-            if (
-                readiness == "ready"
-                and item["ready"]
-                or readiness == "blocked"
-                and bool(item["blockers"])
-                or readiness == "stale"
-                and item["stale"]
-            )
-        ]
+        serialized = [item for item in serialized if item["decision_state"] == readiness]
     total = len(serialized)
     start = (page - 1) * page_size
     items = serialized[start : start + page_size]
@@ -427,6 +451,7 @@ def list_lifecycle_transitions(
         "page": page,
         "page_size": page_size,
         "ready_count": sum(1 for item in serialized if item["ready"]),
+        "review_count": sum(1 for item in serialized if item["decision_state"] == "review"),
         "blocked_count": sum(1 for item in serialized if item["blockers"]),
         "stale_count": sum(1 for item in serialized if item["stale"]),
         "items": items,
@@ -740,14 +765,9 @@ def serialize_transition(
     *,
     latest_run_id: int,
 ) -> dict[str, Any]:
-    stale = proposal.status == "stale" or proposal.run_id != latest_run_id
-    ready = (
-        proposal.status == "pending"
-        and proposal.action_kind == "transition"
-        and bool(proposal.target_status)
-        and not proposal.blockers
-        and not stale
-    )
+    decision_state = _decision_state(proposal, latest_run_id=latest_run_id)
+    stale = decision_state == "stale"
+    ready = decision_state == "ready"
     return {
         "proposal_id": proposal.id,
         "nomenclature_code": proposal.nomenclature_code,
@@ -775,6 +795,7 @@ def serialize_transition(
         "facts_hash": proposal.facts_hash,
         "responsible_bitrix_user_id": proposal.responsible_bitrix_user_id,
         "responsible_name": proposal.responsible_name,
+        "decision_state": decision_state,
         "ready": ready,
         "selectable": ready,
         "stale": stale,
@@ -1140,6 +1161,7 @@ def _serialize_snapshot_row(
         "facts_hash": str(row.get("source_hash") or ""),
         "responsible_bitrix_user_id": None,
         "responsible_name": None,
+        "decision_state": "view",
         "ready": False,
         "selectable": False,
         "stale": False,
@@ -1185,6 +1207,67 @@ def _status_label(status: str | None) -> str:
     return LIFECYCLE_LABELS.get(normalized) or status_label(normalized) or str(status)
 
 
+def _decision_state(
+    proposal: ProcurementLifecycleTransitionProposal,
+    *,
+    latest_run_id: int,
+) -> str:
+    if proposal.status == "stale" or proposal.run_id != latest_run_id:
+        return "stale"
+    if proposal.blockers:
+        return "blocked"
+    if proposal.action_kind != "transition" or not proposal.target_status:
+        return "review"
+    return "ready"
+
+
+def _attention_action_label(proposal: ProcurementLifecycleTransitionProposal) -> str:
+    if proposal.action_kind != "transition" or not proposal.target_status:
+        return "Открыть разбор"
+    return f"{_status_label(proposal.current_status)} → {_status_label(proposal.target_status)}"
+
+
+def _attention_fact_summary(proposal: ProcurementLifecycleTransitionProposal) -> str:
+    facts = dict(proposal.facts or {})
+    evidence = facts.get("evidence")
+    if not isinstance(evidence, Mapping):
+        return "Факты 1С сохранены в расчёте"
+    for key, label in ATTENTION_FACTS:
+        value = evidence.get(key)
+        if value is None or value == "" or value is False or value == 0:
+            continue
+        return f"{label}: {value}"
+    return "Факты 1С сохранены в расчёте"
+
+
+def _dashboard_attention_item(
+    proposal: ProcurementLifecycleTransitionProposal,
+    *,
+    latest_run_id: int,
+) -> dict[str, Any]:
+    decision_state = _decision_state(proposal, latest_run_id=latest_run_id)
+    state_label = DECISION_STATE_LABELS[decision_state]
+    action_label = _attention_action_label(proposal)
+    fact_summary = _attention_fact_summary(proposal)
+    return {
+        "proposal_id": proposal.id,
+        "nomenclature_code": proposal.nomenclature_code,
+        "product_name": proposal.product_name,
+        "current_status": proposal.current_status,
+        "current_status_label": _status_label(proposal.current_status),
+        "kind": "lifecycle",
+        "filter_status": _dashboard_status(proposal.current_status),
+        "action_label": action_label,
+        "fact_summary": fact_summary,
+        "decision_state": decision_state,
+        "decision_state_label": state_label,
+        "reason": fact_summary,
+        "recommendation": action_label,
+        "deadline_label": state_label,
+        "urgency": DECISION_STATE_URGENCY[decision_state],
+    }
+
+
 def _manual_attention_items(rows: Iterable[Mapping[str, Any]]) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
     for row in rows:
@@ -1202,18 +1285,26 @@ def _manual_attention_items(rows: Iterable[Mapping[str, Any]]) -> list[dict[str,
             continue
         blockers = list(row.get("blockers") or []) + list(row.get("export_blockers") or [])
         has_blockers = bool(blockers)
+        decision_state = "blocked" if has_blockers else "control"
+        reason = str(row.get("reason_text") or "Требуется ручная проверка")
+        action_label = MANUAL_STATUS_RECOMMENDATIONS[filter_status]
         items.append(
             {
+                "proposal_id": None,
                 "nomenclature_code": str(row.get("nomenclature_code") or ""),
                 "product_name": str(row.get("name") or ""),
                 "current_status": current_status,
                 "current_status_label": current_status_label,
                 "kind": "manual",
                 "filter_status": filter_status,
-                "reason": str(row.get("reason_text") or "Требуется ручная проверка"),
-                "recommendation": MANUAL_STATUS_RECOMMENDATIONS[filter_status],
-                "deadline_label": "блокер" if has_blockers else "контроль",
-                "urgency": "blocked" if has_blockers else "warning",
+                "action_label": action_label,
+                "fact_summary": reason,
+                "decision_state": decision_state,
+                "decision_state_label": DECISION_STATE_LABELS[decision_state],
+                "reason": reason,
+                "recommendation": action_label,
+                "deadline_label": DECISION_STATE_LABELS[decision_state],
+                "urgency": DECISION_STATE_URGENCY[decision_state],
             }
         )
     order = {status: index for index, status in enumerate(MANUAL_STATUS_ORDER)}
@@ -1236,7 +1327,9 @@ def _pending_decision_reason(
     text = str(reason or "").strip()
     if action_kind != "transition" or not target_status:
         return text or "Требуется ручной разбор"
-    prefix = f"Рекомендуется переход {_status_label(current_status)} → {_status_label(target_status)}."
+    prefix = (
+        f"Рекомендуется переход {_status_label(current_status)} → {_status_label(target_status)}."
+    )
     lowered = text.casefold()
     fact_marker = "по твердым фактам 1с:"
     marker_index = lowered.find(fact_marker)

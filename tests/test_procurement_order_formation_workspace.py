@@ -193,22 +193,32 @@ def test_dashboard_keeps_lifecycle_order_and_nests_newborn_need(
     assert working["action_count"] == 1
     assert dashboard["manual_status_counts"]["matrix"] == 1
     matrix_attention = next(
-        item
-        for item in dashboard["manual_attention"]
-        if item["filter_status"] == "matrix"
+        item for item in dashboard["manual_attention"] if item["filter_status"] == "matrix"
     )
     assert matrix_attention == {
+        "proposal_id": None,
         "nomenclature_code": "MATRIX-1",
         "product_name": "Дисплей матричный",
         "current_status": "matrix",
         "current_status_label": "Матричный",
         "kind": "manual",
         "filter_status": "matrix",
+        "action_label": "Проверить матрицу и минимальный запас",
+        "fact_summary": "Основной товар группы",
+        "decision_state": "control",
+        "decision_state_label": "Контроль",
         "reason": "Основной товар группы",
         "recommendation": "Проверить матрицу и минимальный запас",
-        "deadline_label": "контроль",
+        "deadline_label": "Контроль",
         "urgency": "warning",
     }
+    assert dashboard["decision_summary"] == {
+        "ready_count": 1,
+        "review_count": 2,
+        "blocked_count": 0,
+    }
+    assert all(item["deadline_label"] != "сегодня" for item in dashboard["attention"])
+    assert all("pricing-service" not in item["fact_summary"] for item in dashboard["attention"])
     assert {item["filter_status"] for item in dashboard["manual_attention"]} == {
         "matrix",
         "review",
@@ -251,9 +261,41 @@ def test_queue_starts_unselected_and_only_ready_rows_are_selectable(
     )
     assert review["current_status"] == "newborn"
     assert review["target_status"] is None
-    assert transition["reason"].startswith(
-        "Рекомендуется переход Новорожденный → Новинка."
+    assert transition["reason"].startswith("Рекомендуется переход Новорожденный → Новинка.")
+
+
+def test_queue_filters_manual_reviews_and_opens_exact_proposal(
+    lifecycle_db,
+    sqlite_engine,
+) -> None:
+    run_id = _seed_lifecycle(sqlite_engine)
+    sync_lifecycle_transition_proposals(
+        lifecycle_db,
+        run_id=run_id,
+        settings=_settings(),
     )
+
+    reviews = list_lifecycle_transitions(
+        lifecycle_db,
+        status="all",
+        scope="action",
+        readiness="review",
+    )
+
+    assert reviews["total"] == 2
+    assert reviews["review_count"] == 2
+    assert {item["decision_state"] for item in reviews["items"]} == {"review"}
+
+    exact = list_lifecycle_transitions(
+        lifecycle_db,
+        status="all",
+        scope="action",
+        readiness="review",
+        proposal_id=reviews["items"][0]["proposal_id"],
+    )
+
+    assert exact["total"] == 1
+    assert exact["items"][0]["proposal_id"] == reviews["items"][0]["proposal_id"]
 
 
 def test_action_queue_hides_stale_runs_until_archive_filter(
@@ -333,8 +375,7 @@ def test_first_supplier_order_moves_fruit_to_newborn_without_approval(
     assert proposal.approved_by_actor == "system:onec-facts"
     event = lifecycle_db.scalar(
         select(ProcurementOrderFormationEvent).where(
-            ProcurementOrderFormationEvent.event_type
-            == "lifecycle_transition_auto_applied"
+            ProcurementOrderFormationEvent.event_type == "lifecycle_transition_auto_applied"
         )
     )
     assert event is not None
@@ -346,12 +387,14 @@ def test_first_supplier_order_moves_fruit_to_newborn_without_approval(
         run_id=run_id,
         settings=_settings(),
     )
-    assert lifecycle_db.scalar(
-        select(func.count(ProcurementOrderFormationEvent.id)).where(
-            ProcurementOrderFormationEvent.event_type
-            == "lifecycle_transition_auto_applied"
+    assert (
+        lifecycle_db.scalar(
+            select(func.count(ProcurementOrderFormationEvent.id)).where(
+                ProcurementOrderFormationEvent.event_type == "lifecycle_transition_auto_applied"
+            )
         )
-    ) == 1
+        == 1
+    )
 
 
 def test_batch_approval_returns_partial_result_and_is_idempotent(
@@ -370,14 +413,10 @@ def test_batch_approval_returns_partial_result_and_is_idempotent(
         )
     ).all()
     ready = next(
-        item
-        for item in proposals
-        if item.action_kind == "transition" and item.status == "pending"
+        item for item in proposals if item.action_kind == "transition" and item.status == "pending"
     )
     review = next(
-        item
-        for item in proposals
-        if item.action_kind == "review" and item.status == "pending"
+        item for item in proposals if item.action_kind == "review" and item.status == "pending"
     )
     request_items = [_approval_item(ready), _approval_item(review)]
 
@@ -400,11 +439,14 @@ def test_batch_approval_returns_partial_result_and_is_idempotent(
     assert first["summary"]["approved"] == 1
     assert first["summary"]["blocked"] == 1
     assert second == first
-    assert lifecycle_db.scalar(
-        select(func.count(ProcurementOrderFormationEvent.id)).where(
-            ProcurementOrderFormationEvent.event_type == "lifecycle_transitions_approved"
+    assert (
+        lifecycle_db.scalar(
+            select(func.count(ProcurementOrderFormationEvent.id)).where(
+                ProcurementOrderFormationEvent.event_type == "lifecycle_transitions_approved"
+            )
         )
-    ) == 1
+        == 1
+    )
 
 
 def test_sale_to_working_is_omar_only(lifecycle_db, sqlite_engine) -> None:

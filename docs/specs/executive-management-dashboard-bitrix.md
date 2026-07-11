@@ -77,7 +77,7 @@ Draft / v1 implementation foundation.
 | Отчет о прибылях и убытках | `1C` факт продаж, v1 таблица `onec_sales_daily_kpi`; расходы v1 по оплатам ДДС из `mm-compensation` | `pricing-service` |
 | Дебиторка покупателей | buyers-сегмент текущих receivables cases в `pricing-service` | `pricing-service` |
 | Контроль дебиторки | рабочее место дебиторки, work items, кеш `Контроль папок` | `pricing-service` |
-| Кредиторка | `1C: Заказ поставщику -> Платежный календарь` | `mm-compensation` готовит compact JSON |
+| Кредиторская задолженность | `1C: Задолженность поставщикам товаров / Поставщики; Взаиморасчеты с контрагентами / СОТРУДНИКИ` | `mm-compensation` готовит compact JSON |
 | Закупки / импорт | procurement decision contour | `pricing-service` + compact finance snapshot |
 | Склад / сборка | `mm-compensation` / `piecework.fact_transfer_header`, `piecework.fact_transfer_lines`, `piecework.fact_transfer_corrections` | `pricing-service` читает compact JSON |
 | Сверки | `mm-compensation` jobs Sber / CloudPayments / acquiring / ДДС | `pricing-service` читает compact JSON |
@@ -86,20 +86,18 @@ Draft / v1 implementation foundation.
 
 ## Creditors / Payables Rule
 
-Кредиторка является обязательным блоком v1. Ее нельзя подменять закупочным
-прогнозом. Канонический якорь:
+Кредиторская задолженность является обязательным блоком v1. Ее нельзя подменять
+закупочным прогнозом или платежным календарем. Канонические источники:
 
 ```text
-1C: Заказ поставщику -> Платежный календарь
+1C: Задолженность поставщикам товаров / Поставщики
+1C: Взаиморасчеты с контрагентами / СОТРУДНИКИ
 ```
 
-При развитии нужно read-only изучить:
-
-- действие в документе `Заказ поставщику`, после которого появляется сумма к
-  оплате;
-- форму оплаты с учетом карточки поставщика/контрагента;
-- попадание этих данных во внешний отчет `Платежный календарь`;
-- дедупликацию платежных решений и связь с ответственным в Bitrix.
+В итог попадает только долг компании: отрицательное сальдо взаиморасчетов.
+Положительные (обратные) остатки передаются отдельно и не уменьшают долг. Блок
+показывает общий итог и отдельные суммы по поставщикам и сотрудникам; он не
+создаёт платежи и не меняет 1С.
 
 ## API Contract
 
@@ -388,6 +386,9 @@ fallback-режимом: пользователь видит прежнюю ст
 - finance snapshot — целевой лаг до 1 дня;
 - procurement snapshot — полный read-only список открытых `cargo + ved_import`,
   обновление в 10:35; после 11:00 `stale/missing/source_error` считается ошибкой мониторинга;
+- payables snapshot — read-only срез кредиторской задолженности 1С в 10:40;
+  после 11:00 `stale/missing/source_error` блока `creditors_payables` считается
+  ошибкой мониторинга;
 - receivables — целевой лаг до 1 дня;
 - actions — идемпотентные записи по `stable_key` и `dedupe_key`;
 - закупочные actions формируются из `procurement_import.attention_items`: первые 10
@@ -443,7 +444,8 @@ app/admin context или через OAuth-контекст установлен�
   `receivable_case`, а не с общим signed-срезом.
 - Receivables control: очередь действий и `Контроль папок` выводятся отдельным
   блоком без write-back в `1С`.
-- Payables: кредиторка идет из `Заказ поставщику / Платежный календарь`.
+- Payables: кредиторская задолженность идет из двух групп взаиморасчетов 1С:
+  `Поставщики` и `СОТРУДНИКИ`.
 - Idempotency: повторный запуск не создает дубли actions.
 - Bitrix iframe smoke: страница, session, загрузка блоков, drill-down links.
 - Docs/OpenAPI: manifest и generated contract без drift.

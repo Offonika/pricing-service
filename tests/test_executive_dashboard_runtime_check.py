@@ -162,13 +162,15 @@ def test_monitor_allows_profit_loss_grace_period_but_fails_after_0400() -> None:
     assert any("after the refresh grace period" in error for error in late_errors)
 
 
-def test_monitor_reports_known_missing_and_partial_blocks_as_degraded() -> None:
+def test_monitor_reports_known_missing_blocks_and_partial_data_as_degraded_before_payables_sla() -> (
+    None
+):
     payloads = _payloads()
     payloads["profit_loss"].update(source_status="partial", freshness_status="partial")
 
     status, degraded, errors = evaluate_data_health(
         payloads,
-        now=datetime(2026, 7, 11, 12, 0, tzinfo=MOSCOW_TZ),
+        now=datetime(2026, 7, 11, 10, 59, tzinfo=MOSCOW_TZ),
     )
 
     assert status == "degraded"
@@ -176,6 +178,19 @@ def test_monitor_reports_known_missing_and_partial_blocks_as_degraded() -> None:
     names = {item["name"] for item in degraded}
     assert "profit_loss" in names
     assert "dashboard.creditors_payables" in names
+
+
+def test_monitor_fails_for_unhealthy_payables_after_1100() -> None:
+    payloads = _payloads()
+
+    status, degraded, errors = evaluate_data_health(
+        payloads,
+        now=datetime(2026, 7, 11, 11, 0, tzinfo=MOSCOW_TZ),
+    )
+
+    assert status == "failed"
+    assert not any(item["name"] == "dashboard.creditors_payables" for item in degraded)
+    assert any("creditors_payables is unhealthy" in error for error in errors)
 
 
 def test_monitor_reports_other_stale_dashboard_blocks_without_false_outage() -> None:

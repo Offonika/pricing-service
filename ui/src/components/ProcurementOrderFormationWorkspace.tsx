@@ -26,10 +26,18 @@ interface Props {
 }
 
 type WorkspaceTab = "dashboard" | "orders" | "properties" | "history";
+const LIFECYCLE_READINESS = ["all", "ready", "review", "blocked", "stale"] as const;
+type LifecycleReadiness = (typeof LIFECYCLE_READINESS)[number];
 
 type WorkspaceRoute =
   | { kind: "tab"; tab: WorkspaceTab }
-  | { kind: "lifecycle"; status: string; scope: "action" | "all" }
+  | {
+      kind: "lifecycle";
+      status: string;
+      scope: "action" | "all";
+      readiness: LifecycleReadiness;
+      proposalId?: number;
+    }
   | { kind: "order"; orderId: number };
 
 const TAB_LABELS: Record<WorkspaceTab, string> = {
@@ -141,10 +149,16 @@ function routeFromLocation(): WorkspaceRoute {
   const lifecycleMatch = relative.match(/^\/lifecycle\/([^/]+)$/);
   if (lifecycleMatch) {
     const params = new URLSearchParams(window.location.search);
+    const readinessParam = params.get("readiness");
+    const proposalId = Number(params.get("proposal"));
     return {
       kind: "lifecycle",
       status: decodeURIComponent(lifecycleMatch[1]),
       scope: params.get("scope") === "all" ? "all" : "action",
+      readiness: LIFECYCLE_READINESS.includes(readinessParam as LifecycleReadiness)
+        ? readinessParam as LifecycleReadiness
+        : "all",
+      proposalId: Number.isInteger(proposalId) && proposalId > 0 ? proposalId : undefined,
     };
   }
   const orderMatch = relative.match(/^\/orders\/(\d+)$/);
@@ -158,7 +172,10 @@ function routeFromLocation(): WorkspaceRoute {
 function routeUrl(route: WorkspaceRoute) {
   const root = "/bitrix/procurement-order-formation";
   if (route.kind === "lifecycle") {
-    return `${root}/lifecycle/${encodeURIComponent(route.status)}?scope=${route.scope}`;
+    const params = new URLSearchParams({ scope: route.scope });
+    if (route.readiness !== "all") params.set("readiness", route.readiness);
+    if (route.proposalId) params.set("proposal", String(route.proposalId));
+    return `${root}/lifecycle/${encodeURIComponent(route.status)}?${params}`;
   }
   if (route.kind === "order") return `${root}/orders/${route.orderId}`;
   if (route.tab === "dashboard") return root;
@@ -223,13 +240,24 @@ function Dashboard({
   onOpenLifecycle,
 }: {
   data: ProcurementDashboard;
-  onOpenLifecycle: (status: string, scope: "action" | "all") => void;
+  onOpenLifecycle: (
+    status: string,
+    scope: "action" | "all",
+    options?: { readiness?: LifecycleReadiness; proposalId?: number }
+  ) => void;
 }) {
   const [manualFilter, setManualFilter] = useState<string | null>(null);
   const manualFilterLabel = manualFilter ? MANUAL_STATUS_LABELS[manualFilter] : null;
   const attentionRows = manualFilter
     ? data.manual_attention.filter((item) => item.filter_status === manualFilter)
     : data.attention;
+  const openAttention = (item: ProcurementDashboard["attention"][number]) => {
+    if (item.kind !== "lifecycle" || !item.proposal_id) return;
+    onOpenLifecycle(item.current_status, "action", {
+      readiness: item.decision_state as LifecycleReadiness,
+      proposalId: item.proposal_id,
+    });
+  };
   return (
     <main className="order-workspace__content">
       <section className="order-workspace__section-heading">
@@ -305,11 +333,11 @@ function Dashboard({
       <section className="attention-panel">
         <div className="order-workspace__section-heading">
           <div>
-            <h2>{manualFilterLabel ? `Ручной статус: ${manualFilterLabel}` : "Требует решения сегодня"}</h2>
+            <h2>{manualFilterLabel ? `Ручной статус: ${manualFilterLabel}` : "Очередь решений"}</h2>
             <p>
               {manualFilterLabel
                 ? `Показаны товары выбранного ручного статуса: ${attentionRows.length}.`
-                : "Пять ближайших решений и блокеров. Нажмите строку, чтобы открыть очередь."}
+                : "Пять приоритетных товаров. Полный список открывается по счётчикам."}
             </p>
           </div>
           {manualFilter ? (
@@ -318,9 +346,40 @@ function Dashboard({
             </button>
           ) : null}
         </div>
+        {!manualFilter ? (
+          <section aria-label="Сводка очереди решений" className="attention-summary">
+            <button
+              className="attention-summary__item attention-summary__item--ready"
+              disabled={data.decision_summary.ready_count === 0}
+              onClick={() => onOpenLifecycle("all", "action", { readiness: "ready" })}
+              type="button"
+            >
+              <span>Готово к подтверждению</span>
+              <strong>{data.decision_summary.ready_count}</strong>
+            </button>
+            <button
+              className="attention-summary__item attention-summary__item--review"
+              disabled={data.decision_summary.review_count === 0}
+              onClick={() => onOpenLifecycle("all", "action", { readiness: "review" })}
+              type="button"
+            >
+              <span>Нужен разбор</span>
+              <strong>{data.decision_summary.review_count}</strong>
+            </button>
+            <button
+              className="attention-summary__item attention-summary__item--blocked"
+              disabled={data.decision_summary.blocked_count === 0}
+              onClick={() => onOpenLifecycle("all", "action", { readiness: "blocked" })}
+              type="button"
+            >
+              <span>Есть блокеры</span>
+              <strong>{data.decision_summary.blocked_count}</strong>
+            </button>
+          </section>
+        ) : null}
         {attentionRows.length === 0 ? (
           <div className="order-workspace__empty">
-            {manualFilterLabel ? "В выбранном ручном статусе товаров нет." : "Срочных решений нет."}
+            {manualFilterLabel ? "В выбранном ручном статусе товаров нет." : "Открытых решений нет."}
           </div>
         ) : (
           <div className="order-workspace__table-wrap">
@@ -328,9 +387,10 @@ function Dashboard({
               <thead>
                 <tr>
                   <th>Товар</th>
-                  <th>Причина</th>
-                  <th>Рекомендация</th>
-                  <th>Срок</th>
+                  <th>Предлагаемое решение</th>
+                  <th>Основание</th>
+                  <th>Состояние</th>
+                  <th aria-label="Действие"></th>
                 </tr>
               </thead>
               <tbody>
@@ -338,30 +398,31 @@ function Dashboard({
                   <tr
                     className={item.kind === "lifecycle" ? "attention-row attention-row--clickable" : "attention-row"}
                     key={`${item.kind}-${item.nomenclature_code}-${item.filter_status}`}
-                    onClick={item.kind === "lifecycle"
-                      ? () => onOpenLifecycle(item.current_status, "action")
-                      : undefined}
+                    onClick={item.kind === "lifecycle" ? () => openAttention(item) : undefined}
                   >
                     <td>
                       <strong>{item.product_name}</strong>
                       <small>{item.nomenclature_code} · {item.current_status_label}</small>
                     </td>
-                    <td>{item.reason}</td>
+                    <td><span className="transition-pill">{item.action_label}</span></td>
+                    <td>{item.fact_summary}</td>
                     <td>
-                      {item.kind === "lifecycle" ? (
+                      <span className={`state-pill state-pill--${item.urgency}`}>{item.decision_state_label}</span>
+                    </td>
+                    <td>
+                      {item.kind === "lifecycle" && item.proposal_id ? (
                         <button
                           className="attention-action"
                           onClick={(event) => {
                             event.stopPropagation();
-                            onOpenLifecycle(item.current_status, "action");
+                            openAttention(item);
                           }}
                           type="button"
                         >
-                          Открыть: {item.recommendation}
+                          Проверить
                         </button>
-                      ) : item.recommendation}
+                      ) : <span>—</span>}
                     </td>
-                    <td><span className={`state-pill state-pill--${item.urgency}`}>{item.deadline_label}</span></td>
                   </tr>
                 ))}
               </tbody>
@@ -376,15 +437,19 @@ function Dashboard({
 function LifecycleQueue({
   status,
   scope,
+  initialReadiness,
+  proposalId,
   onClose,
 }: {
   status: string;
   scope: "action" | "all";
+  initialReadiness: LifecycleReadiness;
+  proposalId?: number;
   onClose: () => void;
 }) {
   const [data, setData] = useState<ProcurementLifecycleTransitionList | null>(null);
   const [search, setSearch] = useState("");
-  const [readiness, setReadiness] = useState<"all" | "ready" | "blocked" | "stale">("all");
+  const [readiness, setReadiness] = useState<LifecycleReadiness>(initialReadiness);
   const [page, setPage] = useState(1);
   const [selected, setSelected] = useState<Set<number>>(new Set());
   const [loading, setLoading] = useState(false);
@@ -400,6 +465,7 @@ function LifecycleQueue({
         scope,
         readiness,
         search,
+        proposal_id: proposalId,
         page,
         page_size: 50,
       });
@@ -410,11 +476,16 @@ function LifecycleQueue({
     } finally {
       setLoading(false);
     }
-  }, [page, readiness, scope, search, status]);
+  }, [page, proposalId, readiness, scope, search, status]);
 
   useEffect(() => {
     void load();
   }, [load]);
+
+  useEffect(() => {
+    setReadiness(initialReadiness);
+    setPage(1);
+  }, [initialReadiness, proposalId, scope, status]);
 
   const readyRows = useMemo(
     () => (data?.items || []).filter((item) => item.selectable && item.proposal_id),
@@ -428,9 +499,13 @@ function LifecycleQueue({
     [data, selected]
   );
   const first = data?.items[0];
-  const statusLabel = LIFECYCLE_STATUS_LABELS[status] || first?.current_status_label || status;
+  const statusLabel = status === "all"
+    ? "Все статусы"
+    : LIFECYCLE_STATUS_LABELS[status] || first?.current_status_label || status;
   const title = readiness === "stale"
     ? `${statusLabel}: архив прошлых расчётов`
+    : readiness === "review"
+      ? `${statusLabel}: ручной разбор`
     : scope === "all"
     ? `${statusLabel}: все товары`
     : status === "working"
@@ -440,7 +515,9 @@ function LifecycleQueue({
     ? "Старые предложения сохранены для истории и недоступны для утверждения"
     : scope === "all"
     ? "Полный список товаров выбранного жизненного статуса"
-    : "Только товары, где недостаточно автоматических фактов и нужен человек";
+    : proposalId
+      ? "Открыта точная строка для проверки перед решением"
+      : "Товары, требующие ручного решения. Перед подтверждением проверьте факты 1С.";
 
   const selectReady = () => {
     setSelected(new Set(readyRows.slice(0, 100).map((item) => item.proposal_id as number)));
@@ -484,9 +561,10 @@ function LifecycleQueue({
             </span>
           </section>
         ) : null}
-        <section className="queue-summary queue-summary--three">
+        <section className="queue-summary">
           <div><span>Можно подтвердить</span><strong>{data?.ready_count || 0}</strong></div>
-          <div><span>Нужна проверка</span><strong>{data?.blocked_count || 0}</strong></div>
+          <div><span>Нужен разбор</span><strong>{data?.review_count || 0}</strong></div>
+          <div><span>Есть блокеры</span><strong>{data?.blocked_count || 0}</strong></div>
           <div><span>Выбрано</span><strong>{selected.size}</strong></div>
         </section>
         <section className="queue-toolbar">
@@ -506,7 +584,8 @@ function LifecycleQueue({
           >
             <option value="all">Все требующие решения</option>
             <option value="ready">Можно подтвердить</option>
-            <option value="blocked">Нужна проверка</option>
+            <option value="review">Нужен разбор</option>
+            <option value="blocked">Есть блокеры</option>
             <option value="stale">Архив прошлых расчётов</option>
           </select>
           <button className="btn btn--ghost" disabled={readyRows.length === 0} onClick={selectReady} type="button">
@@ -521,6 +600,8 @@ function LifecycleQueue({
             {scope === "action"
               ? readiness === "stale"
                 ? "В архиве прошлых расчётов строк нет."
+                : proposalId
+                  ? "Это предложение больше не актуально. Вернитесь к витрине и выберите текущую строку."
                 : "Решений не требуется: переходы выполнены автоматически или подходящих товаров нет."
               : "В выбранном статусе товаров нет."}
           </div>
@@ -920,7 +1001,15 @@ export function ProcurementOrderFormationWorkspace({ bitrixUserName }: Props) {
   }, [route]);
 
   if (route.kind === "lifecycle") {
-    return <LifecycleQueue status={route.status} scope={route.scope} onClose={() => navigate({ kind: "tab", tab: "dashboard" })} />;
+    return (
+      <LifecycleQueue
+        initialReadiness={route.readiness}
+        proposalId={route.proposalId}
+        scope={route.scope}
+        status={route.status}
+        onClose={() => navigate({ kind: "tab", tab: "dashboard" })}
+      />
+    );
   }
   if (route.kind === "order") {
     if (orderError) return <ErrorState message={orderError} onRetry={() => navigate(route, true)} />;
@@ -932,7 +1021,13 @@ export function ProcurementOrderFormationWorkspace({ bitrixUserName }: Props) {
     <AppShell bitrixUserName={bitrixUserName} activeTab={route.tab} onNavigate={navigate}>
       {route.tab === "dashboard" && (
         dashboardError ? <ErrorState message={dashboardError} onRetry={() => void loadDashboard()} />
-          : dashboard ? <Dashboard data={dashboard} onOpenLifecycle={(status, scope) => navigate({ kind: "lifecycle", status, scope })} />
+          : dashboard ? <Dashboard data={dashboard} onOpenLifecycle={(status, scope, options) => navigate({
+              kind: "lifecycle",
+              status,
+              scope,
+              readiness: options?.readiness || "all",
+              proposalId: options?.proposalId,
+            })} />
             : <LoadingState message="Загрузка витрины..." />
       )}
       {route.tab === "orders" && <OrdersRegistry onOpenOrder={(orderId) => navigate({ kind: "order", orderId })} />}

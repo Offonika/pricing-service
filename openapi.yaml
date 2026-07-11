@@ -6811,6 +6811,14 @@ paths:
           type: string
           default: ''
           title: Search
+      - name: proposal_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Proposal Id
       - name: page
         in: query
         required: false
@@ -15258,6 +15266,11 @@ components:
       title: ProcurementClassificationQueueResponse
     ProcurementDashboardAttentionItem:
       properties:
+        proposal_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Proposal Id
         nomenclature_code:
           type: string
           title: Nomenclature Code
@@ -15277,6 +15290,18 @@ components:
         filter_status:
           type: string
           title: Filter Status
+        action_label:
+          type: string
+          title: Action Label
+        fact_summary:
+          type: string
+          title: Fact Summary
+        decision_state:
+          type: string
+          title: Decision State
+        decision_state_label:
+          type: string
+          title: Decision State Label
         reason:
           type: string
           title: Reason
@@ -15296,6 +15321,10 @@ components:
       - current_status
       - current_status_label
       - filter_status
+      - action_label
+      - fact_summary
+      - decision_state
+      - decision_state_label
       - reason
       - recommendation
       - deadline_label
@@ -15360,6 +15389,22 @@ components:
       - action_kind
       - action_label
       title: ProcurementDashboardCard
+    ProcurementDashboardDecisionSummary:
+      properties:
+        ready_count:
+          type: integer
+          title: Ready Count
+          default: 0
+        review_count:
+          type: integer
+          title: Review Count
+          default: 0
+        blocked_count:
+          type: integer
+          title: Blocked Count
+          default: 0
+      type: object
+      title: ProcurementDashboardDecisionSummary
     ProcurementDashboardResponse:
       properties:
         folder:
@@ -15392,6 +15437,8 @@ components:
             $ref: '#/components/schemas/ProcurementDashboardCard'
           type: array
           title: Cards
+        decision_summary:
+          $ref: '#/components/schemas/ProcurementDashboardDecisionSummary'
         manual_status_counts:
           additionalProperties:
             type: integer
@@ -15848,6 +15895,9 @@ components:
         ready_count:
           type: integer
           title: Ready Count
+        review_count:
+          type: integer
+          title: Review Count
         blocked_count:
           type: integer
           title: Blocked Count
@@ -15867,6 +15917,7 @@ components:
       - page
       - page_size
       - ready_count
+      - review_count
       - blocked_count
       - stale_count
       title: ProcurementLifecycleTransitionList
@@ -15954,6 +16005,10 @@ components:
           - type: string
           - type: 'null'
           title: Responsible Name
+        decision_state:
+          type: string
+          title: Decision State
+          default: view
         ready:
           type: boolean
           title: Ready

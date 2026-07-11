@@ -386,6 +386,8 @@ fallback-режимом: пользователь видит прежнюю ст
 
 - dashboard API — быстрый cached/read-only ответ;
 - finance snapshot — целевой лаг до 1 дня;
+- procurement snapshot — полный read-only список открытых `cargo + ved_import`,
+  обновление в 10:35; после 11:00 `stale/missing/source_error` считается ошибкой мониторинга;
 - receivables — целевой лаг до 1 дня;
 - actions — идемпотентные записи по `stable_key` и `dedupe_key`;
 - отсутствующий источник показывает `source_missing`, а не нулевой факт.

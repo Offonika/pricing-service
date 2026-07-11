@@ -55,6 +55,11 @@ CONTOUR_BY_ENUM_ORDER = {
     1: "Карго",
     2: "ВЭДИмпорт",
 }
+CONTOUR_ENUM_ORDER_BY_KEY = {
+    "ordinary": 0,
+    "cargo": 1,
+    "ved_import": 2,
+}
 CONTOUR_TITLE_PREFIX = {
     "ordinary": "Закупка",
     "cargo": "Карго",
@@ -248,6 +253,8 @@ def fetch_open_supplier_orders(
     date_to: str,
     contours: set[str],
     blank_contour_cargo_dropoff_only: bool = False,
+    filter_contours_in_sql: bool = False,
+    fail_on_query_limit: bool = False,
 ) -> list[dict[str, Any]]:
     limit = max(1, min(limit, 5000))
     filters = [
@@ -265,6 +272,24 @@ def fetch_open_supplier_orders(
         filters.append("contour._EnumOrder IS NULL")
         filters.append("doc._Fld8852 > :empty_onec_date")
         params["empty_onec_date"] = datetime.combine(ONEC_EMPTY_DATE, datetime.min.time())
+    elif filter_contours_in_sql:
+        enum_orders = sorted(
+            CONTOUR_ENUM_ORDER_BY_KEY[key] for key in contours if key in CONTOUR_ENUM_ORDER_BY_KEY
+        )
+        if not enum_orders:
+            raise ValueError("No supported procurement contours for SQL filter")
+        contour_params: list[str] = []
+        for index, enum_order in enumerate(enum_orders):
+            param_name = f"contour_enum_order_{index}"
+            params[param_name] = enum_order
+            contour_params.append(f":{param_name}")
+        # Unassigned 1C contours must stay in the candidate set because the
+        # established normalization classifies foreign-currency and cargo-date
+        # orders as logical `cargo`.
+        filters.append(
+            f"(contour._EnumOrder IN ({', '.join(contour_params)}) "
+            "OR contour._EnumOrder IS NULL)"
+        )
     where_sql = " AND ".join(f"({part})" for part in filters)
     sql = text(f"""
         WITH open_balance AS (
@@ -322,6 +347,10 @@ def fetch_open_supplier_orders(
     engine = create_engine(onec_database_url, pool_pre_ping=True)
     with engine.connect() as conn:
         rows = [dict(row) for row in conn.execute(sql, params).mappings()]
+    if fail_on_query_limit and len(rows) >= limit:
+        raise RuntimeError(
+            f"procurement source query may be truncated: fetched {len(rows)} rows at limit {limit}"
+        )
     orders: list[dict[str, Any]] = []
     for row in rows:
         order = order_from_open_supplier_order_row(row, allowed_contours=contours)

@@ -1,0 +1,4 @@
+# Ежедневный полный read-only snapshot открытых заказов cargo + ВЭД для управленческой витрины.
+# Должен завершиться до финансового snapshot в 10:45.
+CRON_TZ=Europe/Moscow
+35 10 * * * root /opt/MM/pricing-service-task43-current/infra/cron/executive_procurement_snapshot_daily.sh

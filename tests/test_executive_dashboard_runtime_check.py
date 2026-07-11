@@ -196,3 +196,30 @@ def test_monitor_reports_other_stale_dashboard_blocks_without_false_outage() -> 
     assert status == "degraded"
     assert not errors
     assert any(item["name"] == "dashboard.debtors" for item in degraded)
+
+
+def test_monitor_allows_procurement_grace_period_but_fails_after_1100() -> None:
+    payloads = _payloads()
+    payloads["dashboard"]["blocks"].append(
+        {
+            "key": "procurement_import",
+            "source_status": "stale",
+            "freshness_status": "stale",
+        }
+    )
+
+    early_status, early_degraded, early_errors = evaluate_data_health(
+        payloads,
+        now=datetime(2026, 7, 11, 10, 59, tzinfo=MOSCOW_TZ),
+    )
+    late_status, late_degraded, late_errors = evaluate_data_health(
+        payloads,
+        now=datetime(2026, 7, 11, 11, 0, tzinfo=MOSCOW_TZ),
+    )
+
+    assert early_status == "degraded"
+    assert not early_errors
+    assert any(item["name"] == "dashboard.procurement_import" for item in early_degraded)
+    assert late_status == "failed"
+    assert not any(item["name"] == "dashboard.procurement_import" for item in late_degraded)
+    assert any("procurement_import is unhealthy" in error for error in late_errors)

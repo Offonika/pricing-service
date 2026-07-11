@@ -143,6 +143,7 @@ def evaluate_data_health(
     *,
     now: datetime,
     profit_loss_ready_after: time = time(4, 0),
+    procurement_ready_after: time = time(11, 0),
 ) -> tuple[str, list[dict[str, Any]], list[str]]:
     degraded_checks: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -209,6 +210,15 @@ def evaluate_data_health(
         key = str(block.get("key") or "unknown")
         if _is_unhealthy(block):
             source_status, freshness_status = _status_pair(block)
+            if (
+                key == "procurement_import"
+                and now.astimezone(MOSCOW_TZ).time() >= procurement_ready_after
+            ):
+                errors.append(
+                    "dashboard procurement_import is unhealthy after the refresh grace period: "
+                    f"source_status={source_status}, freshness_status={freshness_status}"
+                )
+                continue
             degraded_checks.append(
                 {
                     "name": f"dashboard.{key}",
@@ -254,6 +264,7 @@ def main() -> None:
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--mode", choices=("release", "monitor"), default="release")
     parser.add_argument("--profit-loss-ready-after", type=_parse_clock, default=time(4, 0))
+    parser.add_argument("--procurement-ready-after", type=_parse_clock, default=time(11, 0))
     args = parser.parse_args()
 
     settings = get_settings()
@@ -298,6 +309,7 @@ def main() -> None:
             payloads,
             now=datetime.now(tz=MOSCOW_TZ),
             profit_loss_ready_after=args.profit_loss_ready_after,
+            procurement_ready_after=args.procurement_ready_after,
         )
 
     errors = availability_errors + data_errors

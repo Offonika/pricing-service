@@ -52,15 +52,7 @@ describe("executive procurement actions", () => {
 });
 
 describe("executive payables", () => {
-  it("separates counterparties and reveals the full read-only list", () => {
-    const counterparties = Array.from({ length: 6 }, (_, index) => ({
-      counterparty_ref: `0x${index + 1}`,
-      counterparty_code: `К${index + 1}`,
-      counterparty_name: `Контрагент ${index + 1}`,
-      payable_amount: `${(6 - index) * 100}.00`,
-      group_title: index === 5 ? "Взаиморасчеты с сотрудниками" : "Поставщики товаров",
-      source_report: "1C: тестовый отчет",
-    }));
+  it("shows only the negative net debt", () => {
     const block: ExecutiveDashboardBlock = {
       key: "creditors_payables",
       title: "Кредиторская задолженность",
@@ -69,24 +61,21 @@ describe("executive payables", () => {
       as_of: "2026-07-11",
       summary: {
         source_anchor: "1C: кредиторка",
-        counterparties,
       },
       metrics: [
-        { key: "total_payable", label: "Всего", value: "2100.00", unit: "RUB", tone: "warning", masked: false, source_status: "ready" },
-        { key: "supplier_payable", label: "Поставщики", value: "2000.00", unit: "RUB", tone: "warning", masked: false, source_status: "ready" },
-        { key: "employee_payable", label: "Сотрудники", value: "100.00", unit: "RUB", tone: "warning", masked: false, source_status: "ready" },
+        { key: "total_payable", label: "Чистый долг", value: "-1900.00", unit: "RUB", tone: "warning", masked: false, source_status: "ready" },
+        { key: "supplier_payable", label: "Поставщикам", value: "-1800.00", unit: "RUB", tone: "warning", masked: false, source_status: "ready" },
+        { key: "employee_payable", label: "Сотрудникам", value: "-100.00", unit: "RUB", tone: "warning", masked: false, source_status: "ready" },
       ],
     };
 
     render(<PayablesBlockCard block={block} />);
 
-    expect(screen.queryByText("Контрагент 6")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "Показать всех 6" }));
-    expect(screen.getByText("Контрагент 6")).toBeVisible();
-
-    fireEvent.click(screen.getByRole("button", { name: /Контрагент 1/ }));
-    const dialog = screen.getByRole("dialog", { name: "Контрагент 1" });
-    expect(dialog).toHaveTextContent("Поставщики товаров");
-    expect(dialog).toHaveTextContent("Режим просмотра");
+    expect(screen.getByText("Чистый долг").parentElement).toHaveTextContent(/-1\s*900 ₽/);
+    expect(screen.getByText("Поставщикам").parentElement).toHaveTextContent(/-1\s*800 ₽/);
+    expect(screen.getByText("Сотрудникам").parentElement).toHaveTextContent(/-100 ₽/);
+    expect(screen.queryByText("Долг до авансов")).not.toBeInTheDocument();
+    expect(screen.queryByText("Авансы / переплаты (−)")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Контрагенты с кредиторской задолженностью")).not.toBeInTheDocument();
   });
 });

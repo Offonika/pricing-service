@@ -631,7 +631,7 @@ def test_dashboard_marks_missing_finance_sources_without_zero_truth(
     assert blocks["receivables_control"].source_status == "partial"
 
 
-def test_payables_block_separates_suppliers_and_employees(
+def test_payables_block_exposes_only_negative_net_debt(
     db_session: Session,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -645,11 +645,13 @@ def test_payables_block_separates_suppliers_and_employees(
                     "source_status": "ready",
                     "freshness_status": "fresh",
                     "as_of": "2026-07-11",
-                    "total_payable": "150.00",
-                    "supplier_payable": "100.00",
+                    "total_payable": "130.00",
+                    "gross_payable": "150.00",
+                    "supplier_payable": "80.00",
                     "employee_payable": "50.00",
                     "counterparty_count": 2,
                     "reverse_balance": "20.00",
+                    "reverse_balance_label": "Авансы / переплаты (−)",
                     "counterparties": [
                         {"counterparty_name": "Поставщик", "payable_amount": "100.00"},
                         {"counterparty_name": "Сотрудник", "payable_amount": "50.00"},
@@ -672,10 +674,9 @@ def test_payables_block_separates_suppliers_and_employees(
     metrics = {metric.key: metric.value for metric in block.metrics}
     assert block.title == "Кредиторская задолженность"
     assert metrics == {
-        "total_payable": Decimal("150.00"),
-        "supplier_payable": Decimal("100.00"),
-        "employee_payable": Decimal("50.00"),
-        "counterparty_count": 2,
+        "total_payable": Decimal("-130.00"),
+        "supplier_payable": Decimal("-80.00"),
+        "employee_payable": Decimal("-50.00"),
     }
     assert block.summary["reverse_balance"] == "20.00"
 

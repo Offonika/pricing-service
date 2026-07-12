@@ -1,11 +1,24 @@
 import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ExecutiveDashboardAction, ExecutiveDashboardBlock } from "../api/executiveDashboard";
+import { fetchExecutiveSalesPeriod } from "../api/executiveDashboard";
+
+vi.mock("../api/executiveDashboard", () => ({
+  closeExecutiveManagementBalance: vi.fn(),
+  fetchExecutiveCashflowPeriod: vi.fn(),
+  fetchExecutiveDashboard: vi.fn(),
+  fetchExecutiveDashboardActions: vi.fn(),
+  fetchExecutiveManagementBalance: vi.fn(),
+  fetchExecutiveProfitLossPeriod: vi.fn(),
+  fetchExecutiveSalesPeriod: vi.fn(),
+}));
+
 import {
   ActionDetail,
   ActionTable,
   ManagementBalanceBlockCard,
+  SalesPeriodPanel,
 } from "./ExecutiveDashboard";
 import { splitManagementBalanceBlock } from "./executiveDashboardLayout";
 
@@ -100,5 +113,63 @@ describe("executive management balance", () => {
     expect(screen.getByText("Итого активы").parentElement).toHaveTextContent(/1\s*300 ₽/);
     expect(screen.getByText("Итого пассивы").parentElement).toHaveTextContent(/2\s*200 ₽/);
     expect(screen.queryByText("Чистый долг")).not.toBeInTheDocument();
+  });
+});
+
+describe("executive sales period", () => {
+  beforeEach(() => {
+    vi.mocked(fetchExecutiveSalesPeriod).mockReset();
+  });
+
+  it("loads the sales dashboard and applies a store from the breakdown", async () => {
+    vi.mocked(fetchExecutiveSalesPeriod).mockResolvedValue({
+      month: "2026-06",
+      date_from: "2026-06-01",
+      date_to: "2026-06-30",
+      as_of: "2026-06-05",
+      source_status: "ready",
+      freshness_status: "fresh",
+      forecast_status: "ready",
+      note: "Факт 1С",
+      forecast_note: "Прогноз по неделям",
+      totals: {
+        revenue_mtd: "1000.00",
+        forecast_revenue_month_end: "5000.00",
+        gross_profit_mtd: "400.00",
+        gross_margin_pct_mtd: "0.4",
+        sales_count_mtd: "5.000",
+      },
+      comparison: {
+        revenue: "800.00",
+        gross_profit: "300.00",
+        gross_margin_pct: "0.375",
+        sales_count: "4.000",
+      },
+      daily: [
+        { business_date: "2026-06-05", actual_revenue: "1000.00", forecast_revenue: null },
+        { business_date: "2026-06-06", actual_revenue: null, forecast_revenue: "200.00" },
+      ],
+      monthly: [
+        { month: "2026-05", revenue: "800.00", gross_profit: "300.00", sales_count: "4.000", forecast_revenue: null },
+        { month: "2026-06", revenue: "1000.00", gross_profit: "400.00", sales_count: "5.000", forecast_revenue: "5000.00" },
+      ],
+      by_store: [{ key: "store-2", label: "Склад Сайт", revenue: "1000.00", gross_profit: "400.00", sales_count: "5.000", gross_margin_pct: "0.4", meta: {} }],
+      by_manager: [],
+      stores: [{ key: "store-2", label: "Склад Сайт" }],
+      managers: [],
+      filters: {},
+    });
+
+    render(<SalesPeriodPanel asOf="2026-06-05" />);
+
+    expect(await screen.findByText("Прогноз выручки")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "Объём продаж" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: /Склад Сайт/ }));
+    expect(await screen.findByDisplayValue("Склад Сайт")).toBeVisible();
+    expect(fetchExecutiveSalesPeriod).toHaveBeenLastCalledWith({
+      month: "2026-06",
+      store_ref: "store-2",
+      manager_ref: undefined,
+    });
   });
 });

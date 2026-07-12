@@ -188,8 +188,8 @@ run_step() {
 }
 
 product_refresh_ok=1
-if run_step "import_topcontrol_products_db" \
-  "${PYTHON_BIN}" -m tasks.import_topcontrol_products_db; then
+if run_step "sync_onec_product_catalog" \
+  "${PYTHON_BIN}" -m tasks.sync_onec_product_catalog; then
   if [[ "${PRODUCT_BACKFILL_ENABLED}" == "1" ]]; then
     run_step "product_phone_model_backfill" \
       "${PYTHON_BIN}" -m tasks.backfill_phone_model_links \

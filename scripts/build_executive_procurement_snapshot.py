@@ -24,7 +24,9 @@ from scripts.sync_open_cargo_supplier_orders_to_bitrix import (  # noqa: E402
     json_default,
 )
 
-DEFAULT_OUTPUT = REPO_ROOT / "build/executive_dashboard/procurement_open_orders_snapshot.json"
+DEFAULT_OUTPUT = Path(
+    "/var/lib/mm-data-contracts/procurement/procurement_open_orders_snapshot.json"
+)
 ALLOWED_CONTOURS = frozenset({"cargo", "ved_import"})
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 MAX_LIMIT = 5000

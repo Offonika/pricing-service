@@ -12,7 +12,7 @@
 Связанные документы:
 
 - [architecture.md](/opt/pricing-service/docs/architecture.md)
-- [topcontrol_schema.md](/opt/pricing-service/docs/topcontrol_schema.md)
+- историческая схема каталога: `docs/legacy/onec-catalog-schema-2025.md`
 - [PRD.md](/opt/pricing-service/docs/PRD.md)
 
 ## 1. Как использовать документ
@@ -49,10 +49,10 @@
 
 | Что ищем | Где найдено | Как подтверждено | Комментарий |
 | --- | --- | --- | --- |
-| Карточка товара | `_Reference62` | `docs/topcontrol_schema.md` | |
-| Артикул | `_Reference62._Fld836` | `docs/topcontrol_schema.md` | |
-| Код 1С | `_Reference62._Code` | `docs/topcontrol_schema.md` | |
-| Код инфосистемы | `_Reference62._Fld9175` | `docs/topcontrol_schema.md` | |
+| Карточка товара | `_Reference62` | `docs/legacy/onec-catalog-schema-2025.md` | |
+| Артикул | `_Reference62._Fld836` | `docs/legacy/onec-catalog-schema-2025.md` | |
+| Код 1С | `_Reference62._Code` | `docs/legacy/onec-catalog-schema-2025.md` | |
+| Код инфосистемы | `_Reference62._Fld9175` | `docs/legacy/onec-catalog-schema-2025.md` | |
 
 Пример SQL:
 
@@ -354,7 +354,7 @@ WHERE tree._Folder = 0x01
 | Назначение | Файл | Что использует |
 | --- | --- | --- |
 | Архитектурная карта | [architecture.md](/opt/pricing-service/docs/architecture.md) | Зафиксированные таблицы и связи |
-| Практическая схема TopControl | [topcontrol_schema.md](/opt/pricing-service/docs/topcontrol_schema.md) | Подтверждённые поля для импорта |
+| Историческая схема каталога 1С | `docs/legacy/onec-catalog-schema-2025.md` | Подтверждённые поля для импорта |
 | Мониторинг возвратной схемы | [return_scheme.py](/opt/pricing-service/app/services/return_scheme.py) | `_Document203/_Document109`, строки документов, `_Reference54`, `_Reference62`, `_Reference80`, `_Reference87` |
 | Foundation дебиторки | [receivables.py](/opt/pricing-service/app/services/receivables.py) | Нормализованный SQL contract для ledger-событий взаиморасчётов |
 
@@ -627,4 +627,4 @@ SQL-файл для гибридного режима:
 - Где именно лежат опорные типы цен для расчёта рекомендованной цены вне документов продажи.
 - Какие регистры в этой конфигурации являются надёжным источником остатков.
 - Какие таблицы используются для выгрузки и последующего чтения документа установки цен.
-- Нужен ли отдельный маппинг для разных версий конфигурации 1С/TopControl.
+- Нужен ли отдельный маппинг для разных версий конфигурации 1С.

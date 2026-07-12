@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from app.core.config import get_settings
+from app.infrastructure.db import build_onec_engine_from_settings, get_application_engine
 from app.models import ExpertiseCase
 from app.services import expertise as expertise_service
 from app.services import expertise_bitrix
@@ -12,21 +13,14 @@ from app.services.expertise_onec import OneCExpertiseExtractor, load_expertise_o
 
 
 def _get_app_engine():
-    return create_engine(get_settings().database_url)
+    return get_application_engine()
 
 
 def _get_onec_engine():
     settings = get_settings()
     if not settings.onec_database_url:
         raise RuntimeError("ONEC_DATABASE_URL is not configured")
-    return create_engine(
-        settings.onec_database_url,
-        connect_args={
-            "timeout": settings.onec_query_timeout_seconds,
-            "login_timeout": settings.onec_login_timeout_seconds,
-        },
-        poolclass=NullPool,
-    )
+    return build_onec_engine_from_settings(poolclass=NullPool)
 
 
 def run_expertise_onec_sync(

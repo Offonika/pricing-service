@@ -67,6 +67,7 @@ class WeeklyKpiReportSnapshot(Base):
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     artifact_path: Mapped[str | None] = mapped_column(String(512), nullable=True)
     artifact_sha256: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    source_content_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         nullable=False,
@@ -132,3 +133,16 @@ class WeeklyKpiReportMetricSnapshot(Base):
     )
 
     report: Mapped[WeeklyKpiReportSnapshot] = relationship(back_populates="metrics")
+
+
+class WeeklyKpiIngestRequest(Base):
+    __tablename__ = "weekly_kpi_ingest_request"
+
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False, unique=True)
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    result_payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        server_default=func.now(),
+    )

@@ -6,8 +6,10 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.exc import SQLAlchemyError
+
+from app.infrastructure.db import build_application_engine
 
 TASK_EFFICIENCY_METRIC_CODE = "personal_tasks_on_time_share"
 TASK_EFFICIENCY_TABLE = "bitrix_fact_employee_task_kpi_monthly"
@@ -399,7 +401,7 @@ def load_task_efficiency_report(
             employee_name ASC
         """)
 
-    engine = create_engine(database_url)
+    engine = build_application_engine(database_url)
     raw_rows: list[dict[str, Any]] = []
     try:
         with engine.connect() as connection:

@@ -4,10 +4,11 @@ from collections.abc import Iterable
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 
-from sqlalchemy import and_, create_engine, exists, func
+from sqlalchemy import and_, exists, func
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db import build_onec_engine_from_settings
 from app.models import (
     CompatibilityMappingDecision,
     Competitor,
@@ -110,10 +111,7 @@ def _buyers_counterparty_refs_from_onec() -> tuple[str, ...] | None:
     if not settings.onec_database_url:
         return None
 
-    engine = create_engine(
-        settings.onec_database_url,
-        pool_pre_ping=True,
-    )
+    engine = build_onec_engine_from_settings()
     try:
         refs = fetch_counterparty_refs_from_onec_group(
             engine,

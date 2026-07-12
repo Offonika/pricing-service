@@ -4,10 +4,10 @@ import logging
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db import build_onec_engine_from_settings, get_application_engine
 from app.services.return_scheme import (
     OneCReturnSchemeExtractor,
     build_return_scheme_output_path,
@@ -22,15 +22,14 @@ logger = logging.getLogger("app.workers.return_scheme")
 
 
 def _get_app_engine():
-    settings = get_settings()
-    return create_engine(settings.database_url)
+    return get_application_engine()
 
 
 def _get_onec_engine():
     settings = get_settings()
     if not settings.onec_database_url:
         raise RuntimeError("ONEC_DATABASE_URL is not configured")
-    return create_engine(settings.onec_database_url)
+    return build_onec_engine_from_settings()
 
 
 def run_return_scheme_job(

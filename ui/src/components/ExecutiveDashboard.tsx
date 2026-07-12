@@ -6,6 +6,7 @@ import {
   fetchExecutiveDashboardActions,
   fetchExecutiveManagementBalance,
   fetchExecutiveProfitLossPeriod,
+  fetchExecutiveSalesPeriod,
   type ExecutiveAccessLevel,
   type ExecutiveCashflowPeriodResponse,
   type ExecutiveCashflowRatio,
@@ -21,6 +22,10 @@ import {
   type ExecutiveProfitLossOpenQuestion,
   type ExecutiveProfitLossPeriodResponse,
   type ExecutiveProfitLossRatio,
+  type ExecutiveSalesBreakdownRow,
+  type ExecutiveSalesFilterOption,
+  type ExecutiveSalesMonthlyRow,
+  type ExecutiveSalesPeriodResponse,
   type ExecutiveSourceStatus,
 } from "../api/executiveDashboard";
 import { splitManagementBalanceBlock } from "./executiveDashboardLayout";
@@ -77,16 +82,20 @@ type ManagementBalanceLine = {
   source_status?: string;
   as_of?: string | null;
   masked?: boolean;
+  recognition_method?: string;
+  estimated_count?: number;
 };
 
 const MONEY_TAB_KEY = "money_today";
 const PROFIT_LOSS_TAB_KEY = "profit_loss";
+const SALES_TAB_KEY = "sales";
 const ODDS_CASHFLOW_TAB_KEY = "odds_cashflow";
 
 const TAB_DEFINITIONS = [
   { key: "today", label: "Сегодня" },
   { key: MONEY_TAB_KEY, label: "Деньги / ДДС" },
   { key: PROFIT_LOSS_TAB_KEY, label: "Прибыли / убытки" },
+  { key: SALES_TAB_KEY, label: "Продажи" },
   { key: ODDS_CASHFLOW_TAB_KEY, label: "ОДДС CashFlow" },
   { key: "debtors", label: "Дебиторка покупателей" },
   { key: "receivables_control", label: "Контроль" },
@@ -102,6 +111,7 @@ const TAB_KEYS = new Set(TAB_DEFINITIONS.map((item) => item.key));
 const DOMAIN_LABELS: Record<string, string> = {
   money_today: "Деньги / ДДС",
   profit_loss: "Прибыли / убытки",
+  sales: "Продажи",
   odds_cashflow: "ОДДС CashFlow",
   debtors: "Дебиторка покупателей",
   receivables_control: "Контроль дебиторки",
@@ -116,6 +126,7 @@ const DOMAIN_LABELS: Record<string, string> = {
 const FLOW_STEPS = [
   { key: "money_today", label: "Деньги / ДДС", metricKeys: ["cash_position_total_balance", "cashflow_inflow_amount"] },
   { key: "profit_loss", label: "Прибыли / убытки", metricKeys: ["gross_profit", "gross_margin_pct"] },
+  { key: "sales", label: "Продажи", metricKeys: ["revenue_mtd", "forecast_revenue_month_end"] },
   { key: "debtors", label: "Покупатели", metricKeys: ["total_receivable"] },
   { key: "receivables_control", label: "Контроль", metricKeys: ["folder_needs_review_count", "need_call_today_count"] },
   { key: "creditors_payables", label: "Баланс", metricKeys: ["balance_liabilities_total"] },
@@ -213,6 +224,9 @@ function statusLabel(status: string) {
     source_missing: "нет источника",
     source_unverified: "источник не подтверждён",
     source_error: "ошибка",
+    insufficient_history: "недостаточно истории",
+    not_applicable: "не рассчитывается",
+    complete: "месяц закрыт",
   };
   return labels[status] || status;
 }
@@ -983,7 +997,10 @@ export function ManagementBalanceBlockCard({
             <div className="executive-management-balance__rows">
               {assets.map((line) => (
                 <div className="executive-management-balance__row" key={line.key || line.label}>
-                  <span>{line.label || "Статья"}</span>
+                  <span>
+                    {line.label || "Статья"}
+                    {!!line.estimated_count && <small>Оценочно, без закрывающих документов</small>}
+                  </span>
                   <strong>{managementBalanceAmount(line)}</strong>
                 </div>
               ))}
@@ -998,7 +1015,10 @@ export function ManagementBalanceBlockCard({
             <div className="executive-management-balance__rows">
               {liabilities.map((line) => (
                 <div className="executive-management-balance__row" key={line.key || line.label}>
-                  <span>{line.label || "Статья"}</span>
+                  <span>
+                    {line.label || "Статья"}
+                    {!!line.estimated_count && <small>Оценочно, без закрывающих документов</small>}
+                  </span>
                   <strong>{managementBalanceAmount(line)}</strong>
                 </div>
               ))}
@@ -1048,6 +1068,9 @@ function MonthlyBalanceRows({
               {line.source_as_of ? `на ${formatDate(line.source_as_of)}` : statusLabel(line.source_status)}
               {line.delta_previous !== null && line.delta_previous !== undefined
                 ? ` · к прошлому месяцу ${formatSignedMoney(line.delta_previous)}`
+                : ""}
+              {line.estimated_count > 0
+                ? ` · оценочно без документов: ${formatPlainNumber(line.estimated_count)}`
                 : ""}
             </small>
           </span>
@@ -1471,7 +1494,11 @@ function profitLossRowDetail(row: ExecutiveProfitLossBreakdownRow) {
 
 function profitLossExpenseDetail(row: ExecutiveProfitLossExpenseBreakdownRow) {
   const review = row.review_count > 0 ? `, на проверку: ${formatPlainNumber(row.review_count)}` : "";
-  return `${formatPlainNumber(row.movement_count)} оплат${review}`;
+  const method = row.recognition_method === "accrual" ? "по начислению" : "по оплате";
+  const estimated = row.estimated_count > 0
+    ? `, оценочно без документов: ${formatPlainNumber(row.estimated_count)}`
+    : "";
+  return `${method}, ${formatPlainNumber(row.movement_count)} оплат${review}${estimated}`;
 }
 
 function profitLossQuestionDetail(row: ExecutiveProfitLossOpenQuestion) {
@@ -2042,6 +2069,317 @@ function ProfitLossPeriodPanel({ asOf }: { asOf: string }) {
   );
 }
 
+function salesValue(
+  data: ExecutiveSalesPeriodResponse | null,
+  key: string,
+  scope: "totals" | "comparison" = "totals"
+) {
+  const value = data?.[scope]?.[key];
+  return value === null || value === undefined ? null : value;
+}
+
+function salesChangeLabel(
+  current: string | number | null,
+  previous: string | number | null,
+  options?: { percentagePoints?: boolean }
+) {
+  const currentValue = numericValue(current);
+  const previousValue = numericValue(previous);
+  if (currentValue === null || previousValue === null || previousValue === 0) {
+    return "нет сопоставимой базы";
+  }
+  if (options?.percentagePoints) {
+    const points = (currentValue - previousValue) * 100;
+    const sign = points > 0 ? "+" : "";
+    return `${sign}${points.toFixed(1)} п.п. к прошлому месяцу`;
+  }
+  const delta = ((currentValue - previousValue) / Math.abs(previousValue)) * 100;
+  const sign = delta > 0 ? "+" : "";
+  return `${sign}${delta.toFixed(1)}% к прошлому месяцу`;
+}
+
+export function SalesBreakdown({
+  title,
+  rows,
+  onSelect,
+}: {
+  title: string;
+  rows: ExecutiveSalesBreakdownRow[];
+  onSelect: (key: string) => void;
+}) {
+  return (
+    <div>
+      <h3>{title}</h3>
+      {rows.length === 0 ? (
+        <div className="executive-cashflow-period__empty">Нет продаж в выбранном периоде.</div>
+      ) : (
+        rows.slice(0, 8).map((row) => (
+          <button className="executive-sales-breakdown" key={row.key} onClick={() => onSelect(row.key)} type="button">
+            <span>{row.label}</span>
+            <strong>{formatMoney(row.revenue)}</strong>
+            <small>
+              {formatPlainNumber(row.sales_count)} ед. · {formatPercent(row.gross_margin_pct)}
+            </small>
+          </button>
+        ))
+      )}
+    </div>
+  );
+}
+
+function formatMonth(value: string) {
+  const parsed = new Date(`${value}-01T00:00:00`);
+  return Number.isNaN(parsed.getTime())
+    ? value
+    : new Intl.DateTimeFormat("ru-RU", { month: "short", year: "2-digit" }).format(parsed);
+}
+
+function SalesLineChart({ monthly }: { monthly: ExecutiveSalesMonthlyRow[] }) {
+  const width = 1000;
+  const height = 260;
+  const padding = { top: 18, right: 22, bottom: 38, left: 72 };
+  const values = monthly.flatMap((row) => [row.revenue, row.gross_profit, row.forecast_revenue])
+    .map((value) => numericValue(value))
+    .filter((value): value is number => value !== null);
+  const minValue = Math.min(0, ...values);
+  const maxValue = Math.max(1, ...values);
+  const chartWidth = width - padding.left - padding.right;
+  const chartHeight = height - padding.top - padding.bottom;
+  const valueRange = Math.max(maxValue - minValue, 1);
+  const pointFor = (index: number, value: number) => ({
+    x: padding.left + (monthly.length <= 1 ? 0 : (index / (monthly.length - 1)) * chartWidth),
+    y: padding.top + ((maxValue - value) / valueRange) * chartHeight,
+  });
+  const pathFor = (points: Array<{ x: number; y: number }>) =>
+    points.map((point, index) => `${index === 0 ? "M" : "L"}${point.x} ${point.y}`).join(" ");
+  const revenuePoints = monthly.map((row, index) => ({
+    ...pointFor(index, numericValue(row.revenue) || 0),
+    value: numericValue(row.revenue) || 0,
+    row,
+  }));
+  const grossProfitPoints = monthly.map((row, index) => ({
+    ...pointFor(index, numericValue(row.gross_profit) || 0),
+    value: numericValue(row.gross_profit) || 0,
+    row,
+  }));
+  const forecastPoints = monthly.flatMap((row, index) => {
+    const value = numericValue(row.forecast_revenue);
+    return value === null ? [] : [{ ...pointFor(index, value), value, row }];
+  });
+  const yTicks = [maxValue, (maxValue + minValue) / 2, minValue];
+  const xTickIndexes = monthly.map((_, index) => index);
+
+  return (
+    <div className="executive-sales-line-chart" aria-label="Помесячная динамика продаж за год">
+      <div className="executive-sales-period__legend">
+        <span><i />Выручка</span>
+        <span><em />Валовая прибыль</span>
+        <span><b />Прогноз текущего месяца</span>
+      </div>
+      <svg role="img" viewBox={`0 0 ${width} ${height}`}>
+        {yTicks.map((value) => {
+          const point = pointFor(0, value);
+          return (
+            <g key={value}>
+              <line className="executive-sales-line-chart__grid" x1={padding.left} x2={width - padding.right} y1={point.y} y2={point.y} />
+              <text className="executive-sales-line-chart__axis" x={padding.left - 10} y={point.y + 4} textAnchor="end">
+                {formatMoney(value)}
+              </text>
+            </g>
+          );
+        })}
+        {xTickIndexes.map((index) => {
+          const point = pointFor(index, minValue);
+          return (
+            <text className="executive-sales-line-chart__axis" key={index} x={point.x} y={height - 12} textAnchor="middle">
+              {formatMonth(monthly[index]?.month || "")}
+            </text>
+          );
+        })}
+        {revenuePoints.length > 1 && <path className="executive-sales-line-chart__fact" d={pathFor(revenuePoints)} />}
+        {grossProfitPoints.length > 1 && <path className="executive-sales-line-chart__profit" d={pathFor(grossProfitPoints)} />}
+        {revenuePoints.map((point) => (
+          <circle className="executive-sales-line-chart__fact-point" cx={point.x} cy={point.y} key={`revenue-${point.row.month}`} r="3.5">
+            <title>{`${formatMonth(point.row.month)}: выручка ${formatMoney(point.value)}`}</title>
+          </circle>
+        ))}
+        {grossProfitPoints.map((point) => (
+          <circle className="executive-sales-line-chart__profit-point" cx={point.x} cy={point.y} key={`profit-${point.row.month}`} r="3.5">
+            <title>{`${formatMonth(point.row.month)}: валовая прибыль ${formatMoney(point.value)}`}</title>
+          </circle>
+        ))}
+        {forecastPoints.map((point) => (
+          <circle className="executive-sales-line-chart__forecast-point" cx={point.x} cy={point.y} key={`forecast-${point.row.month}`} r="5">
+            <title>{`${formatMonth(point.row.month)}: прогноз ${formatMoney(point.value)}`}</title>
+          </circle>
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+function SalesVolumeBars({ monthly }: { monthly: ExecutiveSalesMonthlyRow[] }) {
+  const volumes = monthly.map((row) => numericValue(row.sales_count) || 0);
+  const maxVolume = Math.max(1, ...volumes);
+
+  return (
+    <section className="executive-sales-volume-chart" aria-label="Помесячный объём продаж">
+      <header>
+        <div>
+          <h3>Объём продаж</h3>
+          <span>единиц товаров и услуг</span>
+        </div>
+        <strong>{formatPlainNumber(maxVolume)} ед. максимум</strong>
+      </header>
+      <div className="executive-sales-volume-chart__scroll">
+        <div className="executive-sales-volume-chart__bars">
+          {monthly.map((row, index) => {
+            const volume = volumes[index] || 0;
+            const height = volume === 0 ? 0 : Math.max(5, Math.round((volume / maxVolume) * 100));
+            const label = `${formatMonth(row.month)}: объём продаж ${formatPlainNumber(volume)} ед.`;
+            return (
+              <div className="executive-sales-volume-chart__bar" key={row.month} title={label}>
+                <div className="executive-sales-volume-chart__track">
+                  <i aria-hidden="true" style={{ height: `${height}%` }} />
+                </div>
+                <strong>{formatPlainNumber(volume)}</strong>
+                <span>{formatMonth(row.month)}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+export function SalesPeriodPanel({ asOf }: { asOf: string }) {
+  const [month, setMonth] = useState(monthStartIso(asOf).slice(0, 7));
+  const [storeRef, setStoreRef] = useState("");
+  const [managerRef, setManagerRef] = useState("");
+  const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [message, setMessage] = useState("");
+  const [data, setData] = useState<ExecutiveSalesPeriodResponse | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (!cancelled) setStatus("loading");
+    });
+    fetchExecutiveSalesPeriod({
+      month,
+      store_ref: storeRef || undefined,
+      manager_ref: managerRef || undefined,
+    })
+      .then((payload) => {
+        if (cancelled) return;
+        setData(payload);
+        setStatus("ready");
+        setMessage("");
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setStatus("error");
+        setMessage(errorMessage(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [managerRef, month, storeRef]);
+
+  const stores: ExecutiveSalesFilterOption[] = data?.stores || [];
+  const managers: ExecutiveSalesFilterOption[] = data?.managers || [];
+  const actualRevenue = salesValue(data, "revenue_mtd");
+  const grossProfit = salesValue(data, "gross_profit_mtd");
+  const grossMargin = salesValue(data, "gross_margin_pct_mtd");
+  const salesCount = salesValue(data, "sales_count_mtd");
+  const forecastRevenue = salesValue(data, "forecast_revenue_month_end");
+
+  return (
+    <section className="executive-cashflow-period executive-sales-period" aria-label="Продажи">
+      <header className="executive-cashflow-period__header">
+        <div>
+          <h2>Продажи</h2>
+          <span>Факт 1С и прогноз выручки до конца месяца</span>
+        </div>
+        <div className="executive-cashflow-period__filters">
+          <label>
+            <span>Месяц</span>
+            <input
+              aria-label="Месяц продаж"
+              onChange={(event) => {
+                setMonth(event.target.value);
+                setStoreRef("");
+                setManagerRef("");
+              }}
+              type="month"
+              value={month}
+            />
+          </label>
+          <label>
+            <span>Магазин</span>
+            <select aria-label="Магазин" onChange={(event) => setStoreRef(event.target.value)} value={storeRef}>
+              <option value="">Все магазины</option>
+              {stores.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Менеджер</span>
+            <select aria-label="Менеджер" onChange={(event) => setManagerRef(event.target.value)} value={managerRef}>
+              <option value="">Все менеджеры</option>
+              {managers.map((item) => <option key={item.key} value={item.key}>{item.label}</option>)}
+            </select>
+          </label>
+        </div>
+      </header>
+
+      {status === "error" && <div className="executive-cashflow-period__empty">{message}</div>}
+      {status === "loading" && !data && <div className="executive-cashflow-period__empty">Загрузка продаж...</div>}
+      {data && (
+        <>
+          {data.note && <div className="executive-cashflow-period__note">{data.note}</div>}
+          {data.forecast_note && <div className="executive-sales-period__forecast-note">{data.forecast_note}</div>}
+          <div className="executive-cashflow-period__kpis executive-sales-period__kpis">
+            <div>
+              <span>Выручка факт</span>
+              <strong>{formatNullableMoney(numericValue(actualRevenue))}</strong>
+              <small>{salesChangeLabel(actualRevenue, salesValue(data, "revenue"))}</small>
+            </div>
+            <div>
+              <span>Прогноз выручки</span>
+              <strong>{forecastRevenue === null ? "нет данных" : formatMoney(forecastRevenue)}</strong>
+              <small>{data.forecast_status === "ready" ? "на конец месяца" : statusLabel(data.forecast_status)}</small>
+            </div>
+            <div>
+              <span>Валовая прибыль</span>
+              <strong>{formatNullableMoney(numericValue(grossProfit))}</strong>
+              <small>{salesChangeLabel(grossProfit, salesValue(data, "gross_profit"))}</small>
+            </div>
+            <div>
+              <span>Валовая маржа</span>
+              <strong>{formatPercent(grossMargin)}</strong>
+              <small>{salesChangeLabel(grossMargin, salesValue(data, "gross_margin_pct"), { percentagePoints: true })}</small>
+            </div>
+            <div>
+              <span>Объём продаж</span>
+              <strong>{formatPlainNumber(salesCount)} ед.</strong>
+              <small>{salesChangeLabel(salesCount, salesValue(data, "sales_count"))}</small>
+            </div>
+          </div>
+
+          {data.monthly.length > 0 && <SalesLineChart monthly={data.monthly} />}
+          {data.monthly.length > 0 && <SalesVolumeBars monthly={data.monthly} />}
+
+          <div className="executive-cashflow-period__tables executive-sales-period__tables">
+            <SalesBreakdown title="По магазинам" rows={data.by_store} onSelect={setStoreRef} />
+            <SalesBreakdown title="По менеджерам" rows={data.by_manager} onSelect={setManagerRef} />
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 const ACTION_PREVIEW_LIMIT = 10;
 
 function actionPayloadText(action: ExecutiveDashboardAction, key: string) {
@@ -2403,6 +2741,8 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
           )}
 
           {tab === PROFIT_LOSS_TAB_KEY && <ProfitLossPeriodPanel asOf={date} />}
+
+          {tab === SALES_TAB_KEY && <SalesPeriodPanel asOf={date} key={date} />}
 
           {tab === ODDS_CASHFLOW_TAB_KEY && <CashflowPeriodPanel asOf={date} />}
 

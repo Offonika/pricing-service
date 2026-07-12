@@ -3,11 +3,11 @@ from __future__ import annotations
 from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, require_order_fulfillment_internal_token
 from app.core.config import get_settings
+from app.infrastructure.db.engines import DatabaseNotConfiguredError, get_onec_engine
 from app.schemas.order_fulfillment import (
     BitrixChatIngestResponse,
     BitrixChatMessageIngestRequest,
@@ -131,11 +131,10 @@ def list_review_rows(
         if settings.order_fulfillment_bitrix_webhook_url
         else None
     )
-    onec_engine = (
-        create_engine(settings.onec_database_url, pool_pre_ping=True)
-        if settings.onec_database_url
-        else None
-    )
+    try:
+        onec_engine = get_onec_engine()
+    except DatabaseNotConfiguredError:
+        onec_engine = None
     rows = fulfillment.build_review_rows(
         db,
         limit=limit,

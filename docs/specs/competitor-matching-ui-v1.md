@@ -39,7 +39,7 @@ updated_at: "2026-05-01"
 
 # Source of Truth
 
-- `Product` — наш каталог из 1С/TopControl.
+- `Product` — наш каталог из 1С.
 - `CompetitorItem` — каноничный каталог позиций конкурентов для ручного UI.
 - `CompetitorItemMatch` — текущее item-level сопоставление одного товара конкурента с одним
   нашим товаром.

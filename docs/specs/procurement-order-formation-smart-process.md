@@ -1,3 +1,36 @@
+---
+spec_id: "procurement-order-formation-smart-process"
+title: "Procurement Order Formation Bitrix App"
+doc_type: spec
+domain: "procurement"
+status: "implemented"
+owner: "operations"
+source_of_truth: true
+related_code:
+  - app/models/procurement_order_formation.py
+  - app/api/procurement_order_formation.py
+  - app/services/procurement_order_formation.py
+  - app/services/procurement_order_formation_workspace.py
+  - app/services/bitrix_procurement_order_formation_auth.py
+  - app/services/bitrix_order_formation.py
+  - tasks/build_procurement_order_formation_dry_run.py
+  - tasks/sync_procurement_order_formation_results.py
+  - ui/src/components/ProcurementOrderFormationApp.tsx
+  - ui/src/components/ProcurementOrderFormationWorkspace.tsx
+related_tests:
+  - tests/test_procurement_order_formation.py
+  - tests/test_procurement_order_formation_workspace.py
+  - tests/test_procurement_order_formation_api.py
+  - tests/test_procurement_order_formation_dry_run.py
+contracts:
+  - openapi.yaml
+depends_on:
+  - docs/specs/procurement-order-auto-order-unified-contour.md
+supersedes: []
+rollout_required: true
+updated_at: "2026-07-12"
+---
+
 # Приложение Bitrix24 «Формирование заказа»
 
 Статус: implemented locally, pilot disabled.
@@ -121,3 +154,58 @@ cd ui && npm run lint && npm run build
 ```
 
 Визуальная спецификация и утверждённые макеты: `reports/assortment_lifecycle/2026-07-10/order-formation-app-final-design-2026-07-10.md`.
+
+# Change Summary / Spec Delta
+
+- Было: рабочая поверхность предполагалась в Bitrix smart-process.
+- Стало: единственная рабочая поверхность — OAuth-приложение
+  `/bitrix/procurement-order-formation`; старый smart-process сохранён только для
+  rollback и не участвует в операционном потоке.
+- Не меняется: 1С остаётся источником товарного факта, а создаваемые документы
+  остаются непроведёнными черновиками.
+
+# Acceptance Criteria
+
+- [x] Приложение использует отдельную подписанную сессию и серверные права.
+- [x] Повторная отправка одной версии не создаёт второй XML/message id.
+- [x] Устаревшие версии и изменённые строки блокируются до повторного подтверждения.
+- [x] 1С получает только `draft_only` payload; браузер не может включить apply.
+- [x] Действующие API, workspace и dry-run сценарии покрыты тестами.
+
+# Source of Truth
+
+- `pricing-service` хранит заказы, строки, версии, переходы и журнал событий.
+- `1С УТ 10.3` хранит товарный факт и создаёт только непроведённые черновики
+  `ЗаказПоставщику` после серверной проверки.
+- Bitrix24 OAuth-приложение является рабочей поверхностью, но не аналитической БД.
+
+# API / Data Contracts
+
+- Каноничный HTTP-контракт экспортируется в `openapi.yaml`.
+- Публичные маршруты находятся под `/api/procurement-order-formation`.
+- Запись использует optimistic versions; stale update возвращает `409`.
+- Файловый обмен с 1С использует версионированные XML payload/result и
+  `draft_only=true`.
+
+# Implementation Checklist
+
+- [x] Модели заказов, строк, событий и lifecycle transitions.
+- [x] API, backend auth и Bitrix OAuth application surface.
+- [x] Dry-run builder, result sync и idempotent send-to-1C.
+- [x] Workspace UI и серверная проверка прав.
+- [x] Unit/integration tests и OpenAPI export.
+- [ ] Production pilot включается отдельным rollout-решением после live dry-run.
+
+# Tests
+
+- `tests/test_procurement_order_formation.py` — модели и бизнес-правила.
+- `tests/test_procurement_order_formation_workspace.py` — workspace read model.
+- `tests/test_procurement_order_formation_api.py` — HTTP и права.
+- `tests/test_procurement_order_formation_dry_run.py` — dry-run и payload.
+
+# Rollout
+
+Пилот остаётся выключенным. Перед включением требуется свежий dry-run, проверка
+server flags, тестовый XML round-trip с 1С, smoke OAuth-сессии и подтверждённый
+rollback на скрытый старый контур. Production side effects не включаются только
+фактом наличия этой реализации.

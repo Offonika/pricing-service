@@ -63,12 +63,21 @@ def _validate_payload_shape(name: str, payload: Any) -> list[str]:
             errors.append("actions response does not contain a payload list")
         if not isinstance(payload.get("total_count"), int):
             errors.append("actions response does not contain total_count")
-    elif name in {"cashflow", "profit_loss"}:
+    elif name in {"cashflow", "profit_loss", "sales"}:
         for field, field_type in (
             ("source_status", str),
             ("freshness_status", str),
             ("daily", list),
             ("totals", dict),
+        ):
+            if not isinstance(payload.get(field), field_type):
+                errors.append(f"{name} response has invalid or missing {field}")
+    elif name == "service_accruals":
+        for field, field_type in (
+            ("source_status", str),
+            ("freshness_status", str),
+            ("total_count", int),
+            ("items", list),
         ):
             if not isinstance(payload.get(field), field_type):
                 errors.append(f"{name} response has invalid or missing {field}")
@@ -125,7 +134,11 @@ def collect_runtime_checks(
             "/api/management/executive-dashboard/profit-loss-period"
             f"?date_from={month_start}&date_to={requested_date.isoformat()}"
         ),
+        "sales": f"/api/management/executive-dashboard/sales-period?month={month_start[:7]}",
         "management_balance": ("/api/management/executive-dashboard/management-balance"),
+        "service_accruals": (
+            "/api/management/executive-dashboard/service-accruals" f"?month={month_start[:7]}"
+        ),
     }
     for name, path in endpoints.items():
         response = _request(client, "GET", path, headers=headers)
@@ -224,6 +237,38 @@ def evaluate_data_health(
                 "reason": "monthly balance source is unavailable",
                 "source_status": source_status,
                 "freshness_status": freshness_status,
+            }
+        )
+
+    service_accruals = payloads.get("service_accruals", {})
+    if _is_unhealthy(service_accruals):
+        source_status, freshness_status = _status_pair(service_accruals)
+        if now.astimezone(MOSCOW_TZ).time() >= payables_ready_after:
+            errors.append(
+                "service accrual source is unhealthy after the refresh grace period: "
+                f"source_status={source_status}, freshness_status={freshness_status}"
+            )
+        else:
+            degraded_checks.append(
+                {
+                    "name": "service_accruals",
+                    "reason": "refresh grace period until 11:00",
+                    "source_status": source_status,
+                    "freshness_status": freshness_status,
+                }
+            )
+    elif _is_partial(service_accruals):
+        degraded_checks.append(
+            {
+                "name": "service_accruals",
+                "reason": "estimates are active; closing documents are not fully verified",
+                **dict(
+                    zip(
+                        ("source_status", "freshness_status"),
+                        _status_pair(service_accruals),
+                        strict=True,
+                    )
+                ),
             }
         )
     elif _is_partial(management_balance) or management_balance.get("validation_errors"):

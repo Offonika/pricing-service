@@ -3,7 +3,7 @@
 Project-level specs для `pricing-service` лежат в этом каталоге.
 
 Создавайте spec для крупных изменений FastAPI, management API, Telegram/logistics,
-Bitrix24 smart-processes, read-only 1C/TopControl витрин, OpenAPI и data contracts.
+Bitrix24 smart-processes, read-only 1C/1С витрин, OpenAPI и data contracts.
 
 Порядок работы:
 

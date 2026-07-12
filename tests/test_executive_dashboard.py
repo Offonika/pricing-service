@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -27,6 +27,7 @@ from app.services.executive_dashboard import (
     build_executive_cashflow_period_response,
     build_executive_dashboard,
     build_executive_profit_loss_period_response,
+    build_executive_sales_period_response,
 )
 
 
@@ -804,16 +805,10 @@ def test_shared_snapshot_path_is_resolved_from_workspace_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    workspace_root = tmp_path / "workspace"
-    snapshot_path = workspace_root / "mm-compensation" / "build" / "snapshot.json"
+    snapshot_path = tmp_path / "contracts" / "snapshot.json"
     snapshot_path.parent.mkdir(parents=True)
     snapshot_path.write_text("{}", encoding="utf-8")
-    release_root = tmp_path / "releases" / "pricing-service" / "release-1"
-    release_root.mkdir(parents=True)
-    monkeypatch.chdir(release_root)
-    monkeypatch.setenv("MM_WORKSPACE_ROOT", str(workspace_root))
-
-    resolved = _resolve_shared_path("../mm-compensation/build/snapshot.json")
+    resolved = _resolve_shared_path(str(snapshot_path))
 
     assert resolved == snapshot_path
 
@@ -922,6 +917,113 @@ def test_profit_loss_period_response_aggregates_sales_kpi(
     assert result.expense_open_questions[0].amount == Decimal("400.00")
     assert result.daily[-1].business_date == date(2026, 6, 27)
     assert {row.label for row in result.by_store} == {"Горбушкин Двор", "Склад Сайт"}
+
+
+def test_sales_period_response_calculates_forecast_comparison_and_filters(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _override_settings(monkeypatch, _settings(tmp_path / "missing.json"))
+    rows = []
+    cursor = date(2026, 5, 1)
+    while cursor <= date(2026, 6, 5):
+        rows.append(
+            _sales_kpi(
+                cursor,
+                revenue=Decimal("100.00"),
+                cost_of_sales=Decimal("60.00"),
+                store_ref="store-1",
+                store_name="Горбушкин Двор",
+            )
+        )
+        rows.append(
+            _sales_kpi(
+                cursor,
+                revenue=Decimal("200.00"),
+                cost_of_sales=Decimal("100.00"),
+                manager_ref="mgr-2",
+                manager_name="Менеджер 2",
+                store_ref="store-2",
+                store_name="Склад Сайт",
+            )
+        )
+        cursor += timedelta(days=1)
+    db_session.add_all(rows)
+    db_session.commit()
+
+    result = build_executive_sales_period_response(
+        db_session,
+        month=date(2026, 6, 1),
+        today=date(2026, 6, 5),
+    )
+
+    assert result.source_status == "ready"
+    assert result.forecast_status == "ready"
+    assert result.totals["revenue_mtd"] == Decimal("1500.00")
+    assert result.totals["forecast_revenue_month_end"] == Decimal("9000.00")
+    assert result.comparison["revenue"] == Decimal("1500.00")
+    assert result.daily[5].business_date == date(2026, 6, 6)
+    assert result.daily[5].actual_revenue is None
+    assert result.daily[5].forecast_revenue == Decimal("300.00")
+    assert len(result.monthly) == 12
+    assert result.monthly[-1].month == "2026-06"
+    assert result.monthly[-1].revenue == Decimal("1500.00")
+    assert result.monthly[-1].sales_count == Decimal("20.000")
+    assert result.monthly[-1].forecast_revenue == Decimal("9000.00")
+    assert {item.label for item in result.stores} == {"Горбушкин Двор", "Склад Сайт"}
+    assert {item.label for item in result.managers} == {"Менеджер 1", "Менеджер 2"}
+
+    filtered = build_executive_sales_period_response(
+        db_session,
+        month=date(2026, 6, 1),
+        store_ref="store-2",
+        today=date(2026, 6, 5),
+    )
+    assert filtered.totals["revenue_mtd"] == Decimal("1000.00")
+    assert filtered.totals["forecast_revenue_month_end"] == Decimal("6000.00")
+    assert filtered.monthly[-1].sales_count == Decimal("10.000")
+    assert [row.label for row in filtered.by_store] == ["Склад Сайт"]
+
+
+def test_sales_period_marks_forecast_as_unavailable_without_history(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _override_settings(monkeypatch, _settings(tmp_path / "missing.json"))
+    db_session.add(_sales_kpi(date(2026, 6, 5)))
+    db_session.commit()
+
+    result = build_executive_sales_period_response(
+        db_session,
+        month=date(2026, 6, 1),
+        today=date(2026, 6, 5),
+    )
+
+    assert result.source_status == "ready"
+    assert result.forecast_status == "insufficient_history"
+    assert result.totals["forecast_revenue_month_end"] is None
+    assert "четыре недели" in str(result.forecast_note)
+
+
+def test_sales_period_does_not_recalculate_forecast_for_closed_month(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _override_settings(monkeypatch, _settings(tmp_path / "missing.json"))
+    db_session.add(_sales_kpi(date(2026, 6, 30)))
+    db_session.commit()
+
+    result = build_executive_sales_period_response(
+        db_session,
+        month=date(2026, 6, 1),
+        today=date(2026, 7, 1),
+    )
+
+    assert result.forecast_status == "not_applicable"
+    assert result.totals["forecast_revenue_month_end"] is None
 
 
 def test_debtors_block_uses_buyer_cases_not_other_receivables(
@@ -1529,6 +1631,54 @@ def test_profit_loss_period_api_returns_sales_for_finance_role(
     assert payload["expense_breakdown"][0]["key"] == "rent"
     assert payload["expense_open_questions"][0]["amount"] == "400.00"
     assert payload["lines"][-1]["source_status"] == "source_missing"
+
+
+def test_sales_period_api_is_available_to_full_access_and_forbidden_to_finance(
+    client: TestClient,
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path / "finance_snapshot.json", access_rules_json=_role_rules())
+    _override_settings(monkeypatch, settings)
+    db_session.add(_sales_kpi(date(2026, 6, 28), revenue=Decimal("1200.00")))
+    db_session.commit()
+
+    app.dependency_overrides[get_db] = lambda: db_session
+    try:
+        full_response = client.get(
+            "/api/management/executive-dashboard/sales-period?month=2026-06",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert full_response.status_code == 200
+    assert full_response.json()["month"] == "2026-06"
+
+    finance_access = bitrix_executive_dashboard_auth.resolve_executive_dashboard_access(
+        bitrix_user_id="203",
+        settings=settings,
+    )
+    token, _ = bitrix_executive_dashboard_auth.create_executive_dashboard_session_token(
+        domain="crm.master-mobile.ru",
+        member_id="member-1",
+        user_id="203",
+        user_name="Финансы",
+        access=finance_access,
+        settings=settings,
+        now=1_785_000_000,
+    )
+    app.dependency_overrides[get_db] = lambda: db_session
+    try:
+        finance_response = client.get(
+            "/api/management/executive-dashboard/sales-period?month=2026-06",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert finance_response.status_code == 403
 
 
 def test_cashflow_period_api_forbids_user_without_money_access(

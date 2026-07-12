@@ -4,8 +4,15 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from app.models import Base, PhoneModel, Product, ProductCompatibility, ProductPhoneModel
-from tasks.import_topcontrol_products_db import import_onec_products
 from tasks.report_product_compatibility_sync import build_report
+from tasks.sync_onec_product_catalog import import_onec_products
+
+
+def test_deprecated_catalog_module_reexports_current_importer() -> None:
+    from tasks import import_topcontrol_products_db as deprecated
+    from tasks import sync_onec_product_catalog as current
+
+    assert deprecated.import_onec_products is current.import_onec_products
 
 
 def _setup_onec_schema(engine) -> None:

@@ -2,10 +2,10 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db import build_application_engine, get_application_engine
 from app.models import Competitor, CompetitorPrice, Product
 from app.services.scraper.service import scrape_competitor_pages
 
@@ -13,8 +13,7 @@ logger = logging.getLogger("app.workers.scrape")
 
 
 def get_engine():
-    settings = get_settings()
-    return create_engine(settings.database_url)
+    return get_application_engine()
 
 
 def _ensure_competitor(session: Session, name: str) -> Competitor:
@@ -36,8 +35,11 @@ def run_scrape(
     competitors: {"CompName": ["url1", "url2", ...]}
     limit: max offers total (for quick debugging)
     """
-    settings = get_settings()
-    engine = create_engine(database_url or settings.database_url)
+    engine = (
+        build_application_engine(database_url)
+        if database_url
+        else get_application_engine()
+    )
     stats = {"competitors": 0, "offers_saved": 0, "errors": 0}
     with Session(engine) as session:
         # ensure schema exists for in-memory/testing

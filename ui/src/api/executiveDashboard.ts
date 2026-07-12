@@ -31,6 +31,11 @@ export interface ExecutiveSourceStatus {
   as_of?: string | null;
   max_lag_days?: number | null;
   note?: string | null;
+  source_amount?: string | null;
+  adjustment_amount?: string | null;
+  adjusted_amount?: string | null;
+  recognition_method?: string | null;
+  estimated_count: number;
 }
 
 export interface ExecutiveDashboardAction {
@@ -87,6 +92,11 @@ export interface ExecutiveManagementBalanceLineItem {
   source_status: string;
   source_as_of?: string | null;
   note?: string | null;
+  source_amount?: string | null;
+  adjustment_amount?: string | null;
+  adjusted_amount?: string | null;
+  recognition_method?: string | null;
+  estimated_count: number;
 }
 
 export interface ExecutiveManagementBalanceResponse {
@@ -221,6 +231,10 @@ export interface ExecutiveProfitLossExpenseBreakdownRow {
   review_count: number;
   source_status: string;
   recognition_method: string;
+  cashflow_amount?: string | null;
+  recognized_amount?: string | null;
+  adjustment_amount?: string | null;
+  estimated_count: number;
   meta: Record<string, unknown>;
 }
 
@@ -253,6 +267,57 @@ export interface ExecutiveProfitLossPeriodResponse {
   expense_source_status: string;
   expense_breakdown: ExecutiveProfitLossExpenseBreakdownRow[];
   expense_open_questions: ExecutiveProfitLossOpenQuestion[];
+  filters: Record<string, unknown>;
+}
+
+export interface ExecutiveSalesDailyRow {
+  business_date: string;
+  actual_revenue?: string | number | null;
+  forecast_revenue?: string | number | null;
+}
+
+export interface ExecutiveSalesMonthlyRow {
+  month: string;
+  revenue: string;
+  gross_profit: string;
+  sales_count: string;
+  forecast_revenue?: string | number | null;
+}
+
+export interface ExecutiveSalesBreakdownRow {
+  key: string;
+  label: string;
+  revenue: string;
+  gross_profit: string;
+  sales_count: string;
+  gross_margin_pct?: string | number | null;
+  meta: Record<string, unknown>;
+}
+
+export interface ExecutiveSalesFilterOption {
+  key: string;
+  label: string;
+}
+
+export interface ExecutiveSalesPeriodResponse {
+  month: string;
+  date_from: string;
+  date_to: string;
+  as_of?: string | null;
+  generated_at?: string | null;
+  source_status: string;
+  freshness_status: string;
+  forecast_status: string;
+  note?: string | null;
+  forecast_note?: string | null;
+  totals: Record<string, string | number | null>;
+  comparison: Record<string, string | number | null>;
+  daily: ExecutiveSalesDailyRow[];
+  monthly: ExecutiveSalesMonthlyRow[];
+  by_store: ExecutiveSalesBreakdownRow[];
+  by_manager: ExecutiveSalesBreakdownRow[];
+  stores: ExecutiveSalesFilterOption[];
+  managers: ExecutiveSalesFilterOption[];
   filters: Record<string, unknown>;
 }
 
@@ -315,6 +380,24 @@ export async function fetchExecutiveProfitLossPeriod(params: {
       params: {
         date_from: params.date_from || undefined,
         date_to: params.date_to || undefined,
+      },
+    }
+  );
+  return response.data;
+}
+
+export async function fetchExecutiveSalesPeriod(params: {
+  month?: string;
+  store_ref?: string;
+  manager_ref?: string;
+}) {
+  const response = await api.get<ExecutiveSalesPeriodResponse>(
+    "/management/executive-dashboard/sales-period",
+    {
+      params: {
+        month: params.month || undefined,
+        store_ref: params.store_ref || undefined,
+        manager_ref: params.manager_ref || undefined,
       },
     }
   );

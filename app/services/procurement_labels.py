@@ -15,10 +15,11 @@ from urllib.parse import quote
 from fastapi import HTTPException
 from openpyxl import Workbook
 from PIL import Image, ImageDraw, ImageFont
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
 from app.core.config import Settings, get_settings
+from app.infrastructure.db import build_onec_engine_from_settings
 from app.schemas.procurement_labels import (
     ProcurementCertificationDocsGenerateResponse,
     ProcurementLabelGenerateResponse,
@@ -1805,7 +1806,7 @@ def bitrix_client_from_settings(settings: Settings) -> ProcurementLabelsBitrixCl
 def onec_engine_from_settings(settings: Settings) -> Engine:
     if not settings.onec_database_url:
         raise HTTPException(status_code=500, detail="1C database URL is not configured")
-    return create_engine(settings.onec_database_url, pool_pre_ping=True)
+    return build_onec_engine_from_settings()
 
 
 def build_preview(

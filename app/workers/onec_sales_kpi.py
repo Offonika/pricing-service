@@ -2,22 +2,22 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db import build_onec_engine_from_settings, get_application_engine
 from app.services.onec_sales_kpi import fetch_onec_daily_sales_kpi, sync_onec_daily_sales_kpi
 
 
 def _get_app_engine():
-    return create_engine(get_settings().database_url)
+    return get_application_engine()
 
 
 def _get_onec_engine():
     settings = get_settings()
     if not settings.onec_database_url:
         raise RuntimeError("ONEC_DATABASE_URL is not configured")
-    return create_engine(settings.onec_database_url)
+    return build_onec_engine_from_settings()
 
 
 def run_onec_sales_kpi_sync(*, date_from: date, date_to: date) -> dict[str, int | str]:

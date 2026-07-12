@@ -1,17 +1,33 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time
+from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 from fastapi.responses import FileResponse
-from sqlalchemy import create_engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
-from app.api.dependencies import get_db, require_management_internal_token
+from app.api.dependencies import (
+    get_db,
+    get_uow,
+    require_management_internal_token,
+    require_weekly_kpi_ingest_token,
+)
 from app.core.config import get_settings
+from app.domains.management.application import (
+    WeeklyKpiIdempotencyConflictError,
+    ingest_weekly_kpi_snapshots,
+)
+from app.domains.management.contracts import (
+    WeeklyKpiSnapshotBatchIngest,
+    WeeklyKpiSnapshotIngestResponse,
+)
+from app.infrastructure.db.engines import DatabaseNotConfiguredError, get_onec_engine
+from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
+from app.schemas.bi import BIDailySalesKPI
 from app.schemas.executive_dashboard import (
     ExecutiveCashflowPeriodResponse,
     ExecutiveDashboardActionsResponse,
@@ -19,6 +35,9 @@ from app.schemas.executive_dashboard import (
     ExecutiveManagementBalanceCloseRequest,
     ExecutiveManagementBalanceResponse,
     ExecutiveProfitLossPeriodResponse,
+    ExecutiveSalesPeriodResponse,
+    ExecutiveServiceAccrualItem,
+    ExecutiveServiceAccrualListResponse,
 )
 from app.schemas.management import (
     CounterpartyFolderChangeItem,
@@ -52,6 +71,7 @@ from app.schemas.telephony import (
     TelephonyUserLineItem,
     TelephonyUserLineMapResponse,
 )
+from app.services import bi as bi_service
 from app.services.bitrix_executive_dashboard_auth import (
     ExecutiveDashboardAuthContext,
     require_executive_dashboard_access,
@@ -76,12 +96,18 @@ from app.services.executive_dashboard import (
     build_executive_cashflow_period_response,
     build_executive_dashboard,
     build_executive_profit_loss_period_response,
+    build_executive_sales_period_response,
 )
 from app.services.executive_management_balance import (
     ManagementBalanceCloseError,
     ManagementBalanceNotFoundError,
     close_management_balance,
     get_management_balance,
+    month_end,
+)
+from app.services.executive_service_accruals import (
+    service_accrual_entries,
+    service_accrual_source_status,
 )
 from app.services.finance_cash_position import build_finance_cash_position
 from app.services.management_observability import build_management_health
@@ -184,6 +210,91 @@ def close_executive_management_balance(
 
 
 @router.get(
+    "/executive-dashboard/service-accruals",
+    response_model=ExecutiveServiceAccrualListResponse,
+)
+def list_executive_service_accruals(
+    month: str = Query(pattern=r"^\d{4}-\d{2}$"),
+    counterparty_ref: str | None = Query(default=None),
+    contract_ref: str | None = Query(default=None),
+    expense_line_key: str | None = Query(default=None),
+    status: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    access: ExecutiveDashboardAuthContext = Depends(require_executive_dashboard_access),
+) -> ExecutiveServiceAccrualListResponse:
+    if not access.is_full_access and "finance" not in access.roles:
+        raise HTTPException(status_code=403, detail="Расшифровка начислений доступна финансисту")
+    try:
+        period_month = date.fromisoformat(f"{month}-01")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="month must be YYYY-MM") from exc
+    entries = service_accrual_entries(
+        db,
+        month=period_month,
+        counterparty_ref=counterparty_ref,
+        contract_ref=contract_ref,
+        expense_line_key=expense_line_key,
+        status=status,
+    )
+    items = [
+        ExecutiveServiceAccrualItem(
+            id=entry.id,
+            month=entry.period_month.strftime("%Y-%m"),
+            recognition_date=entry.recognition_date,
+            counterparty_ref=entry.counterparty_ref,
+            counterparty_name=entry.counterparty_name,
+            contract_ref=entry.contract_ref,
+            contract_name=entry.contract_name,
+            expense_line_key=entry.expense_line_key,
+            expense_line_label=entry.expense_line_label,
+            status=entry.status,
+            recognition_method=entry.recognition_method,
+            recognized_amount_rub=entry.recognized_amount_rub,
+            payment_amount_rub=entry.payment_amount_rub,
+            cashflow_expense_replaced_rub=entry.cashflow_expense_replaced_rub,
+            source_status=entry.source_status,
+            source_as_of=entry.source_as_of,
+            note=(
+                "Оценочно, закрывающие документы отсутствуют"
+                if entry.status == "estimated_without_document"
+                else None
+            ),
+        )
+        for entry in entries
+    ]
+    response_source_status = (
+        "ready"
+        if items and all(item.source_status == "ready" for item in items)
+        else (
+            "partial"
+            if items
+            else service_accrual_source_status(
+                db,
+                as_of=(
+                    date.today()
+                    if period_month == date.today().replace(day=1)
+                    else month_end(period_month)
+                ),
+            )
+        )
+    )
+    return ExecutiveServiceAccrualListResponse(
+        month=month,
+        source_status=response_source_status,
+        freshness_status=(
+            "fresh"
+            if response_source_status == "ready"
+            else "partial" if response_source_status == "partial" else "missing"
+        ),
+        total_count=len(items),
+        recognized_amount_rub=sum((item.recognized_amount_rub for item in items), Decimal("0")),
+        payment_amount_rub=sum((item.payment_amount_rub for item in items), Decimal("0")),
+        estimated_count=sum(1 for item in items if item.status == "estimated_without_document"),
+        items=items,
+    )
+
+
+@router.get(
     "/executive-dashboard/actions",
     response_model=ExecutiveDashboardActionsResponse,
 )
@@ -262,6 +373,33 @@ def get_executive_dashboard_profit_loss_period(
     )
 
 
+@router.get(
+    "/executive-dashboard/sales-period",
+    response_model=ExecutiveSalesPeriodResponse,
+)
+def get_executive_dashboard_sales_period(
+    month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    store_ref: str | None = Query(default=None),
+    manager_ref: str | None = Query(default=None),
+    db: Session = Depends(get_db),
+    access: ExecutiveDashboardAuthContext = Depends(require_executive_dashboard_access),
+) -> ExecutiveSalesPeriodResponse:
+    try:
+        requested_month = (
+            date.fromisoformat(f"{month}-01") if month else date.today().replace(day=1)
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="month must be YYYY-MM") from exc
+    if not access.allows_block("sales") or not access.can_view_money_block("sales"):
+        raise HTTPException(status_code=403, detail="Нет доступа к витрине продаж")
+    return build_executive_sales_period_response(
+        db,
+        month=requested_month,
+        store_ref=store_ref,
+        manager_ref=manager_ref,
+    )
+
+
 def _filter_real_rb_counterparty_codes(mapping: dict[str, str]) -> dict[str, str]:
     return {
         counterparty_ref: counterparty_code
@@ -277,20 +415,13 @@ def _add_months(value: date, months: int) -> date:
 
 
 def _build_onec_engine():
-    settings = get_settings()
-    if not settings.onec_database_url:
+    try:
+        return get_onec_engine()
+    except DatabaseNotConfiguredError as exc:
         raise HTTPException(
             status_code=503,
             detail="1C source is unavailable",
-        )
-    return create_engine(
-        settings.onec_database_url,
-        connect_args={
-            "timeout": float(settings.onec_query_timeout_seconds),
-            "login_timeout": float(settings.onec_login_timeout_seconds),
-        },
-        pool_pre_ping=True,
-    )
+        ) from exc
 
 
 @router.get("/retail-director-monthly-kpi", response_model=RetailDirectorMonthlyKpiResponse)
@@ -646,6 +777,53 @@ def get_weekly_kpi_reports_health(
 ):
     payload = build_weekly_kpi_report_health(db, week_end=week_end)
     return WeeklyKpiReportHealthResponse.model_validate(payload)
+
+
+@router.post(
+    "/internal/weekly-kpi-snapshots",
+    response_model=WeeklyKpiSnapshotIngestResponse,
+)
+def ingest_weekly_kpi_snapshot_batch(
+    payload: WeeklyKpiSnapshotBatchIngest,
+    idempotency_key: str = Header(
+        alias="Idempotency-Key",
+        min_length=8,
+        max_length=255,
+    ),
+    unit_of_work: SqlAlchemyUnitOfWork = Depends(get_uow),
+    _: str = Depends(require_weekly_kpi_ingest_token),
+) -> WeeklyKpiSnapshotIngestResponse:
+    if unit_of_work.session is None:
+        raise HTTPException(status_code=503, detail="database unit of work is unavailable")
+    try:
+        result = ingest_weekly_kpi_snapshots(
+            unit_of_work.session,
+            batch=payload,
+            idempotency_key=idempotency_key,
+        )
+    except WeeklyKpiIdempotencyConflictError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return WeeklyKpiSnapshotIngestResponse.model_validate(result)
+
+
+@router.get(
+    "/internal/sales-daily-kpi",
+    response_model=list[BIDailySalesKPI],
+)
+def get_internal_sales_daily_kpi(
+    date_from: date = Query(),
+    date_to: date = Query(),
+    db: Session = Depends(get_db),
+    _: str = Depends(require_weekly_kpi_ingest_token),
+) -> list[BIDailySalesKPI]:
+    return bi_service.get_daily_sales_kpi_dataset(
+        db,
+        date_from=date_from,
+        date_to=date_to,
+        manager_ref=None,
+        store_ref=None,
+        limit=None,
+    )
 
 
 @router.get(

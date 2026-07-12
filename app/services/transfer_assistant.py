@@ -5,9 +5,10 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Iterable
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 from app.core.config import Settings, get_settings
+from app.infrastructure.db import build_onec_engine_from_settings
 
 STATUS_AVAILABLE_TO_TRANSFER = "available_to_transfer"
 STATUS_RESERVED_FOR_ORDER = "reserved_for_order"
@@ -264,7 +265,7 @@ def fetch_transfer_assistant_source_rows(
     if engine is None:
         if not settings.onec_database_url:
             raise RuntimeError("ONEC_DATABASE_URL is not configured")
-        engine = create_engine(settings.onec_database_url, pool_pre_ping=True)
+        engine = build_onec_engine_from_settings()
 
     normalized_source_kinds = set(source_kinds) if source_kinds is not None else None
     with engine.connect() as connection:

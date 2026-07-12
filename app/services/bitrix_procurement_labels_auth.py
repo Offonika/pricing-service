@@ -241,7 +241,7 @@ def verify_procurement_labels_session_token(
 
 
 def verify_procurement_labels_session(
-    credentials: HTTPAuthorizationCredentials | None = Security(security),
+    credentials: HTTPAuthorizationCredentials | None = Security(security),  # noqa: B008
 ) -> ProcurementLabelsSession:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(status_code=401, detail="unauthorized")

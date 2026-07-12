@@ -16,6 +16,10 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     database_url: str = "postgresql+psycopg2://postgres:postgres@localhost:5432/pricing"
+    database_pool_size: int | None = None
+    database_max_overflow: int | None = None
+    database_pool_timeout_seconds: float | None = None
+    database_pool_recycle_seconds: int | None = None
     redis_url: str = "redis://localhost:6379/0"
     onec_database_url: str | None = None
     telephony_mdm_database_url: str | None = None
@@ -69,6 +73,7 @@ class Settings(BaseSettings):
     return_scheme_retail_price_types: str = "Розница"
     return_scheme_output_dir: str = "reports/return_scheme"
     return_scheme_internal_api_token: str | None = None
+    weekly_kpi_ingest_internal_api_token: str | None = None
     return_scheme_alert_telegram_token: str | None = None
     return_scheme_alert_telegram_chat_id: str | None = None
     return_scheme_direct_telegram_enabled: bool = False
@@ -256,17 +261,20 @@ class Settings(BaseSettings):
     receivable_workplace_bitrix_session_ttl_seconds: int = 3600
     receivable_workplace_bitrix_rest_timeout_seconds: float = 6.0
     executive_dashboard_finance_snapshot_path: str = (
-        "../mm-compensation/build/executive_dashboard/finance_snapshot.json"
+        "/var/lib/mm-data-contracts/executive-dashboard/finance_snapshot.json"
     )
     executive_dashboard_cashflow_period_cache_path: str = (
-        "../mm-compensation/build/executive_dashboard/cashflow_period_cache.json"
+        "/var/lib/mm-data-contracts/executive-dashboard/cashflow_period_cache.json"
     )
     executive_dashboard_warehouse_snapshot_path: str = (
-        "../mm-compensation/build/executive_dashboard/warehouse_snapshot.json"
+        "/var/lib/mm-data-contracts/executive-dashboard/warehouse_snapshot.json"
     )
     executive_dashboard_source_max_lag_days: int = 1
     executive_management_balance_accounting_database_url: str | None = None
     executive_management_balance_tolerance_rub: float = 1.0
+    executive_service_accrual_source_path: str = (
+        "/var/lib/mm-data-contracts/executive-dashboard/service_accrual_source_snapshot.json"
+    )
     executive_dashboard_bitrix_enabled: bool = False
     executive_dashboard_bitrix_allowed_domains: Annotated[list[str], NoDecode] = Field(
         default_factory=list
@@ -326,9 +334,6 @@ class Settings(BaseSettings):
     smartphone_gsmarena_enabled: bool = False
     smartphone_gsmarena_rss_url: str = "https://www.gsmarena.com/rss-news-reviews.php"
     smartphone_gsmarena_max_items: int | None = 40
-
-    # TopControl categories filter (comma-separated ids)
-    topcontrol_category_whitelist: str | None = None
 
     # Yandex Direct / demand
     yandex_direct_api_token: str | None = None

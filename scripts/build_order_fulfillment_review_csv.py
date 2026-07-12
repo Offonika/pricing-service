@@ -19,7 +19,7 @@ from app.core.config import get_settings  # noqa: E402
 from app.services import site_order_fulfillment as fulfillment  # noqa: E402
 
 DEFAULT_OUTPUT_DIR = Path(".local/order-fulfillment-pilot")
-DEFAULT_ENV_FILES = (Path(".env"), Path("/opt/MM/mm-compensation/.env"))
+DEFAULT_ENV_FILES = (Path(".env"), Path("/etc/mm-management-orchestrator.env"))
 
 
 def load_env_files(paths: list[Path]) -> dict[str, str]:

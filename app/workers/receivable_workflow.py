@@ -2,10 +2,11 @@ from __future__ import annotations
 
 from datetime import date
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db import build_onec_engine_from_settings, get_application_engine
 from app.models import ReceivableCase
 from app.services.receivable_workflow import (
     build_bitrix_client_from_settings,
@@ -15,20 +16,14 @@ from app.services.receivables import CASE_BUYERS, fetch_counterparty_phones_from
 
 
 def _get_app_engine():
-    return create_engine(get_settings().database_url)
+    return get_application_engine()
 
 
 def _get_onec_engine():
     settings = get_settings()
     if not settings.onec_database_url:
         return None
-    return create_engine(
-        settings.onec_database_url,
-        connect_args={
-            "timeout": float(settings.onec_query_timeout_seconds),
-            "login_timeout": float(settings.onec_login_timeout_seconds),
-        },
-    )
+    return build_onec_engine_from_settings()
 
 
 def _load_workflow_counterparty_refs(session: Session, *, as_of: date) -> tuple[str, ...]:

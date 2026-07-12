@@ -51,6 +51,25 @@ documents:
     related_code: []
     related_tests: []
     keywords: [specs, lifecycle, planning]
+  - path: docs/specs/pricing-service-architecture-hardening.md
+    title: Pricing Service Architecture Hardening
+    doc_type: spec
+    domain: architecture
+    status: accepted
+    owner: engineering
+    source_of_truth: true
+    related_code:
+      - app/api/dependencies.py
+      - app/core/config.py
+      - app/main.py
+      - infra/cron/competitor_matching_nightly.sh
+      - tasks/import_topcontrol_products_db.py
+      - scripts/export_openapi.py
+    related_tests:
+      - tests/test_import_onec_products.py
+      - tests/test_product_compatibility.py
+      - tests/test_weekly_kpi_reports_api.py
+    keywords: [architecture, modular-monolith, onec, database, contracts, cron]
   - path: .github/workflows/docs-manifest.yml
     title: Docs Manifest Workflow
     doc_type: ci
@@ -142,7 +161,7 @@ documents:
       - tests/test_export_ut103_nomenclature_properties_task.py
       - tests/test_ut103_procurement_orders_exporter.py
       - tests/test_export_ut103_procurement_supplier_orders_task.py
-    keywords: [procurement, supplier-order, decision-contract, roadmap, topcontrol, wechat, bitrix24, onec, akb]
+    keywords: [procurement, supplier-order, decision-contract, roadmap, wechat, bitrix24, onec, akb]
   - path: docs/specs/procurement-order-auto-order-unified-contour.md
     title: Procurement Order And Auto Order Unified Contour
     doc_type: spec
@@ -420,7 +439,7 @@ documents:
     related_tests:
       - tests/test_procurement_bitrix_process.py
       - tests/test_procurement_supplier_crm.py
-    keywords: [procurement, supplier-order, topcontrol, wechat, onepager, bitrix24, onec]
+    keywords: [procurement, supplier-order, wechat, onepager, bitrix24, onec]
   - path: docs/Onepage.OfflineStoreAudioAnalytics.md
     title: Offline Store Audio Analytics Onepage
     doc_type: onepager
@@ -450,7 +469,7 @@ documents:
     source_of_truth: true
     related_code: [app/]
     related_tests: [tests/]
-    keywords: [pricing, topcontrol, competitors]
+    keywords: [pricing, onec, competitors]
   - path: docs/architecture.md
     title: Pricing Service Architecture
     doc_type: architecture

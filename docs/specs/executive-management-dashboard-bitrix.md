@@ -58,10 +58,11 @@ Draft / v1 implementation foundation.
 - API `/api/management/executive-dashboard`;
 - API `/api/management/executive-dashboard/actions`;
 - API `/api/management/executive-dashboard/profit-loss-period`;
+- API `/api/management/executive-dashboard/sales-period`;
 - короткая Bitrix-сессия через `POST /api/bitrix/executive-dashboard/session`;
-- десять обязательных блоков: деньги, отчет о прибылях и убытках, дебиторка
-  покупателей, контроль дебиторки, кредиторка, закупки, склад, сверки, задачи,
-  фокус дня;
+- одиннадцать обязательных блоков: деньги, отчет о прибылях и убытках, продажи,
+  дебиторка покупателей, контроль дебиторки, кредиторка, закупки, склад, сверки,
+  задачи, фокус дня;
 - явные статусы `ready`, `partial`, `stale`, `source_missing`, `source_error`;
 - `executive_action_item` как кросс-доменный список решений без автопубликации
   задач в v1.
@@ -113,6 +114,26 @@ Draft / v1 implementation foundation.
 она не подменяется оценкой по средней закупочной цене. В v1 не включены займы,
 налоги, прочие активы и обязательства, капитал; поэтому это частичный
 управленческий срез, а не бухгалтерский баланс. Блок не создаёт платежи и не меняет 1С.
+
+### Начисление регулярных услуг без закрывающих документов
+
+Для группы `ЮР.ЛИЦА` используется отдельный read-only источник
+`service_accrual_source_snapshot.json`. Активное правило допустимо только для
+утверждённого договора с фиксированной месячной суммой и подтверждённым
+договорным периметром остатка. Товары, займы, налоги, обеспечительные платежи,
+эквайринг и собственники в этот контур не входят.
+
+Оценка без документа заменяет соответствующий cash-based расход ДДС, уменьшает
+аванс поставщику услуг и результат периода; обязательство появляется только при
+отрицательном скорректированном сальдо. Поздний документ заменяет оценку фактом,
+а закрытая версия баланса остаётся неизменяемой. Расшифровка доступна финансисту:
+
+- `GET /api/management/executive-dashboard/service-accruals?month=YYYY-MM`;
+- фильтры: `counterparty_ref`, `contract_ref`, `expense_line_key`, `status`.
+
+Пустой утверждённый справочник является готовым нулевым источником. Неизвестный
+договор, пересечение правил или неподтверждённый источник закрывающих документов
+блокирует закрытие месяца. Запись в 1С не выполняется.
 
 ## API Contract
 
@@ -234,12 +255,31 @@ Endpoint возвращает данные только пользователя
 `daily`, `by_store`, `by_manager`, `expense_breakdown`,
 `expense_open_questions`, `expense_source_status` и `filters.source_table`.
 
+### `GET /api/management/executive-dashboard/sales-period`
+
+Вкладка `Продажи` доступна только при полном управленческом доступе. Она читает
+`onec_sales_daily_kpi` по месяцу и необязательным фильтрам `store_ref` и
+`manager_ref`. Ответ содержит факт с начала месяца, валовую прибыль, валовую
+маржу, объем продаж, сравнение с теми же днями прошлого месяца, дневную
+динамику и разрезы по магазинам и менеджерам.
+
+Главный график вкладки — помесячный срез за 12 месяцев до выбранного: отдельные
+линии выручки и валовой прибыли, а в текущем месяце отдельная отметка прогноза
+до закрытия. Ниже отдельной полосой показан объем продаж (`sales_count`) по тем
+же месяцам; это единицы товаров и услуг, а не число чеков.
+
+Для текущего месяца сервис строит прогноз выручки до конца месяца без записи в
+БД: для каждого оставшегося дня берется медиана выручки по тому же дню недели
+за четыре предыдущие недели в выбранном разрезе. Если такой истории нет,
+`forecast_status=insufficient_history`, а прогноз не подменяется нулем. Для
+закрытых месяцев сервис отдает только факт и не пересчитывает прогноз.
+
 Витрина показывает отдельную вкладку `ОДДС CashFlow`. Она использует тот же
 доступ к денежному блоку `money_today`, но отделяет финансовую форму от
 оперативной карточки `Деньги / ДДС`. Вкладка читает отдельный rolling cache:
 
 ```text
-../mm-compensation/build/executive_dashboard/cashflow_period_cache.json
+/var/lib/mm-data-contracts/executive-dashboard/cashflow_period_cache.json
 ```
 
 Кэш строится в `mm-compensation` из `finance.fact_cashflow_movement`,
@@ -294,7 +334,7 @@ Endpoint возвращает только пользователям, у кот
 Вкладка `Склад` читает отдельный compact snapshot:
 
 ```text
-../mm-compensation/build/executive_dashboard/warehouse_snapshot.json
+/var/lib/mm-data-contracts/executive-dashboard/warehouse_snapshot.json
 ```
 
 Snapshot строится в `mm-compensation` из схемы `piecework` после загрузки факта
@@ -474,7 +514,7 @@ app/admin context или через OAuth-контекст установлен�
 
 - Alembic head: `3d4e5f6a7b80`;
 - finance snapshot path:
-  `../mm-compensation/build/executive_dashboard/finance_snapshot.json`;
+  `/var/lib/mm-data-contracts/executive-dashboard/finance_snapshot.json`;
 - snapshot может честно отдавать `source_missing`, пока реальные finance/payables
   inputs не подключены;
 - dashboard API должен возвращать 8 блоков даже при частично отсутствующих

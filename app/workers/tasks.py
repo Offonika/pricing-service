@@ -3,10 +3,10 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db import get_application_engine
 from app.models import Product
 from app.services.market_research import MarketDemandProvider
 from app.services.pricing import (
@@ -19,8 +19,7 @@ logger = logging.getLogger("app.workers.pricing")
 
 
 def get_engine():
-    settings = get_settings()
-    return create_engine(settings.database_url)
+    return get_application_engine()
 
 
 def recalculate_all_prices(product_articles: Iterable[str] | None = None) -> dict:

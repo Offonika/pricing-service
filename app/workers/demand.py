@@ -1,17 +1,16 @@
 import logging
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db import get_application_engine
 from app.services.market_research import KeywordRepository, build_demand_service
 
 logger = logging.getLogger("app.workers.demand")
 
 
 def get_engine():
-    settings = get_settings()
-    return create_engine(settings.database_url)
+    return get_application_engine()
 
 
 def update_stale_keyword_demand():

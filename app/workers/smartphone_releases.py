@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import logging
 
-from sqlalchemy import create_engine, desc
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db import get_application_engine
 from app.models import SmartphoneRelease
 from app.schemas.market_research import DeviceModelCreate
 from app.services.market_research import DeviceModelService, KeywordGenerationService
@@ -16,8 +17,7 @@ logger = logging.getLogger("app.workers.smartphone_releases")
 
 
 def get_engine():
-    settings = get_settings()
-    return create_engine(settings.database_url)
+    return get_application_engine()
 
 
 def run_smartphone_release_job(service: SmartphoneReleaseService | None = None) -> dict:

@@ -8,10 +8,11 @@ from datetime import date
 from pathlib import Path
 from typing import Sequence
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models.receivable_balance_snapshot import ReceivableBalanceSnapshot
 from app.services.counterparty_folder_recommendations import fetch_counterparty_refs_from_onec_group
 from app.services.receivable_decision_onec_metrics import (
@@ -74,7 +75,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
     settings = get_settings()
     database_url = args.database_url or os.environ.get("DATABASE_URL") or settings.database_url
-    engine = create_engine(database_url, pool_pre_ping=True)
+    engine = build_engine(database_url, pool_pre_ping=True)
     try:
         with Session(engine) as session:
             snapshot_date = args.snapshot_date or get_latest_snapshot_date(session)
@@ -122,7 +123,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         raise SystemExit(
                             "ONEC_DATABASE_URL is required for --with-onec-profitability"
                         )
-                    onec_engine = create_engine(onec_database_url, pool_pre_ping=True)
+                    onec_engine = build_engine(onec_database_url, pool_pre_ping=True)
                     try:
                         profitability_by_ref = fetch_counterparty_profitability_metrics_from_onec(
                             onec_engine,
@@ -247,7 +248,7 @@ def resolve_folder_filter(
         )
     if not onec_database_url:
         raise SystemExit("ONEC_DATABASE_URL is required for --folder-filter-source onec")
-    onec_engine = create_engine(onec_database_url, pool_pre_ping=True)
+    onec_engine = build_engine(onec_database_url, pool_pre_ping=True)
     try:
         refs = fetch_counterparty_refs_from_onec_group(
             onec_engine,

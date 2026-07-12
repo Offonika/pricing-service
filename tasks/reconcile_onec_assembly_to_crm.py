@@ -11,9 +11,10 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 
 DEFAULT_CRM_URL = "https://crm.master-mobile.ru/local/tools/mm_crm_1c_assembly_status.php"
 DEFAULT_STATE_PATH = Path(".local/onec_assembly_crm_reconciler.sqlite3")
@@ -194,7 +195,7 @@ def fetch_assembly_events(onec_database_url: str, *, since: datetime, limit: int
         FROM crm_events
         ORDER BY event_at ASC, rtu_date ASC, crm_status ASC
         """)
-    engine = create_engine(onec_database_url, pool_pre_ping=True)
+    engine = build_engine(onec_database_url, pool_pre_ping=True)
     with engine.connect() as connection:
         return [_event_from_row(row) for row in connection.execute(statement, {"since": since})]
 

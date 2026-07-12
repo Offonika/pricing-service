@@ -8,10 +8,11 @@ import logging
 import re
 from datetime import datetime
 
-from sqlalchemy import create_engine, exists, func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import CompetitorItem, CompetitorItemCompatibility
 from app.models.competitor_item import CompetitorItemParseStatus
 from app.services.competitor_matching import (
@@ -512,7 +513,7 @@ def main() -> None:
             )
 
     settings = get_settings()
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
 
     processed = 0
     updated = 0

@@ -7,9 +7,8 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine
-
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.services.assortment_lifecycle_facts import (
     DEFAULT_HISTORY_MONTHS,
     RECEIPT_MAPPING_UNRESOLVED,
@@ -60,7 +59,7 @@ def main() -> int:
                 args.receipt_mapping_json,
                 error_code=RECEIPT_MAPPING_UNRESOLVED,
             )
-            engine = create_engine(onec_database_url, pool_pre_ping=True)
+            engine = build_engine(onec_database_url, pool_pre_ping=True)
             try:
                 nomenclature_rows, supplier_order_rows, receipt_rows = (
                     fetch_onec_lifecycle_source_rows(
@@ -74,7 +73,7 @@ def main() -> int:
                 )
             finally:
                 engine.dispose()
-            product_engine = create_engine(settings.database_url, pool_pre_ping=True)
+            product_engine = build_engine(settings.database_url, pool_pre_ping=True)
             try:
                 nomenclature_rows = enrich_nomenclature_rows_with_product_snapshot(
                     product_engine,

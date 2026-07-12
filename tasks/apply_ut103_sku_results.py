@@ -7,9 +7,10 @@ import sys
 from pathlib import Path
 from typing import Any, Iterable
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.infrastructure.db.engines import build_engine
 from app.models import Product
 from app.services.exporters.ut103_exchange import load_ut103_env_file, resolve_ut103_exchange_root
 from app.services.exporters.ut103_nomenclature_properties import (
@@ -46,7 +47,7 @@ def main() -> int:
         wanted = set(args.message_id)
         results = [result for result in results if result.message_id in wanted]
 
-    engine = create_engine(database_url, pool_pre_ping=True)
+    engine = build_engine(database_url, pool_pre_ping=True)
     try:
         with Session(engine) as session:
             summary = apply_sku_results(

@@ -7,10 +7,11 @@ from decimal import ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import ReceivableBalanceSnapshot
 from app.services.bi import _buyers_snapshot_total, get_receivables_contract_balances
 from app.services.receivables import (
@@ -316,12 +317,12 @@ def main() -> None:
         raise SystemExit(f"Файл не найден: {args.report_path}")
 
     settings = get_settings()
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
     onec_engine = None
     if args.compare_onec_canonical:
         if not settings.onec_database_url:
             raise SystemExit("ONEC_DATABASE_URL is not configured")
-        onec_engine = create_engine(
+        onec_engine = build_engine(
             settings.onec_database_url,
             connect_args={
                 "timeout": float(settings.onec_query_timeout_seconds),

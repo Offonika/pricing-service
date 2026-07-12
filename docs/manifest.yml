@@ -70,6 +70,16 @@ documents:
       - tests/test_product_compatibility.py
       - tests/test_weekly_kpi_reports_api.py
     keywords: [architecture, modular-monolith, onec, database, contracts, cron]
+  - path: docs/registry/cli-jobs.json
+    title: Pricing CLI And Backfill Registry
+    doc_type: registry
+    domain: architecture
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [tasks/, scripts/validate_cli_registry.py, infra/cron/]
+    related_tests: [tests/test_cli_registry.py]
+    keywords: [cli, backfill, dry-run, idempotency, side-effects]
   - path: .github/workflows/docs-manifest.yml
     title: Docs Manifest Workflow
     doc_type: ci

@@ -7,10 +7,11 @@ import json
 import logging
 from collections.abc import Iterable
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import CompetitorItem
 from app.services.competitor_category import CategoryClassifier, category_group
 from tasks.canonicalize_competitor_categories import canonicalize_categories
@@ -204,7 +205,7 @@ def main() -> None:
         ]
 
     settings = get_settings()
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
     with Session(engine) as session:
         stats = normalize_categories(
             session,

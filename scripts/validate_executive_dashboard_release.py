@@ -8,9 +8,9 @@ from pathlib import Path
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.main import app
 from app.services.executive_dashboard import (
     _resolve_cashflow_period_cache_path,
@@ -85,7 +85,7 @@ def main() -> None:
     code_head = script.get_current_head()
     database_head = None
     try:
-        engine = create_engine(settings.database_url)
+        engine = build_engine(settings.database_url)
         with engine.connect() as connection:
             database_head = MigrationContext.configure(connection).get_current_revision()
         engine.dispose()

@@ -1,0 +1,93 @@
+{
+  "version": 1,
+  "defaults": {
+    "owner": "pricing-platform",
+    "kind": "permanent_cli",
+    "dry_run": "not_verified",
+    "idempotency": "not_verified",
+    "side_effect_level": "mixed",
+    "spec": "docs/specs/pricing-service-architecture-hardening.md",
+    "remove_after": null
+  },
+  "rules": [
+    {
+      "glob": "report_*.py",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "read_only",
+      "side_effect_level": "artifact_write"
+    },
+    {
+      "glob": "compare_*.py",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "read_only",
+      "side_effect_level": "artifact_write"
+    },
+    {
+      "glob": "check_*.py",
+      "kind": "maintenance",
+      "dry_run": "not_applicable",
+      "idempotency": "read_only",
+      "side_effect_level": "read_only"
+    },
+    {
+      "glob": "export_*.py",
+      "kind": "export",
+      "dry_run": "not_applicable",
+      "idempotency": "read_only",
+      "side_effect_level": "artifact_write"
+    },
+    {
+      "glob": "backfill_*.py",
+      "kind": "backfill"
+    }
+  ],
+  "commands": {
+    "backfill_competitor_items.py": {
+      "owner": "matching",
+      "kind": "backfill",
+      "dry_run": "supported",
+      "idempotency": "not_verified",
+      "side_effect_level": "db_write",
+      "spec": "docs/specs/pricing-service-architecture-hardening.md",
+      "remove_after": "2026-10-31"
+    },
+    "backfill_expertise_completion_outcomes.py": {
+      "owner": "expertise",
+      "kind": "backfill",
+      "dry_run": "supported",
+      "idempotency": "verified_by_upsert",
+      "side_effect_level": "db_write",
+      "spec": "docs/specs/pricing-service-architecture-hardening.md",
+      "remove_after": "2026-10-31"
+    },
+    "backfill_phone_model_links.py": {
+      "owner": "catalog",
+      "kind": "backfill",
+      "dry_run": "supported",
+      "idempotency": "verified_by_update",
+      "side_effect_level": "db_write",
+      "spec": "docs/specs/pricing-service-architecture-hardening.md",
+      "remove_after": "2026-10-31"
+    },
+    "backfill_product_classification_sources.py": {
+      "owner": "catalog",
+      "kind": "backfill",
+      "dry_run": "supported",
+      "idempotency": "verified_by_update",
+      "side_effect_level": "db_write",
+      "spec": "docs/specs/pricing-service-architecture-hardening.md",
+      "remove_after": "2026-10-31"
+    },
+    "backfill_receivable_history.py": {
+      "owner": "receivables",
+      "kind": "backfill",
+      "dry_run": "supported",
+      "idempotency": "verified_by_upsert",
+      "side_effect_level": "db_write",
+      "spec": "docs/specs/pricing-service-architecture-hardening.md",
+      "remove_after": "2026-10-31"
+    }
+  }
+}

@@ -65,9 +65,14 @@ def find_violations(root: Path = REPO_ROOT) -> list[str]:
             if pattern in text:
                 violations.append(f"foreign project runtime path {pattern}: {relative}")
 
-        if relative.parts and relative.parts[0] == "app" and "create_engine" in text:
-            if relative != Path("app/infrastructure/db/engines.py"):
-                violations.append(f"create_engine outside DB factory: {relative}")
+        if (
+            relative.suffix == ".py"
+            and relative.parts
+            and relative.parts[0] in {"app", "tasks", "scripts", "infra"}
+            and "create_engine" in text
+            and relative != Path("app/infrastructure/db/engines.py")
+        ):
+            violations.append(f"create_engine outside DB factory: {relative}")
 
     markdown_tasks = sorted((root / "tasks").glob("*.md"))
     for path in markdown_tasks:

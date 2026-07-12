@@ -10,10 +10,11 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from sqlalchemy import bindparam, create_engine, select, text
+from sqlalchemy import bindparam, select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models.procurement_order_formation import (
     ProcurementOrderFormation,
     ProcurementOrderFormationLine,
@@ -139,7 +140,7 @@ def main() -> int:
     write_lines_csv(args.output_csv, orders)
     persisted_ids: list[int] = []
     if args.persist_db:
-        engine = create_engine(settings.database_url)
+        engine = build_engine(settings.database_url)
         with Session(engine) as db:
             persisted_ids = persist_grouped_orders(db, orders)
         payload["persisted_order_ids"] = persisted_ids
@@ -439,7 +440,7 @@ def fetch_latest_order_dimensions(
         bindparam("codes", expanding=True),
         bindparam("supplier_refs", expanding=True),
     )
-    engine = create_engine(database_url, pool_pre_ping=True)
+    engine = build_engine(database_url, pool_pre_ping=True)
     with engine.connect() as connection:
         rows = [
             dict(row)
@@ -493,7 +494,7 @@ def fetch_nomenclature_by_codes(
         WHERE item._Marked = 0x00
           AND LTRIM(RTRIM(item._Code)) IN :codes
     """).bindparams(bindparam("codes", expanding=True))
-    engine = create_engine(database_url, pool_pre_ping=True)
+    engine = build_engine(database_url, pool_pre_ping=True)
     with engine.connect() as connection:
         rows = [dict(row) for row in connection.execute(query, {"codes": clean_codes}).mappings()]
     return {_clean(row.get("nomenclature_code")): row for row in rows}

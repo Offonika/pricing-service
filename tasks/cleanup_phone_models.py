@@ -5,10 +5,10 @@ import json
 import logging
 import re
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import PhoneModel, ProductMatch, ProductMatchOverride
 from app.services.competitor_matching import match_competitor_ftp_records
 
@@ -117,7 +117,7 @@ def main():
     args = parser.parse_args()
 
     settings = get_settings()
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
     with Session(engine) as session:
         result = cleanup_phone_models(
             session, brand=args.brand, dry_run=not args.no_dry_run, aggressive=args.aggressive

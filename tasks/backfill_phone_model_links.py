@@ -7,19 +7,23 @@ import json
 import logging
 from datetime import date, datetime
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import CompetitorItem, CompetitorItemCompatibility, Product
 from app.services.phone_model_canonicalization import PhoneModelCanonicalizer
 
 logger = logging.getLogger("tasks.backfill_phone_model_links")
 
 
-def _commit_batch(session: Session, counter: int, batch_size: int) -> None:
+def _commit_batch(session: Session, counter: int, batch_size: int, *, commit: bool) -> None:
     if counter % batch_size == 0:
-        session.commit()
+        if commit:
+            session.commit()
+        else:
+            session.flush()
 
 
 def _merge_reason(notes: str | None, reason: str | None) -> str | None:
@@ -69,6 +73,7 @@ def run_backfill(
     product_limit: int | None = None,
     competitor_limit: int | None = None,
     progress_every: int = 5000,
+    commit: bool = True,
 ) -> dict[str, int]:
     canonicalizer = PhoneModelCanonicalizer(session)
     stats = {
@@ -101,7 +106,7 @@ def run_backfill(
             stats["product_unresolved"] += result["unresolved"]
             stats["product_ambiguous"] += result["ambiguous"]
             stats["auto_created"] += result["auto_created"]
-            _commit_batch(session, stats["products_processed"], batch_size)
+            _commit_batch(session, stats["products_processed"], batch_size, commit=commit)
             _log_progress(
                 "product phone model backfill", stats["products_processed"], progress_every
             )
@@ -144,7 +149,12 @@ def run_backfill(
                     session.add(comp)
                 comp.notes = _merge_reason(comp.notes, result.reason)
                 session.add(comp)
-                _commit_batch(session, stats["competitor_items_processed"], batch_size)
+                _commit_batch(
+                    session,
+                    stats["competitor_items_processed"],
+                    batch_size,
+                    commit=commit,
+                )
                 _log_progress(
                     "competitor compatibility backfill",
                     stats["competitor_items_processed"],
@@ -160,7 +170,12 @@ def run_backfill(
             stats["competitor_links_created"] += 1
             if result.created_new:
                 stats["auto_created"] += 1
-            _commit_batch(session, stats["competitor_items_processed"], batch_size)
+            _commit_batch(
+                session,
+                stats["competitor_items_processed"],
+                batch_size,
+                commit=commit,
+            )
             _log_progress(
                 "competitor compatibility backfill",
                 stats["competitor_items_processed"],
@@ -192,10 +207,13 @@ def run_backfill(
             )
             if result.created_new:
                 stats["auto_created"] += 1
-            _commit_batch(session, item_counter, batch_size)
+            _commit_batch(session, item_counter, batch_size, commit=commit)
             _log_progress("competitor item parsed backfill", item_counter, progress_every)
 
-    session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
     logger.info("phone model backfill completed", extra=stats)
     return stats
 
@@ -226,13 +244,14 @@ def main() -> None:
         default=5000,
         help="Log progress every N processed rows; 0 disables progress logs",
     )
+    parser.add_argument("--dry-run", action="store_true", help="Calculate changes and roll back")
     args = parser.parse_args()
     process_products = args.products or not args.competitors
     process_competitors = args.competitors or not args.products
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     settings = get_settings()
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
     with Session(engine) as session:
         result = run_backfill(
             session,
@@ -244,7 +263,11 @@ def main() -> None:
             product_limit=args.product_limit,
             competitor_limit=args.competitor_limit,
             progress_every=max(0, args.progress_every),
+            commit=not args.dry_run,
         )
+        if args.dry_run:
+            session.rollback()
+            result["dry_run"] = True
     print(json.dumps(result, ensure_ascii=False))
 
 

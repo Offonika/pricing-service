@@ -52,7 +52,25 @@ def main() -> None:
         action="store_true",
         help="Delete existing receivable ledger and derived read-models before sync",
     )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Validate the requested range and print the write plan without DB changes",
+    )
     args = parser.parse_args()
+
+    if args.dry_run:
+        result = {
+            "dry_run": True,
+            "date_from": args.date_from,
+            "date_to": args.date_to,
+            "opening_balance_date": args.opening_balance_date,
+            "rebuild_snapshot_dates": args.rebuild_snapshot_date,
+            "daily_layers": args.daily_layer,
+            "replace_existing": args.replace_ledger,
+        }
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
 
     result = run_receivable_history_backfill(
         date_from=_parse_date(args.date_from),

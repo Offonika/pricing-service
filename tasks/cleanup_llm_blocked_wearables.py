@@ -3,10 +3,11 @@ from __future__ import annotations
 import json
 import logging
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import CompetitorItem
 from app.models.competitor_item import CompetitorItemParseStatus
 
@@ -51,7 +52,7 @@ def run_cleanup(session: Session) -> dict[str, int]:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    engine = create_engine(get_settings().database_url)
+    engine = build_engine(get_settings().database_url)
     with Session(engine) as session:
         result = run_cleanup(session)
     print(json.dumps(result, ensure_ascii=False))

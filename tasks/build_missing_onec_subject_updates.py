@@ -12,10 +12,11 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any, Protocol
 
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import Product
 from app.services.competitor_category import DEFAULT_FALLBACK_CATEGORY, CategoryClassifier
 from app.services.exporters.ut103_exchange import load_ut103_env_file, resolve_ut103_exchange_root
@@ -209,8 +210,8 @@ def main() -> int:
     if not settings.onec_database_url:
         raise SystemExit("ONEC_DATABASE_URL is required")
 
-    engine_app = create_engine(settings.database_url)
-    engine_onec = create_engine(settings.onec_database_url)
+    engine_app = build_engine(settings.database_url)
+    engine_onec = build_engine(settings.onec_database_url)
 
     candidates = load_missing_onec_subject_candidates(engine_onec)
     subject_catalog_values = load_onec_subject_catalog_values(engine_onec)

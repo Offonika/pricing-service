@@ -8,9 +8,10 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
+from app.infrastructure.db.engines import build_engine
 from app.models import Product
 from app.services.exporters.ut103_exchange import load_ut103_env_file, resolve_ut103_exchange_root
 from app.services.exporters.ut103_nomenclature_properties import (
@@ -92,7 +93,7 @@ def main() -> None:
         print("DATABASE_URL is not set", file=sys.stderr)
         raise SystemExit(1)
 
-    engine = create_engine(db_url)
+    engine = build_engine(db_url)
     with Session(engine) as session:
         result = generate_sku_batch(
             session,

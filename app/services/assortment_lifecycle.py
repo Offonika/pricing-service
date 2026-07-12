@@ -41,7 +41,9 @@ class AssortmentStatus(StrEnum):
     SALES_START = "sales_start"
     SALE = "sale"
     WORKING = "working"
-    EXCLUSIVE = "exclusive"
+    # NB: "Эксклюзив" не является статусом жизненного цикла — это коммерческий
+    # признак (CommercialMark.EXCLUSIVE). Ручное значение manual_status="exclusive"
+    # конвертируется в коммерческий признак в assortment_lifecycle_facts.py.
     MATRIX = "matrix"
     ON_DEMAND = "on_demand"
     REPLACE_CANDIDATE = "replace_candidate"
@@ -69,7 +71,6 @@ ASSORTMENT_STATUS_LABELS = {
     AssortmentStatus.SALES_START: "СП / Старт продаж",
     AssortmentStatus.SALE: "ПРОДАЖА",
     AssortmentStatus.WORKING: "Рабочий",
-    AssortmentStatus.EXCLUSIVE: "Эксклюзив",
     AssortmentStatus.MATRIX: "Матричный",
     AssortmentStatus.ON_DEMAND: "Под заказ",
     AssortmentStatus.REPLACE_CANDIDATE: "Кандидат на замену",

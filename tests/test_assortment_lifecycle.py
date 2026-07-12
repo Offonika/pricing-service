@@ -4,6 +4,10 @@ from datetime import date
 from decimal import Decimal
 
 from app.services.assortment_lifecycle import (
+    ASSORTMENT_STATUS_LABELS,
+    MANUAL_ASSORTMENT_STATUSES,
+    WORKING_MIN_RECEIPTS,
+    WORKING_RECEIPT_WINDOW_DAYS,
     AssortmentLifecycleDecision,
     AssortmentLifecycleInput,
     AssortmentStatus,
@@ -244,3 +248,56 @@ def test_manager_need_signal_collects_facts_and_flags_suspicious_quantity() -> N
     assert decision.accepted
     assert decision.suspicious
     assert decision.issues == ("suspicious_quantity",)
+
+
+# --- Контрактные тесты целостности контура статусов (защита от дублирования/дрейфа) ---
+
+
+def test_every_status_has_label_and_no_orphan_labels() -> None:
+    # Каждый статус жизненного цикла обязан иметь человекочитаемую метку,
+    # и в словаре меток не должно быть значений вне enum (ловит рассинхрон).
+    assert set(ASSORTMENT_STATUS_LABELS) == set(AssortmentStatus)
+
+
+def test_manual_statuses_are_subset_of_enum() -> None:
+    assert MANUAL_ASSORTMENT_STATUSES <= set(AssortmentStatus)
+
+
+def test_every_manual_status_classifies_without_error() -> None:
+    # Прямой manual_status по каждому ручному статусу должен давать этот же статус
+    # и не падать (защита от enum-призраков вроде бывшего EXCLUSIVE).
+    for status in MANUAL_ASSORTMENT_STATUSES:
+        decision = _decision(
+            manual_status=status.value,
+            manual_reason="Проверка ручного статуса.",
+            manual_approved_by="Омар",
+            manual_changed_at=date(2026, 7, 12),
+        )
+        assert decision.status == status
+
+
+def test_exclusive_is_not_a_lifecycle_status() -> None:
+    # "Эксклюзив" — коммерческий признак (CommercialMark), а не статус лестницы.
+    assert not hasattr(AssortmentStatus, "EXCLUSIVE")
+    assert "exclusive" not in {status.value for status in AssortmentStatus}
+    assert CommercialMark.EXCLUSIVE.value == "exclusive"
+
+
+def test_working_reason_text_derives_thresholds_from_constants() -> None:
+    # Пороги 180/5 должны приходить в текст причины ИЗ констант, а не хардкодом,
+    # иначе при смене константы тексты рассинхронизируются ("разработка дважды").
+    receipt_dates = (
+        date(2026, 1, 25),
+        date(2026, 2, 25),
+        date(2026, 3, 25),
+        date(2026, 4, 25),
+        date(2026, 5, 25),
+    )
+    decision = _decision(
+        supplier_order_cargo_handoff_dates=(date(2026, 1, 20), date(2026, 2, 20)),
+        receipt_dates=receipt_dates,
+    )
+    assert decision.recommended_status == AssortmentStatus.WORKING
+    assert str(WORKING_RECEIPT_WINDOW_DAYS) in decision.reason_text
+    assert str(len(receipt_dates)) in decision.reason_text
+    assert len(receipt_dates) >= WORKING_MIN_RECEIPTS

@@ -33,12 +33,15 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         DeviceBrandAlias,
     )
     from app.models.device_model import Keyword, KeywordDemand, PhoneModel, PhoneModelAlias
-    from app.models.expertise import ExpertiseCase, ExpertiseCaseAttachment, ExpertiseCaseEvent
     from app.models.executive_dashboard import (
         ExecutiveActionItem,
         ExecutiveDashboardSnapshot,
+        ExecutiveManagementBalanceAudit,
+        ExecutiveManagementBalanceLine,
+        ExecutiveManagementBalanceSnapshot,
         ExecutiveSourceFreshness,
     )
+    from app.models.expertise import ExpertiseCase, ExpertiseCaseAttachment, ExpertiseCaseEvent
     from app.models.logistics import (
         LogisticsBotSession,
         LogisticsBotSessionPhoto,
@@ -64,6 +67,13 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.onec_sales_daily_kpi import OneCSalesDailyKpi
     from app.models.price_recommendation import PriceRecommendation
     from app.models.pricing_strategy_version import PricingStrategyVersion
+    from app.models.procurement_order_formation import (
+        ProcurementClassificationProposal,
+        ProcurementLifecycleTransitionProposal,
+        ProcurementOrderFormation,
+        ProcurementOrderFormationEvent,
+        ProcurementOrderFormationLine,
+    )
     from app.models.product import Product
     from app.models.product_compatibility import ProductCompatibility
     from app.models.product_competitor_item_decision import ProductCompetitorItemDecision
@@ -74,13 +84,6 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.product_phone_model import ProductPhoneModel
     from app.models.product_sku_plan import ProductSkuPlan
     from app.models.product_stock import ProductStock
-    from app.models.procurement_order_formation import (
-        ProcurementClassificationProposal,
-        ProcurementLifecycleTransitionProposal,
-        ProcurementOrderFormation,
-        ProcurementOrderFormationEvent,
-        ProcurementOrderFormationLine,
-    )
     from app.models.receivable_balance_snapshot import ReceivableBalanceSnapshot
     from app.models.receivable_case import ReceivableCase
     from app.models.receivable_ledger_event import ReceivableLedgerEvent
@@ -126,7 +129,9 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "ProductStock",
         "ProcurementOrderFormation",
         "ProcurementOrderFormationLine",
+        "ProcurementOrderFormationEvent",
         "ProcurementClassificationProposal",
+        "ProcurementLifecycleTransitionProposal",
         "ProductCompatibility",
         "Competitor",
         "CompetitorPrice",
@@ -158,6 +163,9 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "ExecutiveDashboardSnapshot",
         "ExecutiveActionItem",
         "ExecutiveSourceFreshness",
+        "ExecutiveManagementBalanceSnapshot",
+        "ExecutiveManagementBalanceLine",
+        "ExecutiveManagementBalanceAudit",
         "LogisticsWarehouse",
         "LogisticsDriver",
         "LogisticsUser",

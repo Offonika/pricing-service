@@ -72,6 +72,16 @@ def _validate_payload_shape(name: str, payload: Any) -> list[str]:
         ):
             if not isinstance(payload.get(field), field_type):
                 errors.append(f"{name} response has invalid or missing {field}")
+    elif name == "management_balance":
+        for field, field_type in (
+            ("month", str),
+            ("assets", list),
+            ("liabilities", list),
+            ("equity", list),
+            ("validation_errors", list),
+        ):
+            if not isinstance(payload.get(field), field_type):
+                errors.append(f"{name} response has invalid or missing {field}")
     return errors
 
 
@@ -115,6 +125,7 @@ def collect_runtime_checks(
             "/api/management/executive-dashboard/profit-loss-period"
             f"?date_from={month_start}&date_to={requested_date.isoformat()}"
         ),
+        "management_balance": ("/api/management/executive-dashboard/management-balance"),
     }
     for name, path in endpoints.items():
         response = _request(client, "GET", path, headers=headers)
@@ -198,6 +209,32 @@ def evaluate_data_health(
                     zip(
                         ("source_status", "freshness_status"),
                         _status_pair(profit_loss),
+                        strict=True,
+                    )
+                ),
+            }
+        )
+
+    management_balance = payloads.get("management_balance", {})
+    if _is_unhealthy(management_balance):
+        source_status, freshness_status = _status_pair(management_balance)
+        degraded_checks.append(
+            {
+                "name": "management_balance",
+                "reason": "monthly balance source is unavailable",
+                "source_status": source_status,
+                "freshness_status": freshness_status,
+            }
+        )
+    elif _is_partial(management_balance) or management_balance.get("validation_errors"):
+        degraded_checks.append(
+            {
+                "name": "management_balance",
+                "reason": "shadow mode: control sources are not fully reconciled",
+                **dict(
+                    zip(
+                        ("source_status", "freshness_status"),
+                        _status_pair(management_balance),
                         strict=True,
                     )
                 ),

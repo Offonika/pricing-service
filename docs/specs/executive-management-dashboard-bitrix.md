@@ -13,16 +13,20 @@ related_code:
   - app/schemas/executive_dashboard.py
   - app/services/bitrix_executive_dashboard_auth.py
   - app/services/executive_dashboard.py
+  - app/services/executive_management_balance.py
+  - tasks/build_executive_management_balance_snapshot.py
+  - infra/cron/executive_management_balance_snapshot.sh
   - ui/src/api/executiveDashboard.ts
   - ui/src/components/ExecutiveDashboard.tsx
 related_tests:
   - tests/test_executive_dashboard.py
+  - tests/test_executive_management_balance.py
 contracts:
   - openapi.yaml
 depends_on: []
 supersedes: []
 rollout_required: true
-updated_at: "2026-06-29"
+updated_at: "2026-07-12"
 ---
 
 # Executive Management Dashboard In Bitrix
@@ -409,6 +413,35 @@ fallback-режимом: пользователь видит прежнюю ст
   следующем snapshot;
 - отсутствующий источник показывает `source_missing`, а не нулевой факт.
 
+## Помесячный управленческий баланс
+
+Баланс имеет собственный период и не зависит от глобального дневного фильтра
+витрины. Основной режим — последний вручную закрытый месяц, а при отсутствии
+закрытых периодов интерфейс открывает оперативный срез текущего месяца.
+
+Контракт:
+
+- `GET /api/management/executive-dashboard/management-balance?month=YYYY-MM&view=closed|operational`;
+- `POST /api/management/executive-dashboard/management-balance/{month}/close`;
+- ежедневный оперативный снимок создаётся в `10:55 Europe/Moscow`, после
+  финансового snapshot в 10:45;
+- снимки, строки и аудит версионируются в PostgreSQL; закрытая версия не
+  изменяется, корректировка создаёт новую draft-версию;
+- закрытие доступно только full/finance роли, требует явного подтверждения,
+  всех обязательных источников и равенства `Активы = Обязательства + Капитал`
+  с допуском не более 1 рубля;
+- искусственная балансирующая строка запрещена, отсутствующая статья остаётся
+  `null/source_missing`, а не превращается в ноль.
+
+Обязательный контрольный источник полного баланса — read-only КА/БП из
+`EXECUTIVE_MANAGEMENT_BALANCE_ACCOUNTING_DATABASE_URL`. До настройки этого
+подключения, утверждения соответствия счетов и сверки `СтоимостьОстаток` с
+типовым отчётом 1С API и UI маркируют результат как «Частичный управленческий
+баланс» и блокируют закрытие. Текущая торговая база Ekama не используется как
+замена бухгалтерским регистрам. Backfill 12 месяцев допускается только после
+подключения исторического КА/БП: значения текущего snapshot нельзя копировать в
+прошлые месяцы.
+
 ## Rollout
 
 1. Read-only dashboard на тестовых snapshots.
@@ -457,6 +490,15 @@ app/admin context или через OAuth-контекст установлен�
   блоком без write-back в `1С`.
 - Payables: взаиморасчеты для баланса идут из `Поставщики`, `СОТРУДНИКИ` и
   утвержденного списка собственников из `Прочие`.
+- Management balance: выбор месяца независим от глобальной даты; февраль
+  високосного года заканчивается 29-м числом; закрытие блокируется при
+  пропущенном источнике, отрицательной стоимости товара и расхождении сторон;
+  повторный close идемпотентен, а новая корректировка создаёт новую версию.
+- Активы по взаиморасчётам берутся только из рублёвого конечного остатка 1С на
+  уровне групп: `Поставщики` → «Дебиторка поставщиков», `СОТРУДНИКИ` →
+  «Дебиторка сотрудников», `Прочие` без Авакян Адель и Авакян Карина →
+  «Прочие дебиторы». Собственники из `Прочие` остаются отдельной статьёй.
+  Внешняя дебиторка покупателей из `receivable_case` в этот набор не смешивается.
 - Idempotency: повторный запуск не создает дубли actions.
 - Bitrix iframe smoke: страница, session, загрузка блоков, drill-down links.
 - Docs/OpenAPI: manifest и generated contract без drift.

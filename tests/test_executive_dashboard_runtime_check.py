@@ -65,6 +65,15 @@ def _payloads() -> dict[str, dict]:
             "daily": [],
             "totals": {},
         },
+        "management_balance": {
+            "month": "2026-07",
+            "source_status": "partial",
+            "freshness_status": "fresh",
+            "assets": [],
+            "liabilities": [],
+            "equity": [],
+            "validation_errors": [{"code": "shadow_mode"}],
+        },
     }
 
 
@@ -82,6 +91,8 @@ def _runtime_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=payloads["cashflow"])
     if path.endswith("/profit-loss-period"):
         return httpx.Response(200, json=payloads["profit_loss"])
+    if path.endswith("/management-balance"):
+        return httpx.Response(200, json=payloads["management_balance"])
     if path == "/api/management/executive-dashboard":
         return httpx.Response(200, json=payloads["dashboard"])
     return httpx.Response(404)
@@ -99,7 +110,7 @@ def test_collect_runtime_checks_accepts_empty_actions_and_session_probe_422() ->
         )
 
     assert not errors
-    assert len(checks) == 6
+    assert len(checks) == 7
     assert payloads["actions"]["payload"] == []
 
 
@@ -195,6 +206,9 @@ def test_monitor_fails_for_unhealthy_payables_after_1100() -> None:
 
 def test_monitor_reports_other_stale_dashboard_blocks_without_false_outage() -> None:
     payloads = _payloads()
+    payloads["dashboard"]["blocks"][1].update(
+        source_status="ready", freshness_status="fresh"
+    )
     payloads["dashboard"]["blocks"].append(
         {
             "key": "debtors",

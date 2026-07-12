@@ -75,6 +75,46 @@ export interface ExecutiveDashboardActionsResponse {
   payload: ExecutiveDashboardAction[];
 }
 
+export type ExecutiveManagementBalanceView = "closed" | "operational";
+
+export interface ExecutiveManagementBalanceLineItem {
+  key: string;
+  label: string;
+  section: "asset" | "liability" | "equity";
+  amount?: string | null;
+  delta_previous?: string | null;
+  source_key: string;
+  source_status: string;
+  source_as_of?: string | null;
+  note?: string | null;
+}
+
+export interface ExecutiveManagementBalanceResponse {
+  month: string;
+  balance_date: string;
+  view: ExecutiveManagementBalanceView;
+  version: number;
+  status: string;
+  source_status: string;
+  freshness_status: string;
+  generated_at: string;
+  closed_at?: string | null;
+  closed_by?: string | null;
+  currency: string;
+  assets: ExecutiveManagementBalanceLineItem[];
+  liabilities: ExecutiveManagementBalanceLineItem[];
+  equity: ExecutiveManagementBalanceLineItem[];
+  assets_total: string;
+  liabilities_total: string;
+  equity_total: string;
+  liabilities_and_equity_total: string;
+  imbalance_amount: string;
+  can_close: boolean;
+  validation_errors: Array<Record<string, unknown>>;
+  available_months: string[];
+  note?: string | null;
+}
+
 export interface ExecutiveCashflowRatio {
   key: string;
   label: string;
@@ -220,6 +260,30 @@ export async function fetchExecutiveDashboard(date?: string) {
   const response = await api.get<ExecutiveDashboardResponse>("/management/executive-dashboard", {
     params: { date: date || undefined },
   });
+  return response.data;
+}
+
+export async function fetchExecutiveManagementBalance(params?: {
+  month?: string;
+  view?: ExecutiveManagementBalanceView;
+}) {
+  const response = await api.get<ExecutiveManagementBalanceResponse>(
+    "/management/executive-dashboard/management-balance",
+    {
+      params: {
+        month: params?.month || undefined,
+        view: params?.view || undefined,
+      },
+    }
+  );
+  return response.data;
+}
+
+export async function closeExecutiveManagementBalance(month: string, note?: string) {
+  const response = await api.post<ExecutiveManagementBalanceResponse>(
+    `/management/executive-dashboard/management-balance/${month}/close`,
+    { confirm: true, note: note || undefined }
+  );
   return response.data;
 }
 

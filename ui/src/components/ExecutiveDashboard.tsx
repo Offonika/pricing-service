@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   fetchExecutiveCashflowPeriod,
+  closeExecutiveManagementBalance,
   fetchExecutiveDashboard,
   fetchExecutiveDashboardActions,
+  fetchExecutiveManagementBalance,
   fetchExecutiveProfitLossPeriod,
   type ExecutiveAccessLevel,
   type ExecutiveCashflowPeriodResponse,
@@ -11,6 +13,9 @@ import {
   type ExecutiveDashboardBlock,
   type ExecutiveDashboardMetric,
   type ExecutiveDashboardResponse,
+  type ExecutiveManagementBalanceLineItem,
+  type ExecutiveManagementBalanceResponse,
+  type ExecutiveManagementBalanceView,
   type ExecutiveProfitLossBreakdownRow,
   type ExecutiveProfitLossExpenseBreakdownRow,
   type ExecutiveProfitLossOpenQuestion,
@@ -206,6 +211,7 @@ function statusLabel(status: string) {
     stale: "устарело",
     empty: "пусто",
     source_missing: "нет источника",
+    source_unverified: "источник не подтверждён",
     source_error: "ошибка",
   };
   return labels[status] || status;
@@ -1014,6 +1020,241 @@ export function ManagementBalanceBlockCard({
             </a>
           )}
         </footer>
+      )}
+    </section>
+  );
+}
+
+function formatBalanceMonth(value: string) {
+  const [year, month] = value.split("-").map(Number);
+  if (!year || !month) return value;
+  return new Intl.DateTimeFormat("ru-RU", { month: "long", year: "numeric" }).format(
+    new Date(year, month - 1, 1)
+  );
+}
+
+function MonthlyBalanceRows({
+  lines,
+}: {
+  lines: ExecutiveManagementBalanceLineItem[];
+}) {
+  return (
+    <div className="executive-management-balance__rows">
+      {lines.map((line) => (
+        <div className="executive-management-balance__row executive-management-balance__row--monthly" key={line.key}>
+          <span>
+            {line.label}
+            <small>
+              {line.source_as_of ? `на ${formatDate(line.source_as_of)}` : statusLabel(line.source_status)}
+              {line.delta_previous !== null && line.delta_previous !== undefined
+                ? ` · к прошлому месяцу ${formatSignedMoney(line.delta_previous)}`
+                : ""}
+            </small>
+          </span>
+          <strong>
+            {line.amount === null || line.amount === undefined
+              ? "Источник не подтверждён"
+              : formatMoney(line.amount)}
+          </strong>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function formatSignedMoney(value: string | number) {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) return String(value);
+  const formatted = formatMoney(Math.abs(numeric));
+  return `${numeric > 0 ? "+" : numeric < 0 ? "−" : ""}${formatted}`;
+}
+
+function MonthlyManagementBalance({
+  asOf,
+  refreshNonce,
+  canCloseMonth,
+}: {
+  asOf: string;
+  refreshNonce: number;
+  canCloseMonth: boolean;
+}) {
+  const [balance, setBalance] = useState<ExecutiveManagementBalanceResponse | null>(null);
+  const [month, setMonth] = useState<string | undefined>();
+  const [view, setView] = useState<ExecutiveManagementBalanceView | undefined>();
+  const [loading, setLoading] = useState(true);
+  const [message, setMessage] = useState("");
+
+  const load = useCallback(async (nextMonth?: string, nextView?: ExecutiveManagementBalanceView) => {
+    setMonth(nextMonth);
+    setView(nextView);
+    setLoading(true);
+    setMessage("");
+    setBalance(null);
+    try {
+      const payload = await fetchExecutiveManagementBalance({ month: nextMonth, view: nextView });
+      setBalance(payload);
+      setMonth(payload.month);
+      setView(payload.view);
+    } catch (error: unknown) {
+      if (nextView === "closed") {
+        try {
+          const fallback = await fetchExecutiveManagementBalance({
+            month: nextMonth,
+            view: "operational",
+          });
+          setBalance(fallback);
+          setMonth(fallback.month);
+          setView(fallback.view);
+          setMessage("Закрытая версия отсутствует. Показан доступный оперативный срез.");
+          return;
+        } catch {
+          // No operational history exists for this month either.
+        }
+      }
+      setMessage(errorMessage(error));
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const selectedMonth = asOf.slice(0, 7);
+    const selectedView: ExecutiveManagementBalanceView =
+      selectedMonth === todayIso().slice(0, 7) ? "operational" : "closed";
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (!cancelled) load(selectedMonth, selectedView);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [asOf, load, refreshNonce]);
+
+  const chooseMonth = (nextMonth: string) => {
+    load(nextMonth, view || "operational");
+  };
+  const chooseView = (nextView: ExecutiveManagementBalanceView) => {
+    load(month, nextView);
+  };
+  const closeMonth = () => {
+    if (!balance || !window.confirm(`Закрыть управленческий баланс за ${formatBalanceMonth(balance.month)}?`)) {
+      return;
+    }
+    setLoading(true);
+    closeExecutiveManagementBalance(balance.month)
+      .then((payload) => {
+        setBalance(payload);
+        setView(payload.view);
+        setMessage("");
+      })
+      .catch((error: unknown) => setMessage(errorMessage(error)))
+      .finally(() => setLoading(false));
+  };
+
+  return (
+    <section className={`executive-block executive-block--management-balance executive-block--${balance?.source_status || "source_missing"}`}>
+      <header className="executive-block__header executive-management-balance__header">
+        <div>
+          <h2>{balance?.status === "closed" ? "Полный управленческий баланс" : "Частичный управленческий баланс"}</h2>
+          <span>
+            {balance
+              ? balance.status === "closed"
+                ? `Закрыт на ${formatDate(balance.balance_date)} · версия ${balance.version}`
+                : `Не закрыт, данные на ${formatDate(balance.balance_date)} · версия ${balance.version}`
+              : loading
+                ? "Загрузка помесячного среза"
+                : month
+                  ? `Нет доступного снимка за ${formatBalanceMonth(month)}`
+                  : "Период не выбран"}
+          </span>
+        </div>
+        <div className="executive-management-balance__controls">
+          <label>
+            <span>Месяц</span>
+            <select
+              aria-label="Месяц управленческого баланса"
+              disabled={loading}
+              onChange={(event) => chooseMonth(event.target.value)}
+              value={month || ""}
+            >
+              {(balance?.available_months || (month ? [month] : [])).map((item) => (
+                <option key={item} value={item}>{formatBalanceMonth(item)}</option>
+              ))}
+            </select>
+          </label>
+          <div className="executive-management-balance__view" aria-label="Режим баланса">
+            <button
+              aria-pressed={view === "closed"}
+              className={view === "closed" ? "is-active" : ""}
+              disabled={loading}
+              onClick={() => chooseView("closed")}
+              type="button"
+            >
+              Закрытый месяц
+            </button>
+            <button
+              aria-pressed={view === "operational"}
+              className={view === "operational" ? "is-active" : ""}
+              disabled={loading}
+              onClick={() => chooseView("operational")}
+              type="button"
+            >
+              Оперативный на сегодня
+            </button>
+          </div>
+        </div>
+      </header>
+
+      {message && (
+        <div className="executive-management-balance__warning" role="alert">
+          <strong>{balance ? "Закрытая версия отсутствует" : "Срез недоступен"}</strong>
+          <span>{message}</span>
+        </div>
+      )}
+      {loading && !balance && <LoadingState title="Загрузка управленческого баланса..." />}
+      {balance && (
+        <>
+          <div className="executive-management-balance__totals">
+            <div><span>Активы</span><strong>{formatMoney(balance.assets_total)}</strong></div>
+            <div><span>Пассивы</span><strong>{formatMoney(balance.liabilities_and_equity_total)}</strong></div>
+            <div className={Number(balance.imbalance_amount) === 0 ? "is-balanced" : "is-unbalanced"}>
+              <span>Расхождение</span><strong>{formatSignedMoney(balance.imbalance_amount)}</strong>
+            </div>
+          </div>
+          {Number(balance.imbalance_amount) !== 0 && (
+            <div className="executive-management-balance__warning" role="status">
+              <strong>Стороны баланса не равны</strong>
+              <span>Закрытие заблокировано до сверки источников; балансирующая статья не создаётся.</span>
+            </div>
+          )}
+          <div className="executive-management-balance" aria-label="Помесячный управленческий баланс">
+            <section className="executive-management-balance__column executive-management-balance__column--assets">
+              <h3>Активы</h3>
+              <MonthlyBalanceRows lines={balance.assets} />
+              <footer><span>Итого активы</span><strong>{formatMoney(balance.assets_total)}</strong></footer>
+            </section>
+            <section className="executive-management-balance__column executive-management-balance__column--liabilities">
+              <h3>Пассивы</h3>
+              <h4 className="executive-management-balance__subsection-title">Обязательства</h4>
+              <MonthlyBalanceRows lines={balance.liabilities} />
+              <footer><span>Итого обязательства</span><strong>{formatMoney(balance.liabilities_total)}</strong></footer>
+              <h4 className="executive-management-balance__subsection-title executive-management-balance__equity-title">
+                Собственные средства
+              </h4>
+              <MonthlyBalanceRows lines={balance.equity} />
+              <footer><span>Итого собственные средства</span><strong>{formatMoney(balance.equity_total)}</strong></footer>
+            </section>
+          </div>
+          <footer className="executive-block__footer executive-management-balance__footer">
+            <span>{balance.note}</span>
+            {balance.validation_errors.length > 0 && (
+              <span>Закрытие заблокировано: {balance.validation_errors.length} контрольных ошибок.</span>
+            )}
+            {canCloseMonth && balance.can_close && (
+              <Button disabled={loading} onClick={closeMonth}>Закрыть месяц</Button>
+            )}
+          </footer>
+        </>
       )}
     </section>
   );
@@ -2181,11 +2422,10 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
 
           {managementBalance && (
             <div className="executive-management-balance-section">
-              <BlockCard
-                activeTab={tab}
-                bitrixMode={bitrixMode}
-                block={managementBalance}
-                date={date}
+              <MonthlyManagementBalance
+                asOf={date}
+                canCloseMonth={currentAccess === "full" || data.roles.includes("finance")}
+                refreshNonce={refreshNonce}
               />
             </div>
           )}

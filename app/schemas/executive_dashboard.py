@@ -7,6 +7,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 ExecutiveAccessLevel = Literal["full", "domain"]
+ExecutiveManagementBalanceView = Literal["closed", "operational"]
 
 
 class ExecutiveDashboardMetric(BaseModel):
@@ -80,6 +81,49 @@ class ExecutiveDashboardActionsResponse(BaseModel):
     source_status: str
     total_count: int
     payload: list[ExecutiveDashboardAction]
+
+
+class ExecutiveManagementBalanceLineItem(BaseModel):
+    key: str
+    label: str
+    section: Literal["asset", "liability", "equity"]
+    amount: Decimal | None = None
+    delta_previous: Decimal | None = None
+    source_key: str
+    source_status: str
+    source_as_of: date | None = None
+    note: str | None = None
+
+
+class ExecutiveManagementBalanceResponse(BaseModel):
+    month: str
+    balance_date: date
+    view: ExecutiveManagementBalanceView
+    version: int
+    status: str
+    source_status: str
+    freshness_status: str
+    generated_at: datetime
+    closed_at: datetime | None = None
+    closed_by: str | None = None
+    currency: str = "RUB"
+    assets: list[ExecutiveManagementBalanceLineItem] = Field(default_factory=list)
+    liabilities: list[ExecutiveManagementBalanceLineItem] = Field(default_factory=list)
+    equity: list[ExecutiveManagementBalanceLineItem] = Field(default_factory=list)
+    assets_total: Decimal = Decimal("0")
+    liabilities_total: Decimal = Decimal("0")
+    equity_total: Decimal = Decimal("0")
+    liabilities_and_equity_total: Decimal = Decimal("0")
+    imbalance_amount: Decimal = Decimal("0")
+    can_close: bool = False
+    validation_errors: list[dict[str, Any]] = Field(default_factory=list)
+    available_months: list[str] = Field(default_factory=list)
+    note: str | None = None
+
+
+class ExecutiveManagementBalanceCloseRequest(BaseModel):
+    confirm: bool
+    note: str | None = Field(default=None, max_length=1000)
 
 
 class ExecutiveCashflowPeriodRatio(BaseModel):

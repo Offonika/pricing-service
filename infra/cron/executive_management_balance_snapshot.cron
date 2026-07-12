@@ -1,0 +1,2 @@
+# Current-month operational balance. Runs after the 10:45 finance snapshot.
+55 10 * * * root /opt/MM/pricing-service-task43-current/infra/cron/executive_management_balance_snapshot.sh

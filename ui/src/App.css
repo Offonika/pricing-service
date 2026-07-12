@@ -1188,6 +1188,119 @@
   grid-column: 1 / -1;
 }
 
+.executive-management-balance__header {
+  align-items: end;
+}
+
+.executive-management-balance__controls {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.executive-management-balance__controls label {
+  display: grid;
+  gap: 3px;
+  color: #667085;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.executive-management-balance__controls select {
+  min-width: 170px;
+  min-height: 34px;
+  padding: 5px 9px;
+  border: 1px solid #d0d5dd;
+  border-radius: 7px;
+  background: #fff;
+  color: #18202a;
+  font: inherit;
+  font-size: 13px;
+}
+
+.executive-management-balance__view {
+  display: flex;
+  align-self: end;
+  overflow: hidden;
+  border: 1px solid #d0d5dd;
+  border-radius: 7px;
+}
+
+.executive-management-balance__view button {
+  min-height: 34px;
+  padding: 5px 10px;
+  border: 0;
+  border-right: 1px solid #d0d5dd;
+  background: #fff;
+  color: #475467;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.executive-management-balance__view button:last-child {
+  border-right: 0;
+}
+
+.executive-management-balance__view button.is-active {
+  background: #1570ef;
+  color: #fff;
+}
+
+.executive-management-balance__view button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}
+
+.executive-management-balance__totals {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.executive-management-balance__totals > div {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid #d0d5dd;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.executive-management-balance__totals span {
+  color: #667085;
+  font-size: 12px;
+}
+
+.executive-management-balance__totals strong {
+  color: #18202a;
+  font-size: 18px;
+}
+
+.executive-management-balance__totals .is-balanced {
+  border-color: #75e0a7;
+  background: #ecfdf3;
+}
+
+.executive-management-balance__totals .is-unbalanced {
+  border-color: #fdb022;
+  background: #fffaeb;
+}
+
+.executive-management-balance__warning {
+  display: grid;
+  gap: 3px;
+  margin-bottom: 10px;
+  padding: 9px 11px;
+  border: 1px solid #fdb022;
+  border-radius: 7px;
+  background: #fffaeb;
+  color: #7a2e0e;
+  font-size: 12px;
+}
+
 .executive-block__header {
   display: flex;
   align-items: flex-start;
@@ -1255,6 +1368,14 @@
   font-size: 16px;
 }
 
+.executive-management-balance__subsection-title {
+  margin: 0;
+  color: #475467;
+  font-size: 13px;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
 .executive-management-balance__rows {
   display: grid;
   gap: 7px;
@@ -1279,6 +1400,28 @@
   color: #18202a;
   font-size: 14px;
   text-align: right;
+}
+
+.executive-management-balance__row--monthly span small {
+  display: block;
+  margin-top: 2px;
+  color: #475467;
+  font-size: 10px;
+}
+
+.executive-management-balance__row--monthly strong {
+  max-width: 190px;
+  font-size: 13px;
+}
+
+.executive-management-balance__equity-title {
+  margin-top: 8px !important;
+  padding-top: 12px;
+  border-top: 2px solid #d0d5dd;
+}
+
+.executive-management-balance__footer {
+  align-items: flex-start;
 }
 
 .executive-management-balance__column footer {
@@ -2298,6 +2441,28 @@
   }
 
   .executive-management-balance {
+    grid-template-columns: 1fr;
+  }
+
+  .executive-management-balance__header {
+    align-items: stretch;
+  }
+
+  .executive-management-balance__controls {
+    justify-content: stretch;
+  }
+
+  .executive-management-balance__controls label,
+  .executive-management-balance__controls select,
+  .executive-management-balance__view {
+    width: 100%;
+  }
+
+  .executive-management-balance__view button {
+    flex: 1 1 0;
+  }
+
+  .executive-management-balance__totals {
     grid-template-columns: 1fr;
   }
 

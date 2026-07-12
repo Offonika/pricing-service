@@ -1627,14 +1627,21 @@ def _settlement_group_amount(
 ) -> Decimal | None:
     for group in section.get("groups") or []:
         if isinstance(group, dict) and group.get("key") == group_key:
-            value = group.get(f"{side}_amount")
-            if value in (None, ""):
-                # Compatibility with the old snapshot format. All currently
-                # supported settlement groups use positive balances for
-                # receivables/prepayments and negative balances for debts.
-                fallback = "gross_payable" if side == "asset" else "reverse_balance"
-                value = group.get(fallback)
-            return _decimal(value) if value not in (None, "") else None
+            total = group.get("total_payable")
+            if total not in (None, ""):
+                # Legacy total is liability minus receivable at the exact 1C
+                # report-group grain. We show only the resulting side, not the
+                # gross debit and credit balances at the same time.
+                net_liability = _decimal(total)
+            else:
+                liability = group.get("liability_amount", group.get("gross_payable"))
+                asset = group.get("asset_amount", group.get("reverse_balance"))
+                if liability in (None, "") or asset in (None, ""):
+                    return None
+                net_liability = _decimal(liability) - _decimal(asset)
+            if side == "asset":
+                return max(-net_liability, Decimal("0"))
+            return max(net_liability, Decimal("0"))
     return None
 
 
@@ -1661,39 +1668,28 @@ def _build_management_balance_block(
     finance_payload: dict[str, Any] | None,
     *,
     money_block: ExecutiveDashboardBlock,
-    debtors_block: ExecutiveDashboardBlock,
     access_context: ExecutiveDashboardAuthContext,
 ) -> ExecutiveDashboardBlock:
     section = _finance_section(finance_payload, "creditors_payables")
     payables_status = str(section.get("source_status") or "source_missing")
     cash_metric = _metric_by_key(money_block, "cash_position_total_balance")
-    receivable_metric = _metric_by_key(debtors_block, "total_receivable")
     cash_status = (
         cash_metric.source_status if cash_metric is not None else money_block.source_status
     )
-    receivables_status = debtors_block.source_status
-    source_status = _combine_source_status_strings(
-        [cash_status, receivables_status, payables_status, "source_missing"]
-    )
+    source_status = _combine_source_status_strings([cash_status, payables_status, "source_missing"])
     masked = any(
         _mask_finance(block_key, access_context)
-        for block_key in ("money_today", "debtors", "creditors_payables")
+        for block_key in ("money_today", "creditors_payables")
     )
 
     cash_as_of = _as_date(money_block.summary.get("cash_position_as_of")) or money_block.as_of
-    receivables_as_of = debtors_block.as_of
     payables_as_of = _as_date(section.get("as_of"))
     cash_amount = (
         _decimal(cash_metric.value)
         if cash_metric is not None and _source_available_for_metric(cash_status)
         else None
     )
-    receivables_amount = (
-        _decimal(receivable_metric.value)
-        if receivable_metric is not None and _source_available_for_metric(receivables_status)
-        else None
-    )
-    supplier_advance = _settlement_group_amount(
+    supplier_receivable = _settlement_group_amount(
         section,
         group_key="suppliers",
         side="asset",
@@ -1701,6 +1697,11 @@ def _build_management_balance_block(
     employee_receivable = _settlement_group_amount(
         section,
         group_key="employees",
+        side="asset",
+    )
+    other_receivable = _settlement_group_amount(
+        section,
+        group_key="other_debtors",
         side="asset",
     )
     supplier_payable = _settlement_group_amount(
@@ -1711,6 +1712,11 @@ def _build_management_balance_block(
     employee_payable = _settlement_group_amount(
         section,
         group_key="employees",
+        side="liability",
+    )
+    other_payable = _settlement_group_amount(
+        section,
+        group_key="other_debtors",
         side="liability",
     )
     owner_receivable = _settlement_group_amount(
@@ -1733,14 +1739,6 @@ def _build_management_balance_block(
             masked=masked,
         ),
         _balance_line(
-            key="receivables",
-            label="Дебиторка покупателей",
-            amount=receivables_amount,
-            source_status=receivables_status,
-            as_of=receivables_as_of,
-            masked=masked,
-        ),
-        _balance_line(
             key="inventory_cost",
             label="Товарные остатки по себестоимости",
             amount=None,
@@ -1749,9 +1747,9 @@ def _build_management_balance_block(
             masked=masked,
         ),
         _balance_line(
-            key="supplier_advances",
-            label="Предоплата поставщикам",
-            amount=supplier_advance,
+            key="supplier_receivables",
+            label="Дебиторка поставщиков",
+            amount=supplier_receivable,
             source_status=payables_status,
             as_of=payables_as_of,
             masked=masked,
@@ -1760,6 +1758,14 @@ def _build_management_balance_block(
             key="employee_receivables",
             label="Дебиторка сотрудников",
             amount=employee_receivable,
+            source_status=payables_status,
+            as_of=payables_as_of,
+            masked=masked,
+        ),
+        _balance_line(
+            key="other_receivables",
+            label="Прочие дебиторы",
+            amount=other_receivable,
             source_status=payables_status,
             as_of=payables_as_of,
             masked=masked,
@@ -1791,6 +1797,14 @@ def _build_management_balance_block(
             masked=masked,
         ),
         _balance_line(
+            key="other_settlement_liabilities",
+            label="Задолженность прочим контрагентам",
+            amount=other_payable,
+            source_status=payables_status,
+            as_of=payables_as_of,
+            masked=masked,
+        ),
+        _balance_line(
             key="owners",
             label="Задолженность собственникам",
             amount=owner_payable,
@@ -1804,9 +1818,9 @@ def _build_management_balance_block(
             amount
             for amount in (
                 cash_amount,
-                receivables_amount,
-                supplier_advance,
+                supplier_receivable,
                 employee_receivable,
+                other_receivable,
                 owner_receivable,
             )
             if amount is not None
@@ -1816,12 +1830,17 @@ def _build_management_balance_block(
     liabilities_total = sum(
         (
             amount
-            for amount in (supplier_payable, employee_payable, owner_payable)
+            for amount in (
+                supplier_payable,
+                employee_payable,
+                other_payable,
+                owner_payable,
+            )
             if amount is not None
         ),
         Decimal("0"),
     )
-    source_dates = [value for value in (cash_as_of, receivables_as_of, payables_as_of) if value]
+    source_dates = [value for value in (cash_as_of, payables_as_of) if value]
     as_of = max(source_dates) if source_dates else None
     return ExecutiveDashboardBlock(
         key="creditors_payables",
@@ -1830,7 +1849,13 @@ def _build_management_balance_block(
         freshness_status=_freshness_from_status(source_status),
         as_of=as_of,
         summary={
-            "source_anchor": "1С: остатки денежных средств, дебиторка покупателей и взаиморасчеты",
+            "source_anchor": (
+                "1С: остатки денежных средств и рублёвый конечный остаток "
+                "взаиморасчётов по группам контрагентов"
+            ),
+            "period_independent": True,
+            "selected_month": payables_as_of.strftime("%Y-%m") if payables_as_of else None,
+            "monthly_balance_endpoint": ("/api/management/executive-dashboard/management-balance"),
             "note": (
                 "Частичный управленческий баланс в рублях. Себестоимость товарных "
                 "остатков ещё не подключена: найденная SQL totals-таблица не прошла "
@@ -2875,7 +2900,6 @@ def build_executive_dashboard(
         _build_management_balance_block(
             finance_payload,
             money_block=money_today_block,
-            debtors_block=debtors_block,
             access_context=context,
         ),
         _build_procurement_block(finance_payload, access_context=context),

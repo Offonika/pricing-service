@@ -356,11 +356,16 @@ documents:
       - app/schemas/executive_dashboard.py
       - app/services/bitrix_executive_dashboard_auth.py
       - app/services/executive_dashboard.py
+      - app/services/executive_management_balance.py
+      - tasks/build_executive_management_balance_snapshot.py
+      - infra/cron/executive_management_balance_snapshot.sh
+      - infra/cron/executive_management_balance_snapshot.cron
       - ui/src/api/executiveDashboard.ts
       - ui/src/components/ExecutiveDashboard.tsx
     related_tests:
       - tests/test_executive_dashboard.py
-    keywords: [management, executive-dashboard, bitrix24, finance, payables, receivables]
+      - tests/test_executive_management_balance.py
+    keywords: [management, executive-dashboard, management-balance, monthly-close, bitrix24, finance, payables, receivables]
   - path: docs/specs/weekly-manager-sales-online-demand.md
     title: Weekly Manager Sales Online Demand Block
     doc_type: spec

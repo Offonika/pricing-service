@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, time
 from pathlib import Path
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse
@@ -15,6 +16,8 @@ from app.schemas.executive_dashboard import (
     ExecutiveCashflowPeriodResponse,
     ExecutiveDashboardActionsResponse,
     ExecutiveDashboardResponse,
+    ExecutiveManagementBalanceCloseRequest,
+    ExecutiveManagementBalanceResponse,
     ExecutiveProfitLossPeriodResponse,
 )
 from app.schemas.management import (
@@ -74,6 +77,12 @@ from app.services.executive_dashboard import (
     build_executive_dashboard,
     build_executive_profit_loss_period_response,
 )
+from app.services.executive_management_balance import (
+    ManagementBalanceCloseError,
+    ManagementBalanceNotFoundError,
+    close_management_balance,
+    get_management_balance,
+)
 from app.services.finance_cash_position import build_finance_cash_position
 from app.services.management_observability import build_management_health
 from app.services.management_rules import build_management_task_payloads
@@ -121,6 +130,57 @@ def get_executive_dashboard(
         requested_date=requested_date,
         access_context=access,
     )
+
+
+@router.get(
+    "/executive-dashboard/management-balance",
+    response_model=ExecutiveManagementBalanceResponse,
+)
+def get_executive_management_balance(
+    month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    view: Literal["closed", "operational"] | None = Query(default=None),
+    db: Session = Depends(get_db),
+    access: ExecutiveDashboardAuthContext = Depends(require_executive_dashboard_access),
+) -> ExecutiveManagementBalanceResponse:
+    if not access.allows_block("creditors_payables") or not access.can_view_money_block(
+        "creditors_payables"
+    ):
+        raise HTTPException(status_code=403, detail="Нет доступа к управленческому балансу")
+    try:
+        return get_management_balance(
+            db,
+            month=month,
+            view=view,
+            access_context=access,
+        )
+    except (ManagementBalanceNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post(
+    "/executive-dashboard/management-balance/{month}/close",
+    response_model=ExecutiveManagementBalanceResponse,
+)
+def close_executive_management_balance(
+    month: str,
+    payload: ExecutiveManagementBalanceCloseRequest,
+    db: Session = Depends(get_db),
+    access: ExecutiveDashboardAuthContext = Depends(require_executive_dashboard_access),
+) -> ExecutiveManagementBalanceResponse:
+    if not access.is_full_access and "finance" not in access.roles:
+        raise HTTPException(status_code=403, detail="Закрывать месяц может только финансист")
+    try:
+        return close_management_balance(
+            db,
+            month=month,
+            actor=access.actor,
+            confirm=payload.confirm,
+            note=payload.note,
+        )
+    except ManagementBalanceNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except (ManagementBalanceCloseError, ValueError) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
 
 
 @router.get(
@@ -394,8 +454,7 @@ def get_counterparty_folder_recommendations(
     status: str | None = Query(
         default=None,
         pattern=(
-            f"^({STATUS_MOVE_RECOMMENDED}|{STATUS_OK}|"
-            f"{STATUS_NO_OVERDUE}|{STATUS_NEEDS_REVIEW})$"
+            f"^({STATUS_MOVE_RECOMMENDED}|{STATUS_OK}|{STATUS_NO_OVERDUE}|{STATUS_NEEDS_REVIEW})$"
         ),
     ),
     limit: int | None = Query(default=None, ge=1, le=10000),

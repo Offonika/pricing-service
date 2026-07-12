@@ -265,6 +265,8 @@ class Settings(BaseSettings):
         "../mm-compensation/build/executive_dashboard/warehouse_snapshot.json"
     )
     executive_dashboard_source_max_lag_days: int = 1
+    executive_management_balance_accounting_database_url: str | None = None
+    executive_management_balance_tolerance_rub: float = 1.0
     executive_dashboard_bitrix_enabled: bool = False
     executive_dashboard_bitrix_allowed_domains: Annotated[list[str], NoDecode] = Field(
         default_factory=list

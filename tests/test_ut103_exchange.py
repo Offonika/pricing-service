@@ -60,6 +60,7 @@ def test_load_ut103_env_file_loads_only_ut103_keys(
             [
                 "UT103_EXCHANGE_ROOT=/mnt/ut103_exchange/UT103",
                 "UT103_FORECAST_SOURCE=custom-forecast",
+                "UT103_CUSTOMER_PRICE_TYPES_SOURCE=custom-price-types",
                 "DATABASE_URL=postgresql://secret",
             ]
         ),
@@ -67,12 +68,14 @@ def test_load_ut103_env_file_loads_only_ut103_keys(
     )
     monkeypatch.delenv("UT103_EXCHANGE_ROOT", raising=False)
     monkeypatch.delenv("UT103_FORECAST_SOURCE", raising=False)
+    monkeypatch.delenv("UT103_CUSTOMER_PRICE_TYPES_SOURCE", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
 
     ut103_exchange.load_ut103_env_file(env_file)
 
     assert ut103_exchange.os.environ["UT103_EXCHANGE_ROOT"] == "/mnt/ut103_exchange/UT103"
     assert ut103_exchange.os.environ["UT103_FORECAST_SOURCE"] == "custom-forecast"
+    assert ut103_exchange.os.environ["UT103_CUSTOMER_PRICE_TYPES_SOURCE"] == "custom-price-types"
     assert "DATABASE_URL" not in ut103_exchange.os.environ
 
 

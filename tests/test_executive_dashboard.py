@@ -618,10 +618,11 @@ def test_dashboard_marks_missing_finance_sources_without_zero_truth(
 
     blocks = {block.key: block for block in result.blocks}
     assert blocks["money_today"].source_status == "source_missing"
-    assert blocks["creditors_payables"].source_status == "partial"
+    assert blocks["creditors_payables"].source_status == "source_missing"
     assert (
         blocks["creditors_payables"].summary["source_anchor"]
-        == "1С: остатки денежных средств, дебиторка покупателей и взаиморасчеты"
+        == "1С: остатки денежных средств и рублёвый конечный остаток "
+        "взаиморасчётов по группам контрагентов"
     )
     assert blocks["debtors"].source_status == "ready"
     assert blocks["debtors"].title == "Дебиторка покупателей"
@@ -679,6 +680,14 @@ def test_management_balance_places_assets_and_liabilities_on_their_sides(
                             "reverse_balance": "50.00",
                         },
                         {
+                            "key": "other_debtors",
+                            "asset_amount": "30.00",
+                            "liability_amount": "10.00",
+                            "gross_payable": "10.00",
+                            "total_payable": "-20.00",
+                            "reverse_balance": "30.00",
+                        },
+                        {
                             "key": "owners",
                             "asset_amount": "0.00",
                             "liability_amount": "200.00",
@@ -707,23 +716,26 @@ def test_management_balance_places_assets_and_liabilities_on_their_sides(
     metrics = {metric.key: metric.value for metric in block.metrics}
     assert block.title == "Управленческий баланс"
     assert metrics == {
-        "balance_assets_total": Decimal("720.00"),
-        "balance_liabilities_total": Decimal("220.00"),
+        "balance_assets_total": Decimal("650.00"),
+        "balance_liabilities_total": Decimal("200.00"),
     }
     assert [row["amount"] for row in block.summary["balance_assets"]] == [
         "500.00",
-        "70.00",
         None,
-        "100.00",
+        "80.00",
         "50.00",
-        "0.00",
+        "20.00",
+        "0",
     ]
     assert [row["amount"] for row in block.summary["balance_liabilities"]] == [
-        "20.00",
-        "0.00",
+        "0",
+        "0",
+        "0",
         "200.00",
     ]
-    assert block.summary["balance_liabilities"][2]["label"] == "Задолженность собственникам"
+    assert block.summary["balance_assets"][2]["label"] == "Дебиторка поставщиков"
+    assert block.summary["balance_assets"][4]["label"] == "Прочие дебиторы"
+    assert block.summary["balance_liabilities"][3]["label"] == "Задолженность собственникам"
 
 
 def test_dashboard_accepts_yesterday_within_configured_lag(

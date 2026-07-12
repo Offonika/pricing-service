@@ -751,6 +751,8 @@ def test_parse_report_period_end_supports_month_range() -> None:
 
 def test_load_onec_mutual_settlements_current_balances_file_reads_xls(tmp_path) -> None:
     source = Path(__file__).resolve().parents[1] / "docs" / "ВедомостьСотрудникипо280226тест.xls"
+    if not source.is_file():
+        pytest.skip("local ignored XLS integration fixture is not available")
     target = tmp_path / "staff_current.xls"
     target.write_bytes(source.read_bytes())
 

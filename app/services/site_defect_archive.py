@@ -193,7 +193,9 @@ def parse_archive_export(
     for thread in threads:
         if limit is not None and len(cases) >= limit:
             break
-        parsed_case = _parse_thread(thread, source_path=source_path, file_map=file_map, dialog_id=dialog_id)
+        parsed_case = _parse_thread(
+            thread, source_path=source_path, file_map=file_map, dialog_id=dialog_id
+        )
         if parsed_case is not None:
             cases.append(parsed_case)
     return cases
@@ -267,7 +269,9 @@ def import_archive_export(
         session.flush()
         if apply_bitrix:
             if client is None or not config.can_sync_items:
-                raise RuntimeError("Bitrix archive sync is requested but Bitrix settings are incomplete")
+                raise RuntimeError(
+                    "Bitrix archive sync is requested but Bitrix settings are incomplete"
+                )
             sync_result = sync_case_to_bitrix(
                 case_row,
                 imported,
@@ -354,9 +358,7 @@ def upsert_archive_case(
     else:
         session.flush()
         session.execute(
-            delete(SiteDefectArchiveMessage).where(
-                SiteDefectArchiveMessage.case_id == case_row.id
-            )
+            delete(SiteDefectArchiveMessage).where(SiteDefectArchiveMessage.case_id == case_row.id)
         )
         session.execute(
             delete(SiteDefectArchiveFile).where(SiteDefectArchiveFile.case_id == case_row.id)
@@ -416,7 +418,9 @@ def search_archive_cases(
         count_stmt = count_stmt.where(condition)
     stmt = (
         stmt.options(selectinload(SiteDefectArchiveCase.files))
-        .order_by(SiteDefectArchiveCase.posted_at.desc().nullslast(), SiteDefectArchiveCase.id.desc())
+        .order_by(
+            SiteDefectArchiveCase.posted_at.desc().nullslast(), SiteDefectArchiveCase.id.desc()
+        )
         .limit(max(1, min(filters.limit, 200)))
         .offset(max(0, filters.offset))
     )
@@ -502,7 +506,9 @@ def render_history_markdown(imported: ImportedArchiveCase) -> str:
     lines.extend(["## Файлы", ""])
     if imported.files:
         for file_item in imported.files:
-            marker = f"fileId={file_item.source_file_id}" if file_item.source_file_id else "fileId=-"
+            marker = (
+                f"fileId={file_item.source_file_id}" if file_item.source_file_id else "fileId=-"
+            )
             size = f", {file_item.size} bytes" if file_item.size is not None else ""
             lines.append(f"- `{file_item.name}` ({marker}{size})")
     else:
@@ -614,15 +620,18 @@ def _parse_thread(
     if not post_id:
         return None
     comment = _as_dict(thread.get("comment") or thread.get("comments") or {})
-    comment_chat_id = _clean_string(
-        _first_present(
-            comment,
-            "chatId",
-            "chat_id",
-            "CHAT_ID",
-            fallback=_first_present(thread, "commentChatId", "comment_chat_id"),
+    comment_chat_id = (
+        _clean_string(
+            _first_present(
+                comment,
+                "chatId",
+                "chat_id",
+                "CHAT_ID",
+                fallback=_first_present(thread, "commentChatId", "comment_chat_id"),
+            )
         )
-    ) or None
+        or None
+    )
     parent_text = _clean_text(
         _first_present(parent, "text", "message", "MESSAGE", "html", "body", fallback="")
     )
@@ -631,7 +640,8 @@ def _parse_thread(
         source_chat_id=_clean_string(_first_present(parent, "chatId", "chat_id")) or dialog_id,
         message_kind="post",
         message_at=_parse_datetime(_first_present(parent, "date", "dateCreate", "createdAt")),
-        author_id=_clean_string(_first_present(parent, "authorId", "author_id", "AUTHOR_ID")) or None,
+        author_id=_clean_string(_first_present(parent, "authorId", "author_id", "AUTHOR_ID"))
+        or None,
         author_name=_clean_string(
             _first_present(parent, "authorName", "author_name", "AUTHOR_NAME", "author")
         )
@@ -685,7 +695,9 @@ def _parse_thread(
                 )
                 or None,
                 text=_clean_text(
-                    _first_present(message, "text", "message", "MESSAGE", "html", "body", fallback="")
+                    _first_present(
+                        message, "text", "message", "MESSAGE", "html", "body", fallback=""
+                    )
                 ),
                 file_ids=_extract_file_ids(message),
             )
@@ -697,7 +709,9 @@ def _parse_thread(
     numbers = _extract_numbers(search_text)
     problem_type = _classify_problem_type(search_text)
     title = _build_title(post_id=post_id, posted_at=parent_message.message_at, numbers=numbers)
-    summary = _build_summary(parent_text=parent_text, comments=comments, numbers=numbers, problem_type=problem_type)
+    summary = _build_summary(
+        parent_text=parent_text, comments=comments, numbers=numbers, problem_type=problem_type
+    )
     return ImportedArchiveCase(
         idempotency_key=f"old_bitrix:{dialog_id}:post:{post_id}",
         source_dialog_id=dialog_id,
@@ -793,9 +807,10 @@ def _extract_files(
             message_by_file_id[file_id] = message.source_message_id
     deduped: dict[tuple[str | None, str], ImportedArchiveFile] = {}
     for raw_file in raw_files:
-        file_id = _clean_string(
-            _first_present(raw_file, "fileId", "file_id", "id", "ID", "sourceFileId")
-        ) or None
+        file_id = (
+            _clean_string(_first_present(raw_file, "fileId", "file_id", "id", "ID", "sourceFileId"))
+            or None
+        )
         name = _clean_string(
             _first_present(raw_file, "name", "fileName", "filename", "NAME", "title")
         )
@@ -815,15 +830,17 @@ def _extract_files(
             if path.exists():
                 size = path.stat().st_size
         extension = Path(name).suffix.lower() or None
-        content_type = _clean_string(
-            _first_present(raw_file, "contentType", "content_type", "mimeType", "type")
-        ) or mimetypes.guess_type(name)[0]
+        content_type = (
+            _clean_string(
+                _first_present(raw_file, "contentType", "content_type", "mimeType", "type")
+            )
+            or mimetypes.guess_type(name)[0]
+        )
         key = (file_id, name)
         deduped[key] = ImportedArchiveFile(
             source_file_id=file_id,
-            source_message_id=message_by_file_id.get(file_id or "") or _clean_string(
-                _first_present(raw_file, "messageId", "message_id")
-            )
+            source_message_id=message_by_file_id.get(file_id or "")
+            or _clean_string(_first_present(raw_file, "messageId", "message_id"))
             or None,
             name=name,
             storage_path=storage_path,
@@ -850,7 +867,9 @@ def _extract_files(
             extension=Path(name).suffix.lower() or None,
             size=size,
         )
-    return sorted(deduped.values(), key=lambda item: (item.name.casefold(), item.source_file_id or ""))
+    return sorted(
+        deduped.values(), key=lambda item: (item.name.casefold(), item.source_file_id or "")
+    )
 
 
 def _find_local_file_path(source_path: Path, *, name: str, file_id: str | None) -> str | None:
@@ -874,9 +893,7 @@ def _extract_file_ids(message: dict[str, Any]) -> list[str]:
         if isinstance(value, list):
             for item in value:
                 if isinstance(item, dict):
-                    file_id = _clean_string(
-                        _first_present(item, "fileId", "file_id", "id", "ID")
-                    )
+                    file_id = _clean_string(_first_present(item, "fileId", "file_id", "id", "ID"))
                 else:
                     file_id = _clean_string(item)
                 if file_id and file_id not in result:
@@ -998,9 +1015,13 @@ def _build_search_conditions(filters: SiteDefectArchiveFilters) -> list[Any]:
             )
         )
     if filters.date_from:
-        conditions.append(SiteDefectArchiveCase.posted_at >= datetime.combine(filters.date_from, time.min))
+        conditions.append(
+            SiteDefectArchiveCase.posted_at >= datetime.combine(filters.date_from, time.min)
+        )
     if filters.date_to:
-        conditions.append(SiteDefectArchiveCase.posted_at <= datetime.combine(filters.date_to, time.max))
+        conditions.append(
+            SiteDefectArchiveCase.posted_at <= datetime.combine(filters.date_to, time.max)
+        )
     author = _clean_string(filters.author)
     if author:
         conditions.append(SiteDefectArchiveCase.author_name.ilike(f"%{author}%"))
@@ -1050,8 +1071,12 @@ def _case_to_list_item(
         "extracted_numbers": case_row.extracted_numbers or [],
         "comment_count": case_row.comment_count,
         "file_count": case_row.file_count,
-        "has_photo": any((file_item.extension or "").lower() in IMAGE_EXTENSIONS for file_item in case_row.files),
-        "has_video": any((file_item.extension or "").lower() in VIDEO_EXTENSIONS for file_item in case_row.files),
+        "has_photo": any(
+            (file_item.extension or "").lower() in IMAGE_EXTENSIONS for file_item in case_row.files
+        ),
+        "has_video": any(
+            (file_item.extension or "").lower() in VIDEO_EXTENSIONS for file_item in case_row.files
+        ),
         "bitrix_entity_id": case_row.bitrix_entity_id,
         "bitrix_detail_url": case_row.bitrix_detail_url,
         "bitrix_disk_folder_id": case_row.bitrix_disk_folder_id,
@@ -1099,8 +1124,15 @@ def _sync_disk_folder(
         raise RuntimeError("Bitrix root disk folder is not configured")
     current_folder_id = str(config.root_folder_id)
     folder_url: str | None = None
-    for part in ("Архив", "Браки сайт", imported.source_dialog_id, f"post-{imported.source_post_message_id}"):
-        found = _find_child(client, parent_folder_id=current_folder_id, name=part, item_type="folder")
+    for part in (
+        "Архив",
+        "Браки сайт",
+        imported.source_dialog_id,
+        f"post-{imported.source_post_message_id}",
+    ):
+        found = _find_child(
+            client, parent_folder_id=current_folder_id, name=part, item_type="folder"
+        )
         if found is None:
             current_folder_id, folder_url = client.add_subfolder(
                 parent_folder_id=int(current_folder_id),
@@ -1108,9 +1140,13 @@ def _sync_disk_folder(
             )
         else:
             current_folder_id, folder_url = found["id"], found.get("url")
-    files_folder = _find_child(client, parent_folder_id=current_folder_id, name="files", item_type="folder")
+    files_folder = _find_child(
+        client, parent_folder_id=current_folder_id, name="files", item_type="folder"
+    )
     if files_folder is None:
-        files_folder_id, _ = client.add_subfolder(parent_folder_id=int(current_folder_id), name="files")
+        files_folder_id, _ = client.add_subfolder(
+            parent_folder_id=int(current_folder_id), name="files"
+        )
     else:
         files_folder_id = files_folder["id"]
 
@@ -1402,9 +1438,7 @@ def _post_multipart_file(
             payload = json.loads(response.read().decode("utf-8"))
     except urllib.error.HTTPError as error:
         body_text = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError(
-            f"Bitrix24 disk upload: HTTP {error.code} {body_text[:500]}"
-        ) from error
+        raise RuntimeError(f"Bitrix24 disk upload: HTTP {error.code} {body_text[:500]}") from error
     except urllib.error.URLError as error:
         raise RuntimeError(f"Bitrix24 disk upload: network error {error.reason}") from error
     except TimeoutError as error:
@@ -1510,7 +1544,9 @@ def sanitize_export_payload(value: Any) -> Any:
         result: dict[str, Any] = {}
         for key, item in value.items():
             normalized_key = str(key).replace("-", "_").casefold()
-            if normalized_key in URLISH_KEYS or any(marker in normalized_key for marker in URLISH_KEYS):
+            if normalized_key in URLISH_KEYS or any(
+                marker in normalized_key for marker in URLISH_KEYS
+            ):
                 continue
             result[str(key)] = sanitize_export_payload(item)
         return result

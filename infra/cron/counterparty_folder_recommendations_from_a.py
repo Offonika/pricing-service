@@ -61,8 +61,7 @@ REVIEW_REASON_LABELS = {
     "department_folder_missing": "у подразделения долга не настроена папка",
     "current_counterparty_folder_missing": "у контрагента не найдена текущая папка",
     "folder_mismatch_payment_term_missing": (
-        "папка отличается, но срок оплаты не заполнен; "
-        "в отчете применен расчетный срок 7 дней"
+        "папка отличается, но срок оплаты не заполнен; " "в отчете применен расчетный срок 7 дней"
     ),
     "spb_cross_folder_manual_review": "межпапочный СПБ-кейс, нужна ручная проверка",
     "excluded_employee_folder": "исключено: контрагент или папка сотрудников",
@@ -86,9 +85,7 @@ REVIEW_REASON_LABELS = {
     "origin_document_closed_by_structure": (
         "выбранный документ закрыт по структуре 1С; нужно найти фактический источник долга"
     ),
-    "document_comment_history_required": (
-        "нужна проверка комментария или истории документа в 1С"
-    ),
+    "document_comment_history_required": ("нужна проверка комментария или истории документа в 1С"),
 }
 DOCUMENT_STRUCTURE_STATUS_LABELS = {
     "confirmed_open": "открытый остаток подтвержден структурой 1С",
@@ -353,8 +350,7 @@ def _bitrix_webhook_base(env: dict[str, str]) -> str:
         if value:
             return value
     raise RuntimeError(
-        "Missing Bitrix webhook base: set one of "
-        + ", ".join(BITRIX_WEBHOOK_ENV_KEYS)
+        "Missing Bitrix webhook base: set one of " + ", ".join(BITRIX_WEBHOOK_ENV_KEYS)
     )
 
 
@@ -380,7 +376,9 @@ def _bitrix_call(
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as decode_error:
-            raise RuntimeError(f"Bitrix API HTTP {exc.code} for {method}: {raw[:300]}") from decode_error
+            raise RuntimeError(
+                f"Bitrix API HTTP {exc.code} for {method}: {raw[:300]}"
+            ) from decode_error
         raise RuntimeError(
             f"Bitrix API error for {method}: {data.get('error')} "
             f"{data.get('error_description', '')}"
@@ -584,9 +582,7 @@ def export_recommendations_csv(report: dict[str, Any], output_path: Path) -> Pat
                         item.get("origin_manager_name"),
                     ),
                     _statement_rule_label(
-                        (item.get("open_debt_documents") or [{}])[0].get(
-                            "statement_selection_rule"
-                        )
+                        (item.get("open_debt_documents") or [{}])[0].get("statement_selection_rule")
                         if isinstance(item.get("open_debt_documents"), list)
                         and item.get("open_debt_documents")
                         else ""
@@ -612,21 +608,19 @@ def export_recommendations_csv(report: dict[str, Any], output_path: Path) -> Pat
                         item.get("effective_credit_depth_days"),
                         item.get("credit_depth_days"),
                     ),
-                    _format_dt(_first_present(item.get("effective_due_date"), item.get("due_date"))),
+                    _format_dt(
+                        _first_present(item.get("effective_due_date"), item.get("due_date"))
+                    ),
                     _payment_term_source_label(
                         _first_present(
                             item.get("effective_payment_term_source"),
                             item.get("payment_term_source"),
                         )
                     ),
-                    _document_structure_status_label(
-                        item.get("document_structure_status")
-                    ),
+                    _document_structure_status_label(item.get("document_structure_status")),
                     _csv_number(item.get("document_structure_open_amount")),
                     _csv_number(item.get("document_structure_sale_amount")),
-                    _format_linked_documents(
-                        item.get("document_structure_linked_documents")
-                    ),
+                    _format_linked_documents(item.get("document_structure_linked_documents")),
                     " от ".join(
                         chunk
                         for chunk in (
@@ -845,7 +839,9 @@ def export_recommendations_xlsx(report: dict[str, Any], output_path: Path) -> Pa
             sheet.column_dimensions[get_column_letter(column_index)].width = min(width, 48)
 
     if data_sheet.max_row > 1:
-        data_sheet.auto_filter.ref = f"A1:{get_column_letter(data_sheet.max_column)}{data_sheet.max_row}"
+        data_sheet.auto_filter.ref = (
+            f"A1:{get_column_letter(data_sheet.max_column)}{data_sheet.max_row}"
+        )
 
     workbook.save(output_path)
     return output_path
@@ -942,10 +938,7 @@ def render_bitrix_comment(
                 limit=3,
             )
             if open_documents:
-                lines.append(
-                    "🧾 Открытые документы по ведомостной логике 1С: "
-                    f"{open_documents}"
-                )
+                lines.append("🧾 Открытые документы по ведомостной логике 1С: " f"{open_documents}")
             elif document_number or document_date:
                 document_parts = [chunk for chunk in (document_number, document_date) if chunk]
                 lines.append(
@@ -1351,9 +1344,7 @@ def main() -> None:
         retry_delay=retry_delay,
     )
     bitrix_base_url = (
-        _bitrix_webhook_base(env)
-        if args.notify_bitrix_task_id and not args.dry_run
-        else ""
+        _bitrix_webhook_base(env) if args.notify_bitrix_task_id and not args.dry_run else ""
     )
     disk_folder_id = _to_int(env.get("COUNTERPARTY_FOLDER_RECOMMENDATIONS_B24_DISK_FOLDER_ID"))
 
@@ -1373,23 +1364,27 @@ def main() -> None:
         bitrix_task_id=args.notify_bitrix_task_id,
         notify_empty=args.notify_empty,
         deliver_comment=(
-            (lambda task_id, message: post_bitrix_task_comment(
-                bitrix_base_url,
-                task_id=task_id,
-                message=message,
-                timeout=int(env.get("COUNTERPARTY_FOLDER_RECOMMENDATIONS_BITRIX_TIMEOUT_SEC", "30")),
-            ))
+            (
+                lambda task_id, message: post_bitrix_task_comment(
+                    bitrix_base_url,
+                    task_id=task_id,
+                    message=message,
+                    timeout=int(
+                        env.get("COUNTERPARTY_FOLDER_RECOMMENDATIONS_BITRIX_TIMEOUT_SEC", "30")
+                    ),
+                )
+            )
             if args.notify_bitrix_task_id and not args.dry_run
             else None
         ),
         deliver_attachment=(
             (
                 lambda task_id, file_path: deliver_bitrix_task_attachment(
-                        bitrix_base_url,
-                        folder_id=disk_folder_id,
-                        task_id=task_id,
-                        file_path=file_path,
-                    )
+                    bitrix_base_url,
+                    folder_id=disk_folder_id,
+                    task_id=task_id,
+                    file_path=file_path,
+                )
             )
             if args.notify_bitrix_task_id and disk_folder_id is not None and not args.dry_run
             else None

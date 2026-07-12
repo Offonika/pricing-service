@@ -69,9 +69,7 @@ def upgrade() -> None:
         ),
         sa.UniqueConstraint("stable_key", name="uq_proc_order_formation_stable_key"),
     )
-    op.create_index(
-        "ix_proc_order_formation_status", "procurement_order_formation", ["status"]
-    )
+    op.create_index("ix_proc_order_formation_status", "procurement_order_formation", ["status"])
     op.create_index(
         "ix_proc_order_formation_supplier",
         "procurement_order_formation",
@@ -119,9 +117,7 @@ def upgrade() -> None:
             ["order_id"], ["procurement_order_formation.id"], ondelete="CASCADE"
         ),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "order_id", "line_number", name="uq_proc_order_line_order_number"
-        ),
+        sa.UniqueConstraint("order_id", "line_number", name="uq_proc_order_line_order_number"),
         sa.UniqueConstraint("stable_key", name="uq_proc_order_line_stable_key"),
     )
     op.create_index(
@@ -172,9 +168,7 @@ def upgrade() -> None:
             ["line_id"], ["procurement_order_formation_line.id"], ondelete="CASCADE"
         ),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "idempotency_key", name="uq_proc_class_proposal_idempotency"
-        ),
+        sa.UniqueConstraint("idempotency_key", name="uq_proc_class_proposal_idempotency"),
     )
     op.create_index(
         "ix_proc_class_proposal_line_status",
@@ -202,21 +196,13 @@ def downgrade() -> None:
         "ix_proc_order_line_bitrix_product",
         table_name="procurement_order_formation_line",
     )
-    op.drop_index(
-        "ix_proc_order_line_onec_ref", table_name="procurement_order_formation_line"
-    )
-    op.drop_index(
-        "ix_proc_order_line_order", table_name="procurement_order_formation_line"
-    )
+    op.drop_index("ix_proc_order_line_onec_ref", table_name="procurement_order_formation_line")
+    op.drop_index("ix_proc_order_line_order", table_name="procurement_order_formation_line")
     op.drop_table("procurement_order_formation_line")
     op.drop_index(
         "ix_proc_order_formation_onec_status",
         table_name="procurement_order_formation",
     )
-    op.drop_index(
-        "ix_proc_order_formation_supplier", table_name="procurement_order_formation"
-    )
-    op.drop_index(
-        "ix_proc_order_formation_status", table_name="procurement_order_formation"
-    )
+    op.drop_index("ix_proc_order_formation_supplier", table_name="procurement_order_formation")
+    op.drop_index("ix_proc_order_formation_status", table_name="procurement_order_formation")
     op.drop_table("procurement_order_formation")

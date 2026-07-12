@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import date, datetime, time
-from decimal import Decimal
 from pathlib import Path
 from typing import Literal
 
@@ -36,8 +35,6 @@ from app.schemas.executive_dashboard import (
     ExecutiveManagementBalanceResponse,
     ExecutiveProfitLossPeriodResponse,
     ExecutiveSalesPeriodResponse,
-    ExecutiveServiceAccrualItem,
-    ExecutiveServiceAccrualListResponse,
 )
 from app.schemas.management import (
     CounterpartyFolderChangeItem,
@@ -103,11 +100,6 @@ from app.services.executive_management_balance import (
     ManagementBalanceNotFoundError,
     close_management_balance,
     get_management_balance,
-    month_end,
-)
-from app.services.executive_service_accruals import (
-    service_accrual_entries,
-    service_accrual_source_status,
 )
 from app.services.finance_cash_position import build_finance_cash_position
 from app.services.management_observability import build_management_health
@@ -207,91 +199,6 @@ def close_executive_management_balance(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except (ManagementBalanceCloseError, ValueError) as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-
-@router.get(
-    "/executive-dashboard/service-accruals",
-    response_model=ExecutiveServiceAccrualListResponse,
-)
-def list_executive_service_accruals(
-    month: str = Query(pattern=r"^\d{4}-\d{2}$"),
-    counterparty_ref: str | None = Query(default=None),
-    contract_ref: str | None = Query(default=None),
-    expense_line_key: str | None = Query(default=None),
-    status: str | None = Query(default=None),
-    db: Session = Depends(get_db),
-    access: ExecutiveDashboardAuthContext = Depends(require_executive_dashboard_access),
-) -> ExecutiveServiceAccrualListResponse:
-    if not access.is_full_access and "finance" not in access.roles:
-        raise HTTPException(status_code=403, detail="Расшифровка начислений доступна финансисту")
-    try:
-        period_month = date.fromisoformat(f"{month}-01")
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail="month must be YYYY-MM") from exc
-    entries = service_accrual_entries(
-        db,
-        month=period_month,
-        counterparty_ref=counterparty_ref,
-        contract_ref=contract_ref,
-        expense_line_key=expense_line_key,
-        status=status,
-    )
-    items = [
-        ExecutiveServiceAccrualItem(
-            id=entry.id,
-            month=entry.period_month.strftime("%Y-%m"),
-            recognition_date=entry.recognition_date,
-            counterparty_ref=entry.counterparty_ref,
-            counterparty_name=entry.counterparty_name,
-            contract_ref=entry.contract_ref,
-            contract_name=entry.contract_name,
-            expense_line_key=entry.expense_line_key,
-            expense_line_label=entry.expense_line_label,
-            status=entry.status,
-            recognition_method=entry.recognition_method,
-            recognized_amount_rub=entry.recognized_amount_rub,
-            payment_amount_rub=entry.payment_amount_rub,
-            cashflow_expense_replaced_rub=entry.cashflow_expense_replaced_rub,
-            source_status=entry.source_status,
-            source_as_of=entry.source_as_of,
-            note=(
-                "Оценочно, закрывающие документы отсутствуют"
-                if entry.status == "estimated_without_document"
-                else None
-            ),
-        )
-        for entry in entries
-    ]
-    response_source_status = (
-        "ready"
-        if items and all(item.source_status == "ready" for item in items)
-        else (
-            "partial"
-            if items
-            else service_accrual_source_status(
-                db,
-                as_of=(
-                    date.today()
-                    if period_month == date.today().replace(day=1)
-                    else month_end(period_month)
-                ),
-            )
-        )
-    )
-    return ExecutiveServiceAccrualListResponse(
-        month=month,
-        source_status=response_source_status,
-        freshness_status=(
-            "fresh"
-            if response_source_status == "ready"
-            else "partial" if response_source_status == "partial" else "missing"
-        ),
-        total_count=len(items),
-        recognized_amount_rub=sum((item.recognized_amount_rub for item in items), Decimal("0")),
-        payment_amount_rub=sum((item.payment_amount_rub for item in items), Decimal("0")),
-        estimated_count=sum(1 for item in items if item.status == "estimated_without_document"),
-        items=items,
-    )
 
 
 @router.get(

@@ -82,8 +82,6 @@ type ManagementBalanceLine = {
   source_status?: string;
   as_of?: string | null;
   masked?: boolean;
-  recognition_method?: string;
-  estimated_count?: number;
 };
 
 const MONEY_TAB_KEY = "money_today";
@@ -997,10 +995,7 @@ export function ManagementBalanceBlockCard({
             <div className="executive-management-balance__rows">
               {assets.map((line) => (
                 <div className="executive-management-balance__row" key={line.key || line.label}>
-                  <span>
-                    {line.label || "Статья"}
-                    {!!line.estimated_count && <small>Оценочно, без закрывающих документов</small>}
-                  </span>
+                  <span>{line.label || "Статья"}</span>
                   <strong>{managementBalanceAmount(line)}</strong>
                 </div>
               ))}
@@ -1015,10 +1010,7 @@ export function ManagementBalanceBlockCard({
             <div className="executive-management-balance__rows">
               {liabilities.map((line) => (
                 <div className="executive-management-balance__row" key={line.key || line.label}>
-                  <span>
-                    {line.label || "Статья"}
-                    {!!line.estimated_count && <small>Оценочно, без закрывающих документов</small>}
-                  </span>
+                  <span>{line.label || "Статья"}</span>
                   <strong>{managementBalanceAmount(line)}</strong>
                 </div>
               ))}
@@ -1068,9 +1060,6 @@ function MonthlyBalanceRows({
               {line.source_as_of ? `на ${formatDate(line.source_as_of)}` : statusLabel(line.source_status)}
               {line.delta_previous !== null && line.delta_previous !== undefined
                 ? ` · к прошлому месяцу ${formatSignedMoney(line.delta_previous)}`
-                : ""}
-              {line.estimated_count > 0
-                ? ` · оценочно без документов: ${formatPlainNumber(line.estimated_count)}`
                 : ""}
             </small>
           </span>
@@ -1494,11 +1483,7 @@ function profitLossRowDetail(row: ExecutiveProfitLossBreakdownRow) {
 
 function profitLossExpenseDetail(row: ExecutiveProfitLossExpenseBreakdownRow) {
   const review = row.review_count > 0 ? `, на проверку: ${formatPlainNumber(row.review_count)}` : "";
-  const method = row.recognition_method === "accrual" ? "по начислению" : "по оплате";
-  const estimated = row.estimated_count > 0
-    ? `, оценочно без документов: ${formatPlainNumber(row.estimated_count)}`
-    : "";
-  return `${method}, ${formatPlainNumber(row.movement_count)} оплат${review}${estimated}`;
+  return `${formatPlainNumber(row.movement_count)} оплат${review}`;
 }
 
 function profitLossQuestionDetail(row: ExecutiveProfitLossOpenQuestion) {

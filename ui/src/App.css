@@ -1137,6 +1137,14 @@
   align-items: stretch;
 }
 
+.executive-management-balance-section {
+  width: 100%;
+}
+
+.executive-management-balance-section > .executive-block--management-balance {
+  width: 100%;
+}
+
 .executive-block {
   min-width: 0;
   padding: 12px;
@@ -1174,6 +1182,10 @@
 
 .executive-block--warehouse {
   grid-column: span 2;
+}
+
+.executive-block--management-balance {
+  grid-column: 1 / -1;
 }
 
 .executive-block__header {
@@ -1214,6 +1226,70 @@
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 8px;
+}
+
+.executive-management-balance {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.executive-management-balance__column {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #d0d5dd;
+  border-top: 4px solid #1570ef;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.executive-management-balance__column--liabilities {
+  border-top-color: #b54708;
+}
+
+.executive-management-balance__column h3 {
+  margin: 0;
+  color: #18202a;
+  font-size: 16px;
+}
+
+.executive-management-balance__rows {
+  display: grid;
+  gap: 7px;
+}
+
+.executive-management-balance__row,
+.executive-management-balance__column footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.executive-management-balance__row span,
+.executive-management-balance__column footer span {
+  color: #475467;
+  font-size: 13px;
+}
+
+.executive-management-balance__row strong,
+.executive-management-balance__column footer strong {
+  color: #18202a;
+  font-size: 14px;
+  text-align: right;
+}
+
+.executive-management-balance__column footer {
+  padding-top: 9px;
+  border-top: 1px solid #d0d5dd;
+}
+
+.executive-management-balance__column footer span,
+.executive-management-balance__column footer strong {
+  color: #18202a;
+  font-weight: 800;
 }
 
 .executive-metric {
@@ -2218,6 +2294,10 @@
   }
 
   .executive-block__metrics {
+    grid-template-columns: 1fr;
+  }
+
+  .executive-management-balance {
     grid-template-columns: 1fr;
   }
 

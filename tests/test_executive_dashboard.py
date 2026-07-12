@@ -618,11 +618,10 @@ def test_dashboard_marks_missing_finance_sources_without_zero_truth(
 
     blocks = {block.key: block for block in result.blocks}
     assert blocks["money_today"].source_status == "source_missing"
-    assert blocks["creditors_payables"].source_status == "source_missing"
+    assert blocks["creditors_payables"].source_status == "partial"
     assert (
         blocks["creditors_payables"].summary["source_anchor"]
-        == "1C: Задолженность поставщикам товаров / Поставщики; "
-        "Взаиморасчеты с контрагентами / СОТРУДНИКИ"
+        == "1С: остатки денежных средств, дебиторка покупателей и взаиморасчеты"
     )
     assert blocks["debtors"].source_status == "ready"
     assert blocks["debtors"].title == "Дебиторка покупателей"
@@ -631,7 +630,7 @@ def test_dashboard_marks_missing_finance_sources_without_zero_truth(
     assert blocks["receivables_control"].source_status == "partial"
 
 
-def test_payables_block_exposes_only_negative_net_debt(
+def test_management_balance_places_assets_and_liabilities_on_their_sides(
     db_session: Session,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -641,20 +640,52 @@ def test_payables_block_exposes_only_negative_net_debt(
         json.dumps(
             {
                 "as_of": "2026-07-11",
+                "money_today": {
+                    "as_of": "2026-07-11",
+                    "cash_position": {
+                        "as_of": "2026-07-11",
+                        "source_status": "ready",
+                        "freshness_status": "fresh",
+                        "total_balance_rub": "500.00",
+                    },
+                },
                 "creditors_payables": {
                     "source_status": "ready",
                     "freshness_status": "fresh",
                     "as_of": "2026-07-11",
-                    "total_payable": "130.00",
-                    "gross_payable": "150.00",
-                    "supplier_payable": "80.00",
-                    "employee_payable": "50.00",
+                    "total_payable": "70.00",
+                    "gross_payable": "220.00",
+                    "supplier_payable": "-80.00",
+                    "employee_payable": "-50.00",
+                    "owner_payable": "200.00",
                     "counterparty_count": 2,
-                    "reverse_balance": "20.00",
+                    "reverse_balance": "150.00",
                     "reverse_balance_label": "Авансы / переплаты (−)",
-                    "counterparties": [
-                        {"counterparty_name": "Поставщик", "payable_amount": "100.00"},
-                        {"counterparty_name": "Сотрудник", "payable_amount": "50.00"},
+                    "groups": [
+                        {
+                            "key": "suppliers",
+                            "asset_amount": "100.00",
+                            "liability_amount": "20.00",
+                            "gross_payable": "20.00",
+                            "total_payable": "-80.00",
+                            "reverse_balance": "100.00",
+                        },
+                        {
+                            "key": "employees",
+                            "asset_amount": "50.00",
+                            "liability_amount": "0.00",
+                            "gross_payable": "0.00",
+                            "total_payable": "-50.00",
+                            "reverse_balance": "50.00",
+                        },
+                        {
+                            "key": "owners",
+                            "asset_amount": "0.00",
+                            "liability_amount": "200.00",
+                            "gross_payable": "200.00",
+                            "total_payable": "200.00",
+                            "reverse_balance": "0.00",
+                        },
                     ],
                 },
             },
@@ -663,6 +694,8 @@ def test_payables_block_exposes_only_negative_net_debt(
         encoding="utf-8",
     )
     _override_settings(monkeypatch, _settings(snapshot_path))
+    db_session.add(_receivable_case(date(2026, 7, 11), balance=Decimal("70.00")))
+    db_session.commit()
 
     result = build_executive_dashboard(
         db_session,
@@ -672,13 +705,25 @@ def test_payables_block_exposes_only_negative_net_debt(
 
     block = next(item for item in result.blocks if item.key == "creditors_payables")
     metrics = {metric.key: metric.value for metric in block.metrics}
-    assert block.title == "Кредиторская задолженность"
+    assert block.title == "Управленческий баланс"
     assert metrics == {
-        "total_payable": Decimal("-130.00"),
-        "supplier_payable": Decimal("-80.00"),
-        "employee_payable": Decimal("-50.00"),
+        "balance_assets_total": Decimal("720.00"),
+        "balance_liabilities_total": Decimal("220.00"),
     }
-    assert block.summary["reverse_balance"] == "20.00"
+    assert [row["amount"] for row in block.summary["balance_assets"]] == [
+        "500.00",
+        "70.00",
+        None,
+        "100.00",
+        "50.00",
+        "0.00",
+    ]
+    assert [row["amount"] for row in block.summary["balance_liabilities"]] == [
+        "20.00",
+        "0.00",
+        "200.00",
+    ]
+    assert block.summary["balance_liabilities"][2]["label"] == "Задолженность собственникам"
 
 
 def test_dashboard_accepts_yesterday_within_configured_lag(

@@ -2,7 +2,12 @@ import "@testing-library/jest-dom/vitest";
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { ExecutiveDashboardAction, ExecutiveDashboardBlock } from "../api/executiveDashboard";
-import { ActionDetail, ActionTable, PayablesBlockCard } from "./ExecutiveDashboard";
+import {
+  ActionDetail,
+  ActionTable,
+  ManagementBalanceBlockCard,
+} from "./ExecutiveDashboard";
+import { splitManagementBalanceBlock } from "./executiveDashboardLayout";
 
 function action(index: number): ExecutiveDashboardAction {
   return {
@@ -51,31 +56,49 @@ describe("executive procurement actions", () => {
   });
 });
 
-describe("executive payables", () => {
-  it("shows only the negative net debt", () => {
+describe("executive management balance", () => {
+  it("renders the balance separately from the KPI cards", () => {
+    const balance = { key: "creditors_payables" } as ExecutiveDashboardBlock;
+    const money = { key: "money_today" } as ExecutiveDashboardBlock;
+
+    const result = splitManagementBalanceBlock([money, balance]);
+
+    expect(result.metricBlocks).toEqual([money]);
+    expect(result.managementBalance).toBe(balance);
+  });
+
+  it("places assets on the left and liabilities on the right", () => {
     const block: ExecutiveDashboardBlock = {
       key: "creditors_payables",
-      title: "Кредиторская задолженность",
+      title: "Управленческий баланс",
       source_status: "ready",
       freshness_status: "fresh",
       as_of: "2026-07-11",
       summary: {
-        source_anchor: "1C: кредиторка",
+        source_anchor: "1C: тест",
+        balance_assets: [
+          { key: "cash", label: "Денежные средства", amount: "1000.00" },
+          { key: "advances", label: "Авансы и переплаты", amount: "300.00" },
+        ],
+        balance_liabilities: [
+          { key: "suppliers", label: "Задолженность поставщикам", amount: "2100.00" },
+          { key: "employees", label: "Задолженность сотрудникам", amount: "100.00" },
+        ],
+        balance_assets_total: "1300.00",
+        balance_liabilities_total: "2200.00",
       },
       metrics: [
-        { key: "total_payable", label: "Чистый долг", value: "-1900.00", unit: "RUB", tone: "warning", masked: false, source_status: "ready" },
-        { key: "supplier_payable", label: "Поставщикам", value: "-1800.00", unit: "RUB", tone: "warning", masked: false, source_status: "ready" },
-        { key: "employee_payable", label: "Сотрудникам", value: "-100.00", unit: "RUB", tone: "warning", masked: false, source_status: "ready" },
+        { key: "balance_assets_total", label: "Активы", value: "1300.00", unit: "RUB", tone: "info", masked: false, source_status: "ready" },
+        { key: "balance_liabilities_total", label: "Пассивы", value: "2200.00", unit: "RUB", tone: "warning", masked: false, source_status: "ready" },
       ],
     };
 
-    render(<PayablesBlockCard block={block} />);
+    render(<ManagementBalanceBlockCard block={block} />);
 
-    expect(screen.getByText("Чистый долг").parentElement).toHaveTextContent(/-1\s*900 ₽/);
-    expect(screen.getByText("Поставщикам").parentElement).toHaveTextContent(/-1\s*800 ₽/);
-    expect(screen.getByText("Сотрудникам").parentElement).toHaveTextContent(/-100 ₽/);
-    expect(screen.queryByText("Долг до авансов")).not.toBeInTheDocument();
-    expect(screen.queryByText("Авансы / переплаты (−)")).not.toBeInTheDocument();
-    expect(screen.queryByLabelText("Контрагенты с кредиторской задолженностью")).not.toBeInTheDocument();
+    expect(screen.getByText("Активы").parentElement).toHaveTextContent("Денежные средства");
+    expect(screen.getByText("Пассивы").parentElement).toHaveTextContent("Задолженность поставщикам");
+    expect(screen.getByText("Итого активы").parentElement).toHaveTextContent(/1\s*300 ₽/);
+    expect(screen.getByText("Итого пассивы").parentElement).toHaveTextContent(/2\s*200 ₽/);
+    expect(screen.queryByText("Чистый долг")).not.toBeInTheDocument();
   });
 });

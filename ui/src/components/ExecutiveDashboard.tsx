@@ -18,6 +18,7 @@ import {
   type ExecutiveProfitLossRatio,
   type ExecutiveSourceStatus,
 } from "../api/executiveDashboard";
+import { splitManagementBalanceBlock } from "./executiveDashboardLayout";
 import { Button, ErrorState, LoadingState, PageShell } from "./ui";
 
 type ExecutiveDashboardProps = {
@@ -64,6 +65,15 @@ type ReconciliationReportDelivery = {
   modes?: string[];
 };
 
+type ManagementBalanceLine = {
+  key?: string;
+  label?: string;
+  amount?: string | number | null;
+  source_status?: string;
+  as_of?: string | null;
+  masked?: boolean;
+};
+
 const MONEY_TAB_KEY = "money_today";
 const PROFIT_LOSS_TAB_KEY = "profit_loss";
 const ODDS_CASHFLOW_TAB_KEY = "odds_cashflow";
@@ -75,7 +85,7 @@ const TAB_DEFINITIONS = [
   { key: ODDS_CASHFLOW_TAB_KEY, label: "ОДДС CashFlow" },
   { key: "debtors", label: "Дебиторка покупателей" },
   { key: "receivables_control", label: "Контроль" },
-  { key: "creditors_payables", label: "Кредиторская задолженность" },
+  { key: "creditors_payables", label: "Управленческий баланс" },
   { key: "procurement_import", label: "Закупки" },
   { key: "warehouse_operations", label: "Склад" },
   { key: "reconciliation", label: "Сверки" },
@@ -90,7 +100,7 @@ const DOMAIN_LABELS: Record<string, string> = {
   odds_cashflow: "ОДДС CashFlow",
   debtors: "Дебиторка покупателей",
   receivables_control: "Контроль дебиторки",
-  creditors_payables: "Кредиторская задолженность",
+  creditors_payables: "Управленческий баланс",
   procurement_import: "Закупки",
   warehouse_operations: "Склад",
   reconciliation: "Сверки",
@@ -103,7 +113,7 @@ const FLOW_STEPS = [
   { key: "profit_loss", label: "Прибыли / убытки", metricKeys: ["gross_profit", "gross_margin_pct"] },
   { key: "debtors", label: "Покупатели", metricKeys: ["total_receivable"] },
   { key: "receivables_control", label: "Контроль", metricKeys: ["folder_needs_review_count", "need_call_today_count"] },
-  { key: "creditors_payables", label: "Кредиторская задолженность", metricKeys: ["total_payable", "supplier_payable"] },
+  { key: "creditors_payables", label: "Баланс", metricKeys: ["balance_liabilities_total"] },
   { key: "procurement_import", label: "Закупки", metricKeys: ["open_supplier_orders"] },
   { key: "warehouse_operations", label: "Склад", metricKeys: ["pieces_picked", "avg_need_fact"] },
   { key: "reconciliation", label: "Сверки", metricKeys: ["unmatched_count"] },
@@ -872,7 +882,7 @@ function BlockCard({
     return <ReconciliationBlockCard block={block} drilldownHref={drilldownHref} />;
   }
   if (block.key === "creditors_payables") {
-    return <PayablesBlockCard block={block} drilldownHref={drilldownHref} />;
+    return <ManagementBalanceBlockCard block={block} drilldownHref={drilldownHref} />;
   }
   if (block.key === "warehouse_operations") {
     return <WarehouseBlockCard block={block} drilldownHref={drilldownHref} />;
@@ -923,7 +933,12 @@ function BlockCard({
   );
 }
 
-export function PayablesBlockCard({
+function managementBalanceAmount(line: ManagementBalanceLine) {
+  if (line.masked) return "скрыто";
+  return line.amount === null || line.amount === undefined ? "нет данных" : formatMoney(line.amount);
+}
+
+export function ManagementBalanceBlockCard({
   block,
   drilldownHref,
 }: {
@@ -932,10 +947,17 @@ export function PayablesBlockCard({
 }) {
   const sourceAnchor = summaryString(block.summary, "source_anchor");
   const note = summaryString(block.summary, "note");
-  const visibleMetrics = visibleMetricsForBlock(block);
+  const assets = summaryArray<ManagementBalanceLine>(block.summary, "balance_assets");
+  const liabilities = summaryArray<ManagementBalanceLine>(block.summary, "balance_liabilities");
+  const assetsTotal = block.summary.balance_assets_total;
+  const liabilitiesTotal = block.summary.balance_liabilities_total;
+  const assetsTotalLabel = summaryString(block.summary, "balance_assets_total_label") || "Итого активы";
+  const liabilitiesTotalLabel = summaryString(block.summary, "balance_liabilities_total_label") || "Итого пассивы";
+  const totalDisplay = (value: unknown) =>
+    value === null || value === undefined ? "скрыто" : formatMoney(value as string | number);
 
   return (
-    <section className={`executive-block executive-block--payables executive-block--${block.source_status}`}>
+    <section className={`executive-block executive-block--management-balance executive-block--${block.source_status}`}>
       <header className="executive-block__header">
         <div>
           <h2>{block.title}</h2>
@@ -949,16 +971,38 @@ export function PayablesBlockCard({
           <span>{note || "Источник пока не подключен к витрине."}</span>
         </div>
       ) : (
-        <>
-          <div className="executive-block__metrics">
-            {visibleMetrics.map((metric) => (
-              <div className={`executive-metric executive-metric--${metric.tone}`} key={metric.key}>
-                <span>{metric.label}</span>
-                <strong>{metricDisplay(metric)}</strong>
-              </div>
-            ))}
-          </div>
-        </>
+        <div className="executive-management-balance" aria-label="Управленческий баланс">
+          <section className="executive-management-balance__column executive-management-balance__column--assets">
+            <h3>Активы</h3>
+            <div className="executive-management-balance__rows">
+              {assets.map((line) => (
+                <div className="executive-management-balance__row" key={line.key || line.label}>
+                  <span>{line.label || "Статья"}</span>
+                  <strong>{managementBalanceAmount(line)}</strong>
+                </div>
+              ))}
+            </div>
+            <footer>
+              <span>{assetsTotalLabel}</span>
+              <strong>{totalDisplay(assetsTotal)}</strong>
+            </footer>
+          </section>
+          <section className="executive-management-balance__column executive-management-balance__column--liabilities">
+            <h3>Пассивы</h3>
+            <div className="executive-management-balance__rows">
+              {liabilities.map((line) => (
+                <div className="executive-management-balance__row" key={line.key || line.label}>
+                  <span>{line.label || "Статья"}</span>
+                  <strong>{managementBalanceAmount(line)}</strong>
+                </div>
+              ))}
+            </div>
+            <footer>
+              <span>{liabilitiesTotalLabel}</span>
+              <strong>{totalDisplay(liabilitiesTotal)}</strong>
+            </footer>
+          </section>
+        </div>
       )}
       {(sourceAnchor || note || drilldownHref) && (
         <footer className="executive-block__footer">
@@ -2004,6 +2048,10 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
   }, [date, navigateDashboard, refreshNonce, tab]);
 
   const blocks = useMemo(() => visibleBlocks(data, tab), [data, tab]);
+  const { metricBlocks, managementBalance } = useMemo(
+    () => splitManagementBalanceBlock(blocks),
+    [blocks],
+  );
   const tabs = useMemo(() => tabsForData(data), [data]);
   const tabOverviewBlock = useMemo(() => {
     if (!data || tab === "today") return null;
@@ -2117,9 +2165,9 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
 
           {tab === ODDS_CASHFLOW_TAB_KEY && <CashflowPeriodPanel asOf={date} />}
 
-          {blocks.length > 0 && (
+          {metricBlocks.length > 0 && (
             <div className="executive-grid">
-              {blocks.map((block) => (
+              {metricBlocks.map((block) => (
                 <BlockCard
                   activeTab={tab}
                   bitrixMode={bitrixMode}
@@ -2128,6 +2176,17 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
                   key={block.key}
                 />
               ))}
+            </div>
+          )}
+
+          {managementBalance && (
+            <div className="executive-management-balance-section">
+              <BlockCard
+                activeTab={tab}
+                bitrixMode={bitrixMode}
+                block={managementBalance}
+                date={date}
+              />
             </div>
           )}
 

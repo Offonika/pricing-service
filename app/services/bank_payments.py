@@ -11,10 +11,11 @@ from io import StringIO
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import bindparam, create_engine, text
+from sqlalchemy import bindparam, text
 from sqlalchemy.engine import Engine
 
 from app.core.config import Settings
+from app.infrastructure.db import build_application_engine
 from app.schemas.bank_payments import (
     BankPaymentClassifyRequest,
     BankPaymentClassifyResponse,
@@ -202,7 +203,9 @@ def export_sber_raw_statement(
     upload_dir = Path(settings.bank_payments_artifact_dir) / upload_id
     upload_dir.mkdir(parents=True, exist_ok=True)
 
-    source_engine = engine or create_engine(settings.bank_payments_source_database_url or "")
+    source_engine = engine or build_application_engine(
+        settings.bank_payments_source_database_url or ""
+    )
     rows = fetch_sber_raw_statement_rows(
         source_engine,
         schema=settings.bank_payments_source_schema,

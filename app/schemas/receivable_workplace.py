@@ -29,6 +29,8 @@ class ReceivableWorkplaceCacheComponent(BaseModel):
     source_status: str
     cached_count: int = 0
     computed_at: datetime | None = None
+    source_max_document_date: datetime | None = None
+    source_lag_days: int | None = None
 
 
 class ReceivableWorkplaceMetaResponse(BaseModel):

@@ -34,9 +34,8 @@ ENV_KEYS = (
     "BITRIX24_WEBHOOK_URL",
 )
 ENV_FILES = (
-    Path("/opt/MM/mm-compensation/.env"),
-    Path("/opt/MM/mastermobile/.env"),
     Path("/opt/MM/pricing-service/.env"),
+    Path("/etc/mm-management-orchestrator.env"),
 )
 
 

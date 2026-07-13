@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -12,6 +11,8 @@ from sqlalchemy import Select, false, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.contracts import ContractIntegrityError, read_json_contract
+from app.infrastructure.db.engines import DatabaseNotConfiguredError, get_onec_engine
 from app.models import (
     ExecutiveActionItem,
     ExecutiveDashboardSnapshot,
@@ -39,6 +40,13 @@ from app.schemas.executive_dashboard import (
     ExecutiveProfitLossOpenQuestion,
     ExecutiveProfitLossPeriodResponse,
     ExecutiveProfitLossRatio,
+    ExecutiveSalesBreakdownRow,
+    ExecutiveSalesDiagnosticKpi,
+    ExecutiveSalesDailyRow,
+    ExecutiveSalesFilterOption,
+    ExecutiveSalesMonthlyRow,
+    ExecutiveSalesPlanContext,
+    ExecutiveSalesPeriodResponse,
     ExecutiveSourceStatus,
 )
 from app.services.bitrix_executive_dashboard_auth import (
@@ -46,6 +54,15 @@ from app.services.bitrix_executive_dashboard_auth import (
     ExecutiveDashboardAuthContext,
     full_executive_dashboard_context,
     legacy_domain_executive_dashboard_context,
+)
+from app.services.executive_service_accruals import (
+    service_accrual_balance_adjustments,
+    service_accrual_profit_loss_summary,
+)
+from app.services.onec_inventory_cost import (
+    OneCInventoryCostError,
+    OneCInventoryCostSnapshot,
+    fetch_onec_inventory_cost,
 )
 from app.services.receivables import CASE_BUYERS
 
@@ -64,6 +81,12 @@ _SEVERITY_RANK = {
 def _decimal(value: Any) -> Decimal:
     if value in (None, ""):
         return Decimal("0")
+    return Decimal(str(value))
+
+
+def _optional_decimal(value: Any) -> Decimal | None:
+    if value in (None, ""):
+        return None
     return Decimal(str(value))
 
 
@@ -210,15 +233,7 @@ def _resolve_shared_path(configured_value: str) -> Path:
     configured = Path(configured_value)
     if configured.is_absolute():
         return configured
-    cwd_candidate = Path.cwd() / configured
-    if cwd_candidate.exists():
-        return cwd_candidate
-    if configured.parts and configured.parts[0] == "..":
-        workspace_root = Path(os.getenv("MM_WORKSPACE_ROOT", "/opt/MM"))
-        workspace_candidate = workspace_root.joinpath(*configured.parts[1:])
-        if workspace_candidate.exists():
-            return workspace_candidate
-    return cwd_candidate
+    return Path.cwd() / configured
 
 
 def _resolve_snapshot_path() -> Path:
@@ -230,8 +245,8 @@ def _load_finance_snapshot() -> tuple[dict[str, Any] | None, str, str]:
     if not path.exists():
         return None, "source_missing", f"finance snapshot is not found: {path}"
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = read_json_contract(path)
+    except (OSError, json.JSONDecodeError, ContractIntegrityError) as exc:
         return None, "source_error", f"finance snapshot is not readable: {exc}"
     if not isinstance(payload, dict):
         return None, "source_error", "finance snapshot root must be an object"
@@ -247,8 +262,8 @@ def _load_cashflow_period_cache() -> tuple[dict[str, Any] | None, str, str]:
     if not path.exists():
         return None, "source_missing", f"cashflow period cache is not found: {path}"
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = read_json_contract(path)
+    except (OSError, json.JSONDecodeError, ContractIntegrityError) as exc:
         return None, "source_error", f"cashflow period cache is not readable: {exc}"
     if not isinstance(payload, dict):
         return None, "source_error", "cashflow period cache root must be an object"
@@ -264,12 +279,48 @@ def _load_warehouse_snapshot() -> tuple[dict[str, Any] | None, str, str]:
     if not path.exists():
         return None, "source_missing", f"warehouse snapshot is not found: {path}"
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        payload = read_json_contract(path)
+    except (OSError, json.JSONDecodeError, ContractIntegrityError) as exc:
         return None, "source_error", f"warehouse snapshot is not readable: {exc}"
     if not isinstance(payload, dict):
         return None, "source_error", "warehouse snapshot root must be an object"
     return payload, str(payload.get("source_status") or "ready"), str(path)
+
+
+def _resolve_owner_cash_control_snapshot_path() -> Path:
+    return _resolve_shared_path(get_settings().executive_dashboard_owner_cash_control_snapshot_path)
+
+
+def _load_owner_cash_control_snapshot() -> tuple[dict[str, Any] | None, str, str]:
+    path = _resolve_owner_cash_control_snapshot_path()
+    if not path.exists():
+        return None, "source_missing", f"owner cash control snapshot is not found: {path}"
+    try:
+        payload = read_json_contract(path)
+    except (OSError, json.JSONDecodeError, ContractIntegrityError) as exc:
+        return None, "source_error", f"owner cash control snapshot is not readable: {exc}"
+    if not isinstance(payload, dict):
+        return None, "source_error", "owner cash control snapshot root must be an object"
+    return payload, str(payload.get("source_status") or "ready"), str(path)
+
+
+def _resolve_sales_plan_snapshot_path() -> Path:
+    return _resolve_shared_path(get_settings().executive_dashboard_sales_plan_snapshot_path)
+
+
+def _load_sales_plan_snapshot() -> tuple[dict[str, Any] | None, str, str]:
+    path = _resolve_sales_plan_snapshot_path()
+    if not path.exists():
+        return None, "source_missing", f"sales plan snapshot is not found: {path}"
+    try:
+        payload = read_json_contract(path)
+    except (OSError, json.JSONDecodeError, ContractIntegrityError) as exc:
+        return None, "source_error", f"sales plan snapshot is not readable: {exc}"
+    if not isinstance(payload, dict):
+        return None, "source_error", "sales plan snapshot root must be an object"
+    if payload.get("schema_version") != 1:
+        return None, "source_error", "sales plan snapshot schema_version must be 1"
+    return payload, str(payload.get("source_status") or "source_missing"), str(path)
 
 
 def _combine_profit_loss_status(sales_status: str, expense_status: str) -> str:
@@ -286,6 +337,7 @@ def _combine_profit_loss_status(sales_status: str, expense_status: str) -> str:
 
 def _profit_loss_expenses_from_cashflow_cache(
     *,
+    session: Session,
     date_from: date,
     date_to: date,
 ) -> dict[str, Any]:
@@ -436,6 +488,46 @@ def _profit_loss_expenses_from_cashflow_cache(
                 },
             )
         )
+
+    accrual_summary = service_accrual_profit_loss_summary(
+        session,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    breakdown_by_key = {item.key: item for item in breakdown}
+    for accrual in accrual_summary["by_line"]:
+        key = str(accrual["key"])
+        current = breakdown_by_key.get(key)
+        cashflow_amount = current.amount if current is not None else Decimal("0")
+        replaced_amount = min(
+            cashflow_amount,
+            _decimal(accrual["cashflow_replaced_amount"]),
+        )
+        recognized_amount = _decimal(accrual["recognized_amount"])
+        adjusted_amount = cashflow_amount - replaced_amount + recognized_amount
+        updated = ExecutiveProfitLossExpenseBreakdownRow(
+            key=key,
+            label=str(accrual["label"]),
+            amount=adjusted_amount,
+            movement_count=current.movement_count if current is not None else 0,
+            review_count=current.review_count if current is not None else 0,
+            source_status=str(accrual["source_status"]),
+            recognition_method="accrual",
+            cashflow_amount=cashflow_amount,
+            recognized_amount=recognized_amount,
+            adjustment_amount=recognized_amount - replaced_amount,
+            estimated_count=int(accrual["estimated_count"]),
+            meta={
+                **(current.meta if current is not None else {}),
+                "service_accrual_entry_count": int(accrual["entry_count"]),
+                "cashflow_replaced_amount": str(replaced_amount),
+            },
+        )
+        if current is not None:
+            breakdown[breakdown.index(current)] = updated
+        else:
+            breakdown.append(updated)
+        breakdown_by_key[key] = updated
     breakdown.sort(key=lambda item: item.amount, reverse=True)
 
     open_questions = [
@@ -461,6 +553,8 @@ def _profit_loss_expenses_from_cashflow_cache(
     expense_status = str(payload.get("source_status") or source_status or "ready")
     if expense_status == "ready" and (open_questions or review_count):
         expense_status = "partial"
+    if accrual_summary["source_status"] == "partial":
+        expense_status = "partial"
     if period_outside_cache:
         expense_status = "stale"
 
@@ -468,8 +562,8 @@ def _profit_loss_expenses_from_cashflow_cache(
         "source_status": expense_status,
         "freshness_status": _freshness_from_status(expense_status),
         "note": (
-            "Расходы определены по исходящим оплатам ДДС. "
-            "Это cash-based управленческий срез, не бухгалтерское начисление."
+            "Расходы определены по исходящим оплатам ДДС; договоры с активными "
+            "правилами заменены управленческими начислениями без двойного учета."
             + (
                 f" Запрошенный период выходит за кэш "
                 f"{cache_from.isoformat() if cache_from else '?'}.."
@@ -1173,6 +1267,25 @@ def _load_profit_loss_rows(
     )
 
 
+def _load_sales_rows(
+    session: Session,
+    *,
+    date_from: date,
+    date_to: date,
+    store_ref: str | None = None,
+    manager_ref: str | None = None,
+) -> list[OneCSalesDailyKpi]:
+    query = select(OneCSalesDailyKpi).where(
+        OneCSalesDailyKpi.sales_date >= date_from,
+        OneCSalesDailyKpi.sales_date <= date_to,
+    )
+    if store_ref:
+        query = query.where(OneCSalesDailyKpi.store_ref == store_ref)
+    if manager_ref:
+        query = query.where(OneCSalesDailyKpi.manager_ref == manager_ref)
+    return session.execute(query.order_by(OneCSalesDailyKpi.sales_date.asc())).scalars().all()
+
+
 def _profit_loss_margin(revenue: Decimal, gross_profit: Decimal) -> Decimal | None:
     ratio = _safe_ratio(gross_profit, revenue)
     return None if ratio is None else ratio
@@ -1394,6 +1507,7 @@ def build_executive_profit_loss_period_response(
         source_as_of=latest_sales_date,
     )
     expense_data = _profit_loss_expenses_from_cashflow_cache(
+        session=session,
         date_from=date_from,
         date_to=date_to,
     )
@@ -1428,8 +1542,8 @@ def build_executive_profit_loss_period_response(
         }
     )
     note = (
-        "ОПУ v1 строится по продажам 1С и расходам по оплатам ДДС. "
-        "Расходы являются cash-based управленческим срезом, не бухгалтерским начислением."
+        "ОПУ строится по продажам 1С и расходам ДДС. Для договоров с утверждёнными "
+        "правилами кассовый расход заменён начислением без двойного учёта."
     )
     if expense_data.get("note"):
         note = f"{note} {expense_data['note']}"
@@ -1510,6 +1624,388 @@ def build_executive_profit_loss_period_response(
     )
 
 
+def _month_bounds(value: date) -> tuple[date, date]:
+    date_from = value.replace(day=1)
+    if date_from.month == 12:
+        next_month = date(date_from.year + 1, 1, 1)
+    else:
+        next_month = date(date_from.year, date_from.month + 1, 1)
+    return date_from, next_month - timedelta(days=1)
+
+
+def _add_months(value: date, months: int) -> date:
+    month_index = value.year * 12 + value.month - 1 + months
+    return date(month_index // 12, month_index % 12 + 1, 1)
+
+
+def _same_day_last_year(value: date) -> date:
+    try:
+        return value.replace(year=value.year - 1)
+    except ValueError:
+        return value.replace(year=value.year - 1, day=28)
+
+
+def _sales_totals(rows: list[OneCSalesDailyKpi]) -> dict[str, Decimal | int | None]:
+    totals = _profit_loss_totals(rows)
+    return {
+        "revenue": _decimal(totals.get("revenue")),
+        "gross_profit": _decimal(totals.get("gross_profit")),
+        "gross_margin_pct": totals.get("gross_margin_pct"),
+        "sales_count": _decimal(totals.get("sales_count")),
+    }
+
+
+def _sales_rows_by_date(rows: list[OneCSalesDailyKpi]) -> dict[date, Decimal]:
+    values: dict[date, Decimal] = defaultdict(lambda: Decimal("0"))
+    for row in rows:
+        values[row.sales_date] += _decimal(row.revenue)
+    return values
+
+
+def _median(values: list[Decimal]) -> Decimal:
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / Decimal("2")
+
+
+def _sales_breakdown(
+    rows: list[OneCSalesDailyKpi],
+    *,
+    key_attr: str,
+    label_attr: str,
+    fallback_label: str,
+) -> list[ExecutiveSalesBreakdownRow]:
+    buckets: dict[str, list[OneCSalesDailyKpi]] = defaultdict(list)
+    labels: dict[str, str] = {}
+    for row in rows:
+        raw_key = getattr(row, key_attr) or ""
+        raw_label = getattr(row, label_attr) or ""
+        key = str(raw_key or fallback_label)
+        buckets[key].append(row)
+        labels[key] = str(raw_label or fallback_label)
+    result = []
+    for key, bucket_rows in buckets.items():
+        totals = _sales_totals(bucket_rows)
+        result.append(
+            ExecutiveSalesBreakdownRow(
+                key=key,
+                label=labels[key],
+                revenue=_decimal(totals["revenue"]),
+                gross_profit=_decimal(totals["gross_profit"]),
+                sales_count=_decimal(totals["sales_count"]),
+                gross_margin_pct=totals["gross_margin_pct"],
+                meta={key_attr: key},
+            )
+        )
+    return sorted(result, key=lambda item: item.revenue, reverse=True)
+
+
+def _sales_filter_options(
+    rows: list[OneCSalesDailyKpi],
+    *,
+    key_attr: str,
+    label_attr: str,
+    fallback_label: str,
+) -> list[ExecutiveSalesFilterOption]:
+    values: dict[str, str] = {}
+    for row in rows:
+        raw_key = getattr(row, key_attr)
+        if raw_key in (None, ""):
+            continue
+        key = str(raw_key)
+        values[key] = str(getattr(row, label_attr) or fallback_label)
+    return [
+        ExecutiveSalesFilterOption(key=key, label=label)
+        for key, label in sorted(values.items(), key=lambda item: item[1].casefold())
+    ]
+
+
+def _sales_forecast(
+    session: Session,
+    *,
+    date_to: date,
+    as_of: date,
+    store_ref: str | None,
+    manager_ref: str | None,
+) -> tuple[dict[date, Decimal] | None, str, str | None]:
+    if as_of >= date_to:
+        return {}, "complete", "Месяц закрыт фактическими данными."
+    history_from = as_of - timedelta(days=28)
+    history_to = as_of - timedelta(days=1)
+    history_rows = _load_sales_rows(
+        session,
+        date_from=history_from,
+        date_to=history_to,
+        store_ref=store_ref,
+        manager_ref=manager_ref,
+    )
+    if not history_rows:
+        return None, "insufficient_history", "Для прогноза нужна история продаж за четыре недели."
+
+    history_dates = {row.sales_date for row in history_rows}
+    if (max(history_dates) - min(history_dates)).days < 21:
+        return None, "insufficient_history", "Для прогноза нужна история продаж за четыре недели."
+
+    values_by_date = _sales_rows_by_date(history_rows)
+    forecast: dict[date, Decimal] = {}
+    forecast_date = as_of + timedelta(days=1)
+    while forecast_date <= date_to:
+        weekday_values = [
+            values_by_date.get(history_from + timedelta(days=offset), Decimal("0"))
+            for offset in range(28)
+            if (history_from + timedelta(days=offset)).weekday() == forecast_date.weekday()
+        ]
+        if len(weekday_values) < 4:
+            return (
+                None,
+                "insufficient_history",
+                "Для прогноза нужна история продаж за четыре недели.",
+            )
+        forecast[forecast_date] = _median(weekday_values)
+        forecast_date += timedelta(days=1)
+    return (
+        forecast,
+        "ready",
+        "Прогноз построен по медиане того же дня недели за четыре предыдущие недели.",
+    )
+
+
+def build_executive_sales_period_response(
+    session: Session,
+    *,
+    date_from: date,
+    date_to: date,
+    store_ref: str | None = None,
+    manager_ref: str | None = None,
+    today: date | None = None,
+) -> ExecutiveSalesPeriodResponse:
+    current_day = today or date.today()
+    is_open_period = date_from <= current_day <= date_to
+    actual_limit = min(current_day, date_to)
+    all_rows = _load_sales_rows(session, date_from=date_from, date_to=actual_limit)
+    rows = _load_sales_rows(
+        session,
+        date_from=date_from,
+        date_to=actual_limit,
+        store_ref=store_ref,
+        manager_ref=manager_ref,
+    )
+    base_response = {
+        "month": date_from.strftime("%Y-%m"),
+        "date_from": date_from,
+        "date_to": date_to,
+        "generated_at": datetime.now(UTC),
+        "stores": _sales_filter_options(
+            all_rows,
+            key_attr="store_ref",
+            label_attr="store_name",
+            fallback_label="Без магазина",
+        ),
+        "managers": _sales_filter_options(
+            all_rows,
+            key_attr="manager_ref",
+            label_attr="manager_name",
+            fallback_label="Без менеджера",
+        ),
+        "filters": {
+            "source_table": "onec_sales_daily_kpi",
+            "store_ref": store_ref,
+            "manager_ref": manager_ref,
+        },
+    }
+    if not rows:
+        return ExecutiveSalesPeriodResponse(
+            **base_response,
+            source_status="source_missing",
+            freshness_status="missing",
+            forecast_status="not_applicable",
+            note="В onec_sales_daily_kpi нет строк продаж за выбранный период.",
+        )
+
+    as_of = max(row.sales_date for row in rows)
+    source_status, freshness_status = _apply_date_freshness(
+        "ready",
+        requested_date=actual_limit,
+        source_as_of=as_of,
+    )
+    totals = _sales_totals(rows)
+    elapsed_days = (as_of - date_from).days + 1
+    previous_to = date_from - timedelta(days=1)
+    previous_from = previous_to - timedelta(days=elapsed_days - 1)
+    comparison = _sales_totals(
+        _load_sales_rows(
+            session,
+            date_from=previous_from,
+            date_to=previous_to,
+            store_ref=store_ref,
+            manager_ref=manager_ref,
+        )
+    )
+    actual_by_date = _sales_rows_by_date(rows)
+    forecast: dict[date, Decimal] | None = None
+    forecast_status = "not_applicable"
+    forecast_note: str | None = (
+        "Прогноз не пересчитывается для периода, который уже полностью в прошлом."
+    )
+    if is_open_period:
+        forecast, forecast_status, forecast_note = _sales_forecast(
+            session,
+            date_to=date_to,
+            as_of=as_of,
+            store_ref=store_ref,
+            manager_ref=manager_ref,
+        )
+    projected_revenue = None
+    if forecast is not None:
+        projected_revenue = _decimal(totals["revenue"]) + sum(forecast.values(), Decimal("0"))
+    totals["forecast_revenue_period_end"] = projected_revenue
+    daily = []
+    cursor = date_from
+    while cursor <= date_to:
+        daily.append(
+            ExecutiveSalesDailyRow(
+                business_date=cursor,
+                actual_revenue=(
+                    actual_by_date.get(cursor, Decimal("0")) if cursor <= as_of else None
+                ),
+                forecast_revenue=(forecast or {}).get(cursor),
+            )
+        )
+        cursor += timedelta(days=1)
+    monthly_anchor = date_to.replace(day=1)
+    year_start = _add_months(monthly_anchor, -11)
+    year_rows = _load_sales_rows(
+        session,
+        date_from=year_start,
+        date_to=date_to,
+        store_ref=store_ref,
+        manager_ref=manager_ref,
+    )
+    rows_by_month: dict[date, list[OneCSalesDailyKpi]] = defaultdict(list)
+    for row in year_rows:
+        rows_by_month[row.sales_date.replace(day=1)].append(row)
+    comparison_year_rows = _load_sales_rows(
+        session,
+        date_from=_same_day_last_year(year_start),
+        date_to=_same_day_last_year(date_to),
+        store_ref=store_ref,
+        manager_ref=manager_ref,
+    )
+    comparison_rows_by_month: dict[date, list[OneCSalesDailyKpi]] = defaultdict(list)
+    for row in comparison_year_rows:
+        comparison_rows_by_month[row.sales_date.replace(day=1)].append(row)
+    monthly = []
+    for offset in range(12):
+        month_start = _add_months(year_start, offset)
+        month_totals = _sales_totals(rows_by_month.get(month_start, []))
+        comparison_month_totals = _sales_totals(
+            comparison_rows_by_month.get(_same_day_last_year(month_start), [])
+        )
+        monthly.append(
+            ExecutiveSalesMonthlyRow(
+                month=month_start.strftime("%Y-%m"),
+                revenue=_decimal(month_totals["revenue"]),
+                gross_profit=_decimal(month_totals["gross_profit"]),
+                sales_count=_decimal(month_totals["sales_count"]),
+                gross_margin_pct=month_totals["gross_margin_pct"],
+                forecast_revenue=(
+                    projected_revenue
+                    if month_start == monthly_anchor and projected_revenue is not None
+                    else None
+                ),
+                comparison_sales_count=_decimal(comparison_month_totals["sales_count"]),
+            )
+        )
+    note = "Факт продаж 1С; суммы включают отраженные в витрине возвраты."
+    if source_status == "stale":
+        note = f"Последняя строка продаж: {as_of.isoformat()}. {note}"
+    return ExecutiveSalesPeriodResponse(
+        **base_response,
+        as_of=as_of,
+        source_status=source_status,
+        freshness_status=freshness_status,
+        forecast_status=forecast_status,
+        note=note,
+        forecast_note=forecast_note,
+        totals=totals,
+        comparison=comparison,
+        daily=daily,
+        monthly=monthly,
+        by_store=_sales_breakdown(
+            rows,
+            key_attr="store_ref",
+            label_attr="store_name",
+            fallback_label="Без магазина",
+        ),
+        by_manager=_sales_breakdown(
+            rows,
+            key_attr="manager_ref",
+            label_attr="manager_name",
+            fallback_label="Без менеджера",
+        ),
+    )
+
+
+def _build_sales_block(
+    session: Session,
+    *,
+    requested_date: date,
+    access_context: ExecutiveDashboardAuthContext,
+) -> ExecutiveDashboardBlock:
+    _requested_month_from, _requested_month_to = _month_bounds(requested_date)
+    period = build_executive_sales_period_response(
+        session,
+        date_from=_requested_month_from,
+        date_to=_requested_month_to,
+        today=requested_date,
+    )
+    masked = _mask_finance("sales", access_context)
+    totals = period.totals
+    return ExecutiveDashboardBlock(
+        key="sales",
+        title="Продажи",
+        source_status=period.source_status,
+        freshness_status=period.freshness_status,
+        as_of=period.as_of,
+        summary={
+            "forecast_status": period.forecast_status,
+            "forecast_note": period.forecast_note,
+            "source_table": "onec_sales_daily_kpi",
+        },
+        metrics=[
+            _metric(
+                "revenue",
+                "Выручка с начала месяца",
+                totals.get("revenue"),
+                unit="RUB",
+                masked=masked,
+                tone="info",
+                source_status=period.source_status,
+            ),
+            _metric(
+                "forecast_revenue_period_end",
+                "Прогноз выручки",
+                totals.get("forecast_revenue_period_end"),
+                unit="RUB",
+                masked=masked,
+                tone="info",
+                source_status=period.source_status,
+            ),
+            _metric(
+                "gross_margin_pct",
+                "Валовая маржа",
+                totals.get("gross_margin_pct"),
+                unit="percent",
+                masked=masked,
+                tone="info",
+                source_status=period.source_status,
+            ),
+        ],
+    )
+
+
 def _build_profit_loss_block(
     session: Session,
     *,
@@ -1561,7 +2057,7 @@ def _build_profit_loss_block(
         ),
         _metric(
             "operating_expenses",
-            "Расходы по ДДС",
+            "Операционные расходы",
             (
                 _decimal(period.totals.get("operating_expenses"))
                 if period.expense_source_status not in {"source_missing", "source_error"}
@@ -1600,7 +2096,10 @@ def _build_profit_loss_block(
             },
             "source_anchor": "1C: onec_sales_daily_kpi",
             "source_table": "onec_sales_daily_kpi",
-            "expense_source_anchor": "ДДС: cashflow_period_cache.profit_loss_expenses",
+            "expense_source_anchor": (
+                "ДДС: cashflow_period_cache.profit_loss_expenses + "
+                "pricing-service: executive_service_accrual_entry"
+            ),
             "expense_source_status": period.expense_source_status,
             "expense_open_question_count": period.totals.get("expense_open_question_count"),
             "expense_open_question_amount": str(
@@ -1627,21 +2126,23 @@ def _settlement_group_amount(
 ) -> Decimal | None:
     for group in section.get("groups") or []:
         if isinstance(group, dict) and group.get("key") == group_key:
+            # Assets and liabilities are gross balances by counterparty. They
+            # must not be netted between different employees, suppliers or
+            # organizations. Legacy total_payable is used only as a fallback
+            # for contracts that do not yet publish both gross sides.
+            liability = group.get("liability_amount", group.get("gross_payable"))
+            asset = group.get("asset_amount", group.get("reverse_balance"))
+            if liability not in (None, "") and asset not in (None, ""):
+                return _decimal(asset if side == "asset" else liability)
             total = group.get("total_payable")
-            if total not in (None, ""):
-                # Legacy total is liability minus receivable at the exact 1C
-                # report-group grain. We show only the resulting side, not the
-                # gross debit and credit balances at the same time.
-                net_liability = _decimal(total)
-            else:
-                liability = group.get("liability_amount", group.get("gross_payable"))
-                asset = group.get("asset_amount", group.get("reverse_balance"))
-                if liability in (None, "") or asset in (None, ""):
-                    return None
-                net_liability = _decimal(liability) - _decimal(asset)
-            if side == "asset":
-                return max(-net_liability, Decimal("0"))
-            return max(net_liability, Decimal("0"))
+            if total in (None, ""):
+                return None
+            net_liability = _decimal(total)
+            return (
+                max(-net_liability, Decimal("0"))
+                if side == "asset"
+                else max(net_liability, Decimal("0"))
+            )
     return None
 
 
@@ -1653,6 +2154,7 @@ def _balance_line(
     source_status: str,
     as_of: date | datetime | None,
     masked: bool,
+    **extra: Any,
 ) -> dict[str, Any]:
     return {
         "key": key,
@@ -1661,12 +2163,48 @@ def _balance_line(
         "source_status": source_status,
         "as_of": as_of.isoformat() if isinstance(as_of, (date, datetime)) else None,
         "masked": masked,
+        **extra,
     }
 
 
+def _load_onec_inventory_cost(as_of: date) -> tuple[OneCInventoryCostSnapshot | None, str]:
+    if not get_settings().onec_database_url:
+        return None, "Не настроено read-only подключение к 1С УТ 10.3"
+    try:
+        return fetch_onec_inventory_cost(get_onec_engine(), as_of=as_of), ""
+    except DatabaseNotConfiguredError:
+        return None, "Не настроено read-only подключение к 1С УТ 10.3"
+    except OneCInventoryCostError as exc:
+        return None, str(exc)
+    except Exception:
+        return None, "Не удалось прочитать стоимость товарных остатков из 1С"
+
+
+def _settlement_group_signed_rows(section: dict[str, Any], *, group_key: str) -> dict[str, Decimal]:
+    result: dict[str, Decimal] = {}
+    for group in section.get("groups") or []:
+        if not isinstance(group, dict) or group.get("key") != group_key:
+            continue
+        for row in group.get("asset_counterparties") or []:
+            ref = str(row.get("counterparty_ref") or "").lower()
+            if ref:
+                result[ref] = result.get(ref, Decimal("0")) + _decimal(row.get("asset_amount"))
+        for row in group.get("counterparties") or []:
+            ref = str(row.get("counterparty_ref") or "").lower()
+            if ref:
+                result[ref] = result.get(ref, Decimal("0")) - _decimal(row.get("payable_amount"))
+        break
+    return result
+
+
 def _build_management_balance_block(
+    session: Session,
     finance_payload: dict[str, Any] | None,
+    owner_cash_control_payload: dict[str, Any] | None,
+    inventory_cost: OneCInventoryCostSnapshot | None,
+    inventory_note: str,
     *,
+    requested_date: date,
     money_block: ExecutiveDashboardBlock,
     access_context: ExecutiveDashboardAuthContext,
 ) -> ExecutiveDashboardBlock:
@@ -1676,7 +2214,11 @@ def _build_management_balance_block(
     cash_status = (
         cash_metric.source_status if cash_metric is not None else money_block.source_status
     )
-    source_status = _combine_source_status_strings([cash_status, payables_status, "source_missing"])
+    owner_status = str((owner_cash_control_payload or {}).get("source_status") or "source_missing")
+    inventory_status = inventory_cost.source_status if inventory_cost is not None else "source_missing"
+    source_status = _combine_source_status_strings(
+        [cash_status, payables_status, owner_status, inventory_status]
+    )
     masked = any(
         _mask_finance(block_key, access_context)
         for block_key in ("money_today", "creditors_payables")
@@ -1729,6 +2271,70 @@ def _build_management_balance_block(
         group_key="owners",
         side="liability",
     )
+    owner_summary = (
+        owner_cash_control_payload.get("summary")
+        if isinstance(owner_cash_control_payload, dict)
+        and isinstance(owner_cash_control_payload.get("summary"), dict)
+        else {}
+    )
+    owner_source_available = owner_cash_control_payload is not None
+    owner_as_of = _as_date((owner_cash_control_payload or {}).get("as_of"))
+    owner_cash_in_transit = (
+        _decimal(owner_summary.get("money_in_transit_asset")) if owner_source_available else None
+    )
+    owner_related_party_asset = (
+        _decimal(owner_summary.get("unresolved_related_party_asset"))
+        if owner_source_available
+        else None
+    )
+    owner_related_party_liability = (
+        _decimal(owner_summary.get("unresolved_related_party_liability"))
+        if owner_source_available
+        else None
+    )
+    owner_unclassified_funds = (
+        _decimal(owner_summary.get("unclassified_owner_funds_liability"))
+        if owner_source_available
+        else None
+    )
+    dividends_ytd = _decimal(owner_summary.get("dividends_ytd")) if owner_source_available else None
+    dividends_month = (
+        _decimal(owner_summary.get("dividends_current_month")) if owner_source_available else None
+    )
+    dividend_warning_count = int(owner_summary.get("dividend_comment_warning_count") or 0)
+    legal_entity_rows = _settlement_group_signed_rows(
+        section,
+        group_key="legal_entities",
+    )
+    accrual_adjustments = service_accrual_balance_adjustments(
+        session,
+        as_of=requested_date,
+    )
+    adjusted_legal_rows = dict(legal_entity_rows)
+    for counterparty_ref, amount in accrual_adjustments["by_counterparty"].items():
+        adjusted_legal_rows[counterparty_ref] = adjusted_legal_rows.get(
+            counterparty_ref, Decimal("0")
+        ) - _decimal(amount)
+    service_advances_raw = sum(
+        (max(amount, Decimal("0")) for amount in legal_entity_rows.values()),
+        Decimal("0"),
+    )
+    service_advances_adjusted = sum(
+        (max(amount, Decimal("0")) for amount in adjusted_legal_rows.values()),
+        Decimal("0"),
+    )
+    accrued_service_liability = sum(
+        (max(-amount, Decimal("0")) for amount in adjusted_legal_rows.values()),
+        Decimal("0"),
+    )
+    accrual_amount = _decimal(accrual_adjustments["amount"])
+    has_service_settlements = (
+        any(
+            isinstance(group, dict) and group.get("key") == "legal_entities"
+            for group in section.get("groups") or []
+        )
+        or accrual_amount != 0
+    )
     assets = [
         _balance_line(
             key="cash",
@@ -1741,10 +2347,21 @@ def _build_management_balance_block(
         _balance_line(
             key="inventory_cost",
             label="Товарные остатки по себестоимости",
-            amount=None,
-            source_status="source_missing",
-            as_of=None,
+            amount=inventory_cost.amount if inventory_cost is not None else None,
+            source_status=inventory_status,
+            as_of=inventory_cost.as_of if inventory_cost is not None else None,
             masked=masked,
+            note=(inventory_cost.source_title if inventory_cost is not None else inventory_note),
+            quantity=(str(inventory_cost.quantity) if inventory_cost is not None else None),
+            source_row_count=(
+                inventory_cost.source_row_count if inventory_cost is not None else None
+            ),
+            negative_cost_row_count=(
+                inventory_cost.negative_cost_row_count if inventory_cost is not None else 0
+            ),
+            negative_cost_amount=(
+                str(inventory_cost.negative_cost_amount) if inventory_cost is not None else None
+            ),
         ),
         _balance_line(
             key="supplier_receivables",
@@ -1777,6 +2394,24 @@ def _build_management_balance_block(
             source_status=payables_status,
             as_of=payables_as_of,
             masked=masked,
+        ),
+        _balance_line(
+            key="owner_cash_in_transit",
+            label="Деньги в пути через собственника",
+            amount=owner_cash_in_transit,
+            source_status=owner_status,
+            as_of=owner_as_of,
+            masked=masked,
+            note="Незакрытые исходящие переводы ПП → карта собственника → ПКО",
+        ),
+        _balance_line(
+            key="owner_related_party_unresolved",
+            label="Неразобранные расчёты со связанными сторонами",
+            amount=owner_related_party_asset,
+            source_status=owner_status,
+            as_of=owner_as_of,
+            masked=masked,
+            note="Включает спорный остаток по ИП Ахмедову",
         ),
     ]
     liabilities = [
@@ -1812,16 +2447,82 @@ def _build_management_balance_block(
             as_of=payables_as_of,
             masked=masked,
         ),
+        _balance_line(
+            key="owner_funds_unclassified",
+            label="Средства собственника, назначение не определено",
+            amount=(
+                None
+                if owner_unclassified_funds is None or owner_related_party_liability is None
+                else owner_unclassified_funds + owner_related_party_liability
+            ),
+            source_status=owner_status,
+            as_of=owner_as_of,
+            masked=masked,
+            note="Незакрытые входящие ПКО и кредитовые остатки связанных сторон",
+        ),
     ]
+    if has_service_settlements:
+        assets[2:2] = [
+            _balance_line(
+                key="service_supplier_advances_1c",
+                label="Авансы поставщикам услуг по данным 1С",
+                amount=service_advances_raw,
+                source_status=payables_status,
+                as_of=payables_as_of,
+                masked=masked,
+                include_in_total=False,
+            ),
+            _balance_line(
+                key="service_accruals_without_documents",
+                label="Минус: услуги, признанные без документов",
+                amount=-accrual_amount,
+                source_status=str(accrual_adjustments["source_status"]),
+                as_of=requested_date,
+                masked=masked,
+                include_in_total=False,
+                recognition_method="approved_fixed_monthly_rule",
+                estimated_count=int(accrual_adjustments["estimated_count"]),
+            ),
+            _balance_line(
+                key="service_supplier_advances",
+                label="Остаток авансов поставщикам услуг",
+                amount=service_advances_adjusted,
+                source_status=str(accrual_adjustments["source_status"]),
+                as_of=requested_date,
+                masked=masked,
+                source_amount=str(service_advances_raw),
+                adjustment_amount=str(-accrual_amount),
+                adjusted_amount=str(service_advances_adjusted),
+                recognition_method="accrual",
+                estimated_count=int(accrual_adjustments["estimated_count"]),
+            ),
+        ]
+        liabilities.insert(
+            0,
+            _balance_line(
+                key="accrued_service_liability",
+                label="Начисленные услуги к оплате",
+                amount=accrued_service_liability,
+                source_status=str(accrual_adjustments["source_status"]),
+                as_of=requested_date,
+                masked=masked,
+                recognition_method="accrual",
+                estimated_count=int(accrual_adjustments["estimated_count"]),
+            ),
+        )
     assets_total = sum(
         (
             amount
             for amount in (
                 cash_amount,
+                inventory_cost.amount if inventory_cost is not None else None,
+                service_advances_adjusted,
                 supplier_receivable,
                 employee_receivable,
                 other_receivable,
                 owner_receivable,
+                owner_cash_in_transit,
+                owner_related_party_asset,
             )
             if amount is not None
         ),
@@ -1832,16 +2533,82 @@ def _build_management_balance_block(
             amount
             for amount in (
                 supplier_payable,
+                accrued_service_liability,
                 employee_payable,
                 other_payable,
                 owner_payable,
+                owner_unclassified_funds,
+                owner_related_party_liability,
             )
             if amount is not None
         ),
         Decimal("0"),
     )
-    source_dates = [value for value in (cash_as_of, payables_as_of) if value]
+    source_dates = [
+        value
+        for value in (
+            cash_as_of,
+            payables_as_of,
+            owner_as_of,
+            inventory_cost.as_of if inventory_cost is not None else None,
+        )
+        if value
+    ]
     as_of = max(source_dates) if source_dates else None
+    equity_lines = []
+    accounting_includes_dividends = bool(
+        get_settings().executive_management_balance_accounting_database_url
+    )
+    if dividends_ytd or owner_status != "ready":
+        warning_note = (
+            f"; {dividend_warning_count} РКО имеют комментарий «Зарплата»"
+            if dividend_warning_count
+            else ""
+        )
+        equity_lines.append(
+            _balance_line(
+                key="dividends_paid_ytd",
+                label="Выплаченные дивиденды",
+                amount=-dividends_ytd if dividends_ytd is not None else None,
+                source_status=owner_status,
+                as_of=owner_as_of,
+                masked=masked,
+                include_in_total=not accounting_includes_dividends,
+                adjustment_amount=(str(-dividends_month) if dividends_month is not None else None),
+                note=(
+                    "Накопительно с начала года; выплата месяца "
+                    f"{dividends_month or Decimal('0')} ₽{warning_note}"
+                    + (
+                        "; информационно — капитал уже берётся из КА/БП"
+                        if accounting_includes_dividends
+                        else ""
+                    )
+                ),
+                recognition_method="equity_distribution",
+            )
+        )
+    if has_service_settlements:
+        equity_lines.append(
+            _balance_line(
+                key="service_accrual_result_adjustment",
+                label="Корректировка результата периода по оценочным расходам",
+                amount=-accrual_amount,
+                source_status=str(accrual_adjustments["source_status"]),
+                as_of=requested_date,
+                masked=masked,
+                recognition_method="accrual",
+                estimated_count=int(accrual_adjustments["estimated_count"]),
+            )
+        )
+    equity_total = sum(
+        (
+            _decimal(item.get("amount"))
+            for item in equity_lines
+            if item.get("amount") is not None and item.get("include_in_total", True)
+        ),
+        Decimal("0"),
+    )
+    liabilities_and_equity_total = liabilities_total + equity_total
     return ExecutiveDashboardBlock(
         key="creditors_payables",
         title="Управленческий баланс",
@@ -1850,25 +2617,26 @@ def _build_management_balance_block(
         as_of=as_of,
         summary={
             "source_anchor": (
-                "1С: остатки денежных средств и рублёвый конечный остаток "
-                "взаиморасчётов по группам контрагентов"
+                "1С: деньги, взаиморасчёты и фактическая стоимость товарных партий"
             ),
             "period_independent": True,
             "selected_month": payables_as_of.strftime("%Y-%m") if payables_as_of else None,
             "monthly_balance_endpoint": ("/api/management/executive-dashboard/management-balance"),
             "note": (
-                "Частичный управленческий баланс в рублях. Себестоимость товарных "
-                "остатков ещё не подключена: найденная SQL totals-таблица не прошла "
-                "проверку суммы. Не включены налоги, прочие активы и обязательства "
-                "вне подключенных источников, капитал."
+                "Частичный управленческий баланс в рублях. Товарные остатки взяты "
+                "по фактической стоимости партий в 1С УТ 10.3. Не включены налоги, "
+                "прочие активы и обязательства вне подключенных источников, капитал."
             ),
             "amount_currency": "RUB",
             "balance_assets": assets,
             "balance_liabilities": liabilities,
+            "balance_equity": equity_lines,
             "balance_assets_total_label": "Итого подключенные активы",
-            "balance_liabilities_total_label": "Итого подключенные пассивы",
+            "balance_liabilities_total_label": "Итого обязательства и собственные средства",
             "balance_assets_total": None if masked else str(assets_total),
-            "balance_liabilities_total": None if masked else str(liabilities_total),
+            "balance_liabilities_total": (None if masked else str(liabilities_and_equity_total)),
+            "balance_obligations_total": None if masked else str(liabilities_total),
+            "balance_equity_total": None if masked else str(equity_total),
         },
         metrics=[
             _metric(
@@ -1882,8 +2650,8 @@ def _build_management_balance_block(
             ),
             _metric(
                 "balance_liabilities_total",
-                "Пассивы по подключенным статьям",
-                liabilities_total,
+                "Обязательства и собственные средства",
+                liabilities_and_equity_total,
                 unit="RUB",
                 tone="warning",
                 masked=masked,
@@ -2372,7 +3140,17 @@ def _quality_issues_for_period(
         )
     issues: list[ExecutiveCashflowQualityIssue] = []
     for item in raw_issues if isinstance(raw_issues, list) else []:
-        if not isinstance(item, dict) or not _date_in_range(
+        if not isinstance(item, dict):
+            continue
+        issue_type = str(item.get("issue_type") or "manual_review")
+        is_open_owner_control = (
+            str(item.get("status") or "open") in {"open", "pending"}
+            and (
+                issue_type.startswith("owner_transfer_")
+                or issue_type == "owner_related_party_unresolved"
+            )
+        )
+        if not is_open_owner_control and not _date_in_range(
             item, date_from=date_from, date_to=date_to
         ):
             continue
@@ -2382,7 +3160,7 @@ def _quality_issues_for_period(
         issues.append(
             ExecutiveCashflowQualityIssue(
                 issue_key=str(item.get("issue_key") or ""),
-                issue_type=str(item.get("issue_type") or "manual_review"),
+                issue_type=issue_type,
                 issue_label=str(
                     item.get("issue_label") or item.get("issue_type") or "Ручная проверка"
                 ),
@@ -2392,6 +3170,16 @@ def _quality_issues_for_period(
                 description=item.get("description") or item.get("description_ru"),
                 proposed_action=item.get("proposed_action") or item.get("proposed_action_ru"),
                 status=str(item.get("status") or "open"),
+                document_number=(
+                    str(item.get("document_number")) if item.get("document_number") else None
+                ),
+                bitrix_task_id=(
+                    str(item.get("bitrix_task_id")) if item.get("bitrix_task_id") else None
+                ),
+                task_status=(str(item.get("task_status")) if item.get("task_status") else None),
+                drilldown_url=(
+                    str(item.get("drilldown_url")) if item.get("drilldown_url") else None
+                ),
             )
         )
     return issues
@@ -2491,6 +3279,22 @@ def build_executive_cashflow_period_response(
         effective_status = "source_missing" if effective_status == "ready" else effective_status
     elif period_outside_cache:
         effective_status = "stale"
+    owner_control_issues = [
+        issue
+        for issue in issues
+        if issue.status in {"open", "pending"}
+        and (
+            issue.issue_type.startswith("owner_transfer_")
+            or issue.issue_type == "owner_related_party_unresolved"
+            or issue.issue_type == "owner_transfer_control_pending"
+        )
+    ]
+    if effective_status == "ready" and any(
+        issue.severity in {"high", "critical"}
+        or issue.issue_type == "owner_transfer_control_pending"
+        for issue in owner_control_issues
+    ):
+        effective_status = "partial"
     effective_freshness = (
         "stale" if period_outside_cache and rows else _freshness_from_status(effective_status)
     )
@@ -2858,6 +3662,8 @@ def build_executive_dashboard(
     )
     finance_payload, finance_source_status, finance_note = _load_finance_snapshot()
     warehouse_payload, warehouse_source_status, warehouse_note = _load_warehouse_snapshot()
+    owner_payload, owner_source_status, owner_note = _load_owner_cash_control_snapshot()
+    inventory_cost, inventory_note = _load_onec_inventory_cost(requested_date)
     persisted = _latest_persisted_snapshot(session, requested_date=requested_date)
     persisted_actions = list_executive_actions(
         session,
@@ -2892,13 +3698,23 @@ def build_executive_dashboard(
             requested_date=requested_date,
             access_context=context,
         ),
+        _build_sales_block(
+            session,
+            requested_date=requested_date,
+            access_context=context,
+        ),
         debtors_block,
         _build_receivables_control_block(
             session,
             requested_date=requested_date,
         ),
         _build_management_balance_block(
+            session,
             finance_payload,
+            owner_payload,
+            inventory_cost,
+            inventory_note,
+            requested_date=requested_date,
             money_block=money_today_block,
             access_context=context,
         ),
@@ -2918,6 +3734,11 @@ def build_executive_dashboard(
             }:
                 block.summary["finance_snapshot_status"] = finance_source_status
                 block.summary["finance_snapshot_note"] = finance_note
+    if owner_payload is None:
+        balance = next((block for block in blocks if block.key == "creditors_payables"), None)
+        if balance is not None:
+            balance.summary["owner_cash_control_status"] = owner_source_status
+            balance.summary["owner_cash_control_note"] = owner_note
     if warehouse_payload is None:
         for block in blocks:
             if block.key == "warehouse_operations":

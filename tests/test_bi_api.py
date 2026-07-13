@@ -620,7 +620,11 @@ def test_buyers_counterparty_refs_from_onec_does_not_keep_process_cache(monkeypa
         "get_settings",
         lambda: SimpleNamespace(onec_database_url="mssql://onec"),
     )
-    monkeypatch.setattr(bi_service, "create_engine", lambda *_args, **_kwargs: FakeEngine())
+    monkeypatch.setattr(
+        bi_service,
+        "build_onec_engine_from_settings",
+        lambda: FakeEngine(),
+    )
     monkeypatch.setattr(
         bi_service,
         "fetch_counterparty_refs_from_onec_group",

@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
+from app.infrastructure.db import get_application_engine
 from app.models import Product
 from app.services.market_research import ProductModelMatcher
 
@@ -13,8 +12,7 @@ logger = logging.getLogger("app.workers.matching")
 
 
 def get_engine():
-    settings = get_settings()
-    return create_engine(settings.database_url)
+    return get_application_engine()
 
 
 def match_products_to_phone_models(limit: int | None = None):

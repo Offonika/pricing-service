@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -27,11 +27,14 @@ from app.services.executive_dashboard import (
     build_executive_cashflow_period_response,
     build_executive_dashboard,
     build_executive_profit_loss_period_response,
+    build_executive_sales_period_response,
 )
+from app.services.onec_inventory_cost import OneCInventoryCostSnapshot
 
 
 def _settings(snapshot_path: Path, *, access_rules_json: str | None = None) -> Settings:
     return Settings(
+        onec_database_url=None,
         management_internal_api_token="secret-token",
         executive_dashboard_finance_snapshot_path=str(snapshot_path),
         executive_dashboard_cashflow_period_cache_path=str(
@@ -39,6 +42,9 @@ def _settings(snapshot_path: Path, *, access_rules_json: str | None = None) -> S
         ),
         executive_dashboard_warehouse_snapshot_path=str(
             snapshot_path.parent / "warehouse_snapshot.json"
+        ),
+        executive_dashboard_owner_cash_control_snapshot_path=str(
+            snapshot_path.parent / "owner_cash_transit_snapshot.json"
         ),
         executive_dashboard_bitrix_enabled=True,
         executive_dashboard_bitrix_allowed_domains=["crm.master-mobile.ru"],
@@ -621,8 +627,7 @@ def test_dashboard_marks_missing_finance_sources_without_zero_truth(
     assert blocks["creditors_payables"].source_status == "source_missing"
     assert (
         blocks["creditors_payables"].summary["source_anchor"]
-        == "1С: остатки денежных средств и рублёвый конечный остаток "
-        "взаиморасчётов по группам контрагентов"
+        == "1С: деньги, взаиморасчёты и фактическая стоимость товарных партий"
     )
     assert blocks["debtors"].source_status == "ready"
     assert blocks["debtors"].title == "Дебиторка покупателей"
@@ -703,6 +708,19 @@ def test_management_balance_places_assets_and_liabilities_on_their_sides(
         encoding="utf-8",
     )
     _override_settings(monkeypatch, _settings(snapshot_path))
+    monkeypatch.setattr(
+        executive_dashboard,
+        "_load_onec_inventory_cost",
+        lambda as_of: (
+            OneCInventoryCostSnapshot(
+                amount=Decimal("1000.00"),
+                quantity=Decimal("25.000"),
+                as_of=as_of,
+                source_row_count=5,
+            ),
+            "",
+        ),
+    )
     db_session.add(_receivable_case(date(2026, 7, 11), balance=Decimal("70.00")))
     db_session.commit()
 
@@ -716,26 +734,101 @@ def test_management_balance_places_assets_and_liabilities_on_their_sides(
     metrics = {metric.key: metric.value for metric in block.metrics}
     assert block.title == "Управленческий баланс"
     assert metrics == {
-        "balance_assets_total": Decimal("650.00"),
-        "balance_liabilities_total": Decimal("200.00"),
+        "balance_assets_total": Decimal("1680.00"),
+        "balance_liabilities_total": Decimal("230.00"),
     }
     assert [row["amount"] for row in block.summary["balance_assets"]] == [
         "500.00",
-        None,
-        "80.00",
+        "1000.00",
+        "100.00",
         "50.00",
-        "20.00",
-        "0",
+        "30.00",
+        "0.00",
+        None,
+        None,
     ]
+    assert block.summary["balance_assets"][1]["source_status"] == "ready"
+    assert (
+        block.summary["balance_assets"][1]["note"]
+        == "1С УТ 10.3: ПартииТоваровНаСкладах.СтоимостьОстаток"
+    )
     assert [row["amount"] for row in block.summary["balance_liabilities"]] == [
-        "0",
-        "0",
-        "0",
+        "20.00",
+        "0.00",
+        "10.00",
         "200.00",
+        None,
     ]
     assert block.summary["balance_assets"][2]["label"] == "Дебиторка поставщиков"
     assert block.summary["balance_assets"][4]["label"] == "Прочие дебиторы"
     assert block.summary["balance_liabilities"][3]["label"] == "Задолженность собственникам"
+
+
+def test_management_balance_includes_owner_transit_and_dividends(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_path = tmp_path / "finance_snapshot.json"
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "money_today": {
+                    "as_of": "2026-07-12",
+                    "cash_position": {
+                        "as_of": "2026-07-12",
+                        "source_status": "ready",
+                        "total_balance_rub": "100.00",
+                    },
+                },
+                "creditors_payables": {
+                    "as_of": "2026-07-12",
+                    "source_status": "ready",
+                    "groups": [],
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    (tmp_path / "owner_cash_transit_snapshot.json").write_text(
+        json.dumps(
+            {
+                "as_of": "2026-07-12",
+                "source_status": "partial",
+                "control_status": "completed",
+                "summary": {
+                    "money_in_transit_asset": "200000.00",
+                    "unclassified_owner_funds_liability": "0.00",
+                    "unresolved_related_party_asset": "87880.00",
+                    "unresolved_related_party_liability": "0.00",
+                    "dividends_ytd": "13415228.19",
+                    "dividends_current_month": "100000.00",
+                    "dividend_comment_warning_count": 1,
+                },
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    _override_settings(monkeypatch, _settings(snapshot_path))
+
+    result = build_executive_dashboard(
+        db_session,
+        requested_date=date(2026, 7, 12),
+        access_level="full",
+    )
+
+    block = next(item for item in result.blocks if item.key == "creditors_payables")
+    assets = {row["key"]: row for row in block.summary["balance_assets"]}
+    liabilities = {row["key"]: row for row in block.summary["balance_liabilities"]}
+    equity = {row["key"]: row for row in block.summary["balance_equity"]}
+    assert assets["owner_cash_in_transit"]["amount"] == "200000.00"
+    assert assets["owner_related_party_unresolved"]["amount"] == "87880.00"
+    assert liabilities["owner_funds_unclassified"]["amount"] == "0.00"
+    assert equity["dividends_paid_ytd"]["amount"] == "-13415228.19"
+    assert equity["dividends_paid_ytd"]["adjustment_amount"] == "-100000.00"
+    assert "Зарплата" in equity["dividends_paid_ytd"]["note"]
 
 
 def test_dashboard_accepts_yesterday_within_configured_lag(
@@ -804,16 +897,10 @@ def test_shared_snapshot_path_is_resolved_from_workspace_root(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    workspace_root = tmp_path / "workspace"
-    snapshot_path = workspace_root / "mm-compensation" / "build" / "snapshot.json"
+    snapshot_path = tmp_path / "contracts" / "snapshot.json"
     snapshot_path.parent.mkdir(parents=True)
     snapshot_path.write_text("{}", encoding="utf-8")
-    release_root = tmp_path / "releases" / "pricing-service" / "release-1"
-    release_root.mkdir(parents=True)
-    monkeypatch.chdir(release_root)
-    monkeypatch.setenv("MM_WORKSPACE_ROOT", str(workspace_root))
-
-    resolved = _resolve_shared_path("../mm-compensation/build/snapshot.json")
+    resolved = _resolve_shared_path(str(snapshot_path))
 
     assert resolved == snapshot_path
 
@@ -922,6 +1009,149 @@ def test_profit_loss_period_response_aggregates_sales_kpi(
     assert result.expense_open_questions[0].amount == Decimal("400.00")
     assert result.daily[-1].business_date == date(2026, 6, 27)
     assert {row.label for row in result.by_store} == {"Горбушкин Двор", "Склад Сайт"}
+
+
+def test_sales_period_response_calculates_forecast_comparison_and_filters(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _override_settings(monkeypatch, _settings(tmp_path / "missing.json"))
+    rows = []
+    cursor = date(2026, 5, 1)
+    while cursor <= date(2026, 6, 5):
+        rows.append(
+            _sales_kpi(
+                cursor,
+                revenue=Decimal("100.00"),
+                cost_of_sales=Decimal("60.00"),
+                store_ref="store-1",
+                store_name="Горбушкин Двор",
+            )
+        )
+        rows.append(
+            _sales_kpi(
+                cursor,
+                revenue=Decimal("200.00"),
+                cost_of_sales=Decimal("100.00"),
+                manager_ref="mgr-2",
+                manager_name="Менеджер 2",
+                store_ref="store-2",
+                store_name="Склад Сайт",
+            )
+        )
+        cursor += timedelta(days=1)
+    db_session.add_all(rows)
+    db_session.commit()
+
+    result = build_executive_sales_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 30),
+        today=date(2026, 6, 5),
+    )
+
+    assert result.source_status == "ready"
+    assert result.forecast_status == "ready"
+    assert result.totals["revenue"] == Decimal("1500.00")
+    assert result.totals["forecast_revenue_period_end"] == Decimal("9000.00")
+    assert result.comparison["revenue"] == Decimal("1500.00")
+    assert result.daily[5].business_date == date(2026, 6, 6)
+    assert result.daily[5].actual_revenue is None
+    assert result.daily[5].forecast_revenue == Decimal("300.00")
+    assert len(result.monthly) == 12
+    assert result.monthly[-1].month == "2026-06"
+    assert result.monthly[-1].revenue == Decimal("1500.00")
+    assert result.monthly[-1].sales_count == Decimal("20.000")
+    assert result.monthly[-1].forecast_revenue == Decimal("9000.00")
+    assert result.monthly[-1].gross_margin_pct is not None
+    assert result.monthly[-1].gross_margin_pct == result.totals["gross_margin_pct"]
+    assert result.monthly[-1].comparison_sales_count == Decimal("0")
+    assert {item.label for item in result.stores} == {"Горбушкин Двор", "Склад Сайт"}
+    assert {item.label for item in result.managers} == {"Менеджер 1", "Менеджер 2"}
+
+    filtered = build_executive_sales_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 30),
+        store_ref="store-2",
+        today=date(2026, 6, 5),
+    )
+    assert filtered.totals["revenue"] == Decimal("1000.00")
+    assert filtered.totals["forecast_revenue_period_end"] == Decimal("6000.00")
+    assert filtered.monthly[-1].sales_count == Decimal("10.000")
+    assert [row.label for row in filtered.by_store] == ["Склад Сайт"]
+
+
+def test_sales_period_monthly_comparison_sales_count_is_year_over_year(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _override_settings(monkeypatch, _settings(tmp_path / "missing.json"))
+    db_session.add_all(
+        [
+            _sales_kpi(date(2026, 6, 10), sales_count=Decimal("7.000")),
+            _sales_kpi(date(2026, 4, 10), sales_count=Decimal("11.000")),
+            _sales_kpi(date(2025, 6, 10), sales_count=Decimal("3.000")),
+            _sales_kpi(date(2025, 6, 20), sales_count=Decimal("99.000")),
+            _sales_kpi(date(2025, 4, 10), sales_count=Decimal("17.000")),
+        ]
+    )
+    db_session.commit()
+
+    result = build_executive_sales_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 15),
+        today=date(2026, 6, 15),
+    )
+
+    by_month = {row.month: row for row in result.monthly}
+    assert by_month["2026-06"].comparison_sales_count == Decimal("3.000")
+    assert by_month["2026-04"].comparison_sales_count == Decimal("17.000")
+
+
+def test_sales_period_marks_forecast_as_unavailable_without_history(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _override_settings(monkeypatch, _settings(tmp_path / "missing.json"))
+    db_session.add(_sales_kpi(date(2026, 6, 5)))
+    db_session.commit()
+
+    result = build_executive_sales_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 30),
+        today=date(2026, 6, 5),
+    )
+
+    assert result.source_status == "ready"
+    assert result.forecast_status == "insufficient_history"
+    assert result.totals["forecast_revenue_period_end"] is None
+    assert "четыре недели" in str(result.forecast_note)
+
+
+def test_sales_period_does_not_recalculate_forecast_for_closed_month(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _override_settings(monkeypatch, _settings(tmp_path / "missing.json"))
+    db_session.add(_sales_kpi(date(2026, 6, 30)))
+    db_session.commit()
+
+    result = build_executive_sales_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 30),
+        today=date(2026, 7, 1),
+    )
+
+    assert result.forecast_status == "not_applicable"
+    assert result.totals["forecast_revenue_period_end"] is None
 
 
 def test_debtors_block_uses_buyer_cases_not_other_receivables(
@@ -1445,6 +1675,47 @@ def test_cashflow_period_response_aggregates_period_cache(
     assert result.quality_issues[0].issue_label == "Документ без статьи ДДС"
 
 
+def test_cashflow_owner_issue_is_linked_and_marks_response_partial(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_path = tmp_path / "finance_snapshot.json"
+    cache_path = tmp_path / "cashflow_period_cache.json"
+    _write_cashflow_period_cache(cache_path)
+    cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    cache["quality_issues"] = [
+        {
+            "issue_key": "owner-transfer:960",
+            "issue_type": "owner_transfer_unmatched_incoming",
+            "issue_label": "Нет исходящего платежа на карту",
+            "severity": "high",
+            "business_date": "2026-06-28",
+            "amount_abs": "200000.00",
+            "status": "open",
+            "document_number": "РБГУ0151620",
+            "bitrix_task_id": "960",
+            "task_status": "completed",
+            "drilldown_url": (
+                "https://crm.master-mobile.ru/company/personal/user/0/tasks/" "task/view/960/"
+            ),
+        }
+    ]
+    cache_path.write_text(json.dumps(cache, ensure_ascii=False), encoding="utf-8")
+    _override_settings(monkeypatch, _settings(snapshot_path))
+
+    result = build_executive_cashflow_period_response(
+        date_from=date(2026, 6, 27),
+        date_to=date(2026, 6, 28),
+    )
+
+    assert result.source_status == "partial"
+    issue = result.quality_issues[0]
+    assert issue.document_number == "РБГУ0151620"
+    assert issue.bitrix_task_id == "960"
+    assert issue.task_status == "completed"
+    assert issue.drilldown_url and issue.drilldown_url.endswith("/960/")
+
+
 def test_profit_loss_period_api_forbids_user_without_money_access(
     client: TestClient,
     db_session: Session,
@@ -1529,6 +1800,56 @@ def test_profit_loss_period_api_returns_sales_for_finance_role(
     assert payload["expense_breakdown"][0]["key"] == "rent"
     assert payload["expense_open_questions"][0]["amount"] == "400.00"
     assert payload["lines"][-1]["source_status"] == "source_missing"
+
+
+def test_sales_period_api_is_available_to_full_access_and_forbidden_to_finance(
+    client: TestClient,
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path / "finance_snapshot.json", access_rules_json=_role_rules())
+    _override_settings(monkeypatch, settings)
+    db_session.add(_sales_kpi(date(2026, 6, 28), revenue=Decimal("1200.00")))
+    db_session.commit()
+
+    app.dependency_overrides[get_db] = lambda: db_session
+    try:
+        full_response = client.get(
+            "/api/management/executive-dashboard/sales-period"
+            "?date_from=2026-06-01&date_to=2026-06-30",
+            headers={"Authorization": "Bearer secret-token"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert full_response.status_code == 200
+    assert full_response.json()["month"] == "2026-06"
+
+    finance_access = bitrix_executive_dashboard_auth.resolve_executive_dashboard_access(
+        bitrix_user_id="203",
+        settings=settings,
+    )
+    token, _ = bitrix_executive_dashboard_auth.create_executive_dashboard_session_token(
+        domain="crm.master-mobile.ru",
+        member_id="member-1",
+        user_id="203",
+        user_name="Финансы",
+        access=finance_access,
+        settings=settings,
+        now=1_785_000_000,
+    )
+    app.dependency_overrides[get_db] = lambda: db_session
+    try:
+        finance_response = client.get(
+            "/api/management/executive-dashboard/sales-period"
+            "?date_from=2026-06-01&date_to=2026-06-30",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert finance_response.status_code == 403
 
 
 def test_cashflow_period_api_forbids_user_without_money_access(

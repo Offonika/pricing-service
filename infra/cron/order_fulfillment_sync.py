@@ -30,7 +30,7 @@ if str(REPO_ROOT) not in sys.path:
 from app.core.config import get_settings  # noqa: E402
 from app.services import site_order_fulfillment as fulfillment  # noqa: E402
 
-DEFAULT_ENV_FILES = (REPO_ROOT / ".env", Path("/opt/MM/mm-compensation/.env"))
+DEFAULT_ENV_FILES = (REPO_ROOT / ".env", Path("/etc/mm-management-orchestrator.env"))
 QUICK_STAGE_IDS = (
     "NEW",
     "PREPARATION",

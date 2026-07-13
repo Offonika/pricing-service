@@ -9,6 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.models import (
     ReceivableCase,
     ReceivableFolderRecommendationCache,
@@ -69,7 +70,15 @@ WORKPLACE_PAYLOAD_KEYS = {
     "workplace_last_action_at",
 }
 
-STATUS_OPTIONS = [
+SYSTEM_STATUS_OPTIONS = [
+    ReceivableWorkplaceStatusOption(value="new_debt", label="Новый долг", scope="system"),
+    ReceivableWorkplaceStatusOption(
+        value=STATUS_NO_PHONE,
+        label="Нет телефона",
+        scope="system",
+    ),
+]
+MANUAL_STATUS_OPTIONS = [
     ReceivableWorkplaceStatusOption(value="no_answer", label="Не берет трубку"),
     ReceivableWorkplaceStatusOption(value="waiting_payment", label="Ждем оплату"),
     ReceivableWorkplaceStatusOption(value="call_back", label="Перезвонить"),
@@ -81,7 +90,9 @@ STATUS_OPTIONS = [
         value="on_card_route", label="На карте/в маршрутке", scope="pyatigorsk"
     ),
 ]
+STATUS_OPTIONS = [*SYSTEM_STATUS_OPTIONS, *MANUAL_STATUS_OPTIONS]
 STATUS_VALUES = {item.value for item in STATUS_OPTIONS}
+SYSTEM_STATUS_VALUES = {item.value for item in SYSTEM_STATUS_OPTIONS}
 STAFF_INACTIVE_STATUS_MARKERS = (
     "fired",
     "dismissed",
@@ -146,6 +157,19 @@ def _payload_dict(item: ReceivableWorkItem | None) -> dict[str, Any]:
     if item is None or not isinstance(item.payload, dict):
         return {}
     return dict(item.payload)
+
+
+def _bitrix_detail_url(item: ReceivableWorkItem | None) -> str | None:
+    if item is None:
+        return None
+    if item.bitrix_detail_url:
+        return item.bitrix_detail_url
+    if item.bitrix_item_id is None:
+        return None
+    entity_type_id = get_settings().receivable_bitrix_entity_type_id
+    if entity_type_id is None:
+        return None
+    return f"/crm/type/{entity_type_id}/details/{item.bitrix_item_id}/"
 
 
 def _action_idempotency_key(counterparty_ref: str, action_id: str | None) -> str | None:
@@ -669,7 +693,7 @@ def _build_item(
         or counterparty_code
         or item_payload.get("counterparty_code"),
         counterparty_name=case.counterparty_name,
-        bitrix_detail_url=item.bitrix_detail_url if item is not None else None,
+        bitrix_detail_url=_bitrix_detail_url(item),
         department_ref=case.department_ref,
         department_name=case.department_name,
         responsible_ref=responsible_ref,
@@ -953,7 +977,7 @@ def build_receivable_workplace(
         for case in cases
         if _ref_key(case.counterparty_ref) not in open_debt_documents_by_counterparty
     ]
-    if missing_cases:
+    if missing_cases and open_debt_cache.source_status != "source_stale":
         open_debt_documents_by_counterparty.update(
             _load_open_debt_documents(
                 session,
@@ -965,6 +989,10 @@ def build_receivable_workplace(
             "fallback_live"
             if open_debt_cache.source_status == "cache_missing"
             else "cache_partial_fallback"
+        )
+    elif missing_cases:
+        open_debt_documents_by_counterparty.update(
+            {_ref_key(case.counterparty_ref): [] for case in missing_cases}
         )
     staff_members = _load_staff_options(session)
     items = [
@@ -1117,6 +1145,20 @@ def apply_receivable_workplace_action(
         raise PermissionError("receivable workplace item is outside allowed departments")
     if payload.status is not None and payload.status not in STATUS_VALUES:
         raise ValueError(f"Unsupported receivable workplace status: {payload.status}")
+
+    existing_item = session.scalar(
+        select(ReceivableWorkItem).where(
+            ReceivableWorkItem.stable_key == stable_key_for_counterparty(counterparty_ref)
+        )
+    )
+    if (
+        payload.status in SYSTEM_STATUS_VALUES
+        and existing_item is not None
+        and existing_item.status not in SYSTEM_STATUS_VALUES
+    ):
+        raise ValueError(
+            f"System receivable workplace status cannot be selected manually: {payload.status}"
+        )
 
     item = _get_or_create_work_item(session, case=case, as_of=snapshot_date)
     staff_members = _load_staff_options(session)

@@ -26,7 +26,7 @@ from app.services.exporters.ut103_nomenclature_properties import (
     build_nomenclature_property_updates_xml,
     write_nomenclature_property_updates_message,
 )
-from tasks.import_topcontrol_products_db import (
+from tasks.sync_onec_product_catalog import (
     detect_item_folder_value,
     fetch_general_catalog_item_ids,
     fetch_onec_products,

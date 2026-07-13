@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
-from typing import Any, Protocol
+from typing import Any, Protocol, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
@@ -110,10 +110,36 @@ class ReceivableWorkflowSummary:
     work_items_closed: int = 0
     bitrix_created: int = 0
     bitrix_updated: int = 0
+    bitrix_conflicts: int = 0
     bitrix_errors: int = 0
+    closure_deferred: int = 0
     data_quality_skipped: int = 0
     events_created: int = 0
+    processed_counterparty_refs: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
+
+    def merge(self, other: ReceivableWorkflowSummary) -> None:
+        for field_name in (
+            "sms_created",
+            "sms_reused",
+            "sms_dry_run",
+            "sms_sent",
+            "sms_failed",
+            "sms_skipped_no_phone",
+            "work_items_created",
+            "work_items_updated",
+            "work_items_closed",
+            "bitrix_created",
+            "bitrix_updated",
+            "bitrix_conflicts",
+            "bitrix_errors",
+            "closure_deferred",
+            "data_quality_skipped",
+            "events_created",
+        ):
+            setattr(self, field_name, getattr(self, field_name) + getattr(other, field_name))
+        self.processed_counterparty_refs.extend(other.processed_counterparty_refs)
+        self.errors.extend(other.errors)
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -128,9 +154,12 @@ class ReceivableWorkflowSummary:
             "work_items_closed": self.work_items_closed,
             "bitrix_created": self.bitrix_created,
             "bitrix_updated": self.bitrix_updated,
+            "bitrix_conflicts": self.bitrix_conflicts,
             "bitrix_errors": self.bitrix_errors,
+            "closure_deferred": self.closure_deferred,
             "data_quality_skipped": self.data_quality_skipped,
             "events_created": self.events_created,
+            "processed_counterparty_refs": list(self.processed_counterparty_refs),
             "errors": list(self.errors),
         }
 
@@ -164,6 +193,19 @@ def _due_date(case: ReceivableCase) -> date | None:
     return case.due_date.date()
 
 
+def _workflow_due_datetime(case: ReceivableCase) -> datetime | None:
+    if case.due_date is not None:
+        return case.due_date
+    if case.planned_payment_date is not None:
+        return case.planned_payment_date
+    if case.origin_document_date is None:
+        return None
+    credit_depth_days = case.credit_depth_days
+    if credit_depth_days is None or credit_depth_days < 0:
+        credit_depth_days = 7
+    return case.origin_document_date + timedelta(days=credit_depth_days)
+
+
 def needs_sms_on_date(case: ReceivableCase, *, as_of: date) -> bool:
     due_date = _due_date(case)
     return due_date is not None and (due_date - as_of).days == 1
@@ -175,8 +217,8 @@ def needs_call_on_date(case: ReceivableCase, *, as_of: date) -> bool:
 
 
 def _is_workflow_card_due(case: ReceivableCase, *, as_of: date) -> bool:
-    due_date = _due_date(case)
-    return due_date is not None and as_of > due_date
+    due_at = _workflow_due_datetime(case)
+    return due_at is not None and case.current_balance > 0 and as_of > due_at.date()
 
 
 def _sms_text(case: ReceivableCase) -> str:
@@ -472,11 +514,11 @@ def _resolve_status(
         return STATUS_DISPUTE
     if item.status in WORKPLACE_MANUAL_STATUS_VALUES:
         return item.status
-    if (case.overdue_days or 0) >= 15:
+    if (item.overdue_days or 0) >= 15:
         return STATUS_ESCALATED
     if item.phone_status == "missing":
         return STATUS_NO_PHONE
-    if needs_call_on_date(case, as_of=as_of):
+    if item.needs_call_today:
         return STATUS_CALLING
     if item.last_sms_status in {SMS_DRY_RUN, SMS_SENT}:
         return STATUS_SMS_SENT
@@ -686,6 +728,11 @@ def _sync_bitrix_item(
     )
     try:
         if item.bitrix_item_id:
+            if not item.bitrix_detail_url:
+                item.bitrix_detail_url = (
+                    f"/crm/type/{settings.receivable_bitrix_entity_type_id}/"
+                    f"details/{item.bitrix_item_id}/"
+                )
             client.update_smart_process_item(
                 entity_type_id=settings.receivable_bitrix_entity_type_id,
                 item_id=str(item.bitrix_item_id),
@@ -702,13 +749,21 @@ def _sync_bitrix_item(
                 ref_value=item.stable_key,
             )
             if len(matches) > 1:
+                summary.bitrix_conflicts += 1
                 raise RuntimeError(
                     f"В Bitrix найдено несколько карточек с stable_key={item.stable_key}"
                 )
             if matches:
                 match = matches[0]
                 item.bitrix_item_id = int(match.get("id") or match.get("ID"))
-                item.bitrix_detail_url = match.get("detailUrl") or match.get("DETAIL_URL")
+                item.bitrix_detail_url = (
+                    match.get("detailUrl")
+                    or match.get("DETAIL_URL")
+                    or (
+                        f"/crm/type/{settings.receivable_bitrix_entity_type_id}/"
+                        f"details/{item.bitrix_item_id}/"
+                    )
+                )
                 client.update_smart_process_item(
                     entity_type_id=settings.receivable_bitrix_entity_type_id,
                     item_id=str(item.bitrix_item_id),
@@ -721,7 +776,10 @@ def _sync_bitrix_item(
                     fields=fields,
                 )
                 item.bitrix_item_id = int(item_id)
-                item.bitrix_detail_url = detail_url
+                item.bitrix_detail_url = detail_url or (
+                    f"/crm/type/{settings.receivable_bitrix_entity_type_id}/"
+                    f"details/{item.bitrix_item_id}/"
+                )
                 summary.bitrix_created += 1
         item.bitrix_last_sync_at = utcnow()
         item.bitrix_last_error = None
@@ -791,8 +849,11 @@ def _update_work_item_from_case(
     item.origin_document_ref = case.origin_document_ref
     item.origin_document_number = case.origin_document_number
     item.origin_document_date = case.origin_document_date
-    item.due_date = case.due_date
-    item.overdue_days = case.overdue_days
+    effective_due_at = _workflow_due_datetime(case)
+    item.due_date = effective_due_at
+    item.overdue_days = (
+        max((as_of - effective_due_at.date()).days, 0) if effective_due_at is not None else None
+    )
     item.age_days = debt_age_days(case, as_of=as_of)
     item.origin_manager_ref = case.origin_manager_ref
     item.origin_manager_name = case.origin_manager_name
@@ -802,7 +863,7 @@ def _update_work_item_from_case(
     item.department_name = case.department_name
     item.phone = phone
     item.phone_status = "present" if phone else "missing"
-    item.needs_call_today = needs_call_on_date(case, as_of=as_of)
+    item.needs_call_today = bool(item.overdue_days and item.overdue_days > 0)
     item.chain_documents = case.chain_documents or []
     preserved_payload = {}
     if isinstance(item.payload, dict):
@@ -874,6 +935,117 @@ def _update_work_item_from_case(
         )
 
 
+def _workflow_candidate_groups(
+    grouped: dict[str, list[ReceivableCase]],
+    *,
+    as_of: date,
+    settings: Settings,
+) -> list[tuple[str, list[ReceivableCase]]]:
+    candidates: list[tuple[str, list[ReceivableCase]]] = []
+    for counterparty_ref, counterparty_cases in grouped.items():
+        segments = {item.segment for item in counterparty_cases}
+        if CASE_BUYERS not in segments:
+            continue
+        case = _select_current_case(counterparty_cases)
+        if not _case_matches_department_scope(case, settings):
+            continue
+        if not _is_workflow_card_due(case, as_of=as_of):
+            continue
+        candidates.append((counterparty_ref, counterparty_cases))
+    return sorted(
+        candidates,
+        key=lambda entry: (
+            not _is_workflow_case_eligible(_select_current_case(entry[1])),
+            -_select_current_case(entry[1]).current_balance,
+            entry[0],
+        ),
+    )
+
+
+def _previous_snapshot_active_stable_keys(
+    session: Session,
+    *,
+    as_of: date,
+) -> set[str] | None:
+    previous_date = session.scalar(
+        select(func.max(ReceivableCase.snapshot_date)).where(
+            ReceivableCase.snapshot_date < as_of,
+            ReceivableCase.segment == CASE_BUYERS,
+        )
+    )
+    if previous_date is None:
+        return None
+    previous_cases = (
+        session.execute(select(ReceivableCase).where(ReceivableCase.snapshot_date == previous_date))
+        .scalars()
+        .all()
+    )
+    previous_grouped = _group_cases(previous_cases)
+    return {
+        stable_key_for_counterparty(counterparty_ref)
+        for counterparty_ref, counterparty_cases in previous_grouped.items()
+        if CASE_BUYERS in {item.segment for item in counterparty_cases}
+        and _is_workflow_card_due(_select_current_case(counterparty_cases), as_of=previous_date)
+    }
+
+
+def close_stale_receivable_work_items(
+    session: Session,
+    *,
+    as_of: date,
+    settings: Settings,
+    bitrix_client: ReceivableBitrixClient | None,
+    summary: ReceivableWorkflowSummary,
+    current_active_stable_keys: set[str],
+    previous_active_stable_keys: set[str] | None = None,
+    dry_run_bitrix: bool = False,
+) -> None:
+    previous_active = previous_active_stable_keys
+    if previous_active is None:
+        previous_active = _previous_snapshot_active_stable_keys(session, as_of=as_of)
+    if previous_active is None:
+        return
+    open_items = (
+        session.execute(
+            select(ReceivableWorkItem).where(ReceivableWorkItem.status != STATUS_CLOSED)
+        )
+        .scalars()
+        .all()
+    )
+    for item in open_items:
+        if item.stable_key in current_active_stable_keys:
+            continue
+        if item.stable_key in previous_active:
+            summary.closure_deferred += 1
+            continue
+        if _department_scope_enabled(settings) and not _work_item_matches_department_scope(
+            item, settings
+        ):
+            continue
+        old_balance = item.current_balance
+        item.status = STATUS_CLOSED
+        item.current_balance = Decimal("0")
+        item.closed_at = utcnow()
+        item.needs_call_today = False
+        summary.work_items_closed += 1
+        _append_event(
+            session,
+            item=item,
+            event_type=EVENT_CLOSED,
+            comment="Долг закрыт по данным 1С.",
+            payload={"old_balance": str(old_balance)},
+            idempotency_key=f"{as_of.isoformat()}|closed",
+            summary=summary,
+        )
+        _sync_bitrix_item(
+            item=item,
+            settings=settings,
+            client=bitrix_client,
+            summary=summary,
+            dry_run_bitrix=dry_run_bitrix,
+        )
+
+
 def sync_receivable_workflow(
     session: Session,
     *,
@@ -883,18 +1055,25 @@ def sync_receivable_workflow(
     bitrix_client: ReceivableBitrixClient | None = None,
     sms_adapter: SmsAdapter | None = None,
     dry_run_bitrix: bool = False,
+    sync_sms: bool = True,
+    allow_closure: bool = True,
+    only_counterparty_refs: Sequence[str] | set[str] | frozenset[str] | None = None,
+    full_active_selection: bool = False,
+    limit: int | None = None,
+    offset: int = 0,
 ) -> ReceivableWorkflowSummary:
     settings = settings or get_settings()
     phone_by_counterparty = phone_by_counterparty or {}
     summary = ReceivableWorkflowSummary()
-    plan_receivable_sms(
-        session,
-        as_of=as_of,
-        phone_by_counterparty=phone_by_counterparty,
-        settings=settings,
-        sms_adapter=sms_adapter,
-        summary=summary,
-    )
+    if sync_sms:
+        plan_receivable_sms(
+            session,
+            as_of=as_of,
+            phone_by_counterparty=phone_by_counterparty,
+            settings=settings,
+            sms_adapter=sms_adapter,
+            summary=summary,
+        )
 
     cases = (
         session.execute(
@@ -912,6 +1091,23 @@ def sync_receivable_workflow(
         snapshot_date=as_of,
         counterparty_refs=list(grouped),
     ).documents_by_counterparty
+    candidates = _workflow_candidate_groups(grouped, as_of=as_of, settings=settings)
+    if only_counterparty_refs is not None:
+        ordered_refs = [str(value).strip() for value in only_counterparty_refs if value]
+        candidates = []
+        for counterparty_ref in ordered_refs:
+            counterparty_cases = grouped.get(counterparty_ref)
+            if not counterparty_cases:
+                continue
+            if CASE_BUYERS not in {item.segment for item in counterparty_cases}:
+                continue
+            case = _select_current_case(counterparty_cases)
+            if case.current_balance <= 0 or not _case_matches_department_scope(case, settings):
+                continue
+            candidates.append((counterparty_ref, counterparty_cases))
+    start = max(offset, 0)
+    stop = None if limit is None else start + max(limit, 0)
+    selected_refs = {entry[0] for entry in candidates[start:stop]}
     active_refs: set[str] = set()
     protected_stable_keys: set[str] = set()
     for counterparty_ref, counterparty_cases in grouped.items():
@@ -919,23 +1115,15 @@ def sync_receivable_workflow(
         if CASE_BUYERS not in segments:
             continue
         stable_key = stable_key_for_counterparty(counterparty_ref)
-        if CASE_OVERDUE not in segments:
-            _protect_existing_open_item(
-                session,
-                stable_key=stable_key,
-                protected_stable_keys=protected_stable_keys,
-            )
-            continue
         case = _select_current_case(counterparty_cases)
         if not _case_matches_department_scope(case, settings):
             continue
-        if not _is_workflow_card_due(case, as_of=as_of):
-            _protect_existing_open_item(
-                session,
-                stable_key=stable_key,
-                protected_stable_keys=protected_stable_keys,
-            )
+        if counterparty_ref not in selected_refs:
             continue
+        if only_counterparty_refs is None and not _is_workflow_card_due(case, as_of=as_of):
+            continue
+        protected_stable_keys.add(stable_key)
+        summary.processed_counterparty_refs.append(counterparty_ref)
         if not _is_workflow_case_eligible(case):
             item = session.scalar(
                 select(ReceivableWorkItem).where(ReceivableWorkItem.stable_key == stable_key)
@@ -1015,45 +1203,23 @@ def sync_receivable_workflow(
 
     active_stable_keys = {stable_key_for_counterparty(ref) for ref in active_refs}
     protected_stable_keys.update(active_stable_keys)
-    if not allow_stale_closure:
+    selection_limited = (
+        (only_counterparty_refs is not None and not full_active_selection)
+        or limit is not None
+        or offset > 0
+    )
+    if not allow_stale_closure or not allow_closure or selection_limited:
         return summary
 
-    open_items = (
-        session.execute(
-            select(ReceivableWorkItem).where(ReceivableWorkItem.status != STATUS_CLOSED)
-        )
-        .scalars()
-        .all()
+    close_stale_receivable_work_items(
+        session,
+        as_of=as_of,
+        settings=settings,
+        bitrix_client=bitrix_client,
+        summary=summary,
+        current_active_stable_keys=protected_stable_keys,
+        dry_run_bitrix=dry_run_bitrix,
     )
-    for item in open_items:
-        if item.stable_key in protected_stable_keys:
-            continue
-        if _department_scope_enabled(settings) and not _work_item_matches_department_scope(
-            item, settings
-        ):
-            continue
-        old_balance = item.current_balance
-        item.status = STATUS_CLOSED
-        item.current_balance = Decimal("0")
-        item.closed_at = utcnow()
-        item.needs_call_today = False
-        summary.work_items_closed += 1
-        _append_event(
-            session,
-            item=item,
-            event_type=EVENT_CLOSED,
-            comment="Долг закрыт по данным 1С.",
-            payload={"old_balance": str(old_balance)},
-            idempotency_key=f"{as_of.isoformat()}|closed",
-            summary=summary,
-        )
-        _sync_bitrix_item(
-            item=item,
-            settings=settings,
-            client=bitrix_client,
-            summary=summary,
-            dry_run_bitrix=dry_run_bitrix,
-        )
 
     return summary
 

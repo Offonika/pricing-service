@@ -14,6 +14,7 @@ from app.core.config import get_settings
 from app.main import app
 from app.services.executive_dashboard import (
     _resolve_cashflow_period_cache_path,
+    _resolve_owner_cash_control_snapshot_path,
     _resolve_snapshot_path,
     _resolve_warehouse_snapshot_path,
 )
@@ -25,8 +26,10 @@ REQUIRED_ROUTES = {
     ("GET", "/api/management/executive-dashboard/actions"),
     ("GET", "/api/management/executive-dashboard/cashflow-period"),
     ("GET", "/api/management/executive-dashboard/profit-loss-period"),
+    ("GET", "/api/management/executive-dashboard/sales-period"),
     ("GET", "/api/management/executive-dashboard/management-balance"),
     ("POST", "/api/management/executive-dashboard/management-balance/{month}/close"),
+    ("GET", "/api/management/executive-dashboard/service-accruals"),
 }
 ASSET_RE = re.compile(r"(?:src|href)=[\"'](?:\./|/)?assets/([^\"']+)[\"']")
 
@@ -67,6 +70,11 @@ def main() -> None:
         ("finance snapshot", _resolve_snapshot_path()),
         ("cashflow cache", _resolve_cashflow_period_cache_path()),
         ("warehouse snapshot", _resolve_warehouse_snapshot_path()),
+        ("owner cash control snapshot", _resolve_owner_cash_control_snapshot_path()),
+        (
+            "employee payroll balance snapshot",
+            Path(settings.executive_management_balance_payroll_snapshot_path),
+        ),
     ):
         if not source_path.is_file():
             errors.append(f"{source_name} is missing: {source_path}")

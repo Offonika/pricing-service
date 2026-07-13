@@ -27,6 +27,7 @@ _BEARER_SECURITY = Security(security)
 EXECUTIVE_DASHBOARD_BLOCK_KEYS = (
     "money_today",
     "profit_loss",
+    "sales",
     "debtors",
     "receivables_control",
     "creditors_payables",
@@ -40,6 +41,7 @@ EXECUTIVE_DASHBOARD_ACTION_DOMAINS = EXECUTIVE_DASHBOARD_BLOCK_KEYS
 EXECUTIVE_DASHBOARD_MONEY_BLOCK_KEYS = (
     "money_today",
     "profit_loss",
+    "sales",
     "debtors",
     "creditors_payables",
     "procurement_import",

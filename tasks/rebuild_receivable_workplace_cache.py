@@ -71,6 +71,11 @@ def main() -> int:
                 **open_debt_summary,
                 "snapshot_date": snapshot_date.isoformat(),
                 "computed_at": open_debt_summary["computed_at"].isoformat(),
+                "source_max_document_date": (
+                    open_debt_summary["source_max_document_date"].isoformat()
+                    if open_debt_summary.get("source_max_document_date")
+                    else None
+                ),
             }
             if not args.skip_folders:
                 if onec_engine is None:
@@ -89,6 +94,7 @@ def main() -> int:
                     "report_revision": row.report_revision,
                     "payload_count": len(row.payload or []),
                     "computed_at": row.computed_at.isoformat(),
+                    "source_status": row.source_status,
                 }
             session.commit()
     finally:

@@ -63,12 +63,21 @@ def _validate_payload_shape(name: str, payload: Any) -> list[str]:
             errors.append("actions response does not contain a payload list")
         if not isinstance(payload.get("total_count"), int):
             errors.append("actions response does not contain total_count")
-    elif name in {"cashflow", "profit_loss"}:
+    elif name in {"cashflow", "profit_loss", "sales"}:
         for field, field_type in (
             ("source_status", str),
             ("freshness_status", str),
             ("daily", list),
             ("totals", dict),
+        ):
+            if not isinstance(payload.get(field), field_type):
+                errors.append(f"{name} response has invalid or missing {field}")
+    elif name == "service_accruals":
+        for field, field_type in (
+            ("source_status", str),
+            ("freshness_status", str),
+            ("total_count", int),
+            ("items", list),
         ):
             if not isinstance(payload.get(field), field_type):
                 errors.append(f"{name} response has invalid or missing {field}")
@@ -79,9 +88,15 @@ def _validate_payload_shape(name: str, payload: Any) -> list[str]:
             ("liabilities", list),
             ("equity", list),
             ("validation_errors", list),
+            ("source_summary", dict),
         ):
             if not isinstance(payload.get(field), field_type):
                 errors.append(f"{name} response has invalid or missing {field}")
+        source_summary = payload.get("source_summary")
+        if isinstance(source_summary, dict) and not isinstance(
+            source_summary.get("salary_reconciliation"), dict
+        ):
+            errors.append("management_balance response does not contain salary_reconciliation")
     return errors
 
 
@@ -125,7 +140,14 @@ def collect_runtime_checks(
             "/api/management/executive-dashboard/profit-loss-period"
             f"?date_from={month_start}&date_to={requested_date.isoformat()}"
         ),
+        "sales": (
+            "/api/management/executive-dashboard/sales-period"
+            f"?date_from={month_start}&date_to={requested_date.isoformat()}"
+        ),
         "management_balance": ("/api/management/executive-dashboard/management-balance"),
+        "service_accruals": (
+            "/api/management/executive-dashboard/service-accruals" f"?month={month_start[:7]}"
+        ),
     }
     for name, path in endpoints.items():
         response = _request(client, "GET", path, headers=headers)
@@ -156,11 +178,30 @@ def evaluate_data_health(
     profit_loss_ready_after: time = time(4, 0),
     procurement_ready_after: time = time(11, 0),
     payables_ready_after: time = time(11, 0),
+    owner_control_ready_after: time = time(11, 45),
 ) -> tuple[str, list[dict[str, Any]], list[str]]:
     degraded_checks: list[dict[str, Any]] = []
     errors: list[str] = []
 
     cashflow = payloads.get("cashflow", {})
+    owner_control_issues = [
+        item
+        for item in cashflow.get("quality_issues", [])
+        if isinstance(item, dict)
+        and str(item.get("status") or "open") in {"open", "pending"}
+        and (
+            str(item.get("issue_type") or "").startswith("owner_transfer_")
+            or str(item.get("issue_type") or "") == "owner_related_party_unresolved"
+        )
+    ]
+    owner_control_pending = any(
+        str(item.get("issue_type") or "") == "owner_transfer_control_pending"
+        for item in owner_control_issues
+    )
+    owner_control_high = any(
+        str(item.get("severity") or "") in {"high", "critical"} for item in owner_control_issues
+    )
+    owner_control_after_grace = now.astimezone(MOSCOW_TZ).time() >= owner_control_ready_after
     if _is_unhealthy(cashflow):
         source_status, freshness_status = _status_pair(cashflow)
         errors.append(
@@ -168,19 +209,27 @@ def evaluate_data_health(
             f"source_status={source_status}, freshness_status={freshness_status}"
         )
     elif _is_partial(cashflow):
-        degraded_checks.append(
-            {
-                "name": "cashflow",
-                "reason": "partial data",
-                **dict(
-                    zip(
-                        ("source_status", "freshness_status"),
-                        _status_pair(cashflow),
-                        strict=True,
-                    )
-                ),
-            }
-        )
+        if owner_control_after_grace and (owner_control_pending or owner_control_high):
+            reason = (
+                "owner cash transfer control has not completed"
+                if owner_control_pending
+                else "owner cash transfer control has a high unresolved issue"
+            )
+            errors.append(reason)
+        else:
+            degraded_checks.append(
+                {
+                    "name": "cashflow",
+                    "reason": "partial data",
+                    **dict(
+                        zip(
+                            ("source_status", "freshness_status"),
+                            _status_pair(cashflow),
+                            strict=True,
+                        )
+                    ),
+                }
+            )
 
     profit_loss = payloads.get("profit_loss", {})
     if _is_unhealthy(profit_loss):
@@ -224,6 +273,38 @@ def evaluate_data_health(
                 "reason": "monthly balance source is unavailable",
                 "source_status": source_status,
                 "freshness_status": freshness_status,
+            }
+        )
+
+    service_accruals = payloads.get("service_accruals", {})
+    if _is_unhealthy(service_accruals):
+        source_status, freshness_status = _status_pair(service_accruals)
+        if now.astimezone(MOSCOW_TZ).time() >= payables_ready_after:
+            errors.append(
+                "service accrual source is unhealthy after the refresh grace period: "
+                f"source_status={source_status}, freshness_status={freshness_status}"
+            )
+        else:
+            degraded_checks.append(
+                {
+                    "name": "service_accruals",
+                    "reason": "refresh grace period until 11:00",
+                    "source_status": source_status,
+                    "freshness_status": freshness_status,
+                }
+            )
+    elif _is_partial(service_accruals):
+        degraded_checks.append(
+            {
+                "name": "service_accruals",
+                "reason": "estimates are active; closing documents are not fully verified",
+                **dict(
+                    zip(
+                        ("source_status", "freshness_status"),
+                        _status_pair(service_accruals),
+                        strict=True,
+                    )
+                ),
             }
         )
     elif _is_partial(management_balance) or management_balance.get("validation_errors"):
@@ -312,6 +393,7 @@ def main() -> None:
     parser.add_argument("--mode", choices=("release", "monitor"), default="release")
     parser.add_argument("--profit-loss-ready-after", type=_parse_clock, default=time(4, 0))
     parser.add_argument("--procurement-ready-after", type=_parse_clock, default=time(11, 0))
+    parser.add_argument("--owner-control-ready-after", type=_parse_clock, default=time(11, 45))
     parser.add_argument("--payables-ready-after", type=_parse_clock, default=time(11, 0))
     args = parser.parse_args()
 
@@ -358,6 +440,7 @@ def main() -> None:
             now=datetime.now(tz=MOSCOW_TZ),
             profit_loss_ready_after=args.profit_loss_ready_after,
             procurement_ready_after=args.procurement_ready_after,
+            owner_control_ready_after=args.owner_control_ready_after,
             payables_ready_after=args.payables_ready_after,
         )
 

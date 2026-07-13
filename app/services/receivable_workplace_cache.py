@@ -21,6 +21,7 @@ from app.services.counterparty_folder_recommendations import (
     STATUS_NO_OVERDUE,
     STATUS_OK,
     build_open_debt_documents_by_counterparty,
+    evaluate_open_debt_source_freshness,
 )
 from app.services.receivables import CASE_BUYERS
 
@@ -32,6 +33,8 @@ class CachedOpenDebtDocuments:
     computed_at: datetime | None = None
     cached_counterparty_count: int = 0
     missing_counterparty_count: int = 0
+    source_max_document_date: datetime | None = None
+    source_lag_days: int | None = None
 
 
 @dataclass(frozen=True)
@@ -157,11 +160,21 @@ def load_cached_open_debt_documents(
         .all()
     )
     documents_by_counterparty = {
-        _ref_key(row.counterparty_ref): list(row.documents or []) for row in rows
+        _ref_key(row.counterparty_ref): (
+            list(row.documents or []) if row.source_status == "ready" else []
+        )
+        for row in rows
     }
     missing_count = len(expected_keys - set(documents_by_counterparty))
     computed_at = max((row.computed_at for row in rows), default=None)
-    if not rows:
+    stale_rows = [row for row in rows if row.source_status == "source_stale"]
+    freshness = evaluate_open_debt_source_freshness(
+        session,
+        snapshot_date=snapshot_date,
+    )
+    if stale_rows:
+        source_status = "source_stale"
+    elif not rows:
         source_status = "cache_missing"
     elif missing_count:
         source_status = "cache_partial"
@@ -173,6 +186,8 @@ def load_cached_open_debt_documents(
         computed_at=computed_at,
         cached_counterparty_count=len(rows),
         missing_counterparty_count=missing_count,
+        source_max_document_date=freshness.source_max_document_date,
+        source_lag_days=freshness.source_lag_days,
     )
 
 
@@ -193,12 +208,20 @@ def rebuild_open_debt_cache(
         .scalars()
         .all()
     )
-    documents_by_counterparty = build_open_debt_documents_by_counterparty(
+    freshness = evaluate_open_debt_source_freshness(
         session,
-        onec_engine=onec_engine,
-        snapshots=snapshots,
         snapshot_date=snapshot_date,
-        include_onec_enrichment=include_onec_enrichment,
+    )
+    documents_by_counterparty = (
+        build_open_debt_documents_by_counterparty(
+            session,
+            onec_engine=onec_engine,
+            snapshots=snapshots,
+            snapshot_date=snapshot_date,
+            include_onec_enrichment=include_onec_enrichment,
+        )
+        if freshness.source_status == "cache_ready"
+        else {}
     )
     now = datetime.utcnow()
     updated_count = 0
@@ -219,7 +242,9 @@ def rebuild_open_debt_cache(
             )
             session.add(row)
         row.department_ref = snapshot.department_ref
-        row.source_status = "ready"
+        row.source_status = (
+            "ready" if freshness.source_status == "cache_ready" else "source_stale"
+        )
         row.documents = _json_safe(documents_by_counterparty.get(key, []))
         row.computed_at = now
         updated_count += 1
@@ -228,6 +253,9 @@ def rebuild_open_debt_cache(
         "source_snapshot_count": len(snapshots),
         "updated_count": updated_count,
         "computed_at": now,
+        "source_status": freshness.source_status,
+        "source_max_document_date": freshness.source_max_document_date,
+        "source_lag_days": freshness.source_lag_days,
     }
 
 
@@ -298,7 +326,7 @@ def cache_folder_recommendation_report(
     row.report_revision = str(report.get("report_revision") or "")
     row.summary = _json_safe(dict(report.get("summary") or {}))
     row.payload = _json_safe(list(report.get("payload") or []))
-    row.source_status = "cached"
+    row.source_status = str(report.get("source_status") or "cache_ready")
     row.computed_at = datetime.utcnow()
     return row
 
@@ -336,7 +364,7 @@ def load_cached_folder_recommendation_report(
         ),
         "payload": payload,
         "computed_at": row.computed_at,
-        "source_status": "cache_ready",
+        "source_status": row.source_status,
     }
 
 
@@ -364,6 +392,16 @@ def workplace_cache_status(
             ReceivableOpenDebtCache.snapshot_date == snapshot_date
         )
     )
+    open_debt_stale_count = session.scalar(
+        select(func.count(ReceivableOpenDebtCache.id)).where(
+            ReceivableOpenDebtCache.snapshot_date == snapshot_date,
+            ReceivableOpenDebtCache.source_status == "source_stale",
+        )
+    )
+    freshness = evaluate_open_debt_source_freshness(
+        session,
+        snapshot_date=snapshot_date,
+    )
     folder_count = session.scalar(
         select(func.count(ReceivableFolderRecommendationCache.id)).where(
             ReceivableFolderRecommendationCache.snapshot_date == snapshot_date,
@@ -378,9 +416,17 @@ def workplace_cache_status(
     )
     return {
         "open_debt": {
-            "source_status": "cache_ready" if open_debt_count else "missing",
+            "source_status": (
+                "source_stale"
+                if open_debt_stale_count
+                else "cache_ready"
+                if open_debt_count
+                else "missing"
+            ),
             "cached_count": int(open_debt_count or 0),
             "computed_at": open_debt_computed_at,
+            "source_max_document_date": freshness.source_max_document_date,
+            "source_lag_days": freshness.source_lag_days,
         },
         "folder_recommendations": {
             "source_status": "cache_ready" if folder_count else "missing",

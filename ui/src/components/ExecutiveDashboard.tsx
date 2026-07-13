@@ -6,6 +6,7 @@ import {
   fetchExecutiveDashboardActions,
   fetchExecutiveManagementBalance,
   fetchExecutiveProfitLossPeriod,
+  fetchExecutiveSalesPeriod,
   type ExecutiveAccessLevel,
   type ExecutiveCashflowPeriodResponse,
   type ExecutiveCashflowRatio,
@@ -21,10 +22,13 @@ import {
   type ExecutiveProfitLossOpenQuestion,
   type ExecutiveProfitLossPeriodResponse,
   type ExecutiveProfitLossRatio,
+  type ExecutiveSalesBreakdownRow,
+  type ExecutiveSalesMonthlyRow,
+  type ExecutiveSalesPeriodResponse,
   type ExecutiveSourceStatus,
 } from "../api/executiveDashboard";
 import { splitManagementBalanceBlock } from "./executiveDashboardLayout";
-import { Button, ErrorState, LoadingState, PageShell } from "./ui";
+import { Button, ErrorState, LoadingState, MetricCard, PageShell, type MetricDelta, type MetricTone } from "./ui";
 
 type ExecutiveDashboardProps = {
   bitrixMode?: boolean;
@@ -77,16 +81,21 @@ type ManagementBalanceLine = {
   source_status?: string;
   as_of?: string | null;
   masked?: boolean;
+  recognition_method?: string;
+  estimated_count?: number;
+  note?: string;
 };
 
 const MONEY_TAB_KEY = "money_today";
 const PROFIT_LOSS_TAB_KEY = "profit_loss";
+const SALES_TAB_KEY = "sales";
 const ODDS_CASHFLOW_TAB_KEY = "odds_cashflow";
 
 const TAB_DEFINITIONS = [
   { key: "today", label: "Сегодня" },
   { key: MONEY_TAB_KEY, label: "Деньги / ДДС" },
   { key: PROFIT_LOSS_TAB_KEY, label: "Прибыли / убытки" },
+  { key: SALES_TAB_KEY, label: "Продажи" },
   { key: ODDS_CASHFLOW_TAB_KEY, label: "ОДДС CashFlow" },
   { key: "debtors", label: "Дебиторка покупателей" },
   { key: "receivables_control", label: "Контроль" },
@@ -102,6 +111,7 @@ const TAB_KEYS = new Set(TAB_DEFINITIONS.map((item) => item.key));
 const DOMAIN_LABELS: Record<string, string> = {
   money_today: "Деньги / ДДС",
   profit_loss: "Прибыли / убытки",
+  sales: "Продажи",
   odds_cashflow: "ОДДС CashFlow",
   debtors: "Дебиторка покупателей",
   receivables_control: "Контроль дебиторки",
@@ -113,9 +123,24 @@ const DOMAIN_LABELS: Record<string, string> = {
   daily_focus: "Фокус",
 };
 
+const SOURCE_FRESHNESS_KEY_BY_TAB: Record<string, string> = {
+  money_today: "money_today",
+  [PROFIT_LOSS_TAB_KEY]: "profit_loss",
+  [SALES_TAB_KEY]: "sales",
+  [ODDS_CASHFLOW_TAB_KEY]: "money_today",
+  debtors: "debtors",
+  receivables_control: "receivables_control",
+  creditors_payables: "creditors_payables",
+  procurement_import: "procurement_import",
+  warehouse_operations: "warehouse_operations",
+  reconciliation: "reconciliation",
+  tasks: "tasks",
+};
+
 const FLOW_STEPS = [
   { key: "money_today", label: "Деньги / ДДС", metricKeys: ["cash_position_total_balance", "cashflow_inflow_amount"] },
   { key: "profit_loss", label: "Прибыли / убытки", metricKeys: ["gross_profit", "gross_margin_pct"] },
+  { key: "sales", label: "Продажи", metricKeys: ["revenue", "forecast_revenue_period_end"] },
   { key: "debtors", label: "Покупатели", metricKeys: ["total_receivable"] },
   { key: "receivables_control", label: "Контроль", metricKeys: ["folder_needs_review_count", "need_call_today_count"] },
   { key: "creditors_payables", label: "Баланс", metricKeys: ["balance_liabilities_total"] },
@@ -190,7 +215,10 @@ function drilldownHrefWithReturn(
 }
 
 function isoFromDate(value: Date) {
-  return value.toISOString().slice(0, 10);
+  const year = value.getFullYear();
+  const month = String(value.getMonth() + 1).padStart(2, "0");
+  const day = String(value.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function addDaysIso(value: string, days: number) {
@@ -199,8 +227,21 @@ function addDaysIso(value: string, days: number) {
   return isoFromDate(parsed);
 }
 
+function daysBetweenInclusive(fromIso: string, toIso: string) {
+  const from = new Date(`${fromIso}T00:00:00`);
+  const to = new Date(`${toIso}T00:00:00`);
+  return Math.round((to.getTime() - from.getTime()) / 86_400_000) + 1;
+}
+
 function monthStartIso(value: string) {
   return `${value.slice(0, 8)}01`;
+}
+
+function monthEndIso(value: string) {
+  const start = new Date(`${monthStartIso(value)}T00:00:00`);
+  const firstOfNextMonth = new Date(start.getFullYear(), start.getMonth() + 1, 1);
+  firstOfNextMonth.setDate(firstOfNextMonth.getDate() - 1);
+  return isoFromDate(firstOfNextMonth);
 }
 
 function statusLabel(status: string) {
@@ -213,6 +254,9 @@ function statusLabel(status: string) {
     source_missing: "нет источника",
     source_unverified: "источник не подтверждён",
     source_error: "ошибка",
+    insufficient_history: "недостаточно истории",
+    not_applicable: "не рассчитывается",
+    complete: "месяц закрыт",
   };
   return labels[status] || status;
 }
@@ -320,7 +364,7 @@ function actionDomainForTab(tab: string) {
 function visibleBlocks(data: ExecutiveDashboardResponse | null, tab: string) {
   if (!data) return [];
   if (tab === "today") return data.blocks.filter((block) => block.key !== "daily_focus");
-  if (tab === ODDS_CASHFLOW_TAB_KEY) return [];
+  if ([ODDS_CASHFLOW_TAB_KEY, PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY].includes(tab)) return [];
   return data.blocks.filter((block) => block.key === tab);
 }
 
@@ -955,6 +999,7 @@ export function ManagementBalanceBlockCard({
   const note = summaryString(block.summary, "note");
   const assets = summaryArray<ManagementBalanceLine>(block.summary, "balance_assets");
   const liabilities = summaryArray<ManagementBalanceLine>(block.summary, "balance_liabilities");
+  const equity = summaryArray<ManagementBalanceLine>(block.summary, "balance_equity");
   const assetsTotal = block.summary.balance_assets_total;
   const liabilitiesTotal = block.summary.balance_liabilities_total;
   const assetsTotalLabel = summaryString(block.summary, "balance_assets_total_label") || "Итого активы";
@@ -983,7 +1028,10 @@ export function ManagementBalanceBlockCard({
             <div className="executive-management-balance__rows">
               {assets.map((line) => (
                 <div className="executive-management-balance__row" key={line.key || line.label}>
-                  <span>{line.label || "Статья"}</span>
+                  <span>
+                    {line.label || "Статья"}
+                    {!!line.estimated_count && <small>Оценочно, без закрывающих документов</small>}
+                  </span>
                   <strong>{managementBalanceAmount(line)}</strong>
                 </div>
               ))}
@@ -995,10 +1043,28 @@ export function ManagementBalanceBlockCard({
           </section>
           <section className="executive-management-balance__column executive-management-balance__column--liabilities">
             <h3>Пассивы</h3>
+            <h4 className="executive-management-balance__subsection-title">Обязательства</h4>
             <div className="executive-management-balance__rows">
               {liabilities.map((line) => (
                 <div className="executive-management-balance__row" key={line.key || line.label}>
-                  <span>{line.label || "Статья"}</span>
+                  <span>
+                    {line.label || "Статья"}
+                    {!!line.estimated_count && <small>Оценочно, без закрывающих документов</small>}
+                  </span>
+                  <strong>{managementBalanceAmount(line)}</strong>
+                </div>
+              ))}
+            </div>
+            <h4 className="executive-management-balance__subsection-title executive-management-balance__equity-title">
+              Собственные средства
+            </h4>
+            <div className="executive-management-balance__rows">
+              {equity.map((line) => (
+                <div className="executive-management-balance__row" key={line.key || line.label}>
+                  <span>
+                    {line.label || "Статья"}
+                    {line.note && <small>{line.note}</small>}
+                  </span>
                   <strong>{managementBalanceAmount(line)}</strong>
                 </div>
               ))}
@@ -1045,9 +1111,13 @@ function MonthlyBalanceRows({
           <span>
             {line.label}
             <small>
-              {line.source_as_of ? `на ${formatDate(line.source_as_of)}` : statusLabel(line.source_status)}
+              {line.note || statusLabel(line.source_status)}
+              {line.source_as_of ? ` · на ${formatDate(line.source_as_of)}` : ""}
               {line.delta_previous !== null && line.delta_previous !== undefined
                 ? ` · к прошлому месяцу ${formatSignedMoney(line.delta_previous)}`
+                : ""}
+              {line.estimated_count > 0
+                ? ` · оценочно без документов: ${formatPlainNumber(line.estimated_count)}`
                 : ""}
             </small>
           </span>
@@ -1069,7 +1139,7 @@ function formatSignedMoney(value: string | number) {
   return `${numeric > 0 ? "+" : numeric < 0 ? "−" : ""}${formatted}`;
 }
 
-function MonthlyManagementBalance({
+export function MonthlyManagementBalance({
   asOf,
   refreshNonce,
   canCloseMonth,
@@ -1150,10 +1220,30 @@ function MonthlyManagementBalance({
       .catch((error: unknown) => setMessage(errorMessage(error)))
       .finally(() => setLoading(false));
   };
+  const salaryReconciliationValue = balance?.source_summary?.salary_reconciliation;
+  const salaryReconciliation =
+    salaryReconciliationValue &&
+    typeof salaryReconciliationValue === "object" &&
+    !Array.isArray(salaryReconciliationValue)
+      ? (salaryReconciliationValue as Record<string, unknown>)
+      : null;
+  const salaryMappingValue = salaryReconciliation?.mapping;
+  const salaryMapping =
+    salaryMappingValue && typeof salaryMappingValue === "object" && !Array.isArray(salaryMappingValue)
+      ? (salaryMappingValue as Record<string, unknown>)
+      : null;
+  const unconfirmedSalaryAmount = Number(salaryReconciliation?.unconfirmed_amount || 0);
+  const salaryMappingCoverage = Number(salaryMapping?.coverage_percent || 0);
+  const showSalaryReconciliationWarning = Boolean(
+    salaryReconciliation &&
+      (salaryReconciliation.status !== "ready" ||
+        salaryReconciliation.closing_blocked ||
+        unconfirmedSalaryAmount > 0)
+  );
 
   return (
     <section className={`executive-block executive-block--management-balance executive-block--${balance?.source_status || "source_missing"}`}>
-      <header className="executive-block__header executive-management-balance__header">
+      <header className="executive-block__header executive-management-balance__header executive-panel__header">
         <div>
           <h2>{balance?.status === "closed" ? "Полный управленческий баланс" : "Частичный управленческий баланс"}</h2>
           <span>
@@ -1168,7 +1258,7 @@ function MonthlyManagementBalance({
                   : "Период не выбран"}
           </span>
         </div>
-        <div className="executive-management-balance__controls">
+        <div className="executive-management-balance__controls executive-panel__filters">
           <label>
             <span>Месяц</span>
             <select
@@ -1215,12 +1305,32 @@ function MonthlyManagementBalance({
       {balance && (
         <>
           <div className="executive-management-balance__totals">
-            <div><span>Активы</span><strong>{formatMoney(balance.assets_total)}</strong></div>
-            <div><span>Пассивы</span><strong>{formatMoney(balance.liabilities_and_equity_total)}</strong></div>
-            <div className={Number(balance.imbalance_amount) === 0 ? "is-balanced" : "is-unbalanced"}>
-              <span>Расхождение</span><strong>{formatSignedMoney(balance.imbalance_amount)}</strong>
-            </div>
+            <MetricCard
+              label="Активы"
+              tooltip="Сумма активов на дату баланса."
+              value={formatMoney(balance.assets_total)}
+            />
+            <MetricCard
+              label="Пассивы"
+              tooltip="Обязательства и собственный капитал на дату баланса."
+              value={formatMoney(balance.liabilities_and_equity_total)}
+            />
+            <MetricCard
+              label="Расхождение"
+              tone={Number(balance.imbalance_amount) === 0 ? "success" : "danger"}
+              tooltip="Активы минус пассивы; ноль — баланс сходится."
+              value={formatSignedMoney(balance.imbalance_amount)}
+            />
           </div>
+          {showSalaryReconciliationWarning && (
+            <div className="executive-management-balance__warning" role="status">
+              <strong>Сверка зарплаты выполнена частично</strong>
+              <span>
+                Неподтверждено: {formatMoney(unconfirmedSalaryAmount)} — в итог баланса не включено.
+                Сопоставлено сотрудников: {formatPlainNumber(salaryMappingCoverage)}%.
+              </span>
+            </div>
+          )}
           {Number(balance.imbalance_amount) !== 0 && (
             <div className="executive-management-balance__warning" role="status">
               <strong>Стороны баланса не равны</strong>
@@ -1471,7 +1581,11 @@ function profitLossRowDetail(row: ExecutiveProfitLossBreakdownRow) {
 
 function profitLossExpenseDetail(row: ExecutiveProfitLossExpenseBreakdownRow) {
   const review = row.review_count > 0 ? `, на проверку: ${formatPlainNumber(row.review_count)}` : "";
-  return `${formatPlainNumber(row.movement_count)} оплат${review}`;
+  const method = row.recognition_method === "accrual" ? "по начислению" : "по оплате";
+  const estimated = row.estimated_count > 0
+    ? `, оценочно без документов: ${formatPlainNumber(row.estimated_count)}`
+    : "";
+  return `${method}, ${formatPlainNumber(row.movement_count)} оплат${review}${estimated}`;
 }
 
 function profitLossQuestionDetail(row: ExecutiveProfitLossOpenQuestion) {
@@ -1664,6 +1778,9 @@ function CashflowPeriodPanel({ asOf }: { asOf: string }) {
   const daysOnHand = ratioByKey(data, "cash_days_on_hand");
   const coverage = ratioByKey(data, "inflow_outflow_coverage");
   const reviewShare = ratioByKey(data, "review_share");
+  const avgDailyOutflowRatio = ratioByKey(data, "average_daily_external_outflow");
+  const internalTurnoverRatio = ratioByKey(data, "internal_turnover_share");
+  const netMarginRatio = ratioByKey(data, "net_cashflow_margin");
   const maxDailyFlow = Math.max(
     ...((data?.daily || []).map((row) => Math.max(Number(row.inflow_amount) || 0, Number(row.outflow_amount) || 0))),
     1
@@ -1676,12 +1793,12 @@ function CashflowPeriodPanel({ asOf }: { asOf: string }) {
 
   return (
     <section className="executive-cashflow-period" aria-label="ОДДС CashFlow за период">
-      <header className="executive-cashflow-period__header">
+      <header className="executive-panel__header">
         <div>
           <h2>ОДДС CashFlow</h2>
           <span>Форма для финансистов: остатки, CFO / CFI / CFF, FCF и контроль движения денег</span>
         </div>
-        <div className="executive-cashflow-period__filters">
+        <div className="executive-panel__filters">
           <button type="button" onClick={() => setQuickRange(7)}>
             7 дней
           </button>
@@ -1709,32 +1826,62 @@ function CashflowPeriodPanel({ asOf }: { asOf: string }) {
       {status === "ready" && data && (
         <>
           {data.note && <div className="executive-cashflow-period__note">{data.note}</div>}
-          <div className="executive-cashflow-period__kpis">
-            <div>
-              <span>Чистый поток без внутренних переводов</span>
-              <strong>{formatMoney(cashflowTotal(data, "external_net_amount"))}</strong>
-              <small>без внутренних переводов</small>
-            </div>
-            <div>
-              <span>Поступило</span>
-              <strong>{formatMoney(cashflowTotal(data, "external_inflow_amount"))}</strong>
-              <small>внешний поток</small>
-            </div>
-            <div>
-              <span>Списано</span>
-              <strong>{formatMoney(cashflowTotal(data, "external_outflow_amount"))}</strong>
-              <small>внешний поток</small>
-            </div>
-            <div>
-              <span>{daysOnHand?.label || "Дней запаса"}</span>
-              <strong>{formatMetricValue(daysOnHand?.value, daysOnHand?.unit)}</strong>
-              <small>{coverage ? `покрытие: ${formatMetricValue(coverage.value, coverage.unit)}` : "остаток / расход"}</small>
-            </div>
-            <div>
-              <span>Ошибки ДДС</span>
-              <strong>{formatPlainNumber(cashflowTotal(data, "quality_issue_count"))}</strong>
-              <small>{reviewShare ? `строк на проверку: ${formatMetricValue(reviewShare.value, reviewShare.unit)}` : "контроль качества"}</small>
-            </div>
+          <div className="executive-panel__kpis">
+            <MetricCard
+              hint="без внутренних переводов"
+              label="Чистый поток без внутренних переводов"
+              tooltip="Внешние поступления за вычетом внешних расходов, без учёта переводов между своими счетами."
+              value={formatMoney(cashflowTotal(data, "external_net_amount"))}
+            />
+            <MetricCard
+              hint="внешний поток"
+              label="Поступило"
+              tooltip="Сумма внешних поступлений за выбранный период."
+              value={formatMoney(cashflowTotal(data, "external_inflow_amount"))}
+            />
+            <MetricCard
+              hint="внешний поток"
+              label="Списано"
+              tooltip="Сумма внешних расходов за выбранный период."
+              value={formatMoney(cashflowTotal(data, "external_outflow_amount"))}
+            />
+            <MetricCard
+              hint={coverage ? `покрытие: ${formatMetricValue(coverage.value, coverage.unit)}` : "остаток / расход"}
+              label={daysOnHand?.label || "Дней запаса"}
+              tone={(daysOnHand?.tone as MetricTone) || "neutral"}
+              tooltip={daysOnHand?.note || undefined}
+              value={formatMetricValue(daysOnHand?.value, daysOnHand?.unit)}
+            />
+            <MetricCard
+              hint={reviewShare ? `строк на проверку: ${formatMetricValue(reviewShare.value, reviewShare.unit)}` : "контроль качества"}
+              label="Ошибки ДДС"
+              tooltip="Число строк ДДС, требующих проверки или ручной классификации."
+              value={formatPlainNumber(cashflowTotal(data, "quality_issue_count"))}
+            />
+            {avgDailyOutflowRatio && (
+              <MetricCard
+                label={avgDailyOutflowRatio.label}
+                tone={(avgDailyOutflowRatio.tone as MetricTone) || "neutral"}
+                tooltip={avgDailyOutflowRatio.note || undefined}
+                value={formatMetricValue(avgDailyOutflowRatio.value, avgDailyOutflowRatio.unit)}
+              />
+            )}
+            {internalTurnoverRatio && (
+              <MetricCard
+                label={internalTurnoverRatio.label}
+                tone={(internalTurnoverRatio.tone as MetricTone) || "neutral"}
+                tooltip={internalTurnoverRatio.note || undefined}
+                value={formatMetricValue(internalTurnoverRatio.value, internalTurnoverRatio.unit)}
+              />
+            )}
+            {netMarginRatio && (
+              <MetricCard
+                label={netMarginRatio.label}
+                tone={(netMarginRatio.tone as MetricTone) || "neutral"}
+                tooltip={netMarginRatio.note || undefined}
+                value={formatMetricValue(netMarginRatio.value, netMarginRatio.unit)}
+              />
+            )}
           </div>
 
           <CashflowStatement data={data} includeInternal={includeInternal} />
@@ -1788,7 +1935,16 @@ function CashflowPeriodPanel({ asOf }: { asOf: string }) {
                   <div className="executive-cashflow-row" key={issue.issue_key}>
                     <span>{issue.issue_label}</span>
                     <strong>{formatMoney(issue.amount_abs)}</strong>
-                    <small>{formatDate(issue.business_date)}</small>
+                    <small>
+                      {issue.drilldown_url ? (
+                        <a href={issue.drilldown_url} rel="noreferrer" target="_blank">
+                          {issue.document_number || `Задача №${issue.bitrix_task_id}`}
+                        </a>
+                      ) : (
+                        issue.document_number || formatDate(issue.business_date)
+                      )}
+                      {issue.task_status && ` · ${issue.task_status}`}
+                    </small>
                   </div>
                 ))
               )}
@@ -1854,12 +2010,12 @@ function ProfitLossPeriodPanel({ asOf }: { asOf: string }) {
 
   return (
     <section className="executive-cashflow-period executive-profit-loss-period" aria-label="Отчет о прибылях и убытках за период">
-      <header className="executive-cashflow-period__header">
+      <header className="executive-panel__header">
         <div>
           <h2>Отчет о прибылях и убытках</h2>
           <span>Выручка, себестоимость, валовая прибыль и расходы по оплатам ДДС</span>
         </div>
-        <div className="executive-cashflow-period__filters">
+        <div className="executive-panel__filters">
           <button type="button" onClick={() => setQuickRange(7)}>
             7 дней
           </button>
@@ -1879,50 +2035,60 @@ function ProfitLossPeriodPanel({ asOf }: { asOf: string }) {
       {status === "ready" && data && (
         <>
           {data.note && <div className="executive-cashflow-period__note">{data.note}</div>}
-          <div className="executive-cashflow-period__kpis">
-            <div>
-              <span>Выручка</span>
-              <strong>{formatMoney(profitLossTotal(data, "revenue"))}</strong>
-              <small>{formatDate(data.date_from)} - {formatDate(data.date_to)}</small>
-            </div>
-            <div>
-              <span>Себестоимость</span>
-              <strong>{formatMoney(profitLossTotal(data, "cost_of_sales"))}</strong>
-              <small>из 1С продаж</small>
-            </div>
-            <div>
-              <span>Валовая прибыль</span>
-              <strong>{formatMoney(profitLossTotal(data, "gross_profit"))}</strong>
-              <small>выручка минус себестоимость</small>
-            </div>
-            <div>
-              <span>{grossMargin?.label || "Валовая маржа"}</span>
-              <strong>{formatMetricValue(grossMargin?.value, grossMargin?.unit)}</strong>
-              <small>{formatPlainNumber(profitLossTotal(data, "sales_count"))} продаж</small>
-            </div>
-            <div>
-              <span>Расходы по ДДС</span>
-              <strong>
-                {!expenseHasAmounts
+          <div className="executive-panel__kpis">
+            <MetricCard
+              hint={`${formatDate(data.date_from)} - ${formatDate(data.date_to)}`}
+              label="Выручка"
+              tooltip="Выручка по продажам 1С за выбранный период."
+              value={formatMoney(profitLossTotal(data, "revenue"))}
+            />
+            <MetricCard
+              hint="из 1С продаж"
+              label="Себестоимость"
+              tooltip="Себестоимость проданных товаров и услуг за период."
+              value={formatMoney(profitLossTotal(data, "cost_of_sales"))}
+            />
+            <MetricCard
+              hint="выручка минус себестоимость"
+              label="Валовая прибыль"
+              tooltip="Выручка за вычетом себестоимости продаж."
+              value={formatMoney(profitLossTotal(data, "gross_profit"))}
+            />
+            <MetricCard
+              hint={`${formatPlainNumber(profitLossTotal(data, "sales_count"))} продаж`}
+              label={grossMargin?.label || "Валовая маржа"}
+              tone={(grossMargin?.tone as MetricTone) || "neutral"}
+              tooltip={grossMargin?.note || "Валовая прибыль к выручке, %."}
+              value={formatMetricValue(grossMargin?.value, grossMargin?.unit)}
+            />
+            <MetricCard
+              hint={statusLabel(data.expense_source_status)}
+              label="Расходы по ДДС"
+              tooltip="Операционные расходы по данным ДДС за период."
+              value={
+                !expenseHasAmounts
                   ? statusLabel(data.expense_source_status)
-                  : formatMoney(profitLossTotal(data, "operating_expenses"))}
-              </strong>
-              <small>{statusLabel(data.expense_source_status)}</small>
-            </div>
-            <div>
-              <span>Операционная прибыль</span>
-              <strong>
-                {!expenseHasAmounts
+                  : formatMoney(profitLossTotal(data, "operating_expenses"))
+              }
+            />
+            <MetricCard
+              hint={formatMetricValue(operatingMargin?.value, operatingMargin?.unit)}
+              label="Операционная прибыль"
+              tone={(operatingMargin?.tone as MetricTone) || "neutral"}
+              tooltip={operatingMargin?.note || "Валовая прибыль за вычетом операционных расходов."}
+              value={
+                !expenseHasAmounts
                   ? statusLabel(data.expense_source_status)
-                  : formatMoney(profitLossTotal(data, "operating_profit"))}
-              </strong>
-              <small>{formatMetricValue(operatingMargin?.value, operatingMargin?.unit)}</small>
-            </div>
-            <div>
-              <span>Открытые вопросы</span>
-              <strong>{formatPlainNumber(profitLossTotal(data, "expense_open_question_count"))}</strong>
-              <small>{formatMoney(profitLossTotal(data, "expense_open_question_amount"))}</small>
-            </div>
+                  : formatMoney(profitLossTotal(data, "operating_profit"))
+              }
+            />
+            <MetricCard
+              hint={formatMoney(profitLossTotal(data, "expense_open_question_amount"))}
+              label="Открытые вопросы"
+              tone={Number(profitLossTotal(data, "expense_open_question_count")) > 0 ? "warning" : "neutral"}
+              tooltip="Расходы без закрывающих документов, требующие уточнения."
+              value={formatPlainNumber(profitLossTotal(data, "expense_open_question_count"))}
+            />
           </div>
 
           <section className="executive-profit-loss-lines" aria-label="Структура ОПУ">
@@ -2035,6 +2201,441 @@ function ProfitLossPeriodPanel({ asOf }: { asOf: string }) {
                 ))
               )}
             </div>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
+function salesValue(
+  data: ExecutiveSalesPeriodResponse | null,
+  key: string,
+  scope: "totals" | "comparison" = "totals"
+) {
+  const value = data?.[scope]?.[key];
+  return value === null || value === undefined ? null : value;
+}
+
+function salesDelta(
+  current: string | number | null,
+  previous: string | number | null,
+  options?: { percentagePoints?: boolean }
+): MetricDelta {
+  const currentValue = numericValue(current);
+  const previousValue = numericValue(previous);
+  if (currentValue === null || previousValue === null || previousValue === 0) {
+    return { text: "нет сопоставимой базы", direction: "flat", isFavorable: null };
+  }
+  const delta = options?.percentagePoints
+    ? (currentValue - previousValue) * 100
+    : ((currentValue - previousValue) / Math.abs(previousValue)) * 100;
+  const sign = delta > 0 ? "+" : "";
+  const text = options?.percentagePoints
+    ? `${sign}${delta.toFixed(1)} п.п. к прошлому периоду`
+    : `${sign}${delta.toFixed(1)}% к прошлому периоду`;
+  const direction: MetricDelta["direction"] = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
+  return { text, direction, isFavorable: direction === "flat" ? null : direction === "up" };
+}
+
+export function SalesBreakdown({
+  title,
+  rows,
+  onSelect,
+}: {
+  title: string;
+  rows: ExecutiveSalesBreakdownRow[];
+  onSelect: (key: string) => void;
+}) {
+  const visibleRows = rows.slice(0, 8);
+  const maxRevenue = Math.max(1, ...visibleRows.map((row) => Math.abs(numericValue(row.revenue) || 0)));
+  return (
+    <div>
+      <h3>{title}</h3>
+      {visibleRows.length === 0 ? (
+        <div className="executive-cashflow-period__empty">Нет продаж в выбранном периоде.</div>
+      ) : (
+        visibleRows.map((row) => {
+          const revenue = Math.abs(numericValue(row.revenue) || 0);
+          const width = Math.max(2, Math.round((revenue / maxRevenue) * 100));
+          return (
+            <button className="executive-sales-breakdown" key={row.key} onClick={() => onSelect(row.key)} type="button">
+              <span className="executive-sales-breakdown__label">{row.label}</span>
+              <strong className="executive-sales-breakdown__value">{formatMoney(row.revenue)}</strong>
+              <div className="executive-sales-breakdown__track">
+                <i style={{ width: `${width}%` }} />
+              </div>
+              <small>
+                {formatPlainNumber(row.sales_count)} ед. · {formatPercent(row.gross_margin_pct)}
+              </small>
+            </button>
+          );
+        })
+      )}
+    </div>
+  );
+}
+
+function formatMonth(value: string) {
+  const parsed = new Date(`${value}-01T00:00:00`);
+  return Number.isNaN(parsed.getTime())
+    ? value
+    : new Intl.DateTimeFormat("ru-RU", { month: "short", year: "2-digit" }).format(parsed);
+}
+
+function monthTooltipLabel(row: ExecutiveSalesMonthlyRow) {
+  const parts = [
+    formatMonth(row.month),
+    `выручка ${formatMoney(row.revenue)}`,
+    `валовая прибыль ${formatMoney(row.gross_profit)}`,
+    `маржа ${formatPercent(row.gross_margin_pct)}`,
+    `объём ${formatPlainNumber(row.sales_count)} ед.`,
+  ];
+  if (row.forecast_revenue !== null && row.forecast_revenue !== undefined) {
+    parts.push(`прогноз ${formatMoney(row.forecast_revenue)}`);
+  }
+  if (row.comparison_sales_count !== null && row.comparison_sales_count !== undefined) {
+    parts.push(`объём за аналогичный прошлый период ${formatPlainNumber(row.comparison_sales_count)} ед.`);
+  }
+  return parts.join(", ");
+}
+
+function buildPointScale(
+  length: number,
+  padding: { top: number; right: number; bottom: number; left: number },
+  chartWidth: number,
+  chartHeight: number,
+  minValue: number,
+  maxValue: number,
+  minRange: number
+) {
+  const valueRange = Math.max(maxValue - minValue, minRange);
+  return (index: number, value: number) => ({
+    x: padding.left + (length <= 1 ? 0 : (index / (length - 1)) * chartWidth),
+    y: padding.top + ((maxValue - value) / valueRange) * chartHeight,
+  });
+}
+
+function pathFor(points: Array<{ x: number; y: number }>) {
+  return points.map((point, index) => `${index === 0 ? "M" : "L"}${point.x} ${point.y}`).join(" ");
+}
+
+function SalesLineChart({
+  monthly,
+  hoveredIndex,
+  onHover,
+}: {
+  monthly: ExecutiveSalesMonthlyRow[];
+  hoveredIndex: number | null;
+  onHover: (index: number | null) => void;
+}) {
+  const width = 1000;
+  const height = 260;
+  const padding = { top: 18, right: 22, bottom: 38, left: 72 };
+  const values = monthly.flatMap((row) => [row.revenue, row.gross_profit, row.forecast_revenue])
+    .map((value) => numericValue(value))
+    .filter((value): value is number => value !== null);
+  const minValue = Math.min(0, ...values);
+  const maxValue = Math.max(1, ...values);
+  const chartWidth = width - padding.left - padding.right;
+  const chartHeight = height - padding.top - padding.bottom;
+  const pointFor = buildPointScale(monthly.length, padding, chartWidth, chartHeight, minValue, maxValue, 1);
+  const revenuePoints = monthly.map((row, index) => ({
+    ...pointFor(index, numericValue(row.revenue) || 0),
+    value: numericValue(row.revenue) || 0,
+    row,
+  }));
+  const grossProfitPoints = monthly.map((row, index) => ({
+    ...pointFor(index, numericValue(row.gross_profit) || 0),
+    value: numericValue(row.gross_profit) || 0,
+    row,
+  }));
+  const forecastPoints = monthly.flatMap((row, index) => {
+    const value = numericValue(row.forecast_revenue);
+    return value === null ? [] : [{ ...pointFor(index, value), value, row }];
+  });
+  const yTicks = [maxValue, (maxValue + minValue) / 2, minValue];
+  const xTickIndexes = monthly.map((_, index) => index);
+  const bandWidth = monthly.length > 0 ? chartWidth / monthly.length : 0;
+  const crosshairX = hoveredIndex === null ? null : pointFor(hoveredIndex, 0).x;
+
+  const marginValues = monthly
+    .map((row) => numericValue(row.gross_margin_pct))
+    .filter((value): value is number => value !== null);
+  const marginMin = Math.min(0, ...marginValues);
+  const marginMax = Math.max(0.01, ...marginValues);
+  const pointForMargin = buildPointScale(monthly.length, padding, chartWidth, chartHeight, marginMin, marginMax, 0.01);
+  const marginPoints = monthly.map((row, index) => ({
+    ...pointForMargin(index, numericValue(row.gross_margin_pct) || 0),
+    value: numericValue(row.gross_margin_pct),
+    row,
+  }));
+  const marginTicks = [marginMax, (marginMax + marginMin) / 2, marginMin];
+
+  const volumes = monthly.map((row) => numericValue(row.sales_count) || 0);
+  const comparisonVolumes = monthly.map((row) => numericValue(row.comparison_sales_count));
+  const hasComparisonVolume = comparisonVolumes.some((value) => value !== null);
+  const maxVolume = Math.max(
+    1,
+    ...volumes,
+    ...comparisonVolumes.filter((value): value is number => value !== null)
+  );
+  const volumeBarWidth = hasComparisonVolume ? bandWidth * 0.32 : bandWidth * 0.6;
+
+  return (
+    <div className="executive-sales-line-chart" aria-label="Помесячная динамика продаж за год">
+      <div className="executive-sales-period__legend">
+        <span><i />Выручка</span>
+        <span><em />Валовая прибыль</span>
+        <span><b />Прогноз текущего месяца</span>
+        <span><s />Валовая маржа, %</span>
+        <span><u />Объём продаж</span>
+        {hasComparisonVolume && <span><mark />Объём за аналогичный прошлый период</span>}
+      </div>
+      <svg role="img" viewBox={`0 0 ${width} ${height}`}>
+        {monthly.map((row, index) => {
+          const volume = volumes[index] || 0;
+          const barHeight = volume === 0 ? 0 : (volume / maxVolume) * chartHeight;
+          const comparisonVolume = comparisonVolumes[index];
+          const showComparison = hasComparisonVolume && comparisonVolume !== null;
+          const barX = showComparison
+            ? pointFor(index, 0).x - volumeBarWidth - 2
+            : pointFor(index, 0).x - volumeBarWidth / 2;
+          return (
+            <g key={`volume-${row.month}`}>
+              <rect
+                className="executive-sales-line-chart__volume-bar"
+                height={barHeight}
+                rx="2"
+                width={volumeBarWidth}
+                x={barX}
+                y={height - padding.bottom - barHeight}
+              />
+              {showComparison && (
+                <rect
+                  className="executive-sales-line-chart__volume-bar--comparison"
+                  height={(comparisonVolume / maxVolume) * chartHeight}
+                  rx="2"
+                  width={volumeBarWidth}
+                  x={pointFor(index, 0).x + 2}
+                  y={height - padding.bottom - (comparisonVolume / maxVolume) * chartHeight}
+                />
+              )}
+            </g>
+          );
+        })}
+        {yTicks.map((value) => {
+          const point = pointFor(0, value);
+          return (
+            <g key={value}>
+              <line className="executive-sales-line-chart__grid" x1={padding.left} x2={width - padding.right} y1={point.y} y2={point.y} />
+              <text className="executive-sales-line-chart__axis" x={padding.left - 10} y={point.y + 4} textAnchor="end">
+                {formatMoney(value)}
+              </text>
+            </g>
+          );
+        })}
+        {marginTicks.map((value) => {
+          const point = pointForMargin(0, value);
+          return (
+            <text className="executive-sales-line-chart__axis-right" key={value} x={width - padding.right + 10} y={point.y + 4} textAnchor="start">
+              {formatPercent(value)}
+            </text>
+          );
+        })}
+        {xTickIndexes.map((index) => {
+          const point = pointFor(index, minValue);
+          return (
+            <text className="executive-sales-line-chart__axis" key={index} x={point.x} y={height - 12} textAnchor="middle">
+              {formatMonth(monthly[index]?.month || "")}
+            </text>
+          );
+        })}
+        {revenuePoints.length > 1 && <path className="executive-sales-line-chart__fact" d={pathFor(revenuePoints)} />}
+        {grossProfitPoints.length > 1 && <path className="executive-sales-line-chart__profit" d={pathFor(grossProfitPoints)} />}
+        {marginPoints.length > 1 && <path className="executive-sales-line-chart__margin" d={pathFor(marginPoints)} />}
+        {revenuePoints.map((point) => (
+          <circle className="executive-sales-line-chart__fact-point" cx={point.x} cy={point.y} key={`revenue-${point.row.month}`} r="3.5" />
+        ))}
+        {grossProfitPoints.map((point) => (
+          <circle className="executive-sales-line-chart__profit-point" cx={point.x} cy={point.y} key={`profit-${point.row.month}`} r="3.5" />
+        ))}
+        {forecastPoints.map((point) => (
+          <circle className="executive-sales-line-chart__forecast-point" cx={point.x} cy={point.y} key={`forecast-${point.row.month}`} r="5" />
+        ))}
+        {marginPoints.map((point) => (
+          <circle className="executive-sales-line-chart__margin-point" cx={point.x} cy={point.y} key={`margin-${point.row.month}`} r="3.5" />
+        ))}
+        {crosshairX !== null && (
+          <line className="executive-sales-chart-crosshair" x1={crosshairX} x2={crosshairX} y1={padding.top} y2={height - padding.bottom} />
+        )}
+        {monthly.map((row, index) => (
+          <rect
+            aria-label={monthTooltipLabel(row)}
+            className="executive-sales-chart-hit"
+            height={chartHeight}
+            key={`hit-${row.month}`}
+            onBlur={() => onHover(null)}
+            onFocus={() => onHover(index)}
+            onMouseEnter={() => onHover(index)}
+            onMouseLeave={() => onHover(null)}
+            role="button"
+            tabIndex={0}
+            width={bandWidth}
+            x={padding.left + index * bandWidth}
+            y={padding.top}
+          />
+        ))}
+      </svg>
+    </div>
+  );
+}
+
+function SalesMonthTooltip({
+  monthly,
+  hoveredIndex,
+}: {
+  monthly: ExecutiveSalesMonthlyRow[];
+  hoveredIndex: number | null;
+}) {
+  if (hoveredIndex === null || !monthly[hoveredIndex]) return null;
+  const row = monthly[hoveredIndex];
+  const left = monthly.length > 1 ? (hoveredIndex / (monthly.length - 1)) * 100 : 50;
+  const forecastValue = numericValue(row.forecast_revenue);
+  const comparisonVolume = numericValue(row.comparison_sales_count);
+  return (
+    <div className="executive-sales-month-tooltip" role="status" style={{ left: `${left}%` }}>
+      <strong>{formatMonth(row.month)}</strong>
+      <span>Выручка: {formatMoney(row.revenue)}</span>
+      <span>Валовая прибыль: {formatMoney(row.gross_profit)}</span>
+      <span>Валовая маржа: {formatPercent(row.gross_margin_pct)}</span>
+      <span>Объём: {formatPlainNumber(row.sales_count)} ед.</span>
+      {forecastValue !== null && <span>Прогноз: {formatMoney(forecastValue)}</span>}
+      {comparisonVolume !== null && (
+        <span>Объём за аналогичный прошлый период: {formatPlainNumber(comparisonVolume)} ед.</span>
+      )}
+    </div>
+  );
+}
+
+export function SalesPeriodPanel({
+  data,
+  message,
+  onSelectManager,
+  onSelectStore,
+  status,
+}: {
+  data: ExecutiveSalesPeriodResponse | null;
+  message: string;
+  onSelectManager: (managerRef: string) => void;
+  onSelectStore: (storeRef: string) => void;
+  status: "loading" | "ready" | "error";
+}) {
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const [hoveredIndexForData, setHoveredIndexForData] = useState(data);
+  if (data !== hoveredIndexForData) {
+    setHoveredIndexForData(data);
+    setHoveredIndex(null);
+  }
+
+  const actualRevenue = salesValue(data, "revenue");
+  const grossProfit = salesValue(data, "gross_profit");
+  const grossMargin = salesValue(data, "gross_margin_pct");
+  const salesCount = salesValue(data, "sales_count");
+  const forecastRevenue = salesValue(data, "forecast_revenue_period_end");
+  const actualRevenueNum = numericValue(actualRevenue);
+  const salesCountNum = numericValue(salesCount);
+  const forecastRevenueNum = numericValue(forecastRevenue);
+  const averageCheck = actualRevenueNum !== null && salesCountNum ? actualRevenueNum / salesCountNum : null;
+  const forecastProgress = actualRevenueNum !== null && forecastRevenueNum ? actualRevenueNum / forecastRevenueNum : null;
+  const previousRevenueNum = numericValue(salesValue(data, "revenue", "comparison"));
+  const previousSalesCountNum = numericValue(salesValue(data, "sales_count", "comparison"));
+  const previousAverageCheck =
+    previousRevenueNum !== null && previousSalesCountNum ? previousRevenueNum / previousSalesCountNum : null;
+  const expectedProgress =
+    data && data.as_of
+      ? Math.min(1, daysBetweenInclusive(data.date_from, data.as_of) / daysBetweenInclusive(data.date_from, data.date_to))
+      : null;
+  let forecastProgressTone: MetricTone = "neutral";
+  let forecastProgressHint: string | undefined;
+  if (forecastProgress !== null && expectedProgress !== null) {
+    const paceGap = forecastProgress - expectedProgress;
+    forecastProgressTone = paceGap >= 0.03 ? "success" : paceGap <= -0.03 ? "warning" : "neutral";
+    forecastProgressHint = `к этой дате периода ожидалось ${formatPercent(expectedProgress)}`;
+  }
+
+  return (
+    <section className="executive-cashflow-period executive-sales-period" aria-label="Продажи">
+      <header className="executive-panel__header">
+        <div>
+          <h2>Продажи</h2>
+          <span>Факт 1С и прогноз выручки до конца периода</span>
+        </div>
+      </header>
+
+      {status === "error" && <div className="executive-cashflow-period__empty">{message}</div>}
+      {status === "loading" && !data && <div className="executive-cashflow-period__empty">Загрузка продаж...</div>}
+      {data && (
+        <>
+          {data.note && <div className="executive-cashflow-period__note">{data.note}</div>}
+          {data.forecast_note && <div className="executive-sales-period__forecast-note">{data.forecast_note}</div>}
+          <div className="executive-panel__kpis">
+            <MetricCard
+              delta={salesDelta(actualRevenue, salesValue(data, "revenue", "comparison"))}
+              label="Выручка факт"
+              tooltip="Сумма продаж 1С за выбранный период, включая возвраты, отражённые в витрине."
+              value={formatNullableMoney(actualRevenueNum)}
+            />
+            <MetricCard
+              hint={data.forecast_status === "ready" ? "на конец периода" : statusLabel(data.forecast_status)}
+              label="Прогноз выручки"
+              tone={data.forecast_status === "ready" ? "neutral" : "warning"}
+              tooltip="Медиана выручки по тому же дню недели за 4 предыдущие недели; для периода, уже полностью в прошлом, не строится."
+              value={forecastRevenueNum === null ? "нет данных" : formatMoney(forecastRevenueNum)}
+            />
+            <MetricCard
+              delta={salesDelta(grossProfit, salesValue(data, "gross_profit", "comparison"))}
+              label="Валовая прибыль"
+              tooltip="Выручка за вычетом себестоимости продаж за выбранный период."
+              value={formatNullableMoney(numericValue(grossProfit))}
+            />
+            <MetricCard
+              delta={salesDelta(grossMargin, salesValue(data, "gross_margin_pct", "comparison"), { percentagePoints: true })}
+              label="Валовая маржа"
+              tooltip="Валовая прибыль к выручке, % за выбранный период."
+              value={formatPercent(grossMargin)}
+            />
+            <MetricCard
+              delta={salesDelta(salesCount, salesValue(data, "sales_count", "comparison"))}
+              label="Объём продаж"
+              tooltip="Количество проданных единиц товаров и услуг, не число чеков."
+              value={`${formatPlainNumber(salesCount)} ед.`}
+            />
+            <MetricCard
+              delta={averageCheck !== null && previousAverageCheck ? salesDelta(averageCheck, previousAverageCheck) : undefined}
+              label="Средний чек"
+              tooltip="Выручка за период, делённая на объём продаж."
+              value={averageCheck === null ? "нет данных" : formatMoney(averageCheck)}
+            />
+            <MetricCard
+              hint={forecastProgressHint}
+              label="% выполнения прогноза"
+              tone={forecastProgressTone}
+              tooltip="Факт выручки за период к прогнозу на конец периода. Цвет — опережаем или отстаём от равномерного темпа по дням периода."
+              value={forecastProgress === null ? "нет данных" : formatPercent(forecastProgress)}
+            />
+          </div>
+
+          {data.monthly.length > 0 && (
+            <div className="executive-sales-charts">
+              <SalesLineChart hoveredIndex={hoveredIndex} monthly={data.monthly} onHover={setHoveredIndex} />
+              <SalesMonthTooltip hoveredIndex={hoveredIndex} monthly={data.monthly} />
+            </div>
+          )}
+
+          <div className="executive-cashflow-period__tables executive-sales-period__tables">
+            <SalesBreakdown title="По магазинам" rows={data.by_store} onSelect={onSelectStore} />
+            <SalesBreakdown title="По менеджерам" rows={data.by_manager} onSelect={onSelectManager} />
           </div>
         </>
       )}
@@ -2220,6 +2821,63 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
   const [selectedAction, setSelectedAction] = useState<ExecutiveDashboardAction | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
 
+  const [salesDateFrom, setSalesDateFrom] = useState(() => monthStartIso(date));
+  const [salesDateTo, setSalesDateTo] = useState(() => monthEndIso(date));
+  const [salesStoreRef, setSalesStoreRef] = useState("");
+  const [salesManagerRef, setSalesManagerRef] = useState("");
+  const [salesStatus, setSalesStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [salesMessage, setSalesMessage] = useState("");
+  const [salesData, setSalesData] = useState<ExecutiveSalesPeriodResponse | null>(null);
+  const [salesFiltersForDate, setSalesFiltersForDate] = useState(date);
+  if (date !== salesFiltersForDate) {
+    setSalesFiltersForDate(date);
+    setSalesDateFrom(monthStartIso(date));
+    setSalesDateTo(monthEndIso(date));
+    setSalesStoreRef("");
+    setSalesManagerRef("");
+  }
+
+  const setSalesQuickRange = (days: number) => {
+    setSalesDateTo(date);
+    setSalesDateFrom(addDaysIso(date, -(days - 1)));
+    setSalesStoreRef("");
+    setSalesManagerRef("");
+  };
+  const setSalesFullMonth = () => {
+    setSalesDateFrom(monthStartIso(date));
+    setSalesDateTo(monthEndIso(date));
+    setSalesStoreRef("");
+    setSalesManagerRef("");
+  };
+
+  useEffect(() => {
+    if (tab !== SALES_TAB_KEY) return;
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (!cancelled) setSalesStatus("loading");
+    });
+    fetchExecutiveSalesPeriod({
+      date_from: salesDateFrom,
+      date_to: salesDateTo,
+      store_ref: salesStoreRef || undefined,
+      manager_ref: salesManagerRef || undefined,
+    })
+      .then((payload) => {
+        if (cancelled) return;
+        setSalesData(payload);
+        setSalesStatus("ready");
+        setSalesMessage("");
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setSalesStatus("error");
+        setSalesMessage(errorMessage(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, salesDateFrom, salesDateTo, salesStoreRef, salesManagerRef, refreshNonce]);
+
   const navigateDashboard = useCallback(
     (next: { date?: string; tab?: string }, mode: "push" | "replace" = "push") => {
       const nextDate = next.date || date;
@@ -2293,10 +2951,17 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
     () => splitManagementBalanceBlock(blocks),
     [blocks],
   );
+  const visibleSourceFreshness = useMemo(() => {
+    if (!data) return [];
+    const relevantKey = SOURCE_FRESHNESS_KEY_BY_TAB[tab];
+    if (!relevantKey) return data.source_freshness;
+    return data.source_freshness.filter((source) => source.source_key === relevantKey);
+  }, [data, tab]);
   const tabs = useMemo(() => tabsForData(data), [data]);
   const tabOverviewBlock = useMemo(() => {
     if (!data || tab === "today") return null;
     if (tab === ODDS_CASHFLOW_TAB_KEY) return moneyBlock(data);
+    if ([PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, "creditors_payables"].includes(tab)) return null;
     return blocks[0] || null;
   }, [blocks, data, tab]);
   const currentAccess = accessLevel || data?.access_level;
@@ -2314,16 +2979,88 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
           </span>
         </div>
         <div className="executive__controls">
-          <label className="executive__date-field">
-            <span>Дата</span>
-            <input
-              aria-label="Дата управленческой витрины"
-              className="app__select executive__date"
-              onChange={(event) => navigateDashboard({ date: event.target.value })}
-              type="date"
-              value={date}
-            />
-          </label>
+          {tab !== SALES_TAB_KEY && (
+            <label className="executive__date-field">
+              <span>Дата</span>
+              <input
+                aria-label="Дата управленческой витрины"
+                className="app__select executive__date"
+                onChange={(event) => navigateDashboard({ date: event.target.value })}
+                type="date"
+                value={date}
+              />
+            </label>
+          )}
+          {tab === SALES_TAB_KEY && (
+            <div className="executive__controls-group">
+              <span className="executive__controls-divider" aria-hidden="true" />
+              <Button disabled={salesStatus === "loading"} onClick={() => setSalesQuickRange(7)} variant="secondary">
+                7 дней
+              </Button>
+              <Button disabled={salesStatus === "loading"} onClick={() => setSalesQuickRange(30)} variant="secondary">
+                30 дней
+              </Button>
+              <Button disabled={salesStatus === "loading"} onClick={setSalesFullMonth} variant="secondary">
+                Месяц
+              </Button>
+              <label className="executive__date-field">
+                <span>С</span>
+                <input
+                  aria-label="Начало периода продаж"
+                  className="app__select executive__date"
+                  onChange={(event) => {
+                    setSalesDateFrom(event.target.value);
+                    setSalesStoreRef("");
+                    setSalesManagerRef("");
+                  }}
+                  type="date"
+                  value={salesDateFrom}
+                />
+              </label>
+              <label className="executive__date-field">
+                <span>По</span>
+                <input
+                  aria-label="Конец периода продаж"
+                  className="app__select executive__date"
+                  onChange={(event) => {
+                    setSalesDateTo(event.target.value);
+                    setSalesStoreRef("");
+                    setSalesManagerRef("");
+                  }}
+                  type="date"
+                  value={salesDateTo}
+                />
+              </label>
+              <label className="executive__date-field">
+                <span>Магазин</span>
+                <select
+                  aria-label="Магазин"
+                  className="app__select executive__controls-select"
+                  onChange={(event) => setSalesStoreRef(event.target.value)}
+                  value={salesStoreRef}
+                >
+                  <option value="">Все магазины</option>
+                  {(salesData?.stores || []).map((item) => (
+                    <option key={item.key} value={item.key}>{item.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="executive__date-field">
+                <span>Менеджер</span>
+                <select
+                  aria-label="Менеджер"
+                  className="app__select executive__controls-select"
+                  onChange={(event) => setSalesManagerRef(event.target.value)}
+                  value={salesManagerRef}
+                >
+                  <option value="">Все менеджеры</option>
+                  {(salesData?.managers || []).map((item) => (
+                    <option key={item.key} value={item.key}>{item.label}</option>
+                  ))}
+                </select>
+              </label>
+            </div>
+          )}
           <Button
             disabled={status === "loading"}
             onClick={() => navigateDashboard({ date: todayIso() })}
@@ -2404,6 +3141,16 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
 
           {tab === PROFIT_LOSS_TAB_KEY && <ProfitLossPeriodPanel asOf={date} />}
 
+          {tab === SALES_TAB_KEY && (
+            <SalesPeriodPanel
+              data={salesData}
+              message={salesMessage}
+              onSelectManager={setSalesManagerRef}
+              onSelectStore={setSalesStoreRef}
+              status={salesStatus}
+            />
+          )}
+
           {tab === ODDS_CASHFLOW_TAB_KEY && <CashflowPeriodPanel asOf={date} />}
 
           {metricBlocks.length > 0 && (
@@ -2440,7 +3187,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
             <ActionTable actions={actions} onOpen={setSelectedAction} />
           </section>
 
-          <SourceFreshness sources={data.source_freshness} />
+          <SourceFreshness sources={visibleSourceFreshness} />
           {selectedAction && <ActionDetail action={selectedAction} onClose={() => setSelectedAction(null)} />}
         </>
       )}

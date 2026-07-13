@@ -6,11 +6,14 @@ import {
   fetchCounterpartyFolderRecommendations,
   fetchReceivableWorkplace,
   fetchReceivableWorkplaceMeta,
+  buildReceivableWorkplaceActionPayload,
+  receivablesErrorMessage,
   updateReceivableWorkplaceItem,
   type CounterpartyFolderRecommendation,
   type ReceivableCacheComponent,
   type ReceivableDepartmentOption,
   type ReceivableStatusOption,
+  type ReceivableWorkplaceEditState,
   type ReceivableWorkplaceItem,
   type ReceivableWorkplaceSummary,
 } from "../api/receivables";
@@ -18,15 +21,7 @@ import {
 const RECEIVABLES_TOKEN_SESSION_KEY = "pricing.receivables.session_token.v1";
 const RECEIVABLES_TOKEN_LEGACY_KEY = "pricing.receivables.token.v1";
 
-type EditState = {
-  status: string;
-  contacted_staff_ref: string;
-  promised_payment_date: string;
-  last_contact_at: string;
-  next_action_date: string;
-  payment_postponed: boolean;
-  comment: string;
-};
+type EditState = ReceivableWorkplaceEditState;
 
 type QuickFilter = "" | "call_today" | "no_phone" | "overdue_30" | "overdue_90" | "postponed";
 type ReceivablesTab = "work" | "folders";
@@ -79,10 +74,7 @@ function readDashboardReturnUrl() {
 }
 
 function getErrorMessage(error: unknown, fallback: string) {
-  const status = getErrorStatus(error);
-  if (status === 401) return "Сессия не принята или истекла. Обновите страницу и откройте витрину заново.";
-  if (status === 403) return "Нет доступа к рабочему месту: проверьте привязку пользователя к подразделению.";
-  return error instanceof Error ? error.message : fallback;
+  return receivablesErrorMessage(error, fallback);
 }
 
 function getErrorStatus(error: unknown) {
@@ -241,9 +233,11 @@ function ReceivableRow({
   index,
   statusOptions,
   expanded,
+  commentExpanded,
   saving,
   edit,
   onToggle,
+  onToggleComment,
   onEdit,
   onSave,
 }: {
@@ -251,9 +245,11 @@ function ReceivableRow({
   index: number;
   statusOptions: ReceivableStatusOption[];
   expanded: boolean;
+  commentExpanded: boolean;
   saving: boolean;
   edit: EditState;
   onToggle: () => void;
+  onToggleComment: () => void;
   onEdit: (patch: Partial<EditState>) => void;
   onSave: () => void;
 }) {
@@ -263,7 +259,13 @@ function ReceivableRow({
   );
   const badges = rowBadges(item);
   if (!rowStatusOptions.some((option) => option.value === edit.status)) {
-    rowStatusOptions.push({ value: edit.status, label: edit.status, scope: "custom" });
+    rowStatusOptions.push(
+      statusOptions.find((option) => option.value === edit.status) || {
+        value: edit.status,
+        label: edit.status,
+        scope: "custom",
+      }
+    );
   }
   const bitrixCardUrl = resolveBitrixPortalUrl(item.bitrix_detail_url);
   return (
@@ -282,10 +284,12 @@ function ReceivableRow({
           <div className="receivables__client-actions">
             {bitrixCardUrl ? (
               <a className="receivables__card-link" href={bitrixCardUrl} rel="noreferrer" target="_blank">
-                Карточка
+                Открыть карточку
               </a>
             ) : (
-              <span className="receivables__card-link receivables__card-link--disabled">Нет карточки</span>
+              <span className="receivables__card-link receivables__card-link--disabled">
+                Карточка Bitrix не создана
+              </span>
             )}
           </div>
           {badges.length > 0 && (
@@ -366,11 +370,15 @@ function ReceivableRow({
           </label>
         </td>
         <td>
-          <textarea
-            className="receivables__comment"
-            value={edit.comment}
-            onChange={(event) => onEdit({ comment: event.target.value })}
-          />
+          <button
+            aria-expanded={commentExpanded}
+            className="receivables__comment-preview"
+            onClick={onToggleComment}
+            title={edit.comment || "Добавить комментарий"}
+            type="button"
+          >
+            {edit.comment || "Добавить комментарий"}
+          </button>
         </td>
         <td>
           <button className="btn" disabled={saving} onClick={onSave} type="button">
@@ -378,9 +386,34 @@ function ReceivableRow({
           </button>
         </td>
       </tr>
+      {commentExpanded && (
+        <tr className="receivables__comment-editor-row">
+          <td colSpan={15}>
+            <div className="receivables__comment-editor">
+              <label>
+                <strong>Комментарий по {item.counterparty_name || item.counterparty_ref}</strong>
+                <textarea
+                  autoFocus
+                  className="receivables__comment receivables__comment--expanded"
+                  value={edit.comment}
+                  onChange={(event) => onEdit({ comment: event.target.value })}
+                />
+              </label>
+              <div className="receivables__comment-editor-actions">
+                <button className="btn btn--ghost" onClick={onToggleComment} type="button">
+                  Свернуть
+                </button>
+                <button className="btn" disabled={saving} onClick={onSave} type="button">
+                  {saving ? "Сохраняем..." : "Сохранить комментарий"}
+                </button>
+              </div>
+            </div>
+          </td>
+        </tr>
+      )}
       {expanded && (
         <tr className="receivables__details">
-          <td colSpan={16}>
+          <td colSpan={15}>
             <div className="receivables__documents">
               <div className="receivables__documents-head">
                 <strong>Накладные</strong>
@@ -453,6 +486,7 @@ function FolderRecommendations({
   sourceStatus: string;
 }) {
   if (loading) return <div className="receivables__state">Загрузка вкладки контроля папок...</div>;
+  const sourceStale = sourceStatus === "source_stale";
   const computedAt = typeof summary.computed_at === "string" ? summary.computed_at : "";
   if (!items.length) {
     return (
@@ -464,6 +498,11 @@ function FolderRecommendations({
   }
   return (
     <section className="receivables__folder-tab">
+      {sourceStale && (
+        <div className="receivables__state">
+          Источник накладных устарел. Номера накладных скрыты, автоматические переносы отключены.
+        </div>
+      )}
       <div className="receivables__folder-summary">
         <span>Строк: {String(summary.total_count ?? items.length)}</span>
         <span>К пересмотру: {String(summary.needs_review_count ?? 0)}</span>
@@ -477,7 +516,7 @@ function FolderRecommendations({
             <th>Клиент</th>
             <th>Текущая папка</th>
             <th>Рекомендованная папка</th>
-            <th>Подразделение долга</th>
+            <th>Долгообразующая накладная</th>
             <th>Долг</th>
             <th>Статус</th>
           </tr>
@@ -486,12 +525,12 @@ function FolderRecommendations({
           {items.map((item) => {
             const recommendedFolder =
               item.recommended_folder_display_name || item.recommended_folder_name || "";
-            const debtDepartment =
-              item.debt_department_display_name ||
-              item.debt_department_name ||
-              item.snapshot_department_display_name ||
-              item.snapshot_department_name ||
-              "";
+            const debtInvoiceNumber = sourceStale
+              ? ""
+              : item.debt_document_number || item.origin_document_number || "";
+            const debtInvoiceDate = sourceStale
+              ? ""
+              : item.debt_document_date || item.origin_document_date || "";
             const reviewReason = folderReviewReasonLabel(item.review_reason);
             return (
               <tr key={item.counterparty_ref}>
@@ -502,10 +541,10 @@ function FolderRecommendations({
                 </td>
                 <td title={item.recommended_folder_name || ""}>
                   {recommendedFolder || "—"}
-                  {!recommendedFolder && debtDepartment && <small>Подразделение: {debtDepartment}</small>}
                 </td>
-                <td title={item.debt_department_name || item.snapshot_department_name || ""}>
-                  {debtDepartment || "—"}
+                <td title={debtInvoiceNumber}>
+                  {debtInvoiceNumber || "—"}
+                  {debtInvoiceDate && <small>{formatDate(debtInvoiceDate)}</small>}
                 </td>
                 <td>{formatMoney(item.current_balance)}</td>
                 <td>
@@ -541,6 +580,7 @@ export function ReceivablesWorkplace({
   const [sourceStatus, setSourceStatus] = useState("");
   const [edits, setEdits] = useState<Record<string, EditState>>({});
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [commentsExpanded, setCommentsExpanded] = useState<Set<string>>(() => new Set());
   const [saving, setSaving] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(false);
   const [message, setMessage] = useState("");
@@ -669,27 +709,25 @@ export function ReceivablesWorkplace({
 
   const saveItem = async (item: ReceivableWorkplaceItem) => {
     const edit = edits[item.counterparty_ref] || initialEdit(item);
+    const payload = buildReceivableWorkplaceActionPayload(item, edit, newActionId());
+    if (Object.keys(payload).length === 1) {
+      toast("Нет изменений для сохранения");
+      return;
+    }
     setSaving((prev) => new Set(prev).add(item.counterparty_ref));
-    const staff = item.staff_options.find((option) => option.staff_ref === edit.contacted_staff_ref);
     try {
-      const response = await updateReceivableWorkplaceItem(date, item.counterparty_ref, {
-        action_id: newActionId(),
-        status: edit.status,
-        contacted_staff_ref: edit.contacted_staff_ref || null,
-        contacted_staff_name: staff?.staff_name || null,
-        promised_payment_date: edit.promised_payment_date || null,
-        last_contact_at: edit.last_contact_at || null,
-        next_action_date: edit.next_action_date || null,
-        payment_postponed: edit.payment_postponed,
-        comment: edit.comment,
-      });
+      const response = await updateReceivableWorkplaceItem(
+        date,
+        item.counterparty_ref,
+        payload
+      );
       setItems((prev) =>
         prev.map((row) => (row.counterparty_ref === item.counterparty_ref ? response.item : row))
       );
       setEdits((prev) => ({ ...prev, [item.counterparty_ref]: initialEdit(response.item) }));
       toast.success("Сохранено");
     } catch (error: unknown) {
-      toast.error(error instanceof Error ? error.message : "Не удалось сохранить");
+      toast.error(receivablesErrorMessage(error, "Не удалось сохранить"));
     } finally {
       setSaving((prev) => {
         const next = new Set(prev);
@@ -746,6 +784,11 @@ export function ReceivablesWorkplace({
           <span>Дата витрины: {date || "не выбрана"}</span>
           <span>Источник: {sourceStatus || cacheStatus.open_debt?.source_status || "ожидает загрузки"}</span>
           {openDebtComputedAt && <span>Долг рассчитан: {formatDateTime(openDebtComputedAt)}</span>}
+        </div>
+      )}
+      {hasToken && cacheStatus.open_debt?.source_status === "source_stale" && (
+        <div className="receivables__state">
+          Источник накладных устарел. Суммы долга актуальны, номера и даты накладных временно скрыты.
         </div>
       )}
       {!hasToken && <div className="receivables__auth-state">Введите внутренний токен, чтобы открыть витрину.</div>}
@@ -811,6 +854,7 @@ export function ReceivablesWorkplace({
                     key={item.counterparty_ref}
                     edit={edits[item.counterparty_ref] || initialEdit(item)}
                     expanded={expanded.has(item.counterparty_ref)}
+                    commentExpanded={commentsExpanded.has(item.counterparty_ref)}
                     index={index}
                     item={item}
                     onEdit={(patch) =>
@@ -823,6 +867,14 @@ export function ReceivablesWorkplace({
                       }))
                     }
                     onSave={() => void saveItem(item)}
+                    onToggleComment={() =>
+                      setCommentsExpanded((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(item.counterparty_ref)) next.delete(item.counterparty_ref);
+                        else next.add(item.counterparty_ref);
+                        return next;
+                      })
+                    }
                     onToggle={() =>
                       setExpanded((prev) => {
                         const next = new Set(prev);

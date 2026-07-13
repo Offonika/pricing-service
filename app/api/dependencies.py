@@ -1,13 +1,15 @@
-from functools import lru_cache
 from typing import Generator
 
 from fastapi import HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import create_engine
-from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db import (
+    SqlAlchemyUnitOfWork,
+    get_application_engine,
+    get_application_session_factory,
+)
 
 security = HTTPBearer(auto_error=False)
 
@@ -27,19 +29,21 @@ def _require_bearer_token(
     return credentials.credentials
 
 
-@lru_cache(maxsize=1)
-def get_engine() -> Engine:
-    settings = get_settings()
-    return create_engine(settings.database_url)
+# Compatibility alias retained for API/tests that import the historic symbol.
+get_engine = get_application_engine
 
 
 def get_db() -> Generator[Session, None, None]:
-    engine = get_engine()
-    session = Session(engine)
+    session = get_application_session_factory()()
     try:
         yield session
     finally:
         session.close()
+
+
+def get_uow() -> Generator[SqlAlchemyUnitOfWork, None, None]:
+    with SqlAlchemyUnitOfWork() as unit_of_work:
+        yield unit_of_work
 
 
 def require_management_internal_token(
@@ -52,6 +56,17 @@ def require_management_internal_token(
         or settings.return_scheme_internal_api_token
     )
     return _require_bearer_token(credentials, expected)
+
+
+def require_weekly_kpi_ingest_token(
+    credentials: HTTPAuthorizationCredentials = Security(security),
+) -> str:
+    settings = get_settings()
+    return _require_bearer_token(
+        credentials,
+        settings.weekly_kpi_ingest_internal_api_token,
+        missing_detail="weekly KPI ingest token not configured",
+    )
 
 
 def require_logistics_internal_token(

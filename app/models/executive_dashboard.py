@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     Date,
     DateTime,
     ForeignKey,
@@ -190,6 +191,92 @@ class ExecutiveManagementBalanceAudit(Base):
     snapshot_id: Mapped[int] = mapped_column(
         ForeignKey("executive_management_balance_snapshot.id", ondelete="CASCADE"),
         nullable=False,
+    )
+    action: Mapped[str] = mapped_column(String(48), nullable=False)
+    actor: Mapped[str] = mapped_column(String(160), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
+class ExecutiveServiceAccrualRule(Base):
+    __tablename__ = "executive_service_accrual_rule"
+    __table_args__ = (
+        UniqueConstraint("rule_key", "version", name="uq_service_accrual_rule_version"),
+        Index("ix_service_accrual_rule_contract_active", "contract_ref", "active"),
+    )
+
+    rule_key: Mapped[str] = mapped_column(String(120), nullable=False)
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    counterparty_ref: Mapped[str] = mapped_column(String(40), nullable=False)
+    counterparty_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    contract_ref: Mapped[str] = mapped_column(String(40), nullable=False)
+    contract_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    effective_from: Mapped[date] = mapped_column(Date, nullable=False)
+    effective_to: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    expense_line_key: Mapped[str] = mapped_column(String(96), nullable=False)
+    expense_line_label: Mapped[str] = mapped_column(String(255), nullable=False)
+    monthly_amount_rub: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    recognition_day: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    balance_scope_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    approved_by: Mapped[str] = mapped_column(String(160), nullable=False)
+    approval_note: Mapped[Optional[str]] = mapped_column(String(1000), nullable=True)
+    source_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ExecutiveServiceAccrualEntry(Base):
+    __tablename__ = "executive_service_accrual_entry"
+    __table_args__ = (
+        UniqueConstraint("rule_id", "period_month", name="uq_service_accrual_rule_month"),
+        Index("ix_service_accrual_entry_period_status", "period_month", "status"),
+        Index("ix_service_accrual_entry_counterparty", "counterparty_ref", "period_month"),
+    )
+
+    rule_id: Mapped[int] = mapped_column(
+        ForeignKey("executive_service_accrual_rule.id", ondelete="RESTRICT"), nullable=False
+    )
+    period_month: Mapped[date] = mapped_column(Date, nullable=False)
+    recognition_date: Mapped[date] = mapped_column(Date, nullable=False)
+    counterparty_ref: Mapped[str] = mapped_column(String(40), nullable=False)
+    counterparty_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    contract_ref: Mapped[str] = mapped_column(String(40), nullable=False)
+    contract_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    expense_line_key: Mapped[str] = mapped_column(String(96), nullable=False)
+    expense_line_label: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(40), nullable=False)
+    recognition_method: Mapped[str] = mapped_column(String(48), nullable=False)
+    recognized_amount_rub: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
+    payment_amount_rub: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False, default=0)
+    cashflow_expense_replaced_rub: Mapped[Decimal] = mapped_column(
+        Numeric(18, 2), nullable=False, default=0
+    )
+    source_document_ref: Mapped[Optional[str]] = mapped_column(String(80), nullable=True)
+    source_status: Mapped[str] = mapped_column(String(32), nullable=False)
+    source_as_of: Mapped[Optional[date]] = mapped_column(Date, nullable=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    generated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ExecutiveServiceAccrualAudit(Base):
+    __tablename__ = "executive_service_accrual_audit"
+    __table_args__ = (Index("ix_service_accrual_audit_entry", "entry_id", "created_at"),)
+
+    entry_id: Mapped[int] = mapped_column(
+        ForeignKey("executive_service_accrual_entry.id", ondelete="CASCADE"), nullable=False
     )
     action: Mapped[str] = mapped_column(String(48), nullable=False)
     actor: Mapped[str] = mapped_column(String(160), nullable=False)

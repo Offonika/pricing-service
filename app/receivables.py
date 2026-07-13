@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from datetime import date, datetime, time, timedelta
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db import build_onec_engine_from_settings, get_application_engine
 from app.services.receivables import (
     OneCReceivableLedgerExtractor,
     fetch_employee_counterparty_refs_from_onec,
@@ -18,20 +18,14 @@ DEFAULT_RECEIVABLE_WINDOW_CHUNK_DAYS = 1
 
 
 def _get_app_engine():
-    return create_engine(get_settings().database_url)
+    return get_application_engine()
 
 
 def _get_onec_engine():
     settings = get_settings()
     if not settings.onec_database_url:
         raise RuntimeError("ONEC_DATABASE_URL is not configured")
-    return create_engine(
-        settings.onec_database_url,
-        connect_args={
-            "timeout": float(settings.onec_query_timeout_seconds),
-            "login_timeout": float(settings.onec_login_timeout_seconds),
-        },
-    )
+    return build_onec_engine_from_settings()
 
 
 def _build_receivable_sync_windows(

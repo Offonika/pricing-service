@@ -8,10 +8,11 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db import get_application_engine, get_onec_engine
 from app.models import ReceivableBalanceSnapshot, ReceivableLedgerEvent, StaffMember
 from app.services.receivables import (
     AuthoritativeReceivableBalanceRow,
@@ -44,20 +45,11 @@ BUYERS_COUNTERPARTY_GROUP_NAME = "ПОКУПАТЕЛИ"
 
 
 def _get_app_engine():
-    return create_engine(get_settings().database_url)
+    return get_application_engine()
 
 
 def _get_onec_engine():
-    settings = get_settings()
-    if not settings.onec_database_url:
-        raise RuntimeError("ONEC_DATABASE_URL is not configured")
-    return create_engine(
-        settings.onec_database_url,
-        connect_args={
-            "timeout": float(settings.onec_query_timeout_seconds),
-            "login_timeout": float(settings.onec_login_timeout_seconds),
-        },
-    )
+    return get_onec_engine()
 
 
 def _dispose_engine(engine) -> None:

@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import calendar
+import json
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Literal
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.contracts import ContractIntegrityError, read_json_contract
 from app.models.executive_dashboard import (
     ExecutiveManagementBalanceAudit,
     ExecutiveManagementBalanceLine,
@@ -49,6 +52,12 @@ class BalanceLineDraft:
     source_status: str
     source_as_of: date | None
     note: str | None = None
+    include_in_total: bool = True
+    source_amount: Decimal | None = None
+    adjustment_amount: Decimal | None = None
+    adjusted_amount: Decimal | None = None
+    recognition_method: str | None = None
+    estimated_count: int = 0
 
 
 _ACCOUNTING_LINES: tuple[tuple[BalanceSection, str, str, int], ...] = (
@@ -112,10 +121,338 @@ def _line_from_compact(
         source_status=str(item.get("source_status") or "source_missing"),
         source_as_of=_as_date(item.get("as_of")),
         note=(
-            "Источник не подтверждён"
-            if str(item.get("source_status") or "") in {"source_missing", "source_error"}
-            else None
+            str(item.get("note"))
+            if item.get("note")
+            else (
+                "Источник не подтверждён"
+                if str(item.get("source_status") or "") in {"source_missing", "source_error"}
+                else None
+            )
         ),
+        include_in_total=bool(item.get("include_in_total", True)),
+        source_amount=_money(item.get("source_amount")),
+        adjustment_amount=_money(item.get("adjustment_amount")),
+        adjusted_amount=_money(item.get("adjusted_amount")),
+        recognition_method=(
+            str(item.get("recognition_method")) if item.get("recognition_method") else None
+        ),
+        estimated_count=int(item.get("estimated_count") or 0),
+    )
+
+
+def _load_bp_tax_line(
+    *,
+    balance_date: date,
+    snapshot_path: str,
+) -> tuple[BalanceLineDraft, dict[str, Any]]:
+    path = Path(snapshot_path)
+    base = {
+        "section": "liability",
+        "key": "taxes_payable",
+        "label": "Налоги к уплате",
+        "order": 40,
+        "source_key": "onec_bp_tax_accounting",
+    }
+    try:
+        payload = read_json_contract(path)
+    except FileNotFoundError:
+        note = "Не опубликован read-only снимок налогов из БП"
+        return (
+            BalanceLineDraft(
+                **base,
+                amount=None,
+                source_status="source_missing",
+                source_as_of=None,
+                note=note,
+            ),
+            {"configured": False, "status": "source_missing", "note": note},
+        )
+    except (ContractIntegrityError, OSError, ValueError, json.JSONDecodeError) as exc:
+        note = f"Снимок налогов из БП не прошёл проверку: {type(exc).__name__}"
+        return (
+            BalanceLineDraft(
+                **base,
+                amount=None,
+                source_status="source_error",
+                source_as_of=None,
+                note=note,
+            ),
+            {"configured": True, "status": "source_error", "note": note},
+        )
+
+    raw_line = (payload.get("lines") or {}).get("taxes_payable")
+    source_as_of = _as_date(payload.get("as_of"))
+    if not isinstance(raw_line, dict) or source_as_of is None:
+        note = "Снимок налогов из БП не содержит обязательную строку или дату"
+        return (
+            BalanceLineDraft(
+                **base,
+                amount=None,
+                source_status="source_error",
+                source_as_of=source_as_of,
+                note=note,
+            ),
+            {"configured": True, "status": "source_error", "note": note},
+        )
+    if source_as_of != balance_date:
+        status = "stale" if source_as_of < balance_date else "source_error"
+        note = (
+            f"Снимок налогов из БП рассчитан на {source_as_of.isoformat()}, "
+            f"требуется дата {balance_date.isoformat()}"
+        )
+        return (
+            BalanceLineDraft(
+                **base,
+                amount=None,
+                source_status=status,
+                source_as_of=source_as_of,
+                note=note,
+            ),
+            {
+                "configured": True,
+                "status": status,
+                "as_of": source_as_of.isoformat(),
+                "note": note,
+            },
+        )
+    amount = _money(raw_line.get("amount"))
+    if amount is None or amount < 0 or str(raw_line.get("source_status")) != "ready":
+        note = "Снимок налогов из БП содержит неподтверждённую сумму"
+        return (
+            BalanceLineDraft(
+                **base,
+                amount=None,
+                source_status="source_error",
+                source_as_of=source_as_of,
+                note=note,
+            ),
+            {
+                "configured": True,
+                "status": "source_error",
+                "as_of": source_as_of.isoformat(),
+                "note": note,
+            },
+        )
+    note = str(raw_line.get("note") or "Кредитовое сальдо счетов 68/69 из 1С БП")
+    return (
+        BalanceLineDraft(
+            **base,
+            amount=amount,
+            source_status="ready",
+            source_as_of=source_as_of,
+            note=note,
+        ),
+        {
+            "configured": True,
+            "status": "ready",
+            "as_of": source_as_of.isoformat(),
+            "note": note,
+        },
+    )
+
+
+_PAYROLL_LINE_LAYOUT: tuple[tuple[BalanceSection, str, int], ...] = (
+    ("asset", "official_salary_advances", 45),
+    ("asset", "employee_receivables", 50),
+    ("liability", "official_salary_payable", 25),
+    ("liability", "management_salary_payable", 26),
+    ("liability", "other_employee_settlements", 27),
+    ("liability", "service_employee_settlements", 28),
+)
+
+
+def _load_salary_reconciliation_lines(
+    *,
+    balance_date: date,
+    snapshot_path: str,
+) -> tuple[list[BalanceLineDraft], dict[str, Any]]:
+    path = Path(snapshot_path)
+
+    def unavailable(status: str, note: str) -> tuple[list[BalanceLineDraft], dict[str, Any]]:
+        labels = {
+            "official_salary_advances": "Авансы/переплата по официальной зарплате",
+            "employee_receivables": "Дебиторка сотрудников",
+            "official_salary_payable": "Зарплата к выплате — официальная",
+            "management_salary_payable": "Зарплата к выплате — управленческая часть",
+            "other_employee_settlements": "Прочие расчёты с сотрудниками",
+            "service_employee_settlements": "Служебные расчёты с сотрудниками",
+        }
+        return (
+            [
+                BalanceLineDraft(
+                    section=section,
+                    key=key,
+                    label=labels[key],
+                    amount=None,
+                    order=order,
+                    source_key="ut_bp_salary_reconciliation",
+                    source_status=status,
+                    source_as_of=None,
+                    note=note,
+                )
+                for section, key, order in _PAYROLL_LINE_LAYOUT
+            ],
+            {
+                "configured": status != "source_missing",
+                "status": status,
+                "as_of": None,
+                "closing_blocked": True,
+                "blockers": [status],
+                "note": note,
+            },
+        )
+
+    try:
+        payload = read_json_contract(path)
+    except FileNotFoundError:
+        return unavailable(
+            "source_missing", "Не опубликован единый снимок зарплатной задолженности"
+        )
+    except (ContractIntegrityError, OSError, ValueError, json.JSONDecodeError) as exc:
+        return unavailable(
+            "source_error",
+            f"Снимок зарплатной задолженности не прошёл проверку: {type(exc).__name__}",
+        )
+
+    source_as_of = _as_date(payload.get("as_of"))
+    if source_as_of != balance_date:
+        status = "stale" if source_as_of and source_as_of < balance_date else "source_error"
+        return unavailable(
+            status,
+            "Снимок зарплатной задолженности рассчитан не на дату баланса",
+        )
+    raw_lines = payload.get("lines")
+    control = payload.get("control")
+    if not isinstance(raw_lines, dict) or not isinstance(control, dict):
+        return unavailable("source_error", "В зарплатном снимке отсутствуют строки или контроль")
+
+    result: list[BalanceLineDraft] = []
+    for section, key, order in _PAYROLL_LINE_LAYOUT:
+        raw = raw_lines.get(key)
+        if not isinstance(raw, dict):
+            return unavailable("source_error", f"В зарплатном снимке отсутствует строка {key}")
+        amount = _money(raw.get("amount"))
+        status = str(raw.get("source_status") or "source_error")
+        if amount is not None and amount < 0:
+            return unavailable("source_error", f"В зарплатной строке {key} отрицательная сумма")
+        result.append(
+            BalanceLineDraft(
+                section=section,
+                key=key,
+                label=str(raw.get("label") or key),
+                amount=amount,
+                order=order,
+                source_key=str(raw.get("source_key") or "ut_bp_salary_reconciliation"),
+                source_status=status,
+                source_as_of=source_as_of,
+                note=str(raw.get("note")) if raw.get("note") else None,
+                include_in_total=bool(raw.get("include_in_total", True)),
+                recognition_method="gross_employee_balance",
+            )
+        )
+    summary = {
+        "configured": True,
+        "status": str(payload.get("source_status") or "source_error"),
+        "as_of": source_as_of.isoformat() if source_as_of else None,
+        "closing_blocked": bool(control.get("closing_blocked", True)),
+        "blockers": list(control.get("blockers") or []),
+        "mapping": control.get("mapping") or {},
+        "unconfirmed_amount": control.get("unconfirmed_amount"),
+        "duplicate_payment_amount": control.get("duplicate_payment_amount"),
+        "ambiguous_payment_amount": control.get("ambiguous_payment_amount"),
+        "ambiguous_duplicate_count": int(control.get("ambiguous_duplicate_count") or 0),
+        "account70_reconciliation_difference": control.get("account70_reconciliation_difference"),
+        "source_summary": payload.get("source_summary") or {},
+    }
+    return result, summary
+
+
+def _load_owner_dividends_line(
+    *,
+    balance_date: date,
+    snapshot_path: str,
+    accounting_includes_dividends: bool,
+    max_lag_days: int,
+) -> BalanceLineDraft:
+    path = Path(snapshot_path)
+    base = {
+        "section": "equity",
+        "key": "dividends_paid_ytd",
+        "label": "Выплаченные дивиденды",
+        "order": 40,
+        "source_key": "management_owner_cash_control",
+    }
+    try:
+        payload = read_json_contract(path)
+    except FileNotFoundError:
+        return BalanceLineDraft(
+            **base,
+            amount=None,
+            source_status="source_missing",
+            source_as_of=None,
+            note="Не опубликован снимок движения ДДС по дивидендам",
+        )
+    except (ContractIntegrityError, OSError, ValueError, json.JSONDecodeError) as exc:
+        return BalanceLineDraft(
+            **base,
+            amount=None,
+            source_status="source_error",
+            source_as_of=None,
+            note=f"Снимок движения ДДС по дивидендам не прошёл проверку: {type(exc).__name__}",
+        )
+
+    summary = payload.get("summary")
+    source_as_of = _as_date(payload.get("as_of"))
+    if not isinstance(summary, dict) or source_as_of is None:
+        return BalanceLineDraft(
+            **base,
+            amount=None,
+            source_status="source_error",
+            source_as_of=source_as_of,
+            note="Снимок движения ДДС не содержит итог по дивидендам или дату",
+        )
+
+    dividends_ytd = _money(summary.get("dividends_ytd"))
+    dividends_month = _money(summary.get("dividends_current_month"))
+    if dividends_ytd is None or dividends_ytd < 0:
+        return BalanceLineDraft(
+            **base,
+            amount=None,
+            source_status="source_error",
+            source_as_of=source_as_of,
+            note="Снимок движения ДДС содержит неподтверждённую сумму дивидендов",
+        )
+
+    source_status = str(payload.get("source_status") or "ready")
+    lag_days = (balance_date - source_as_of).days
+    if lag_days < 0:
+        source_status = "source_error"
+    elif lag_days > max_lag_days:
+        source_status = "stale"
+    elif source_status not in {"ready", "partial"}:
+        source_status = "source_error"
+
+    warning_count = int(summary.get("dividend_comment_warning_count") or 0)
+    notes = [
+        "Накопительно с начала года; выплата дивидендов уменьшает собственные средства",
+    ]
+    if dividends_month is not None:
+        notes.append(f"за текущий месяц {dividends_month} ₽")
+    if warning_count:
+        notes.append(f"{warning_count} РКО требуют проверки назначения платежа")
+    if accounting_includes_dividends:
+        notes.append("информационно — капитал уже берётся из КА/БП")
+
+    return BalanceLineDraft(
+        **base,
+        amount=-dividends_ytd,
+        source_status=source_status,
+        source_as_of=source_as_of,
+        note="; ".join(notes),
+        include_in_total=not accounting_includes_dividends,
+        source_amount=dividends_ytd,
+        adjustment_amount=(-dividends_month if dividends_month is not None else None),
+        recognition_method="equity_distribution",
     )
 
 
@@ -137,10 +474,14 @@ def _build_draft_lines(
     summary = compact.summary if compact is not None else {}
     lines: list[BalanceLineDraft] = []
     for order, item in enumerate(summary.get("balance_assets") or [], start=1):
+        if str(item.get("key")) == "employee_receivables":
+            continue
         source_key = {
             "cash": "onec_cash_position",
             "receivables": "onec_customer_receivables",
             "inventory_cost": "onec_inventory_cost",
+            "owner_cash_in_transit": "management_owner_cash_control",
+            "owner_related_party_unresolved": "management_owner_cash_control",
         }.get(str(item.get("key")), "onec_counterparty_settlements")
         lines.append(
             _line_from_compact(
@@ -151,17 +492,56 @@ def _build_draft_lines(
             )
         )
     for order, item in enumerate(summary.get("balance_liabilities") or [], start=1):
+        if str(item.get("key")) == "employees":
+            continue
+        source_key = (
+            "management_owner_cash_control"
+            if str(item.get("key")) == "owner_funds_unclassified"
+            else "onec_counterparty_settlements"
+        )
         lines.append(
             _line_from_compact(
                 item,
                 section="liability",
                 order=order * 10,
-                source_key="onec_counterparty_settlements",
+                source_key=source_key,
+            )
+        )
+    for order, item in enumerate(summary.get("balance_equity") or [], start=1):
+        source_key = (
+            "management_owner_cash_control"
+            if str(item.get("key")) == "dividends_paid_ytd"
+            else "management_service_accruals"
+        )
+        lines.append(
+            _line_from_compact(
+                item,
+                section="equity",
+                order=order * 10,
+                source_key=source_key,
             )
         )
 
     settings = get_settings()
+    salary_lines, salary_summary = _load_salary_reconciliation_lines(
+        balance_date=balance_date,
+        snapshot_path=settings.executive_management_balance_payroll_snapshot_path,
+    )
+    lines.extend(salary_lines)
     accounting_configured = bool(settings.executive_management_balance_accounting_database_url)
+    if not any(line.key == "dividends_paid_ytd" for line in lines):
+        lines.append(
+            _load_owner_dividends_line(
+                balance_date=balance_date,
+                snapshot_path=settings.executive_dashboard_owner_cash_control_snapshot_path,
+                accounting_includes_dividends=accounting_configured,
+                max_lag_days=settings.executive_dashboard_source_max_lag_days,
+            )
+        )
+    bp_tax_line, bp_tax_summary = _load_bp_tax_line(
+        balance_date=balance_date,
+        snapshot_path=settings.executive_management_balance_bp_tax_snapshot_path,
+    )
     accounting_status = "source_unverified" if accounting_configured else "source_missing"
     accounting_note = (
         "Read-only КА/БП настроена, но сопоставление счетов ещё не прошло контрольную сверку"
@@ -169,6 +549,9 @@ def _build_draft_lines(
         else "Не настроено read-only подключение к КА/БП"
     )
     for section, key, label, order in _ACCOUNTING_LINES:
+        if key == "taxes_payable":
+            lines.append(bp_tax_line)
+            continue
         lines.append(
             BalanceLineDraft(
                 section=section,
@@ -189,19 +572,69 @@ def _build_draft_lines(
             "as_of": compact.as_of.isoformat() if compact and compact.as_of else None,
         },
         "inventory": {
-            "status": "source_unverified",
-            "note": "СтоимостьОстаток не прошла сверку с типовым отчётом 1С",
+            "status": next(
+                (line.source_status for line in lines if line.source_key == "onec_inventory_cost"),
+                "source_missing",
+            ),
+            "as_of": next(
+                (
+                    line.source_as_of.isoformat()
+                    for line in lines
+                    if line.source_key == "onec_inventory_cost" and line.source_as_of is not None
+                ),
+                None,
+            ),
+            "note": next(
+                (
+                    line.note
+                    for line in lines
+                    if line.source_key == "onec_inventory_cost" and line.note
+                ),
+                None,
+            ),
         },
         "accounting": {
-            "configured": accounting_configured,
-            "status": accounting_status,
-            "note": accounting_note,
+            "configured": accounting_configured or bool(bp_tax_summary.get("configured")),
+            "status": (
+                "partial"
+                if bp_tax_summary.get("status") == "ready"
+                else bp_tax_summary.get("status") or accounting_status
+            ),
+            "as_of": bp_tax_summary.get("as_of"),
+            "note": (
+                "Налоги к уплате подтверждены из БП; остальные статьи КА/БП " "ещё не подключены"
+                if bp_tax_summary.get("status") == "ready"
+                else bp_tax_summary.get("note") or accounting_note
+            ),
         },
+        "owner_cash_control": {
+            "status": next(
+                (
+                    line.source_status
+                    for line in lines
+                    if line.source_key == "management_owner_cash_control"
+                ),
+                "source_missing",
+            ),
+            "as_of": next(
+                (
+                    line.source_as_of.isoformat()
+                    for line in lines
+                    if line.source_key == "management_owner_cash_control"
+                    and line.source_as_of is not None
+                ),
+                None,
+            ),
+        },
+        "salary_reconciliation": salary_summary,
     }
     return lines, source_summary
 
 
-def _validation_errors(lines: list[BalanceLineDraft]) -> list[dict[str, str]]:
+def _validation_errors(
+    lines: list[BalanceLineDraft],
+    source_summary: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
     errors: list[dict[str, str]] = []
     missing = [line.label for line in lines if line.amount is None]
     if missing:
@@ -229,6 +662,56 @@ def _validation_errors(lines: list[BalanceLineDraft]) -> list[dict[str, str]]:
                 "message": "Отрицательная стоимость товара блокирует закрытие месяца",
             }
         )
+    accrual_lines = [
+        line
+        for line in lines
+        if line.source_key == "management_service_accruals"
+        or line.recognition_method in {"accrual", "approved_fixed_monthly_rule"}
+    ]
+    if any(
+        line.source_status in {"partial", "source_missing", "source_error", "source_unverified"}
+        for line in accrual_lines
+    ):
+        errors.append(
+            {
+                "code": "service_accrual_source_incomplete",
+                "severity": "error",
+                "message": (
+                    "Начисления услуг не закрыты: источник договоров или закрывающих "
+                    "документов не прошёл контроль"
+                ),
+            }
+        )
+    owner_control_lines = [
+        line for line in lines if line.source_key == "management_owner_cash_control"
+    ]
+    if not owner_control_lines or any(
+        line.source_status
+        in {"partial", "source_missing", "source_error", "source_unverified", "stale"}
+        for line in owner_control_lines
+    ):
+        errors.append(
+            {
+                "code": "owner_cash_control_incomplete",
+                "severity": "error",
+                "message": (
+                    "Сверка переводов через собственника не завершена или содержит "
+                    "незакрытые расхождения"
+                ),
+            }
+        )
+    salary = (source_summary or {}).get("salary_reconciliation") or {}
+    if salary.get("status") != "ready" or bool(salary.get("closing_blocked", True)):
+        blockers = ", ".join(str(item) for item in salary.get("blockers") or [])
+        errors.append(
+            {
+                "code": "salary_reconciliation_incomplete",
+                "severity": "error",
+                "message": (
+                    "Сверка зарплаты УТ/БП не закрыта" + (f": {blockers}" if blockers else "")
+                ),
+            }
+        )
     return errors
 
 
@@ -237,7 +720,13 @@ def _totals(
 ) -> tuple[Decimal, Decimal, Decimal, Decimal]:
     def total(section: BalanceSection) -> Decimal:
         return sum(
-            (line.amount for line in lines if line.section == section and line.amount is not None),
+            (
+                line.amount
+                for line in lines
+                if line.section == section and line.amount is not None and line.include_in_total
+            ),
+            # Informational reconciliation rows are visible in the response,
+            # but only the adjusted line participates in balance totals.
             Decimal("0"),
         ).quantize(MONEY)
 
@@ -268,7 +757,7 @@ def build_and_persist_management_balance_snapshot(
         access_context=full_executive_dashboard_context(),
     )
     assets, liabilities, equity, imbalance = _totals(lines)
-    errors = _validation_errors(lines)
+    errors = _validation_errors(lines, source_summary)
     tolerance = Decimal(str(get_settings().executive_management_balance_tolerance_rub))
     if abs(imbalance) > tolerance:
         errors.append(
@@ -319,6 +808,20 @@ def build_and_persist_management_balance_snapshot(
                 source_status=line.source_status,
                 source_as_of=line.source_as_of,
                 note=line.note,
+                payload={
+                    "include_in_total": line.include_in_total,
+                    "source_amount": (
+                        str(line.source_amount) if line.source_amount is not None else None
+                    ),
+                    "adjustment_amount": (
+                        str(line.adjustment_amount) if line.adjustment_amount is not None else None
+                    ),
+                    "adjusted_amount": (
+                        str(line.adjusted_amount) if line.adjusted_amount is not None else None
+                    ),
+                    "recognition_method": line.recognition_method,
+                    "estimated_count": line.estimated_count,
+                },
             )
         )
     session.add(
@@ -415,6 +918,10 @@ def _response(
         delta = None
         if line.amount is not None and old_amount is not None:
             delta = (line.amount - old_amount).quantize(MONEY)
+        if line.line_key == "dividends_paid_ytd":
+            monthly_dividends = _money((line.payload or {}).get("adjustment_amount"))
+            if monthly_dividends is not None:
+                delta = monthly_dividends
         return ExecutiveManagementBalanceLineItem(
             key=line.line_key,
             label=line.label,
@@ -425,6 +932,11 @@ def _response(
             source_status=line.source_status,
             source_as_of=line.source_as_of,
             note=line.note,
+            source_amount=_money((line.payload or {}).get("source_amount")),
+            adjustment_amount=_money((line.payload or {}).get("adjustment_amount")),
+            adjusted_amount=_money((line.payload or {}).get("adjusted_amount")),
+            recognition_method=(line.payload or {}).get("recognition_method"),
+            estimated_count=int((line.payload or {}).get("estimated_count") or 0),
         )
 
     items = [item(line) for line in lines]
@@ -458,6 +970,7 @@ def _response(
         imbalance_amount=snapshot.imbalance_amount,
         can_close=can_close,
         validation_errors=list(snapshot.validation_errors or []),
+        source_summary=dict(snapshot.source_summary or {}),
         available_months=_available_months(session),
         note=(
             "Полный баланс не подтверждён: до сверки КА/БП и стоимости товара "

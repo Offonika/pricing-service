@@ -3,10 +3,9 @@ from __future__ import annotations
 from datetime import date
 from typing import Any, Sequence
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
+from app.infrastructure.db import get_application_engine
 from app.services.staffing import (
     StaffMemberRow,
     StoreShiftFactRow,
@@ -16,7 +15,7 @@ from app.services.staffing import (
 
 
 def _get_app_engine():
-    return create_engine(get_settings().database_url)
+    return get_application_engine()
 
 
 def run_staffing_sync(

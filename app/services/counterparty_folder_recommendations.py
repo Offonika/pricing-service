@@ -8,7 +8,7 @@ from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any, Iterable, Sequence
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from app.models.receivable_balance_snapshot import ReceivableBalanceSnapshot
@@ -41,6 +41,8 @@ PAYMENT_TERM_SOURCE_FALLBACK = "fallback_7_days_read_only"
 STRUCTURE_CANDIDATE_OLDEST_SALES_PER_COUNTERPARTY = 20
 STRUCTURE_CANDIDATE_AFTER_ORIGIN_SALES_PER_COUNTERPARTY = 40
 STRUCTURE_CANDIDATE_LATEST_SALES_PER_COUNTERPARTY = 60
+OPEN_DEBT_SOURCE_MAX_LAG_DAYS = 7
+OPEN_DEBT_SOURCE_EVENT_TYPES = ("sale", "payment", "return", "settlement")
 
 STATUS_SORT_ORDER = {
     STATUS_MOVE_RECOMMENDED: 0,
@@ -72,6 +74,43 @@ REVIEW_REASON_ORIGIN_DOCUMENT_STRUCTURE_CONFIRMED = (
 )
 REVIEW_REASON_ORIGIN_DOCUMENT_CLOSED_BY_STRUCTURE = "origin_document_closed_by_structure"
 REVIEW_REASON_DOCUMENT_COMMENT_HISTORY_REQUIRED = "document_comment_history_required"
+REVIEW_REASON_OPEN_DEBT_SOURCE_STALE = "open_debt_source_stale"
+
+
+@dataclass(frozen=True)
+class OpenDebtSourceFreshness:
+    source_status: str
+    source_max_document_date: datetime | None
+    source_lag_days: int | None
+
+
+def evaluate_open_debt_source_freshness(
+    session: Session,
+    *,
+    snapshot_date: date,
+    max_lag_days: int = OPEN_DEBT_SOURCE_MAX_LAG_DAYS,
+) -> OpenDebtSourceFreshness:
+    snapshot_end = datetime.combine(snapshot_date + timedelta(days=1), time.min)
+    source_max_document_date = session.scalar(
+        select(func.max(ReceivableLedgerEvent.external_document_date)).where(
+            ReceivableLedgerEvent.event_type.in_(OPEN_DEBT_SOURCE_EVENT_TYPES),
+            ReceivableLedgerEvent.external_document_date < snapshot_end,
+        )
+    )
+    if source_max_document_date is None:
+        return OpenDebtSourceFreshness(
+            source_status="source_stale",
+            source_max_document_date=None,
+            source_lag_days=None,
+        )
+    source_lag_days = max((snapshot_date - source_max_document_date.date()).days, 0)
+    return OpenDebtSourceFreshness(
+        source_status=(
+            "cache_ready" if source_lag_days <= max_lag_days else "source_stale"
+        ),
+        source_max_document_date=source_max_document_date,
+        source_lag_days=source_lag_days,
+    )
 
 
 @dataclass(frozen=True)
@@ -1237,8 +1276,15 @@ def _build_item(
             status = STATUS_NO_OVERDUE
             review_reason = exception_reason
         elif term.is_overdue:
-            status = STATUS_NEEDS_REVIEW
-            review_reason = _structure_review_reason(structure_check)
+            if (
+                structure_check is not None
+                and structure_check.status == DOCUMENT_STRUCTURE_CONFIRMED_OPEN
+            ):
+                status = STATUS_MOVE_RECOMMENDED
+                review_reason = None
+            else:
+                status = STATUS_NEEDS_REVIEW
+                review_reason = _structure_review_reason(structure_check)
         elif not folders_match and _has_missing_payment_term(snapshot):
             review_reason = REVIEW_REASON_FOLDER_MISMATCH_PAYMENT_TERM_MISSING
     elif term.is_overdue:
@@ -1454,16 +1500,24 @@ def build_counterparty_folder_recommendations(
         snapshots = sorted(snapshots, key=_snapshot_candidate_sort_key)[:candidate_limit]
 
     counterparty_refs = [snapshot.counterparty_ref for snapshot in snapshots]
+    source_freshness = evaluate_open_debt_source_freshness(
+        session,
+        snapshot_date=snapshot_date,
+    )
     current_folders = fetch_counterparty_current_folders(
         onec_engine,
         counterparty_refs=counterparty_refs,
     )
-    open_debt_documents_by_counterparty = build_open_debt_documents_by_counterparty(
-        session,
-        onec_engine=onec_engine,
-        snapshots=snapshots,
-        snapshot_date=snapshot_date,
-        status=status,
+    open_debt_documents_by_counterparty = (
+        build_open_debt_documents_by_counterparty(
+            session,
+            onec_engine=onec_engine,
+            snapshots=snapshots,
+            snapshot_date=snapshot_date,
+            status=status,
+        )
+        if source_freshness.source_status == "cache_ready"
+        else {}
     )
     document_refs = sorted(
         {
@@ -1505,18 +1559,31 @@ def build_counterparty_folder_recommendations(
             if open_debt_documents
             else None
         )
-        items.append(
-            _apply_report_suppression(
-                _build_item(
-                    snapshot,
-                    folder_row=current_folders.get(counterparty_key),
-                    document_row=document_departments.get(_ref_key(primary_document_ref)),
-                    structure_check=document_structure_checks.get(_ref_key(primary_document_ref)),
-                    open_debt_documents=open_debt_documents,
-                    is_excluded_china_supplier=counterparty_key in china_supplier_refs,
-                )
-            )
+        item = _build_item(
+            snapshot,
+            folder_row=current_folders.get(counterparty_key),
+            document_row=document_departments.get(_ref_key(primary_document_ref)),
+            structure_check=document_structure_checks.get(_ref_key(primary_document_ref)),
+            open_debt_documents=open_debt_documents,
+            is_excluded_china_supplier=counterparty_key in china_supplier_refs,
         )
+        if source_freshness.source_status == "source_stale":
+            item = dict(item)
+            item.update(
+                {
+                    "status": STATUS_NEEDS_REVIEW,
+                    "review_reason": REVIEW_REASON_OPEN_DEBT_SOURCE_STALE,
+                    "recommended_folder_ref": None,
+                    "recommended_folder_name": None,
+                    "recommended_folder_display_name": None,
+                    "recommended_folder_source": None,
+                    "debt_document_ref": None,
+                    "debt_document_number": None,
+                    "debt_document_date": None,
+                    "open_debt_documents": [],
+                }
+            )
+        items.append(_apply_report_suppression(item))
     below_min_balance_count = sum(
         1 for item in items if item.get("suppression_reason") == REVIEW_REASON_BELOW_MIN_BALANCE
     )
@@ -1548,6 +1615,9 @@ def build_counterparty_folder_recommendations(
 
     return {
         "snapshot_date": snapshot_date,
+        "source_status": source_freshness.source_status,
+        "source_max_document_date": source_freshness.source_max_document_date,
+        "source_lag_days": source_freshness.source_lag_days,
         "report_revision": _build_report_revision(snapshot_date, items),
         "summary": {
             "total_count": len(items),

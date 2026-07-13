@@ -93,6 +93,11 @@ class ExecutiveManagementBalanceLineItem(BaseModel):
     source_status: str
     source_as_of: date | None = None
     note: str | None = None
+    source_amount: Decimal | None = None
+    adjustment_amount: Decimal | None = None
+    adjusted_amount: Decimal | None = None
+    recognition_method: str | None = None
+    estimated_count: int = 0
 
 
 class ExecutiveManagementBalanceResponse(BaseModel):
@@ -117,6 +122,7 @@ class ExecutiveManagementBalanceResponse(BaseModel):
     imbalance_amount: Decimal = Decimal("0")
     can_close: bool = False
     validation_errors: list[dict[str, Any]] = Field(default_factory=list)
+    source_summary: dict[str, Any] = Field(default_factory=dict)
     available_months: list[str] = Field(default_factory=list)
     note: str | None = None
 
@@ -124,6 +130,37 @@ class ExecutiveManagementBalanceResponse(BaseModel):
 class ExecutiveManagementBalanceCloseRequest(BaseModel):
     confirm: bool
     note: str | None = Field(default=None, max_length=1000)
+
+
+class ExecutiveServiceAccrualItem(BaseModel):
+    id: int
+    month: str
+    recognition_date: date
+    counterparty_ref: str
+    counterparty_name: str
+    contract_ref: str
+    contract_name: str
+    expense_line_key: str
+    expense_line_label: str
+    status: str
+    recognition_method: str
+    recognized_amount_rub: Decimal
+    payment_amount_rub: Decimal
+    cashflow_expense_replaced_rub: Decimal
+    source_status: str
+    source_as_of: date | None = None
+    note: str | None = None
+
+
+class ExecutiveServiceAccrualListResponse(BaseModel):
+    month: str
+    source_status: str
+    freshness_status: str
+    total_count: int
+    recognized_amount_rub: Decimal = Decimal("0")
+    payment_amount_rub: Decimal = Decimal("0")
+    estimated_count: int = 0
+    items: list[ExecutiveServiceAccrualItem] = Field(default_factory=list)
 
 
 class ExecutiveCashflowPeriodRatio(BaseModel):
@@ -167,6 +204,10 @@ class ExecutiveCashflowQualityIssue(BaseModel):
     description: str | None = None
     proposed_action: str | None = None
     status: str = "open"
+    document_number: str | None = None
+    bitrix_task_id: str | None = None
+    task_status: str | None = None
+    drilldown_url: str | None = None
 
 
 class ExecutiveCashflowPeriodResponse(BaseModel):
@@ -232,6 +273,10 @@ class ExecutiveProfitLossExpenseBreakdownRow(BaseModel):
     review_count: int = 0
     source_status: str = "ready"
     recognition_method: str = "cashflow_fallback"
+    cashflow_amount: Decimal | None = None
+    recognized_amount: Decimal | None = None
+    adjustment_amount: Decimal | None = None
+    estimated_count: int = 0
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -264,6 +309,89 @@ class ExecutiveProfitLossPeriodResponse(BaseModel):
     expense_source_status: str = "source_missing"
     expense_breakdown: list[ExecutiveProfitLossExpenseBreakdownRow] = Field(default_factory=list)
     expense_open_questions: list[ExecutiveProfitLossOpenQuestion] = Field(default_factory=list)
+    filters: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutiveSalesDailyRow(BaseModel):
+    business_date: date
+    actual_revenue: Decimal | None = None
+    forecast_revenue: Decimal | None = None
+
+
+class ExecutiveSalesMonthlyRow(BaseModel):
+    month: str
+    revenue: Decimal = Decimal("0")
+    gross_profit: Decimal = Decimal("0")
+    sales_count: Decimal = Decimal("0")
+    gross_margin_pct: Decimal | None = None
+    forecast_revenue: Decimal | None = None
+    comparison_sales_count: Decimal | None = None
+
+
+class ExecutiveSalesBreakdownRow(BaseModel):
+    key: str
+    label: str
+    revenue: Decimal = Decimal("0")
+    gross_profit: Decimal = Decimal("0")
+    sales_count: Decimal = Decimal("0")
+    gross_margin_pct: Decimal | None = None
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutiveSalesFilterOption(BaseModel):
+    key: str
+    label: str
+
+
+class ExecutiveSalesPlanContext(BaseModel):
+    source_status: str
+    period_month: str
+    revision_no: int | None = None
+    snapshot_id: str | None = None
+    frozen_at: datetime | None = None
+    scope_type: str
+    scope_key: str | None = None
+    approved_revenue: Decimal | None = None
+    approved_margin_pct: Decimal | None = None
+    approved_gross_profit: Decimal | None = None
+    comparison_basis: str = "not_applicable"
+    comparison_revenue: Decimal | None = None
+    plan_attainment_pct: Decimal | None = None
+    note: str | None = None
+
+
+class ExecutiveSalesDiagnosticKpi(BaseModel):
+    key: str
+    value: Decimal | int | None = None
+    unit: str
+    source_status: str
+    note: str | None = None
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutiveSalesPeriodResponse(BaseModel):
+    month: str
+    date_from: date
+    date_to: date
+    as_of: date | None = None
+    generated_at: datetime | None = None
+    source_status: str
+    freshness_status: str
+    forecast_status: str = "not_applicable"
+    plan_status: str = "source_missing"
+    note: str | None = None
+    forecast_note: str | None = None
+    plan_note: str | None = None
+    plan: ExecutiveSalesPlanContext | None = None
+    diagnostic_kpis: list[ExecutiveSalesDiagnosticKpi] = Field(default_factory=list)
+    totals: dict[str, Decimal | int | None] = Field(default_factory=dict)
+    comparison: dict[str, Decimal | int | None] = Field(default_factory=dict)
+    daily: list[ExecutiveSalesDailyRow] = Field(default_factory=list)
+    monthly: list[ExecutiveSalesMonthlyRow] = Field(default_factory=list)
+    by_store: list[ExecutiveSalesBreakdownRow] = Field(default_factory=list)
+    by_manager: list[ExecutiveSalesBreakdownRow] = Field(default_factory=list)
+    stores: list[ExecutiveSalesFilterOption] = Field(default_factory=list)
+    managers: list[ExecutiveSalesFilterOption] = Field(default_factory=list)
     filters: dict[str, Any] = Field(default_factory=dict)
 
 

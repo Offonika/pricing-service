@@ -39,6 +39,9 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         ExecutiveManagementBalanceAudit,
         ExecutiveManagementBalanceLine,
         ExecutiveManagementBalanceSnapshot,
+        ExecutiveServiceAccrualAudit,
+        ExecutiveServiceAccrualEntry,
+        ExecutiveServiceAccrualRule,
         ExecutiveSourceFreshness,
     )
     from app.models.expertise import ExpertiseCase, ExpertiseCaseAttachment, ExpertiseCaseEvent
@@ -118,6 +121,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.store_shift_plan import StoreShiftPlan
     from app.models.telephony import TelephonyUserLineSnapshot
     from app.models.weekly_kpi_report import (
+        WeeklyKpiIngestRequest,
         WeeklyKpiReportMetricSnapshot,
         WeeklyKpiReportSnapshot,
     )
@@ -166,6 +170,9 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "ExecutiveManagementBalanceSnapshot",
         "ExecutiveManagementBalanceLine",
         "ExecutiveManagementBalanceAudit",
+        "ExecutiveServiceAccrualRule",
+        "ExecutiveServiceAccrualEntry",
+        "ExecutiveServiceAccrualAudit",
         "LogisticsWarehouse",
         "LogisticsDriver",
         "LogisticsUser",
@@ -215,6 +222,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "WeeklySmartphoneDigest",
         "WeeklyKpiReportSnapshot",
         "WeeklyKpiReportMetricSnapshot",
+        "WeeklyKpiIngestRequest",
         "ReceivableLedgerEvent",
         "ReceivableBalanceSnapshot",
         "ReceivableReconciliationSnapshot",

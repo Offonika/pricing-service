@@ -1,4 +1,8 @@
 import { api } from "./client";
+import {
+  isBitrixReceivablesRoute,
+  refreshBitrixReceivablesSession,
+} from "./bitrix";
 
 export interface ReceivableStatusOption {
   value: string;
@@ -22,6 +26,8 @@ export interface ReceivableCacheComponent {
   source_status: string;
   cached_count: number;
   computed_at?: string | null;
+  source_max_document_date?: string | null;
+  source_lag_days?: number | null;
 }
 
 export interface ReceivableWorkplaceMetaResponse {
@@ -132,6 +138,102 @@ export interface ReceivableWorkplaceActionResponse {
   };
 }
 
+export interface ReceivableWorkplaceEditState {
+  status: string;
+  contacted_staff_ref: string;
+  promised_payment_date: string;
+  last_contact_at: string;
+  next_action_date: string;
+  payment_postponed: boolean;
+  comment: string;
+}
+
+type ReceivablesRetryOptions = {
+  refreshSession?: () => Promise<unknown>;
+  isBitrixRoute?: () => boolean;
+};
+
+function responseStatus(error: unknown) {
+  return typeof error === "object" && error !== null && "response" in error
+    ? (error as { response?: { status?: number } }).response?.status
+    : undefined;
+}
+
+function responseDetail(error: unknown) {
+  if (typeof error !== "object" || error === null || !("response" in error)) return "";
+  const detail = (error as { response?: { data?: { detail?: unknown } } }).response?.data?.detail;
+  return typeof detail === "string" ? detail.trim() : "";
+}
+
+export function receivablesErrorMessage(error: unknown, fallback: string) {
+  const detail = responseDetail(error);
+  if (detail) return detail;
+  const status = responseStatus(error);
+  if (status === 401) {
+    return "Сессия истекла и не обновилась. Введённые данные остались на экране; повторите сохранение.";
+  }
+  if (status === 403) {
+    return "Нет доступа к рабочему месту: проверьте привязку пользователя к подразделению.";
+  }
+  return error instanceof Error && error.message ? error.message : fallback;
+}
+
+export async function withReceivablesAuthRetry<T>(
+  request: () => Promise<T>,
+  options: ReceivablesRetryOptions = {}
+) {
+  const isBitrixRoute = options.isBitrixRoute || isBitrixReceivablesRoute;
+  const refreshSession = options.refreshSession || refreshBitrixReceivablesSession;
+  try {
+    return await request();
+  } catch (error: unknown) {
+    if (responseStatus(error) !== 401 || !isBitrixRoute()) throw error;
+    try {
+      await refreshSession();
+    } catch (refreshError: unknown) {
+      throw new Error(receivablesErrorMessage(refreshError, "Не удалось обновить сессию Bitrix24."));
+    }
+    return request();
+  }
+}
+
+function dateValue(value?: string | null) {
+  return value ? value.slice(0, 10) : "";
+}
+
+export function buildReceivableWorkplaceActionPayload(
+  item: ReceivableWorkplaceItem,
+  edit: ReceivableWorkplaceEditState,
+  actionId: string
+) {
+  const payload: ReceivableWorkplaceActionPayload = { action_id: actionId };
+  if (edit.status !== item.status) payload.status = edit.status;
+
+  const currentStaffRef = item.contacted_staff_ref || "";
+  if (edit.contacted_staff_ref !== currentStaffRef) {
+    const staff = item.staff_options.find(
+      (option) => option.staff_ref === edit.contacted_staff_ref
+    );
+    payload.contacted_staff_ref = edit.contacted_staff_ref || null;
+    payload.contacted_staff_name = staff?.staff_name || null;
+  }
+
+  const dateFields: Array<
+    ["promised_payment_date" | "last_contact_at" | "next_action_date", string]
+  > = [
+    ["promised_payment_date", edit.promised_payment_date],
+    ["last_contact_at", edit.last_contact_at],
+    ["next_action_date", edit.next_action_date],
+  ];
+  for (const [field, value] of dateFields) {
+    if (value !== dateValue(item[field])) payload[field] = value || null;
+  }
+
+  if (edit.payment_postponed) payload.payment_postponed = true;
+  if (edit.comment !== (item.comment || "")) payload.comment = edit.comment;
+  return payload;
+}
+
 export interface CounterpartyFolderRecommendation {
   counterparty_ref: string;
   counterparty_code?: string | null;
@@ -168,21 +270,25 @@ export async function fetchReceivableWorkplace(params: {
   department_ref?: string;
   status?: string;
 }) {
-  const response = await api.get<ReceivableWorkplaceResponse>("/receivables/workplace", {
-    params: {
-      date: params.date,
-      department_ref: params.department_ref || undefined,
-      limit: 100,
-      status: params.status || undefined,
-    },
-  });
+  const response = await withReceivablesAuthRetry(() =>
+    api.get<ReceivableWorkplaceResponse>("/receivables/workplace", {
+      params: {
+        date: params.date,
+        department_ref: params.department_ref || undefined,
+        limit: 100,
+        status: params.status || undefined,
+      },
+    })
+  );
   return response.data;
 }
 
 export async function fetchReceivableWorkplaceMeta(date?: string) {
-  const response = await api.get<ReceivableWorkplaceMetaResponse>("/receivables/workplace/meta", {
-    params: { date: date || undefined },
-  });
+  const response = await withReceivablesAuthRetry(() =>
+    api.get<ReceivableWorkplaceMetaResponse>("/receivables/workplace/meta", {
+      params: { date: date || undefined },
+    })
+  );
   return response.data;
 }
 
@@ -191,18 +297,22 @@ export async function updateReceivableWorkplaceItem(
   counterpartyRef: string,
   payload: ReceivableWorkplaceActionPayload
 ) {
-  const response = await api.patch<ReceivableWorkplaceActionResponse>(
-    `/receivables/workplace/${encodeURIComponent(counterpartyRef)}`,
-    payload,
-    { params: { date } }
+  const response = await withReceivablesAuthRetry(() =>
+    api.patch<ReceivableWorkplaceActionResponse>(
+      `/receivables/workplace/${encodeURIComponent(counterpartyRef)}`,
+      payload,
+      { params: { date } }
+    )
   );
   return response.data;
 }
 
 export async function fetchCounterpartyFolderRecommendations(date: string) {
-  const response = await api.get<CounterpartyFolderRecommendationResponse>(
-    "/receivables/workplace/folder-recommendations",
-    { params: { date, limit: 100 } }
+  const response = await withReceivablesAuthRetry(() =>
+    api.get<CounterpartyFolderRecommendationResponse>(
+      "/receivables/workplace/folder-recommendations",
+      { params: { date, limit: 100 } }
+    )
   );
   return response.data;
 }

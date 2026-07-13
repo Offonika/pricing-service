@@ -17,10 +17,11 @@ from typing import Any
 
 import httpx
 from openai import OpenAI
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
+from app.infrastructure.db import build_onec_engine_from_settings
 from app.models.site_order_fulfillment import (
     BitrixChatMention,
     BitrixChatMessage,
@@ -1568,7 +1569,7 @@ def query_unknown_delivery_methods(
     settings = settings or get_settings()
     if not settings.onec_database_url:
         raise RuntimeError("ONEC_DATABASE_URL is not configured")
-    engine = create_engine(settings.onec_database_url, pool_pre_ping=True)
+    engine = build_onec_engine_from_settings()
     date_filter = "AND d._Date_Time >= :date_from" if date_from else ""
     with engine.connect() as connection:
         rows = connection.execute(

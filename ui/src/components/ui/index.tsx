@@ -1,4 +1,4 @@
-import { useId, type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react";
+import { useId, useState, type ButtonHTMLAttributes, type HTMLAttributes, type InputHTMLAttributes, type ReactNode } from "react";
 
 import styles from "./ui.module.css";
 
@@ -42,8 +42,61 @@ export function StatusBadge({ tone = "neutral", className, ...props }: StatusBad
   return <span className={classes(styles.badge, styles[`badge_${tone}`], className)} {...props} />;
 }
 
-export function MetricCard({ label, value, hint }: { label: string; value: ReactNode; hint?: string }) {
-  return <Surface className={styles.metric}><span>{label}</span><strong>{value}</strong>{hint && <small>{hint}</small>}</Surface>;
+export function InfoTooltip({ label, children }: { label: string; children: ReactNode }) {
+  const [open, setOpen] = useState(false);
+  const id = useId();
+  return (
+    <span className={styles.tooltipWrap}>
+      <button
+        aria-describedby={open ? id : undefined}
+        aria-label={`Пояснение: ${label}`}
+        className={styles.tooltipTrigger}
+        onBlur={() => setOpen(false)}
+        onFocus={() => setOpen(true)}
+        onKeyDown={(event) => { if (event.key === "Escape") setOpen(false); }}
+        onMouseEnter={() => setOpen(true)}
+        onMouseLeave={() => setOpen(false)}
+        type="button"
+      >
+        ?
+      </button>
+      {open && <span className={styles.tooltipBubble} id={id} role="tooltip">{children}</span>}
+    </span>
+  );
+}
+
+export type MetricTone = "neutral" | "success" | "warning" | "danger" | "info";
+export type MetricDelta = { text: string; direction: "up" | "down" | "flat"; isFavorable: boolean | null };
+
+const DELTA_ARROW: Record<MetricDelta["direction"], string> = { up: "▲", down: "▼", flat: "•" };
+
+type MetricCardProps = {
+  label: string;
+  value: ReactNode;
+  hint?: ReactNode;
+  tone?: MetricTone;
+  delta?: MetricDelta;
+  tooltip?: ReactNode;
+  className?: string;
+};
+
+export function MetricCard({ label, value, hint, tone = "neutral", delta, tooltip, className }: MetricCardProps) {
+  const deltaTone = delta ? (delta.isFavorable === null ? "neutral" : delta.isFavorable ? "success" : "danger") : null;
+  return (
+    <Surface className={classes(styles.metric, styles[`metric_${tone}`], className)}>
+      <span className={styles.metricLabel}>
+        {label}
+        {tooltip && <InfoTooltip label={label}>{tooltip}</InfoTooltip>}
+      </span>
+      <strong>{value}</strong>
+      {delta && (
+        <span className={classes(styles.delta, styles[`delta_${deltaTone}`])}>
+          {DELTA_ARROW[delta.direction]} {delta.text}
+        </span>
+      )}
+      {hint && <small>{hint}</small>}
+    </Surface>
+  );
 }
 
 type StateProps = { title: string; description?: string; actionLabel?: string; onAction?: () => void };

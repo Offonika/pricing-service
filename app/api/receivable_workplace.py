@@ -9,12 +9,12 @@ from typing import Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Security
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials
-from sqlalchemy import create_engine
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, security
 from app.core.config import get_settings
+from app.infrastructure.db.engines import DatabaseNotConfiguredError, get_onec_engine
 from app.schemas.management import (
     CounterpartyFolderRecommendationItem,
     CounterpartyFolderRecommendationResponse,
@@ -129,17 +129,10 @@ def require_receivable_workplace_access(
 
 
 def _build_onec_engine():
-    settings = get_settings()
-    if not settings.onec_database_url:
-        raise HTTPException(status_code=503, detail="1C source is unavailable")
-    return create_engine(
-        settings.onec_database_url,
-        connect_args={
-            "timeout": float(settings.onec_query_timeout_seconds),
-            "login_timeout": float(settings.onec_login_timeout_seconds),
-        },
-        pool_pre_ping=True,
-    )
+    try:
+        return get_onec_engine()
+    except DatabaseNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail="1C source is unavailable") from exc
 
 
 def _department_allowed(

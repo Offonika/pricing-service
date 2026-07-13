@@ -27,6 +27,8 @@ if ! flock -n 9; then
 fi
 
 echo "[$(date -Iseconds)] starting operational management balance snapshot" >> "${LOG_FILE}"
+/opt/MM/mm-compensation/infra/cron/employee_payroll_balance_snapshot_daily.sh
+"${PYTHON_BIN}" -m tasks.sync_executive_service_accruals >> "${LOG_FILE}" 2>&1
 "${PYTHON_BIN}" -m tasks.build_executive_management_balance_snapshot \
   --view operational >> "${LOG_FILE}" 2>&1
 echo "[$(date -Iseconds)] finished operational management balance snapshot" >> "${LOG_FILE}"

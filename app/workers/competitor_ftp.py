@@ -4,10 +4,10 @@ import logging
 from dataclasses import dataclass
 from ftplib import FTP, FTP_TLS
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db import get_application_engine
 from app.services.importers.competitor_ftp import (
     CompetitorFtpImportError,
     FtpFileInfo,
@@ -30,8 +30,7 @@ class ImportResult:
 
 
 def _get_engine():
-    settings = get_settings()
-    return create_engine(settings.database_url)
+    return get_application_engine()
 
 
 def _connect_ftp(settings) -> FTP:

@@ -6,10 +6,11 @@ from datetime import date
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
+from app.infrastructure.db import build_onec_engine_from_settings, get_application_engine
 from app.models import (
     CardBalanceCashbox,
     CardBalanceReconciliation,
@@ -37,20 +38,14 @@ _BITRIX_USER_BY_ID_CACHE: dict[str, dict[str, Any] | None] = {}
 
 
 def _get_app_engine():
-    return create_engine(get_settings().database_url)
+    return get_application_engine()
 
 
 def _get_onec_engine():
     settings = get_settings()
     if not settings.onec_database_url:
         raise RuntimeError("ONEC_DATABASE_URL is not configured")
-    return create_engine(
-        settings.onec_database_url,
-        connect_args={
-            "timeout": settings.onec_query_timeout_seconds,
-            "login_timeout": settings.onec_login_timeout_seconds,
-        },
-    )
+    return build_onec_engine_from_settings()
 
 
 def run_card_balance_onec_cashbox_sync(

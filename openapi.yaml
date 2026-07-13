@@ -2788,6 +2788,65 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/executive-dashboard/service-accruals:
+    get:
+      summary: List Executive Service Accruals
+      operationId: list_executive_service_accruals_api_management_executive_dashboard_service_accruals_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: month
+        in: query
+        required: true
+        schema:
+          type: string
+          pattern: ^\d{4}-\d{2}$
+          title: Month
+      - name: counterparty_ref
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Ref
+      - name: contract_ref
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contract Ref
+      - name: expense_line_key
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Expense Line Key
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutiveServiceAccrualListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/management/executive-dashboard/actions:
     get:
       summary: List Executive Dashboard Actions
@@ -2960,6 +3019,60 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ExecutiveProfitLossPeriodResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/executive-dashboard/sales-period:
+    get:
+      summary: Get Executive Dashboard Sales Period
+      operationId: get_executive_dashboard_sales_period_api_management_executive_dashboard_sales_period_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date From
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date To
+      - name: store_ref
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Store Ref
+      - name: manager_ref
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Manager Ref
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutiveSalesPeriodResponse'
         '422':
           description: Validation Error
           content:
@@ -3376,6 +3489,77 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/WeeklyKpiReportHealthResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/internal/weekly-kpi-snapshots:
+    post:
+      summary: Ingest Weekly Kpi Snapshot Batch
+      operationId: ingest_weekly_kpi_snapshot_batch_api_management_internal_weekly_kpi_snapshots_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 255
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/WeeklyKpiSnapshotBatchIngest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/WeeklyKpiSnapshotIngestResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/internal/sales-daily-kpi:
+    get:
+      summary: Get Internal Sales Daily Kpi
+      operationId: get_internal_sales_daily_kpi_api_management_internal_sales_daily_kpi_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date_from
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: Date From
+      - name: date_to
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: Date To
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/BIDailySalesKPI'
+                title: Response Get Internal Sales Daily Kpi Api Management Internal Sales Daily Kpi Get
         '422':
           description: Validation Error
           content:
@@ -11502,6 +11686,26 @@ components:
           type: string
           title: Status
           default: open
+        document_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Document Number
+        bitrix_task_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Task Id
+        task_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Task Status
+        drilldown_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Drilldown Url
       type: object
       required:
       - issue_key
@@ -11824,6 +12028,33 @@ components:
           - type: string
           - type: 'null'
           title: Note
+        source_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Source Amount
+        adjustment_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Adjustment Amount
+        adjusted_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Adjusted Amount
+        recognition_method:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recognition Method
+        estimated_count:
+          type: integer
+          title: Estimated Count
+          default: 0
       type: object
       required:
       - key
@@ -11928,6 +12159,10 @@ components:
             type: object
           type: array
           title: Validation Errors
+        source_summary:
+          additionalProperties: true
+          type: object
+          title: Source Summary
         available_months:
           items:
             type: string
@@ -12077,6 +12312,28 @@ components:
           type: string
           title: Recognition Method
           default: cashflow_fallback
+        cashflow_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Cashflow Amount
+        recognized_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Recognized Amount
+        adjustment_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Adjustment Amount
+        estimated_count:
+          type: integer
+          title: Estimated Count
+          default: 0
         meta:
           additionalProperties: true
           type: object
@@ -12294,6 +12551,346 @@ components:
       - key
       - label
       title: ExecutiveProfitLossRatio
+    ExecutiveSalesBreakdownRow:
+      properties:
+        key:
+          type: string
+          title: Key
+        label:
+          type: string
+          title: Label
+        revenue:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Revenue
+          default: '0'
+        gross_profit:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Gross Profit
+          default: '0'
+        sales_count:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Sales Count
+          default: '0'
+        gross_margin_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Gross Margin Pct
+        meta:
+          additionalProperties: true
+          type: object
+          title: Meta
+      type: object
+      required:
+      - key
+      - label
+      title: ExecutiveSalesBreakdownRow
+    ExecutiveSalesDailyRow:
+      properties:
+        business_date:
+          type: string
+          format: date
+          title: Business Date
+        actual_revenue:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Actual Revenue
+        forecast_revenue:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Forecast Revenue
+      type: object
+      required:
+      - business_date
+      title: ExecutiveSalesDailyRow
+    ExecutiveSalesFilterOption:
+      properties:
+        key:
+          type: string
+          title: Key
+        label:
+          type: string
+          title: Label
+      type: object
+      required:
+      - key
+      - label
+      title: ExecutiveSalesFilterOption
+    ExecutiveSalesMonthlyRow:
+      properties:
+        month:
+          type: string
+          title: Month
+        revenue:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Revenue
+          default: '0'
+        gross_profit:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Gross Profit
+          default: '0'
+        sales_count:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Sales Count
+          default: '0'
+        gross_margin_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Gross Margin Pct
+        forecast_revenue:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Forecast Revenue
+        comparison_sales_count:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Comparison Sales Count
+      type: object
+      required:
+      - month
+      title: ExecutiveSalesMonthlyRow
+    ExecutiveSalesPeriodResponse:
+      properties:
+        month:
+          type: string
+          title: Month
+        date_from:
+          type: string
+          format: date
+          title: Date From
+        date_to:
+          type: string
+          format: date
+          title: Date To
+        as_of:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: As Of
+        generated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Generated At
+        source_status:
+          type: string
+          title: Source Status
+        freshness_status:
+          type: string
+          title: Freshness Status
+        forecast_status:
+          type: string
+          title: Forecast Status
+          default: not_applicable
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+        forecast_note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Forecast Note
+        totals:
+          additionalProperties:
+            anyOf:
+            - type: string
+              pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+            - type: integer
+            - type: 'null'
+          type: object
+          title: Totals
+        comparison:
+          additionalProperties:
+            anyOf:
+            - type: string
+              pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+            - type: integer
+            - type: 'null'
+          type: object
+          title: Comparison
+        daily:
+          items:
+            $ref: '#/components/schemas/ExecutiveSalesDailyRow'
+          type: array
+          title: Daily
+        monthly:
+          items:
+            $ref: '#/components/schemas/ExecutiveSalesMonthlyRow'
+          type: array
+          title: Monthly
+        by_store:
+          items:
+            $ref: '#/components/schemas/ExecutiveSalesBreakdownRow'
+          type: array
+          title: By Store
+        by_manager:
+          items:
+            $ref: '#/components/schemas/ExecutiveSalesBreakdownRow'
+          type: array
+          title: By Manager
+        stores:
+          items:
+            $ref: '#/components/schemas/ExecutiveSalesFilterOption'
+          type: array
+          title: Stores
+        managers:
+          items:
+            $ref: '#/components/schemas/ExecutiveSalesFilterOption'
+          type: array
+          title: Managers
+        filters:
+          additionalProperties: true
+          type: object
+          title: Filters
+      type: object
+      required:
+      - month
+      - date_from
+      - date_to
+      - source_status
+      - freshness_status
+      title: ExecutiveSalesPeriodResponse
+    ExecutiveServiceAccrualItem:
+      properties:
+        id:
+          type: integer
+          title: Id
+        month:
+          type: string
+          title: Month
+        recognition_date:
+          type: string
+          format: date
+          title: Recognition Date
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        counterparty_name:
+          type: string
+          title: Counterparty Name
+        contract_ref:
+          type: string
+          title: Contract Ref
+        contract_name:
+          type: string
+          title: Contract Name
+        expense_line_key:
+          type: string
+          title: Expense Line Key
+        expense_line_label:
+          type: string
+          title: Expense Line Label
+        status:
+          type: string
+          title: Status
+        recognition_method:
+          type: string
+          title: Recognition Method
+        recognized_amount_rub:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Recognized Amount Rub
+        payment_amount_rub:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Payment Amount Rub
+        cashflow_expense_replaced_rub:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Cashflow Expense Replaced Rub
+        source_status:
+          type: string
+          title: Source Status
+        source_as_of:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Source As Of
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+      type: object
+      required:
+      - id
+      - month
+      - recognition_date
+      - counterparty_ref
+      - counterparty_name
+      - contract_ref
+      - contract_name
+      - expense_line_key
+      - expense_line_label
+      - status
+      - recognition_method
+      - recognized_amount_rub
+      - payment_amount_rub
+      - cashflow_expense_replaced_rub
+      - source_status
+      title: ExecutiveServiceAccrualItem
+    ExecutiveServiceAccrualListResponse:
+      properties:
+        month:
+          type: string
+          title: Month
+        source_status:
+          type: string
+          title: Source Status
+        freshness_status:
+          type: string
+          title: Freshness Status
+        total_count:
+          type: integer
+          title: Total Count
+        recognized_amount_rub:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Recognized Amount Rub
+          default: '0'
+        payment_amount_rub:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Payment Amount Rub
+          default: '0'
+        estimated_count:
+          type: integer
+          title: Estimated Count
+          default: 0
+        items:
+          items:
+            $ref: '#/components/schemas/ExecutiveServiceAccrualItem'
+          type: array
+          title: Items
+      type: object
+      required:
+      - month
+      - source_status
+      - freshness_status
+      - total_count
+      title: ExecutiveServiceAccrualListResponse
     ExecutiveSourceStatus:
       properties:
         source_key:
@@ -20266,6 +20863,110 @@ components:
       - msg
       - type
       title: ValidationError
+    WeeklyKpiMetricSnapshotIngest:
+      properties:
+        metric_code:
+          type: string
+          title: Metric Code
+        metric_name:
+          type: string
+          title: Metric Name
+        unit:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Unit
+        fact_value:
+          anyOf:
+          - type: number
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Fact Value
+        plan_value:
+          anyOf:
+          - type: number
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Plan Value
+        achievement_pct:
+          anyOf:
+          - type: number
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Achievement Pct
+        bonus_preview_amount:
+          anyOf:
+          - type: number
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Bonus Preview Amount
+        weight:
+          anyOf:
+          - type: number
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Weight
+        previous_fact_value:
+          anyOf:
+          - type: number
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Previous Fact Value
+        delta_abs:
+          anyOf:
+          - type: number
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Delta Abs
+        delta_pct:
+          anyOf:
+          - type: number
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Delta Pct
+        signal:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Signal
+        sort_order:
+          type: integer
+          title: Sort Order
+          default: 0
+        source_system:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source System
+        source_entity:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Entity
+        source_as_of:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Source As Of
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+      type: object
+      required:
+      - metric_code
+      - metric_name
+      - fact_value
+      title: WeeklyKpiMetricSnapshotIngest
     WeeklyKpiReportDetail:
       properties:
         report_id:
@@ -20604,6 +21305,152 @@ components:
       - week_start
       - week_end
       title: WeeklyKpiReportPeriod
+    WeeklyKpiReportSnapshotIngest:
+      properties:
+        report_key:
+          type: string
+          title: Report Key
+        revision:
+          type: integer
+          minimum: 1.0
+          title: Revision
+        week_start:
+          type: string
+          format: date
+          title: Week Start
+        week_end:
+          type: string
+          format: date
+          title: Week End
+        employee_key:
+          type: string
+          title: Employee Key
+        employee_name:
+          type: string
+          title: Employee Name
+        role_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Role Code
+        position_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Position Code
+        position_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Position Name
+        bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix User Id
+        bitrix_box_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Bitrix Box User Id
+        eligibility_status:
+          type: string
+          enum:
+          - eligible
+          - quarantine
+          title: Eligibility Status
+        eligibility_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Eligibility Reason
+        overall_signal:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Overall Signal
+        summary_payload:
+          additionalProperties: true
+          type: object
+          title: Summary Payload
+        source_as_of:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Source As Of
+        generated_at:
+          type: string
+          format: date-time
+          title: Generated At
+        metrics:
+          items:
+            $ref: '#/components/schemas/WeeklyKpiMetricSnapshotIngest'
+          type: array
+          title: Metrics
+      type: object
+      required:
+      - report_key
+      - revision
+      - week_start
+      - week_end
+      - employee_key
+      - employee_name
+      - eligibility_status
+      - summary_payload
+      - generated_at
+      - metrics
+      title: WeeklyKpiReportSnapshotIngest
+    WeeklyKpiSnapshotBatchIngest:
+      properties:
+        contract_version:
+          type: string
+          const: weekly-kpi-report.v1
+          title: Contract Version
+          default: weekly-kpi-report.v1
+        generated_at:
+          type: string
+          format: date-time
+          title: Generated At
+        reports:
+          items:
+            $ref: '#/components/schemas/WeeklyKpiReportSnapshotIngest'
+          type: array
+          title: Reports
+      type: object
+      required:
+      - generated_at
+      - reports
+      title: WeeklyKpiSnapshotBatchIngest
+    WeeklyKpiSnapshotIngestResponse:
+      properties:
+        contract_version:
+          type: string
+          title: Contract Version
+        inserted:
+          type: integer
+          title: Inserted
+        updated:
+          type: integer
+          title: Updated
+        noop:
+          type: integer
+          title: Noop
+        quarantined:
+          type: integer
+          title: Quarantined
+        replayed:
+          type: boolean
+          title: Replayed
+          default: false
+      type: object
+      required:
+      - contract_version
+      - inserted
+      - updated
+      - noop
+      - quarantined
+      title: WeeklyKpiSnapshotIngestResponse
     WeeklyManagerSalesReportArtifact:
       properties:
         artifact_type:

@@ -65,6 +65,12 @@ def _payloads() -> dict[str, dict]:
             "daily": [],
             "totals": {},
         },
+        "sales": {
+            "source_status": "ready",
+            "freshness_status": "fresh",
+            "daily": [],
+            "totals": {},
+        },
         "management_balance": {
             "month": "2026-07",
             "source_status": "partial",
@@ -73,6 +79,19 @@ def _payloads() -> dict[str, dict]:
             "liabilities": [],
             "equity": [],
             "validation_errors": [{"code": "shadow_mode"}],
+            "source_summary": {
+                "salary_reconciliation": {
+                    "status": "partial",
+                    "closing_blocked": True,
+                }
+            },
+        },
+        "service_accruals": {
+            "month": "2026-07",
+            "source_status": "ready",
+            "freshness_status": "fresh",
+            "total_count": 0,
+            "items": [],
         },
     }
 
@@ -91,6 +110,10 @@ def _runtime_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=payloads["cashflow"])
     if path.endswith("/profit-loss-period"):
         return httpx.Response(200, json=payloads["profit_loss"])
+    if path.endswith("/sales-period"):
+        return httpx.Response(200, json=payloads["sales"])
+    if path.endswith("/service-accruals"):
+        return httpx.Response(200, json=payloads["service_accruals"])
     if path.endswith("/management-balance"):
         return httpx.Response(200, json=payloads["management_balance"])
     if path == "/api/management/executive-dashboard":
@@ -110,7 +133,7 @@ def test_collect_runtime_checks_accepts_empty_actions_and_session_probe_422() ->
         )
 
     assert not errors
-    assert len(checks) == 7
+    assert len(checks) == 9
     assert payloads["actions"]["payload"] == []
 
 
@@ -204,11 +227,30 @@ def test_monitor_fails_for_unhealthy_payables_after_1100() -> None:
     assert any("creditors_payables is unhealthy" in error for error in errors)
 
 
+def test_monitor_allows_service_accrual_grace_but_fails_after_1100() -> None:
+    payloads = _payloads()
+    payloads["dashboard"]["blocks"][1].update(source_status="ready", freshness_status="fresh")
+    payloads["service_accruals"].update(source_status="source_missing", freshness_status="missing")
+
+    early_status, early_degraded, early_errors = evaluate_data_health(
+        payloads,
+        now=datetime(2026, 7, 11, 10, 59, tzinfo=MOSCOW_TZ),
+    )
+    late_status, _, late_errors = evaluate_data_health(
+        payloads,
+        now=datetime(2026, 7, 11, 11, 0, tzinfo=MOSCOW_TZ),
+    )
+
+    assert early_status == "degraded"
+    assert not early_errors
+    assert any(item["name"] == "service_accruals" for item in early_degraded)
+    assert late_status == "failed"
+    assert any("service accrual source is unhealthy" in item for item in late_errors)
+
+
 def test_monitor_reports_other_stale_dashboard_blocks_without_false_outage() -> None:
     payloads = _payloads()
-    payloads["dashboard"]["blocks"][1].update(
-        source_status="ready", freshness_status="fresh"
-    )
+    payloads["dashboard"]["blocks"][1].update(source_status="ready", freshness_status="fresh")
     payloads["dashboard"]["blocks"].append(
         {
             "key": "debtors",
@@ -252,3 +294,38 @@ def test_monitor_allows_procurement_grace_period_but_fails_after_1100() -> None:
     assert late_status == "failed"
     assert not any(item["name"] == "dashboard.procurement_import" for item in late_degraded)
     assert any("procurement_import is unhealthy" in error for error in late_errors)
+
+
+def test_monitor_owner_control_warning_before_1145_and_error_after() -> None:
+    payloads = _payloads()
+    next(
+        block
+        for block in payloads["dashboard"]["blocks"]
+        if block["key"] == "creditors_payables"
+    ).update(source_status="partial", freshness_status="partial")
+    payloads["cashflow"].update(
+        source_status="partial",
+        freshness_status="partial",
+        quality_issues=[
+            {
+                "issue_type": "owner_transfer_unmatched_incoming",
+                "severity": "high",
+                "status": "open",
+            }
+        ],
+    )
+
+    early_status, early_degraded, early_errors = evaluate_data_health(
+        payloads,
+        now=datetime(2026, 7, 11, 11, 44, tzinfo=MOSCOW_TZ),
+    )
+    late_status, _, late_errors = evaluate_data_health(
+        payloads,
+        now=datetime(2026, 7, 11, 11, 45, tzinfo=MOSCOW_TZ),
+    )
+
+    assert early_status == "degraded"
+    assert not early_errors
+    assert any(item["name"] == "cashflow" for item in early_degraded)
+    assert late_status == "failed"
+    assert any("high unresolved issue" in error for error in late_errors)

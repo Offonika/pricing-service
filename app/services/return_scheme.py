@@ -9,10 +9,10 @@ from typing import Any, Iterable, Sequence
 
 import httpx
 from openpyxl import Workbook
-from sqlalchemy import create_engine, func, select, text, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
+from app.infrastructure.db import SqlAlchemyUnitOfWork
 from app.models import ReturnSchemeAlertBatch, ReturnSchemeIncident
 
 # Direct MSSQL mapping for the observed 1C UT schema:
@@ -702,11 +702,13 @@ def mark_return_scheme_incidents_notified_by_ids(
     *,
     notified_at: datetime | None = None,
 ) -> None:
-    settings = get_settings()
-    engine = create_engine(settings.database_url)
-    with Session(engine) as session:
-        mark_return_scheme_incidents_notified(session, incident_ids, notified_at=notified_at)
-        session.commit()
+    with SqlAlchemyUnitOfWork() as unit_of_work:
+        assert unit_of_work.session is not None
+        mark_return_scheme_incidents_notified(
+            unit_of_work.session,
+            incident_ids,
+            notified_at=notified_at,
+        )
 
 
 def acknowledge_return_scheme_alert_batch_by_id(
@@ -714,12 +716,13 @@ def acknowledge_return_scheme_alert_batch_by_id(
     *,
     delivered_at: datetime | None = None,
 ) -> ReturnSchemeAlertBatch:
-    settings = get_settings()
-    engine = create_engine(settings.database_url)
-    with Session(engine) as session:
-        batch = acknowledge_return_scheme_alert_batch(session, batch_id, delivered_at=delivered_at)
-        session.commit()
-        return batch
+    with SqlAlchemyUnitOfWork() as unit_of_work:
+        assert unit_of_work.session is not None
+        return acknowledge_return_scheme_alert_batch(
+            unit_of_work.session,
+            batch_id,
+            delivered_at=delivered_at,
+        )
 
 
 def export_return_scheme_report_xlsx(

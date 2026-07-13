@@ -1,21 +1,18 @@
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 from typing import Any
 
-DEFAULT_MM_COMPENSATION_ROOT = Path(__file__).resolve().parents[3] / "mm-compensation"
-DEFAULT_REPORTS_DIR = DEFAULT_MM_COMPENSATION_ROOT / "build" / "retail_director_monthly"
+from app.infrastructure.contracts import read_json_contract
+
+DEFAULT_REPORTS_DIR = Path("/var/lib/mm-data-contracts/retail-director-monthly")
 
 
 def _resolve_reports_dir() -> Path:
     explicit_dir = os.getenv("RETAIL_DIRECTOR_MONTHLY_REPORTS_DIR")
     if explicit_dir:
         return Path(explicit_dir)
-    compensation_root = os.getenv("MM_COMPENSATION_ROOT")
-    if compensation_root:
-        return Path(compensation_root) / "build" / "retail_director_monthly"
     return DEFAULT_REPORTS_DIR
 
 
@@ -43,7 +40,7 @@ def load_retail_director_monthly_kpi(month: str) -> dict[str, Any] | None:
     if not artifact_path.exists():
         return None
 
-    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    payload = read_json_contract(artifact_path)
     header = _safe_dict(payload.get("header"))
     shrinkage = _safe_dict(payload.get("shrinkage"))
     compensation = _safe_dict(payload.get("compensation"))

@@ -12,6 +12,8 @@
 5. `../openapi.yaml` — зафиксированный API-контракт FastAPI.
 6. `plan.md` — статусы задач и дальнейшая очередь работ.
 7. `specs/README.md` — lifecycle новых крупных спецификаций проекта.
+8. `specs/pricing-service-architecture-hardening.md` — принятый план архитектурного
+   оздоровления, вывода устаревшего источника и усиления границ между проектами.
 
 ## Основные домены
 
@@ -26,6 +28,7 @@
 | Expertise/order flow | `Onepage.ExpertiseCaseMVP.md`, `TechDesign.ExpertiseCaseMVP.md`, `IntegrationContract.Expertise1C.md`, `Runbook.ExpertiseWave1.md`, `order_flow/README.md`, `specs/site-order-fulfillment-control-contour.md`, `specs/site-defect-archive-search.md` |
 | SKU/1C | `sku_policy.md`, `sku_dev_mapping.md`, `sku_dictionary_for_buyers.md`, `1c_sql_mapping.md`, `bank-payment-classifier-one-pager.md` |
 | Specs | `specs/README.md`, новые specs в `docs/specs/` |
+| Architecture hardening | `specs/pricing-service-architecture-hardening.md`, `architecture.md`, `../openapi.yaml` |
 
 ## Правила расширения
 

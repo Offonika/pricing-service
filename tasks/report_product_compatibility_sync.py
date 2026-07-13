@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.models import Product, ProductCompatibility
-from tasks.import_topcontrol_products_db import (
+from tasks.sync_onec_product_catalog import (
     detect_item_folder_value,
     fetch_general_catalog_item_ids,
     fetch_onec_compatibility_models,

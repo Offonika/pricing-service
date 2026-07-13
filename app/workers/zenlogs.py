@@ -5,10 +5,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import requests
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db import get_application_engine
 from app.services.importers.competitor_catalog import upsert_catalog_records
 from app.services.importers.zenlogs_moba import CompetitorCatalogRecord, parse_zenlogs_xlsx
 
@@ -60,8 +60,7 @@ def run_zenlogs_moba_import(session: Session | None = None) -> dict:
 
     created_session = False
     if session is None:
-        engine = create_engine(settings.database_url)
-        session = Session(engine)
+        session = Session(get_application_engine())
         created_session = True
 
     total_processed = 0

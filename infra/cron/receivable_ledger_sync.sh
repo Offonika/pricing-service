@@ -14,7 +14,7 @@ WINDOW_DAYS="${RECEIVABLE_LEDGER_WINDOW_DAYS:-7}"
 OPENING_BALANCE_DATE="${RECEIVABLE_LEDGER_OPENING_BALANCE_DATE:-}"
 OPENING_IMPORT_FILE="${RECEIVABLE_LEDGER_OPENING_IMPORT_FILE:-}"
 OPENING_LAYERS="${RECEIVABLE_LEDGER_OPENING_LAYERS:-regular_opening,employee_opening}"
-DAILY_LAYERS="${RECEIVABLE_DAILY_LAYERS:-}"
+DAILY_LAYERS="${RECEIVABLE_DAILY_LAYERS:-sales_returns,payments,settlements,employee_movements}"
 WORKPLACE_CACHE_ENABLED="${RECEIVABLE_WORKPLACE_CACHE_REBUILD_ENABLED:-1}"
 WORKPLACE_CACHE_REQUIRED="${RECEIVABLE_WORKPLACE_CACHE_REQUIRED:-0}"
 WORKPLACE_CACHE_INCLUDE_ONEC_OPEN_DEBT="${RECEIVABLE_WORKPLACE_CACHE_INCLUDE_ONEC_OPEN_DEBT:-1}"
@@ -27,6 +27,9 @@ if [[ -f "${ENV_FILE}" ]]; then
   source "${ENV_LOADER}"
   load_env_file_preserve_json "${ENV_FILE}"
 fi
+
+CARD_SYNC_ENABLED="${RECEIVABLE_CARD_SYNC_ENABLED:-1}"
+CARD_SYNC_BATCH_SIZE="${RECEIVABLE_CARD_SYNC_BATCH_SIZE:-25}"
 
 if [[ ! -x "${PYTHON_BIN}" && -x "${FALLBACK_PYTHON_BIN}" ]]; then
   PYTHON_BIN="${FALLBACK_PYTHON_BIN}"
@@ -66,11 +69,7 @@ do
   fi
 done
 echo "[$timestamp] opening_layers=${OPENING_LAYERS}" >> "${LOG_FILE}"
-if [[ -n "${DAILY_LAYERS}" ]]; then
-  echo "[$timestamp] daily_layers=${DAILY_LAYERS}" >> "${LOG_FILE}"
-else
-  echo "[$timestamp] daily layers disabled: set RECEIVABLE_DAILY_LAYERS only after 1C extractor acceptance" >> "${LOG_FILE}"
-fi
+echo "[$timestamp] daily_layers=${DAILY_LAYERS}" >> "${LOG_FILE}"
 
 run_step() {
   local step_name="$1"
@@ -176,5 +175,19 @@ for snapshot_date in "${yesterday}" "${today}"; do
     echo "[$(date -Iseconds)] skip workplace_cache:${snapshot_date}; disabled by RECEIVABLE_WORKPLACE_CACHE_REBUILD_ENABLED" >> "${LOG_FILE}"
   fi
 done
+
+if [[ "${CARD_SYNC_ENABLED}" == "1" ]]; then
+  card_sync_cmd=(
+    "${PYTHON_BIN}" -m tasks.sync_receivable_workflow
+    --date "${today}"
+    --force
+    --bitrix-only
+    --all-departments
+    --batch-size "${CARD_SYNC_BATCH_SIZE}"
+  )
+  run_step "receivable_cards:${today}" "${card_sync_cmd[@]}"
+else
+  echo "[$(date -Iseconds)] skip receivable_cards:${today}; disabled by RECEIVABLE_CARD_SYNC_ENABLED" >> "${LOG_FILE}"
+fi
 
 echo "[$(date -Iseconds)] receivable ledger sync job finished successfully" >> "${LOG_FILE}"

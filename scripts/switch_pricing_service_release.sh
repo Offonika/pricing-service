@@ -18,6 +18,8 @@ previous_target="$(readlink -f "$ACTIVE_LINK" 2>/dev/null || true)"
 (
   cd "$RELEASE_DIR"
   PYTHONPATH="$RELEASE_DIR" "$PYTHON_BIN" scripts/validate_executive_dashboard_release.py
+  PYTHONPATH="$RELEASE_DIR" "$PYTHON_BIN" scripts/validate_receivables_release.py \
+    --release-dir "$RELEASE_DIR"
 )
 
 if [[ -d "$RELEASE_DIR/ui/dist" ]]; then

@@ -19,6 +19,7 @@ from app.models import (
     ReceivableBitrixUserAccess,
     ReceivableCase,
     ReceivableFolderRecommendationCache,
+    ReceivableLedgerEvent,
     ReceivableOpenDebtCache,
     ReceivableWorkEvent,
     ReceivableWorkItem,
@@ -32,6 +33,9 @@ from app.services.bitrix_receivables_auth import (
     ReceivablesAccess,
     create_receivables_session_token,
 )
+from app.services.counterparty_folder_recommendations import (
+    evaluate_open_debt_source_freshness,
+)
 from app.services.receivable_department_aliases import (
     TEPLY_STAN_RECEIVABLES_REF,
     TEPLY_STAN_STAFF_DEPARTMENT_REF,
@@ -44,6 +48,21 @@ from app.services.receivable_workplace import (
 )
 from app.services.receivables import CASE_BUYERS, CASE_OVERDUE
 from tests.test_receivable_workflow import _settings
+
+
+def _ledger_event(*, document_date: datetime, business_key: str = "event-1") -> ReceivableLedgerEvent:
+    return ReceivableLedgerEvent(
+        source="onec",
+        source_layer="regular_receivables",
+        business_key=business_key,
+        event_type="sale",
+        external_document_ref=f"doc-{business_key}",
+        external_document_number=business_key,
+        external_document_date=document_date,
+        counterparty_ref="cp-1",
+        counterparty_name="Клиент 1",
+        amount_delta=Decimal("1000.00"),
+    )
 
 
 def _case(
@@ -587,6 +606,72 @@ def test_receivable_workplace_uses_open_debt_cache_for_effective_overdue(
     assert result.payload[0].documents[0].document_number == "РБГУ7777"
     assert result.payload[0].effective_due_date == datetime(2026, 6, 19, 9, 0)
     assert result.payload[0].effective_overdue_days == 4
+
+
+def test_open_debt_source_freshness_marks_old_ledger_as_stale(
+    db_session: Session,
+) -> None:
+    db_session.add(_ledger_event(document_date=datetime(2026, 4, 21, 0, 50)))
+    db_session.flush()
+
+    freshness = evaluate_open_debt_source_freshness(
+        db_session,
+        snapshot_date=date(2026, 7, 13),
+    )
+
+    assert freshness.source_status == "source_stale"
+    assert freshness.source_max_document_date == datetime(2026, 4, 21, 0, 50)
+    assert freshness.source_lag_days == 83
+
+
+def test_open_debt_source_freshness_accepts_recent_ledger(
+    db_session: Session,
+) -> None:
+    db_session.add(_ledger_event(document_date=datetime(2026, 7, 12, 18, 0)))
+    db_session.flush()
+
+    freshness = evaluate_open_debt_source_freshness(
+        db_session,
+        snapshot_date=date(2026, 7, 13),
+    )
+
+    assert freshness.source_status == "cache_ready"
+    assert freshness.source_lag_days == 1
+
+
+def test_receivable_workplace_hides_documents_from_stale_cache(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 7, 13)
+    db_session.add_all(
+        [
+            _case(
+                snapshot_date=as_of,
+                due_date=datetime(2026, 7, 1, 12, 0),
+                overdue_days=12,
+            ),
+            ReceivableOpenDebtCache(
+                snapshot_date=as_of,
+                counterparty_ref="cp-1",
+                department_ref="dep-1",
+                source_status="source_stale",
+                documents=[
+                    {
+                        "document_ref": "sale-old",
+                        "document_number": "РТУ-АПРЕЛЬ",
+                        "document_date": "2026-04-21T10:00:00",
+                        "open_amount": "1000.00",
+                    }
+                ],
+            ),
+        ]
+    )
+
+    result = build_receivable_workplace(db_session, snapshot_date=as_of)
+
+    assert result.source_status == "source_stale"
+    assert result.cache_status["open_debt"].source_status == "source_stale"
+    assert result.payload[0].documents == []
 
 
 def test_receivable_workplace_current_balance_uses_cached_open_debt_documents(

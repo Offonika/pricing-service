@@ -9,11 +9,12 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Sequence
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import func, select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db import build_application_engine
 from app.models import CounterpartyDuplicateCase
 
 DEFAULT_COUNTERPARTY_DUPLICATE_SQL = """
@@ -549,7 +550,8 @@ def run_counterparty_duplicate_detection(
     anchor = run_at or datetime.now()
     window_start = anchor - timedelta(hours=settings.counterparty_duplicate_detection_window_hours)
     extractor = CounterpartyDuplicateExtractor(
-        onec_engine or create_engine(settings.onec_database_url or "sqlite:///:memory:"),
+        onec_engine
+        or build_application_engine(settings.onec_database_url or "sqlite:///:memory:"),
         sql_text=sql_text or _load_counterparty_duplicate_sql(),
     )
     records = extractor.fetch_rows(window_start=window_start, window_end=anchor)

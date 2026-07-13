@@ -1,11 +1,30 @@
 import "@testing-library/jest-dom/vitest";
-import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
-import type { ExecutiveDashboardAction, ExecutiveDashboardBlock } from "../api/executiveDashboard";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { ExecutiveDashboardAction, ExecutiveDashboardBlock, ExecutiveDashboardResponse } from "../api/executiveDashboard";
+import {
+  fetchExecutiveDashboard,
+  fetchExecutiveDashboardActions,
+  fetchExecutiveManagementBalance,
+  fetchExecutiveSalesPeriod,
+} from "../api/executiveDashboard";
+
+vi.mock("../api/executiveDashboard", () => ({
+  closeExecutiveManagementBalance: vi.fn(),
+  fetchExecutiveCashflowPeriod: vi.fn(),
+  fetchExecutiveDashboard: vi.fn(),
+  fetchExecutiveDashboardActions: vi.fn(),
+  fetchExecutiveManagementBalance: vi.fn(),
+  fetchExecutiveProfitLossPeriod: vi.fn(),
+  fetchExecutiveSalesPeriod: vi.fn(),
+}));
+
 import {
   ActionDetail,
   ActionTable,
+  ExecutiveDashboard,
   ManagementBalanceBlockCard,
+  MonthlyManagementBalance,
 } from "./ExecutiveDashboard";
 import { splitManagementBalanceBlock } from "./executiveDashboardLayout";
 
@@ -57,6 +76,11 @@ describe("executive procurement actions", () => {
 });
 
 describe("executive management balance", () => {
+  afterEach(() => {
+    cleanup();
+    vi.mocked(fetchExecutiveManagementBalance).mockReset();
+  });
+
   it("renders the balance separately from the KPI cards", () => {
     const balance = { key: "creditors_payables" } as ExecutiveDashboardBlock;
     const money = { key: "money_today" } as ExecutiveDashboardBlock;
@@ -100,5 +124,315 @@ describe("executive management balance", () => {
     expect(screen.getByText("Итого активы").parentElement).toHaveTextContent(/1\s*300 ₽/);
     expect(screen.getByText("Итого пассивы").parentElement).toHaveTextContent(/2\s*200 ₽/);
     expect(screen.queryByText("Чистый долг")).not.toBeInTheDocument();
+  });
+
+  it("shows the unconfirmed salary amount outside the balance total", async () => {
+    vi.mocked(fetchExecutiveManagementBalance).mockResolvedValue({
+      month: "2026-07",
+      balance_date: "2026-07-13",
+      view: "operational",
+      version: 12,
+      status: "partial",
+      source_status: "partial",
+      freshness_status: "fresh",
+      generated_at: "2026-07-13T10:00:00+03:00",
+      currency: "RUB",
+      assets: [],
+      liabilities: [],
+      equity: [],
+      assets_total: "0.00",
+      liabilities_total: "0.00",
+      equity_total: "0.00",
+      liabilities_and_equity_total: "0.00",
+      imbalance_amount: "0.00",
+      can_close: false,
+      validation_errors: [],
+      source_summary: {
+        salary_reconciliation: {
+          status: "partial",
+          closing_blocked: true,
+          unconfirmed_amount: "4301900.00",
+          mapping: { coverage_percent: "0.00" },
+        },
+      },
+      available_months: ["2026-07"],
+      note: "Оперативный срез",
+    });
+
+    render(<MonthlyManagementBalance asOf="2026-07-13" canCloseMonth={false} refreshNonce={0} />);
+
+    expect(await screen.findByText("Сверка зарплаты выполнена частично")).toBeVisible();
+    expect(screen.getByText(/Неподтверждено:/)).toHaveTextContent(/4\s*301\s*900 ₽/);
+    expect(screen.getByText(/Неподтверждено:/)).toHaveTextContent("в итог баланса не включено");
+    expect(screen.getByText(/Неподтверждено:/)).toHaveTextContent("Сопоставлено сотрудников: 0%");
+  });
+});
+
+function salesPeriodResponse() {
+  return {
+    month: "2026-06",
+    date_from: "2026-06-01",
+    date_to: "2026-06-30",
+    as_of: "2026-06-05",
+    source_status: "ready",
+    freshness_status: "fresh",
+    forecast_status: "ready",
+    note: "Факт 1С",
+    forecast_note: "Прогноз по неделям",
+    totals: {
+      revenue: "1000.00",
+      forecast_revenue_period_end: "5000.00",
+      gross_profit: "400.00",
+      gross_margin_pct: "0.4",
+      sales_count: "5.000",
+    },
+    comparison: {
+      revenue: "800.00",
+      gross_profit: "300.00",
+      gross_margin_pct: "0.375",
+      sales_count: "4.000",
+    },
+    daily: [
+      { business_date: "2026-06-05", actual_revenue: "1000.00", forecast_revenue: null },
+      { business_date: "2026-06-06", actual_revenue: null, forecast_revenue: "200.00" },
+    ],
+    monthly: [
+      { month: "2026-05", revenue: "800.00", gross_profit: "300.00", sales_count: "4.000", gross_margin_pct: "0.375", forecast_revenue: null, comparison_sales_count: null },
+      { month: "2026-06", revenue: "1000.00", gross_profit: "400.00", sales_count: "5.000", gross_margin_pct: "0.4", forecast_revenue: "5000.00", comparison_sales_count: "4.000" },
+    ],
+    by_store: [{ key: "store-2", label: "Склад Сайт", revenue: "1000.00", gross_profit: "400.00", sales_count: "5.000", gross_margin_pct: "0.4", meta: {} }],
+    by_manager: [],
+    stores: [{ key: "store-2", label: "Склад Сайт" }],
+    managers: [],
+    filters: {},
+  };
+}
+
+function salesDashboardResponse(): ExecutiveDashboardResponse {
+  return {
+    as_of: "2026-06-05",
+    generated_at: "2026-06-05T10:00:00Z",
+    freshness_status: "fresh",
+    source_status: "ready",
+    access_level: "full",
+    roles: [],
+    allowed_blocks: ["sales"],
+    allowed_action_domains: ["sales"],
+    blocks: [
+      {
+        key: "sales",
+        title: "Продажи",
+        source_status: "ready",
+        freshness_status: "fresh",
+        as_of: "2026-06-05",
+        summary: {},
+        metrics: [],
+      },
+    ],
+    source_freshness: [],
+    top_actions: [],
+    summary: {},
+  };
+}
+
+async function renderSalesTab() {
+  window.history.pushState({}, "", "?tab=sales&date=2026-06-05");
+  vi.mocked(fetchExecutiveDashboard).mockResolvedValue(salesDashboardResponse());
+  vi.mocked(fetchExecutiveDashboardActions).mockResolvedValue({
+    as_of: "2026-06-05",
+    freshness_status: "fresh",
+    source_status: "ready",
+    total_count: 0,
+    payload: [],
+  });
+  vi.mocked(fetchExecutiveSalesPeriod).mockResolvedValue(salesPeriodResponse());
+
+  const result = render(<ExecutiveDashboard />);
+  await screen.findByText("Прогноз выручки");
+  return result;
+}
+
+describe("executive sales period", () => {
+  beforeEach(() => {
+    vi.mocked(fetchExecutiveDashboard).mockReset();
+    vi.mocked(fetchExecutiveDashboardActions).mockReset();
+    vi.mocked(fetchExecutiveSalesPeriod).mockReset();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("loads the sales dashboard and applies a store from the breakdown", async () => {
+    await renderSalesTab();
+
+    expect(screen.getAllByText("Объём продаж").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: /Склад Сайт/ }));
+    expect(await screen.findByDisplayValue("Склад Сайт")).toBeVisible();
+    expect(fetchExecutiveSalesPeriod).toHaveBeenLastCalledWith({
+      date_from: "2026-06-01",
+      date_to: "2026-06-30",
+      store_ref: "store-2",
+      manager_ref: undefined,
+    });
+  });
+
+  it("plots the monthly gross margin trend and sales volume on the single main chart", async () => {
+    const { container } = await renderSalesTab();
+
+    expect(screen.getByText("Валовая маржа, %")).toBeVisible();
+    expect(container.querySelector(".executive-sales-period__legend")).toHaveTextContent("Объём продаж");
+    expect(container.querySelector(".executive-sales-line-chart__margin")).not.toBeNull();
+    expect(container.querySelectorAll(".executive-sales-line-chart__volume-bar")).toHaveLength(2);
+  });
+
+  it("keeps native browser tooltips off the sales chart", async () => {
+    const { container } = await renderSalesTab();
+
+    expect(container.querySelectorAll("title")).toHaveLength(0);
+    expect(container.querySelector("[title]")).toBeNull();
+  });
+
+  it("shows the shared tooltip and crosshair on hover", async () => {
+    const { container } = await renderSalesTab();
+
+    expect(container.querySelector(".executive-sales-month-tooltip")).toBeNull();
+
+    const hitTargets = container.querySelectorAll(".executive-sales-chart-hit");
+    expect(hitTargets).toHaveLength(2);
+    fireEvent.mouseEnter(hitTargets[1]);
+
+    expect(container.querySelectorAll(".executive-sales-chart-crosshair")).toHaveLength(1);
+    const tooltip = container.querySelector(".executive-sales-month-tooltip");
+    expect(tooltip).not.toBeNull();
+    expect(tooltip).toHaveTextContent("Валовая маржа:");
+    expect(tooltip).toHaveTextContent("Объём:");
+
+    fireEvent.mouseLeave(hitTargets[1]);
+    expect(container.querySelector(".executive-sales-month-tooltip")).toBeNull();
+  });
+
+  it("shows a comparison bar and tooltip line for months with year-over-year volume data", async () => {
+    const { container } = await renderSalesTab();
+
+    expect(container.querySelector(".executive-sales-period__legend")).toHaveTextContent(
+      "Объём за аналогичный прошлый период"
+    );
+    expect(container.querySelectorAll(".executive-sales-line-chart__volume-bar--comparison")).toHaveLength(1);
+
+    const hitTargets = container.querySelectorAll(".executive-sales-chart-hit");
+    fireEvent.mouseEnter(hitTargets[1]);
+    expect(container.querySelector(".executive-sales-month-tooltip")).toHaveTextContent(
+      "Объём за аналогичный прошлый период"
+    );
+
+    fireEvent.mouseLeave(hitTargets[1]);
+    fireEvent.mouseEnter(hitTargets[0]);
+    expect(container.querySelector(".executive-sales-month-tooltip")).not.toHaveTextContent(
+      "Объём за аналогичный прошлый период"
+    );
+  });
+
+  it("shows the shared tooltip on keyboard focus of a chart point", async () => {
+    const { container } = await renderSalesTab();
+
+    const hitTargets = container.querySelectorAll(".executive-sales-chart-hit");
+    expect(hitTargets.length).toBeGreaterThan(0);
+    fireEvent.focus(hitTargets[0]);
+    expect(container.querySelector(".executive-sales-month-tooltip")).not.toBeNull();
+    fireEvent.blur(hitTargets[0]);
+    expect(container.querySelector(".executive-sales-month-tooltip")).toBeNull();
+  });
+
+  it("colors the forecast-completion card by pace against the elapsed share of the period", async () => {
+    await renderSalesTab();
+
+    // fixture: date_from=2026-06-01, date_to=2026-06-30, as_of=2026-06-05 -> expected pace 5/30 ~ 16.7%
+    // actual/forecast = 1000/5000 = 20%, ahead of the expected pace -> favorable
+    expect(screen.getByText(/к этой дате периода ожидалось/)).toHaveTextContent("16,7");
+  });
+
+  it("renders an info tooltip on the sales KPI cards", async () => {
+    await renderSalesTab();
+
+    const trigger = screen.getByRole("button", { name: "Пояснение: Выручка факт" });
+    fireEvent.mouseEnter(trigger);
+    expect(screen.getByRole("tooltip")).toHaveTextContent("Сумма продаж 1С за выбранный период");
+    fireEvent.mouseLeave(trigger);
+    expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+
+  it("moves the date range/store/manager filters into the page header, replacing the redundant global date field", async () => {
+    await renderSalesTab();
+
+    expect(screen.getByLabelText("Начало периода продаж")).toBeVisible();
+    expect(screen.getByLabelText("Конец периода продаж")).toBeVisible();
+    expect(screen.getByLabelText("Магазин")).toBeVisible();
+    expect(screen.getByLabelText("Менеджер")).toBeVisible();
+    expect(screen.queryByLabelText("Дата управленческой витрины")).not.toBeInTheDocument();
+  });
+});
+
+describe("executive dashboard tab overview de-duplication", () => {
+  beforeEach(() => {
+    vi.mocked(fetchExecutiveDashboard).mockReset();
+    vi.mocked(fetchExecutiveDashboardActions).mockReset();
+    vi.mocked(fetchExecutiveSalesPeriod).mockReset();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("does not render the generic block overview or metric grid on the Sales tab", async () => {
+    window.history.pushState({}, "", "?tab=sales&date=2026-06-05");
+    vi.mocked(fetchExecutiveDashboard).mockResolvedValue({
+      as_of: "2026-06-05",
+      generated_at: "2026-06-05T10:00:00Z",
+      freshness_status: "fresh",
+      source_status: "ready",
+      access_level: "full",
+      roles: [],
+      allowed_blocks: ["sales"],
+      allowed_action_domains: ["sales"],
+      blocks: [
+        {
+          key: "sales",
+          title: "Продажи",
+          source_status: "ready",
+          freshness_status: "fresh",
+          as_of: "2026-06-05",
+          summary: {},
+          metrics: [
+            {
+              key: "revenue_mtd",
+              label: "Выручка с начала месяца",
+              value: "1000",
+              unit: "RUB",
+              tone: "success",
+              masked: false,
+              source_status: "ready",
+            },
+          ],
+        },
+      ],
+      source_freshness: [],
+      top_actions: [],
+      summary: {},
+    });
+    vi.mocked(fetchExecutiveDashboardActions).mockResolvedValue({
+      as_of: "2026-06-05",
+      freshness_status: "fresh",
+      source_status: "ready",
+      total_count: 0,
+      payload: [],
+    });
+    vi.mocked(fetchExecutiveSalesPeriod).mockResolvedValue(salesPeriodResponse());
+
+    const { container } = render(<ExecutiveDashboard />);
+
+    expect(await screen.findByText("Выручка факт")).toBeVisible();
+    expect(screen.queryByText("Выручка с начала месяца")).toBeNull();
+    expect(container.querySelector(".executive-grid")).toBeNull();
   });
 });

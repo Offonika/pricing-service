@@ -22,6 +22,7 @@ const RECEIVABLES_LEFT_MENU_TITLE = "Дебиторка покупателей";
 const EXECUTIVE_LEFT_MENU_TITLE = "Управленческая витрина";
 const PROCUREMENT_LABELS_TITLE = "Сформировать этикетки";
 const PROCUREMENT_ORDER_FORMATION_MENU_TITLE = "Формирование заказа";
+let receivablesSessionRefreshPromise: Promise<BitrixReceivablesSessionResponse> | null = null;
 
 interface BitrixAuthPayload {
   access_token: string;
@@ -264,6 +265,14 @@ function cacheReceivablesSession(session: BitrixReceivablesSessionResponse) {
     window.sessionStorage.setItem(RECEIVABLES_SESSION_STORAGE_KEY, JSON.stringify(cached));
   } catch {
     // Storage can be restricted in embedded contexts; in-memory axios auth still works.
+  }
+}
+
+function clearCachedReceivablesSession() {
+  try {
+    window.sessionStorage.removeItem(RECEIVABLES_SESSION_STORAGE_KEY);
+  } catch {
+    // Storage can be restricted in embedded contexts; the in-memory token is still cleared.
   }
 }
 
@@ -735,19 +744,25 @@ export async function initializeBitrixMatchingSession() {
   return data.user;
 }
 
-export async function initializeBitrixReceivablesSession() {
-  const cached = readCachedReceivablesSession();
+async function requestBitrixReceivablesSession(forceRefresh: boolean) {
+  const cached = forceRefresh ? null : readCachedReceivablesSession();
   if (cached) {
     setApiAuthToken(cached.session_token);
-    ensureBitrixReceivablesLeftMenuPlacementInBackground();
     return cached;
   }
 
+  if (forceRefresh) clearCachedReceivablesSession();
   clearApiAuthToken();
-  let auth = getLaunchAuth();
-  if (!auth) {
+  let auth: BitrixAuthPayload | null = null;
+  if (forceRefresh) {
     await loadBitrixSdk();
     auth = await initBitrix();
+  } else {
+    auth = getLaunchAuth();
+    if (!auth) {
+      await loadBitrixSdk();
+      auth = await initBitrix();
+    }
   }
   const { data } = await api.post<BitrixReceivablesSessionResponse>("/bitrix/receivables/session", {
     access_token: auth.access_token,
@@ -756,6 +771,23 @@ export async function initializeBitrixReceivablesSession() {
   });
   setApiAuthToken(data.session_token);
   cacheReceivablesSession(data);
+  return data;
+}
+
+export async function refreshBitrixReceivablesSession(
+  requestSession: () => Promise<BitrixReceivablesSessionResponse> = () =>
+    requestBitrixReceivablesSession(true)
+) {
+  if (!receivablesSessionRefreshPromise) {
+    receivablesSessionRefreshPromise = requestSession().finally(() => {
+      receivablesSessionRefreshPromise = null;
+    });
+  }
+  return receivablesSessionRefreshPromise;
+}
+
+export async function initializeBitrixReceivablesSession() {
+  const data = await requestBitrixReceivablesSession(false);
   ensureBitrixReceivablesLeftMenuPlacementInBackground();
   return data;
 }

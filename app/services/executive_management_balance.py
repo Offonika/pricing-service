@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import calendar
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -30,6 +32,7 @@ from app.services.executive_dashboard import build_executive_dashboard
 
 BalanceView = Literal["closed", "operational"]
 BalanceSection = Literal["asset", "liability", "equity"]
+BalanceTrigger = Literal["cron", "manual"]
 MONEY = Decimal("0.01")
 
 
@@ -58,6 +61,12 @@ class BalanceLineDraft:
     adjusted_amount: Decimal | None = None
     recognition_method: str | None = None
     estimated_count: int = 0
+
+
+@dataclass(frozen=True)
+class ManagementBalanceSnapshotBuildResult:
+    snapshot: ExecutiveManagementBalanceSnapshot
+    outcome: Literal["inserted", "noop"]
 
 
 _ACCOUNTING_LINES: tuple[tuple[BalanceSection, str, str, int], ...] = (
@@ -736,13 +745,85 @@ def _totals(
     return assets, liabilities, equity, (assets - liabilities - equity).quantize(MONEY)
 
 
-def build_and_persist_management_balance_snapshot(
+def _canonical_hash_value(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {
+            str(key): _canonical_hash_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_canonical_hash_value(item) for item in value]
+    return value
+
+
+def _management_balance_content_sha256(
+    *,
+    balance_date: date,
+    view: BalanceView,
+    lines: list[BalanceLineDraft],
+    assets: Decimal,
+    liabilities: Decimal,
+    equity: Decimal,
+    imbalance: Decimal,
+    source_summary: dict[str, Any],
+    validation_errors: list[dict[str, Any]],
+) -> str:
+    ordered_lines = sorted(lines, key=lambda line: (line.section, line.order, line.key))
+    payload = {
+        "balance_date": balance_date,
+        "view_mode": view,
+        "lines": [
+            {
+                "section": line.section,
+                "key": line.key,
+                "label": line.label,
+                "amount": line.amount,
+                "order": line.order,
+                "source_key": line.source_key,
+                "source_status": line.source_status,
+                "source_as_of": line.source_as_of,
+                "note": line.note,
+                "include_in_total": line.include_in_total,
+                "source_amount": line.source_amount,
+                "adjustment_amount": line.adjustment_amount,
+                "adjusted_amount": line.adjusted_amount,
+                "recognition_method": line.recognition_method,
+                "estimated_count": line.estimated_count,
+            }
+            for line in ordered_lines
+        ],
+        "totals": {
+            "assets": assets,
+            "liabilities": liabilities,
+            "equity": equity,
+            "imbalance": imbalance,
+        },
+        "source_summary": source_summary,
+        "validation_errors": validation_errors,
+    }
+    canonical = json.dumps(
+        _canonical_hash_value(payload),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def build_management_balance_snapshot_command(
     session: Session,
     *,
     balance_date: date | None = None,
     view: BalanceView = "operational",
     actor: str = "system:daily",
-) -> ExecutiveManagementBalanceSnapshot:
+    trigger: BalanceTrigger = "manual",
+) -> ManagementBalanceSnapshotBuildResult:
     today = date.today()
     actual_date = balance_date or today
     period_month = actual_date.replace(day=1)
@@ -767,6 +848,26 @@ def build_and_persist_management_balance_snapshot(
                 "message": f"Расхождение сторон {imbalance} ₽ превышает допуск {tolerance} ₽",
             }
         )
+    content_sha256 = _management_balance_content_sha256(
+        balance_date=actual_date,
+        view=view,
+        lines=lines,
+        assets=assets,
+        liabilities=liabilities,
+        equity=equity,
+        imbalance=imbalance,
+        source_summary=source_summary,
+        validation_errors=errors,
+    )
+    existing = session.scalar(
+        select(ExecutiveManagementBalanceSnapshot).where(
+            ExecutiveManagementBalanceSnapshot.balance_date == actual_date,
+            ExecutiveManagementBalanceSnapshot.view_mode == view,
+            ExecutiveManagementBalanceSnapshot.content_sha256 == content_sha256,
+        )
+    )
+    if existing is not None:
+        return ManagementBalanceSnapshotBuildResult(snapshot=existing, outcome="noop")
     version = (
         session.scalar(
             select(func.max(ExecutiveManagementBalanceSnapshot.version)).where(
@@ -791,6 +892,7 @@ def build_and_persist_management_balance_snapshot(
         imbalance_amount=imbalance,
         source_summary=source_summary,
         validation_errors=errors,
+        content_sha256=content_sha256,
         generated_at=generated_at,
     )
     session.add(snapshot)
@@ -829,12 +931,49 @@ def build_and_persist_management_balance_snapshot(
             snapshot_id=snapshot.id,
             action="generated",
             actor=actor,
-            payload={"view": view, "balance_date": actual_date.isoformat()},
+            payload={
+                "view": view,
+                "balance_date": actual_date.isoformat(),
+                "trigger": trigger,
+            },
         )
     )
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        existing = session.scalar(
+            select(ExecutiveManagementBalanceSnapshot).where(
+                ExecutiveManagementBalanceSnapshot.balance_date == actual_date,
+                ExecutiveManagementBalanceSnapshot.view_mode == view,
+                ExecutiveManagementBalanceSnapshot.content_sha256 == content_sha256,
+            )
+        )
+        if existing is not None:
+            return ManagementBalanceSnapshotBuildResult(snapshot=existing, outcome="noop")
+        raise
+    except BaseException:
+        session.rollback()
+        raise
     session.refresh(snapshot)
-    return snapshot
+    return ManagementBalanceSnapshotBuildResult(snapshot=snapshot, outcome="inserted")
+
+
+def build_and_persist_management_balance_snapshot(
+    session: Session,
+    *,
+    balance_date: date | None = None,
+    view: BalanceView = "operational",
+    actor: str = "system:daily",
+    trigger: BalanceTrigger = "manual",
+) -> ExecutiveManagementBalanceSnapshot:
+    return build_management_balance_snapshot_command(
+        session,
+        balance_date=balance_date,
+        view=view,
+        actor=actor,
+        trigger=trigger,
+    ).snapshot
 
 
 def _latest_snapshot(

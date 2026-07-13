@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -15,6 +16,7 @@ from app.core.config import Settings
 from app.main import app
 from app.models import (
     ExecutiveManagementBalanceAudit,
+    ExecutiveManagementBalanceLine,
     ExecutiveManagementBalanceSnapshot,
 )
 from app.services import bitrix_executive_dashboard_auth, executive_dashboard
@@ -23,6 +25,7 @@ from app.services.executive_management_balance import (
     BalanceLineDraft,
     ManagementBalanceCloseError,
     build_and_persist_management_balance_snapshot,
+    build_management_balance_snapshot_command,
     close_management_balance,
     get_management_balance,
     month_end,
@@ -403,6 +406,64 @@ def test_closed_snapshot_is_immutable_and_close_is_idempotent(
     assert audit_count == 1
 
 
+def test_snapshot_build_is_idempotent_by_content(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings()
+    monkeypatch.setattr(balance_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        balance_service, "_build_draft_lines", lambda *args, **kwargs: _complete_lines()
+    )
+
+    first = build_management_balance_snapshot_command(
+        db_session,
+        balance_date=date(2026, 6, 30),
+        view="closed",
+        trigger="cron",
+    )
+    repeated = build_management_balance_snapshot_command(
+        db_session,
+        balance_date=date(2026, 6, 30),
+        view="closed",
+        trigger="cron",
+    )
+
+    assert first.outcome == "inserted"
+    assert repeated.outcome == "noop"
+    assert repeated.snapshot.id == first.snapshot.id
+    assert repeated.snapshot.version == 1
+    assert db_session.scalar(select(func.count(ExecutiveManagementBalanceSnapshot.id))) == 1
+    assert db_session.scalar(select(func.count(ExecutiveManagementBalanceAudit.id))) == 1
+
+
+def test_snapshot_build_rolls_back_all_rows_on_commit_failure(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings()
+    monkeypatch.setattr(balance_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        balance_service, "_build_draft_lines", lambda *args, **kwargs: _complete_lines()
+    )
+
+    def fail_commit() -> None:
+        raise RuntimeError("simulated commit failure")
+
+    with monkeypatch.context() as failing_commit:
+        failing_commit.setattr(db_session, "commit", fail_commit)
+        with pytest.raises(RuntimeError, match="simulated commit failure"):
+            build_management_balance_snapshot_command(
+                db_session,
+                balance_date=date(2026, 6, 30),
+                view="closed",
+            )
+
+    assert db_session.scalar(select(func.count(ExecutiveManagementBalanceSnapshot.id))) == 0
+    assert db_session.scalar(select(func.count(ExecutiveManagementBalanceLine.id))) == 0
+    assert db_session.scalar(select(func.count(ExecutiveManagementBalanceAudit.id))) == 0
+
+
 def test_correction_after_close_creates_new_draft_version(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -417,6 +478,20 @@ def test_correction_after_close_creates_new_draft_version(
     )
     close_management_balance(
         db_session, month="2026-06", actor="finance:42", confirm=True, note=None
+    )
+    changed_lines, source_summary = _complete_lines()
+    changed_lines = [
+        (
+            replace(line, amount=Decimal("101.00"))
+            if line.key == "cash"
+            else (replace(line, amount=Decimal("21.00")) if line.key == "owner_capital" else line)
+        )
+        for line in changed_lines
+    ]
+    monkeypatch.setattr(
+        balance_service,
+        "_build_draft_lines",
+        lambda *args, **kwargs: (changed_lines, source_summary),
     )
     second = build_and_persist_management_balance_snapshot(
         db_session, balance_date=date(2026, 6, 30), view="closed"

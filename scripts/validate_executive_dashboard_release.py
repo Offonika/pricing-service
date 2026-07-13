@@ -15,7 +15,6 @@ from app.infrastructure.db.engines import get_application_engine
 from app.main import app
 from app.services.executive_dashboard import (
     _resolve_cashflow_period_cache_path,
-    _resolve_owner_cash_control_snapshot_path,
     _resolve_sales_plan_snapshot_path,
     _resolve_snapshot_path,
     _resolve_warehouse_snapshot_path,
@@ -72,7 +71,6 @@ def main() -> None:
         ("finance snapshot", _resolve_snapshot_path()),
         ("cashflow cache", _resolve_cashflow_period_cache_path()),
         ("warehouse snapshot", _resolve_warehouse_snapshot_path()),
-        ("owner cash control snapshot", _resolve_owner_cash_control_snapshot_path()),
         ("frozen sales plan snapshot", _resolve_sales_plan_snapshot_path()),
         (
             "employee payroll balance snapshot",

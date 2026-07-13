@@ -5,10 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import Product
 from app.services.product_classification import (
     CLASSIFICATION_SOURCE_1C,
@@ -63,7 +64,11 @@ def _backfill_kind(product: Product) -> bool:
 
 
 def backfill_product_classification_sources(
-    session: Session, limit: int | None = None, chunk_size: int = 500
+    session: Session,
+    limit: int | None = None,
+    chunk_size: int = 500,
+    *,
+    commit: bool = True,
 ) -> dict[str, int]:
     updated = 0
     processed = 0
@@ -94,7 +99,10 @@ def backfill_product_classification_sources(
                 recompute_product_classification(product)
                 session.add(product)
                 updated += 1
-        session.commit()
+        if commit:
+            session.commit()
+        else:
+            session.flush()
 
     return {"processed": processed, "updated": updated}
 
@@ -105,16 +113,21 @@ def main() -> None:
     parser.add_argument(
         "--chunk-size", type=int, default=500, help="Commit every N records (default: 500)"
     )
+    parser.add_argument("--dry-run", action="store_true", help="Calculate changes and roll back")
     args = parser.parse_args()
 
     settings = get_settings()
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
     with Session(engine) as session:
         stats = backfill_product_classification_sources(
             session=session,
             limit=args.limit,
             chunk_size=max(args.chunk_size, 1),
+            commit=not args.dry_run,
         )
+        if args.dry_run:
+            session.rollback()
+            stats["dry_run"] = True
     print(json.dumps(stats, ensure_ascii=False, indent=2))
 
 

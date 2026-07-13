@@ -7,10 +7,10 @@ from dataclasses import asdict
 from datetime import date
 from pathlib import Path
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.services.telephony import (
     build_retail_line_map_projection,
     load_telephony_user_line_snapshot,
@@ -85,7 +85,7 @@ def main() -> None:
 
     if args.export_dir:
         settings = get_settings()
-        engine = create_engine(settings.database_url)
+        engine = build_engine(settings.database_url)
         snapshot_date = date.fromisoformat(str(result["snapshot_date"]))
         try:
             with Session(engine) as session:

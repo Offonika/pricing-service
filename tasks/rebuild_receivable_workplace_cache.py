@@ -8,10 +8,10 @@ import json
 from datetime import date
 from typing import Any
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.services.counterparty_folder_recommendations import (
     build_counterparty_folder_recommendations,
 )
@@ -39,7 +39,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def _engine(url: str):
-    return create_engine(url, pool_pre_ping=True)
+    return build_engine(url, pool_pre_ping=True)
 
 
 def main() -> int:
@@ -49,7 +49,7 @@ def main() -> int:
     db_engine = _engine(settings.database_url)
     onec_engine = None
     if settings.onec_database_url:
-        onec_engine = create_engine(
+        onec_engine = build_engine(
             settings.onec_database_url,
             connect_args={
                 "timeout": float(settings.onec_query_timeout_seconds),

@@ -237,6 +237,7 @@ def _mapping() -> dict[str, Any]:
             },
             "ved_import": {
                 "supplier_order": "DT1056_12:NEW",
+                "docs_collection": "DT1056_12:DOCS_COLLECTION",
                 "receiving": "DT1056_12:RECEIVING",
             },
         },

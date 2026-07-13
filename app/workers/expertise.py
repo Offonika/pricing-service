@@ -50,7 +50,7 @@ def run_expertise_alarm_scan() -> dict[str, int]:
         return expertise_bitrix.scan_alarm_cases(session)
 
 
-def run_expertise_completion_outcome_backfill() -> dict[str, int]:
+def run_expertise_completion_outcome_backfill(*, dry_run: bool = False) -> dict[str, int | bool]:
     with Session(_get_app_engine()) as session:
         case_ids = session.scalars(
             select(ExpertiseCase.id).where(
@@ -58,6 +58,13 @@ def run_expertise_completion_outcome_backfill() -> dict[str, int]:
                 ExpertiseCase.decision_code == expertise_service.DECISION_APPROVED,
             )
         ).all()
+        if dry_run:
+            return {
+                "updated": len(case_ids),
+                "synced": 0,
+                "errors": 0,
+                "dry_run": True,
+            }
         result = expertise_service.backfill_completion_outcomes(session)
         synced = 0
         errors = 0

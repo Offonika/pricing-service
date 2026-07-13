@@ -58,6 +58,36 @@ def test_open_supplier_order_row_includes_ved_import() -> None:
     assert order["expected_receipt_date"] == ""
 
 
+def test_ved_import_with_confirmed_receipt_routes_to_receiving() -> None:
+    row = {
+        **_row(2),
+        "expected_receipt_date": datetime(2026, 8, 1),
+    }
+
+    order = sync.order_from_open_supplier_order_row(
+        row,
+        allowed_contours={"ved_import"},
+    )
+
+    assert order is not None
+    assert order["procurement_stage_key"] == "receiving"
+
+
+def test_ved_import_respects_explicit_stage() -> None:
+    row = {
+        **_row(2),
+        "procurement_stage_key": "payment_work",
+    }
+
+    order = sync.order_from_open_supplier_order_row(
+        row,
+        allowed_contours={"ved_import"},
+    )
+
+    assert order is not None
+    assert order["procurement_stage_key"] == "payment_work"
+
+
 def test_open_supplier_order_row_can_skip_ved_when_filter_is_cargo_only() -> None:
     order = sync.order_from_open_supplier_order_row(_row(2), allowed_contours={"cargo"})
 

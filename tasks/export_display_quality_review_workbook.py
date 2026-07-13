@@ -9,10 +9,10 @@ from pathlib import Path
 from openpyxl import Workbook
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.worksheet.datavalidation import DataValidation
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 
 try:
     from report_display_quality_mismatch_candidates import build_report
@@ -393,7 +393,7 @@ def _write_raw_sheet(workbook: Workbook, review_rows: list[dict[str, object]]) -
 
 
 def build_workbook(output_path: Path) -> dict[str, object]:
-    engine = create_engine(get_settings().database_url)
+    engine = build_engine(get_settings().database_url)
     with Session(engine) as session:
         stats, rows = build_report(session)
 

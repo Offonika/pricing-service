@@ -7,9 +7,10 @@ from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
 
-from sqlalchemy import create_engine, select, text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from app.infrastructure.db.engines import build_engine
 from app.models import Base, ReceivableBalanceSnapshot
 from app.services.receivables import (
     OneCReceivableLedgerExtractor,
@@ -160,7 +161,7 @@ def build_temp_snapshots(
     dict[str, Decimal],
     dict[str, list[dict[str, Decimal | str | None]]],
 ]:
-    onec_engine = create_engine(onec_url)
+    onec_engine = build_engine(onec_url)
     employee_refs = fetch_employee_counterparty_refs_from_onec(onec_engine)
     staff_rows = [
         StaffMemberRow.from_mapping(item, default_source="onec_physical_person")
@@ -193,7 +194,7 @@ def build_temp_snapshots(
             ] += Decimal(event.amount_delta)
 
     with tempfile.NamedTemporaryFile(prefix="receivables-compare-", suffix=".sqlite") as tmp:
-        app_engine = create_engine(f"sqlite:///{tmp.name}")
+        app_engine = build_engine(f"sqlite:///{tmp.name}")
         Base.metadata.create_all(app_engine)
         with Session(app_engine) as session:
             upsert_staff_members(session, staff_rows)
@@ -252,7 +253,7 @@ def fetch_employee_summary_opening_breakdown(
     counterparty_names: list[str],
     contract_kind_names: set[str] | None = None,
 ) -> dict[str, list[dict[str, object]]]:
-    engine = create_engine(onec_url)
+    engine = build_engine(onec_url)
     sql = text("""
 SELECT
   c._Description AS counterparty_name,

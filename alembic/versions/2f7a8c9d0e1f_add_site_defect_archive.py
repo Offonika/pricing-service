@@ -58,9 +58,7 @@ def upgrade() -> None:
             ondelete="SET NULL",
         ),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint(
-            "idempotency_key", name="uq_site_defect_archive_case_idempotency_key"
-        ),
+        sa.UniqueConstraint("idempotency_key", name="uq_site_defect_archive_case_idempotency_key"),
         sa.UniqueConstraint(
             "source_dialog_id",
             "source_post_message_id",
@@ -205,7 +203,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index("ix_site_defect_archive_file_source_file_id", table_name="site_defect_archive_file")
+    op.drop_index(
+        "ix_site_defect_archive_file_source_file_id", table_name="site_defect_archive_file"
+    )
     op.drop_index("ix_site_defect_archive_file_extension", table_name="site_defect_archive_file")
     op.drop_index("ix_site_defect_archive_file_case_id", table_name="site_defect_archive_file")
     op.drop_index(

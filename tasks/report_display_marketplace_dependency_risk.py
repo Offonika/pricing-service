@@ -85,12 +85,10 @@ DEPENDENCY_LABELS_RU = {
 
 ACTION_RU = {
     "critical_marketplace_refusal_nonliquid_risk": (
-        "Не заказывать автоматически; проверить обычный спрос и остаток; "
-        "решение только вручную."
+        "Не заказывать автоматически; проверить обычный спрос и остаток; " "решение только вручную."
     ),
     "high_marketplace_refusal_risk": (
-        "Отделить магазинную потребность от маркетплейсной; автозаказ только "
-        "после проверки."
+        "Отделить магазинную потребность от маркетплейсной; автозаказ только " "после проверки."
     ),
     "medium_channel_split_required": (
         "Показывать две потребности; при заказе проверить, что обычный спрос "
@@ -176,9 +174,7 @@ def build_risk_rows(
                     _decimal(row.get("total_net_sales_qty")) or Decimal("0")
                 ),
                 "non_marketplace_net_sales_qty": _out_decimal(non_marketplace_qty),
-                "marketplace_net_sales_qty": _out_decimal(
-                    marketplace_qty
-                ),
+                "marketplace_net_sales_qty": _out_decimal(marketplace_qty),
                 "marketplace_share_pct": _out_decimal(share),
                 "sales_doc_count_total": _clean(row.get("sales_doc_count_total")),
                 "sales_doc_count_non_marketplace": _clean(
@@ -443,10 +439,7 @@ def _critical_singleton_section(rows: Sequence[Mapping[str, Any]]) -> list[str]:
             f"маркетплейса `{_clean(row.get('non_marketplace_net_sales_qty'))}`;"
         ),
         f"- доля маркетплейса `{_clean(row.get('marketplace_share_pct'))}%`;",
-        (
-            "- если маркетплейсщик откажется, товар может зависнуть как "
-            "неликвид для магазинов;"
-        ),
+        ("- если маркетплейсщик откажется, товар может зависнуть как " "неликвид для магазинов;"),
         (
             "- автоматический заказ и перевод в магазинную матрицу запрещены "
             "без отдельного ручного решения."
@@ -547,9 +540,7 @@ def _parse_date(value: str | date) -> date:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Build a read-only display demand risk report for marketplace-dependent SKUs."
-        )
+        description=("Build a read-only display demand risk report for marketplace-dependent SKUs.")
     )
     parser.add_argument("--as-of", type=_parse_date, default=date.today())
     parser.add_argument(
@@ -570,7 +561,9 @@ def _parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     report_dir = DEFAULT_REPORT_ROOT / args.as_of.isoformat()
     if args.counterparty_slices_csv is None:
-        args.counterparty_slices_csv = report_dir / "display-auto-order-counterparty-type-slices.csv"
+        args.counterparty_slices_csv = (
+            report_dir / "display-auto-order-counterparty-type-slices.csv"
+        )
     if args.stock_risk_csv is None:
         args.stock_risk_csv = report_dir / "display-auto-order-sales-point-stock-risk.csv"
     if args.output_csv is None:

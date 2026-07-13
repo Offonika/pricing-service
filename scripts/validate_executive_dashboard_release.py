@@ -8,10 +8,10 @@ from pathlib import Path
 from alembic.config import Config
 from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine
 
 from app.core.config import get_settings
 from app.infrastructure.contracts import ContractIntegrityError, read_json_contract
+from app.infrastructure.db.engines import get_application_engine
 from app.main import app
 from app.services.executive_dashboard import (
     _resolve_cashflow_period_cache_path,
@@ -109,10 +109,9 @@ def main() -> None:
     code_head = script.get_current_head()
     database_head = None
     try:
-        engine = create_engine(settings.database_url)
+        engine = get_application_engine()
         with engine.connect() as connection:
             database_head = MigrationContext.configure(connection).get_current_revision()
-        engine.dispose()
     except Exception as exc:  # pragma: no cover - operational diagnostic
         errors.append(f"database migration check failed: {type(exc).__name__}: {exc}")
     if database_head is not None and database_head != code_head:

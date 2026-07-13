@@ -12,9 +12,10 @@ from pathlib import Path
 from statistics import mean, median
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy import bindparam, create_engine, text
+from sqlalchemy import bindparam, text
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.services.assortment_lifecycle_facts import (
     RECEIPT_MAPPING_UNRESOLVED,
     SUPPLIER_ORDER_MAPPING_UNRESOLVED,
@@ -181,7 +182,7 @@ def main() -> int:
         error_code=RECEIPT_MAPPING_UNRESOLVED,
     )
 
-    engine = create_engine(onec_database_url, pool_pre_ping=True)
+    engine = build_engine(onec_database_url, pool_pre_ping=True)
     try:
         source_rows = fetch_display_supplier_lead_time_source_rows(
             engine,

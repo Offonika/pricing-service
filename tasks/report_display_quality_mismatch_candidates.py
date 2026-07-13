@@ -5,10 +5,11 @@ import csv
 import json
 from pathlib import Path
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import Competitor, Product, ProductMatch
 from app.models.competitor_item import CompetitorItem
 from app.services.competitor_matching import (
@@ -264,7 +265,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    engine = create_engine(get_settings().database_url)
+    engine = build_engine(get_settings().database_url)
     with Session(engine) as session:
         stats, rows = build_report(session)
 

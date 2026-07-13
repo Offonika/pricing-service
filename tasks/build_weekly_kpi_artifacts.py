@@ -5,10 +5,10 @@ import json
 from datetime import date
 from pathlib import Path
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.services.weekly_kpi_reports import build_pending_weekly_kpi_artifacts
 
 
@@ -39,7 +39,7 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    engine = create_engine(get_settings().database_url)
+    engine = build_engine(get_settings().database_url)
     with Session(engine) as session:
         result = build_pending_weekly_kpi_artifacts(
             session,

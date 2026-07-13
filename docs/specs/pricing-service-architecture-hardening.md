@@ -82,7 +82,7 @@ Spec фиксирует вывод TopControl из активного конту
 - [x] `tasks.import_topcontrol_products_db` один релиз вызывает
   `tasks.sync_onec_product_catalog`, после успешного scheduled-run alias удаляется.
 - [ ] Каталог из 1С обновляется без ухудшения row count и freshness.
-- [ ] Postgres и 1С engines создаются только разрешенными factories; CI запрещает
+- [x] Postgres и 1С engines создаются только разрешенными factories; CI запрещает
   прямой `create_engine` вне allowlist.
 - [x] Write-use-cases подтверждают commit/rollback/idempotency тестами.
 - [ ] `infra/cron` не содержит SQL и бизнес-правил для мигрированных jobs.

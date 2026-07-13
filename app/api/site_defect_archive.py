@@ -181,9 +181,7 @@ def _render_archive_page(
     filters: SiteDefectArchiveFilters,
     token: str | None,
 ) -> str:
-    hidden_token = (
-        f'<input type="hidden" name="token" value="{escape(token)}">' if token else ""
-    )
+    hidden_token = f'<input type="hidden" name="token" value="{escape(token)}">' if token else ""
     problem_options = "\n".join(
         f'<option value="{escape(key)}"{" selected" if filters.problem_type == key else ""}>'
         f"{escape(label)}</option>"
@@ -272,9 +270,13 @@ def _render_result(item: dict) -> str:
     )
     links = []
     if item.get("bitrix_detail_url"):
-        links.append(f'<a href="{escape(item["bitrix_detail_url"])}" target="_blank">Открыть карточку Bitrix</a>')
+        links.append(
+            f'<a href="{escape(item["bitrix_detail_url"])}" target="_blank">Открыть карточку Bitrix</a>'
+        )
     if item.get("bitrix_disk_folder_url"):
-        links.append(f'<a href="{escape(item["bitrix_disk_folder_url"])}" target="_blank">Открыть файлы</a>')
+        links.append(
+            f'<a href="{escape(item["bitrix_disk_folder_url"])}" target="_blank">Открыть файлы</a>'
+        )
     query = urlencode({"q": item.get("source_post_message_id") or ""})
     links.append(f'<a href="/api/site-defects/archive/{int(item["id"])}?{query}">JSON</a>')
     links_html = f'<div class="links">{"".join(links)}</div>' if links else ""

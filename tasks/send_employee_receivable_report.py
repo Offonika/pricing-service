@@ -14,11 +14,12 @@ from openpyxl.chart import BarChart, LineChart, Reference
 from openpyxl.formatting.rule import DataBarRule, FormulaRule, IconSetRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
-from sqlalchemy import create_engine, distinct, func, select, text
+from sqlalchemy import distinct, func, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import ReceivableCase
 from app.services.return_scheme import send_return_scheme_telegram_report
 
@@ -111,7 +112,7 @@ def _load_env(path: Path) -> dict[str, str]:
 def _build_onec_engine(settings) -> Engine | None:
     if not settings.onec_database_url:
         return None
-    return create_engine(
+    return build_engine(
         settings.onec_database_url,
         connect_args={
             "timeout": float(settings.onec_query_timeout_seconds),
@@ -1131,7 +1132,7 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = get_settings()
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
     onec_engine = _build_onec_engine(settings)
 
     with Session(engine) as session:

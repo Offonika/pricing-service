@@ -11,11 +11,12 @@ from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import Product, ProductCompatibility
 from tasks.sync_onec_product_catalog import (
     detect_item_folder_value,
@@ -227,8 +228,8 @@ def main() -> None:
 
     site_values = load_site_compatibility_json(args.site_json) if args.site_json else None
     rows = build_report(
-        create_engine(app_url),
-        create_engine(onec_url),
+        build_engine(app_url),
+        build_engine(onec_url),
         articles=set(args.article or []) or None,
         site_values=site_values,
         only_mismatches=args.only_mismatches,

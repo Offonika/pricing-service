@@ -93,6 +93,13 @@ def _payloads() -> dict[str, dict]:
             "total_count": 0,
             "items": [],
         },
+        "service_accruals": {
+            "month": "2026-07",
+            "source_status": "ready",
+            "freshness_status": "fresh",
+            "total_count": 0,
+            "items": [],
+        },
     }
 
 

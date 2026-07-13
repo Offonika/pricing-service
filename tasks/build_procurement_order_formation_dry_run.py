@@ -10,10 +10,11 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
-from sqlalchemy import bindparam, create_engine, select, text
+from sqlalchemy import bindparam, select, text
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models.procurement_order_formation import (
     ProcurementOrderFormation,
     ProcurementOrderFormationLine,
@@ -139,7 +140,7 @@ def main() -> int:
     write_lines_csv(args.output_csv, orders)
     persisted_ids: list[int] = []
     if args.persist_db:
-        engine = create_engine(settings.database_url)
+        engine = build_engine(settings.database_url)
         with Session(engine) as db:
             persisted_ids = persist_grouped_orders(db, orders)
         payload["persisted_order_ids"] = persisted_ids
@@ -304,9 +305,7 @@ def build_grouped_orders(
                     else None
                 ),
                 "payload": (
-                    {"b2b_customer_demand": b2b_customer_demand}
-                    if b2b_customer_demand
-                    else {}
+                    {"b2b_customer_demand": b2b_customer_demand} if b2b_customer_demand else {}
                 ),
             }
         )
@@ -439,7 +438,7 @@ def fetch_latest_order_dimensions(
         bindparam("codes", expanding=True),
         bindparam("supplier_refs", expanding=True),
     )
-    engine = create_engine(database_url, pool_pre_ping=True)
+    engine = build_engine(database_url, pool_pre_ping=True)
     with engine.connect() as connection:
         rows = [
             dict(row)
@@ -493,7 +492,7 @@ def fetch_nomenclature_by_codes(
         WHERE item._Marked = 0x00
           AND LTRIM(RTRIM(item._Code)) IN :codes
     """).bindparams(bindparam("codes", expanding=True))
-    engine = create_engine(database_url, pool_pre_ping=True)
+    engine = build_engine(database_url, pool_pre_ping=True)
     with engine.connect() as connection:
         rows = [dict(row) for row in connection.execute(query, {"codes": clean_codes}).mappings()]
     return {_clean(row.get("nomenclature_code")): row for row in rows}
@@ -695,12 +694,8 @@ def _b2b_customer_demand_payload(row: Mapping[str, Any]) -> dict[str, Any]:
         "managed_sales_qty_window": _clean(row.get("b2b_managed_sales_qty_window")),
         "active_daily_rate": _clean(row.get("b2b_active_daily_rate")),
         "client_forecast_qty": _clean(row.get("b2b_client_forecast_qty")),
-        "ordinary_net_sales_qty_window": _clean(
-            row.get("b2b_ordinary_net_sales_qty_window")
-        ),
-        "replacement_target_stock_qty": _clean(
-            row.get("b2b_replacement_target_stock_qty")
-        ),
+        "ordinary_net_sales_qty_window": _clean(row.get("b2b_ordinary_net_sales_qty_window")),
+        "replacement_target_stock_qty": _clean(row.get("b2b_replacement_target_stock_qty")),
         "replacement_decision": _clean(row.get("b2b_replacement_decision")),
         "replacement_recommended_order_qty": _clean(
             row.get("b2b_replacement_recommended_order_qty")

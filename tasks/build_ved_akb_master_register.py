@@ -14,9 +14,10 @@ from typing import Any
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, PatternFill
-from sqlalchemy import create_engine, or_, select, text
+from sqlalchemy import or_, select, text
 from sqlalchemy.orm import Session, selectinload
 
+from app.infrastructure.db.engines import build_engine
 from app.models import Product
 from app.services.sku import generate_sku_for_product
 
@@ -207,10 +208,10 @@ def main() -> None:
     old_tech_rows = _load_csv_by_code(args.old_tech_csv)
     old_normalization_rows = _load_csv_by_code(args.old_normalization_csv)
 
-    onec_engine = create_engine(onec_database_url, pool_pre_ping=True)
+    onec_engine = build_engine(onec_database_url, pool_pre_ping=True)
     onec_lines = _fetch_onec_order_lines(onec_engine, args.order_number)
 
-    app_engine = create_engine(database_url, pool_pre_ping=True)
+    app_engine = build_engine(database_url, pool_pre_ping=True)
     with Session(app_engine) as session:
         products_by_code = _load_products_by_code(
             session,

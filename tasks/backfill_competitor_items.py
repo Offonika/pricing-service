@@ -5,10 +5,11 @@ import json
 from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import CompetitorFtpRecord, CompetitorItem, CompetitorItemSnapshot
 from app.services.competitor_category import (
     CategoryClassifier,
@@ -30,6 +31,7 @@ def backfill_items(
     sources: Sequence[str] | None = None,
     limit: int | None = None,
     chunk_size: int = 1000,
+    commit: bool = True,
 ) -> dict:
     query = select(CompetitorFtpRecord)
     if days_back:
@@ -133,8 +135,12 @@ def backfill_items(
 
         if stats["processed"] % chunk_size == 0:
             session.flush()
-            session.commit()
-    session.commit()
+            if commit:
+                session.commit()
+    if commit:
+        session.commit()
+    else:
+        session.flush()
     if category_classifier is not None:
         category_classifier.close()
     return stats
@@ -150,10 +156,11 @@ def main() -> None:
     parser.add_argument(
         "--chunk-size", type=int, default=1000, help="Flush/commit every N rows (default: 1000)"
     )
+    parser.add_argument("--dry-run", action="store_true", help="Calculate changes and roll back")
     args = parser.parse_args()
 
     settings = get_settings()
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
     with Session(engine) as session:
         stats = backfill_items(
             session,
@@ -161,7 +168,11 @@ def main() -> None:
             sources=args.source,
             limit=args.limit,
             chunk_size=args.chunk_size,
+            commit=not args.dry_run,
         )
+        if args.dry_run:
+            session.rollback()
+            stats["dry_run"] = True
     print(json.dumps(stats, ensure_ascii=False, indent=2))
 
 

@@ -112,7 +112,9 @@ def build_plan(
     return plan
 
 
-def apply_plan(client: BitrixClient, entity_id: str, plan: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def apply_plan(
+    client: BitrixClient, entity_id: str, plan: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     results: list[dict[str, Any]] = []
     for item in plan:
         if item["action"] != "add":

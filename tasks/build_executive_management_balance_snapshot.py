@@ -4,10 +4,10 @@ import argparse
 import json
 from datetime import date
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.services.executive_management_balance import (
     build_and_persist_management_balance_snapshot,
 )
@@ -29,7 +29,7 @@ def _parse_args() -> argparse.Namespace:
 def main() -> None:
     args = _parse_args()
     settings = get_settings()
-    engine = create_engine(settings.database_url, pool_pre_ping=True)
+    engine = build_engine(settings.database_url, pool_pre_ping=True)
     try:
         with Session(engine) as session:
             snapshot = build_and_persist_management_balance_snapshot(

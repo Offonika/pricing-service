@@ -273,11 +273,7 @@ def test_refresh_assortment_lifecycle_classification_applies_fact_status_decisio
 
     engine = create_engine(database_url)
     with engine.connect() as conn:
-        row = (
-            conn.execute(select(ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE))
-            .mappings()
-            .one()
-        )
+        row = conn.execute(select(ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE)).mappings().one()
     engine.dispose()
 
     assert row["status"] == "sales_start"

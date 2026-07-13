@@ -238,7 +238,7 @@ def test_review_marks_multiple_bitrix_deals_manual_review() -> None:
                 ]
             },
             onec_by_order={},
-    )
+        )
 
     assert rows[0].action == "manual_review"
     assert rows[0].recommended_stage == service.CRM_STAGE_MANUAL_REVIEW

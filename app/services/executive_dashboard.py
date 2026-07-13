@@ -52,6 +52,10 @@ from app.services.bitrix_executive_dashboard_auth import (
     full_executive_dashboard_context,
     legacy_domain_executive_dashboard_context,
 )
+from app.services.executive_service_accruals import (
+    service_accrual_balance_adjustments,
+    service_accrual_profit_loss_summary,
+)
 from app.services.receivables import CASE_BUYERS
 
 AccessLevel = Literal["full", "domain"]
@@ -283,6 +287,7 @@ def _combine_profit_loss_status(sales_status: str, expense_status: str) -> str:
 
 def _profit_loss_expenses_from_cashflow_cache(
     *,
+    session: Session,
     date_from: date,
     date_to: date,
 ) -> dict[str, Any]:
@@ -434,6 +439,45 @@ def _profit_loss_expenses_from_cashflow_cache(
             )
         )
 
+    accrual_summary = service_accrual_profit_loss_summary(
+        session,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    breakdown_by_key = {item.key: item for item in breakdown}
+    for accrual in accrual_summary["by_line"]:
+        key = str(accrual["key"])
+        current = breakdown_by_key.get(key)
+        cashflow_amount = current.amount if current is not None else Decimal("0")
+        replaced_amount = min(
+            cashflow_amount,
+            _decimal(accrual["cashflow_replaced_amount"]),
+        )
+        recognized_amount = _decimal(accrual["recognized_amount"])
+        adjusted_amount = cashflow_amount - replaced_amount + recognized_amount
+        updated = ExecutiveProfitLossExpenseBreakdownRow(
+            key=key,
+            label=str(accrual["label"]),
+            amount=adjusted_amount,
+            movement_count=current.movement_count if current is not None else 0,
+            review_count=current.review_count if current is not None else 0,
+            source_status=str(accrual["source_status"]),
+            recognition_method="accrual",
+            cashflow_amount=cashflow_amount,
+            recognized_amount=recognized_amount,
+            adjustment_amount=recognized_amount - replaced_amount,
+            estimated_count=int(accrual["estimated_count"]),
+            meta={
+                **(current.meta if current is not None else {}),
+                "service_accrual_entry_count": int(accrual["entry_count"]),
+                "cashflow_replaced_amount": str(replaced_amount),
+            },
+        )
+        if current is not None:
+            breakdown[breakdown.index(current)] = updated
+        else:
+            breakdown.append(updated)
+        breakdown_by_key[key] = updated
     breakdown.sort(key=lambda item: item.amount, reverse=True)
 
     open_questions = [
@@ -459,6 +503,8 @@ def _profit_loss_expenses_from_cashflow_cache(
     expense_status = str(payload.get("source_status") or source_status or "ready")
     if expense_status == "ready" and (open_questions or review_count):
         expense_status = "partial"
+    if accrual_summary["source_status"] == "partial":
+        expense_status = "partial"
     if period_outside_cache:
         expense_status = "stale"
 
@@ -466,8 +512,8 @@ def _profit_loss_expenses_from_cashflow_cache(
         "source_status": expense_status,
         "freshness_status": _freshness_from_status(expense_status),
         "note": (
-            "Расходы определены по исходящим оплатам ДДС. "
-            "Это cash-based управленческий срез, не бухгалтерское начисление."
+            "Расходы определены по исходящим оплатам ДДС; договоры с активными "
+            "правилами заменены управленческими начислениями без двойного учета."
             + (
                 f" Запрошенный период выходит за кэш "
                 f"{cache_from.isoformat() if cache_from else '?'}.."
@@ -1411,6 +1457,7 @@ def build_executive_profit_loss_period_response(
         source_as_of=latest_sales_date,
     )
     expense_data = _profit_loss_expenses_from_cashflow_cache(
+        session=session,
         date_from=date_from,
         date_to=date_to,
     )
@@ -1445,8 +1492,8 @@ def build_executive_profit_loss_period_response(
         }
     )
     note = (
-        "ОПУ v1 строится по продажам 1С и расходам по оплатам ДДС. "
-        "Расходы являются cash-based управленческим срезом, не бухгалтерским начислением."
+        "ОПУ строится по продажам 1С и расходам ДДС. Для договоров с утверждёнными "
+        "правилами кассовый расход заменён начислением без двойного учёта."
     )
     if expense_data.get("note"):
         note = f"{note} {expense_data['note']}"
@@ -1947,7 +1994,7 @@ def _build_profit_loss_block(
         ),
         _metric(
             "operating_expenses",
-            "Расходы по ДДС",
+            "Операционные расходы",
             (
                 _decimal(period.totals.get("operating_expenses"))
                 if period.expense_source_status not in {"source_missing", "source_error"}
@@ -1986,7 +2033,10 @@ def _build_profit_loss_block(
             },
             "source_anchor": "1C: onec_sales_daily_kpi",
             "source_table": "onec_sales_daily_kpi",
-            "expense_source_anchor": "ДДС: cashflow_period_cache.profit_loss_expenses",
+            "expense_source_anchor": (
+                "ДДС: cashflow_period_cache.profit_loss_expenses + "
+                "pricing-service: executive_service_accrual_entry"
+            ),
             "expense_source_status": period.expense_source_status,
             "expense_open_question_count": period.totals.get("expense_open_question_count"),
             "expense_open_question_amount": str(
@@ -2039,6 +2089,7 @@ def _balance_line(
     source_status: str,
     as_of: date | datetime | None,
     masked: bool,
+    **extra: Any,
 ) -> dict[str, Any]:
     return {
         "key": key,
@@ -2047,12 +2098,32 @@ def _balance_line(
         "source_status": source_status,
         "as_of": as_of.isoformat() if isinstance(as_of, (date, datetime)) else None,
         "masked": masked,
+        **extra,
     }
 
 
+def _settlement_group_signed_rows(section: dict[str, Any], *, group_key: str) -> dict[str, Decimal]:
+    result: dict[str, Decimal] = {}
+    for group in section.get("groups") or []:
+        if not isinstance(group, dict) or group.get("key") != group_key:
+            continue
+        for row in group.get("asset_counterparties") or []:
+            ref = str(row.get("counterparty_ref") or "").lower()
+            if ref:
+                result[ref] = result.get(ref, Decimal("0")) + _decimal(row.get("asset_amount"))
+        for row in group.get("counterparties") or []:
+            ref = str(row.get("counterparty_ref") or "").lower()
+            if ref:
+                result[ref] = result.get(ref, Decimal("0")) - _decimal(row.get("payable_amount"))
+        break
+    return result
+
+
 def _build_management_balance_block(
+    session: Session,
     finance_payload: dict[str, Any] | None,
     *,
+    requested_date: date,
     money_block: ExecutiveDashboardBlock,
     access_context: ExecutiveDashboardAuthContext,
 ) -> ExecutiveDashboardBlock:
@@ -2114,6 +2185,39 @@ def _build_management_balance_block(
         section,
         group_key="owners",
         side="liability",
+    )
+    legal_entity_rows = _settlement_group_signed_rows(
+        section,
+        group_key="legal_entities",
+    )
+    accrual_adjustments = service_accrual_balance_adjustments(
+        session,
+        as_of=requested_date,
+    )
+    adjusted_legal_rows = dict(legal_entity_rows)
+    for counterparty_ref, amount in accrual_adjustments["by_counterparty"].items():
+        adjusted_legal_rows[counterparty_ref] = adjusted_legal_rows.get(
+            counterparty_ref, Decimal("0")
+        ) - _decimal(amount)
+    service_advances_raw = sum(
+        (max(amount, Decimal("0")) for amount in legal_entity_rows.values()),
+        Decimal("0"),
+    )
+    service_advances_adjusted = sum(
+        (max(amount, Decimal("0")) for amount in adjusted_legal_rows.values()),
+        Decimal("0"),
+    )
+    accrued_service_liability = sum(
+        (max(-amount, Decimal("0")) for amount in adjusted_legal_rows.values()),
+        Decimal("0"),
+    )
+    accrual_amount = _decimal(accrual_adjustments["amount"])
+    has_service_settlements = (
+        any(
+            isinstance(group, dict) and group.get("key") == "legal_entities"
+            for group in section.get("groups") or []
+        )
+        or accrual_amount != 0
     )
     assets = [
         _balance_line(
@@ -2199,11 +2303,61 @@ def _build_management_balance_block(
             masked=masked,
         ),
     ]
+    if has_service_settlements:
+        assets[2:2] = [
+            _balance_line(
+                key="service_supplier_advances_1c",
+                label="Авансы поставщикам услуг по данным 1С",
+                amount=service_advances_raw,
+                source_status=payables_status,
+                as_of=payables_as_of,
+                masked=masked,
+                include_in_total=False,
+            ),
+            _balance_line(
+                key="service_accruals_without_documents",
+                label="Минус: услуги, признанные без документов",
+                amount=-accrual_amount,
+                source_status=str(accrual_adjustments["source_status"]),
+                as_of=requested_date,
+                masked=masked,
+                include_in_total=False,
+                recognition_method="approved_fixed_monthly_rule",
+                estimated_count=int(accrual_adjustments["estimated_count"]),
+            ),
+            _balance_line(
+                key="service_supplier_advances",
+                label="Остаток авансов поставщикам услуг",
+                amount=service_advances_adjusted,
+                source_status=str(accrual_adjustments["source_status"]),
+                as_of=requested_date,
+                masked=masked,
+                source_amount=str(service_advances_raw),
+                adjustment_amount=str(-accrual_amount),
+                adjusted_amount=str(service_advances_adjusted),
+                recognition_method="accrual",
+                estimated_count=int(accrual_adjustments["estimated_count"]),
+            ),
+        ]
+        liabilities.insert(
+            0,
+            _balance_line(
+                key="accrued_service_liability",
+                label="Начисленные услуги к оплате",
+                amount=accrued_service_liability,
+                source_status=str(accrual_adjustments["source_status"]),
+                as_of=requested_date,
+                masked=masked,
+                recognition_method="accrual",
+                estimated_count=int(accrual_adjustments["estimated_count"]),
+            ),
+        )
     assets_total = sum(
         (
             amount
             for amount in (
                 cash_amount,
+                service_advances_adjusted,
                 supplier_receivable,
                 employee_receivable,
                 other_receivable,
@@ -2218,6 +2372,7 @@ def _build_management_balance_block(
             amount
             for amount in (
                 supplier_payable,
+                accrued_service_liability,
                 employee_payable,
                 other_payable,
                 owner_payable,
@@ -2251,7 +2406,22 @@ def _build_management_balance_block(
             "amount_currency": "RUB",
             "balance_assets": assets,
             "balance_liabilities": liabilities,
-            "balance_equity": [],
+            "balance_equity": (
+                [
+                    _balance_line(
+                        key="service_accrual_result_adjustment",
+                        label="Корректировка результата периода по оценочным расходам",
+                        amount=-accrual_amount,
+                        source_status=str(accrual_adjustments["source_status"]),
+                        as_of=requested_date,
+                        masked=masked,
+                        recognition_method="accrual",
+                        estimated_count=int(accrual_adjustments["estimated_count"]),
+                    )
+                ]
+                if has_service_settlements
+                else []
+            ),
             "balance_assets_total_label": "Итого подключенные активы",
             "balance_liabilities_total_label": "Итого подключенные пассивы",
             "balance_assets_total": None if masked else str(assets_total),
@@ -3290,7 +3460,9 @@ def build_executive_dashboard(
             requested_date=requested_date,
         ),
         _build_management_balance_block(
+            session,
             finance_payload,
+            requested_date=requested_date,
             money_block=money_today_block,
             access_context=context,
         ),

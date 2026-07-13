@@ -31,6 +31,11 @@ export interface ExecutiveSourceStatus {
   as_of?: string | null;
   max_lag_days?: number | null;
   note?: string | null;
+  source_amount?: string | null;
+  adjustment_amount?: string | null;
+  adjusted_amount?: string | null;
+  recognition_method?: string | null;
+  estimated_count: number;
 }
 
 export interface ExecutiveDashboardAction {
@@ -87,6 +92,11 @@ export interface ExecutiveManagementBalanceLineItem {
   source_status: string;
   source_as_of?: string | null;
   note?: string | null;
+  source_amount?: string | null;
+  adjustment_amount?: string | null;
+  adjusted_amount?: string | null;
+  recognition_method?: string | null;
+  estimated_count: number;
 }
 
 export interface ExecutiveManagementBalanceResponse {
@@ -221,6 +231,10 @@ export interface ExecutiveProfitLossExpenseBreakdownRow {
   review_count: number;
   source_status: string;
   recognition_method: string;
+  cashflow_amount?: string | null;
+  recognized_amount?: string | null;
+  adjustment_amount?: string | null;
+  estimated_count: number;
   meta: Record<string, unknown>;
 }
 

@@ -93,6 +93,11 @@ class ExecutiveManagementBalanceLineItem(BaseModel):
     source_status: str
     source_as_of: date | None = None
     note: str | None = None
+    source_amount: Decimal | None = None
+    adjustment_amount: Decimal | None = None
+    adjusted_amount: Decimal | None = None
+    recognition_method: str | None = None
+    estimated_count: int = 0
 
 
 class ExecutiveManagementBalanceResponse(BaseModel):
@@ -124,6 +129,37 @@ class ExecutiveManagementBalanceResponse(BaseModel):
 class ExecutiveManagementBalanceCloseRequest(BaseModel):
     confirm: bool
     note: str | None = Field(default=None, max_length=1000)
+
+
+class ExecutiveServiceAccrualItem(BaseModel):
+    id: int
+    month: str
+    recognition_date: date
+    counterparty_ref: str
+    counterparty_name: str
+    contract_ref: str
+    contract_name: str
+    expense_line_key: str
+    expense_line_label: str
+    status: str
+    recognition_method: str
+    recognized_amount_rub: Decimal
+    payment_amount_rub: Decimal
+    cashflow_expense_replaced_rub: Decimal
+    source_status: str
+    source_as_of: date | None = None
+    note: str | None = None
+
+
+class ExecutiveServiceAccrualListResponse(BaseModel):
+    month: str
+    source_status: str
+    freshness_status: str
+    total_count: int
+    recognized_amount_rub: Decimal = Decimal("0")
+    payment_amount_rub: Decimal = Decimal("0")
+    estimated_count: int = 0
+    items: list[ExecutiveServiceAccrualItem] = Field(default_factory=list)
 
 
 class ExecutiveCashflowPeriodRatio(BaseModel):
@@ -232,6 +268,10 @@ class ExecutiveProfitLossExpenseBreakdownRow(BaseModel):
     review_count: int = 0
     source_status: str = "ready"
     recognition_method: str = "cashflow_fallback"
+    cashflow_amount: Decimal | None = None
+    recognized_amount: Decimal | None = None
+    adjustment_amount: Decimal | None = None
+    estimated_count: int = 0
     meta: dict[str, Any] = Field(default_factory=dict)
 
 

@@ -818,10 +818,7 @@ def procurement_stage_key(logical_key: str, onec_order: dict[str, Any]) -> str:
     if logical_key == "ved_import":
         if order_has_value(onec_order, "expected_receipt_date", "Поступление"):
             return "receiving"
-        # ВЭД-заказ без подтверждённого поступления остаётся на документальной
-        # остановке. Явный stage_key выше по-прежнему позволяет передать уже
-        # подтверждённый этап из источника.
-        return "docs_collection"
+        return "supplier_order"
     if logical_key != "cargo":
         return "supplier_order"
     if order_has_value(onec_order, "payment_task_id") or clean_string(

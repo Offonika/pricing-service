@@ -49,6 +49,12 @@ class BalanceLineDraft:
     source_status: str
     source_as_of: date | None
     note: str | None = None
+    include_in_total: bool = True
+    source_amount: Decimal | None = None
+    adjustment_amount: Decimal | None = None
+    adjusted_amount: Decimal | None = None
+    recognition_method: str | None = None
+    estimated_count: int = 0
 
 
 _ACCOUNTING_LINES: tuple[tuple[BalanceSection, str, str, int], ...] = (
@@ -116,6 +122,14 @@ def _line_from_compact(
             if str(item.get("source_status") or "") in {"source_missing", "source_error"}
             else None
         ),
+        include_in_total=bool(item.get("include_in_total", True)),
+        source_amount=_money(item.get("source_amount")),
+        adjustment_amount=_money(item.get("adjustment_amount")),
+        adjusted_amount=_money(item.get("adjusted_amount")),
+        recognition_method=(
+            str(item.get("recognition_method")) if item.get("recognition_method") else None
+        ),
+        estimated_count=int(item.get("estimated_count") or 0),
     )
 
 
@@ -159,6 +173,16 @@ def _build_draft_lines(
                 source_key="onec_counterparty_settlements",
             )
         )
+    for order, item in enumerate(summary.get("balance_equity") or [], start=1):
+        lines.append(
+            _line_from_compact(
+                item,
+                section="equity",
+                order=order * 10,
+                source_key="management_service_accruals",
+            )
+        )
+
     settings = get_settings()
     accounting_configured = bool(settings.executive_management_balance_accounting_database_url)
     accounting_status = "source_unverified" if accounting_configured else "source_missing"
@@ -228,6 +252,26 @@ def _validation_errors(lines: list[BalanceLineDraft]) -> list[dict[str, str]]:
                 "message": "Отрицательная стоимость товара блокирует закрытие месяца",
             }
         )
+    accrual_lines = [
+        line
+        for line in lines
+        if line.source_key == "management_service_accruals"
+        or line.recognition_method in {"accrual", "approved_fixed_monthly_rule"}
+    ]
+    if any(
+        line.source_status in {"partial", "source_missing", "source_error", "source_unverified"}
+        for line in accrual_lines
+    ):
+        errors.append(
+            {
+                "code": "service_accrual_source_incomplete",
+                "severity": "error",
+                "message": (
+                    "Начисления услуг не закрыты: источник договоров или закрывающих "
+                    "документов не прошёл контроль"
+                ),
+            }
+        )
     return errors
 
 
@@ -236,7 +280,13 @@ def _totals(
 ) -> tuple[Decimal, Decimal, Decimal, Decimal]:
     def total(section: BalanceSection) -> Decimal:
         return sum(
-            (line.amount for line in lines if line.section == section and line.amount is not None),
+            (
+                line.amount
+                for line in lines
+                if line.section == section and line.amount is not None and line.include_in_total
+            ),
+            # Informational reconciliation rows are visible in the response,
+            # but only the adjusted line participates in balance totals.
             Decimal("0"),
         ).quantize(MONEY)
 
@@ -318,6 +368,20 @@ def build_and_persist_management_balance_snapshot(
                 source_status=line.source_status,
                 source_as_of=line.source_as_of,
                 note=line.note,
+                payload={
+                    "include_in_total": line.include_in_total,
+                    "source_amount": (
+                        str(line.source_amount) if line.source_amount is not None else None
+                    ),
+                    "adjustment_amount": (
+                        str(line.adjustment_amount) if line.adjustment_amount is not None else None
+                    ),
+                    "adjusted_amount": (
+                        str(line.adjusted_amount) if line.adjusted_amount is not None else None
+                    ),
+                    "recognition_method": line.recognition_method,
+                    "estimated_count": line.estimated_count,
+                },
             )
         )
     session.add(
@@ -424,6 +488,11 @@ def _response(
             source_status=line.source_status,
             source_as_of=line.source_as_of,
             note=line.note,
+            source_amount=_money((line.payload or {}).get("source_amount")),
+            adjustment_amount=_money((line.payload or {}).get("adjustment_amount")),
+            adjusted_amount=_money((line.payload or {}).get("adjusted_amount")),
+            recognition_method=(line.payload or {}).get("recognition_method"),
+            estimated_count=int((line.payload or {}).get("estimated_count") or 0),
         )
 
     items = [item(line) for line in lines]

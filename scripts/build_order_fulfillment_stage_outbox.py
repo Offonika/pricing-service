@@ -81,9 +81,7 @@ def main() -> int:
     settings = get_settings()
     env_values = load_env_files([*DEFAULT_ENV_FILES, *args.env_file])
     bitrix_webhook_url = resolve_bitrix_webhook_url(env_values)
-    bitrix_client = (
-        fulfillment.BitrixChatClient(bitrix_webhook_url) if bitrix_webhook_url else None
-    )
+    bitrix_client = fulfillment.BitrixChatClient(bitrix_webhook_url) if bitrix_webhook_url else None
     onec_engine = (
         build_engine(settings.onec_database_url, pool_pre_ping=True)
         if settings.onec_database_url

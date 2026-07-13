@@ -473,7 +473,9 @@ def _new_decision(
     )
 
 
-def fetch_new_deals(client: fulfillment.BitrixChatClient, *, limit: int) -> list[fulfillment.BitrixDealSnapshot]:
+def fetch_new_deals(
+    client: fulfillment.BitrixChatClient, *, limit: int
+) -> list[fulfillment.BitrixDealSnapshot]:
     deals: list[fulfillment.BitrixDealSnapshot] = []
     for stage_id in QUICK_STAGE_IDS:
         stage_count = 0
@@ -540,7 +542,8 @@ def fetch_sale_order_statuses(order_numbers: list[str]) -> dict[str, SaleOrderSt
         result[str(order_number)] = SaleOrderStatus(
             order_number=str(order_number),
             canceled=fulfillment._clean_string(raw_status.get("CANCELED")) == "Y",  # noqa: SLF001
-            status_id=fulfillment._clean_string(raw_status.get("STATUS_ID")) or None,  # noqa: SLF001
+            status_id=fulfillment._clean_string(raw_status.get("STATUS_ID"))
+            or None,  # noqa: SLF001
             payed=(
                 fulfillment._clean_string(raw_status.get("PAYED")) == "Y"  # noqa: SLF001
                 if raw_status.get("PAYED") is not None
@@ -806,7 +809,13 @@ echo json_encode($result, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 
 
 def _truthy_bitrix_value(value: Any) -> bool:
-    return fulfillment._clean_string(value).lower() in {"1", "y", "yes", "true", "да"}  # noqa: SLF001
+    return fulfillment._clean_string(value).lower() in {
+        "1",
+        "y",
+        "yes",
+        "true",
+        "да",
+    }  # noqa: SLF001
 
 
 def build_new_deal_outbox_rows(
@@ -862,7 +871,9 @@ def run_quick_sync(
 ) -> dict[str, Any]:
     deals = fetch_new_deals(client, limit=limit)
     order_numbers = [
-        fulfillment._clean_string((deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD))  # noqa: SLF001
+        fulfillment._clean_string(
+            (deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD)
+        )  # noqa: SLF001
         for deal in deals
     ]
     order_statuses = fetch_sale_order_statuses(order_numbers)
@@ -873,10 +884,14 @@ def run_quick_sync(
         decide_new_deal_stage(
             deal,
             order_status=order_statuses.get(
-                fulfillment._clean_string((deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD))  # noqa: SLF001
+                fulfillment._clean_string(
+                    (deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD)
+                )  # noqa: SLF001
             ),
             onec_settlement=onec_settlements.get(
-                fulfillment._clean_string((deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD))  # noqa: SLF001
+                fulfillment._clean_string(
+                    (deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD)
+                )  # noqa: SLF001
             ),
         )
         for deal in deals
@@ -1160,7 +1175,9 @@ def write_dict_csv(
     fieldnames: list[str] | None = None,
 ) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = fieldnames or (sorted({key for row in rows for key in row}) if rows else ["status"])
+    fieldnames = fieldnames or (
+        sorted({key for row in rows for key in row}) if rows else ["status"]
+    )
     with path.open("w", encoding="utf-8-sig", newline="") as file_obj:
         writer = csv.DictWriter(file_obj, fieldnames=fieldnames)
         writer.writeheader()
@@ -1192,7 +1209,9 @@ def query_rtu_without_assembled_for_deals(
         return []
 
     order_numbers = [
-        fulfillment._clean_string((deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD))  # noqa: SLF001
+        fulfillment._clean_string(
+            (deal.raw or {}).get(fulfillment.CRM_ORDER_NUMBER_FIELD)
+        )  # noqa: SLF001
         for deal in executing_deals
     ]
     try:
@@ -1460,15 +1479,11 @@ def enrich_summary_item_from_artifacts(item: dict[str, Any]) -> dict[str, Any]:
             key for row in review_rows if (key := review_deal_key(row))
         )
         item["review_action_counts"] = dict(action_counts)
-        item["manual_review_keys"] = unique_values(
-            manual_review_key(row) for row in manual_rows
-        )
+        item["manual_review_keys"] = unique_values(manual_review_key(row) for row in manual_rows)
         item["manual_review_reason_counts"] = dict(
             Counter(manual_review_reason(row) for row in manual_rows)
         )
-        item["manual_review_examples"] = [
-            manual_review_example(row) for row in manual_rows[:5]
-        ]
+        item["manual_review_examples"] = [manual_review_example(row) for row in manual_rows[:5]]
     else:
         item.setdefault("deal_keys", [])
         item.setdefault("review_action_counts", {})
@@ -1526,9 +1541,7 @@ def enrich_summary_item_from_monitoring(item: dict[str, Any]) -> dict[str, Any]:
     item["operational_alert_counts"] = dict(
         Counter(clean_csv_value(row.get("alert_type")) or "operational_alert" for row in rows)
     )
-    item["operational_alert_examples"] = [
-        operational_alert_example(row) for row in rows[:5]
-    ]
+    item["operational_alert_examples"] = [operational_alert_example(row) for row in rows[:5]]
     return item
 
 
@@ -1776,9 +1789,7 @@ def deliver_order_fulfillment_notifications(
         "operational_alert_keys",
         operational_events,
     )
-    operational_user_ids = unique_ints(
-        [*config.business_user_ids, *config.tech_user_ids]
-    )
+    operational_user_ids = unique_ints([*config.business_user_ids, *config.tech_user_ids])
     if operational_new and has_notification_recipient(
         user_ids=operational_user_ids,
         dialog_id=config.site_dialog_id,
@@ -2131,8 +2142,7 @@ def format_operational_example(event: dict[str, Any]) -> str:
         order_number = order_number or (key_parts[1] if len(key_parts) > 1 else "")
         deal_id = deal_id or (key_parts[2] if len(key_parts) > 2 else "")
         return (
-            f"- заказ {order_number or '-'} / сделка {deal_id or '-'}: "
-            "оплату ждут больше 7 дней"
+            f"- заказ {order_number or '-'} / сделка {deal_id or '-'}: " "оплату ждут больше 7 дней"
         )
 
     if alert_type == "pickup_waiting_close_candidate":
@@ -2173,9 +2183,7 @@ def format_ru_count(count: int, one: str, few: str, many: str) -> str:
 
 def paths_for_events(events: list[dict[str, Any]], field: str) -> list[str]:
     return unique_values(
-        event.get("item", {}).get(field)
-        for event in events
-        if isinstance(event.get("item"), dict)
+        event.get("item", {}).get(field) for event in events if isinstance(event.get("item"), dict)
     )
 
 
@@ -2205,9 +2213,7 @@ def format_examples(examples: list[dict[str, Any]], *, limit: int = 5) -> list[s
         order_number = clean_csv_value(example.get("site_order_number")) or "-"
         deal_id = clean_csv_value(example.get("bitrix_deal_id")) or "-"
         reason = (
-            clean_csv_value(example.get("reason"))
-            or clean_csv_value(example.get("result"))
-            or "-"
+            clean_csv_value(example.get("reason")) or clean_csv_value(example.get("result")) or "-"
         )
         lines.append(f"- заказ {order_number} / сделка {deal_id}: {reason}")
     return lines or ["- нет примеров"]
@@ -2324,8 +2330,7 @@ def build_daily_digest(
         lines.append(f"Техрезультаты: {format_top_counts(technical_result_counts)}")
     if operational_alert_counts:
         lines.append(
-            "Операционные сигналы: "
-            f"{format_operational_alert_counts(operational_alert_counts)}"
+            "Операционные сигналы: " f"{format_operational_alert_counts(operational_alert_counts)}"
         )
     lines.extend(
         [
@@ -2407,7 +2412,9 @@ def main() -> int:
     stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     webhook_url = resolve_bitrix_webhook_url()
     if not webhook_url:
-        raise SystemExit("ORDER_FULFILLMENT_BITRIX_WEBHOOK_URL or BITRIX_BOX_WEBHOOK_BASE is missing")
+        raise SystemExit(
+            "ORDER_FULFILLMENT_BITRIX_WEBHOOK_URL or BITRIX_BOX_WEBHOOK_BASE is missing"
+        )
     client = fulfillment.BitrixChatClient(webhook_url)
     summaries: list[dict[str, Any]] = []
     if args.mode in {"quick", "all"}:

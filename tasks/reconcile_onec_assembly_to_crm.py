@@ -40,9 +40,7 @@ class AssemblyEvent:
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description=(
-            "Read 1C RTU assembly events from SQL and send safe assembled signal to CRM."
-        )
+        description=("Read 1C RTU assembly events from SQL and send safe assembled signal to CRM.")
     )
     parser.add_argument(
         "--apply",
@@ -115,14 +113,14 @@ def _event_from_row(row: Any) -> AssemblyEvent:
         site_order_number=(data["site_order_number"] or "").strip(),
         is_posted=bool(data["is_posted"]),
         document_amount=(
-            str(data["document_amount"])
-            if data.get("document_amount") is not None
-            else None
+            str(data["document_amount"]) if data.get("document_amount") is not None else None
         ),
     )
 
 
-def fetch_assembly_events(onec_database_url: str, *, since: datetime, limit: int) -> list[AssemblyEvent]:
+def fetch_assembly_events(
+    onec_database_url: str, *, since: datetime, limit: int
+) -> list[AssemblyEvent]:
     limit_clause = f"TOP ({max(1, int(limit))})"
     statement = text(f"""
         WITH crm_events AS (
@@ -201,8 +199,7 @@ def fetch_assembly_events(onec_database_url: str, *, since: datetime, limit: int
 
 
 def ensure_state(connection: sqlite3.Connection) -> None:
-    connection.execute(
-        """
+    connection.execute("""
         CREATE TABLE IF NOT EXISTS processed_events (
             event_key TEXT PRIMARY KEY,
             processed_at TEXT NOT NULL,
@@ -210,8 +207,7 @@ def ensure_state(connection: sqlite3.Connection) -> None:
             rtu_number TEXT NOT NULL,
             crm_response TEXT
         )
-        """
-    )
+        """)
     connection.commit()
 
 

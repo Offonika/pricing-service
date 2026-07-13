@@ -2518,8 +2518,7 @@ def _is_lower_board_charge_part(text: str | None) -> bool:
     has_board = bool(re.search(r"нижн\w*\s+плат\w*|плат\w*\s+нижн\w*", normalized))
     has_charge_context = bool(
         re.search(
-            r"системн\w*\s+разъ[еe]м\w*|разъ[еe]м\w*\s+зарядк\w*|"
-            r"зарядк\w*|микрофон\w*",
+            r"системн\w*\s+разъ[еe]м\w*|разъ[еe]м\w*\s+зарядк\w*|" r"зарядк\w*|микрофон\w*",
             normalized,
         )
     )

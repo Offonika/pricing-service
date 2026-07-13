@@ -203,10 +203,7 @@ def _fetch_contract_balances(order_numbers: list[str]) -> dict[str, dict[str, An
 
     engine = build_engine(settings.onec_database_url, pool_pre_ping=True)
     with engine.connect() as connection:
-        sale_rows = [
-            dict(row)
-            for row in connection.execute(base_statement, params).mappings()
-        ]
+        sale_rows = [dict(row) for row in connection.execute(base_statement, params).mappings()]
         contract_balances: defaultdict[tuple[bytes, bytes, bytes], Decimal] = defaultdict(
             lambda: Decimal("0.00")
         )
@@ -439,9 +436,7 @@ def _fetch_nearby_payment_rows(
                         organization_ref=item.get("organization_ref"),
                         base_kind=_clean(item.get("base_kind")),
                         base_number=_clean(item.get("base_number")),
-                        base_site_order_number=_clean(
-                            item.get("base_site_order_number")
-                        ),
+                        base_site_order_number=_clean(item.get("base_site_order_number")),
                         base_ref=item.get("base_ref"),
                     )
                 )
@@ -729,9 +724,13 @@ def _build_report_rows(
         order_number = _clean(source.get("заказ"))
         onec = onec_rows.get(order_number, {})
         report_debt = _decimal(source.get("долг"))
-        check = _classify(onec, report_debt) if onec else BalanceCheck(
-            "не найден заказ в 1С",
-            "проверить номер заказа и дубль вручную",
+        check = (
+            _classify(onec, report_debt)
+            if onec
+            else BalanceCheck(
+                "не найден заказ в 1С",
+                "проверить номер заказа и дубль вручную",
+            )
         )
         payments = payment_candidates.get(order_number, [])
         refined_label, refined_action = _refine_action(

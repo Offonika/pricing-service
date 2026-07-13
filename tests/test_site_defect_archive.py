@@ -75,9 +75,7 @@ def _write_sample_export(path: Path) -> Path:
         encoding="utf-8",
     )
     (path / "comment-files-download-log.csv").write_text(
-        "fileId,savedAs,size\n"
-        "f1,photo.png,3\n"
-        "f2,MOV_20260521_174251_944.mp4,5\n",
+        "fileId,savedAs,size\n" "f1,photo.png,3\n" "f2,MOV_20260521_174251_944.mp4,5\n",
         encoding="utf-8",
     )
     return path

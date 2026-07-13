@@ -133,18 +133,14 @@ def build_override_payload(
     payload = dict(base_payload)
     payload.update(
         {
-            "_analog_winner_confirmation_applied_at": datetime.now().isoformat(
-                timespec="seconds"
-            ),
+            "_analog_winner_confirmation_applied_at": datetime.now().isoformat(timespec="seconds"),
             "_analog_winner_confirmation_source": str(review_csv),
             "_analog_winner_confirmation_rule": ANALOG_WINNER_RULE,
             "_analog_winner_confirmation_rule_ru": (
                 "лучший аналог группы с расчетной потребностью"
             ),
             "_analog_winner_confirmation_added": len(added_codes),
-            "_analog_winner_confirmation_skipped_manual_stops": sorted(
-                skipped_manual_stop_codes
-            ),
+            "_analog_winner_confirmation_skipped_manual_stops": sorted(skipped_manual_stop_codes),
             "_approved_by": approved_by,
             "_changed_at": changed_at.isoformat(),
             "items": sorted(items_by_code.values(), key=lambda item: _code(item)),

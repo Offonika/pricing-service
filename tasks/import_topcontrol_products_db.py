@@ -16,8 +16,7 @@ from tasks.sync_onec_product_catalog import main as _sync_onec_main
 
 def main() -> None:
     message = (
-        "tasks.import_topcontrol_products_db is deprecated; "
-        "use tasks.sync_onec_product_catalog"
+        "tasks.import_topcontrol_products_db is deprecated; " "use tasks.sync_onec_product_catalog"
     )
     warnings.warn(message, DeprecationWarning, stacklevel=2)
     logging.getLogger(__name__).warning(message)

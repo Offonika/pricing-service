@@ -82,36 +82,60 @@ def _deal(
 
 
 def test_decide_new_deal_stage_for_safe_v1_rules() -> None:
-    assert sync.decide_new_deal_stage(
-        _deal(delivery="Самовывоз", payment_status="0")
-    ).recommended_stage == "EXECUTING"
-    assert sync.decide_new_deal_stage(
-        _deal(delivery="Курьер", payment_status="0")
-    ).recommended_stage == "EXECUTING"
-    assert sync.decide_new_deal_stage(
-        _deal(delivery="СДЭК", payment_status="0")
-    ).recommended_stage == "PREPAYMENT_INVOICE"
-    assert sync.decide_new_deal_stage(
-        _deal(delivery="СДЭК (Самовывоз)", payment_status="0")
-    ).recommended_stage == "PREPAYMENT_INVOICE"
-    assert sync.decide_new_deal_stage(
-        _deal(delivery="СДЭК", payment_status="1")
-    ).recommended_stage == "EXECUTING"
-    assert sync.decide_new_deal_stage(
-        _deal(stage_id="PREPARATION", delivery="Самовывоз", payment_status="0")
-    ).recommended_stage == "EXECUTING"
-    assert sync.decide_new_deal_stage(
-        _deal(stage_id="PREPARATION", delivery="Курьер", payment_status="1")
-    ).recommended_stage == "EXECUTING"
-    assert sync.decide_new_deal_stage(
-        _deal(stage_id="PREPARATION", delivery="Курьер", payment_status="0")
-    ).recommended_stage == "EXECUTING"
-    assert sync.decide_new_deal_stage(
-        _deal(delivery="Доставка курьером", payment_status="0")
-    ).recommended_stage == "EXECUTING"
-    assert sync.decide_new_deal_stage(
-        _deal(delivery="Dostavista", payment_status="0")
-    ).recommended_stage == "EXECUTING"
+    assert (
+        sync.decide_new_deal_stage(
+            _deal(delivery="Самовывоз", payment_status="0")
+        ).recommended_stage
+        == "EXECUTING"
+    )
+    assert (
+        sync.decide_new_deal_stage(_deal(delivery="Курьер", payment_status="0")).recommended_stage
+        == "EXECUTING"
+    )
+    assert (
+        sync.decide_new_deal_stage(_deal(delivery="СДЭК", payment_status="0")).recommended_stage
+        == "PREPAYMENT_INVOICE"
+    )
+    assert (
+        sync.decide_new_deal_stage(
+            _deal(delivery="СДЭК (Самовывоз)", payment_status="0")
+        ).recommended_stage
+        == "PREPAYMENT_INVOICE"
+    )
+    assert (
+        sync.decide_new_deal_stage(_deal(delivery="СДЭК", payment_status="1")).recommended_stage
+        == "EXECUTING"
+    )
+    assert (
+        sync.decide_new_deal_stage(
+            _deal(stage_id="PREPARATION", delivery="Самовывоз", payment_status="0")
+        ).recommended_stage
+        == "EXECUTING"
+    )
+    assert (
+        sync.decide_new_deal_stage(
+            _deal(stage_id="PREPARATION", delivery="Курьер", payment_status="1")
+        ).recommended_stage
+        == "EXECUTING"
+    )
+    assert (
+        sync.decide_new_deal_stage(
+            _deal(stage_id="PREPARATION", delivery="Курьер", payment_status="0")
+        ).recommended_stage
+        == "EXECUTING"
+    )
+    assert (
+        sync.decide_new_deal_stage(
+            _deal(delivery="Доставка курьером", payment_status="0")
+        ).recommended_stage
+        == "EXECUTING"
+    )
+    assert (
+        sync.decide_new_deal_stage(
+            _deal(delivery="Dostavista", payment_status="0")
+        ).recommended_stage
+        == "EXECUTING"
+    )
 
 
 def test_decide_delivery_review_completed_order_closes_won() -> None:
@@ -177,10 +201,7 @@ def test_decide_delivery_review_routes_non_completed_orders() -> None:
     assert old_unpaid_carrier.recommended_stage == "LOSE"
     assert old_unpaid_carrier.review_reason == "delivery_review_unpaid_expired_to_lost"
     assert fresh_unpaid_carrier.recommended_stage == "PREPAYMENT_INVOICE"
-    assert (
-        fresh_unpaid_carrier.review_reason
-        == "delivery_review_carrier_unpaid_to_payment_waiting"
-    )
+    assert fresh_unpaid_carrier.review_reason == "delivery_review_carrier_unpaid_to_payment_waiting"
     assert assembled_pickup.recommended_stage == "PICKUP_WAITING"
     assert assembled_pickup.review_reason == "delivery_review_pickup_assembled_waiting"
     assert paid_courier.recommended_stage == "FINAL_INVOICE"
@@ -224,8 +245,7 @@ def test_decide_new_deal_stage_keeps_active_prepayment_waiting() -> None:
             canceled=False,
             status_id="N",
             payed=False,
-            created_at=datetime.now()
-            - timedelta(days=sync.PREPAYMENT_WAITING_MAX_AGE_DAYS - 1),
+            created_at=datetime.now() - timedelta(days=sync.PREPAYMENT_WAITING_MAX_AGE_DAYS - 1),
         ),
     )
 
@@ -339,8 +359,7 @@ def test_decide_new_deal_stage_moves_paid_prepayment_to_assembly() -> None:
             canceled=False,
             status_id="N",
             payed=True,
-            created_at=datetime.now()
-            - timedelta(days=sync.PREPAYMENT_WAITING_MAX_AGE_DAYS + 10),
+            created_at=datetime.now() - timedelta(days=sync.PREPAYMENT_WAITING_MAX_AGE_DAYS + 10),
         ),
     )
 

@@ -24,7 +24,9 @@ def parse_args() -> argparse.Namespace:
         description="Analyze Bitrix working site defect cases with archive hints."
     )
     parser.add_argument("--case-id", default=None, help="Bitrix smart-process item id")
-    parser.add_argument("--limit", type=int, default=5, help="How many recent working cards to check")
+    parser.add_argument(
+        "--limit", type=int, default=5, help="How many recent working cards to check"
+    )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Only print analysis")
     mode.add_argument("--apply", action="store_true", help="Write hints/comments/tasks to Bitrix")

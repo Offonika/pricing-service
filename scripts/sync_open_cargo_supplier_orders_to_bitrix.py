@@ -222,9 +222,7 @@ def order_from_open_supplier_order_row(
         "posted": bool(row.get("posted")),
         "КонтурЗакупки": contour,
         "procurement_contour_key": logical_key,
-        "procurement_stage_key": clean(
-            row.get("procurement_stage_key") or row.get("stage_key")
-        ),
+        "procurement_stage_key": clean(row.get("procurement_stage_key") or row.get("stage_key")),
         "is_open_supplier_order": True,
         "supplier": {
             "onec_ref": clean(row.get("supplier_ref")),

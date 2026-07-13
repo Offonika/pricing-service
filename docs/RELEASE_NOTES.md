@@ -5,7 +5,7 @@
 ## Что готово
 - FastAPI каркас с логированием, `/health` и автоконфигом через Pydantic Settings.
 - База: модели Product/Competitor/CompetitorPrice/ProductMatch/Stock и первичная миграция Alembic.
-- Импорт: каталог и остатки напрямую из SQL 1С/TopControl (Ekama), цены конкурентов из CSV (`app/services/importers/competitors.py`), SKU-матчинг по парам (`app/services/matching.py`).
+- Импорт: каталог и остатки напрямую из SQL 1С (Ekama), цены конкурентов из CSV (`app/services/importers/competitors.py`), SKU-матчинг по парам (`app/services/matching.py`).
 - Ценообразование: базовая стратегия «не ниже закупки + минимальная маржа», расчёт рекомендаций и фоновой перебор (`app/services/pricing*.py`, `app/workers/tasks.py`).
 - История стратегий/цен: версии стратегий и лог расчётов (`PricingStrategyVersion`, `PriceRecommendation`, helper в `app/services/pricing.py`).
 - API: рекомендации `/api/products/{article}/recommendation`, отчёты `/api/reports/summary` и `/api/reports/price-changes`, BI-выгрузки `/api/bi/*` (products/recommendations/competitor-prices), расширенный Telegram-интерфейс `/api/telegram/*` (фильтры по бренду/категории/поиск и алерты по марже).
@@ -17,7 +17,7 @@
 - Локально: `python -m venv .venv && source .venv/bin/activate && ./.venv/bin/pip install -e .[dev]`, затем `./.venv/bin/python -m uvicorn app.main:app --reload`.
 - Docker: `cp .env.example .env && cd infra && docker-compose up --build`.
 - Тесты и линтеры: `./.venv/bin/python -m pytest`, `./.venv/bin/python -m ruff check .`, `./.venv/bin/python -m black --check .`.
-- Импорт примеры: запустить синхронизацию топ-каталога с MSSQL (`sync_topcontrol_catalog`) и `import_competitor_prices_from_csv(Path(...), session)` для файлов парсера.
+- Импорт примеры: запустить синхронизацию каталога 1С с MSSQL (`python -m tasks.sync_onec_product_catalog`) и `import_competitor_prices_from_csv(Path(...), session)` для файлов парсера.
 
 ## Ограничения и известные пробелы
 - Telegram-бот — заглушки, нет команд, авторизации и уведомлений.

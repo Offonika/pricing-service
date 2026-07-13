@@ -63,7 +63,6 @@ documents:
       - app/core/config.py
       - app/main.py
       - infra/cron/competitor_matching_nightly.sh
-      - tasks/import_topcontrol_products_db.py
       - scripts/export_openapi.py
     related_tests:
       - tests/test_import_onec_products.py

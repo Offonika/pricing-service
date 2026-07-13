@@ -11,7 +11,7 @@ related_code:
   - app/core/config.py
   - app/main.py
   - infra/cron/competitor_matching_nightly.sh
-  - tasks/import_topcontrol_products_db.py
+  - tasks/sync_onec_product_catalog.py
   - scripts/export_openapi.py
   - scripts/build_pricing_service_release.sh
   - scripts/switch_pricing_service_release.sh
@@ -33,7 +33,7 @@ updated_at: "2026-07-12"
 
 Сделать `pricing-service` управляемым модульным монолитом без изменения
 бизнес-формул, внешних HTTP-маршрутов и действующих Bitrix24/Telegram-процессов.
-Spec фиксирует вывод TopControl из активного контура, единый слой подключений к БД,
+Spec фиксирует вывод устаревшего источника из активного контура, единый слой подключений к БД,
 границы между API/application/domain/infrastructure, тонкие cron/CLI entrypoints и
 контрактный обмен с соседними проектами.
 
@@ -42,7 +42,7 @@ Spec фиксирует вывод TopControl из активного конту
 Входит:
 
 - прямой read-only импорт каталога и свойств из `1С УТ 10.3 / Ekama`;
-- compatibility alias старой команды TopControl на один релиз;
+- удаление compatibility alias старой команды после успешного scheduled-run;
 - центральные фабрики Postgres и MSSQL/1С, session factory и Unit of Work;
 - постепенное устранение бизнес-логики из `infra/cron` и одноразовых `tasks`;
 - доменные границы catalog, matching, pricing, assortment, procurement,
@@ -61,7 +61,7 @@ Spec фиксирует вывод TopControl из активного конту
 
 # Change Summary / Spec Delta
 
-- Было: TopControl оставался в активных именах и документации, хотя importer уже
+- Было: устаревший источник оставался в активных именах и документации, хотя importer уже
   читает `1С` через `ONEC_DATABASE_URL`.
 - Станет: единственный активный источник каталога называется `1С`, старая CLI-команда
   один релиз делегирует новой и затем удаляется.
@@ -77,10 +77,10 @@ Spec фиксирует вывод TopControl из активного конту
 
 # Acceptance Criteria
 
-- [x] Активный код, env, cron и каноничная документация не используют TopControl;
+- [x] Активный код, env, cron и каноничная документация не используют устаревший источник;
   исторические упоминания изолированы как legacy.
-- [x] `tasks.import_topcontrol_products_db` один релиз вызывает
-  `tasks.sync_onec_product_catalog`, после успешного scheduled-run alias удаляется.
+- [x] Compatibility alias удалён после успешного scheduled-run
+  `tasks.sync_onec_product_catalog`.
 - [ ] Каталог из 1С обновляется без ухудшения row count и freshness.
 - [x] Postgres и 1С engines создаются только разрешенными factories; CI запрещает
   прямой `create_engine` вне allowlist.
@@ -136,6 +136,11 @@ pricing read models -> root delivery adapter -> Bitrix24/Telegram
 - Side effects остаются dry-run, если они не были production-enabled до refactor.
 - Первая волна миграций additive; удаление данных и колонок запрещено.
 - Активный release symlink и rollback target не участвуют в cleanup.
+- Release-builder принимает только clean Git tree, фиксирует commit, Alembic head,
+  base release и content hash, исключает Python/test caches и делает весь release
+  read-only; writable state остаётся только во внешних symlink-каталогах.
+- Overlay разрешён только от release с `source_dirty=false`; любой UI-overlay
+  полностью заменяет `ui/dist/assets`.
 
 # Errors / Edge Cases
 
@@ -146,16 +151,16 @@ pricing read models -> root delivery adapter -> Bitrix24/Telegram
 - Snapshot отсутствует/устарел/не проходит schema/hash: dashboard возвращает
   `source_missing`, `stale` или `source_error`, а не подменяет данные нулями.
 - Ошибка после первой DB-операции: Unit of Work выполняет rollback.
-- Старый cron вызывает deprecated module: wrapper делегирует новой команде и пишет
-  warning, не меняя exit code.
+- Cron вызывает только актуальную команду каталога 1С.
 - Cleanup обнаружил runtime/reference path: каталог пропускается и попадает в отчет.
 
 # Implementation Checklist
 
 - [x] Зафиксировать live baseline, active/rollback release и smoke URLs.
 - [x] Исправить текущие docs quality ошибки и зарегистрировать этот spec.
-- [x] Переименовать 1С catalog CLI, обновить cron/imports/tests и добавить alias.
-- [x] Удалить активные TopControl settings и обновить каноничную документацию.
+- [x] Переименовать 1С catalog CLI, обновить cron/imports/tests и удалить alias
+  после успешного scheduled-run.
+- [x] Удалить настройки устаревшего источника и обновить каноничную документацию.
 - [x] Добавить DB factories, Unit of Work и architecture tests.
 - [x] Перевести weekly KPI publication с прямого DB URL на internal API.
 - [x] Добавить shared snapshot schemas/manifest и нейтральные runtime paths.
@@ -163,8 +168,7 @@ pricing read models -> root delivery adapter -> Bitrix24/Telegram
 - [x] Добавить доменный skeleton и dependency rules без big-bang переносов.
 - [x] Усилить management-job/retention validators и MasterMobile OpenAPI parity.
 - [ ] Прогнать regression, собрать immutable release, smoke и rollback.
-- [ ] После контрольного цикла применить safe retention и удалить deprecated alias
-  в следующем релизе.
+- [ ] После контрольного цикла применить safe retention.
 
 # Review Notes / Risks
 
@@ -181,11 +185,11 @@ pricing read models -> root delivery adapter -> Bitrix24/Telegram
 
 # Tests
 
-- Unit: TopControl alias, DB factories, Unit of Work, domain errors, idempotency.
+- Unit: catalog importer, DB factories, Unit of Work, domain errors, idempotency.
 - Integration: Postgres transaction rollback, read-only 1C adapter, weekly KPI ingest,
   shared artifact schema/hash/freshness.
 - Architecture: forbidden imports, direct engines, sibling env/DB/build paths,
-  TopControl outside legacy.
+  устаревшее имя источника вне legacy/changelog.
 - Regression: full pytest, UI tests, OpenAPI check, Alembic check, docs quality.
 - Smoke: `/health`, matching, receivables, executive dashboard, procurement,
   1C catalog dry-run/sync and weekly KPI dry-run without external delivery.
@@ -205,3 +209,4 @@ pricing read models -> root delivery adapter -> Bitrix24/Telegram
 # Changelog
 
 - 2026-07-12 — accepted architecture-hardening plan created from live baseline.
+- 2026-07-13 — новый catalog CLI прошёл scheduled-run, compatibility alias удалён.

@@ -20,15 +20,6 @@ DOMAIN_NAMES = {
     "telephony",
 }
 TEXT_SUFFIXES = {".py", ".md", ".sh", ".yml", ".yaml", ".toml", ".example"}
-TOPCONTROL_ALLOWED = {
-    Path("tasks/import_topcontrol_products_db.py"),
-    Path("tests/test_import_onec_products.py"),
-    Path("docs/RELEASE_NOTES.md"),
-    Path("docs/manifest.yml"),
-    Path("docs/specs/pricing-service-architecture-hardening.md"),
-}
-
-
 def _text_files(root: Path) -> list[Path]:
     files: list[Path] = []
     for relative_root in ("app", "tasks", "infra", "scripts", "tests", "docs"):
@@ -52,7 +43,8 @@ def find_violations(root: Path = REPO_ROOT) -> list[str]:
 
         if "topcontrol" in lowered:
             is_legacy = relative.parts[:2] == ("docs", "legacy")
-            if not is_legacy and relative not in TOPCONTROL_ALLOWED:
+            is_changelog = relative.name.lower().startswith(("changelog", "release_notes"))
+            if not is_legacy and not is_changelog:
                 violations.append(f"deprecated TopControl reference: {relative}")
 
         foreign_patterns = (

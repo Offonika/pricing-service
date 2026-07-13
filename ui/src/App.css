@@ -852,6 +852,25 @@
   gap: 8px;
 }
 
+.executive-domain-tab-layout {
+  display: contents;
+}
+
+.executive-sales-period__status {
+  margin-top: 2px;
+}
+
+.executive-sales-diagnostics {
+  display: grid;
+  gap: 8px;
+}
+
+.executive-sales-diagnostics h3 {
+  margin: 0;
+  color: #18202a;
+  font-size: 15px;
+}
+
 .executive-cashflow-statement {
   display: grid;
   gap: 9px;

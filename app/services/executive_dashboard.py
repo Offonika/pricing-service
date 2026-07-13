@@ -41,12 +41,12 @@ from app.schemas.executive_dashboard import (
     ExecutiveProfitLossPeriodResponse,
     ExecutiveProfitLossRatio,
     ExecutiveSalesBreakdownRow,
-    ExecutiveSalesDiagnosticKpi,
     ExecutiveSalesDailyRow,
+    ExecutiveSalesDiagnosticKpi,
     ExecutiveSalesFilterOption,
     ExecutiveSalesMonthlyRow,
-    ExecutiveSalesPlanContext,
     ExecutiveSalesPeriodResponse,
+    ExecutiveSalesPlanContext,
     ExecutiveSourceStatus,
 )
 from app.services.bitrix_executive_dashboard_auth import (
@@ -1722,32 +1722,219 @@ def _sales_filter_options(
     ]
 
 
-def _sales_forecast(
-    session: Session,
+def _is_full_calendar_month(date_from: date, date_to: date) -> bool:
+    month_from, month_to = _month_bounds(date_from)
+    return date_from == month_from and date_to == month_to
+
+
+def _sales_plan_month_contract(
+    *, date_from: date, date_to: date
+) -> tuple[dict[str, Any] | None, str, str | None]:
+    if not _is_full_calendar_month(date_from, date_to):
+        return (
+            None,
+            "not_applicable",
+            "Плановые показатели доступны только в режиме «Месяц».",
+        )
+    payload, payload_status, source_note = _load_sales_plan_snapshot()
+    if payload is None:
+        return None, payload_status, source_note
+    months = payload.get("months")
+    if not isinstance(months, list):
+        return None, "source_error", "sales plan snapshot months must be an array"
+    month_key = date_from.strftime("%Y-%m")
+    matches = [
+        item for item in months if isinstance(item, dict) and item.get("period_month") == month_key
+    ]
+    if not matches:
+        return None, "source_missing", f"План на {month_key} не утверждён."
+    if len(matches) != 1:
+        return None, "source_error", f"В snapshot найдено несколько frozen-планов на {month_key}."
+    month = matches[0]
+    month_status = str(month.get("source_status") or payload_status or "source_missing")
+    note = str(month.get("note") or payload.get("note") or "").strip() or None
+    return month, month_status, note
+
+
+def _sales_plan_contract_rows(
+    month: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, dict[str, Any]]]:
+    network = month.get("network")
+    stores = month.get("stores")
+    if not isinstance(network, dict) or not isinstance(stores, list):
+        raise ValueError("sales plan month must contain network and stores")
+    store_map: dict[str, dict[str, Any]] = {}
+    for row in stores:
+        if not isinstance(row, dict):
+            raise ValueError("sales plan store row must be an object")
+        key = str(row.get("scope_key") or "").strip()
+        if not key or key in store_map:
+            raise ValueError("sales plan store scope_key is empty or duplicated")
+        store_map[key] = row
+    if not store_map:
+        raise ValueError("sales plan month has no stores")
+    return network, store_map
+
+
+def _sales_plan_margin_ratio(row: dict[str, Any] | None) -> Decimal | None:
+    if not row:
+        return None
+    value = _optional_decimal(row.get("approved_margin_pct"))
+    return None if value is None else value / Decimal("100")
+
+
+def _sales_plan_revenue(row: dict[str, Any] | None) -> Decimal | None:
+    return None if not row else _optional_decimal(row.get("approved_revenue"))
+
+
+def _sales_plan_gross_profit(row: dict[str, Any] | None) -> Decimal | None:
+    return None if not row else _optional_decimal(row.get("approved_gross_profit"))
+
+
+def _sales_target_for_rows(
+    rows: list[OneCSalesDailyKpi],
+    store_plans: dict[str, dict[str, Any]],
+) -> tuple[Decimal | None, Decimal | None, str, str | None]:
+    revenue = sum((_decimal(row.revenue) for row in rows), Decimal("0"))
+    if revenue <= 0:
+        return None, None, "source_missing", "Нет положительной выручки для расчёта целевой маржи."
+    expected_gross_profit = Decimal("0")
+    missing_store_refs: set[str] = set()
+    for row in rows:
+        store_ref = str(row.store_ref or "").strip()
+        margin = _sales_plan_margin_ratio(store_plans.get(store_ref))
+        if not store_ref or margin is None:
+            missing_store_refs.add(store_ref or "Без магазина")
+            continue
+        expected_gross_profit += _decimal(row.revenue) * margin
+    if missing_store_refs:
+        labels = ", ".join(sorted(missing_store_refs))
+        return (
+            None,
+            None,
+            "partial",
+            f"Не все продажи сопоставлены с frozen-планом магазинов: {labels}.",
+        )
+    return expected_gross_profit / revenue, expected_gross_profit, "ready", None
+
+
+def _sales_diagnostic(
+    key: str,
+    *,
+    value: Decimal | int | None,
+    unit: str,
+    source_status: str,
+    note: str | None = None,
+    meta: dict[str, Any] | None = None,
+) -> ExecutiveSalesDiagnosticKpi:
+    return ExecutiveSalesDiagnosticKpi(
+        key=key,
+        value=value,
+        unit=unit,
+        source_status=source_status,
+        note=note,
+        meta=meta or {},
+    )
+
+
+def _empty_sales_diagnostics(status: str, note: str | None) -> list[ExecutiveSalesDiagnosticKpi]:
+    return [
+        _sales_diagnostic(
+            "lost_gross_profit_margin_gap",
+            value=None,
+            unit="RUB",
+            source_status=status,
+            note=note,
+        ),
+        _sales_diagnostic(
+            "gross_profit_per_unit",
+            value=None,
+            unit="RUB_PER_UNIT",
+            source_status="source_missing",
+            note="Нет объёма продаж.",
+        ),
+        _sales_diagnostic(
+            "cost_per_unit",
+            value=None,
+            unit="RUB_PER_UNIT",
+            source_status="source_missing",
+            note="Нет объёма продаж.",
+        ),
+        _sales_diagnostic(
+            "margin_gap_pp",
+            value=None,
+            unit="PERCENTAGE_POINT",
+            source_status=status,
+            note=note,
+        ),
+        _sales_diagnostic(
+            "stores_below_plan_count",
+            value=None,
+            unit="COUNT",
+            source_status=status,
+            note=note,
+        ),
+        _sales_diagnostic(
+            "managers_below_target_margin_count",
+            value=None,
+            unit="COUNT",
+            source_status=status,
+            note=note,
+        ),
+    ]
+
+
+def _sales_plan_context(
+    month: dict[str, Any] | None,
+    *,
+    plan_status: str,
+    plan_note: str | None,
+    scope_type: str,
+    scope_key: str | None,
+    plan_row: dict[str, Any] | None,
+    comparison_basis: str = "not_applicable",
+    comparison_revenue: Decimal | None = None,
+) -> ExecutiveSalesPlanContext | None:
+    if month is None:
+        return None
+    approved_revenue = _sales_plan_revenue(plan_row)
+    attainment = (
+        None
+        if approved_revenue in (None, Decimal("0")) or comparison_revenue is None
+        else comparison_revenue / approved_revenue
+    )
+    return ExecutiveSalesPlanContext(
+        source_status=plan_status,
+        period_month=str(month.get("period_month") or ""),
+        revision_no=int(month.get("revision_no") or 0) or None,
+        snapshot_id=str(month.get("snapshot_id") or "") or None,
+        frozen_at=month.get("frozen_at"),
+        scope_type=scope_type,
+        scope_key=scope_key,
+        approved_revenue=approved_revenue,
+        approved_margin_pct=_sales_plan_margin_ratio(plan_row),
+        approved_gross_profit=_sales_plan_gross_profit(plan_row),
+        comparison_basis=comparison_basis,
+        comparison_revenue=comparison_revenue,
+        plan_attainment_pct=attainment,
+        note=plan_note,
+    )
+
+
+def _sales_forecast_from_history_rows(
+    history_rows: list[OneCSalesDailyKpi],
     *,
     date_to: date,
     as_of: date,
-    store_ref: str | None,
-    manager_ref: str | None,
 ) -> tuple[dict[date, Decimal] | None, str, str | None]:
     if as_of >= date_to:
         return {}, "complete", "Месяц закрыт фактическими данными."
-    history_from = as_of - timedelta(days=28)
-    history_to = as_of - timedelta(days=1)
-    history_rows = _load_sales_rows(
-        session,
-        date_from=history_from,
-        date_to=history_to,
-        store_ref=store_ref,
-        manager_ref=manager_ref,
-    )
     if not history_rows:
         return None, "insufficient_history", "Для прогноза нужна история продаж за четыре недели."
-
     history_dates = {row.sales_date for row in history_rows}
     if (max(history_dates) - min(history_dates)).days < 21:
         return None, "insufficient_history", "Для прогноза нужна история продаж за четыре недели."
-
+    history_from = as_of - timedelta(days=28)
     values_by_date = _sales_rows_by_date(history_rows)
     forecast: dict[date, Decimal] = {}
     forecast_date = as_of + timedelta(days=1)
@@ -1772,6 +1959,97 @@ def _sales_forecast(
     )
 
 
+def _sales_forecast(
+    session: Session,
+    *,
+    date_to: date,
+    as_of: date,
+    store_ref: str | None,
+    manager_ref: str | None,
+) -> tuple[dict[date, Decimal] | None, str, str | None]:
+    history_from = as_of - timedelta(days=28)
+    history_to = as_of - timedelta(days=1)
+    history_rows = _load_sales_rows(
+        session,
+        date_from=history_from,
+        date_to=history_to,
+        store_ref=store_ref,
+        manager_ref=manager_ref,
+    )
+    return _sales_forecast_from_history_rows(
+        history_rows,
+        date_to=date_to,
+        as_of=as_of,
+    )
+
+
+def _sales_store_projections(
+    session: Session,
+    *,
+    current_rows: list[OneCSalesDailyKpi],
+    store_plans: dict[str, dict[str, Any]],
+    date_to: date,
+    as_of: date,
+    is_open_period: bool,
+    selected_store_ref: str | None,
+) -> tuple[dict[str, Decimal] | None, str, str | None]:
+    target_keys = [selected_store_ref] if selected_store_ref else sorted(store_plans)
+    if any(not key or key not in store_plans for key in target_keys):
+        return None, "partial", "Не найден frozen-план выбранного магазина."
+    if not selected_store_ref:
+        unplanned_actual_stores = sorted(
+            {
+                str(row.store_ref or "Без магазина")
+                for row in current_rows
+                if str(row.store_ref or "") not in store_plans and _decimal(row.revenue) != 0
+            }
+        )
+        if unplanned_actual_stores:
+            return (
+                None,
+                "partial",
+                "Не все магазины факта присутствуют во frozen-плане: "
+                + ", ".join(unplanned_actual_stores),
+            )
+    actual_by_store: dict[str, Decimal] = defaultdict(lambda: Decimal("0"))
+    for row in current_rows:
+        actual_by_store[str(row.store_ref or "")] += _decimal(row.revenue)
+    if not is_open_period:
+        return {key: actual_by_store.get(key, Decimal("0")) for key in target_keys}, "ready", None
+
+    history_from = as_of - timedelta(days=28)
+    history_rows = _load_sales_rows(
+        session,
+        date_from=history_from,
+        date_to=as_of - timedelta(days=1),
+    )
+    history_by_store: dict[str, list[OneCSalesDailyKpi]] = defaultdict(list)
+    for row in history_rows:
+        history_by_store[str(row.store_ref or "")].append(row)
+    projections: dict[str, Decimal] = {}
+    missing_forecast: list[str] = []
+    for key in target_keys:
+        forecast, status, _ = _sales_forecast_from_history_rows(
+            history_by_store.get(key, []),
+            date_to=date_to,
+            as_of=as_of,
+        )
+        if forecast is None or status not in {"ready", "complete"}:
+            missing_forecast.append(key)
+            continue
+        projections[key] = actual_by_store.get(key, Decimal("0")) + sum(
+            forecast.values(), Decimal("0")
+        )
+    if missing_forecast:
+        return (
+            None,
+            "partial",
+            "Не хватает четырёхнедельной истории для прогноза магазинов: "
+            + ", ".join(sorted(missing_forecast)),
+        )
+    return projections, "ready", None
+
+
 def build_executive_sales_period_response(
     session: Session,
     *,
@@ -1782,6 +2060,47 @@ def build_executive_sales_period_response(
     today: date | None = None,
 ) -> ExecutiveSalesPeriodResponse:
     current_day = today or date.today()
+    plan_month, plan_status, plan_note = _sales_plan_month_contract(
+        date_from=date_from,
+        date_to=date_to,
+    )
+    network_plan: dict[str, Any] | None = None
+    store_plans: dict[str, dict[str, Any]] = {}
+    if plan_month is not None:
+        try:
+            network_plan, store_plans = _sales_plan_contract_rows(plan_month)
+        except (ArithmeticError, TypeError, ValueError) as exc:
+            plan_status = "source_error"
+            plan_note = f"Frozen-план не прошёл проверку: {exc}"
+            network_plan = None
+            store_plans = {}
+    if manager_ref:
+        plan_scope_type = "manager"
+        plan_scope_key = manager_ref
+        scope_plan = None
+        scope_plan_note = "Для менеджеров утверждается целевая маржа, но не отдельный план выручки."
+    elif store_ref:
+        plan_scope_type = "store"
+        plan_scope_key = store_ref
+        scope_plan = store_plans.get(store_ref)
+        scope_plan_note = plan_note
+        if plan_month is not None and scope_plan is None:
+            plan_status = "partial"
+            scope_plan_note = f"В frozen-плане отсутствует магазин {store_ref}."
+            plan_note = scope_plan_note
+    else:
+        plan_scope_type = "network"
+        plan_scope_key = str((network_plan or {}).get("scope_key") or "network")
+        scope_plan = network_plan
+        scope_plan_note = plan_note
+    plan_context = _sales_plan_context(
+        plan_month,
+        plan_status=plan_status,
+        plan_note=scope_plan_note,
+        scope_type=plan_scope_type,
+        scope_key=plan_scope_key,
+        plan_row=scope_plan,
+    )
     is_open_period = date_from <= current_day <= date_to
     actual_limit = min(current_day, date_to)
     all_rows = _load_sales_rows(session, date_from=date_from, date_to=actual_limit)
@@ -1797,6 +2116,9 @@ def build_executive_sales_period_response(
         "date_from": date_from,
         "date_to": date_to,
         "generated_at": datetime.now(UTC),
+        "plan_status": plan_status,
+        "plan_note": plan_note,
+        "plan": plan_context,
         "stores": _sales_filter_options(
             all_rows,
             key_attr="store_ref",
@@ -1813,6 +2135,7 @@ def build_executive_sales_period_response(
             "source_table": "onec_sales_daily_kpi",
             "store_ref": store_ref,
             "manager_ref": manager_ref,
+            "plan_source": "sales_plan_monthly_snapshot",
         },
     }
     if not rows:
@@ -1822,6 +2145,7 @@ def build_executive_sales_period_response(
             freshness_status="missing",
             forecast_status="not_applicable",
             note="В onec_sales_daily_kpi нет строк продаж за выбранный период.",
+            diagnostic_kpis=_empty_sales_diagnostics(plan_status, plan_note),
         )
 
     as_of = max(row.sales_date for row in rows)
@@ -1921,6 +2245,230 @@ def build_executive_sales_period_response(
     note = "Факт продаж 1С; суммы включают отраженные в витрине возвраты."
     if source_status == "stale":
         note = f"Последняя строка продаж: {as_of.isoformat()}. {note}"
+
+    by_store = _sales_breakdown(
+        rows,
+        key_attr="store_ref",
+        label_attr="store_name",
+        fallback_label="Без магазина",
+    )
+    by_manager = _sales_breakdown(
+        rows,
+        key_attr="manager_ref",
+        label_attr="manager_name",
+        fallback_label="Без менеджера",
+    )
+
+    comparison_revenue = projected_revenue if is_open_period else _decimal(totals.get("revenue"))
+    comparison_basis = "forecast" if is_open_period else "actual"
+    if manager_ref:
+        comparison_revenue = None
+        comparison_basis = "manager_margin_only"
+    plan_context = _sales_plan_context(
+        plan_month,
+        plan_status=plan_status,
+        plan_note=scope_plan_note,
+        scope_type=plan_scope_type,
+        scope_key=plan_scope_key,
+        plan_row=scope_plan,
+        comparison_basis=comparison_basis,
+        comparison_revenue=comparison_revenue,
+    )
+
+    target_margin: Decimal | None = None
+    expected_gross_profit: Decimal | None = None
+    target_status = plan_status
+    target_note = plan_note
+    if plan_status in {"ready", "partial"} and store_plans:
+        target_margin, expected_gross_profit, target_status, target_note = _sales_target_for_rows(
+            rows,
+            store_plans,
+        )
+    if plan_context is not None and manager_ref and target_margin is not None:
+        plan_context.approved_margin_pct = target_margin
+        plan_context.note = scope_plan_note
+
+    sales_count = _decimal(totals.get("sales_count"))
+    gross_profit = _decimal(totals.get("gross_profit"))
+    revenue = _decimal(totals.get("revenue"))
+    cost_of_sales = revenue - gross_profit
+    gross_profit_per_unit = None if sales_count == 0 else gross_profit / sales_count
+    cost_per_unit = None if sales_count == 0 else cost_of_sales / sales_count
+    actual_margin = _optional_decimal(totals.get("gross_margin_pct"))
+    lost_gross_profit = (
+        None
+        if expected_gross_profit is None
+        else max(expected_gross_profit - gross_profit, Decimal("0"))
+    )
+    margin_gap_pp = (
+        None
+        if actual_margin is None or target_margin is None
+        else (actual_margin - target_margin) * Decimal("100")
+    )
+
+    store_projections: dict[str, Decimal] | None = None
+    store_metric_status = plan_status
+    store_metric_note = plan_note
+    stores_below_plan: int | None = None
+    stores_evaluated = 0
+    if manager_ref:
+        store_metric_status = "not_applicable"
+        store_metric_note = "План выручки не распределён по менеджерам."
+    elif plan_status in {"ready", "partial"} and store_plans:
+        store_projections, store_metric_status, store_metric_note = _sales_store_projections(
+            session,
+            current_rows=all_rows,
+            store_plans=store_plans,
+            date_to=date_to,
+            as_of=as_of,
+            is_open_period=is_open_period,
+            selected_store_ref=store_ref,
+        )
+        if store_projections is not None:
+            selected_store_keys = [store_ref] if store_ref else sorted(store_plans)
+            missing_plan_revenue = [
+                key
+                for key in selected_store_keys
+                if _sales_plan_revenue(store_plans.get(key)) is None
+            ]
+            if missing_plan_revenue:
+                store_metric_status = "partial"
+                store_metric_note = (
+                    "У магазинов отсутствует утверждённый план выручки: "
+                    + ", ".join(missing_plan_revenue)
+                )
+            else:
+                stores_evaluated = len(selected_store_keys)
+                stores_below_plan = sum(
+                    1
+                    for key in selected_store_keys
+                    if store_projections[key]
+                    < (_sales_plan_revenue(store_plans.get(key)) or Decimal("0"))
+                )
+
+    managers_by_key: dict[str, list[OneCSalesDailyKpi]] = defaultdict(list)
+    for row in rows:
+        managers_by_key[str(row.manager_ref or "")].append(row)
+    manager_targets: dict[str, tuple[Decimal, Decimal]] = {}
+    manager_metric_status = plan_status
+    manager_metric_note = plan_note
+    managers_below_target: int | None = None
+    if plan_status in {"ready", "partial"} and store_plans:
+        if not managers_by_key or "" in managers_by_key:
+            manager_metric_status = "partial"
+            manager_metric_note = "Не у всех продаж заполнен менеджер."
+        else:
+            manager_failures: list[str] = []
+            below_count = 0
+            for key, manager_rows in managers_by_key.items():
+                manager_target, _, manager_status, manager_note = _sales_target_for_rows(
+                    manager_rows,
+                    store_plans,
+                )
+                manager_actual = _optional_decimal(
+                    _sales_totals(manager_rows).get("gross_margin_pct")
+                )
+                if manager_status != "ready" or manager_target is None or manager_actual is None:
+                    manager_failures.append(f"{key}: {manager_note or manager_status}")
+                    continue
+                manager_targets[key] = (
+                    manager_target,
+                    (manager_actual - manager_target) * Decimal("100"),
+                )
+                if manager_actual < manager_target:
+                    below_count += 1
+            if manager_failures:
+                manager_metric_status = "partial"
+                manager_metric_note = "Не все менеджеры сопоставлены с целевой маржой."
+            else:
+                manager_metric_status = "ready"
+                manager_metric_note = None
+                managers_below_target = below_count
+
+    for item in by_store:
+        plan_row = store_plans.get(item.key)
+        plan_revenue = _sales_plan_revenue(plan_row)
+        projected = None if store_projections is None else store_projections.get(item.key)
+        item.meta.update(
+            {
+                "plan_status": (
+                    "ready" if plan_row is not None and plan_revenue is not None else plan_status
+                ),
+                "approved_revenue": plan_revenue,
+                "approved_margin_pct": _sales_plan_margin_ratio(plan_row),
+                "comparison_revenue": projected,
+                "plan_attainment_pct": (
+                    None
+                    if projected is None or plan_revenue in (None, Decimal("0"))
+                    else projected / plan_revenue
+                ),
+            }
+        )
+    for item in by_manager:
+        manager_target = manager_targets.get(item.key)
+        item.meta.update(
+            {
+                "plan_status": "ready" if manager_target is not None else manager_metric_status,
+                "approved_margin_pct": manager_target[0] if manager_target is not None else None,
+                "margin_gap_pp": manager_target[1] if manager_target is not None else None,
+            }
+        )
+
+    unit_status = "ready" if sales_count != 0 else "source_missing"
+    unit_note = None if sales_count != 0 else "Нет объёма продаж."
+    diagnostic_kpis = [
+        _sales_diagnostic(
+            "lost_gross_profit_margin_gap",
+            value=lost_gross_profit,
+            unit="RUB",
+            source_status=target_status,
+            note=target_note
+            or "Разница между целевой и фактической валовой прибылью на фактической выручке.",
+        ),
+        _sales_diagnostic(
+            "gross_profit_per_unit",
+            value=gross_profit_per_unit,
+            unit="RUB_PER_UNIT",
+            source_status=unit_status,
+            note=unit_note,
+        ),
+        _sales_diagnostic(
+            "cost_per_unit",
+            value=cost_per_unit,
+            unit="RUB_PER_UNIT",
+            source_status=unit_status,
+            note=unit_note,
+        ),
+        _sales_diagnostic(
+            "margin_gap_pp",
+            value=margin_gap_pp,
+            unit="PERCENTAGE_POINT",
+            source_status=target_status,
+            note=target_note,
+        ),
+        _sales_diagnostic(
+            "stores_below_plan_count",
+            value=stores_below_plan,
+            unit="COUNT",
+            source_status=store_metric_status,
+            note=store_metric_note,
+            meta={
+                "evaluated_count": stores_evaluated,
+                "comparison_basis": comparison_basis,
+            },
+        ),
+        _sales_diagnostic(
+            "managers_below_target_margin_count",
+            value=managers_below_target,
+            unit="COUNT",
+            source_status=manager_metric_status,
+            note=manager_metric_note,
+            meta={"evaluated_count": len(manager_targets)},
+        ),
+    ]
+    base_response["plan_status"] = plan_status
+    base_response["plan_note"] = plan_note
+    base_response["plan"] = plan_context
     return ExecutiveSalesPeriodResponse(
         **base_response,
         as_of=as_of,
@@ -1933,18 +2481,9 @@ def build_executive_sales_period_response(
         comparison=comparison,
         daily=daily,
         monthly=monthly,
-        by_store=_sales_breakdown(
-            rows,
-            key_attr="store_ref",
-            label_attr="store_name",
-            fallback_label="Без магазина",
-        ),
-        by_manager=_sales_breakdown(
-            rows,
-            key_attr="manager_ref",
-            label_attr="manager_name",
-            fallback_label="Без менеджера",
-        ),
+        diagnostic_kpis=diagnostic_kpis,
+        by_store=by_store,
+        by_manager=by_manager,
     )
 
 
@@ -2215,7 +2754,9 @@ def _build_management_balance_block(
         cash_metric.source_status if cash_metric is not None else money_block.source_status
     )
     owner_status = str((owner_cash_control_payload or {}).get("source_status") or "source_missing")
-    inventory_status = inventory_cost.source_status if inventory_cost is not None else "source_missing"
+    inventory_status = (
+        inventory_cost.source_status if inventory_cost is not None else "source_missing"
+    )
     source_status = _combine_source_status_strings(
         [cash_status, payables_status, owner_status, inventory_status]
     )
@@ -2616,9 +3157,7 @@ def _build_management_balance_block(
         freshness_status=_freshness_from_status(source_status),
         as_of=as_of,
         summary={
-            "source_anchor": (
-                "1С: деньги, взаиморасчёты и фактическая стоимость товарных партий"
-            ),
+            "source_anchor": ("1С: деньги, взаиморасчёты и фактическая стоимость товарных партий"),
             "period_independent": True,
             "selected_month": payables_as_of.strftime("%Y-%m") if payables_as_of else None,
             "monthly_balance_endpoint": ("/api/management/executive-dashboard/management-balance"),
@@ -3143,12 +3682,9 @@ def _quality_issues_for_period(
         if not isinstance(item, dict):
             continue
         issue_type = str(item.get("issue_type") or "manual_review")
-        is_open_owner_control = (
-            str(item.get("status") or "open") in {"open", "pending"}
-            and (
-                issue_type.startswith("owner_transfer_")
-                or issue_type == "owner_related_party_unresolved"
-            )
+        is_open_owner_control = str(item.get("status") or "open") in {"open", "pending"} and (
+            issue_type.startswith("owner_transfer_")
+            or issue_type == "owner_related_party_unresolved"
         )
         if not is_open_owner_control and not _date_in_range(
             item, date_from=date_from, date_to=date_to

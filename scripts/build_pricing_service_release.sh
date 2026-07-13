@@ -2,6 +2,7 @@
 set -euo pipefail
 
 SOURCE_ROOT="${PRICING_SERVICE_SOURCE_ROOT:-/opt/MM/pricing-service}"
+RUNTIME_ROOT="${PRICING_SERVICE_RUNTIME_ROOT:-/opt/MM/pricing-service}"
 RELEASE_ROOT="${PRICING_SERVICE_RELEASE_ROOT:-/opt/MM/releases/pricing-service}"
 PYTHON_BIN="${PRICING_SERVICE_PYTHON_BIN:-/opt/MM/pricing-service/.venv/bin/python}"
 RELEASE_NAME="${1:-architecture-hardening-$(date +%Y%m%d-%H%M%S)}"
@@ -39,10 +40,10 @@ rsync -a \
   "$SOURCE_ROOT/" "$TEMP_DIR/"
 
 for mutable_name in .local .artifacts build data reports; do
-  mkdir -p "$SOURCE_ROOT/$mutable_name"
-  ln -s "$SOURCE_ROOT/$mutable_name" "$TEMP_DIR/$mutable_name"
+  mkdir -p "$RUNTIME_ROOT/$mutable_name"
+  ln -s "$RUNTIME_ROOT/$mutable_name" "$TEMP_DIR/$mutable_name"
 done
-ln -s "$SOURCE_ROOT/.env" "$TEMP_DIR/.env"
+ln -s "$RUNTIME_ROOT/.env" "$TEMP_DIR/.env"
 
 source_commit="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
 alembic_revision="$(

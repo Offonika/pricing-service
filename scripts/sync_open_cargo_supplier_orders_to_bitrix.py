@@ -13,12 +13,13 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+from app.infrastructure.db.engines import build_engine  # noqa: E402
 from app.services.procurement_supplier_crm import (  # noqa: E402
     normalize_procurement_contour,
     procurement_stage_key,
@@ -345,7 +346,7 @@ def fetch_open_supplier_orders(
         ORDER BY doc._Date_Time DESC
         """)
     params["balance_period"] = datetime.fromisoformat(OPEN_BALANCE_PERIOD)
-    engine = create_engine(onec_database_url, pool_pre_ping=True)
+    engine = build_engine(onec_database_url, pool_pre_ping=True)
     with engine.connect() as conn:
         rows = [dict(row) for row in conn.execute(sql, params).mappings()]
     if fail_on_query_limit and len(rows) >= limit:

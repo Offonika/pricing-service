@@ -400,9 +400,7 @@ class Settings(BaseSettings):
         "config/assortment/display-manual-overrides.json"
     )
     procurement_order_formation_entity_type_id: int | None = None
-    procurement_order_formation_mapping_path: str = (
-        "build/bitrix/order_formation_mapping.json"
-    )
+    procurement_order_formation_mapping_path: str = "build/bitrix/order_formation_mapping.json"
     procurement_order_formation_bitrix_enabled: bool = False
     procurement_order_formation_bitrix_allowed_domains: Annotated[list[str], NoDecode] = Field(
         default_factory=list
@@ -416,12 +414,12 @@ class Settings(BaseSettings):
     procurement_order_formation_bitrix_session_secret: str | None = None
     procurement_order_formation_bitrix_session_ttl_seconds: int = 3600
     procurement_order_formation_bitrix_rest_timeout_seconds: float = 6.0
-    procurement_order_formation_classification_approver_user_ids: Annotated[
-        list[str], NoDecode
-    ] = Field(default_factory=lambda: ["130757", "4241"])
-    procurement_order_formation_lifecycle_approver_user_ids: Annotated[
-        list[str], NoDecode
-    ] = Field(default_factory=lambda: ["130757", "4241"])
+    procurement_order_formation_classification_approver_user_ids: Annotated[list[str], NoDecode] = (
+        Field(default_factory=lambda: ["130757", "4241"])
+    )
+    procurement_order_formation_lifecycle_approver_user_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["130757", "4241"]
+    )
     procurement_order_formation_display_responsible_user_id: str = "130757"
     procurement_order_formation_property_apply_enabled: bool = False
     procurement_order_formation_onec_apply_enabled: bool = False

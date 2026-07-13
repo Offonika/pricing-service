@@ -217,7 +217,9 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     repo = args.repo.resolve()
-    python = args.python.resolve()
+    python = args.python.expanduser()
+    if not python.is_absolute():
+        python = (Path.cwd() / python).absolute()
     if not python.is_file():
         raise ValueError(f"python runner does not exist: {python}")
 

@@ -15,7 +15,7 @@ from benchmark_llm_context import parse_events, validate_run_label
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT = Path("/data/llm-context-bench/results")
-DEFAULT_WORKTREES = Path("/data/llm-context-bench/worktrees")
+DEFAULT_WORKTREES = Path("/opt/MM/.local/worktrees/llm-context-smoke")
 DEFAULT_PYTHON = Path("/opt/MM/pricing-service/.venv/bin/python")
 
 

@@ -14,6 +14,8 @@
 7. `specs/README.md` — lifecycle новых крупных спецификаций проекта.
 8. `specs/pricing-service-architecture-hardening.md` — принятый план архитектурного
    оздоровления, вывода устаревшего источника и усиления границ между проектами.
+9. `registry/cli-jobs.json` — обязательные owner/dry-run/idempotency/side-effect
+   metadata для постоянных CLI и одноразовых backfill-команд.
 
 ## Основные домены
 

@@ -186,10 +186,13 @@ def test_empty_rule_set_is_partial_not_ready(
     )
 
     assert result["source_status"] == "partial"
-    assert service_accrual_balance_adjustments(
-        db_session,
-        as_of=date(2026, 7, 12),
-    )["source_status"] == "partial"
+    assert (
+        service_accrual_balance_adjustments(
+            db_session,
+            as_of=date(2026, 7, 12),
+        )["source_status"]
+        == "partial"
+    )
 
 
 def test_profit_loss_replaces_cash_payment_with_accrual_without_double_count(

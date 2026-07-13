@@ -20,6 +20,8 @@ DOMAIN_NAMES = {
     "telephony",
 }
 TEXT_SUFFIXES = {".py", ".md", ".sh", ".yml", ".yaml", ".toml", ".example"}
+
+
 def _text_files(root: Path) -> list[Path]:
     files: list[Path] = []
     for relative_root in ("app", "tasks", "infra", "scripts", "tests", "docs"):

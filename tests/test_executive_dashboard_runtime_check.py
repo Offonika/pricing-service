@@ -93,13 +93,6 @@ def _payloads() -> dict[str, dict]:
             "total_count": 0,
             "items": [],
         },
-        "service_accruals": {
-            "month": "2026-07",
-            "source_status": "ready",
-            "freshness_status": "fresh",
-            "total_count": 0,
-            "items": [],
-        },
     }
 
 
@@ -306,9 +299,7 @@ def test_monitor_allows_procurement_grace_period_but_fails_after_1100() -> None:
 def test_monitor_owner_control_warning_before_1145_and_error_after() -> None:
     payloads = _payloads()
     next(
-        block
-        for block in payloads["dashboard"]["blocks"]
-        if block["key"] == "creditors_payables"
+        block for block in payloads["dashboard"]["blocks"] if block["key"] == "creditors_payables"
     ).update(source_status="partial", freshness_status="partial")
     payloads["cashflow"].update(
         source_status="partial",

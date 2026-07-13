@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pricing Service Workflows"
+  short_description: "Routes pricing-service work to the right role"
+  default_prompt: "Use $pricing-service-workflows to select the minimal workflow and checks for this pricing-service task."

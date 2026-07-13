@@ -6,6 +6,9 @@ name: Docs manifest
     paths:
       - "README.md"
       - "AGENTS.md"
+      - ".agents/**"
+      - ".codex/config.toml"
+      - ".cbmignore"
       - "docs/index.md"
       - "docs/manifest.yml"
       - "docs/specs/**"
@@ -15,6 +18,9 @@ name: Docs manifest
     paths:
       - "README.md"
       - "AGENTS.md"
+      - ".agents/**"
+      - ".codex/config.toml"
+      - ".cbmignore"
       - "docs/index.md"
       - "docs/manifest.yml"
       - "docs/specs/**"

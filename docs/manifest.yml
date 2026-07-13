@@ -21,6 +21,40 @@ documents:
     related_code: [app/, tasks/]
     related_tests: [tests/]
     keywords: [agents, workflow, codex]
+  - path: .agents/skills/pricing-service-workflows/SKILL.md
+    title: Pricing Service Workflows Skill
+    doc_type: agent_skill
+    domain: governance
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code:
+      - .agents/skills/pricing-service-workflows/references/
+      - app/
+      - tasks/
+      - infra/
+    related_tests: [tests/]
+    keywords: [agents, skill, workflow, routing, progressive-disclosure]
+  - path: .codex/config.toml
+    title: Pricing Service Codex Project Config
+    doc_type: project_config
+    domain: tooling
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [.agents/skills/pricing-service-workflows/]
+    related_tests: []
+    keywords: [codex, reasoning, medium, project-config]
+  - path: .cbmignore
+    title: Codebase Memory Index Exclusions
+    doc_type: tooling_config
+    domain: tooling
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/, tasks/, scripts/, infra/]
+    related_tests: [tests/]
+    keywords: [codebase-memory, graph, index, exclusions, generated-artifacts]
   - path: openapi.yaml
     title: Pricing Service OpenAPI
     doc_type: openapi

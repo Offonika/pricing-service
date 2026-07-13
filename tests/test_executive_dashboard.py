@@ -803,18 +803,16 @@ def test_management_balance_places_assets_and_liabilities_on_their_sides(
     metrics = {metric.key: metric.value for metric in block.metrics}
     assert block.title == "Управленческий баланс"
     assert metrics == {
-        "balance_assets_total": Decimal("1680.00"),
-        "balance_liabilities_total": Decimal("230.00"),
+        "balance_assets_total": Decimal("1650.00"),
+        "balance_liabilities_total": Decimal("200.00"),
     }
     assert [row["amount"] for row in block.summary["balance_assets"]] == [
         "500.00",
         "1000.00",
-        "100.00",
+        "80.00",
         "50.00",
-        "30.00",
-        "0.00",
-        None,
-        None,
+        "20.00",
+        "0",
     ]
     assert block.summary["balance_assets"][1]["source_status"] == "ready"
     assert (
@@ -822,18 +820,17 @@ def test_management_balance_places_assets_and_liabilities_on_their_sides(
         == "1С УТ 10.3: ПартииТоваровНаСкладах.СтоимостьОстаток"
     )
     assert [row["amount"] for row in block.summary["balance_liabilities"]] == [
-        "20.00",
-        "0.00",
-        "10.00",
+        "0",
+        "0",
+        "0",
         "200.00",
-        None,
     ]
     assert block.summary["balance_assets"][2]["label"] == "Дебиторка поставщиков"
     assert block.summary["balance_assets"][4]["label"] == "Прочие дебиторы"
     assert block.summary["balance_liabilities"][3]["label"] == "Задолженность собственникам"
 
 
-def test_management_balance_includes_owner_transit_and_dividends(
+def test_management_balance_does_not_activate_unreleased_owner_cash_formula(
     db_session: Session,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -892,12 +889,10 @@ def test_management_balance_includes_owner_transit_and_dividends(
     assets = {row["key"]: row for row in block.summary["balance_assets"]}
     liabilities = {row["key"]: row for row in block.summary["balance_liabilities"]}
     equity = {row["key"]: row for row in block.summary["balance_equity"]}
-    assert assets["owner_cash_in_transit"]["amount"] == "200000.00"
-    assert assets["owner_related_party_unresolved"]["amount"] == "87880.00"
-    assert liabilities["owner_funds_unclassified"]["amount"] == "0.00"
-    assert equity["dividends_paid_ytd"]["amount"] == "-13415228.19"
-    assert equity["dividends_paid_ytd"]["adjustment_amount"] == "-100000.00"
-    assert "Зарплата" in equity["dividends_paid_ytd"]["note"]
+    assert "owner_cash_in_transit" not in assets
+    assert "owner_related_party_unresolved" not in assets
+    assert "owner_funds_unclassified" not in liabilities
+    assert "dividends_paid_ytd" not in equity
 
 
 def test_dashboard_accepts_yesterday_within_configured_lag(
@@ -1924,7 +1919,7 @@ def test_cashflow_period_response_aggregates_period_cache(
     assert result.quality_issues[0].issue_label == "Документ без статьи ДДС"
 
 
-def test_cashflow_owner_issue_is_linked_and_marks_response_partial(
+def test_cashflow_owner_issue_keeps_live_status_and_contract(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1957,12 +1952,12 @@ def test_cashflow_owner_issue_is_linked_and_marks_response_partial(
         date_to=date(2026, 6, 28),
     )
 
-    assert result.source_status == "partial"
+    assert result.source_status == "ready"
     issue = result.quality_issues[0]
-    assert issue.document_number == "РБГУ0151620"
-    assert issue.bitrix_task_id == "960"
-    assert issue.task_status == "completed"
-    assert issue.drilldown_url and issue.drilldown_url.endswith("/960/")
+    assert issue.document_number is None
+    assert issue.bitrix_task_id is None
+    assert issue.task_status is None
+    assert issue.drilldown_url is None
 
 
 def test_profit_loss_period_api_forbids_user_without_money_access(

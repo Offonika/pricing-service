@@ -287,23 +287,6 @@ def _load_warehouse_snapshot() -> tuple[dict[str, Any] | None, str, str]:
     return payload, str(payload.get("source_status") or "ready"), str(path)
 
 
-def _resolve_owner_cash_control_snapshot_path() -> Path:
-    return _resolve_shared_path(get_settings().executive_dashboard_owner_cash_control_snapshot_path)
-
-
-def _load_owner_cash_control_snapshot() -> tuple[dict[str, Any] | None, str, str]:
-    path = _resolve_owner_cash_control_snapshot_path()
-    if not path.exists():
-        return None, "source_missing", f"owner cash control snapshot is not found: {path}"
-    try:
-        payload = read_json_contract(path)
-    except (OSError, json.JSONDecodeError, ContractIntegrityError) as exc:
-        return None, "source_error", f"owner cash control snapshot is not readable: {exc}"
-    if not isinstance(payload, dict):
-        return None, "source_error", "owner cash control snapshot root must be an object"
-    return payload, str(payload.get("source_status") or "ready"), str(path)
-
-
 def _resolve_sales_plan_snapshot_path() -> Path:
     return _resolve_shared_path(get_settings().executive_dashboard_sales_plan_snapshot_path)
 
@@ -2665,23 +2648,18 @@ def _settlement_group_amount(
 ) -> Decimal | None:
     for group in section.get("groups") or []:
         if isinstance(group, dict) and group.get("key") == group_key:
-            # Assets and liabilities are gross balances by counterparty. They
-            # must not be netted between different employees, suppliers or
-            # organizations. Legacy total_payable is used only as a fallback
-            # for contracts that do not yet publish both gross sides.
-            liability = group.get("liability_amount", group.get("gross_payable"))
-            asset = group.get("asset_amount", group.get("reverse_balance"))
-            if liability not in (None, "") and asset not in (None, ""):
-                return _decimal(asset if side == "asset" else liability)
             total = group.get("total_payable")
-            if total in (None, ""):
-                return None
-            net_liability = _decimal(total)
-            return (
-                max(-net_liability, Decimal("0"))
-                if side == "asset"
-                else max(net_liability, Decimal("0"))
-            )
+            if total not in (None, ""):
+                net_liability = _decimal(total)
+            else:
+                liability = group.get("liability_amount", group.get("gross_payable"))
+                asset = group.get("asset_amount", group.get("reverse_balance"))
+                if liability in (None, "") or asset in (None, ""):
+                    return None
+                net_liability = _decimal(liability) - _decimal(asset)
+            if side == "asset":
+                return max(-net_liability, Decimal("0"))
+            return max(net_liability, Decimal("0"))
     return None
 
 
@@ -2739,7 +2717,6 @@ def _settlement_group_signed_rows(section: dict[str, Any], *, group_key: str) ->
 def _build_management_balance_block(
     session: Session,
     finance_payload: dict[str, Any] | None,
-    owner_cash_control_payload: dict[str, Any] | None,
     inventory_cost: OneCInventoryCostSnapshot | None,
     inventory_note: str,
     *,
@@ -2753,13 +2730,10 @@ def _build_management_balance_block(
     cash_status = (
         cash_metric.source_status if cash_metric is not None else money_block.source_status
     )
-    owner_status = str((owner_cash_control_payload or {}).get("source_status") or "source_missing")
     inventory_status = (
         inventory_cost.source_status if inventory_cost is not None else "source_missing"
     )
-    source_status = _combine_source_status_strings(
-        [cash_status, payables_status, owner_status, inventory_status]
-    )
+    source_status = _combine_source_status_strings([cash_status, payables_status, inventory_status])
     masked = any(
         _mask_finance(block_key, access_context)
         for block_key in ("money_today", "creditors_payables")
@@ -2812,37 +2786,6 @@ def _build_management_balance_block(
         group_key="owners",
         side="liability",
     )
-    owner_summary = (
-        owner_cash_control_payload.get("summary")
-        if isinstance(owner_cash_control_payload, dict)
-        and isinstance(owner_cash_control_payload.get("summary"), dict)
-        else {}
-    )
-    owner_source_available = owner_cash_control_payload is not None
-    owner_as_of = _as_date((owner_cash_control_payload or {}).get("as_of"))
-    owner_cash_in_transit = (
-        _decimal(owner_summary.get("money_in_transit_asset")) if owner_source_available else None
-    )
-    owner_related_party_asset = (
-        _decimal(owner_summary.get("unresolved_related_party_asset"))
-        if owner_source_available
-        else None
-    )
-    owner_related_party_liability = (
-        _decimal(owner_summary.get("unresolved_related_party_liability"))
-        if owner_source_available
-        else None
-    )
-    owner_unclassified_funds = (
-        _decimal(owner_summary.get("unclassified_owner_funds_liability"))
-        if owner_source_available
-        else None
-    )
-    dividends_ytd = _decimal(owner_summary.get("dividends_ytd")) if owner_source_available else None
-    dividends_month = (
-        _decimal(owner_summary.get("dividends_current_month")) if owner_source_available else None
-    )
-    dividend_warning_count = int(owner_summary.get("dividend_comment_warning_count") or 0)
     legal_entity_rows = _settlement_group_signed_rows(
         section,
         group_key="legal_entities",
@@ -2936,24 +2879,6 @@ def _build_management_balance_block(
             as_of=payables_as_of,
             masked=masked,
         ),
-        _balance_line(
-            key="owner_cash_in_transit",
-            label="Деньги в пути через собственника",
-            amount=owner_cash_in_transit,
-            source_status=owner_status,
-            as_of=owner_as_of,
-            masked=masked,
-            note="Незакрытые исходящие переводы ПП → карта собственника → ПКО",
-        ),
-        _balance_line(
-            key="owner_related_party_unresolved",
-            label="Неразобранные расчёты со связанными сторонами",
-            amount=owner_related_party_asset,
-            source_status=owner_status,
-            as_of=owner_as_of,
-            masked=masked,
-            note="Включает спорный остаток по ИП Ахмедову",
-        ),
     ]
     liabilities = [
         _balance_line(
@@ -2987,19 +2912,6 @@ def _build_management_balance_block(
             source_status=payables_status,
             as_of=payables_as_of,
             masked=masked,
-        ),
-        _balance_line(
-            key="owner_funds_unclassified",
-            label="Средства собственника, назначение не определено",
-            amount=(
-                None
-                if owner_unclassified_funds is None or owner_related_party_liability is None
-                else owner_unclassified_funds + owner_related_party_liability
-            ),
-            source_status=owner_status,
-            as_of=owner_as_of,
-            masked=masked,
-            note="Незакрытые входящие ПКО и кредитовые остатки связанных сторон",
         ),
     ]
     if has_service_settlements:
@@ -3062,8 +2974,6 @@ def _build_management_balance_block(
                 employee_receivable,
                 other_receivable,
                 owner_receivable,
-                owner_cash_in_transit,
-                owner_related_party_asset,
             )
             if amount is not None
         ),
@@ -3078,8 +2988,6 @@ def _build_management_balance_block(
                 employee_payable,
                 other_payable,
                 owner_payable,
-                owner_unclassified_funds,
-                owner_related_party_liability,
             )
             if amount is not None
         ),
@@ -3090,44 +2998,12 @@ def _build_management_balance_block(
         for value in (
             cash_as_of,
             payables_as_of,
-            owner_as_of,
             inventory_cost.as_of if inventory_cost is not None else None,
         )
         if value
     ]
     as_of = max(source_dates) if source_dates else None
     equity_lines = []
-    accounting_includes_dividends = bool(
-        get_settings().executive_management_balance_accounting_database_url
-    )
-    if dividends_ytd or owner_status != "ready":
-        warning_note = (
-            f"; {dividend_warning_count} РКО имеют комментарий «Зарплата»"
-            if dividend_warning_count
-            else ""
-        )
-        equity_lines.append(
-            _balance_line(
-                key="dividends_paid_ytd",
-                label="Выплаченные дивиденды",
-                amount=-dividends_ytd if dividends_ytd is not None else None,
-                source_status=owner_status,
-                as_of=owner_as_of,
-                masked=masked,
-                include_in_total=not accounting_includes_dividends,
-                adjustment_amount=(str(-dividends_month) if dividends_month is not None else None),
-                note=(
-                    "Накопительно с начала года; выплата месяца "
-                    f"{dividends_month or Decimal('0')} ₽{warning_note}"
-                    + (
-                        "; информационно — капитал уже берётся из КА/БП"
-                        if accounting_includes_dividends
-                        else ""
-                    )
-                ),
-                recognition_method="equity_distribution",
-            )
-        )
     if has_service_settlements:
         equity_lines.append(
             _balance_line(
@@ -3141,15 +3017,6 @@ def _build_management_balance_block(
                 estimated_count=int(accrual_adjustments["estimated_count"]),
             )
         )
-    equity_total = sum(
-        (
-            _decimal(item.get("amount"))
-            for item in equity_lines
-            if item.get("amount") is not None and item.get("include_in_total", True)
-        ),
-        Decimal("0"),
-    )
-    liabilities_and_equity_total = liabilities_total + equity_total
     return ExecutiveDashboardBlock(
         key="creditors_payables",
         title="Управленческий баланс",
@@ -3171,11 +3038,9 @@ def _build_management_balance_block(
             "balance_liabilities": liabilities,
             "balance_equity": equity_lines,
             "balance_assets_total_label": "Итого подключенные активы",
-            "balance_liabilities_total_label": "Итого обязательства и собственные средства",
+            "balance_liabilities_total_label": "Итого подключенные пассивы",
             "balance_assets_total": None if masked else str(assets_total),
-            "balance_liabilities_total": (None if masked else str(liabilities_and_equity_total)),
-            "balance_obligations_total": None if masked else str(liabilities_total),
-            "balance_equity_total": None if masked else str(equity_total),
+            "balance_liabilities_total": None if masked else str(liabilities_total),
         },
         metrics=[
             _metric(
@@ -3189,8 +3054,8 @@ def _build_management_balance_block(
             ),
             _metric(
                 "balance_liabilities_total",
-                "Обязательства и собственные средства",
-                liabilities_and_equity_total,
+                "Пассивы по подключенным статьям",
+                liabilities_total,
                 unit="RUB",
                 tone="warning",
                 masked=masked,
@@ -3679,14 +3544,7 @@ def _quality_issues_for_period(
         )
     issues: list[ExecutiveCashflowQualityIssue] = []
     for item in raw_issues if isinstance(raw_issues, list) else []:
-        if not isinstance(item, dict):
-            continue
-        issue_type = str(item.get("issue_type") or "manual_review")
-        is_open_owner_control = str(item.get("status") or "open") in {"open", "pending"} and (
-            issue_type.startswith("owner_transfer_")
-            or issue_type == "owner_related_party_unresolved"
-        )
-        if not is_open_owner_control and not _date_in_range(
+        if not isinstance(item, dict) or not _date_in_range(
             item, date_from=date_from, date_to=date_to
         ):
             continue
@@ -3696,7 +3554,7 @@ def _quality_issues_for_period(
         issues.append(
             ExecutiveCashflowQualityIssue(
                 issue_key=str(item.get("issue_key") or ""),
-                issue_type=issue_type,
+                issue_type=str(item.get("issue_type") or "manual_review"),
                 issue_label=str(
                     item.get("issue_label") or item.get("issue_type") or "Ручная проверка"
                 ),
@@ -3706,16 +3564,6 @@ def _quality_issues_for_period(
                 description=item.get("description") or item.get("description_ru"),
                 proposed_action=item.get("proposed_action") or item.get("proposed_action_ru"),
                 status=str(item.get("status") or "open"),
-                document_number=(
-                    str(item.get("document_number")) if item.get("document_number") else None
-                ),
-                bitrix_task_id=(
-                    str(item.get("bitrix_task_id")) if item.get("bitrix_task_id") else None
-                ),
-                task_status=(str(item.get("task_status")) if item.get("task_status") else None),
-                drilldown_url=(
-                    str(item.get("drilldown_url")) if item.get("drilldown_url") else None
-                ),
             )
         )
     return issues
@@ -3815,22 +3663,6 @@ def build_executive_cashflow_period_response(
         effective_status = "source_missing" if effective_status == "ready" else effective_status
     elif period_outside_cache:
         effective_status = "stale"
-    owner_control_issues = [
-        issue
-        for issue in issues
-        if issue.status in {"open", "pending"}
-        and (
-            issue.issue_type.startswith("owner_transfer_")
-            or issue.issue_type == "owner_related_party_unresolved"
-            or issue.issue_type == "owner_transfer_control_pending"
-        )
-    ]
-    if effective_status == "ready" and any(
-        issue.severity in {"high", "critical"}
-        or issue.issue_type == "owner_transfer_control_pending"
-        for issue in owner_control_issues
-    ):
-        effective_status = "partial"
     effective_freshness = (
         "stale" if period_outside_cache and rows else _freshness_from_status(effective_status)
     )
@@ -4198,7 +4030,6 @@ def build_executive_dashboard(
     )
     finance_payload, finance_source_status, finance_note = _load_finance_snapshot()
     warehouse_payload, warehouse_source_status, warehouse_note = _load_warehouse_snapshot()
-    owner_payload, owner_source_status, owner_note = _load_owner_cash_control_snapshot()
     inventory_cost, inventory_note = _load_onec_inventory_cost(requested_date)
     persisted = _latest_persisted_snapshot(session, requested_date=requested_date)
     persisted_actions = list_executive_actions(
@@ -4247,7 +4078,6 @@ def build_executive_dashboard(
         _build_management_balance_block(
             session,
             finance_payload,
-            owner_payload,
             inventory_cost,
             inventory_note,
             requested_date=requested_date,
@@ -4270,11 +4100,6 @@ def build_executive_dashboard(
             }:
                 block.summary["finance_snapshot_status"] = finance_source_status
                 block.summary["finance_snapshot_note"] = finance_note
-    if owner_payload is None:
-        balance = next((block for block in blocks if block.key == "creditors_payables"), None)
-        if balance is not None:
-            balance.summary["owner_cash_control_status"] = owner_source_status
-            balance.summary["owner_cash_control_note"] = owner_note
     if warehouse_payload is None:
         for block in blocks:
             if block.key == "warehouse_operations":

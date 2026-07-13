@@ -1,47 +1,49 @@
 # Pricing Service — правила для AI-агентов
 
 Этот файл задаёт короткие обязательные правила для репозитория `pricing-service`.
-Подробные ролевые workflow вынесены в skill
-`$pricing-service-workflows` и читаются только при совпадении задачи.
+Подробные workflow изменений вынесены в `$pricing-service-workflows` и не загружаются
+для простой read-only навигации.
 
 ## 1. Быстрый старт
 
-1. Из `/opt/MM` запусти маршрутизатор:
+1. Сначала определи режим:
+   - `navigation` — найти, объяснить, проверить статус или показать код/тесты без правки;
+   - `implementation` — изменить код, документацию, конфигурацию или тесты.
+   Неоднозначный запрос считай `navigation`, пока пользователь явно не попросил изменить.
+2. Сохрани текущий checkout и из `/opt/MM` запусти маршрутизатор. Для `navigation`:
 
    ```bash
+   repo_root="$(git rev-parse --show-toplevel)"
+   cd /opt/MM
    python scripts/mm_context.py \
      --query "<текст задачи>" \
      --project auto \
-     --limit 8 \
-     --max-bytes 12288 \
-     --format text
+     --limit 3 \
+     --max-bytes 6144 \
+     --format text \
+     --project-root "pricing-service=$repo_root"
    ```
 
-2. Если `requires_manual_routing=true`, сверь кандидатов с `/opt/MM/AGENTS.md` и
+3. Для `implementation` используй ту же команду с `--limit 8 --max-bytes 12288`,
+   затем вызови `$pricing-service-workflows` и прочитай один основной reference.
+   Второй reference допустим только для реально междоменной задачи.
+4. Если `requires_manual_routing=true`, сверь кандидатов с `/opt/MM/AGENTS.md` и
    повтори команду с `--project pricing-service`.
-3. Прочитай только документы, код и тесты, возвращённые маршрутизатором.
-   Полный `docs/manifest.yml` открывай только при изменении documentation governance
-   или самого маршрутизатора.
-4. Используй `$pricing-service-workflows`, выбери одну основную роль и открой её
-   reference. Для междоменной задачи разрешена одна дополнительная роль.
-5. Если указан `TASK_ID`, найди соответствующий `tasks/TASK_ID-*.md`. Если задача
-   выбирается из плана, возьми только одну незавершённую задачу из `docs/plan.md`.
-6. Перед изменением прочитай фактический исходник, после изменения запусти адресные
-   тесты и обязательные проверки.
+5. Читай только возвращённые документы, код и тесты. Полный `docs/manifest.yml`
+   открывай только при изменении documentation governance или router.
+6. Если указан `TASK_ID`, найди `tasks/TASK_ID-*.md`. Перед изменением прочитай
+   исходник, после изменения запусти адресные тесты и обязательные проверки.
 
-## 2. Выбор workflow
+## 2. Read-only навигация
 
-| Задача | Основная роль | Reference |
-| --- | --- | --- |
-| Архитектура, границы модулей, схема БД, интеграционный контракт | `pricing-architect` | `.agents/skills/pricing-service-workflows/references/pricing-architect.md` |
-| FastAPI, сервисы, схемы, бизнес-логика | `pricing-backend` | `.agents/skills/pricing-service-workflows/references/pricing-backend.md` |
-| Импорт, очистка, нормализация, внешние данные | `pricing-data` | `.agents/skills/pricing-service-workflows/references/pricing-data.md` |
-| Формулы и правила ценообразования | `pricing-strategies` | `.agents/skills/pricing-service-workflows/references/pricing-strategies.md` |
-| Telegram UX и интеграция бота с API | `pricing-telegram` | `.agents/skills/pricing-service-workflows/references/pricing-telegram.md` |
-| CI/CD, контейнеры, cron, окружения | `pricing-devops` | `.agents/skills/pricing-service-workflows/references/pricing-devops.md` |
-| PRD, specs, plan, manifest, runbooks | `pricing-docs` | `.agents/skills/pricing-service-workflows/references/pricing-docs.md` |
-| Небольшая локальная правка без явного домена | `pricing-universal` | `.agents/skills/pricing-service-workflows/references/pricing-universal.md` |
-| Исследование рынка, модели устройств, спрос | `pricing-market-research` | `.agents/skills/pricing-service-workflows/references/pricing-market-research.md` |
+- Не загружай `$pricing-service-workflows` и его references.
+- Мягкий ориентир: до 8 tool calls, один canonical document, до трёх code paths и
+  трёх test paths. Превышай его только когда иначе нельзя подтвердить корректность.
+- Сначала используй пути и термины router. Предпочитай `rg -l` или
+  `rg -n --max-count 20`; не запускай широкий `rg` по `.`, `app` или `tests` без
+  адресного glob/path. Открывай окна `sed` не более 160 строк и расширяй постепенно.
+- Остановись, когда найдены canonical документ, фактический код и релевантный тест;
+  не собирай дополнительный контекст «на всякий случай».
 
 ## 3. Инварианты и безопасность
 
@@ -63,11 +65,10 @@
 - `pricing-service` — отдельный вложенный Git-репозиторий. Git-операции выполняй
   внутри него и не включай изменения соседних проектов в один коммит.
 
-## 4. Контекст
+## 4. Контекст изменений
 
-- Сначала используй адресные `rg`, имена функций, эндпоинтов и тестов. Не загружай
-  целиком логи, выгрузки, большие CSV/JSON/XML, локальные БД и generated artifacts.
-- Перед правкой обязательно открой исходник; после правки проверь поведение тестами.
+- Не загружай целиком логи, выгрузки, большие CSV/JSON/XML, локальные БД и generated
+  artifacts. Перед правкой обязательно открой исходник; после правки проверь тестами.
 
 ## 5. Проверки
 

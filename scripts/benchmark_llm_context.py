@@ -96,7 +96,22 @@ def codex_command(
     ]
     env = os.environ.copy()
     if mode == "graph":
-        command = [str(repo / "scripts" / "codex_cbm_pilot.sh"), *common]
+        cbm_bin = env.get("CBM_BIN", str(Path.home() / ".local" / "bin" / "codebase-memory-mcp"))
+        cache_dir = env.get("CBM_CACHE_DIR", "/data/llm-context-bench/cbm-cache")
+        command = [
+            "codex",
+            "-c",
+            f"mcp_servers.codebase_memory_pilot.command={json.dumps(cbm_bin)}",
+            "-c",
+            "mcp_servers.codebase_memory_pilot.env="
+            f"{{CBM_ALLOWED_ROOT={json.dumps(str(repo))},"
+            f"CBM_CACHE_DIR={json.dumps(cache_dir)}}}",
+            "-c",
+            "mcp_servers.codebase_memory_pilot.enabled_tools="
+            '["index_repository","index_status","search_graph","trace_path",'
+            '"detect_changes","get_code_snippet","get_architecture"]',
+            *common,
+        ]
     else:
         command = ["codex", *common]
     return command, env

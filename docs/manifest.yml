@@ -45,16 +45,6 @@ documents:
     related_code: [.agents/skills/pricing-service-workflows/]
     related_tests: []
     keywords: [codex, reasoning, medium, project-config]
-  - path: .cbmignore
-    title: Codebase Memory Index Exclusions
-    doc_type: tooling_config
-    domain: tooling
-    status: active
-    owner: engineering
-    source_of_truth: true
-    related_code: [app/, tasks/, scripts/, infra/]
-    related_tests: [tests/]
-    keywords: [codebase-memory, graph, index, exclusions, generated-artifacts]
   - path: openapi.yaml
     title: Pricing Service OpenAPI
     doc_type: openapi

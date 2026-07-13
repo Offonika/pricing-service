@@ -3,6 +3,7 @@ set -euo pipefail
 
 SOURCE_ROOT="${PRICING_SERVICE_SOURCE_ROOT:-/opt/MM/pricing-service}"
 RELEASE_ROOT="${PRICING_SERVICE_RELEASE_ROOT:-/opt/MM/releases/pricing-service}"
+PYTHON_BIN="${PRICING_SERVICE_PYTHON_BIN:-/opt/MM/pricing-service/.venv/bin/python}"
 RELEASE_NAME="${1:-architecture-hardening-$(date +%Y%m%d-%H%M%S)}"
 FINAL_DIR="${RELEASE_ROOT}/${RELEASE_NAME}"
 TEMP_DIR="${RELEASE_ROOT}/.${RELEASE_NAME}.tmp.$$"
@@ -44,6 +45,10 @@ done
 ln -s "$SOURCE_ROOT/.env" "$TEMP_DIR/.env"
 
 source_commit="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
+alembic_revision="$(
+  cd "$SOURCE_ROOT"
+  "$PYTHON_BIN" -m alembic heads | awk 'NR == 1 {print $1}'
+)"
 source_dirty=false
 if [[ -n "$(git -C "$SOURCE_ROOT" status --porcelain)" ]]; then
   source_dirty=true
@@ -57,6 +62,7 @@ cat >"$TEMP_DIR/release-manifest.json" <<EOF
   "release_name": "$RELEASE_NAME",
   "built_at": "$(date -Is)",
   "source_commit": "$source_commit",
+  "alembic_revision": "$alembic_revision",
   "source_dirty": $source_dirty,
   "content_sha256": "$content_sha256"
 }

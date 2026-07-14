@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel
 
@@ -170,6 +170,27 @@ class CounterpartyFolderChangeResponse(ManagementEnvelope):
     report_revision: str
     summary: dict[str, Any]
     payload: list[CounterpartyFolderChangeItem]
+
+
+class RetailCounterpartyZeroBalanceItem(BaseModel):
+    counterparty_code: str
+    counterparty_name: str | None = None
+    counterparty_ref: str | None = None
+    current_balance_rub: Decimal | None = None
+    status: Literal["ok", "warning", "missing", "unavailable"]
+
+
+class RetailCounterpartyZeroBalanceResponse(BaseModel):
+    status: Literal["ready", "partial", "unavailable"]
+    source: str
+    generated_at_msk: datetime
+    expected_balance_rub: Decimal
+    requested_count: int
+    checked_count: int
+    warning_count: int
+    missing_count: int
+    unavailable_count: int
+    items: list[RetailCounterpartyZeroBalanceItem]
 
 
 class ReceivablesManagerSummaryItem(BaseModel):

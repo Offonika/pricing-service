@@ -3385,6 +3385,52 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/retail-counterparty-zero-balances:
+    get:
+      summary: Get Retail Counterparty Zero Balances
+      operationId: get_retail_counterparty_zero_balances_api_management_retail_counterparty_zero_balances_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: counterparty_code
+        in: query
+        required: true
+        schema:
+          type: array
+          items:
+            type: string
+          title: Counterparty Code
+      - name: period_start
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Period Start
+      - name: as_of
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RetailCounterpartyZeroBalanceResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/management/cash-position:
     get:
       summary: Get Cash Position
@@ -19201,6 +19247,93 @@ components:
           title: Reason
       type: object
       title: RejectRequest
+    RetailCounterpartyZeroBalanceItem:
+      properties:
+        counterparty_code:
+          type: string
+          title: Counterparty Code
+        counterparty_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Name
+        counterparty_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Ref
+        current_balance_rub:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Current Balance Rub
+        status:
+          type: string
+          enum:
+          - ok
+          - warning
+          - missing
+          - unavailable
+          title: Status
+      type: object
+      required:
+      - counterparty_code
+      - status
+      title: RetailCounterpartyZeroBalanceItem
+    RetailCounterpartyZeroBalanceResponse:
+      properties:
+        status:
+          type: string
+          enum:
+          - ready
+          - partial
+          - unavailable
+          title: Status
+        source:
+          type: string
+          title: Source
+        generated_at_msk:
+          type: string
+          format: date-time
+          title: Generated At Msk
+        expected_balance_rub:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Expected Balance Rub
+        requested_count:
+          type: integer
+          title: Requested Count
+        checked_count:
+          type: integer
+          title: Checked Count
+        warning_count:
+          type: integer
+          title: Warning Count
+        missing_count:
+          type: integer
+          title: Missing Count
+        unavailable_count:
+          type: integer
+          title: Unavailable Count
+        items:
+          items:
+            $ref: '#/components/schemas/RetailCounterpartyZeroBalanceItem'
+          type: array
+          title: Items
+      type: object
+      required:
+      - status
+      - source
+      - generated_at_msk
+      - expected_balance_rub
+      - requested_count
+      - checked_count
+      - warning_count
+      - missing_count
+      - unavailable_count
+      - items
+      title: RetailCounterpartyZeroBalanceResponse
     RetailCustomerPriceTypeRecommendation:
       properties:
         counterparty_ref:

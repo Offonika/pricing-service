@@ -12611,6 +12611,39 @@ components:
       required:
       - business_date
       title: ExecutiveSalesDailyRow
+    ExecutiveSalesDiagnosticKpi:
+      properties:
+        key:
+          type: string
+          title: Key
+        value:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: integer
+          - type: 'null'
+          title: Value
+        unit:
+          type: string
+          title: Unit
+        source_status:
+          type: string
+          title: Source Status
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+        meta:
+          additionalProperties: true
+          type: object
+          title: Meta
+      type: object
+      required:
+      - key
+      - unit
+      - source_status
+      title: ExecutiveSalesDiagnosticKpi
     ExecutiveSalesFilterOption:
       properties:
         key:
@@ -12701,6 +12734,10 @@ components:
           type: string
           title: Forecast Status
           default: not_applicable
+        plan_status:
+          type: string
+          title: Plan Status
+          default: source_missing
         note:
           anyOf:
           - type: string
@@ -12711,6 +12748,20 @@ components:
           - type: string
           - type: 'null'
           title: Forecast Note
+        plan_note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Plan Note
+        plan:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutiveSalesPlanContext'
+          - type: 'null'
+        diagnostic_kpis:
+          items:
+            $ref: '#/components/schemas/ExecutiveSalesDiagnosticKpi'
+          type: array
+          title: Diagnostic Kpis
         totals:
           additionalProperties:
             anyOf:
@@ -12771,6 +12822,83 @@ components:
       - source_status
       - freshness_status
       title: ExecutiveSalesPeriodResponse
+    ExecutiveSalesPlanContext:
+      properties:
+        source_status:
+          type: string
+          title: Source Status
+        period_month:
+          type: string
+          title: Period Month
+        revision_no:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Revision No
+        snapshot_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Snapshot Id
+        frozen_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Frozen At
+        scope_type:
+          type: string
+          title: Scope Type
+        scope_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Scope Key
+        approved_revenue:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Approved Revenue
+        approved_margin_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Approved Margin Pct
+        approved_gross_profit:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Approved Gross Profit
+        comparison_basis:
+          type: string
+          title: Comparison Basis
+          default: not_applicable
+        comparison_revenue:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Comparison Revenue
+        plan_attainment_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Plan Attainment Pct
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+      type: object
+      required:
+      - source_status
+      - period_month
+      - scope_type
+      title: ExecutiveSalesPlanContext
     ExecutiveServiceAccrualItem:
       properties:
         id:
@@ -18488,6 +18616,17 @@ components:
             format: date-time
           - type: 'null'
           title: Computed At
+        source_max_document_date:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Source Max Document Date
+        source_lag_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Source Lag Days
       type: object
       required:
       - source_status

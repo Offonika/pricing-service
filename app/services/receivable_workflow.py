@@ -944,7 +944,7 @@ def _workflow_candidate_groups(
     candidates: list[tuple[str, list[ReceivableCase]]] = []
     for counterparty_ref, counterparty_cases in grouped.items():
         segments = {item.segment for item in counterparty_cases}
-        if CASE_BUYERS not in segments:
+        if CASE_BUYERS not in segments or CASE_OVERDUE not in segments:
             continue
         case = _select_current_case(counterparty_cases)
         if not _case_matches_department_scope(case, settings):
@@ -1004,7 +1004,7 @@ def close_stale_receivable_work_items(
     if previous_active is None:
         previous_active = _previous_snapshot_active_stable_keys(session, as_of=as_of)
     if previous_active is None:
-        return
+        previous_active = set()
     open_items = (
         session.execute(
             select(ReceivableWorkItem).where(ReceivableWorkItem.status != STATUS_CLOSED)

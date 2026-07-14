@@ -3,21 +3,12 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 
-from alembic.config import Config
-from alembic.runtime.migration import MigrationContext
-from alembic.script import ScriptDirectory
-from sqlalchemy import create_engine
-
-from app.core.config import get_settings
-from app.main import app
-from app.services.executive_dashboard import (
-    _resolve_cashflow_period_cache_path,
-    _resolve_owner_cash_control_snapshot_path,
-    _resolve_snapshot_path,
-    _resolve_warehouse_snapshot_path,
-)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 REQUIRED_ROUTES = {
     ("GET", "/bitrix/executive-dashboard/"),
@@ -35,6 +26,22 @@ ASSET_RE = re.compile(r"(?:src|href)=[\"'](?:\./|/)?assets/([^\"']+)[\"']")
 
 
 def main() -> None:
+    from alembic.config import Config
+    from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+    from sqlalchemy import create_engine
+
+    from app.core.config import get_settings
+    from app.infrastructure.contracts import ContractIntegrityError, read_json_contract
+    from app.main import app
+    from app.services.executive_dashboard import (
+        _resolve_cashflow_period_cache_path,
+        _resolve_owner_cash_control_snapshot_path,
+        _resolve_sales_plan_snapshot_path,
+        _resolve_snapshot_path,
+        _resolve_warehouse_snapshot_path,
+    )
+
     root = Path.cwd().resolve()
     index_path = root / "ui" / "dist" / "index.html"
     errors: list[str] = []
@@ -71,6 +78,7 @@ def main() -> None:
         ("cashflow cache", _resolve_cashflow_period_cache_path()),
         ("warehouse snapshot", _resolve_warehouse_snapshot_path()),
         ("owner cash control snapshot", _resolve_owner_cash_control_snapshot_path()),
+        ("frozen sales plan snapshot", _resolve_sales_plan_snapshot_path()),
         (
             "employee payroll balance snapshot",
             Path(settings.executive_management_balance_payroll_snapshot_path),
@@ -86,6 +94,20 @@ def main() -> None:
             continue
         if not isinstance(payload, dict):
             errors.append(f"{source_name} root is not an object: {source_path}")
+
+    sales_plan_path = _resolve_sales_plan_snapshot_path()
+    if sales_plan_path.is_file():
+        try:
+            sales_plan = read_json_contract(sales_plan_path)
+        except (OSError, json.JSONDecodeError, ContractIntegrityError) as exc:
+            errors.append(
+                f"frozen sales plan contract integrity check failed: {type(exc).__name__}: {exc}"
+            )
+        else:
+            if sales_plan.get("schema_version") != 1:
+                errors.append("frozen sales plan schema_version must be 1")
+            if not isinstance(sales_plan.get("months"), list):
+                errors.append("frozen sales plan months must be an array")
 
     alembic_config = Config(str(root / "alembic.ini"))
     script = ScriptDirectory.from_config(alembic_config)

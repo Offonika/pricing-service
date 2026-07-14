@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   fetchExecutiveCashflowPeriod,
   closeExecutiveManagementBalance,
@@ -23,12 +23,13 @@ import {
   type ExecutiveProfitLossPeriodResponse,
   type ExecutiveProfitLossRatio,
   type ExecutiveSalesBreakdownRow,
+  type ExecutiveSalesDiagnosticKpi,
   type ExecutiveSalesMonthlyRow,
   type ExecutiveSalesPeriodResponse,
   type ExecutiveSourceStatus,
 } from "../api/executiveDashboard";
 import { splitManagementBalanceBlock } from "./executiveDashboardLayout";
-import { Button, ErrorState, LoadingState, MetricCard, PageShell, type MetricDelta, type MetricTone } from "./ui";
+import { Button, ErrorState, LoadingState, MetricCard, PageShell, StatusBadge, type MetricDelta, type MetricTone } from "./ui";
 
 type ExecutiveDashboardProps = {
   bitrixMode?: boolean;
@@ -225,12 +226,6 @@ function addDaysIso(value: string, days: number) {
   const parsed = new Date(`${value}T00:00:00`);
   parsed.setDate(parsed.getDate() + days);
   return isoFromDate(parsed);
-}
-
-function daysBetweenInclusive(fromIso: string, toIso: string) {
-  const from = new Date(`${fromIso}T00:00:00`);
-  const to = new Date(`${toIso}T00:00:00`);
-  return Math.round((to.getTime() - from.getTime()) / 86_400_000) + 1;
 }
 
 function monthStartIso(value: string) {
@@ -2258,6 +2253,12 @@ export function SalesBreakdown({
         visibleRows.map((row) => {
           const revenue = Math.abs(numericValue(row.revenue) || 0);
           const width = Math.max(2, Math.round((revenue / maxRevenue) * 100));
+          const planAttainment = numericValue(
+            row.meta?.plan_attainment_pct as string | number | null | undefined
+          );
+          const marginGapPp = numericValue(
+            row.meta?.margin_gap_pp as string | number | null | undefined
+          );
           return (
             <button className="executive-sales-breakdown" key={row.key} onClick={() => onSelect(row.key)} type="button">
               <span className="executive-sales-breakdown__label">{row.label}</span>
@@ -2267,6 +2268,8 @@ export function SalesBreakdown({
               </div>
               <small>
                 {formatPlainNumber(row.sales_count)} ед. · {formatPercent(row.gross_margin_pct)}
+                {planAttainment !== null && ` · план ${formatPercent(planAttainment)}`}
+                {marginGapPp !== null && ` · к плану ${marginGapPp > 0 ? "+" : ""}${marginGapPp.toFixed(1)} п.п.`}
               </small>
             </button>
           );
@@ -2518,13 +2521,120 @@ function SalesMonthTooltip({
   );
 }
 
+type ExecutiveDomainTabLayoutProps = {
+  filters?: ReactNode;
+  sourceStatus?: ReactNode;
+  primaryKpis?: ReactNode;
+  mainChart?: ReactNode;
+  diagnosticKpis?: ReactNode;
+  breakdowns?: ReactNode;
+  actions?: ReactNode;
+};
+
+export function ExecutiveDomainTabLayout({
+  filters,
+  sourceStatus,
+  primaryKpis,
+  mainChart,
+  diagnosticKpis,
+  breakdowns,
+  actions,
+}: ExecutiveDomainTabLayoutProps) {
+  return (
+    <div className="executive-domain-tab-layout">
+      {filters}
+      {sourceStatus}
+      {primaryKpis}
+      {mainChart}
+      {diagnosticKpis}
+      {breakdowns}
+      {actions}
+    </div>
+  );
+}
+
+const SALES_DIAGNOSTIC_LABELS: Record<string, string> = {
+  lost_gross_profit_margin_gap: "Потерянная валовая прибыль",
+  gross_profit_per_unit: "Валовая прибыль на единицу",
+  cost_per_unit: "Себестоимость на единицу",
+  margin_gap_pp: "Отклонение маржи от плана",
+  stores_below_plan_count: "Магазины ниже плана",
+  managers_below_target_margin_count: "Менеджеры ниже целевой маржи",
+};
+
+const SALES_PLAN_DIAGNOSTIC_KEYS = new Set([
+  "lost_gross_profit_margin_gap",
+  "margin_gap_pp",
+  "stores_below_plan_count",
+  "managers_below_target_margin_count",
+]);
+
+function salesDiagnosticValue(metric: ExecutiveSalesDiagnosticKpi) {
+  const value = numericValue(metric.value);
+  if (value === null) {
+    if (metric.source_status === "not_applicable") return "Только режим «Месяц»";
+    if (metric.source_status === "source_missing" && SALES_PLAN_DIAGNOSTIC_KEYS.has(metric.key)) {
+      return "План не утверждён";
+    }
+    return statusLabel(metric.source_status);
+  }
+  if (metric.unit === "RUB" || metric.unit === "RUB_PER_UNIT") return formatMoney(value);
+  if (metric.unit === "PERCENTAGE_POINT") {
+    return `${value > 0 ? "+" : ""}${value.toFixed(1)} п.п.`;
+  }
+  return formatPlainNumber(value);
+}
+
+function salesDiagnosticTone(metric: ExecutiveSalesDiagnosticKpi): MetricTone {
+  if (metric.source_status === "source_error") return "danger";
+  if (!["ready", "complete"].includes(metric.source_status)) return "warning";
+  const value = numericValue(metric.value);
+  if (value === null) return "neutral";
+  if (metric.key === "margin_gap_pp") return value < 0 ? "warning" : "success";
+  if (metric.key === "lost_gross_profit_margin_gap") return value > 0 ? "warning" : "success";
+  if (metric.unit === "COUNT") return value > 0 ? "warning" : "success";
+  return "neutral";
+}
+
+function salesDiagnosticStatus(metric: ExecutiveSalesDiagnosticKpi): { label: string; tone: MetricTone } {
+  if (metric.source_status === "source_error") return { label: "Ошибка", tone: "danger" };
+  if (metric.source_status === "not_applicable") return { label: "Не применяется", tone: "neutral" };
+  if (metric.source_status === "source_missing") return { label: "Нет данных", tone: "warning" };
+  if (!["ready", "complete"].includes(metric.source_status)) {
+    return { label: "Нужна проверка", tone: "warning" };
+  }
+  const tone = salesDiagnosticTone(metric);
+  if (tone === "warning" || tone === "danger") return { label: "Требует внимания", tone };
+  if (tone === "success") return { label: "В норме", tone };
+  return { label: "Рассчитано", tone: "info" };
+}
+
+function salesDiagnosticDetail(metric: ExecutiveSalesDiagnosticKpi) {
+  const evaluated = numericValue(metric.meta?.evaluated_count as string | number | null | undefined);
+  if (evaluated !== null && metric.value !== null && metric.value !== undefined) {
+    const entity = metric.key === "stores_below_plan_count" ? "магазинов" : "менеджеров";
+    return `Проверено: ${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(evaluated)} ${entity}`;
+  }
+  const note = metric.note?.trim();
+  if (!note) return "По фактическим продажам 1С";
+  if (note.startsWith("Не все продажи сопоставлены с frozen-планом магазинов")) {
+    return "Не все продажи сопоставлены с утверждённым планом магазинов.";
+  }
+  if (note.startsWith("У магазинов отсутствует утверждённый план выручки")) {
+    return "Не у всех магазинов есть утверждённый план выручки.";
+  }
+  return note;
+}
+
 export function SalesPeriodPanel({
+  actions,
   data,
   message,
   onSelectManager,
   onSelectStore,
   status,
 }: {
+  actions?: ReactNode;
   data: ExecutiveSalesPeriodResponse | null;
   message: string;
   onSelectManager: (managerRef: string) => void;
@@ -2546,23 +2656,22 @@ export function SalesPeriodPanel({
   const actualRevenueNum = numericValue(actualRevenue);
   const salesCountNum = numericValue(salesCount);
   const forecastRevenueNum = numericValue(forecastRevenue);
-  const averageCheck = actualRevenueNum !== null && salesCountNum ? actualRevenueNum / salesCountNum : null;
-  const forecastProgress = actualRevenueNum !== null && forecastRevenueNum ? actualRevenueNum / forecastRevenueNum : null;
+  const revenuePerUnit = actualRevenueNum !== null && salesCountNum ? actualRevenueNum / salesCountNum : null;
   const previousRevenueNum = numericValue(salesValue(data, "revenue", "comparison"));
   const previousSalesCountNum = numericValue(salesValue(data, "sales_count", "comparison"));
-  const previousAverageCheck =
+  const previousRevenuePerUnit =
     previousRevenueNum !== null && previousSalesCountNum ? previousRevenueNum / previousSalesCountNum : null;
-  const expectedProgress =
-    data && data.as_of
-      ? Math.min(1, daysBetweenInclusive(data.date_from, data.as_of) / daysBetweenInclusive(data.date_from, data.date_to))
-      : null;
-  let forecastProgressTone: MetricTone = "neutral";
-  let forecastProgressHint: string | undefined;
-  if (forecastProgress !== null && expectedProgress !== null) {
-    const paceGap = forecastProgress - expectedProgress;
-    forecastProgressTone = paceGap >= 0.03 ? "success" : paceGap <= -0.03 ? "warning" : "neutral";
-    forecastProgressHint = `к этой дате периода ожидалось ${formatPercent(expectedProgress)}`;
-  }
+  const planAttainment = numericValue(data?.plan?.plan_attainment_pct);
+  const approvedPlanRevenue = numericValue(data?.plan?.approved_revenue);
+  const planAttainmentValue = (() => {
+    if (planAttainment !== null) return formatPercent(planAttainment);
+    if (data?.plan?.scope_type === "manager") return "Нет плана выручки";
+    if (data?.plan_status === "not_applicable") return "Только режим «Месяц»";
+    if (data?.plan_status === "source_missing") return "План не утверждён";
+    return statusLabel(data?.plan_status || "source_missing");
+  })();
+  const planAttainmentTone: MetricTone =
+    planAttainment === null ? "warning" : planAttainment >= 1 ? "success" : "warning";
 
   return (
     <section className="executive-cashflow-period executive-sales-period" aria-label="Продажи">
@@ -2579,64 +2688,112 @@ export function SalesPeriodPanel({
         <>
           {data.note && <div className="executive-cashflow-period__note">{data.note}</div>}
           {data.forecast_note && <div className="executive-sales-period__forecast-note">{data.forecast_note}</div>}
-          <div className="executive-panel__kpis">
-            <MetricCard
-              delta={salesDelta(actualRevenue, salesValue(data, "revenue", "comparison"))}
-              label="Выручка факт"
-              tooltip="Сумма продаж 1С за выбранный период, включая возвраты, отражённые в витрине."
-              value={formatNullableMoney(actualRevenueNum)}
-            />
-            <MetricCard
-              hint={data.forecast_status === "ready" ? "на конец периода" : statusLabel(data.forecast_status)}
-              label="Прогноз выручки"
-              tone={data.forecast_status === "ready" ? "neutral" : "warning"}
-              tooltip="Медиана выручки по тому же дню недели за 4 предыдущие недели; для периода, уже полностью в прошлом, не строится."
-              value={forecastRevenueNum === null ? "нет данных" : formatMoney(forecastRevenueNum)}
-            />
-            <MetricCard
-              delta={salesDelta(grossProfit, salesValue(data, "gross_profit", "comparison"))}
-              label="Валовая прибыль"
-              tooltip="Выручка за вычетом себестоимости продаж за выбранный период."
-              value={formatNullableMoney(numericValue(grossProfit))}
-            />
-            <MetricCard
-              delta={salesDelta(grossMargin, salesValue(data, "gross_margin_pct", "comparison"), { percentagePoints: true })}
-              label="Валовая маржа"
-              tooltip="Валовая прибыль к выручке, % за выбранный период."
-              value={formatPercent(grossMargin)}
-            />
-            <MetricCard
-              delta={salesDelta(salesCount, salesValue(data, "sales_count", "comparison"))}
-              label="Объём продаж"
-              tooltip="Количество проданных единиц товаров и услуг, не число чеков."
-              value={`${formatPlainNumber(salesCount)} ед.`}
-            />
-            <MetricCard
-              delta={averageCheck !== null && previousAverageCheck ? salesDelta(averageCheck, previousAverageCheck) : undefined}
-              label="Средний чек"
-              tooltip="Выручка за период, делённая на объём продаж."
-              value={averageCheck === null ? "нет данных" : formatMoney(averageCheck)}
-            />
-            <MetricCard
-              hint={forecastProgressHint}
-              label="% выполнения прогноза"
-              tone={forecastProgressTone}
-              tooltip="Факт выручки за период к прогнозу на конец периода. Цвет — опережаем или отстаём от равномерного темпа по дням периода."
-              value={forecastProgress === null ? "нет данных" : formatPercent(forecastProgress)}
-            />
-          </div>
-
-          {data.monthly.length > 0 && (
-            <div className="executive-sales-charts">
-              <SalesLineChart hoveredIndex={hoveredIndex} monthly={data.monthly} onHover={setHoveredIndex} />
-              <SalesMonthTooltip hoveredIndex={hoveredIndex} monthly={data.monthly} />
-            </div>
-          )}
-
-          <div className="executive-cashflow-period__tables executive-sales-period__tables">
-            <SalesBreakdown title="По магазинам" rows={data.by_store} onSelect={onSelectStore} />
-            <SalesBreakdown title="По менеджерам" rows={data.by_manager} onSelect={onSelectManager} />
-          </div>
+          <ExecutiveDomainTabLayout
+            sourceStatus={(
+              <div aria-label="Статус источников продаж" className="executive__topline executive-sales-period__status">
+                <div><span>Факт 1С</span><strong>{statusLabel(data.source_status)}</strong></div>
+                <div><span>Свежесть факта</span><strong>{statusLabel(data.freshness_status)}</strong></div>
+                <div><span>План продаж</span><strong>{statusLabel(data.plan_status || "source_missing")}</strong></div>
+                <div><span>План заморожен</span><strong>{data.plan?.frozen_at ? formatDateTime(data.plan.frozen_at) : "—"}</strong></div>
+              </div>
+            )}
+            primaryKpis={(
+              <div aria-label="Основные KPI продаж" className="executive-panel__kpis">
+                <MetricCard
+                  delta={salesDelta(actualRevenue, salesValue(data, "revenue", "comparison"))}
+                  label="Выручка факт"
+                  tooltip="Сумма продаж 1С за выбранный период, включая возвраты, отражённые в витрине."
+                  value={formatNullableMoney(actualRevenueNum)}
+                />
+                <MetricCard
+                  hint={data.forecast_status === "ready" ? "на конец периода" : statusLabel(data.forecast_status)}
+                  label="Прогноз выручки"
+                  tone={data.forecast_status === "ready" ? "neutral" : "warning"}
+                  tooltip="Медиана выручки по тому же дню недели за 4 предыдущие недели; для периода, уже полностью в прошлом, не строится."
+                  value={forecastRevenueNum === null ? "нет данных" : formatMoney(forecastRevenueNum)}
+                />
+                <MetricCard
+                  delta={salesDelta(grossProfit, salesValue(data, "gross_profit", "comparison"))}
+                  label="Валовая прибыль"
+                  tooltip="Выручка за вычетом себестоимости продаж за выбранный период."
+                  value={formatNullableMoney(numericValue(grossProfit))}
+                />
+                <MetricCard
+                  delta={salesDelta(grossMargin, salesValue(data, "gross_margin_pct", "comparison"), { percentagePoints: true })}
+                  label="Валовая маржа"
+                  tooltip="Валовая прибыль к выручке, % за выбранный период."
+                  value={formatPercent(grossMargin)}
+                />
+                <MetricCard
+                  delta={salesDelta(salesCount, salesValue(data, "sales_count", "comparison"))}
+                  label="Объём продаж"
+                  tooltip="Количество проданных единиц товаров и услуг, не число чеков."
+                  value={`${formatPlainNumber(salesCount)} ед.`}
+                />
+                <MetricCard
+                  delta={revenuePerUnit !== null && previousRevenuePerUnit ? salesDelta(revenuePerUnit, previousRevenuePerUnit) : undefined}
+                  label="Выручка на единицу"
+                  tooltip="Выручка за период, делённая на количество проданных единиц товаров и услуг."
+                  value={revenuePerUnit === null ? "нет данных" : formatMoney(revenuePerUnit)}
+                />
+                <MetricCard
+                  hint={approvedPlanRevenue === null ? data.plan_note || data.plan?.note : `план ${formatMoney(approvedPlanRevenue)}`}
+                  label="Выполнение плана"
+                  tone={planAttainmentTone}
+                  tooltip="Для открытого месяца прогноз выручки сравнивается с frozen-планом; для закрытого месяца используется факт."
+                  value={planAttainmentValue}
+                />
+              </div>
+            )}
+            mainChart={data.monthly.length > 0 && (
+              <div className="executive-sales-charts">
+                <SalesLineChart hoveredIndex={hoveredIndex} monthly={data.monthly} onHover={setHoveredIndex} />
+                <SalesMonthTooltip hoveredIndex={hoveredIndex} monthly={data.monthly} />
+              </div>
+            )}
+            diagnosticKpis={(
+              <section aria-label="Диагностические KPI продаж" className="executive-sales-diagnostics">
+                <h3>Диагностика продаж</h3>
+                <div className="executive-sales-diagnostics__table-wrap">
+                  <table className="executive-sales-diagnostics__table">
+                    <caption className="visually-hidden">Показатели диагностики продаж</caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">Показатель</th>
+                        <th scope="col">Значение</th>
+                        <th scope="col">Статус</th>
+                        <th scope="col">Что это значит</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(data.diagnostic_kpis || []).map((metric) => {
+                        const diagnosticStatus = salesDiagnosticStatus(metric);
+                        return (
+                          <tr key={metric.key}>
+                            <th scope="row">{SALES_DIAGNOSTIC_LABELS[metric.key] || metric.key}</th>
+                            <td className={`executive-sales-diagnostics__value executive-sales-diagnostics__value--${salesDiagnosticTone(metric)}`}>
+                              {salesDiagnosticValue(metric)}
+                            </td>
+                            <td>
+                              <StatusBadge tone={diagnosticStatus.tone}>{diagnosticStatus.label}</StatusBadge>
+                            </td>
+                            <td className="executive-sales-diagnostics__detail">{salesDiagnosticDetail(metric)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </section>
+            )}
+            breakdowns={(
+              <div className="executive-cashflow-period__tables executive-sales-period__tables">
+                <SalesBreakdown title="По магазинам" rows={data.by_store} onSelect={onSelectStore} />
+                <SalesBreakdown title="По менеджерам" rows={data.by_manager} onSelect={onSelectManager} />
+              </div>
+            )}
+            actions={actions}
+          />
         </>
       )}
     </section>
@@ -3143,6 +3300,17 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
 
           {tab === SALES_TAB_KEY && (
             <SalesPeriodPanel
+              actions={(
+                <section className="executive-actions">
+                  <header className="executive-actions__header">
+                    <div>
+                      <h2>{`Решения: ${tabLabel(tab)}`}</h2>
+                      <span>5-10 действий с ответственным, сроком и ссылкой на источник</span>
+                    </div>
+                  </header>
+                  <ActionTable actions={actions} onOpen={setSelectedAction} />
+                </section>
+              )}
               data={salesData}
               message={salesMessage}
               onSelectManager={setSalesManagerRef}
@@ -3177,15 +3345,17 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
             </div>
           )}
 
-          <section className="executive-actions">
-            <header className="executive-actions__header">
-              <div>
-                <h2>{tab === "today" ? "Фокус дня" : `Решения: ${tabLabel(tab)}`}</h2>
-                <span>5-10 действий с ответственным, сроком и ссылкой на источник</span>
-              </div>
-            </header>
-            <ActionTable actions={actions} onOpen={setSelectedAction} />
-          </section>
+          {tab !== SALES_TAB_KEY && (
+            <section className="executive-actions">
+              <header className="executive-actions__header">
+                <div>
+                  <h2>{tab === "today" ? "Фокус дня" : `Решения: ${tabLabel(tab)}`}</h2>
+                  <span>5-10 действий с ответственным, сроком и ссылкой на источник</span>
+                </div>
+              </header>
+              <ActionTable actions={actions} onOpen={setSelectedAction} />
+            </section>
+          )}
 
           <SourceFreshness sources={visibleSourceFreshness} />
           {selectedAction && <ActionDetail action={selectedAction} onClose={() => setSelectedAction(null)} />}

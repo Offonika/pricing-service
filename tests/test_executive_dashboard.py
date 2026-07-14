@@ -46,6 +46,9 @@ def _settings(snapshot_path: Path, *, access_rules_json: str | None = None) -> S
         executive_dashboard_owner_cash_control_snapshot_path=str(
             snapshot_path.parent / "owner_cash_transit_snapshot.json"
         ),
+        executive_dashboard_sales_plan_snapshot_path=str(
+            snapshot_path.parent / "sales_plan_monthly_snapshot.json"
+        ),
         executive_dashboard_bitrix_enabled=True,
         executive_dashboard_bitrix_allowed_domains=["crm.master-mobile.ru"],
         executive_dashboard_bitrix_allowed_member_ids=["member-1"],
@@ -177,6 +180,72 @@ def _sales_kpi(
         revenue=revenue,
         cost_of_sales=cost_of_sales,
         sales_count=sales_count,
+    )
+
+
+def _write_sales_plan_snapshot(
+    path: Path,
+    *,
+    period_month: str = "2026-06",
+    stores: list[dict[str, object]] | None = None,
+) -> None:
+    store_rows = stores or [
+        {
+            "scope_key": "store-1",
+            "scope_name": "Горбушкин Двор",
+            "approved_revenue": "3000.00",
+            "approved_margin_pct": "35.00",
+            "approved_gross_profit": "1050.00",
+        },
+        {
+            "scope_key": "store-2",
+            "scope_name": "Склад Сайт",
+            "approved_revenue": "6000.00",
+            "approved_margin_pct": "50.00",
+            "approved_gross_profit": "3000.00",
+        },
+    ]
+    network_revenue = sum(
+        (Decimal(str(row["approved_revenue"])) for row in store_rows), Decimal("0")
+    )
+    network_gross_profit = sum(
+        (Decimal(str(row["approved_gross_profit"])) for row in store_rows), Decimal("0")
+    )
+    network_margin = (
+        Decimal("0")
+        if network_revenue == 0
+        else network_gross_profit / network_revenue * Decimal("100")
+    )
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "generated_at": "2026-06-05T12:00:00+00:00",
+                "source_status": "ready",
+                "note": None,
+                "months": [
+                    {
+                        "period_month": period_month,
+                        "revision_no": 3,
+                        "snapshot_id": "snapshot-2026-06-v3",
+                        "frozen_at": "2026-06-01T09:00:00+00:00",
+                        "source_status": "ready",
+                        "note": None,
+                        "network": {
+                            "scope_key": "network",
+                            "scope_name": "Сеть",
+                            "approved_revenue": str(network_revenue),
+                            "approved_margin_pct": str(network_margin),
+                            "approved_gross_profit": str(network_gross_profit),
+                        },
+                        "stores": store_rows,
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
     )
 
 
@@ -1016,7 +1085,9 @@ def test_sales_period_response_calculates_forecast_comparison_and_filters(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _override_settings(monkeypatch, _settings(tmp_path / "missing.json"))
+    settings = _settings(tmp_path / "missing.json")
+    _write_sales_plan_snapshot(Path(settings.executive_dashboard_sales_plan_snapshot_path))
+    _override_settings(monkeypatch, settings)
     rows = []
     cursor = date(2026, 5, 1)
     while cursor <= date(2026, 6, 5):
@@ -1069,6 +1140,24 @@ def test_sales_period_response_calculates_forecast_comparison_and_filters(
     assert result.monthly[-1].comparison_sales_count == Decimal("0")
     assert {item.label for item in result.stores} == {"Горбушкин Двор", "Склад Сайт"}
     assert {item.label for item in result.managers} == {"Менеджер 1", "Менеджер 2"}
+    assert result.plan_status == "ready"
+    assert result.plan is not None
+    assert result.plan.approved_revenue == Decimal("9000.00")
+    assert result.plan.approved_margin_pct == Decimal("0.45")
+    assert result.plan.comparison_basis == "forecast"
+    assert result.plan.comparison_revenue == Decimal("9000.00")
+    assert result.plan.plan_attainment_pct == Decimal("1")
+    diagnostics = {item.key: item for item in result.diagnostic_kpis}
+    assert len(diagnostics) == 6
+    assert diagnostics["lost_gross_profit_margin_gap"].value == Decimal("0")
+    assert diagnostics["gross_profit_per_unit"].value == Decimal("35.00")
+    assert diagnostics["cost_per_unit"].value == Decimal("40.00")
+    assert diagnostics["margin_gap_pp"].value == Decimal("1.6700")
+    assert diagnostics["stores_below_plan_count"].value == 0
+    assert diagnostics["managers_below_target_margin_count"].value == 0
+    store_meta = {item.key: item.meta for item in result.by_store}
+    assert store_meta["store-1"]["approved_revenue"] == Decimal("3000.00")
+    assert store_meta["store-2"]["plan_attainment_pct"] == Decimal("1")
 
     filtered = build_executive_sales_period_response(
         db_session,
@@ -1081,6 +1170,164 @@ def test_sales_period_response_calculates_forecast_comparison_and_filters(
     assert filtered.totals["forecast_revenue_period_end"] == Decimal("6000.00")
     assert filtered.monthly[-1].sales_count == Decimal("10.000")
     assert [row.label for row in filtered.by_store] == ["Склад Сайт"]
+    assert filtered.plan is not None
+    assert filtered.plan.scope_type == "store"
+    assert filtered.plan.approved_revenue == Decimal("6000.00")
+    assert filtered.plan.plan_attainment_pct == Decimal("1")
+
+
+def test_sales_period_manager_uses_weighted_store_margin_without_revenue_plan(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path / "missing.json")
+    _write_sales_plan_snapshot(Path(settings.executive_dashboard_sales_plan_snapshot_path))
+    _override_settings(monkeypatch, settings)
+    db_session.add_all(
+        [
+            _sales_kpi(
+                date(2026, 6, 30),
+                revenue=Decimal("100.00"),
+                cost_of_sales=Decimal("60.00"),
+                manager_ref="mgr-1",
+                store_ref="store-1",
+            ),
+            _sales_kpi(
+                date(2026, 6, 30),
+                revenue=Decimal("300.00"),
+                cost_of_sales=Decimal("180.00"),
+                manager_ref="mgr-1",
+                store_ref="store-2",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    result = build_executive_sales_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 30),
+        manager_ref="mgr-1",
+        today=date(2026, 7, 1),
+    )
+
+    assert result.plan_status == "ready"
+    assert result.plan is not None
+    assert result.plan.scope_type == "manager"
+    assert result.plan.approved_revenue is None
+    assert result.plan.plan_attainment_pct is None
+    assert result.plan.comparison_basis == "manager_margin_only"
+    assert result.plan.approved_margin_pct == Decimal("0.4625")
+    diagnostics = {item.key: item for item in result.diagnostic_kpis}
+    assert diagnostics["stores_below_plan_count"].source_status == "not_applicable"
+    assert diagnostics["managers_below_target_margin_count"].value == 1
+
+
+def test_sales_period_requires_complete_store_plan_coverage(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path / "missing.json")
+    _write_sales_plan_snapshot(
+        Path(settings.executive_dashboard_sales_plan_snapshot_path),
+        stores=[
+            {
+                "scope_key": "store-1",
+                "scope_name": "Горбушкин Двор",
+                "approved_revenue": "3000.00",
+                "approved_margin_pct": "35.00",
+                "approved_gross_profit": "1050.00",
+            }
+        ],
+    )
+    _override_settings(monkeypatch, settings)
+    db_session.add_all(
+        [
+            _sales_kpi(date(2026, 6, 30), store_ref="store-1"),
+            _sales_kpi(date(2026, 6, 30), store_ref="store-2", manager_ref="mgr-2"),
+        ]
+    )
+    db_session.commit()
+
+    result = build_executive_sales_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 30),
+        today=date(2026, 7, 1),
+    )
+
+    diagnostics = {item.key: item for item in result.diagnostic_kpis}
+    assert result.source_status == "ready"
+    assert diagnostics["lost_gross_profit_margin_gap"].source_status == "partial"
+    assert diagnostics["lost_gross_profit_margin_gap"].value is None
+    assert diagnostics["margin_gap_pp"].value is None
+    assert diagnostics["stores_below_plan_count"].source_status == "partial"
+    assert diagnostics["stores_below_plan_count"].value is None
+    assert diagnostics["managers_below_target_margin_count"].source_status == "partial"
+    assert diagnostics["managers_below_target_margin_count"].value is None
+
+
+def test_sales_period_plan_is_not_applicable_for_partial_month(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path / "missing.json")
+    _write_sales_plan_snapshot(Path(settings.executive_dashboard_sales_plan_snapshot_path))
+    _override_settings(monkeypatch, settings)
+    db_session.add(_sales_kpi(date(2026, 6, 20)))
+    db_session.commit()
+
+    result = build_executive_sales_period_response(
+        db_session,
+        date_from=date(2026, 6, 10),
+        date_to=date(2026, 6, 20),
+        today=date(2026, 6, 20),
+    )
+
+    assert result.source_status == "ready"
+    assert result.plan_status == "not_applicable"
+    assert result.plan is None
+    assert result.plan_note == "Плановые показатели доступны только в режиме «Месяц»."
+    diagnostics = {item.key: item for item in result.diagnostic_kpis}
+    assert diagnostics["gross_profit_per_unit"].source_status == "ready"
+    assert diagnostics["margin_gap_pp"].source_status == "not_applicable"
+
+
+def test_sales_period_handles_zero_revenue_and_volume_without_division(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path / "missing.json")
+    _write_sales_plan_snapshot(Path(settings.executive_dashboard_sales_plan_snapshot_path))
+    _override_settings(monkeypatch, settings)
+    db_session.add(
+        _sales_kpi(
+            date(2026, 6, 30),
+            revenue=Decimal("0"),
+            cost_of_sales=Decimal("0"),
+            sales_count=Decimal("0"),
+        )
+    )
+    db_session.commit()
+
+    result = build_executive_sales_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 30),
+        today=date(2026, 7, 1),
+    )
+
+    diagnostics = {item.key: item for item in result.diagnostic_kpis}
+    assert result.source_status == "ready"
+    assert result.plan_status == "ready"
+    assert diagnostics["gross_profit_per_unit"].value is None
+    assert diagnostics["gross_profit_per_unit"].source_status == "source_missing"
+    assert diagnostics["cost_per_unit"].value is None
+    assert diagnostics["lost_gross_profit_margin_gap"].value is None
 
 
 def test_sales_period_monthly_comparison_sales_count_is_year_over_year(
@@ -1129,6 +1376,8 @@ def test_sales_period_marks_forecast_as_unavailable_without_history(
     )
 
     assert result.source_status == "ready"
+    assert result.plan_status == "source_missing"
+    assert result.plan_note is not None
     assert result.forecast_status == "insufficient_history"
     assert result.totals["forecast_revenue_period_end"] is None
     assert "четыре недели" in str(result.forecast_note)

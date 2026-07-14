@@ -50,7 +50,9 @@ from app.services.receivables import CASE_BUYERS, CASE_OVERDUE
 from tests.test_receivable_workflow import _settings
 
 
-def _ledger_event(*, document_date: datetime, business_key: str = "event-1") -> ReceivableLedgerEvent:
+def _ledger_event(
+    *, document_date: datetime, business_key: str = "event-1"
+) -> ReceivableLedgerEvent:
     return ReceivableLedgerEvent(
         source="onec",
         source_layer="regular_receivables",
@@ -671,6 +673,34 @@ def test_receivable_workplace_hides_documents_from_stale_cache(
 
     assert result.source_status == "source_stale"
     assert result.cache_status["open_debt"].source_status == "source_stale"
+    assert result.payload[0].documents == []
+
+
+def test_receivable_workplace_keeps_debt_visible_for_document_amount_mismatch(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 7, 13)
+    db_session.add_all(
+        [
+            _case(
+                snapshot_date=as_of,
+                due_date=datetime(2026, 7, 1, 12, 0),
+                overdue_days=12,
+            ),
+            ReceivableOpenDebtCache(
+                snapshot_date=as_of,
+                counterparty_ref="cp-1",
+                department_ref="dep-1",
+                source_status="document_mismatch",
+                documents=[],
+            ),
+        ]
+    )
+
+    result = build_receivable_workplace(db_session, snapshot_date=as_of)
+
+    assert result.source_status == "cache_ready"
+    assert result.payload[0].current_balance == Decimal("12500.00")
     assert result.payload[0].documents == []
 
 

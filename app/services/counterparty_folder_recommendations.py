@@ -75,6 +75,7 @@ REVIEW_REASON_ORIGIN_DOCUMENT_STRUCTURE_CONFIRMED = (
 REVIEW_REASON_ORIGIN_DOCUMENT_CLOSED_BY_STRUCTURE = "origin_document_closed_by_structure"
 REVIEW_REASON_DOCUMENT_COMMENT_HISTORY_REQUIRED = "document_comment_history_required"
 REVIEW_REASON_OPEN_DEBT_SOURCE_STALE = "open_debt_source_stale"
+REVIEW_REASON_OPEN_DEBT_AMOUNT_MISMATCH = "open_debt_document_amount_mismatch"
 
 
 @dataclass(frozen=True)
@@ -82,6 +83,20 @@ class OpenDebtSourceFreshness:
     source_status: str
     source_max_document_date: datetime | None
     source_lag_days: int | None
+
+
+def open_debt_documents_match_balance(
+    documents: Sequence[dict[str, Any]],
+    *,
+    current_balance: Decimal,
+) -> bool:
+    if not documents:
+        return True
+    document_total = sum(
+        (Decimal(str(document.get("open_amount") or "0")) for document in documents),
+        Decimal("0.00"),
+    ).quantize(Decimal("0.01"))
+    return document_total == Decimal(current_balance).quantize(Decimal("0.01"))
 
 
 def evaluate_open_debt_source_freshness(
@@ -105,9 +120,7 @@ def evaluate_open_debt_source_freshness(
         )
     source_lag_days = max((snapshot_date - source_max_document_date.date()).days, 0)
     return OpenDebtSourceFreshness(
-        source_status=(
-            "cache_ready" if source_lag_days <= max_lag_days else "source_stale"
-        ),
+        source_status=("cache_ready" if source_lag_days <= max_lag_days else "source_stale"),
         source_max_document_date=source_max_document_date,
         source_lag_days=source_lag_days,
     )
@@ -1276,15 +1289,8 @@ def _build_item(
             status = STATUS_NO_OVERDUE
             review_reason = exception_reason
         elif term.is_overdue:
-            if (
-                structure_check is not None
-                and structure_check.status == DOCUMENT_STRUCTURE_CONFIRMED_OPEN
-            ):
-                status = STATUS_MOVE_RECOMMENDED
-                review_reason = None
-            else:
-                status = STATUS_NEEDS_REVIEW
-                review_reason = _structure_review_reason(structure_check)
+            status = STATUS_NEEDS_REVIEW
+            review_reason = _structure_review_reason(structure_check)
         elif not folders_match and _has_missing_payment_term(snapshot):
             review_reason = REVIEW_REASON_FOLDER_MISMATCH_PAYMENT_TERM_MISSING
     elif term.is_overdue:
@@ -1554,6 +1560,12 @@ def build_counterparty_folder_recommendations(
     for snapshot in snapshots:
         counterparty_key = _ref_key(snapshot.counterparty_ref)
         open_debt_documents = open_debt_documents_by_counterparty.get(counterparty_key, [])
+        document_amount_mismatch = not open_debt_documents_match_balance(
+            open_debt_documents,
+            current_balance=snapshot.current_balance,
+        )
+        if document_amount_mismatch:
+            open_debt_documents = []
         primary_document_ref = (
             _normalize_ref(open_debt_documents[0].get("document_ref"))
             if open_debt_documents
@@ -1567,6 +1579,18 @@ def build_counterparty_folder_recommendations(
             open_debt_documents=open_debt_documents,
             is_excluded_china_supplier=counterparty_key in china_supplier_refs,
         )
+        if document_amount_mismatch:
+            item = dict(item)
+            item.update(
+                {
+                    "status": STATUS_NEEDS_REVIEW,
+                    "review_reason": REVIEW_REASON_OPEN_DEBT_AMOUNT_MISMATCH,
+                    "recommended_folder_ref": None,
+                    "recommended_folder_name": None,
+                    "recommended_folder_display_name": None,
+                    "recommended_folder_source": None,
+                }
+            )
         if source_freshness.source_status == "source_stale":
             item = dict(item)
             item.update(

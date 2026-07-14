@@ -628,12 +628,18 @@ def _build_item(
     staff_members: list[StaffMember],
     open_debt_documents: list[dict[str, Any]] | None = None,
     counterparty_code: str | None = None,
+    hide_open_debt_documents: bool = False,
 ) -> ReceivableWorkplaceItem:
     has_open_debt_source = open_debt_documents is not None
     open_debt_documents = _sort_open_debt_documents(open_debt_documents or [])
+    if hide_open_debt_documents:
+        open_debt_documents = []
     primary_open_document = open_debt_documents[0] if open_debt_documents else {}
     debt_document_date = _selected_debt_document_date(open_debt_documents)
-    if has_open_debt_source and not open_debt_documents:
+    if hide_open_debt_documents:
+        effective_due_date, needs_default_credit_depth = _effective_due_date(case)
+        effective_overdue_days, _ = _effective_overdue_days(case, as_of=as_of)
+    elif has_open_debt_source and not open_debt_documents:
         effective_due_date = None
         effective_overdue_days = None
         needs_default_credit_depth = False
@@ -651,17 +657,21 @@ def _build_item(
         case,
         as_of=as_of,
         needs_default_credit_depth=needs_default_credit_depth,
-        open_debt_documents=open_debt_documents if has_open_debt_source else None,
+        open_debt_documents=(
+            []
+            if hide_open_debt_documents
+            else open_debt_documents if has_open_debt_source else None
+        ),
     )
     current_balance = _item_current_balance(
         case,
         documents=documents,
-        has_open_debt_documents=has_open_debt_source,
+        has_open_debt_documents=has_open_debt_source and not hide_open_debt_documents,
     )
     overdue_amount = _item_overdue_amount(
         case,
         documents=documents,
-        has_open_debt_documents=has_open_debt_source,
+        has_open_debt_documents=has_open_debt_source and not hide_open_debt_documents,
         effective_overdue_days=effective_overdue_days,
     )
     item_payload = _payload_dict(item)
@@ -1005,6 +1015,10 @@ def build_receivable_workplace(
                 _ref_key(case.counterparty_ref)
             ),
             counterparty_code=counterparty_codes.get(_ref_key(case.counterparty_ref)),
+            hide_open_debt_documents=(
+                open_debt_source_status == "source_stale"
+                or _ref_key(case.counterparty_ref) in open_debt_cache.hidden_counterparty_refs
+            ),
         )
         for case in cases
     ]

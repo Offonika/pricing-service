@@ -1,7 +1,12 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExecutiveDashboardAction, ExecutiveDashboardBlock, ExecutiveDashboardResponse } from "../api/executiveDashboard";
+import type {
+  ExecutiveDashboardAction,
+  ExecutiveDashboardBlock,
+  ExecutiveDashboardResponse,
+  ExecutiveSalesPeriodResponse,
+} from "../api/executiveDashboard";
 import {
   fetchExecutiveDashboard,
   fetchExecutiveDashboardActions,
@@ -168,7 +173,7 @@ describe("executive management balance", () => {
   });
 });
 
-function salesPeriodResponse() {
+function salesPeriodResponse(): ExecutiveSalesPeriodResponse {
   return {
     month: "2026-06",
     date_from: "2026-06-01",
@@ -177,8 +182,34 @@ function salesPeriodResponse() {
     source_status: "ready",
     freshness_status: "fresh",
     forecast_status: "ready",
+    plan_status: "ready",
     note: "Факт 1С",
     forecast_note: "Прогноз по неделям",
+    plan_note: null,
+    plan: {
+      source_status: "ready",
+      period_month: "2026-06",
+      revision_no: 3,
+      snapshot_id: "snapshot-2026-06-v3",
+      frozen_at: "2026-06-01T09:00:00Z",
+      scope_type: "network",
+      scope_key: "network",
+      approved_revenue: "5000.00",
+      approved_margin_pct: "0.35",
+      approved_gross_profit: "1750.00",
+      comparison_basis: "forecast",
+      comparison_revenue: "5000.00",
+      plan_attainment_pct: "1.0",
+      note: null,
+    },
+    diagnostic_kpis: [
+      { key: "lost_gross_profit_margin_gap", value: "0.00", unit: "RUB", source_status: "ready", note: null, meta: {} },
+      { key: "gross_profit_per_unit", value: "80.00", unit: "RUB_PER_UNIT", source_status: "ready", note: null, meta: {} },
+      { key: "cost_per_unit", value: "120.00", unit: "RUB_PER_UNIT", source_status: "ready", note: null, meta: {} },
+      { key: "margin_gap_pp", value: "5.00", unit: "PERCENTAGE_POINT", source_status: "ready", note: null, meta: {} },
+      { key: "stores_below_plan_count", value: 0, unit: "COUNT", source_status: "ready", note: null, meta: { evaluated_count: 1 } },
+      { key: "managers_below_target_margin_count", value: 0, unit: "COUNT", source_status: "ready", note: null, meta: { evaluated_count: 1 } },
+    ],
     totals: {
       revenue: "1000.00",
       forecast_revenue_period_end: "5000.00",
@@ -235,7 +266,7 @@ function salesDashboardResponse(): ExecutiveDashboardResponse {
   };
 }
 
-async function renderSalesTab() {
+async function renderSalesTab(response = salesPeriodResponse()) {
   window.history.pushState({}, "", "?tab=sales&date=2026-06-05");
   vi.mocked(fetchExecutiveDashboard).mockResolvedValue(salesDashboardResponse());
   vi.mocked(fetchExecutiveDashboardActions).mockResolvedValue({
@@ -245,7 +276,7 @@ async function renderSalesTab() {
     total_count: 0,
     payload: [],
   });
-  vi.mocked(fetchExecutiveSalesPeriod).mockResolvedValue(salesPeriodResponse());
+  vi.mocked(fetchExecutiveSalesPeriod).mockResolvedValue(response);
 
   const result = render(<ExecutiveDashboard />);
   await screen.findByText("Прогноз выручки");
@@ -344,12 +375,64 @@ describe("executive sales period", () => {
     expect(container.querySelector(".executive-sales-month-tooltip")).toBeNull();
   });
 
-  it("colors the forecast-completion card by pace against the elapsed share of the period", async () => {
+  it("renders the universal sales KPI rows with the fixed card counts", async () => {
     await renderSalesTab();
 
-    // fixture: date_from=2026-06-01, date_to=2026-06-30, as_of=2026-06-05 -> expected pace 5/30 ~ 16.7%
-    // actual/forecast = 1000/5000 = 20%, ahead of the expected pace -> favorable
-    expect(screen.getByText(/к этой дате периода ожидалось/)).toHaveTextContent("16,7");
+    expect(screen.getByLabelText("Основные KPI продаж").children).toHaveLength(7);
+    const diagnosticTable = screen.getByRole("table", { name: "Показатели диагностики продаж" });
+    expect(diagnosticTable.querySelectorAll("tbody tr")).toHaveLength(6);
+    expect(screen.getByText("Выручка на единицу")).toBeVisible();
+    expect(screen.getByText("Выполнение плана")).toBeVisible();
+    expect(screen.queryByText("Средний чек")).not.toBeInTheDocument();
+    expect(screen.getByText(/план 5/)).toBeVisible();
+  });
+
+  it("hides internal store references from sales diagnostics", async () => {
+    const response = salesPeriodResponse();
+    await renderSalesTab({
+      ...response,
+      diagnostic_kpis: (response.diagnostic_kpis || []).map((metric) =>
+        metric.key === "lost_gross_profit_margin_gap"
+          ? {
+              ...metric,
+              note: "Не все продажи сопоставлены с frozen-планом магазинов: 0x93040025901E48EE11E3B5A2, 0xBB780025901E48EF11E160486.",
+              source_status: "partial",
+              value: null,
+            }
+          : metric
+      ),
+    });
+
+    expect(screen.getByText("Не все продажи сопоставлены с утверждённым планом магазинов.")).toBeVisible();
+    expect(screen.queryByText(/0x93040025901E48EE11E3B5A2/)).not.toBeInTheDocument();
+  });
+
+  it("shows plan-only metrics as unavailable outside full-month mode", async () => {
+    const response = salesPeriodResponse();
+    vi.mocked(fetchExecutiveSalesPeriod).mockResolvedValue({
+      ...response,
+      plan_status: "not_applicable",
+      plan_note: "Плановые показатели доступны только в режиме «Месяц».",
+      plan: null,
+      diagnostic_kpis: (response.diagnostic_kpis || []).map((metric) =>
+        ["lost_gross_profit_margin_gap", "margin_gap_pp", "stores_below_plan_count", "managers_below_target_margin_count"].includes(metric.key)
+          ? { ...metric, value: null, source_status: "not_applicable" }
+          : metric
+      ),
+    });
+    window.history.pushState({}, "", "?tab=sales&date=2026-06-05");
+    vi.mocked(fetchExecutiveDashboard).mockResolvedValue(salesDashboardResponse());
+    vi.mocked(fetchExecutiveDashboardActions).mockResolvedValue({
+      as_of: "2026-06-05",
+      freshness_status: "fresh",
+      source_status: "ready",
+      total_count: 0,
+      payload: [],
+    });
+
+    render(<ExecutiveDashboard />);
+
+    expect((await screen.findAllByText("Только режим «Месяц»")).length).toBeGreaterThanOrEqual(5);
   });
 
   it("renders an info tooltip on the sales KPI cards", async () => {

@@ -39,13 +39,11 @@ def validate_release(release_dir: Path, *, snapshot_date: date) -> dict[str, obj
 
     index_path = release_dir / "ui" / "dist" / "index.html"
     index_text = index_path.read_text(encoding="utf-8") if index_path.exists() else ""
-    asset_match = re.search(r'src="(/assets/[^\"]+\.js)"', index_text)
-    asset_path = (
-        release_dir / "ui" / "dist" / asset_match.group(1).removeprefix("/")
-        if asset_match
-        else None
+    asset_match = re.search(r'src="(?:\./|/)?(assets/[^\"]+\.js)"', index_text)
+    asset_path = release_dir / "ui" / "dist" / asset_match.group(1) if asset_match else None
+    asset_text = (
+        asset_path.read_text(encoding="utf-8") if asset_path and asset_path.exists() else ""
     )
-    asset_text = asset_path.read_text(encoding="utf-8") if asset_path and asset_path.exists() else ""
     checks["ui_bundle"] = {
         "ok": REQUIRED_UI_TEXT in asset_text and FORBIDDEN_UI_TEXT not in asset_text,
         "path": str(asset_path or ""),

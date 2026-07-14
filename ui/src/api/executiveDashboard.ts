@@ -306,6 +306,32 @@ export interface ExecutiveSalesFilterOption {
   label: string;
 }
 
+export interface ExecutiveSalesPlanContext {
+  source_status: string;
+  period_month: string;
+  revision_no?: number | null;
+  snapshot_id?: string | null;
+  frozen_at?: string | null;
+  scope_type: string;
+  scope_key?: string | null;
+  approved_revenue?: string | number | null;
+  approved_margin_pct?: string | number | null;
+  approved_gross_profit?: string | number | null;
+  comparison_basis: string;
+  comparison_revenue?: string | number | null;
+  plan_attainment_pct?: string | number | null;
+  note?: string | null;
+}
+
+export interface ExecutiveSalesDiagnosticKpi {
+  key: string;
+  value?: string | number | null;
+  unit: string;
+  source_status: string;
+  note?: string | null;
+  meta: Record<string, unknown>;
+}
+
 export interface ExecutiveSalesPeriodResponse {
   month: string;
   date_from: string;
@@ -315,8 +341,12 @@ export interface ExecutiveSalesPeriodResponse {
   source_status: string;
   freshness_status: string;
   forecast_status: string;
+  plan_status?: string;
   note?: string | null;
   forecast_note?: string | null;
+  plan_note?: string | null;
+  plan?: ExecutiveSalesPlanContext | null;
+  diagnostic_kpis?: ExecutiveSalesDiagnosticKpi[];
   totals: Record<string, string | number | null>;
   comparison: Record<string, string | number | null>;
   daily: ExecutiveSalesDailyRow[];

@@ -6,7 +6,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.models import (
@@ -22,6 +22,7 @@ from app.services.counterparty_folder_recommendations import (
     STATUS_OK,
     build_open_debt_documents_by_counterparty,
     evaluate_open_debt_source_freshness,
+    open_debt_documents_match_balance,
 )
 from app.services.receivables import CASE_BUYERS
 
@@ -35,6 +36,7 @@ class CachedOpenDebtDocuments:
     missing_counterparty_count: int = 0
     source_max_document_date: datetime | None = None
     source_lag_days: int | None = None
+    hidden_counterparty_refs: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -168,6 +170,11 @@ def load_cached_open_debt_documents(
     missing_count = len(expected_keys - set(documents_by_counterparty))
     computed_at = max((row.computed_at for row in rows), default=None)
     stale_rows = [row for row in rows if row.source_status == "source_stale"]
+    hidden_counterparty_refs = frozenset(
+        _ref_key(row.counterparty_ref)
+        for row in rows
+        if row.source_status in {"source_stale", "document_mismatch"}
+    )
     freshness = evaluate_open_debt_source_freshness(
         session,
         snapshot_date=snapshot_date,
@@ -188,6 +195,7 @@ def load_cached_open_debt_documents(
         missing_counterparty_count=missing_count,
         source_max_document_date=freshness.source_max_document_date,
         source_lag_days=freshness.source_lag_days,
+        hidden_counterparty_refs=hidden_counterparty_refs,
     )
 
 
@@ -212,6 +220,15 @@ def rebuild_open_debt_cache(
         session,
         snapshot_date=snapshot_date,
     )
+    active_counterparty_refs = {snapshot.counterparty_ref for snapshot in snapshots}
+    stale_cache_delete = delete(ReceivableOpenDebtCache).where(
+        ReceivableOpenDebtCache.snapshot_date == snapshot_date
+    )
+    if active_counterparty_refs:
+        stale_cache_delete = stale_cache_delete.where(
+            ReceivableOpenDebtCache.counterparty_ref.not_in(active_counterparty_refs)
+        )
+    deleted_count = session.execute(stale_cache_delete).rowcount or 0
     documents_by_counterparty = (
         build_open_debt_documents_by_counterparty(
             session,
@@ -227,6 +244,11 @@ def rebuild_open_debt_cache(
     updated_count = 0
     for snapshot in snapshots:
         key = _ref_key(snapshot.counterparty_ref)
+        documents = documents_by_counterparty.get(key, [])
+        document_amount_mismatch = not open_debt_documents_match_balance(
+            documents,
+            current_balance=snapshot.current_balance,
+        )
         row = session.scalar(
             select(ReceivableOpenDebtCache).where(
                 ReceivableOpenDebtCache.snapshot_date == snapshot_date,
@@ -243,15 +265,18 @@ def rebuild_open_debt_cache(
             session.add(row)
         row.department_ref = snapshot.department_ref
         row.source_status = (
-            "ready" if freshness.source_status == "cache_ready" else "source_stale"
+            "source_stale"
+            if freshness.source_status == "source_stale"
+            else "document_mismatch" if document_amount_mismatch else "ready"
         )
-        row.documents = _json_safe(documents_by_counterparty.get(key, []))
+        row.documents = _json_safe([] if document_amount_mismatch else documents)
         row.computed_at = now
         updated_count += 1
     return {
         "snapshot_date": snapshot_date,
         "source_snapshot_count": len(snapshots),
         "updated_count": updated_count,
+        "deleted_count": deleted_count,
         "computed_at": now,
         "source_status": freshness.source_status,
         "source_max_document_date": freshness.source_max_document_date,
@@ -364,7 +389,7 @@ def load_cached_folder_recommendation_report(
         ),
         "payload": payload,
         "computed_at": row.computed_at,
-        "source_status": row.source_status,
+        "source_status": ("source_stale" if row.source_status == "source_stale" else "cache_ready"),
     }
 
 
@@ -419,9 +444,7 @@ def workplace_cache_status(
             "source_status": (
                 "source_stale"
                 if open_debt_stale_count
-                else "cache_ready"
-                if open_debt_count
-                else "missing"
+                else "cache_ready" if open_debt_count else "missing"
             ),
             "cached_count": int(open_debt_count or 0),
             "computed_at": open_debt_computed_at,

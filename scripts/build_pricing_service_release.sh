@@ -51,6 +51,10 @@ if [[ -n "$BASE_RELEASE" ]]; then
   rsync -a "${rsync_excludes[@]}" \
     --exclude '/release-manifest.json' \
     "$BASE_RELEASE/" "$TEMP_DIR/"
+  if [[ " $OVERLAY_PATHS " == *" ui/dist/index.html "* ]]; then
+    rm -rf "$TEMP_DIR/ui/dist/assets"
+    mkdir -p "$TEMP_DIR/ui/dist/assets"
+  fi
   for relative_path in $OVERLAY_PATHS; do
     if [[ "$relative_path" = /* || "$relative_path" == *".."* ]]; then
       echo "unsupported overlay path: $relative_path" >&2

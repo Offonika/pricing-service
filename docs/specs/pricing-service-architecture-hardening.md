@@ -139,6 +139,9 @@ pricing read models -> root delivery adapter -> Bitrix24/Telegram
 - Release-builder принимает только clean Git tree, фиксирует commit, Alembic head,
   base release и content hash, исключает Python/test caches и делает весь release
   read-only; writable state остаётся только во внешних symlink-каталогах.
+- Индексы `embeddings` относятся к persistent runtime state: release-builder не
+  копирует их в release, а подключает внешний каталог тем же способом, что `build`
+  и `data`.
 - Overlay разрешён только от release с `source_dirty=false`; любой UI-overlay
   полностью заменяет `ui/dist/assets`.
 

@@ -3,7 +3,7 @@ spec_id: "pricing-service-architecture-hardening"
 title: "Pricing Service Architecture Hardening"
 doc_type: spec
 domain: "architecture"
-status: "accepted"
+status: "implemented"
 owner: "engineering"
 source_of_truth: true
 related_code:
@@ -26,7 +26,7 @@ depends_on:
   - docs/specs/README.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-12"
+updated_at: "2026-07-14"
 ---
 
 # Назначение
@@ -81,17 +81,17 @@ Spec фиксирует вывод устаревшего источника и�
   исторические упоминания изолированы как legacy.
 - [x] Compatibility alias удалён после успешного scheduled-run
   `tasks.sync_onec_product_catalog`.
-- [ ] Каталог из 1С обновляется без ухудшения row count и freshness.
+- [x] Каталог из 1С обновляется без ухудшения row count и freshness.
 - [x] Postgres и 1С engines создаются только разрешенными factories; CI запрещает
   прямой `create_engine` вне allowlist.
 - [x] Write-use-cases подтверждают commit/rollback/idempotency тестами.
-- [ ] `infra/cron` не содержит SQL и бизнес-правил для мигрированных jobs.
+- [x] `infra/cron` не содержит SQL и бизнес-правил для мигрированных jobs.
 - [x] Weekly KPI загружается в `pricing-service` через authenticated idempotent API,
   а не через прямую запись из `mm-compensation` в его БД.
 - [x] Executive snapshots публикуются атомарно по versioned JSON Schema и читаются
   из нейтрального runtime-каталога.
-- [ ] OpenAPI, manifests, specs, architecture checks и regression tests проходят.
-- [ ] Release выкладывается неизменяемым каталогом с проверенным rollback и без
+- [x] OpenAPI, manifests, specs, architecture checks и regression tests проходят.
+- [x] Release выкладывается неизменяемым каталогом с проверенным rollback и без
   удаления активного/rollback targets.
 
 # Source of Truth
@@ -167,18 +167,17 @@ pricing read models -> root delivery adapter -> Bitrix24/Telegram
 - [x] Устранить дубли receivables/counterparty recommendations.
 - [x] Добавить доменный skeleton и dependency rules без big-bang переносов.
 - [x] Усилить management-job/retention validators и MasterMobile OpenAPI parity.
-- [ ] Прогнать regression, собрать immutable release, smoke и rollback.
-- [ ] После контрольного цикла применить safe retention.
+- [x] Прогнать regression, собрать immutable release, smoke и rollback.
+- [x] После контрольного цикла применить safe retention.
 
 # Review Notes / Risks
 
-- В рабочем tree есть незакоммиченный dashboard-контур; refactor обязан сохранять его
-  изменения и избегать механического переписывания соответствующих файлов.
-- Live-сервис запускается через `/opt/MM/pricing-service-task43-current`; source
-  checkout не равен runtime truth до явного release switch.
-- Во время hardening-работ 2026-07-12 другой процесс переключил production на
-  `sales-dashboard-volume-bars-20260712-173002`; архитектурный rollout поэтому
-  не должен менять symlink, пока параллельный dashboard-релиз не зафиксирован.
+- Dashboard/UI-контур консолидирован вместе с архитектурными изменениями в commit
+  `4a021cd`; live release собран из полного clean source tree без overlay-цепочки.
+- Live-сервис запускается через `/opt/MM/pricing-service-task43-current`, который
+  указывает на `pricing-clean-ui-consolidation-20260714-132116`.
+- Финансовый `source_status=partial`, расхождение баланса и неполные источники
+  остаются отдельной задачей качества данных и не меняют статус hardening-релиза.
 - Direct 1C SQL и application Postgres — разные engines и разные access policies.
 - Автоматический commit на каждый HTTP-запрос запрещен: транзакция соответствует
   application command, а не transport request вообще.
@@ -210,3 +209,8 @@ pricing read models -> root delivery adapter -> Bitrix24/Telegram
 
 - 2026-07-12 — accepted architecture-hardening plan created from live baseline.
 - 2026-07-13 — новый catalog CLI прошёл scheduled-run, compatibility alias удалён.
+- 2026-07-14 — каталог `28 717 / 28 717`, missing `0`, outside `0`; management
+  snapshot `version=17` создан с уникальным content hash и одним audit `generated`.
+- 2026-07-14 — clean release `pricing-clean-ui-consolidation-20260714-132116`
+  переключён в production; сохранены три проверенных rollback, остальные release
+  catalogs удалены после dry-run retention.

@@ -1,7 +1,12 @@
 import "@testing-library/jest-dom/vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { ExecutiveDashboardAction, ExecutiveDashboardBlock, ExecutiveDashboardResponse } from "../api/executiveDashboard";
+import type {
+  ExecutiveDashboardAction,
+  ExecutiveDashboardBlock,
+  ExecutiveDashboardResponse,
+  ExecutiveSalesPeriodResponse,
+} from "../api/executiveDashboard";
 import {
   fetchExecutiveDashboard,
   fetchExecutiveDashboardActions,
@@ -168,7 +173,7 @@ describe("executive management balance", () => {
   });
 });
 
-function salesPeriodResponse() {
+function salesPeriodResponse(): ExecutiveSalesPeriodResponse {
   return {
     month: "2026-06",
     date_from: "2026-06-01",
@@ -261,7 +266,7 @@ function salesDashboardResponse(): ExecutiveDashboardResponse {
   };
 }
 
-async function renderSalesTab() {
+async function renderSalesTab(response = salesPeriodResponse()) {
   window.history.pushState({}, "", "?tab=sales&date=2026-06-05");
   vi.mocked(fetchExecutiveDashboard).mockResolvedValue(salesDashboardResponse());
   vi.mocked(fetchExecutiveDashboardActions).mockResolvedValue({
@@ -271,7 +276,7 @@ async function renderSalesTab() {
     total_count: 0,
     payload: [],
   });
-  vi.mocked(fetchExecutiveSalesPeriod).mockResolvedValue(salesPeriodResponse());
+  vi.mocked(fetchExecutiveSalesPeriod).mockResolvedValue(response);
 
   const result = render(<ExecutiveDashboard />);
   await screen.findByText("Прогноз выручки");
@@ -374,13 +379,34 @@ describe("executive sales period", () => {
     await renderSalesTab();
 
     expect(screen.getByLabelText("Основные KPI продаж").children).toHaveLength(7);
-    expect(
-      screen.getByLabelText("Диагностические KPI продаж").querySelector(".executive-panel__kpis")?.children
-    ).toHaveLength(6);
+    const diagnosticTable = screen.getByRole("table", { name: "Показатели диагностики продаж" });
+    expect(diagnosticTable.querySelectorAll("tbody tr")).toHaveLength(6);
     expect(screen.getByText("Выручка на единицу")).toBeVisible();
     expect(screen.getByText("Выполнение плана")).toBeVisible();
     expect(screen.queryByText("Средний чек")).not.toBeInTheDocument();
     expect(screen.getByText(/план 5/)).toBeVisible();
+  });
+
+  it("hides internal store references from sales diagnostics", async () => {
+    const response = salesPeriodResponse();
+    await renderSalesTab({
+      ...response,
+      diagnostic_kpis: (response.diagnostic_kpis || []).map((metric) =>
+        metric.key === "stores_below_plan_count"
+          ? {
+              ...metric,
+              note: "Не все магазины факта присутствуют во frozen-плане: 0x93040025901E48EE11E3B5A2, 0xBB780025901E48EF11E160486.",
+              source_status: "partial",
+              value: null,
+            }
+          : metric
+      ),
+    });
+
+    expect(
+      screen.getByText("Не все магазины из фактических продаж найдены в утверждённом плане.")
+    ).toBeVisible();
+    expect(screen.queryByText(/0x[0-9a-f]{16,}/i)).not.toBeInTheDocument();
   });
 
   it("shows plan-only metrics as unavailable outside full-month mode", async () => {
@@ -390,7 +416,7 @@ describe("executive sales period", () => {
       plan_status: "not_applicable",
       plan_note: "Плановые показатели доступны только в режиме «Месяц».",
       plan: null,
-      diagnostic_kpis: response.diagnostic_kpis.map((metric) =>
+      diagnostic_kpis: (response.diagnostic_kpis || []).map((metric) =>
         ["lost_gross_profit_margin_gap", "margin_gap_pp", "stores_below_plan_count", "managers_below_target_margin_count"].includes(metric.key)
           ? { ...metric, value: null, source_status: "not_applicable" }
           : metric

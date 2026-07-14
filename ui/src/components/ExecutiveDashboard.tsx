@@ -29,7 +29,7 @@ import {
   type ExecutiveSourceStatus,
 } from "../api/executiveDashboard";
 import { splitManagementBalanceBlock } from "./executiveDashboardLayout";
-import { Button, ErrorState, LoadingState, MetricCard, PageShell, type MetricDelta, type MetricTone } from "./ui";
+import { Button, ErrorState, LoadingState, MetricCard, PageShell, StatusBadge, type MetricDelta, type MetricTone } from "./ui";
 
 type ExecutiveDashboardProps = {
   bitrixMode?: boolean;
@@ -2596,12 +2596,43 @@ function salesDiagnosticTone(metric: ExecutiveSalesDiagnosticKpi): MetricTone {
   return "neutral";
 }
 
-function salesDiagnosticHint(metric: ExecutiveSalesDiagnosticKpi) {
+function salesDiagnosticStatus(metric: ExecutiveSalesDiagnosticKpi): { label: string; tone: MetricTone } {
+  if (metric.source_status === "source_error") return { label: "Ошибка", tone: "danger" };
+  if (metric.source_status === "not_applicable") return { label: "Не применяется", tone: "neutral" };
+  if (metric.source_status === "source_missing") return { label: "Нет данных", tone: "warning" };
+  if (!["ready", "complete"].includes(metric.source_status)) {
+    return { label: "Нужна проверка", tone: "warning" };
+  }
+  const tone = salesDiagnosticTone(metric);
+  if (tone === "warning" || tone === "danger") return { label: "Требует внимания", tone };
+  if (tone === "success") return { label: "В норме", tone };
+  return { label: "Рассчитано", tone: "info" };
+}
+
+function salesDiagnosticDetail(metric: ExecutiveSalesDiagnosticKpi) {
   const evaluated = numericValue(metric.meta?.evaluated_count as string | number | null | undefined);
   if (evaluated !== null && metric.value !== null && metric.value !== undefined) {
-    return `проверено: ${formatPlainNumber(evaluated)}`;
+    const entity = metric.key === "stores_below_plan_count" ? "магазинов" : "менеджеров";
+    return `Проверено: ${new Intl.NumberFormat("ru-RU", { maximumFractionDigits: 0 }).format(evaluated)} ${entity}`;
   }
-  return metric.note || undefined;
+  const note = metric.note?.trim();
+  if (!note) return "По фактическим продажам 1С";
+  if (note.startsWith("Не все продажи сопоставлены с frozen-планом магазинов")) {
+    return "Не все продажи сопоставлены с утверждённым планом магазинов.";
+  }
+  if (note.startsWith("Не все магазины факта присутствуют во frozen-плане")) {
+    return "Не все магазины из фактических продаж найдены в утверждённом плане.";
+  }
+  if (note.startsWith("У магазинов отсутствует утверждённый план выручки")) {
+    return "Не у всех магазинов есть утверждённый план выручки.";
+  }
+  if (/\b0x[0-9a-f]{16,}\b/i.test(note)) {
+    const summary = note.split(":", 1)[0].trim();
+    return `${summary
+      .replace("frozen-планом", "утверждённым планом")
+      .replace("frozen-плане", "утверждённом плане")}.`;
+  }
+  return note;
 }
 
 export function SalesPeriodPanel({
@@ -2732,17 +2763,35 @@ export function SalesPeriodPanel({
             diagnosticKpis={(
               <section aria-label="Диагностические KPI продаж" className="executive-sales-diagnostics">
                 <h3>Диагностика продаж</h3>
-                <div className="executive-panel__kpis">
-                  {(data.diagnostic_kpis || []).map((metric) => (
-                    <MetricCard
-                      hint={salesDiagnosticHint(metric)}
-                      key={metric.key}
-                      label={SALES_DIAGNOSTIC_LABELS[metric.key] || metric.key}
-                      tone={salesDiagnosticTone(metric)}
-                      tooltip={metric.note}
-                      value={salesDiagnosticValue(metric)}
-                    />
-                  ))}
+                <div className="executive-sales-diagnostics__table-wrap">
+                  <table className="executive-sales-diagnostics__table">
+                    <caption className="visually-hidden">Показатели диагностики продаж</caption>
+                    <thead>
+                      <tr>
+                        <th scope="col">Показатель</th>
+                        <th scope="col">Значение</th>
+                        <th scope="col">Статус</th>
+                        <th scope="col">Что это значит</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(data.diagnostic_kpis || []).map((metric) => {
+                        const diagnosticStatus = salesDiagnosticStatus(metric);
+                        return (
+                          <tr key={metric.key}>
+                            <th scope="row">{SALES_DIAGNOSTIC_LABELS[metric.key] || metric.key}</th>
+                            <td className={`executive-sales-diagnostics__value executive-sales-diagnostics__value--${salesDiagnosticTone(metric)}`}>
+                              {salesDiagnosticValue(metric)}
+                            </td>
+                            <td>
+                              <StatusBadge tone={diagnosticStatus.tone}>{diagnosticStatus.label}</StatusBadge>
+                            </td>
+                            <td className="executive-sales-diagnostics__detail">{salesDiagnosticDetail(metric)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
                 </div>
               </section>
             )}

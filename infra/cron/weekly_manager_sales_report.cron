@@ -1,0 +1,1 @@
+15 6 * * MON /opt/MM/pricing-service/infra/cron/weekly_manager_sales_report.sh

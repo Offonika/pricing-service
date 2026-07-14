@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Optional
 
 from sqlalchemy.orm import Session
 
@@ -28,7 +27,19 @@ class ProductModelMatcher:
     def __init__(self, db: Session):
         self.db = db
 
-    def match_product(self, product: Product) -> Optional[MatchResult]:
+    def match_product(self, product: Product) -> MatchResult | None:
+        if product.phone_model_links:
+            best_link = sorted(
+                product.phone_model_links,
+                key=lambda link: (bool(link.is_manual), float(link.confidence or 0)),
+                reverse=True,
+            )[0]
+            return MatchResult(
+                product_id=product.id,
+                phone_model_id=best_link.phone_model_id,
+                confidence=float(best_link.confidence or 1.0),
+                reason="canonical_phone_model_overlap",
+            )
         if not product.brand or not product.name:
             return None
         brand_norm = product.brand.lower()
@@ -38,7 +49,7 @@ class ProductModelMatcher:
             .order_by(PhoneModel.created_at.desc())
         )
         name_norm = product.name.lower()
-        best: Optional[MatchResult] = None
+        best: MatchResult | None = None
         for model in products_query.all():
             if model.model_name:
                 pattern = re.escape(model.model_name.lower())
@@ -54,7 +65,7 @@ class ProductModelMatcher:
                 product_id=product.id,
                 phone_model_id=model.id,
                 confidence=confidence,
-                reason=f"brand match and model substring '{model.model_name}'",
+                reason=f"fallback_name_match:{model.model_name}",
             )
             if best is None or result.confidence > best.confidence:
                 best = result

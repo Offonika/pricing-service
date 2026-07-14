@@ -1,20 +1,19 @@
 from __future__ import annotations
 
 from decimal import Decimal
-from typing import List, Optional
 
 from pydantic import BaseModel
 
 
 class TelegramItem(BaseModel):
-    sku: str
+    article: str
     name: str
-    brand: Optional[str] = None
-    category: Optional[str] = None
+    brand: str | None = None
+    category: str | None = None
     recommended_price: Decimal
-    purchase_price: Optional[Decimal] = None
-    delta: Optional[Decimal] = None
-    reasons: List[str]
+    purchase_price: Decimal | None = None
+    delta: Decimal | None = None
+    reasons: list[str]
 
 
 class TelegramAlert(TelegramItem):

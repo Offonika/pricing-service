@@ -1,0 +1,106 @@
+{
+  "_description": "Позиции исключаются из очереди автозаполнения свойства Качество, потому что сначала нужна закупочная оценка статуса по фактам жизни товара: продажи, остаток, давность продажи, рентабельность, конкуренты и спрос по модели за последние 6 месяцев.",
+  "items": [
+    {
+      "nomenclature_code": "РБ000045041",
+      "exclude_from_quality_queue": true,
+      "review_queue": "procurement_status_review",
+      "fact_lifecycle_relation": "live_selling_item",
+      "current_status": "sale",
+      "status_recommendation": "keep_sale",
+      "order_action": "commercial_check_before_auto_order",
+      "reason": "Живая позиция: поступило 13 шт., продано 10 шт., последняя продажа 2026-07-02, остаток расчетно 3 шт. Место в структуре статусов: ПРОДАЖА; не неликвид, но перед автозаказом нужны маржа, конкурентность и спрос модели за 6 месяцев.",
+      "evidence": {
+        "first_receipt_at": "2025-12-09",
+        "last_receipt_at": "2026-04-19",
+        "receipt_qty_total": 13,
+        "sales_qty_total": 10,
+        "last_sale_at": "2026-07-02",
+        "estimated_balance_qty": 3
+      },
+      "changed_at": "2026-07-04",
+      "changed_by": "chat_2026-07-04"
+    },
+    {
+      "nomenclature_code": "РБ000045042",
+      "exclude_from_quality_queue": true,
+      "review_queue": "procurement_status_review",
+      "fact_lifecycle_relation": "new_item_with_confirmed_demand",
+      "current_status": "new_item",
+      "status_recommendation": "keep_new_item_until_repeat_cycle",
+      "order_action": "repeat_test_order_after_commercial_check",
+      "reason": "Позиция распродалась за первый цикл: поступило 5 шт., продано 5 шт., последняя продажа 2026-06-24, расчетный остаток 0. Место в структуре статусов: Новинка с подтвержденным спросом; в Рабочий переводить только после следующего цикла.",
+      "evidence": {
+        "first_receipt_at": "2025-12-09",
+        "last_receipt_at": "2025-12-09",
+        "receipt_qty_total": 5,
+        "sales_qty_total": 5,
+        "last_sale_at": "2026-06-24",
+        "estimated_balance_qty": 0
+      },
+      "changed_at": "2026-07-04",
+      "changed_by": "chat_2026-07-04"
+    },
+    {
+      "nomenclature_code": "РБ000045045",
+      "exclude_from_quality_queue": true,
+      "review_queue": "procurement_status_review",
+      "fact_lifecycle_relation": "live_item_with_remaining_stock",
+      "current_status": "sale",
+      "status_recommendation": "keep_sale_hold_order",
+      "order_action": "do_not_reorder_until_stock_or_new_signal",
+      "reason": "Позиция живая, но остаток еще есть: поступило 14 шт., продано 9 шт., последняя продажа 2026-06-17, расчетный остаток 5 шт. Место в структуре статусов: ПРОДАЖА; новый заказ сейчас не нужен до расхода остатка или нового сигнала.",
+      "evidence": {
+        "first_receipt_at": "2025-12-09",
+        "last_receipt_at": "2026-04-19",
+        "receipt_qty_total": 14,
+        "sales_qty_total": 9,
+        "last_sale_at": "2026-06-17",
+        "estimated_balance_qty": 5
+      },
+      "changed_at": "2026-07-04",
+      "changed_by": "chat_2026-07-04"
+    },
+    {
+      "nomenclature_code": "РБ000045044",
+      "exclude_from_quality_queue": true,
+      "review_queue": "procurement_status_review",
+      "fact_lifecycle_relation": "weak_demand_with_hanging_stock",
+      "current_status": "nonliquid",
+      "status_recommendation": "manual_nonliquid_no_auto_order",
+      "order_action": "do_not_reorder",
+      "reason": "Поступило 7 шт., продана 1 шт., последняя продажа 2026-03-06, расчетный остаток 6 шт.; две внутренние складские потребности не считаем рыночным спросом. Место в структуре статусов: Кандидат на неликвид, без автозаказа; дальше только ручная распродажа, перемещение или Под заказ после проверки.",
+      "evidence": {
+        "first_receipt_at": "2025-11-23",
+        "last_receipt_at": "2025-11-23",
+        "receipt_qty_total": 7,
+        "sales_qty_total": 1,
+        "internal_warehouse_need_count": 2,
+        "last_sale_at": "2026-03-06",
+        "estimated_balance_qty": 6
+      },
+      "changed_at": "2026-07-04",
+      "changed_by": "chat_2026-07-04"
+    },
+    {
+      "nomenclature_code": "РБ000032776",
+      "exclude_from_quality_queue": true,
+      "review_queue": "procurement_status_review",
+      "fact_lifecycle_relation": "legacy_without_current_demand",
+      "current_status": "do_not_order",
+      "status_recommendation": "manual_do_not_order_legacy",
+      "order_action": "manual_return_only",
+      "reason": "Старая историческая позиция: поступило 8 шт., продано 8 шт., последняя продажа 2021-03-26, текущей жизни, остатка и потребности нет. Место в структуре статусов: Не закупать; возврат только ручным решением.",
+      "evidence": {
+        "first_receipt_at": "2018-12-20",
+        "last_receipt_at": "2019-05-13",
+        "receipt_qty_total": 8,
+        "sales_qty_total": 8,
+        "last_sale_at": "2021-03-26",
+        "estimated_balance_qty": 0
+      },
+      "changed_at": "2026-07-04",
+      "changed_by": "chat_2026-07-04"
+    }
+  ]
+}

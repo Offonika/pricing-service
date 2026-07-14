@@ -1,6 +1,6 @@
 name: CI
 
-on:
+"on":
   push:
     branches: [main]
   pull_request:
@@ -24,10 +24,19 @@ jobs:
           pip install -e .[dev]
 
       - name: Lint (ruff)
-        run: ruff .
+        run: ruff check .
+
+      - name: Architecture boundaries
+        run: python scripts/check_architecture_boundaries.py
+
+      - name: CLI and backfill registry
+        run: python scripts/validate_cli_registry.py
 
       - name: Format check (black)
         run: black --check .
+
+      - name: OpenAPI contract check
+        run: python scripts/export_openapi.py --check
 
       - name: Tests (pytest)
         run: pytest

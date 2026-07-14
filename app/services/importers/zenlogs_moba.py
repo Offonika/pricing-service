@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
-from typing import List, Optional
 
 from openpyxl import load_workbook
 
@@ -14,15 +13,15 @@ class CompetitorCatalogRecord:
     competitor: str
     external_id: str
     name: str
-    category: Optional[str]
-    price_opt: Optional[Decimal]
-    price_roz: Optional[Decimal]
-    availability: Optional[bool]
-    url: Optional[str]
+    category: str | None
+    price_opt: Decimal | None
+    price_roz: Decimal | None
+    availability: bool | None
+    url: str | None
     scraped_at: datetime
 
 
-def _parse_bool(value) -> Optional[bool]:
+def _parse_bool(value) -> bool | None:
     if value is None or value == "":
         return None
     if isinstance(value, bool):
@@ -35,7 +34,7 @@ def _parse_bool(value) -> Optional[bool]:
     return None
 
 
-def _parse_decimal(value) -> Optional[Decimal]:
+def _parse_decimal(value) -> Decimal | None:
     if value is None or value == "":
         return None
     try:
@@ -48,10 +47,10 @@ def parse_zenlogs_xlsx(
     content: bytes,
     competitor: str,
     scraped_at: datetime,
-) -> List[CompetitorCatalogRecord]:
+) -> list[CompetitorCatalogRecord]:
     wb = load_workbook(BytesIO(content), read_only=True)
     ws = wb.active
-    records: List[CompetitorCatalogRecord] = []
+    records: list[CompetitorCatalogRecord] = []
     rows = list(ws.rows)
     if not rows:
         return records

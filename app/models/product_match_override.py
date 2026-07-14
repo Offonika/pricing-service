@@ -16,7 +16,9 @@ class ProductMatchOverride(Base):
     model: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
     variant: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     product_id: Mapped[Optional[int]] = mapped_column(ForeignKey("product.id"), nullable=True)
-    phone_model_id: Mapped[Optional[int]] = mapped_column(ForeignKey("phone_models.id"), nullable=True)
+    phone_model_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("phone_models.id"), nullable=True
+    )
     quality: Mapped[Optional[str]] = mapped_column(String(50), nullable=True)
     note: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
@@ -32,4 +34,3 @@ class ProductMatchOverride(Base):
             name="uq_product_match_override_source_sku",
         ),
     )
-

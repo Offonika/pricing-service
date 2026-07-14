@@ -1,0 +1,4 @@
+interface:
+  display_name: "Bitrix24 UI Design"
+  short_description: "Design safe embedded Bitrix24 interfaces"
+  default_prompt: "Design or improve an embedded Bitrix24 interface using repository tokens, components, and local accessibility QA."

@@ -1,0 +1,6 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+CRON_TZ=Europe/Moscow
+
+# Pull UT103 SKU result files back into pricing-service after 1C processes exchange packages.
+45 * * * * root /opt/MM/pricing-service/infra/cron/sku_result_sync_ut103.sh >> /var/log/pricing/sku_result_sync_ut103.cron.log 2>&1

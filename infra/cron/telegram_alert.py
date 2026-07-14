@@ -9,18 +9,18 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 
 
-def _read_lines(path: Path) -> List[str]:
+def _read_lines(path: Path) -> list[str]:
     if not path.exists():
         return []
     return path.read_text(encoding="utf-8", errors="ignore").splitlines()
 
 
-def _extract_payload(lines: List[str]) -> Optional[Dict[str, Any]]:
+def _extract_payload(lines: list[str]) -> dict[str, Any] | None:
     for line in reversed(lines):
         stripped = line.strip()
         if stripped.startswith("{") and stripped.endswith("}"):
@@ -31,7 +31,7 @@ def _extract_payload(lines: List[str]) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _collect_tail(lines: List[str], limit: int = 5) -> str:
+def _collect_tail(lines: list[str], limit: int = 5) -> str:
     tail = [line.strip() for line in lines if line.strip()]
     if not tail:
         return ""
@@ -45,31 +45,36 @@ def _shorten(text: str, limit: int = 240) -> str:
     return cleaned[: limit - 1].rstrip() + "…"
 
 
-def _status_ru(status: Optional[str]) -> Optional[str]:
+def _status_ru(status: str | None) -> str | None:
     if not status:
         return None
     mapping = {"rumor": "слух", "announced": "анонс", "released": "в продаже"}
     return mapping.get(str(status).lower().strip(), str(status))
 
 
-def _format_stats(payload: Dict[str, Any]) -> List[str]:
+def _format_stats(payload: dict[str, Any]) -> list[str]:
+    def _fmt(value: Any) -> Any:
+        if isinstance(value, bool):
+            return "да" if value else "нет"
+        return value
+
     return [
-        f"- Получено: {payload.get('fetched', '?')}",
-        f"- Обработано: {payload.get('processed', '?')}",
-        f"- Создано: {payload.get('created', '?')}",
-        f"- Обновлено: {payload.get('updated', '?')}",
-        f"- Пропущено: {payload.get('skipped', '?')}",
-        f"- Ошибок: {payload.get('errors', '?')}",
+        f"- Получено: {_fmt(payload.get('fetched', '?'))}",
+        f"- Обработано: {_fmt(payload.get('processed', '?'))}",
+        f"- Создано: {_fmt(payload.get('created', '?'))}",
+        f"- Обновлено: {_fmt(payload.get('updated', '?'))}",
+        f"- Пропущено: {_fmt(payload.get('skipped', '?'))}",
+        f"- Ошибок: {_fmt(payload.get('errors', '?'))}",
     ]
 
 
-def _format_sync(payload: Dict[str, Any]) -> List[str]:
+def _format_sync(payload: dict[str, Any]) -> list[str]:
     sync_keys = [
         ("sync_synced_models", "Новые модели"),
         ("sync_updated_models", "Обновлено моделей"),
         ("sync_keywords_created", "Ключевых слов создано"),
     ]
-    lines: List[str] = []
+    lines: list[str] = []
     for key, label in sync_keys:
         if key in payload:
             lines.append(f"- {label}: {payload.get(key, '?')}")
@@ -98,9 +103,9 @@ def _format_overview_item(item: Any, idx: int) -> str:
     return head
 
 
-def _format_overview(payload: Dict[str, Any], limit: int = 5) -> str:
+def _format_overview(payload: dict[str, Any], limit: int = 5) -> str:
     highlights = payload.get("highlights") or payload.get("news_overview") or []
-    parts: List[str] = []
+    parts: list[str] = []
     for idx, item in enumerate(highlights[:limit], 1):
         formatted = _format_overview_item(item, idx)
         if formatted:
@@ -108,7 +113,13 @@ def _format_overview(payload: Dict[str, Any], limit: int = 5) -> str:
     return "\n".join(parts)
 
 
-def _build_message(job_name: str, payload: Optional[Dict[str, Any]], exit_code: int, tail: str) -> str:
+def _clamp_text(text: str, limit: int = 4096) -> str:
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "…"
+
+
+def _build_message(job_name: str, payload: dict[str, Any] | None, exit_code: int, tail: str) -> str:
     errors = (payload or {}).get("errors")
     status_icon = "✅" if exit_code == 0 and (errors is None or errors == 0) else "⚠️"
     now = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%SZ")
@@ -134,11 +145,12 @@ def _build_message(job_name: str, payload: Optional[Dict[str, Any]], exit_code: 
     else:
         lines.append("")
         lines.append("Payload: не удалось распарсить JSON результата")
-    if tail:
+    include_tail = bool(tail) and exit_code != 0
+    if include_tail:
         lines.append("")
         lines.append("Хвост логов:")
         lines.append(tail)
-    return "\n".join(lines)
+    return _clamp_text("\n".join(lines))
 
 
 def _send_telegram(token: str, chat_id: str, text: str) -> None:

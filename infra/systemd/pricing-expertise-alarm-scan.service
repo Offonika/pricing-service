@@ -1,0 +1,12 @@
+[Unit]
+Description=Pricing Service Expertise Alarm Scan
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/MM/pricing-service
+ExecStart=/opt/MM/pricing-service/infra/cron/expertise_alarm_scan.sh
+StandardOutput=append:/var/log/pricing/expertise_alarm_scan.log
+StandardError=append:/var/log/pricing/expertise_alarm_scan.log

@@ -5,16 +5,20 @@ Revises: cc0a7f8c2104
 Create Date: 2025-12-01 01:20:00
 
 """
-from typing import Sequence, Union
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+import sqlalchemy as sa
 
 from alembic import op
-import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "ed7e4f7c8f2d"
-down_revision: Union[str, None] = "cc0a7f8c2104"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "cc0a7f8c2104"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -36,11 +40,12 @@ def upgrade() -> None:
         sa.ForeignKeyConstraint(["phone_model_id"], ["phone_models.id"]),
         sa.ForeignKeyConstraint(["product_id"], ["product.id"]),
         sa.PrimaryKeyConstraint("id"),
-        sa.UniqueConstraint("competitor_source", "competitor_sku", name="uq_product_match_override_source_sku"),
+        sa.UniqueConstraint(
+            "competitor_source", "competitor_sku", name="uq_product_match_override_source_sku"
+        ),
     )
 
 
 def downgrade() -> None:
     op.drop_table("productmatchoverride")
     op.drop_column("productmatch", "quality")
-

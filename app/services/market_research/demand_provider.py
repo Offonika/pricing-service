@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
-from typing import Optional
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -21,11 +20,11 @@ class MarketDemandProvider:
 
     def get_model_demand_score(
         self,
-        phone_model_id: Optional[int] = None,
-        brand: Optional[str] = None,
-        model_name: Optional[str] = None,
-        region: Optional[str] = None,
-    ) -> Optional[float]:
+        phone_model_id: int | None = None,
+        brand: str | None = None,
+        model_name: str | None = None,
+        region: str | None = None,
+    ) -> float | None:
         query = (
             self.db.query(func.avg(KeywordDemand.impressions))
             .join(Keyword, Keyword.id == KeywordDemand.keyword_id)

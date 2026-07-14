@@ -1,17 +1,20 @@
+from __future__ import annotations
+
 import json
+import logging
+import time
 from dataclasses import dataclass
 from datetime import date
-from typing import Dict, List, Optional
-import time
 
-import logging
 import httpx
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.models import Keyword, KeywordDemand
 from app.services.market_research.repositories import KeywordDemandRepository
-from app.services.market_research.wordstat import WordstatClient, build_wordstat_client_from_settings
-from app.core.config import get_settings
+from app.services.market_research.wordstat import (
+    build_wordstat_client_from_settings,
+)
 
 
 @dataclass
@@ -19,10 +22,10 @@ class YandexKeywordStat:
     phrase: str
     region: str
     impressions: int
-    stat_date: Optional[date] = None
-    clicks: Optional[int] = None
-    ctr: Optional[float] = None
-    bid_metrics: Optional[str] = None
+    stat_date: date | None = None
+    clicks: int | None = None
+    ctr: float | None = None
+    bid_metrics: str | None = None
 
 
 class YandexDirectClient:
@@ -32,9 +35,9 @@ class YandexDirectClient:
         self,
         token: str,
         base_url: str,
-        client_login: Optional[str],
+        client_login: str | None,
         timeout: float = 10.0,
-        rps_limit: Optional[float] = None,
+        rps_limit: float | None = None,
     ):
         self.token = token
         self.base_url = base_url
@@ -43,9 +46,9 @@ class YandexDirectClient:
         self.rps_limit = rps_limit
         self.logger = logging.getLogger("app.services.yandex_direct")
         self._client = httpx.Client(timeout=self.timeout)
-        self._last_call_ts: Optional[float] = None
+        self._last_call_ts: float | None = None
 
-    def get_stats(self, phrases: List[str], region: str) -> List[YandexKeywordStat]:
+    def get_stats(self, phrases: list[str], region: str) -> list[YandexKeywordStat]:
         """
         Вызывает API Директа и возвращает агрегированные метрики по фразам.
 
@@ -62,7 +65,14 @@ class YandexDirectClient:
             "method": "hasSearchVolume",
             "params": {
                 "SelectionCriteria": {"Keywords": phrases, "RegionIds": [region_id]},
-                "FieldNames": ["Keyword", "RegionIds", "AllDevices", "MobilePhones", "Tablets", "Desktops"],
+                "FieldNames": [
+                    "Keyword",
+                    "RegionIds",
+                    "AllDevices",
+                    "MobilePhones",
+                    "Tablets",
+                    "Desktops",
+                ],
             },
         }
         headers = {
@@ -83,7 +93,9 @@ class YandexDirectClient:
             response.raise_for_status()
             self._last_call_ts = time.perf_counter()
         except httpx.HTTPError:
-            self.logger.exception("failed to call Yandex Direct", extra={"phrases": phrases, "region": region})
+            self.logger.exception(
+                "failed to call Yandex Direct", extra={"phrases": phrases, "region": region}
+            )
             return []
 
         try:
@@ -98,7 +110,7 @@ class YandexDirectClient:
             )
             return []
 
-        stats: List[YandexKeywordStat] = []
+        stats: list[YandexKeywordStat] = []
         result_items = data.get("result", {}).get("HasSearchVolumeResults", [])
         for item in result_items:
             try:
@@ -128,25 +140,31 @@ class YandexDirectClient:
 class DemandService:
     """Сервис для обновления метрик спроса по ключевым фразам."""
 
-    def __init__(self, db: Session, client, batch_size: int = 100):  # client: YandexDirectClient | WordstatClient
+    def __init__(
+        self, db: Session, client, batch_size: int = 100
+    ):  # client: YandexDirectClient | WordstatClient
         self.db = db
         self.client = client
         self.batch_size = batch_size
         self.repo = KeywordDemandRepository(db)
         self.logger = logging.getLogger("app.services.demand")
 
-    def update_demand_for_keywords(self, keywords: List[Keyword], region: str) -> List[KeywordDemand]:
+    def update_demand_for_keywords(
+        self, keywords: list[Keyword], region: str
+    ) -> list[KeywordDemand]:
         """
         Берёт список Keyword, запрашивает Яндекс.Директ и сохраняет KeywordDemand.
         Валидацию лимитов/регионов/ретраев обеспечивает клиент или вызывающий код.
         """
-        saved: List[KeywordDemand] = []
+        saved: list[KeywordDemand] = []
         for i in range(0, len(keywords), self.batch_size):
             batch = keywords[i : i + self.batch_size]
             phrases = [kw.phrase for kw in batch]
             stats = self.client.get_stats(phrases=phrases, region=region)
-            stat_by_phrase: Dict[str, YandexKeywordStat] = {item.phrase.lower(): item for item in stats}
-            demand_records: List[KeywordDemand] = []
+            stat_by_phrase: dict[str, YandexKeywordStat] = {
+                item.phrase.lower(): item for item in stats
+            }
+            demand_records: list[KeywordDemand] = []
             for kw in batch:
                 stat = stat_by_phrase.get(kw.phrase.lower())
                 if not stat:
@@ -183,7 +201,7 @@ def build_yandex_direct_client_from_settings() -> YandexDirectClient:
     )
 
 
-def build_demand_service(db: Session, batch_size: Optional[int] = None) -> DemandService:
+def build_demand_service(db: Session, batch_size: int | None = None) -> DemandService:
     settings = get_settings()
     if settings.yandex_wordstat_enabled:
         client = build_wordstat_client_from_settings()

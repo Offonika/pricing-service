@@ -11,10 +11,12 @@ from app.api.dependencies import get_db
 from app.main import app
 from app.models import (
     Base,
+    PriceRecommendation,
     Product,
     ProductStock,
-    PriceRecommendation,
 )
+
+UTC = timezone.utc
 
 
 def setup_db():
@@ -27,10 +29,10 @@ def setup_db():
 
 
 def seed_data(session: Session) -> None:
-    prod_ok = Product(sku="OK-1", name="Good", brand="BrandA", category="Cat1")
+    prod_ok = Product(article="OK-1", name="Good", brand="BrandA", category="Cat1")
     prod_ok.stock = ProductStock(quantity=5, purchase_price=Decimal("100"))
 
-    prod_alert = Product(sku="AL-1", name="Bad", brand="BrandB", category="Cat2")
+    prod_alert = Product(article="AL-1", name="Bad", brand="BrandB", category="Cat2")
     prod_alert.stock = ProductStock(quantity=5, purchase_price=Decimal("150"))
 
     session.add_all([prod_ok, prod_alert])
@@ -44,7 +46,7 @@ def seed_data(session: Session) -> None:
             competitor_min_price=None,
             min_margin_pct=Decimal("0.1"),
             reasons=["market above floor"],
-            created_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            created_at=datetime.now(UTC) - timedelta(minutes=1),
         )
     )
     session.add(
@@ -55,7 +57,7 @@ def seed_data(session: Session) -> None:
             competitor_min_price=None,
             min_margin_pct=Decimal("0.1"),
             reasons=["below purchase"],
-            created_at=datetime.now(timezone.utc) - timedelta(minutes=1),
+            created_at=datetime.now(UTC) - timedelta(minutes=1),
         )
     )
     session.commit()
@@ -84,13 +86,13 @@ def test_today_and_alerts_filters() -> None:
     assert resp.status_code == 200
     items = resp.json()
     assert len(items) == 1
-    assert items[0]["sku"] == "OK-1"
+    assert items[0]["article"] == "OK-1"
     assert Decimal(str(items[0]["purchase_price"])) == Decimal("100")
     assert Decimal(str(items[0]["delta"])) == Decimal("20")
 
     alerts = client.get("/api/telegram/alerts").json()
     assert len(alerts) == 1
-    assert alerts[0]["sku"] == "AL-1"
+    assert alerts[0]["article"] == "AL-1"
     assert alerts[0]["alert_reason"] == "recommended_below_purchase"
 
     app.dependency_overrides = {}

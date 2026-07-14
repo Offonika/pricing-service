@@ -5,8 +5,7 @@ import json
 import logging
 import os
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import httpx
 import yaml
@@ -28,11 +27,11 @@ DEFAULT_PROMPT = """
 @dataclass
 class SourceConfig:
     brand: str
-    urls: List[str]
+    urls: list[str]
 
 
-def load_sources(path: str) -> Dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
+def load_sources(path: str) -> dict[str, Any]:
+    with open(path, encoding="utf-8") as f:
         return yaml.safe_load(f)
 
 
@@ -42,7 +41,7 @@ def fetch_url(url: str, client: httpx.Client) -> str:
     return resp.text
 
 
-def extract_release(html_text: str, brand_hint: str, client: OpenAI) -> Optional[Dict[str, Any]]:
+def extract_release(html_text: str, brand_hint: str, client: OpenAI) -> dict[str, Any] | None:
     messages = [
         {"role": "system", "content": DEFAULT_PROMPT},
         {"role": "user", "content": f"Brand hint: {brand_hint}\n\nContent:\n{html_text[:15000]}"},
@@ -62,7 +61,7 @@ def extract_release(html_text: str, brand_hint: str, client: OpenAI) -> Optional
         return None
 
 
-def post_device_model(api_base: str, payload: Dict[str, Any]) -> httpx.Response:
+def post_device_model(api_base: str, payload: dict[str, Any]) -> httpx.Response:
     url = f"{api_base}/api/agents/devices/models"
     return httpx.post(url, json=payload, timeout=20)
 
@@ -100,7 +99,10 @@ def main():
                 if not data:
                     continue
                 # минимальная валидация
-                if criteria.get("require_brand_in_title") and source.brand.lower() not in json.dumps(data).lower():
+                if (
+                    criteria.get("require_brand_in_title")
+                    and source.brand.lower() not in json.dumps(data).lower()
+                ):
                     logging.info("skip: brand not detected in data for %s", url)
                     continue
                 resp = post_device_model(args.api_base, data)

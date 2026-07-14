@@ -1,0 +1,9 @@
+[Unit]
+Description=pricing-service executive dashboard live check
+After=pricing-service.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/MM/pricing-service-task43-current
+EnvironmentFile=/opt/MM/pricing-service-task43-current/.env
+ExecStart=/opt/MM/pricing-service/.venv/bin/python scripts/check_executive_dashboard_runtime.py --mode monitor

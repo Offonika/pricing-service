@@ -5,16 +5,20 @@ Revises: ed7e4f7c8f2d
 Create Date: 2025-12-01 01:45:00
 
 """
-from typing import Sequence, Union
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+
+import sqlalchemy as sa
 
 from alembic import op
-import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "1f2c9c8e3e1b"
-down_revision: Union[str, None] = "ed7e4f7c8f2d"
-branch_labels: Union[str, Sequence[str], None] = None
-depends_on: Union[str, Sequence[str], None] = None
+down_revision: str | None = "ed7e4f7c8f2d"
+branch_labels: str | Sequence[str] | None = None
+depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
@@ -23,4 +27,3 @@ def upgrade() -> None:
 
 def downgrade() -> None:
     op.drop_column("product", "subject")
-

@@ -2,19 +2,21 @@ from __future__ import annotations
 
 import logging
 from datetime import date
-from typing import Dict, List, Optional
 
 from sqlalchemy.orm import Session
 
-from app.models import ReleaseStatus, SmartphoneRelease, SourceType
 from app.core.config import get_settings
-from app.services.smartphone_releases.news_client import SmartphoneNewsClient, build_news_client_from_settings
+from app.models import ReleaseStatus, SmartphoneRelease, SourceType
+from app.services.smartphone_releases.gsmarena_client import build_gsmarena_client_from_settings
+from app.services.smartphone_releases.news_client import (
+    SmartphoneNewsClient,
+    build_news_client_from_settings,
+)
 from app.services.smartphone_releases.normalizer import (
     SmartphoneReleaseNormalizer,
     build_normalizer_from_settings,
 )
 from app.services.smartphone_releases.types import NormalizedReleaseCandidate, RawNewsItem
-from app.services.smartphone_releases.gsmarena_client import build_gsmarena_client_from_settings
 
 HIGHLIGHT_LIMIT = 5
 HIGHLIGHT_SUMMARY_MAX_LEN = 240
@@ -24,7 +26,7 @@ class SmartphoneReleaseRepository:
     def __init__(self, db: Session):
         self.db = db
 
-    def get_by_source(self, source_name: str, source_url: str) -> Optional[SmartphoneRelease]:
+    def get_by_source(self, source_name: str, source_url: str) -> SmartphoneRelease | None:
         return (
             self.db.query(SmartphoneRelease)
             .filter(
@@ -35,8 +37,8 @@ class SmartphoneReleaseRepository:
         )
 
     def get_by_identity(
-        self, brand: str, model: str, announcement_date: Optional[date]
-    ) -> Optional[SmartphoneRelease]:
+        self, brand: str, model: str, announcement_date: date | None
+    ) -> SmartphoneRelease | None:
         query = self.db.query(SmartphoneRelease).filter(
             SmartphoneRelease.brand == brand,
             SmartphoneRelease.model == model,
@@ -47,13 +49,13 @@ class SmartphoneReleaseRepository:
             query = query.filter(SmartphoneRelease.announcement_date == announcement_date)
         return query.first()
 
-    def create(self, payload: Dict) -> SmartphoneRelease:
+    def create(self, payload: dict) -> SmartphoneRelease:
         release = SmartphoneRelease(**payload)
         self.db.add(release)
         self.db.flush()
         return release
 
-    def update(self, release: SmartphoneRelease, payload: Dict) -> SmartphoneRelease:
+    def update(self, release: SmartphoneRelease, payload: dict) -> SmartphoneRelease:
         for key, value in payload.items():
             # Не затираем существующие данные пустыми значениями, кроме raw_payload.
             if value is None and getattr(release, key, None) is not None and key != "raw_payload":
@@ -71,8 +73,8 @@ class SmartphoneReleaseService:
         self,
         db: Session,
         news_client: SmartphoneNewsClient,
-        normalizer: Optional[SmartphoneReleaseNormalizer],
-        extra_sources: Optional[list] = None,
+        normalizer: SmartphoneReleaseNormalizer | None,
+        extra_sources: list | None = None,
     ) -> None:
         self.db = db
         self.repo = SmartphoneReleaseRepository(db)
@@ -82,15 +84,17 @@ class SmartphoneReleaseService:
         self.logger = logging.getLogger("app.services.smartphone_releases")
         self.highlight_limit = HIGHLIGHT_LIMIT
 
-    def ingest_latest(self, batch_size: int = 20) -> Dict[str, object]:
+    def ingest_latest(self, batch_size: int = 20) -> dict[str, object]:
         raw_items = self.news_client.fetch_recent_news()
         for source in self.extra_sources:
             try:
                 raw_items.extend(source.fetch_recent_news())
             except Exception:
-                self.logger.exception("failed to fetch from extra source", extra={"source": source.__class__.__name__})
+                self.logger.exception(
+                    "failed to fetch from extra source", extra={"source": source.__class__.__name__}
+                )
 
-        result: Dict[str, object] = {
+        result: dict[str, object] = {
             "fetched": len(raw_items),
             "processed": 0,
             "created": 0,
@@ -128,9 +132,13 @@ class SmartphoneReleaseService:
                     continue
 
                 for idx, model_name in enumerate(models):
-                    payload = self._build_payload(item, normalized, model_name, idx if len(models) > 1 else None)
+                    payload = self._build_payload(
+                        item, normalized, model_name, idx if len(models) > 1 else None
+                    )
                     try:
-                        existing = self.repo.get_by_source(payload["source_name"], payload["source_url"])
+                        existing = self.repo.get_by_source(
+                            payload["source_name"], payload["source_url"]
+                        )
                         if not existing:
                             existing = self.repo.get_by_identity(
                                 payload["brand"], payload["model"], payload["announcement_date"]
@@ -146,7 +154,9 @@ class SmartphoneReleaseService:
                     except Exception:
                         self.db.rollback()
                         result["errors"] += 1
-                        self.logger.exception("failed to upsert smartphone release", extra={"payload": payload})
+                        self.logger.exception(
+                            "failed to upsert smartphone release", extra={"payload": payload}
+                        )
                         continue
             self.db.commit()
         safe_extra = {f"smartphone_releases_{k}": v for k, v in result.items() if k != "highlights"}
@@ -155,8 +165,8 @@ class SmartphoneReleaseService:
 
     def _add_highlight(
         self,
-        result: Dict[str, object],
-        payload: Dict,
+        result: dict[str, object],
+        payload: dict,
         normalized: NormalizedReleaseCandidate,
         item: RawNewsItem,
     ) -> None:
@@ -188,7 +198,7 @@ class SmartphoneReleaseService:
             }
         )
 
-    def _status_label(self, status: Optional[str]) -> Optional[str]:
+    def _status_label(self, status: str | None) -> str | None:
         if not status:
             return None
         normalized = str(status).lower().strip()
@@ -204,10 +214,10 @@ class SmartphoneReleaseService:
         item: RawNewsItem,
         normalized: NormalizedReleaseCandidate,
         model_name: str,
-        model_index: Optional[int] = None,
-    ) -> Dict:
+        model_index: int | None = None,
+    ) -> dict:
         status = self._safe_status(normalized.release_status)
-        status_value: Optional[str]
+        status_value: str | None
         if isinstance(status, ReleaseStatus):
             status_value = status.value
         elif status:
@@ -236,14 +246,14 @@ class SmartphoneReleaseService:
             "is_active": True,
         }
 
-    def _extract_models(self, normalized: NormalizedReleaseCandidate) -> List[str]:
+    def _extract_models(self, normalized: NormalizedReleaseCandidate) -> list[str]:
         models = normalized.models or []
         if not models and normalized.model:
             models = self._split_model_string(normalized.model)
         cleaned = [model.strip() for model in models if model and model.strip()]
         # Deduplicate while preserving order
         seen = set()
-        unique: List[str] = []
+        unique: list[str] = []
         for model in cleaned:
             key = model.lower()
             if key in seen:
@@ -252,7 +262,7 @@ class SmartphoneReleaseService:
             unique.append(model)
         return unique
 
-    def _split_model_string(self, value: str) -> List[str]:
+    def _split_model_string(self, value: str) -> list[str]:
         separators = [",", "/", "|", ";"]
         normalized = value
         for token in (" and ", " And ", " AND ", " и ", " И "):
@@ -262,7 +272,7 @@ class SmartphoneReleaseService:
         parts = [part.strip(" -") for part in normalized.split(",")]
         return [part for part in parts if part]
 
-    def _safe_status(self, value: Optional[str]) -> Optional[ReleaseStatus]:
+    def _safe_status(self, value: str | None) -> ReleaseStatus | None:
         if isinstance(value, ReleaseStatus):
             return value
         if not value:
@@ -281,4 +291,6 @@ def build_release_service(db: Session) -> SmartphoneReleaseService:
     extras = []
     if settings.smartphone_gsmarena_enabled:
         extras.append(build_gsmarena_client_from_settings())
-    return SmartphoneReleaseService(db=db, news_client=news_client, normalizer=normalizer, extra_sources=extras)
+    return SmartphoneReleaseService(
+        db=db, news_client=news_client, normalizer=normalizer, extra_sources=extras
+    )

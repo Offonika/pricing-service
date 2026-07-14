@@ -1,26 +1,26 @@
+from __future__ import annotations
+
 import json
 import logging
-from typing import Optional
 
-from sqlalchemy import create_engine
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.services.smartphone_releases import SmartphoneReleaseService, build_release_service
+from app.infrastructure.db import get_application_engine
 from app.models import SmartphoneRelease
-from sqlalchemy import desc
-from app.services.market_research import DeviceModelService, KeywordGenerationService
 from app.schemas.market_research import DeviceModelCreate
+from app.services.market_research import DeviceModelService, KeywordGenerationService
+from app.services.smartphone_releases import SmartphoneReleaseService, build_release_service
 
 logger = logging.getLogger("app.workers.smartphone_releases")
 
 
 def get_engine():
-    settings = get_settings()
-    return create_engine(settings.database_url)
+    return get_application_engine()
 
 
-def run_smartphone_release_job(service: Optional[SmartphoneReleaseService] = None) -> dict:
+def run_smartphone_release_job(service: SmartphoneReleaseService | None = None) -> dict:
     """
     Обновляет таблицу smartphone_releases:
     - проверяет фича-флаг SMARTPHONE_RELEASES_ENABLED,
@@ -94,6 +94,7 @@ def sync_releases_to_phone_models(session: Session, limit: int = 50) -> dict:
             brand=rel.brand,
             model_name=rel.model,
             variant=None,
+            source="smartphone_release",
             announce_date=rel.announcement_date,
             release_date=rel.market_release_date,
         )

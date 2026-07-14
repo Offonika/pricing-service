@@ -1,28 +1,28 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, date
-from typing import Any, Dict, Optional, List
+from datetime import date, datetime
+from typing import Any
 
 
 @dataclass
 class RawNewsItem:
     title: str
-    description: Optional[str]
+    description: str | None
     url: str
-    published_at: Optional[datetime]
+    published_at: datetime | None
     source_name: str
-    raw: Dict[str, Any]
+    raw: dict[str, Any]
 
 
 @dataclass
 class NormalizedReleaseCandidate:
     is_phone_announcement: bool
-    brand: Optional[str]
-    model: Optional[str]
-    announcement_date: Optional[date]
-    release_status: Optional[str]
-    models: Optional[List[str]] = None
-    market_release_date: Optional[date] = None
-    market_release_date_ru: Optional[date] = None
-    summary_ru: Optional[str] = None
+    brand: str | None
+    model: str | None
+    announcement_date: date | None
+    release_status: str | None
+    models: list[str] | None = None
+    market_release_date: date | None = None
+    market_release_date_ru: date | None = None
+    summary_ru: str | None = None

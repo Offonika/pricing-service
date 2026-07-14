@@ -14,6 +14,7 @@ env/
 # Environment / secrets
 .env
 .env.*.local
+.env.bak*
 
 # Tooling caches
 .mypy_cache/
@@ -25,6 +26,7 @@ coverage.xml
 # Build / packaging
 build/
 dist/
+storybook-static/
 *.egg-info/
 
 # Editors / IDE
@@ -39,3 +41,32 @@ Thumbs.db
 # Local sqlite files
 *.db
 data/
+
+# Local research/runtime artifacts
+.artifacts/
+.local/
+.venv*/
+embeddings/
+reports/
+
+# Generated or imported office/business exports
+docs/**/*.docx
+docs/**/*.xls
+docs/**/*.xlsx
+docs/**/*.mxl
+docs/_*
+docs/Ведомость*.txt
+docs/Взаиморасчеты*.csv
+docs/Взаиморасчеты*.txt
+docs/ИтогиPB.csv
+docs/Хыдыров*.txt
+docs/сбер*.txt
+docs/order_flow/artifacts/
+
+# Accidental shell argument fragments
+--*
+LOCAL_LLM_CHAT_MODEL=*
+python
+*, sql)*
+*conn.execute(text(sql))*
+PY

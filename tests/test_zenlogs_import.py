@@ -15,6 +15,8 @@ from app.services.importers.zenlogs_moba import (
 )
 from app.workers.zenlogs import run_zenlogs_moba_import
 
+UTC = timezone.utc
+
 
 def _make_workbook() -> bytes:
     wb = Workbook()
@@ -31,7 +33,7 @@ def test_parse_zenlogs_xlsx_normalizes_rows():
     records = parse_zenlogs_xlsx(
         content,
         competitor="moba",
-        scraped_at=datetime(2025, 1, 1, tzinfo=timezone.utc),
+        scraped_at=datetime(2025, 1, 1, tzinfo=UTC),
     )
 
     assert len(records) == 1
@@ -46,7 +48,7 @@ def test_parse_zenlogs_xlsx_normalizes_rows():
 def test_upsert_catalog_records_creates_and_updates():
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
-    now = datetime.now(tz=timezone.utc)
+    now = datetime.now(tz=UTC)
 
     with Session(engine) as session:
         first_batch = [
@@ -116,14 +118,12 @@ def test_run_zenlogs_moba_import(monkeypatch):
             price_roz=None,
             availability=True,
             url="https://example/item1",
-            scraped_at=datetime.now(tz=timezone.utc),
+            scraped_at=datetime.now(tz=UTC),
         )
     ]
 
     monkeypatch.setattr("app.workers.zenlogs.get_settings", lambda: DummySettings())
-    monkeypatch.setattr(
-        "app.workers.zenlogs.load_zenlogs_catalog", lambda **kwargs: records
-    )
+    monkeypatch.setattr("app.workers.zenlogs.load_zenlogs_catalog", lambda **kwargs: records)
 
     with Session(engine) as session:
         result = run_zenlogs_moba_import(session)
@@ -170,7 +170,7 @@ def test_run_zenlogs_multi_source(monkeypatch):
                 price_roz=None,
                 availability=True,
                 url=f"https://example/{competitor}",
-                scraped_at=datetime.now(tz=timezone.utc),
+                scraped_at=datetime.now(tz=UTC),
             )
         ]
 
@@ -184,4 +184,3 @@ def test_run_zenlogs_multi_source(monkeypatch):
         assert result["processed"] == 2
         assert len(result["sources"]) == 2
         assert session.query(CompetitorItem).count() == 2
-

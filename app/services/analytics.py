@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from datetime import date
-from typing import List, Optional
 
 from sqlalchemy import text
 from sqlalchemy.orm import Session
@@ -19,9 +18,9 @@ class ModelDemandService:
         self,
         days: int = 30,
         limit: int = 50,
-        brand: Optional[str] = None,
-        region: Optional[str] = None,
-    ) -> List[ModelDemandItem]:
+        brand: str | None = None,
+        region: str | None = None,
+    ) -> list[ModelDemandItem]:
         # Используем агрегированное view за 30 дней; параметр days оставлен на будущее расширение.
         sql = """
             SELECT
@@ -54,8 +53,8 @@ class ModelDemandService:
         device_model_id: int,
         date_from: date,
         date_to: date,
-        region: Optional[str] = None,
-    ) -> List[ModelDemandTimeseriesItem]:
+        region: str | None = None,
+    ) -> list[ModelDemandTimeseriesItem]:
         sql = """
             SELECT
                 date,

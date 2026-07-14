@@ -1,0 +1,1 @@
+20 6 * * MON OPENCLAW_ENV_FILE=/home/deploy/.openclaw/.env /home/deploy/.openclaw/workspace/scripts/weekly_manager_sales_reports_from_a.sh >> /home/deploy/.openclaw/logs/weekly_manager_sales_reports_from_a.log 2>&1

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -16,7 +18,9 @@ from app.services.market_research.keyword_generation import KeywordGenerationSer
 router = APIRouter(prefix="/agents", tags=["agents"])
 
 
-@router.post("/devices/models", response_model=DeviceModelResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/devices/models", response_model=DeviceModelResponse, status_code=status.HTTP_202_ACCEPTED
+)
 def upsert_device_model(payload: DeviceModelCreate, db: Session = Depends(get_db)):
     """
     Приём нормализованных моделей телефонов от агентного контура.
@@ -28,8 +32,12 @@ def upsert_device_model(payload: DeviceModelCreate, db: Session = Depends(get_db
     return model
 
 
-@router.post("/devices/models/bulk", response_model=List[DeviceModelResponse], status_code=status.HTTP_202_ACCEPTED)
-def upsert_device_models_bulk(payload: List[DeviceModelCreate], db: Session = Depends(get_db)):
+@router.post(
+    "/devices/models/bulk",
+    response_model=List[DeviceModelResponse],
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def upsert_device_models_bulk(payload: list[DeviceModelCreate], db: Session = Depends(get_db)):
     """
     Батчевый приём моделей телефонов.
     """
@@ -41,7 +49,9 @@ def upsert_device_models_bulk(payload: List[DeviceModelCreate], db: Session = De
     return models
 
 
-@router.post("/keywords/bulk", response_model=List[KeywordResponse], status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/keywords/bulk", response_model=List[KeywordResponse], status_code=status.HTTP_202_ACCEPTED
+)
 def bulk_keywords(payload: KeywordBulkCreate, db: Session = Depends(get_db)):
     """
     Приём уже сгенерированных ключевых фраз от агента (если генерация вынесена наружу).
@@ -57,7 +67,9 @@ def bulk_keywords(payload: KeywordBulkCreate, db: Session = Depends(get_db)):
     return keywords
 
 
-@router.post("/keywords/generate", response_model=List[KeywordResponse], status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/keywords/generate", response_model=List[KeywordResponse], status_code=status.HTTP_202_ACCEPTED
+)
 def generate_keywords_for_model(phone_model_id: int, db: Session = Depends(get_db)):
     """
     Генерация ключевых фраз внутри backend по указанной модели телефона.

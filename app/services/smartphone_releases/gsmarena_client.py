@@ -1,17 +1,16 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
-from typing import List, Optional
 import xml.etree.ElementTree as ET
+from datetime import datetime
 
 import httpx
 
-from app.services.smartphone_releases.types import RawNewsItem
 from app.core.config import get_settings
+from app.services.smartphone_releases.types import RawNewsItem
 
 
-def _parse_pub_date(value: Optional[str]) -> Optional[datetime]:
+def _parse_pub_date(value: str | None) -> datetime | None:
     if not value:
         return None
     # Typical RSS pubDate example: Mon, 24 Nov 2025 10:00:00 +0000
@@ -34,7 +33,7 @@ class GSMArenaClient:
         rss_url: str,
         timeout: float = 10.0,
         source_name: str = "GSMArena",
-        max_items: Optional[int] = 40,
+        max_items: int | None = 40,
     ) -> None:
         self.rss_url = rss_url
         self.timeout = timeout
@@ -43,7 +42,7 @@ class GSMArenaClient:
         self.logger = logging.getLogger("app.services.gsmarena")
         self._client = httpx.Client(timeout=self.timeout)
 
-    def fetch_recent_news(self) -> List[RawNewsItem]:
+    def fetch_recent_news(self) -> list[RawNewsItem]:
         if not self.rss_url:
             self.logger.warning("GSMArena RSS URL not configured; skipping")
             return []
@@ -59,7 +58,7 @@ class GSMArenaClient:
             self.logger.warning("failed to parse GSMArena RSS XML")
             return []
 
-        items: List[RawNewsItem] = []
+        items: list[RawNewsItem] = []
         for item in root.findall(".//item"):
             if self.max_items and len(items) >= self.max_items:
                 break
@@ -78,7 +77,13 @@ class GSMArenaClient:
                     url=url.strip(),
                     published_at=_parse_pub_date(pub_el.text if pub_el is not None else None),
                     source_name=self.source_name,
-                    raw={"source": {"name": self.source_name}, "title": title, "link": url, "description": desc_el.text if desc_el is not None else None, "pubDate": pub_el.text if pub_el is not None else None},
+                    raw={
+                        "source": {"name": self.source_name},
+                        "title": title,
+                        "link": url,
+                        "description": desc_el.text if desc_el is not None else None,
+                        "pubDate": pub_el.text if pub_el is not None else None,
+                    },
                 )
             )
         self.logger.info("gsmarena news fetched", extra={"items": len(items)})

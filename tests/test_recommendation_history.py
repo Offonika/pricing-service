@@ -20,7 +20,7 @@ def setup_db():
 def test_record_recommendation_creates_history() -> None:
     engine = setup_db()
     with Session(engine) as session:
-        product = Product(sku="SKU-1", name="Prod 1")
+        product = Product(article="SKU-1", name="Prod 1")
         product.stock = ProductStock(purchase_price=Decimal("100"))
         session.add(product)
         session.commit()

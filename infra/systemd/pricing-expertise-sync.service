@@ -1,0 +1,12 @@
+[Unit]
+Description=Pricing Service Expertise 1C to Bitrix Sync
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/MM/pricing-service
+ExecStart=/opt/MM/pricing-service/infra/cron/expertise_sync.sh
+StandardOutput=append:/var/log/pricing/expertise_sync.log
+StandardError=append:/var/log/pricing/expertise_sync.log

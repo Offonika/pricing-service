@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
+
+import sqlalchemy as sa
 
 from alembic import op
-import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision: str = "4b2e3df5c1d9"
@@ -18,7 +19,9 @@ def upgrade() -> None:
     op.add_column("smartphone_releases", sa.Column("summary_ru", sa.Text(), nullable=True))
     op.add_column("smartphone_releases", sa.Column("published_at", sa.DateTime(), nullable=True))
     op.add_column("smartphone_releases", sa.Column("market_release_date", sa.Date(), nullable=True))
-    op.add_column("smartphone_releases", sa.Column("market_release_date_ru", sa.Date(), nullable=True))
+    op.add_column(
+        "smartphone_releases", sa.Column("market_release_date_ru", sa.Date(), nullable=True)
+    )
 
 
 def downgrade() -> None:

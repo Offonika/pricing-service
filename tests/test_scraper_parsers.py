@@ -13,10 +13,10 @@ def test_parse_json_offers():
 
 
 def test_parse_html_offers():
-    html = '''
+    html = """
     <div class="offer" data-sku="SKU-2" data-price="99.9" data-availability="in_stock" data-url="https://ex/item2" data-category="CatB">Item 2</div>
     <div class="offer" data-sku="SKU-3" data-price="0" data-availability="0" data-url="https://ex/item3" data-category="">Item 3</div>
-    '''
+    """
     offers = parse_html_offers(html, "comp", datetime.utcnow())
     assert len(offers) == 2
     assert offers[0].external_sku == "SKU-2"

@@ -1,0 +1,2 @@
+# m h dom mon dow user command
+30 5 * * MON root /opt/pricing-service/infra/cron/weekly_buyer_digest.sh

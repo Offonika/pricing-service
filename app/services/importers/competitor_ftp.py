@@ -4,11 +4,11 @@ import io
 import logging
 import os
 import re
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
-from ftplib import FTP, FTP_TLS
-from typing import Iterable, List, Optional, Sequence
+from ftplib import FTP
 
 from openpyxl import load_workbook
 from sqlalchemy import delete, select
@@ -19,6 +19,7 @@ from app.models import (
     CompetitorFtpRawRow,
     CompetitorFtpRecord,
 )
+from app.services.competitor_category import canonicalize_category
 
 try:
     from zoneinfo import ZoneInfo
@@ -27,6 +28,7 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger("app.import.competitor_ftp")
 
+UTC = timezone.utc
 MSK_TZ = ZoneInfo("Europe/Moscow")
 DATE_PATTERN = r"(?P<date>\d{4}\.\d{2}\.\d{2})"
 REQUIRED_COLUMNS = {"group", "sku", "name", "price_opt", "price_roz", "link", "time"}
@@ -51,21 +53,21 @@ class FtpFileInfo:
     filename: str
     path: str
     file_date: date
-    mtime: Optional[datetime]
+    mtime: datetime | None
 
 
 @dataclass
 class ParsedRow:
-    group_name: Optional[str]
-    sku: Optional[str]
-    name: Optional[str]
-    price_opt: Optional[Decimal]
-    price_roz: Optional[Decimal]
-    link: Optional[str]
-    stock: Optional[bool]
-    amount: Optional[int]
-    observed_at: Optional[datetime]
-    error: Optional[str]
+    group_name: str | None
+    sku: str | None
+    name: str | None
+    price_opt: Decimal | None
+    price_roz: Decimal | None
+    link: str | None
+    stock: bool | None
+    amount: int | None
+    observed_at: datetime | None
+    error: str | None
 
     @property
     def is_valid(self) -> bool:
@@ -79,32 +81,38 @@ def _compile_pattern(pattern: str) -> re.Pattern[str]:
     return re.compile(f"^{escaped}$", re.IGNORECASE)
 
 
-def parse_sources(raw: Optional[str]) -> List[FtpSourceConfig]:
+def parse_sources(raw: str | None) -> list[FtpSourceConfig]:
     if not raw:
         return []
-    sources: List[FtpSourceConfig] = []
+    sources: list[FtpSourceConfig] = []
     for entry in raw.split(","):
         item = entry.strip()
         if not item:
             continue
         parts = item.split(":", 2)
         if len(parts) != 3:
-            logger.warning("ftp source skipped: expected name:directory:pattern", extra={"entry": item})
+            logger.warning(
+                "ftp source skipped: expected name:directory:pattern", extra={"entry": item}
+            )
             continue
         name, directory, pattern = (part.strip() for part in parts)
         if not name or not directory or not pattern:
-            logger.warning("ftp source skipped: empty name/directory/pattern", extra={"entry": item})
+            logger.warning(
+                "ftp source skipped: empty name/directory/pattern", extra={"entry": item}
+            )
             continue
         try:
             regex = _compile_pattern(pattern)
         except CompetitorFtpImportError as exc:
             logger.warning("ftp source skipped: %s", exc, extra={"entry": item})
             continue
-        sources.append(FtpSourceConfig(name=name, directory=directory, pattern=pattern, regex=regex))
+        sources.append(
+            FtpSourceConfig(name=name, directory=directory, pattern=pattern, regex=regex)
+        )
     return sources
 
 
-def _parse_file_date(filename: str, source: FtpSourceConfig) -> Optional[date]:
+def _parse_file_date(filename: str, source: FtpSourceConfig) -> date | None:
     match = source.regex.match(filename)
     if not match:
         return None
@@ -115,12 +123,12 @@ def _parse_file_date(filename: str, source: FtpSourceConfig) -> Optional[date]:
         return None
 
 
-def _parse_mtime_from_mdtm(response: str) -> Optional[datetime]:
+def _parse_mtime_from_mdtm(response: str) -> datetime | None:
     # MDTM response: "213 20251130001510"
     try:
         ts = response.split()[-1]
         parsed = datetime.strptime(ts, "%Y%m%d%H%M%S")
-        return parsed.replace(tzinfo=timezone.utc)
+        return parsed.replace(tzinfo=UTC)
     except Exception:
         return None
 
@@ -128,21 +136,23 @@ def _parse_mtime_from_mdtm(response: str) -> Optional[datetime]:
 def list_matching_files(
     ftp: FTP,
     source: FtpSourceConfig,
-) -> List[FtpFileInfo]:
+) -> list[FtpFileInfo]:
     """
     Lists files for the source directory that match the pattern with {date}.
     """
     try:
         entries = ftp.nlst(source.directory)
     except Exception as exc:  # pragma: no cover - network-dependent
-        raise CompetitorFtpImportError(f"failed to list directory {source.directory}: {exc}") from exc
-    files: List[FtpFileInfo] = []
+        raise CompetitorFtpImportError(
+            f"failed to list directory {source.directory}: {exc}"
+        ) from exc
+    files: list[FtpFileInfo] = []
     for path in entries:
         filename = os.path.basename(path)
         file_date = _parse_file_date(filename, source)
         if not file_date:
             continue
-        mtime: Optional[datetime] = None
+        mtime: datetime | None = None
         try:
             resp = ftp.sendcmd(f"MDTM {path}")
             mtime = _parse_mtime_from_mdtm(resp)
@@ -158,7 +168,9 @@ def list_matching_files(
                 mtime=mtime,
             )
         )
-    files.sort(key=lambda f: (f.file_date, f.mtime or datetime.min.replace(tzinfo=timezone.utc)), reverse=True)
+    files.sort(
+        key=lambda f: (f.file_date, f.mtime or datetime.min.replace(tzinfo=UTC)), reverse=True
+    )
     return files
 
 
@@ -171,7 +183,7 @@ def download_file(ftp: FTP, path: str) -> bytes:
     return buffer.getvalue()
 
 
-def _normalize_bool(value: object) -> Optional[bool]:
+def _normalize_bool(value: object) -> bool | None:
     if value is None:
         return None
     if isinstance(value, bool):
@@ -186,7 +198,7 @@ def _normalize_bool(value: object) -> Optional[bool]:
     return None
 
 
-def _normalize_decimal(value: object) -> Optional[Decimal]:
+def _normalize_decimal(value: object) -> Decimal | None:
     if value in (None, ""):
         return None
     try:
@@ -195,7 +207,7 @@ def _normalize_decimal(value: object) -> Optional[Decimal]:
         return None
 
 
-def _normalize_int(value: object) -> Optional[int]:
+def _normalize_int(value: object) -> int | None:
     if value in (None, ""):
         return None
     try:
@@ -204,7 +216,7 @@ def _normalize_int(value: object) -> Optional[int]:
         return None
 
 
-def _normalize_datetime(value: object) -> Optional[datetime]:
+def _normalize_datetime(value: object) -> datetime | None:
     if value is None:
         return None
     if isinstance(value, datetime):
@@ -241,25 +253,33 @@ def _row_value(row: Sequence[object], header_map: dict[str, int], column: str) -
     return row[idx] if idx < len(row) else None
 
 
-def parse_ftp_xlsx(content: bytes, file_date: date, source: str) -> tuple[List[ParsedRow], bool]:
+def parse_ftp_xlsx(content: bytes, file_date: date, source: str) -> tuple[list[ParsedRow], bool]:
     workbook = load_workbook(io.BytesIO(content), data_only=True, read_only=True)
     sheet = workbook.active
     rows = list(sheet.rows)
     if not rows:
         logger.warning("ftp xlsx is empty", extra={"source": source})
         return [], False
-    header_map = _extract_header_map((cell.value for cell in rows[0]))
-    parsed: List[ParsedRow] = []
+    header_map = _extract_header_map(cell.value for cell in rows[0])
+    parsed: list[ParsedRow] = []
     date_mismatch = False
     for row in rows[1:]:
         values = [cell.value for cell in row]
         sku = _row_value(values, header_map, "sku")
         link = _row_value(values, header_map, "link")
         observed_at = _normalize_datetime(_row_value(values, header_map, "time"))
-        amount = _normalize_int(_row_value(values, header_map, "amount")) if "amount" in header_map else None
-        stock = _normalize_bool(_row_value(values, header_map, "stock")) if "stock" in header_map else None
+        amount = (
+            _normalize_int(_row_value(values, header_map, "amount"))
+            if "amount" in header_map
+            else None
+        )
+        stock = (
+            _normalize_bool(_row_value(values, header_map, "stock"))
+            if "stock" in header_map
+            else None
+        )
 
-        error: Optional[str] = None
+        error: str | None = None
         if not sku or not link:
             error = "missing sku or link"
         elif observed_at is None:
@@ -356,12 +376,13 @@ def ingest_ftp_file(
             continue
 
         in_stock = (row.amount or 0) > 0 if row.amount is not None else bool(row.stock)
+        normalized_group = canonicalize_category(row.group_name)
         record = CompetitorFtpRecord(
             raw_row=raw,
             file=file_row,
             source=info.source,
             file_date=info.file_date,
-            group_name=row.group_name,
+            group_name=normalized_group,
             sku=row.sku or "",
             name=row.name,
             price_opt=row.price_opt,
@@ -384,4 +405,3 @@ def ingest_ftp_file(
         "rows_invalid": file_row.rows_invalid,
         "date_mismatch": file_row.date_mismatch,
     }
-

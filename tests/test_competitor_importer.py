@@ -1,7 +1,7 @@
+from __future__ import annotations
+
 import csv
-from datetime import datetime
 from pathlib import Path
-from typing import Dict, List
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -10,7 +10,7 @@ from app.models import Base, Competitor, CompetitorPrice, Product
 from app.services.importers.competitors import ImportResult, import_competitor_prices_from_csv
 
 
-def write_csv(tmp_path: Path, rows: List[Dict]) -> Path:
+def write_csv(tmp_path: Path, rows: list[dict]) -> Path:
     path = tmp_path / "competitors.csv"
     fieldnames = list(rows[0].keys())
     with path.open("w", newline="", encoding="utf-8") as f:
@@ -34,8 +34,8 @@ def test_import_competitor_prices(tmp_path) -> None:
     )
 
     with Session(engine) as session:
-        session.add(Product(sku="SKU-1", name="Product 1"))
-        session.add(Product(sku="SKU-2", name="Product 2"))
+        session.add(Product(article="SKU-1", name="Product 1"))
+        session.add(Product(article="SKU-2", name="Product 2"))
         session.commit()
 
         result: ImportResult = import_competitor_prices_from_csv(csv_path, session)
@@ -46,7 +46,7 @@ def test_import_competitor_prices(tmp_path) -> None:
 
         prices = session.query(CompetitorPrice).order_by(CompetitorPrice.price).all()
         assert len(prices) == 3
-        assert prices[0].product.sku == "SKU-2"
+        assert prices[0].product.article == "SKU-2"
         assert prices[0].competitor.name == "CompB"
 
 

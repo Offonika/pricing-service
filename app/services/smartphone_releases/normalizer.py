@@ -5,7 +5,6 @@ import logging
 import re
 import time
 from datetime import date
-from typing import List, Optional
 
 from openai import OpenAI
 
@@ -27,7 +26,7 @@ SYSTEM_PROMPT = """
 """
 
 
-def _parse_date(raw: Optional[str]) -> Optional[date]:
+def _parse_date(raw: str | None) -> date | None:
     if not raw:
         return None
     try:
@@ -36,7 +35,7 @@ def _parse_date(raw: Optional[str]) -> Optional[date]:
         return None
 
 
-def _parse_model_list(raw: Optional[object]) -> List[str]:
+def _parse_model_list(raw: object | None) -> list[str]:
     if not raw:
         return []
     if isinstance(raw, str):
@@ -50,7 +49,7 @@ def _parse_model_list(raw: Optional[object]) -> List[str]:
     return []
 
 
-def _split_model_string(value: Optional[str]) -> List[str]:
+def _split_model_string(value: str | None) -> list[str]:
     if not value:
         return []
     normalized = value
@@ -69,7 +68,7 @@ class SmartphoneReleaseNormalizer:
         self.request_delay = request_delay
         self.logger = logging.getLogger("app.services.smartphone_release_normalizer")
 
-    def normalize(self, item: RawNewsItem) -> Optional[NormalizedReleaseCandidate]:
+    def normalize(self, item: RawNewsItem) -> NormalizedReleaseCandidate | None:
         content = (item.description or "")[:2000]
         if self.request_delay and self.request_delay > 0:
             time.sleep(self.request_delay)
@@ -95,7 +94,9 @@ class SmartphoneReleaseNormalizer:
         try:
             payload = json.loads(result_text)
         except json.JSONDecodeError:
-            self.logger.warning("llm returned non-json payload", extra={"url": item.url, "body": result_text})
+            self.logger.warning(
+                "llm returned non-json payload", extra={"url": item.url, "body": result_text}
+            )
             return None
 
         is_announcement = bool(payload.get("is_phone_announcement"))
@@ -115,7 +116,7 @@ class SmartphoneReleaseNormalizer:
         )
 
 
-def build_normalizer_from_settings() -> Optional[SmartphoneReleaseNormalizer]:
+def build_normalizer_from_settings() -> SmartphoneReleaseNormalizer | None:
     settings = get_settings()
     if not settings.openai_api_key:
         logging.getLogger("app.services.smartphone_release_normalizer").warning(

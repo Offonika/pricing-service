@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Pricing Service Expertise Alarm Scan every 15 minutes
+
+[Timer]
+OnCalendar=*:0/15
+Persistent=true
+AccuracySec=1m
+Unit=pricing-expertise-alarm-scan.service
+
+[Install]
+WantedBy=timers.target

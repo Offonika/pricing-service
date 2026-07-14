@@ -11,18 +11,18 @@ from app.services.pricing import calculate_recommendation
 router = APIRouter()
 
 
-@router.get("/products/{sku}/recommendation", response_model=RecommendationResponse)
+@router.get("/products/{article}/recommendation", response_model=RecommendationResponse)
 def get_recommendation(
-    sku: str,
+    article: str,
     min_margin: Decimal = Decimal("0.1"),
     db: Session = Depends(get_db),
 ):
-    product = db.query(Product).filter_by(sku=sku).first()
+    product = db.query(Product).filter_by(article=article).first()
     if not product:
         raise HTTPException(status_code=404, detail="product not found")
     rec = calculate_recommendation(product, competitor_min_price=None, min_margin_pct=min_margin)
     return RecommendationResponse(
-        sku=product.sku,
+        article=product.article,
         recommended_price=rec.recommended_price,
         floor_price=rec.floor_price,
         reasons=rec.reasons,

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import datetime
 
 import httpx
@@ -33,10 +32,10 @@ def make_mock_client(responses: dict[str, str]) -> ProxyHttpClient:
 def test_scrape_competitor_pages_with_limit():
     responses = {
         "https://example.com/page1": '[{"sku":"A1","name":"ItemA","price": "10","availability":"1","url":"u1","category":"Cat"}]',
-        "https://example.com/page2": '''
+        "https://example.com/page2": """
             <div class="offer" data-sku="B1" data-price="20" data-availability="in_stock" data-url="u2" data-category="CatB">ItemB</div>
             <div class="offer" data-sku="B2" data-price="30" data-availability="in_stock" data-url="u3" data-category="CatB">ItemB2</div>
-        ''',
+        """,
     }
     client = make_mock_client(responses)
     offers = scrape_competitor_pages(
@@ -55,7 +54,7 @@ def test_scraped_offers_can_be_saved_to_db(tmp_path):
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     with Session(engine) as session:
-        product = Product(sku="A1", name="ItemA")
+        product = Product(article="A1", name="ItemA")
         competitor = Competitor(name="CompX")
         session.add_all([product, competitor])
         session.commit()
@@ -64,11 +63,13 @@ def test_scraped_offers_can_be_saved_to_db(tmp_path):
         "https://example.com/page1": '[{"sku":"A1","name":"ItemA","price": "10","availability":"1","url":"u1","category":"Cat"}]',
     }
     client = make_mock_client(responses)
-    offers = scrape_competitor_pages("CompX", ["https://example.com/page1"], limit=10, proxy_client=client)
+    offers = scrape_competitor_pages(
+        "CompX", ["https://example.com/page1"], limit=10, proxy_client=client
+    )
 
     with Session(engine) as session:
         comp = session.query(Competitor).filter_by(name="CompX").one()
-        prod = session.query(Product).filter_by(sku="A1").one()
+        prod = session.query(Product).filter_by(article="A1").one()
         for offer in offers:
             session.add(
                 CompetitorPrice(

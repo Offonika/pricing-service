@@ -1,5 +1,6 @@
+from __future__ import annotations
+
 from decimal import Decimal
-from typing import List
 
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -24,8 +25,8 @@ def build_summary(session: Session) -> SummaryReport:
     )
 
 
-def build_price_changes(session: Session, limit: int = 10) -> List[PriceChangeItem]:
-    items: List[PriceChangeItem] = []
+def build_price_changes(session: Session, limit: int = 10) -> list[PriceChangeItem]:
+    items: list[PriceChangeItem] = []
     for product in session.query(Product).limit(limit * 5).all():
         purchase = Decimal("0")
         if product.stock and product.stock.purchase_price:
@@ -34,7 +35,7 @@ def build_price_changes(session: Session, limit: int = 10) -> List[PriceChangeIt
         delta = rec.recommended_price - purchase
         items.append(
             PriceChangeItem(
-                sku=product.sku,
+                article=product.article,
                 recommended_price=rec.recommended_price,
                 purchase_price=purchase,
                 delta=delta,

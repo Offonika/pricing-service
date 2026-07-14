@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Iterable
+from collections.abc import Iterable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -22,9 +22,9 @@ def match_by_sku(session: Session, sku_pairs: Iterable[tuple[str, str]]) -> int:
         grouped[ours].append(competitor)
 
     products = {
-        p.sku: p
+        p.article: p
         for p in session.execute(
-            select(Product).where(Product.sku.in_(grouped.keys()))
+            select(Product).where(Product.article.in_(grouped.keys()))
         ).scalars()
     }
     competitors = {c.name: c for c in session.execute(select(Competitor)).scalars()}

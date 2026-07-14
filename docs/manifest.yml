@@ -1,0 +1,821 @@
+version: 1
+project: pricing-service
+documents:
+  - path: README.md
+    title: Pricing Service README
+    doc_type: readme
+    domain: workspace
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/, tasks/, infra/]
+    related_tests: [tests/]
+    keywords: [pricing-service, quickstart, operations]
+  - path: AGENTS.md
+    title: Pricing Service Agents
+    doc_type: agent_rules
+    domain: governance
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/, tasks/]
+    related_tests: [tests/]
+    keywords: [agents, workflow, codex]
+  - path: openapi.yaml
+    title: Pricing Service OpenAPI
+    doc_type: openapi
+    domain: api
+    status: active
+    owner: api
+    source_of_truth: true
+    related_code: [app/api/, app/schemas/, scripts/export_openapi.py]
+    related_tests: [tests/]
+    keywords: [openapi, fastapi, api-contract]
+  - path: docs/index.md
+    title: Pricing Service Docs Index
+    doc_type: index
+    domain: documentation
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: []
+    related_tests: []
+    keywords: [docs, index, navigation]
+  - path: docs/specs/README.md
+    title: Pricing Service Spec Lifecycle
+    doc_type: spec_index
+    domain: documentation
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: []
+    related_tests: []
+    keywords: [specs, lifecycle, planning]
+  - path: docs/specs/pricing-service-architecture-hardening.md
+    title: Pricing Service Architecture Hardening
+    doc_type: spec
+    domain: architecture
+    status: accepted
+    owner: engineering
+    source_of_truth: true
+    related_code:
+      - app/api/dependencies.py
+      - app/core/config.py
+      - app/main.py
+      - infra/cron/competitor_matching_nightly.sh
+      - scripts/export_openapi.py
+    related_tests:
+      - tests/test_import_onec_products.py
+      - tests/test_product_compatibility.py
+      - tests/test_weekly_kpi_reports_api.py
+    keywords: [architecture, modular-monolith, onec, database, contracts, cron]
+  - path: docs/registry/cli-jobs.json
+    title: Pricing CLI And Backfill Registry
+    doc_type: registry
+    domain: architecture
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [tasks/, scripts/validate_cli_registry.py, infra/cron/]
+    related_tests: [tests/test_cli_registry.py]
+    keywords: [cli, backfill, dry-run, idempotency, side-effects]
+  - path: .github/workflows/docs-manifest.yml
+    title: Docs Manifest Workflow
+    doc_type: ci
+    domain: tooling
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [docs/manifest.yml, docs/specs/]
+    related_tests: [docs/manifest.yml, docs/specs/README.md]
+    keywords: [docs, manifest, specs, ci]
+  - path: docs/specs/dhl-europe-logistics-contour.md
+    title: DHL Europe Logistics Contour
+    doc_type: spec
+    domain: logistics
+    status: draft
+    owner: product
+    source_of_truth: false
+    related_code: []
+    related_tests: []
+    keywords: [dhl, europe, logistics, customs, procurement, spare-parts]
+  - path: docs/specs/ved-akb-import-pilot.md
+    title: VED AKB Import Pilot
+    doc_type: spec
+    domain: logistics
+    status: draft
+    owner: operations
+    source_of_truth: true
+    related_code:
+      - scripts/ensure_procurement_bitrix_process.py
+      - scripts/sync_onec_supplier_to_crm.py
+      - scripts/import_onec_supplier_order_to_procurement.py
+      - app/services/procurement_supplier_crm.py
+    related_tests:
+      - tests/test_procurement_bitrix_process.py
+      - tests/test_procurement_supplier_crm.py
+    keywords: [ved, akb, import, procurement, bitrix24, smart-process, warehouse-receiving]
+  - path: docs/specs/procurement-decision-contract-roadmap.md
+    title: Procurement Decision Contract And Roadmap
+    doc_type: spec
+    domain: procurement
+    status: draft
+    owner: operations
+    source_of_truth: true
+    related_code:
+      - scripts/ensure_procurement_bitrix_process.py
+      - scripts/import_onec_supplier_order_to_procurement.py
+      - app/services/procurement_supplier_crm.py
+      - app/services/assortment_lifecycle.py
+      - app/services/assortment_lifecycle_classification_store.py
+      - app/services/assortment_lifecycle_facts.py
+      - app/services/exporters/ut103_exchange.py
+      - app/services/exporters/ut103_nomenclature_properties.py
+      - app/services/exporters/ut103_procurement_orders.py
+      - alembic/versions/1b2c3d4e5f60_add_assortment_lifecycle_classification.py
+      - alembic/versions/2c3d4e5f6a70_add_assortment_commercial_marks.py
+      - tasks/build_assortment_lifecycle_facts.py
+      - tasks/build_assortment_lifecycle_updates.py
+      - tasks/report_display_supplier_lead_time_history.py
+      - tasks/detect_procurement_cargo_dropoff_refresh_needed.py
+      - tasks/refresh_assortment_lifecycle_classification.py
+      - tasks/export_ut103_nomenclature_properties.py
+      - tasks/export_ut103_procurement_supplier_orders.py
+      - config/assortment/display-warehouse-policy.json
+      - config/assortment/display-supplier-order-line-mapping.json
+      - config/assortment/display-receipt-line-mapping.json
+      - config/assortment/display-manual-overrides.json
+      - config/assortment/display-manager-signals.json
+      - config/assortment/display-quality-status-review-exclusions.json
+      - config/assortment/display-fact-status-decisions.json
+      - infra/cron/assortment_lifecycle_classification.sh
+      - infra/cron/assortment_lifecycle_classification.cron
+      - infra/cron/assortment_lifecycle_ut103_export.sh
+      - infra/cron/assortment_lifecycle_ut103_export.cron
+      - infra/cron/display_supplier_lead_time_refresh.sh
+      - infra/cron/display_supplier_lead_time_refresh.cron
+      - infra/cron/sync_open_procurement_supplier_orders_to_bitrix.sh
+    related_tests:
+      - tests/test_procurement_bitrix_process.py
+      - tests/test_procurement_supplier_crm.py
+      - tests/test_assortment_lifecycle.py
+      - tests/test_assortment_lifecycle_facts.py
+      - tests/test_build_assortment_lifecycle_facts_task.py
+      - tests/test_build_assortment_lifecycle_updates_task.py
+      - tests/test_report_display_supplier_lead_time_history_task.py
+      - tests/test_detect_procurement_cargo_dropoff_refresh_needed_task.py
+      - tests/test_refresh_assortment_lifecycle_classification_task.py
+      - tests/test_ut103_exchange.py
+      - tests/test_ut103_nomenclature_properties_exporter.py
+      - tests/test_export_ut103_nomenclature_properties_task.py
+      - tests/test_ut103_procurement_orders_exporter.py
+      - tests/test_export_ut103_procurement_supplier_orders_task.py
+    keywords: [procurement, supplier-order, decision-contract, roadmap, wechat, bitrix24, onec, akb]
+  - path: docs/specs/procurement-order-auto-order-unified-contour.md
+    title: Procurement Order And Auto Order Unified Contour
+    doc_type: spec
+    domain: procurement
+    status: draft
+    owner: operations
+    source_of_truth: true
+    related_code:
+      - app/api/procurement_assortment_decisions.py
+      - app/schemas/procurement_assortment_decisions.py
+      - app/services/procurement_assortment_decisions.py
+      - ui/src/api/procurementAssortment.ts
+      - ui/src/components/ProcurementAssortmentDecisionApp.tsx
+      - scripts/ensure_procurement_bitrix_process.py
+      - scripts/audit_procurement_onec_bitrix_sync.py
+      - scripts/sync_open_cargo_supplier_orders_to_bitrix.py
+      - scripts/sync_display_auto_order_candidates_to_bitrix.py
+      - scripts/sync_procurement_assortment_status_decisions.py
+      - tasks/build_display_auto_order_dry_run.py
+      - tasks/report_display_auto_order_adaptive_lead_time_comparison.py
+      - tasks/report_display_supplier_lead_time_history.py
+      - tasks/detect_procurement_cargo_dropoff_refresh_needed.py
+      - infra/cron/sync_open_procurement_supplier_orders_to_bitrix.sh
+      - config/assortment/display-auto-order-policy.json
+    related_tests:
+      - tests/test_procurement_assortment_decisions.py
+      - tests/test_procurement_bitrix_process.py
+      - tests/test_sync_open_procurement_supplier_orders.py
+      - tests/test_sync_display_auto_order_candidates.py
+      - tests/test_sync_procurement_assortment_status_decisions.py
+      - tests/test_build_display_auto_order_dry_run_task.py
+      - tests/test_report_display_auto_order_adaptive_lead_time_comparison_task.py
+      - tests/test_report_display_supplier_lead_time_history_task.py
+      - tests/test_detect_procurement_cargo_dropoff_refresh_needed_task.py
+    keywords: [procurement, auto-order, smart-process, display, bitrix24, onec, pilot]
+  - path: docs/specs/procurement-order-formation-smart-process.md
+    title: Procurement Order Formation Bitrix App
+    doc_type: spec
+    domain: procurement
+    status: implemented
+    owner: operations
+    source_of_truth: true
+    related_code:
+      - app/models/procurement_order_formation.py
+      - app/api/procurement_order_formation.py
+      - app/services/procurement_order_formation.py
+      - app/services/procurement_order_formation_workspace.py
+      - app/services/bitrix_procurement_order_formation_auth.py
+      - app/services/bitrix_order_formation.py
+      - tasks/build_procurement_order_formation_dry_run.py
+      - tasks/sync_procurement_order_formation_results.py
+      - ui/src/components/ProcurementOrderFormationApp.tsx
+      - ui/src/components/ProcurementOrderFormationWorkspace.tsx
+    related_tests:
+      - tests/test_procurement_order_formation.py
+      - tests/test_procurement_order_formation_workspace.py
+      - tests/test_procurement_order_formation_api.py
+      - tests/test_procurement_order_formation_dry_run.py
+    keywords: [procurement, supplier-order, oauth-app, bitrix24, onec, catalog, lifecycle]
+  - path: docs/specs/display-auto-order-project-brief.md
+    title: Display Auto Order Project Brief
+    doc_type: spec
+    domain: procurement
+    status: draft
+    owner: operations
+    source_of_truth: false
+    related_code:
+      - app/services/assortment_lifecycle.py
+      - app/services/assortment_lifecycle_facts.py
+      - tasks/build_display_auto_order_dry_run.py
+      - tasks/report_display_auto_order_adaptive_lead_time_comparison.py
+      - tasks/report_display_supplier_lead_time_history.py
+      - tasks/detect_procurement_cargo_dropoff_refresh_needed.py
+    related_tests:
+      - tests/test_assortment_lifecycle.py
+      - tests/test_assortment_lifecycle_facts.py
+      - tests/test_build_display_auto_order_dry_run_task.py
+      - tests/test_report_display_auto_order_adaptive_lead_time_comparison_task.py
+      - tests/test_report_display_supplier_lead_time_history_task.py
+      - tests/test_detect_procurement_cargo_dropoff_refresh_needed_task.py
+    keywords: [display, auto-order, procurement, assortment-lifecycle, lead-time, analogs]
+  - path: docs/specs/site-order-fulfillment-control-contour.md
+    title: Site Order Fulfillment Control Contour
+    doc_type: spec
+    domain: order_flow
+    status: draft
+    owner: operations
+    source_of_truth: true
+    related_code: [app/api/order_fulfillment.py, app/models/site_order_fulfillment.py, app/schemas/order_fulfillment.py, app/services/site_order_fulfillment.py, infra/cron/order_fulfillment_sync.py, scripts/apply_order_fulfillment_stage_outbox.py, scripts/build_order_fulfillment_stage_outbox.py, scripts/ensure_site_order_deal_stages.py]
+    related_tests: [tests/test_ensure_site_order_deal_stages.py, tests/test_order_fulfillment_api.py, tests/test_order_fulfillment_parser.py, tests/test_order_fulfillment_stage_apply.py, tests/test_order_fulfillment_sync.py]
+    keywords: [site-orders, order-flow, pickup, courier, bitrix-chat, bitrix24, logistics]
+  - path: docs/specs/site-defect-archive-search.md
+    title: Site Defect Archive Search
+    doc_type: spec
+    domain: order_flow
+    status: implemented
+    owner: operations
+    source_of_truth: true
+    related_code:
+      - app/api/site_defect_archive.py
+      - app/models/site_defect_archive.py
+      - app/schemas/site_defect_archive.py
+      - app/services/site_defect_archive.py
+      - scripts/ensure_site_defect_archive_bitrix_process.py
+      - scripts/import-old-bitrix-site-defects
+      - scripts/import_old_bitrix_site_defects.py
+    related_tests:
+      - tests/test_site_defect_archive.py
+    keywords: [site-defects, old-bitrix, chat69465, archive, smart-process, disk, search]
+  - path: docs/specs/logistics-control-contour.md
+    title: Logistics Control Contour
+    doc_type: spec
+    domain: logistics
+    status: draft
+    owner: operations
+    source_of_truth: true
+    related_code: [app/api/logistics.py, app/api/logistics_web.py, app/models/logistics.py, app/schemas/logistics.py, app/services/logistics.py, app/services/logistics_onec.py, tasks/apply_logistics_warehouse_alias_overrides.py, tasks/report_logistics_rtu_manual_review.py, tasks/sync_logistics_warehouse_aliases_from_onec.py, tasks/sync_logistics_rtu_from_onec.py, app/telegram/logistics_bot.py]
+    related_tests: [tests/test_logistics_api.py, tests/test_logistics_onec.py, tests/test_logistics_bot.py, tests/test_logistics_bot_webhook_api.py, tests/test_order_fulfillment_api.py]
+    keywords: [logistics, route-run, rtu, external-carrier, manual-review, web-fallback]
+  - path: docs/specs/transfer-assistant-readonly-v1.md
+    title: Transfer Assistant Readonly V1
+    doc_type: spec
+    domain: logistics
+    status: implemented
+    owner: operations
+    source_of_truth: true
+    related_code:
+      - app/api/logistics.py
+      - app/schemas/logistics.py
+      - app/services/transfer_assistant.py
+      - app/core/config.py
+      - tasks/export_transfer_assistant_candidates.py
+    related_tests:
+      - tests/test_transfer_assistant.py
+      - tests/test_export_transfer_assistant_candidates_task.py
+      - tests/test_logistics_api.py
+      - tests/test_logistics_onec.py
+      - tests/test_order_fulfillment_api.py
+    keywords: [logistics, transfer-assistant, onec, reserve, placement, pickup, readonly]
+  - path: docs/specs/receivables-smart-process-workflow.md
+    title: Receivables Workplace And Smart Process Workflow
+    doc_type: spec
+    domain: receivables
+    status: draft
+    owner: product
+    source_of_truth: true
+    related_code: [app/api/bitrix_receivables.py, app/api/receivables.py, app/api/receivable_workplace.py, app/api/management.py, app/models/receivable_case.py, app/models/receivable_work.py, app/schemas/bitrix_receivables.py, app/schemas/receivable_workplace.py, app/services/bitrix_receivables_auth.py, app/services/receivables.py, app/services/receivable_credit_profile.py, app/services/receivable_decision_portrait.py, app/services/receivable_decision_onec_metrics.py, app/services/receivable_workplace.py, app/services/receivable_workflow.py, app/services/management_rules.py, ui/src/api/bitrix.ts, ui/src/components/ReceivablesWorkplace.tsx, scripts/build_receivable_decision_blueprint.py, tasks/build_receivable_credit_profiles.py, tasks/build_receivable_decision_portraits.py, infra/cron/new_daily_receivables_from_a.py]
+    related_tests: [tests/test_receivables.py, tests/test_receivable_workplace.py, tests/test_receivable_workflow.py, tests/test_receivable_decision_blueprint.py, tests/test_receivable_credit_profile.py, tests/test_receivable_decision_onec_metrics.py, tests/test_receivable_decision_portrait.py, tests/test_management_rules.py, tests/test_management_tasks_api.py, tests/test_new_daily_receivables_from_a.py]
+    keywords: [receivables, bitrix24, smart-process, debt, sms]
+  - path: docs/specs/counterparty-folder-recommendations.md
+    title: Counterparty Folder Recommendations
+    doc_type: spec
+    domain: receivables
+    status: implemented
+    owner: finance
+    source_of_truth: true
+    related_code: [app/api/management.py, app/services/counterparty_folder_recommendations.py, app/schemas/management.py, infra/cron/counterparty_folder_recommendations_from_a.py, infra/cron/counterparty_folder_recommendations_from_a.sh]
+    related_tests: [tests/test_counterparty_folder_recommendations.py]
+    keywords: [receivables, onec, counterparty, folder, department, overdue, management]
+  - path: docs/specs/ut103-bot-command-file-exchange.md
+    title: UT 10.3 Bot Command File Exchange
+    doc_type: spec
+    domain: receivables
+    status: draft
+    owner: finance
+    source_of_truth: true
+    related_code:
+      - app/services/exporters/ut103_exchange.py
+      - app/services/exporters/ut103_forecast.py
+      - app/services/exporters/ut103_nomenclature_properties.py
+      - app/services/exporters/ut103_procurement_orders.py
+      - tasks/build_assortment_lifecycle_facts.py
+      - tasks/build_assortment_lifecycle_updates.py
+      - tasks/refresh_assortment_lifecycle_classification.py
+      - tasks/export_ut103_forecast.py
+      - tasks/export_ut103_nomenclature_properties.py
+      - tasks/export_ut103_procurement_supplier_orders.py
+      - infra/cron/assortment_lifecycle_ut103_export.sh
+    related_tests:
+      - tests/test_ut103_exchange.py
+      - tests/test_ut103_forecast_exporter.py
+      - tests/test_build_assortment_lifecycle_facts_task.py
+      - tests/test_build_assortment_lifecycle_updates_task.py
+      - tests/test_ut103_nomenclature_properties_exporter.py
+      - tests/test_ut103_procurement_orders_exporter.py
+      - tests/test_export_ut103_forecast_task.py
+      - tests/test_export_ut103_nomenclature_properties_task.py
+      - tests/test_export_ut103_procurement_supplier_orders_task.py
+    keywords: [ut103, onec, file-exchange, bot-commands, credit-depth, credit-limit, receivables, nomenclature-properties, supplier-order, procurement]
+  - path: docs/specs/exchange-counterparty-daily-settlements.md
+    title: Exchange Counterparty Daily Settlements Report
+    doc_type: spec
+    domain: receivables
+    status: implemented
+    owner: finance
+    source_of_truth: false
+    related_code: [app/api/management.py, app/services/exchange_counterparty_settlements.py, app/services/finance_cash_position.py, infra/cron/management_digest_from_a.py]
+    related_tests: [tests/test_exchange_counterparty_settlements.py, tests/test_finance_cash_position.py, tests/test_management_digest_from_a.py]
+    keywords: [receivables, onec, counterparty, exchange, currency, cash-position, daily-report]
+  - path: docs/specs/executive-management-dashboard-bitrix.md
+    title: Executive Management Dashboard In Bitrix
+    doc_type: spec
+    domain: management
+    status: draft
+    owner: finance
+    source_of_truth: true
+    related_code:
+      - app/api/bitrix_executive_dashboard.py
+      - app/api/management.py
+      - app/models/executive_dashboard.py
+      - app/schemas/executive_dashboard.py
+      - app/services/bitrix_executive_dashboard_auth.py
+      - app/services/executive_dashboard.py
+      - app/services/executive_management_balance.py
+      - tasks/build_executive_management_balance_snapshot.py
+      - infra/cron/executive_management_balance_snapshot.sh
+      - infra/cron/executive_management_balance_snapshot.cron
+      - ui/src/api/executiveDashboard.ts
+      - ui/src/components/ExecutiveDashboard.tsx
+    related_tests:
+      - tests/test_executive_dashboard.py
+      - tests/test_executive_management_balance.py
+    keywords: [management, executive-dashboard, management-balance, monthly-close, bitrix24, finance, payables, receivables]
+  - path: docs/specs/weekly-manager-sales-online-demand.md
+    title: Weekly Manager Sales Online Demand Block
+    doc_type: spec
+    domain: management
+    status: implemented
+    owner: analytics
+    source_of_truth: true
+    related_code: [infra/cron/weekly_manager_sales_reports_from_a.py, app/services/online_demand_metrics.py, tasks/send_weekly_manager_sales_report.py]
+    related_tests: [tests/test_online_demand_metrics.py, tests/test_weekly_manager_sales_reports_from_a.py]
+    keywords: [weekly-manager-sales, metrika, online-demand, telegram, openclaw]
+  - path: docs/specs/monthly-online-demand-report.md
+    title: Monthly Online Demand Report
+    doc_type: spec
+    domain: management
+    status: implemented
+    owner: analytics
+    source_of_truth: true
+    related_code: [infra/cron/monthly_online_demand_report.py, app/services/online_demand_metrics.py]
+    related_tests: [tests/test_monthly_online_demand_report.py, tests/test_online_demand_metrics.py]
+    keywords: [monthly, metrika, online-demand, telegram, openclaw]
+  - path: docs/specs/offline-store-audio-analytics.md
+    title: Offline Store Audio Analytics
+    doc_type: spec
+    domain: speech_analytics
+    status: draft
+    owner: product
+    source_of_truth: true
+    related_code: [infra/cron/offline_audio_ingest.py, infra/cron/weekly_asr_transcription.py, infra/cron/asr_runtime.py, infra/cron/calls_unified_projection.py, infra/cron/meeting_action_digest.py]
+    related_tests: [tests/test_offline_audio_ingest.py, tests/test_weekly_asr_transcription.py]
+    keywords: [offline-audio, speech-analytics, asr, stores, windows-agent, ftps]
+  - path: docs/Onepage.DHLEuropeLogisticsContour.md
+    title: DHL Europe Logistics Onepage
+    doc_type: onepager
+    domain: logistics
+    status: draft
+    owner: product
+    source_of_truth: false
+    related_code: []
+    related_tests: []
+    keywords: [dhl, europe, logistics, onepager, spare-parts]
+  - path: docs/Onepage.ProcurementManagementContour.md
+    title: Procurement Management Contour Onepage
+    doc_type: onepager
+    domain: procurement
+    status: draft
+    owner: operations
+    source_of_truth: false
+    related_code:
+      - scripts/ensure_procurement_bitrix_process.py
+      - scripts/import_onec_supplier_order_to_procurement.py
+      - app/services/procurement_supplier_crm.py
+    related_tests:
+      - tests/test_procurement_bitrix_process.py
+      - tests/test_procurement_supplier_crm.py
+    keywords: [procurement, supplier-order, wechat, onepager, bitrix24, onec]
+  - path: docs/Onepage.OfflineStoreAudioAnalytics.md
+    title: Offline Store Audio Analytics Onepage
+    doc_type: onepager
+    domain: speech_analytics
+    status: draft
+    owner: product
+    source_of_truth: false
+    related_code: [infra/cron/offline_audio_ingest.py, infra/cron/weekly_asr_transcription.py, infra/cron/asr_runtime.py]
+    related_tests: [tests/test_offline_audio_ingest.py, tests/test_weekly_asr_transcription.py]
+    keywords: [offline-audio, speech-analytics, asr, stores, windows-agent, onepager]
+  - path: docs/imports/openclaw-b-offline-dialog-recording-onepage.md
+    title: Openclaw B Offline Dialog Recording Onepage Import
+    doc_type: imported_context
+    domain: speech_analytics
+    status: archived
+    owner: product
+    source_of_truth: false
+    related_code: []
+    related_tests: []
+    keywords: [openclaw-b, offline-audio, speech-analytics, asr, stores, import]
+  - path: docs/PRD.md
+    title: Pricing Service PRD
+    doc_type: prd
+    domain: pricing
+    status: active
+    owner: product
+    source_of_truth: true
+    related_code: [app/]
+    related_tests: [tests/]
+    keywords: [pricing, onec, competitors]
+  - path: docs/architecture.md
+    title: Pricing Service Architecture
+    doc_type: architecture
+    domain: architecture
+    status: active
+    owner: architecture
+    source_of_truth: true
+    related_code: [app/, infra/]
+    related_tests: [tests/]
+    keywords: [architecture, fastapi, postgres]
+  - path: docs/plan.md
+    title: Pricing Service Plan
+    doc_type: plan
+    domain: planning
+    status: active
+    owner: product
+    source_of_truth: true
+    related_code: [tasks/]
+    related_tests: []
+    keywords: [plan, tasks, roadmap]
+  - path: docs/price-strategies.md
+    title: Price Strategies
+    doc_type: rules
+    domain: pricing
+    status: active
+    owner: product
+    source_of_truth: true
+    related_code: [app/services/pricing_strategies/]
+    related_tests: [tests/]
+    keywords: [pricing, strategy, margin]
+  - path: docs/TechDesign.CompetitorMatching.md
+    title: Competitor Matching Tech Design
+    doc_type: tech_design
+    domain: matching
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/services/competitor_matching.py, app/api/matching.py]
+    related_tests: [tests/]
+    keywords: [matching, competitors, sku]
+  - path: docs/specs/competitor-matching-ui-v1.md
+    title: Competitor Matching UI V1
+    doc_type: spec
+    domain: matching
+    status: accepted
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/api/matching.py, app/schemas/matching.py, ui/]
+    related_tests: [tests/test_matching_api.py, tests/test_embedding_matching.py]
+    keywords: [matching, competitors, ui, competitor-item]
+  - path: docs/specs/competitor-matching-bitrix-app-v1.md
+    title: Competitor Matching Bitrix24 App V1
+    doc_type: spec
+    domain: matching
+    status: accepted
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/api/bitrix_matching.py, app/services/bitrix_matching_auth.py, ui/]
+    related_tests: [tests/test_matching_api.py]
+    keywords: [matching, competitors, ui, bitrix24]
+  - path: docs/specs/competitor-matching-property-mapping-v1.md
+    title: Competitor Matching Property Mapping V1
+    doc_type: spec
+    domain: matching
+    status: accepted
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/api/matching.py, app/services/matching_attributes.py, app/services/matching_property_mapping.py, app/models/matching_property_mapping.py, ui/]
+    related_tests: [tests/test_matching_api.py, tests/test_embedding_matching.py, tests/test_display_normalization.py, tests/test_display_quality_raw_mapping.py, tests/test_product_display_modification.py]
+    keywords: [matching, competitors, ui, properties, mapping]
+  - path: docs/competitor_matching.md
+    title: Competitor Matching Run Context
+    doc_type: runbook
+    domain: matching
+    status: active
+    owner: engineering
+    source_of_truth: false
+    related_code: [tasks/]
+    related_tests: [tests/]
+    keywords: [llm, embeddings, matching]
+  - path: docs/competitor-matching-nightly-audit-2026-05-02.md
+    title: Competitor Matching Nightly Audit 2026-05-02
+    doc_type: audit
+    domain: matching
+    status: active
+    owner: engineering
+    source_of_truth: false
+    related_code: [infra/cron/competitor_matching_nightly.sh, tasks/match_competitor_items_embeddings.py]
+    related_tests: [tests/test_matching_api.py, tests/test_embedding_matching.py]
+    keywords: [competitors, ftp, nightly, matching, embeddings, audit]
+  - path: docs/TechDesign.CompetitorFTPImport.md
+    title: Competitor FTP Import Tech Design
+    doc_type: tech_design
+    domain: import
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/services/importers/competitor_ftp.py, app/workers/competitor_ftp.py]
+    related_tests: [tests/]
+    keywords: [ftp, competitors, import]
+  - path: docs/TechDesign.AgentsMarketDemand.md
+    title: Agents Market Demand Tech Design
+    doc_type: tech_design
+    domain: market_research
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [agents/, app/services/market_research/]
+    related_tests: [tests/]
+    keywords: [agents, demand, yandex-direct]
+  - path: docs/agents-market-research.md
+    title: Market Research Agents
+    doc_type: runbook
+    domain: market_research
+    status: active
+    owner: engineering
+    source_of_truth: false
+    related_code: [agents/, config/agents/]
+    related_tests: [tests/]
+    keywords: [agents, smartphone, llm]
+  - path: docs/TechDesign.ManagementControlTower.md
+    title: Management Control Tower Tech Design
+    doc_type: tech_design
+    domain: management
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/api/management.py, app/services/management_rules.py]
+    related_tests: [tests/]
+    keywords: [management, control-tower, api]
+  - path: docs/BI.Receivables.md
+    title: Receivables BI
+    doc_type: bi
+    domain: receivables
+    status: active
+    owner: analytics
+    source_of_truth: true
+    related_code: [app/api/receivables.py, app/services/receivables.py]
+    related_tests: [tests/]
+    keywords: [receivables, bi, debt]
+  - path: docs/Onepage.ReceivablesWorkProcess.md
+    title: Receivables Work Process Onepage
+    doc_type: onepager
+    domain: receivables
+    status: draft
+    owner: product
+    source_of_truth: false
+    related_code: [app/api/receivables.py, app/services/receivables.py, app/services/management_rules.py]
+    related_tests: [tests/test_receivables.py, tests/test_management_rules.py]
+    keywords: [receivables, bitrix24, smart-process, debt, sms, onepager]
+  - path: docs/BI.ModelDemand.md
+    title: Model Demand BI
+    doc_type: bi
+    domain: demand
+    status: active
+    owner: analytics
+    source_of_truth: true
+    related_code: [app/api/analytics.py, app/services/analytics.py]
+    related_tests: [tests/]
+    keywords: [demand, bi, phone-models]
+  - path: docs/TechDesign.LogisticsTelegramMVP.md
+    title: Logistics Telegram MVP Tech Design
+    doc_type: tech_design
+    domain: logistics
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/api/logistics.py, app/telegram/logistics_bot.py]
+    related_tests: [tests/]
+    keywords: [logistics, telegram, transfer]
+  - path: docs/IntegrationContract.Logistics1C.md
+    title: Logistics 1C Integration Contract
+    doc_type: integration_contract
+    domain: logistics
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/services/logistics.py]
+    related_tests: [tests/]
+    keywords: [logistics, 1c, contract]
+  - path: docs/IntegrationContract.LogisticsSiteOrders1C.md
+    title: Logistics Site Orders 1C Integration Contract
+    doc_type: integration_contract
+    domain: logistics
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/services/logistics_onec.py, tasks/apply_logistics_warehouse_alias_overrides.py, tasks/report_logistics_rtu_manual_review.py, tasks/sync_logistics_warehouse_aliases_from_onec.py, tasks/sync_logistics_rtu_from_onec.py]
+    related_tests: [tests/test_logistics_onec.py]
+    keywords: [logistics, 1c, rtu, site-orders, contract]
+  - path: docs/Onepage.LogisticsTelegramMVP.md
+    title: Logistics Telegram Onepage
+    doc_type: onepager
+    domain: logistics
+    status: active
+    owner: product
+    source_of_truth: false
+    related_code: [app/api/logistics.py]
+    related_tests: [tests/]
+    keywords: [logistics, telegram, onepager]
+  - path: docs/Onepage.ExpertiseCaseMVP.md
+    title: Expertise Case MVP Onepage
+    doc_type: onepager
+    domain: expertise
+    status: active
+    owner: product
+    source_of_truth: true
+    related_code: [app/api/expertise.py, app/services/expertise.py]
+    related_tests: [tests/]
+    keywords: [expertise, mvp, bitrix24]
+  - path: docs/TechDesign.ExpertiseCaseMVP.md
+    title: Expertise Case MVP Tech Design
+    doc_type: tech_design
+    domain: expertise
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/api/expertise.py, app/services/expertise.py]
+    related_tests: [tests/]
+    keywords: [expertise, 1c, bitrix24]
+  - path: docs/IntegrationContract.Expertise1C.md
+    title: Expertise 1C Integration Contract
+    doc_type: integration_contract
+    domain: expertise
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/services/expertise_onec.py]
+    related_tests: [tests/]
+    keywords: [expertise, 1c, contract]
+  - path: docs/Runbook.ExpertiseWave1.md
+    title: Expertise Wave 1 Runbook
+    doc_type: runbook
+    domain: expertise
+    status: active
+    owner: engineering
+    source_of_truth: false
+    related_code: [tasks/, infra/cron/]
+    related_tests: [tests/]
+    keywords: [expertise, runbook, wave1]
+  - path: docs/order_flow/README.md
+    title: Order Flow Context Index
+    doc_type: index
+    domain: order_flow
+    status: active
+    owner: product
+    source_of_truth: true
+    related_code: [app/]
+    related_tests: []
+    keywords: [orders, returns, order-flow]
+  - path: docs/order_flow/site-order-rtu-process-context-2026-05-03.md
+    title: Site Order RTU Process Context 2026-05-03
+    doc_type: context
+    domain: order_flow
+    status: active
+    owner: product
+    source_of_truth: false
+    related_code: []
+    related_tests: []
+    keywords: [orders, site-orders, rtu, onec, bitrix24, delivery]
+  - path: docs/order_flow/site-order-1c-process-tz-2026-05-03.md
+    title: Site Order 1C Process TZ 2026-05-03
+    doc_type: tech_design
+    domain: order_flow
+    status: draft
+    owner: product
+    source_of_truth: false
+    related_code: []
+    related_tests: []
+    keywords: [orders, site-orders, onec, bitrix, commerce-ml, rtu, delivery, status]
+  - path: docs/order_flow/onec-site-order-process-tz-2026-05-03.md
+    title: 1C Site Order Process TZ 2026-05-03
+    doc_type: tech_design
+    domain: order_flow
+    status: draft
+    owner: product
+    source_of_truth: false
+    related_code: []
+    related_tests: []
+    keywords: [orders, site-orders, onec, commerce-ml, rtu, delivery, status, tasks, sms]
+  - path: docs/order_flow/onec-site-order-wave1-tz-2026-05-03.md
+    title: 1C Site Order Wave 1 TZ 2026-05-03
+    doc_type: tech_design
+    domain: order_flow
+    status: accepted
+    owner: product
+    source_of_truth: false
+    related_code: []
+    related_tests: []
+    keywords: [orders, site-orders, onec, wave1, commerce-ml, rtu, delivery, status]
+  - path: docs/order_flow/ut103-site-order-wave1-module-sync-diagnostic-2026-05-06.md
+    title: UT 10.3 Site Order Wave 1 Module Sync Diagnostic 2026-05-06
+    doc_type: diagnostic
+    domain: order_flow
+    status: active
+    owner: engineering
+    source_of_truth: false
+    related_code: [.local/1c-config/, scripts/with_onec_test.sh]
+    related_tests: []
+    keywords: [orders, site-orders, onec, wave1, rtu, module-sync, diagnostics]
+  - path: docs/order_flow/ut103-tzp-wave1-codex-task-2026-05-10.md
+    title: UT 10.3 TZP Wave 1 Codex Task 2026-05-10
+    doc_type: task
+    domain: order_flow
+    status: active
+    owner: engineering
+    source_of_truth: false
+    related_code: [docs/order_flow/, docs/order_flow/artifacts/site-order-exchange-2026-05-03/]
+    related_tests: []
+    keywords: [orders, site-orders, onec, wave1, tzp, rtu, picking]
+  - path: docs/1c_sql_mapping.md
+    title: 1C SQL Mapping
+    doc_type: mapping
+    domain: onec
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/services/]
+    related_tests: [tests/]
+    keywords: [1c, sql, mapping]
+  - path: docs/bank-payment-classifier-one-pager.md
+    title: Bank Payment Classifier Onepager
+    doc_type: onepager
+    domain: onec
+    status: draft
+    owner: engineering
+    source_of_truth: false
+    related_code: [app/api/, app/services/, .local/1c-config/]
+    related_tests: [tests/]
+    keywords: [1c, bank, client-bank, payments, classifier, sbp, acquiring]
+  - path: docs/sku_policy.md
+    title: SKU Policy
+    doc_type: policy
+    domain: sku
+    status: active
+    owner: product
+    source_of_truth: true
+    related_code: [app/services/sku.py]
+    related_tests: [tests/]
+    keywords: [sku, policy, nomenclature]

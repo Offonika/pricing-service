@@ -1,0 +1,1 @@
+0 9 * * * /opt/pricing-service/infra/cron/return_scheme_monitoring.sh

@@ -1,0 +1,32 @@
+{
+  "color": {
+    "background": { "value": "#F5F7FA" },
+    "surface": { "value": "#FFFFFF" },
+    "surfaceMuted": { "value": "#F0F3F7" },
+    "text": { "value": "#18202A" },
+    "textMuted": { "value": "#667085" },
+    "border": { "value": "#D9E0E8" },
+    "primary": { "value": "#155EEF" },
+    "primaryStrong": { "value": "#004EEB" },
+    "success": { "value": "#079455" },
+    "warning": { "value": "#B54708" },
+    "danger": { "value": "#D92D20" },
+    "info": { "value": "#2E90FA" }
+  },
+  "space": {
+    "1": { "value": "4px" },
+    "2": { "value": "8px" },
+    "3": { "value": "12px" },
+    "4": { "value": "16px" },
+    "6": { "value": "24px" }
+  },
+  "radius": {
+    "sm": { "value": "6px" },
+    "md": { "value": "8px" },
+    "lg": { "value": "12px" },
+    "pill": { "value": "999px" }
+  },
+  "shadow": {
+    "surface": { "value": "0 8px 24px rgba(16, 24, 40, 0.08)" }
+  }
+}

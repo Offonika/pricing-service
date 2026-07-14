@@ -1,4 +1,4 @@
-from typing import List, Optional
+from __future__ import annotations
 
 from sqlalchemy.orm import Session
 
@@ -13,7 +13,7 @@ class KeywordGenerationService:
         self.db = db
         self.repo = KeywordRepository(db)
 
-    def generate_for_device(self, device: PhoneModel) -> List[str]:
+    def generate_for_device(self, device: PhoneModel) -> list[str]:
         """
         Формирует список текстовых фраз по шаблонам:
         - дисплей/экран/тач/стекло <brand> <model> (+варианты купить/оригинал/замена и т.п.).
@@ -33,7 +33,7 @@ class KeywordGenerationService:
         ]
         return list({tpl.format(name=normalized) for tpl in templates})
 
-    def create_keywords_for_device(self, device: PhoneModel) -> List[Keyword]:
+    def create_keywords_for_device(self, device: PhoneModel) -> list[Keyword]:
         """Генерирует и сохраняет фразы в БД, избегая дублей."""
         phrases = self.generate_for_device(device)
         return self.repo.create_many(
@@ -45,8 +45,8 @@ class KeywordGenerationService:
         )
 
     def bulk_create_from_agent(
-        self, phone_model_id: int, phrases: List[str], language: Optional[str], category: Optional[str]
-    ) -> List[Keyword]:
+        self, phone_model_id: int, phrases: list[str], language: str | None, category: str | None
+    ) -> list[Keyword]:
         """Сохраняет фразы, переданные агентом напрямую."""
         cleaned = [p.strip() for p in phrases if p and p.strip()]
         return self.repo.create_many(

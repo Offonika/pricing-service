@@ -1,0 +1,303 @@
+{
+  "version": 1,
+  "folder": "дисплеи",
+  "responsible_user_id": 130757,
+  "evaluation_cadence": {
+    "cron": "20 9 * * *",
+    "timezone": "Europe/Moscow",
+    "description": "Ежедневно пересчитываем потребность, но размер заказа считает горизонт регулярной закупки."
+  },
+  "order_creation_schedule": {
+    "description": "Документ Потребность на заказ создаем по графику статуса/скорости, а данные обновляем ежедневно.",
+    "rules": [
+      {
+        "status": "ПРОДАЖА",
+        "speed_tier": "super_fast",
+        "cadence": "twice_weekly",
+        "days_ru": [
+          "понедельник",
+          "четверг"
+        ],
+        "exception": "внеплановый сигнал при критичном остатке или резком росте спроса"
+      },
+      {
+        "status": "ПРОДАЖА",
+        "speed_tier": "fast",
+        "cadence": "weekly",
+        "cadence_days": 7
+      },
+      {
+        "status": "ПРОДАЖА",
+        "speed_tier": "normal",
+        "cadence": "biweekly",
+        "cadence_days": 14
+      },
+      {
+        "status": "Рабочий",
+        "speed_tier": "unknown",
+        "cadence": "biweekly_manual_review",
+        "cadence_days": 14
+      },
+      {
+        "status": "Новинка/Плод",
+        "cadence": "weekly_manual_review",
+        "cadence_days": 7
+      },
+      {
+        "status": "Review",
+        "cadence": "weekly_manual_review",
+        "cadence_days": 7
+      },
+      {
+        "status": "Под заказ",
+        "cadence": "event_only"
+      },
+      {
+        "status": "Неликвид/Не закупать/Пенсия",
+        "cadence": "disabled"
+      }
+    ]
+  },
+  "off_schedule_signal_policy": {
+    "description": "Внеплановый сигнал включается раньше планового графика, если сборка поставщика уходит выше нормы или есть риск опустошения склада.",
+    "baseline_source": "supplier_prepare_profile.recommended_supplier_prepare_days",
+    "baseline_metric": "median_or_p75_by_confidence",
+    "warning_over_baseline_pct": 30,
+    "alarm_over_baseline_pct": 60,
+    "minimum_warning_delay_days": 3,
+    "minimum_alarm_delay_days": 7,
+    "stockout_guard_days": 10,
+    "rules": [
+      {
+        "level": "warning",
+        "label_ru": "предупреждение",
+        "condition_ru": "фактическая сборка у поставщика уже на 30% выше обычного срока, но минимум на 3 дня",
+        "action_ru": "создать внеплановый сигнал в manual_review и показать риск в карточке"
+      },
+      {
+        "level": "alarm",
+        "label_ru": "тревога",
+        "condition_ru": "фактическая сборка у поставщика уже на 60% выше обычного срока, но минимум на 7 дней",
+        "action_ru": "поднять приоритет очереди, проверить поставщика, аналог, срочную замену или перенос закупки"
+      },
+      {
+        "level": "stockout_guard",
+        "label_ru": "защита от опустошения склада",
+        "condition_ru": "дней свободного остатка меньше ожидаемого оставшегося срока поставки плюс 10 дней запаса",
+        "action_ru": "создать внеплановую Потребность на заказ или ручную задачу до обычного дня графика"
+      }
+    ]
+  },
+  "price_segment_schedule_policy": {
+    "status": "approved",
+    "approved_at": "2026-07-11",
+    "implementation_status": "wired_in_dry_run",
+    "description": "Ценовой слой корректирует график и партию: дешевые товары можно заказывать реже и крупнее, дорогие - чаще и меньшими партиями.",
+    "applies_to_statuses": [
+      "ПРОДАЖА",
+      "Рабочий"
+    ],
+    "applies_to_analog_roles": [
+      "single_sku",
+      "primary_analog",
+      "supported_analog"
+    ],
+    "history_window_days": 180,
+    "source_report": "reports/assortment_lifecycle/2026-07-06/display-order-schedule-price-batch-analysis.md",
+    "quantity_basis": {
+      "raw_min_qty": "показывать справочно, но не использовать как правило партии",
+      "p25_qty": "нижняя нормальная партия",
+      "median_qty": "обычная целевая партия",
+      "p75_qty": "верхняя партия без ручной проверки"
+    },
+    "rules": [
+      {
+        "speed_tier": "super_fast",
+        "price_segments": [
+          "economy",
+          "mid_low"
+        ],
+        "cadence": "weekly_with_stockout_guard",
+        "batch_basis": "median_to_p75",
+        "minimum_batch_qty": 20,
+        "max_automatic_excess_coverage_days": 7
+      },
+      {
+        "speed_tier": "super_fast",
+        "price_segments": [
+          "mid_high",
+          "premium"
+        ],
+        "cadence": "twice_weekly",
+        "batch_basis": "p25_to_median",
+        "rounding_mode": "exact_need",
+        "manual_review_above": "p75_qty"
+      },
+      {
+        "speed_tier": "fast",
+        "price_segments": [
+          "economy",
+          "mid_low"
+        ],
+        "cadence": "biweekly",
+        "batch_basis": "median_to_p75",
+        "minimum_batch_qty": 12,
+        "max_automatic_excess_coverage_days": 14
+      },
+      {
+        "speed_tier": "fast",
+        "price_segments": [
+          "mid_high",
+          "premium"
+        ],
+        "cadence": "weekly_or_10_days",
+        "batch_basis": "p25_to_median",
+        "rounding_mode": "exact_need",
+        "manual_review_above": "p75_qty"
+      },
+      {
+        "speed_tier": "normal",
+        "price_segments": [
+          "economy",
+          "mid_low"
+        ],
+        "cadence": "every_3_weeks",
+        "batch_basis": "median_to_p75",
+        "minimum_batch_qty": 10,
+        "max_automatic_excess_coverage_days": 21
+      },
+      {
+        "speed_tier": "normal",
+        "price_segments": [
+          "mid_high",
+          "premium"
+        ],
+        "cadence": "biweekly",
+        "batch_basis": "p25_to_median",
+        "rounding_mode": "exact_need",
+        "manual_review_above": "p75_qty"
+      }
+    ]
+  },
+  "supported_analog_policy": {
+    "status": "approved",
+    "approved_at": "2026-07-11",
+    "implementation_status": "wired_in_dry_run",
+    "description": "Продающийся цветовой вариант того же дисплея и качества не обнуляем только потому, что в группе есть более ходовой цвет: сохраняем сетевой минимум для магазинов и сайта.",
+    "applies_to_statuses": [
+      "ПРОДАЖА",
+      "Рабочий"
+    ],
+    "active_store_count": 11,
+    "site_reserve_qty": 1,
+    "min_network_stock_qty": 12,
+    "min_recent_sales_pct_of_store_count": 10,
+    "max_days_since_last_sale": 180,
+    "rules": [
+      "вариант должен отличаться от основного только цветом и иметь то же качество; другие качества и поставщицкие версии не получают сетевой минимум",
+      "за 180 дней должно быть не меньше 10% от числа действующих магазинов, то есть минимум 2 чистые продажи",
+      "должна быть продажа в последние 180 дней",
+      "остаток Новый плюс товар в пути доводим до 12 штук: 11 магазинов плюс сайт",
+      "сначала выделяем потребность поддерживаемому аналогу, остаток общей потребности группы отдаем основному аналогу",
+      "после распределения применяется ценовое округление"
+    ]
+  },
+  "auto_order_policy": {
+    "sales_window_days": 180,
+    "target_days": 14,
+    "order_cadence_days": 7,
+    "supplier_prepare_days": 18,
+    "logistics_days": 30,
+    "supplier_delay_buffer_days": 3,
+    "receiving_buffer_days": 1,
+    "safety_stock_days": 25,
+    "min_display_qty": 0,
+    "min_order_qty": 1,
+    "max_order_qty": null,
+    "include_sale_review_candidates": true,
+    "order_rounding_rules": [
+      {
+        "threshold_gt": 2000,
+        "round_to": 100
+      },
+      {
+        "threshold_gt": 1000,
+        "round_to": 50
+      },
+      {
+        "threshold_gt": 100,
+        "round_to": 10
+      }
+    ],
+    "speed_horizon_rules": [
+      {
+        "tier": "super_fast",
+        "label_ru": "супер-ходовая группа",
+        "min_group_avg_daily_sales_qty": 2,
+        "max_effective_target_days": 60,
+        "safety_stock_days": 7
+      },
+      {
+        "tier": "fast",
+        "label_ru": "ходовая группа",
+        "min_group_avg_daily_sales_qty": 0.8,
+        "max_effective_target_days": 70,
+        "safety_stock_days": 10
+      },
+      {
+        "tier": "normal",
+        "label_ru": "обычная группа",
+        "min_group_avg_daily_sales_qty": 0.25,
+        "max_effective_target_days": 82,
+        "safety_stock_days": 14
+      },
+      {
+        "tier": "slow",
+        "label_ru": "медленная группа",
+        "min_group_avg_daily_sales_qty": 0,
+        "review_only": true
+      }
+    ],
+    "onec_catalog_analog_candidate_model_tokens": [
+      "apple:model:iphone 11"
+    ],
+    "demand_uplift_rules": [
+      {
+        "rule_id": "iphone11_display_stockout_demand_uplift",
+        "match_any_analog_model_tokens": [
+          "apple:model:iphone 11"
+        ],
+        "demand_multiplier": 1.3,
+        "reason_ru": "для iPhone 11 дисплеев история продаж могла быть занижена из-за перебоев заказа и наличия; применяем только к этой аналоговой группе"
+      }
+    ]
+  },
+  "incoming_qty_policy": {
+    "deduct_open_supplier_order_balance": true,
+    "source": "1C open supplier order balance _AccumRgT7160",
+    "pipeline_buckets": [
+      "arriving_10_days",
+      "arriving_20_days",
+      "later",
+      "no_date",
+      "cargo_handoff",
+      "supplier_processing"
+    ]
+  },
+  "notes": [
+    "target_days - запас продаж, который хотим иметь после регулярного пересмотра.",
+    "order_cadence_days - период между закупочными решениями; cron может запускаться чаще.",
+    "supplier_prepare_days - согласование/сборка у поставщика до сдачи в cargo; для дисплеев базовая норма 18 дней по факту 2025-12-30..2026-07-04.",
+    "logistics_days - доставка/cargo/путь до приемки; для дисплеев базовая норма 30 дней по факту 2025-12-30..2026-07-04.",
+    "supplier_processing/no_date - ранняя ветка первичного обмена с поставщиком и закупщиком; отсутствие даты cargo здесь не является ошибкой, но автозаказ должен учитывать это как товар еще не сдан в cargo.",
+    "safety_stock_days - дополнительный складской запас; для дисплеев добавляем 25 дней сверх срока поставки и регулярного заказа.",
+    "supplier_delay_buffer_days и receiving_buffer_days добавляют операционный запас времени.",
+    "min_order_qty - если расчетная потребность больше нуля, округляем к заказу минимум до 1 штуки.",
+    "order_rounding_rules - крупные количества округляем вверх: больше 2000 до кратности 100, больше 1000 до 50, больше 100 до 10.",
+    "speed_horizon_rules - целевой запас считаем по скорости группы аналогов: super_fast максимум 60 дней покрытия и 7 дней страховки; fast максимум 70 дней и 10 дней страховки; normal максимум 82 дня и 14 дней страховки; slow не раздуваем автозаказом, отправляем на review.",
+    "max_order_qty = null - верхний потолок по штукам снят; заказ показывает полную расчетную потребность.",
+    "include_sale_review_candidates = true - строки ПРОДАЖА участвуют в расчете групп аналогов как review-only; автозаказ создается только по строкам order.",
+    "onec_catalog_analog_candidate_model_tokens - из каталога 1С подтягиваем аналоги только по явно разрешенным токенам модели; сейчас включена только группа Apple iPhone 11.",
+    "demand_uplift_rules - точечные поправки на скрытый спрос из-за перебоев наличия; глобально не применяются."
+  ]
+}

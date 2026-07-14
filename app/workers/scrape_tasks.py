@@ -1,12 +1,11 @@
 from __future__ import annotations
 
 import logging
-from typing import Dict, List, Optional
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db import build_application_engine, get_application_engine
 from app.models import Competitor, CompetitorPrice, Product
 from app.services.scraper.service import scrape_competitor_pages
 
@@ -14,8 +13,7 @@ logger = logging.getLogger("app.workers.scrape")
 
 
 def get_engine():
-    settings = get_settings()
-    return create_engine(settings.database_url)
+    return get_application_engine()
 
 
 def _ensure_competitor(session: Session, name: str) -> Competitor:
@@ -29,16 +27,15 @@ def _ensure_competitor(session: Session, name: str) -> Competitor:
 
 
 def run_scrape(
-    competitors: Dict[str, List[str]],
+    competitors: dict[str, list[str]],
     limit: int,
-    database_url: Optional[str] = None,
+    database_url: str | None = None,
 ) -> dict:
     """
     competitors: {"CompName": ["url1", "url2", ...]}
     limit: max offers total (for quick debugging)
     """
-    settings = get_settings()
-    engine = create_engine(database_url or settings.database_url)
+    engine = build_application_engine(database_url) if database_url else get_application_engine()
     stats = {"competitors": 0, "offers_saved": 0, "errors": 0}
     with Session(engine) as session:
         # ensure schema exists for in-memory/testing
@@ -54,8 +51,13 @@ def run_scrape(
                     urls=urls,
                     limit=limit,
                 )
-                # simple SKU-based link to Product if exists
-                products = {p.sku: p for p in session.query(Product).filter(Product.sku.in_([o.external_sku for o in offers]))}
+                # simple article-based link to Product if exists
+                products = {
+                    p.article: p
+                    for p in session.query(Product).filter(
+                        Product.article.in_([o.external_sku for o in offers])
+                    )
+                }
                 for offer in offers:
                     product = products.get(offer.external_sku)
                     price = CompetitorPrice(
@@ -84,13 +86,13 @@ def run_scrape(
     return stats
 
 
-def scrape_default(limit: Optional[int] = None) -> dict:
+def scrape_default(limit: int | None = None) -> dict:
     """
     Пример запуска: использует COMPETITOR_PARSE_LIMIT и несколько тестовых URL-ов (заполнить позже).
     """
     settings = get_settings()
     effective_limit = limit if limit is not None else settings.competitor_parse_limit
-    competitors: Dict[str, List[str]] = {
+    competitors: dict[str, list[str]] = {
         "moba": ["https://moba.ru/catalog/"],
         # Указываем конкретный раздел, чтобы бить в API /local/api/catalog/products
         "green-spark": [

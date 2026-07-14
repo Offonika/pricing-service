@@ -1,13 +1,10 @@
 from __future__ import annotations
 
-from datetime import datetime
-from typing import List
-
 import httpx
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
-from app.models import Base, Competitor, Product
+from app.models import Base, Product
 from app.services.proxy_client import ProxyConfig, ProxyHttpClient
 from app.services.scraper.service import scrape_competitor_pages
 from app.workers.scrape_tasks import run_scrape
@@ -35,7 +32,7 @@ def test_run_scrape_saves_prices(monkeypatch):
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     with Session(engine) as session:
-        session.add(Product(sku="A1", name="ItemA"))
+        session.add(Product(article="A1", name="ItemA"))
         session.commit()
 
     responses = {
@@ -50,5 +47,7 @@ def test_run_scrape_saves_prices(monkeypatch):
         ),
     )
 
-    stats = run_scrape({"CompX": list(responses.keys())}, limit=5, database_url="sqlite:///:memory:")
+    stats = run_scrape(
+        {"CompX": list(responses.keys())}, limit=5, database_url="sqlite:///:memory:"
+    )
     assert stats["offers_saved"] >= 1

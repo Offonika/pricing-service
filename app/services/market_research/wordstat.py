@@ -1,7 +1,8 @@
+from __future__ import annotations
+
 import logging
-from datetime import date
-from typing import List, Optional
 import time
+from datetime import date
 
 import httpx
 
@@ -15,8 +16,8 @@ class WordstatClient:
         self,
         token: str,
         base_url: str = "https://api.wordstat.yandex.net",
-        devices: Optional[List[str]] = None,
-        rps_limit: Optional[float] = None,
+        devices: list[str] | None = None,
+        rps_limit: float | None = None,
         timeout: float = 10.0,
     ):
         self.token = token
@@ -26,7 +27,7 @@ class WordstatClient:
         self.timeout = timeout
         self.logger = logging.getLogger("app.services.wordstat")
         self._client = httpx.Client(timeout=self.timeout)
-        self._last_call_ts: Optional[float] = None
+        self._last_call_ts: float | None = None
 
     def _throttle(self) -> None:
         if not self.rps_limit:
@@ -37,7 +38,7 @@ class WordstatClient:
             if elapsed < min_interval:
                 time.sleep(min_interval - elapsed)
 
-    def get_stats(self, phrases: List[str], region: str) -> List:
+    def get_stats(self, phrases: list[str], region: str) -> list:
         """
         Возвращает агрегированные метрики по фразам через /v1/topRequests.
 
@@ -52,7 +53,7 @@ class WordstatClient:
             region_id = int(region)
         except (TypeError, ValueError):
             region_id = region
-        stats: List[YandexKeywordStat] = []
+        stats: list[YandexKeywordStat] = []
         for phrase in phrases:
             payload = {
                 "phrase": phrase,
@@ -65,14 +66,18 @@ class WordstatClient:
             }
             try:
                 self._throttle()
-                resp = self._client.post(f"{self.base_url}/v1/topRequests", headers=headers, json=payload)
+                resp = self._client.post(
+                    f"{self.base_url}/v1/topRequests", headers=headers, json=payload
+                )
                 self._last_call_ts = time.perf_counter()
                 if resp.status_code == 401:
                     self.logger.error("wordstat unauthorized", extra={"phrase": phrase})
                     continue
                 resp.raise_for_status()
             except httpx.HTTPError:
-                self.logger.exception("failed to call wordstat", extra={"phrase": phrase, "region": region})
+                self.logger.exception(
+                    "failed to call wordstat", extra={"phrase": phrase, "region": region}
+                )
                 continue
             try:
                 data = resp.json()
@@ -99,7 +104,7 @@ class WordstatClient:
 
 def build_wordstat_client_from_settings() -> WordstatClient:
     settings = get_settings()
-    devices: List[str] = []
+    devices: list[str] = []
     raw_devices = settings.yandex_wordstat_devices
     if raw_devices:
         devices = [d.strip() for d in raw_devices.split(",") if d.strip()]

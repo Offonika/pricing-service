@@ -3,9 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from decimal import Decimal, InvalidOperation
 from datetime import datetime
-from typing import List, Optional, Tuple
+from decimal import Decimal, InvalidOperation
 from urllib.parse import urlencode, urlparse
 
 from playwright.async_api import async_playwright
@@ -25,7 +24,7 @@ def _to_decimal_safe(value: object) -> Decimal:
         return Decimal("0")
 
 
-def _green_spark_api_url(catalog_url: str, per_page: int) -> Optional[str]:
+def _green_spark_api_url(catalog_url: str, per_page: int) -> str | None:
     """
     Конвертирует URL каталога в API-запрос GreenSpark:
     https://green-spark.ru/catalog/a/b/c/ -> /local/api/catalog/products/?path[]=a&path[]=b&path[]=c
@@ -47,7 +46,7 @@ def _green_spark_api_url(catalog_url: str, per_page: int) -> Optional[str]:
     return f"https://green-spark.ru/local/api/catalog/products/?{urlencode(params)}"
 
 
-def _proxy_options(proxy_url: Optional[str]):
+def _proxy_options(proxy_url: str | None):
     if not proxy_url:
         return None
     parsed = urlparse(proxy_url)
@@ -60,7 +59,7 @@ def _proxy_options(proxy_url: Optional[str]):
     }
 
 
-async def _playwright_fetch_json(api_url: str, referer: str) -> Tuple[Optional[int], str]:
+async def _playwright_fetch_json(api_url: str, referer: str) -> tuple[int | None, str]:
     """
     Загружает JSON через настоящий браузер (Chromium headless) с теми же заголовками и куками.
     Возвращает (status, body_text).
@@ -84,7 +83,14 @@ async def _playwright_fetch_json(api_url: str, referer: str) -> Tuple[Optional[i
                 if "=" not in item:
                     continue
                 name, value = item.split("=", 1)
-                cookies.append({"name": name.strip(), "value": value.strip(), "domain": ".green-spark.ru", "path": "/"})
+                cookies.append(
+                    {
+                        "name": name.strip(),
+                        "value": value.strip(),
+                        "domain": ".green-spark.ru",
+                        "path": "/",
+                    }
+                )
             if cookies:
                 await context.add_cookies(cookies)
         page = await context.new_page()
@@ -124,7 +130,7 @@ def _scrape_green_spark(
     url: str,
     limit: int,
     collected_at: datetime,
-) -> List[CompetitorOffer]:
+) -> list[CompetitorOffer]:
     api_url = _green_spark_api_url(url, per_page=limit or 20)
     if not api_url:
         return []
@@ -157,7 +163,7 @@ def _scrape_green_spark(
                 extra={"status": status, "length": len(body) if body else 0},
             )
             return []
-    items: Optional[List] = None
+    items: list | None = None
     if isinstance(payload, list):
         items = payload
     elif isinstance(payload, dict):
@@ -170,7 +176,7 @@ def _scrape_green_spark(
                 items = payload["data"]["items"]
     if not items:
         return []
-    offers: List[CompetitorOffer] = []
+    offers: list[CompetitorOffer] = []
     for item in items:
         try:
             offers.append(
@@ -197,16 +203,16 @@ def _scrape_green_spark(
 
 def scrape_competitor_pages(
     competitor: str,
-    urls: List[str],
+    urls: list[str],
     limit: int,
-    proxy_client: Optional[ProxyHttpClient] = None,
-) -> List[CompetitorOffer]:
+    proxy_client: ProxyHttpClient | None = None,
+) -> list[CompetitorOffer]:
     """
     Забирает страницы конкурентов через Proxy API, парсит в единый формат.
     Лимит ограничивает общее количество собранных позиций (для отладки).
     """
     client = proxy_client or get_proxy_client()
-    collected: List[CompetitorOffer] = []
+    collected: list[CompetitorOffer] = []
     for url in urls:
         if limit and len(collected) >= limit:
             break

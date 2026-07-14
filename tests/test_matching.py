@@ -11,8 +11,8 @@ def test_match_by_sku_creates_links() -> None:
     with Session(engine) as session:
         session.add_all(
             [
-                Product(sku="P1", name="Product 1"),
-                Product(sku="P2", name="Product 2"),
+                Product(article="P1", name="Product 1"),
+                Product(article="P2", name="Product 2"),
                 Competitor(name="CompA"),
             ]
         )
@@ -23,15 +23,15 @@ def test_match_by_sku_creates_links() -> None:
         assert created == 2
         matches = session.query(ProductMatch).all()
         assert len(matches) == 2
-        assert any(m.product.sku == "P1" and m.competitor.name == "CompA" for m in matches)
-        assert any(m.product.sku == "P2" and m.competitor.name == "CompB" for m in matches)
+        assert any(m.product.article == "P1" and m.competitor.name == "CompA" for m in matches)
+        assert any(m.product.article == "P2" and m.competitor.name == "CompB" for m in matches)
 
 
 def test_match_by_sku_skips_duplicates() -> None:
     engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(engine)
     with Session(engine) as session:
-        product = Product(sku="P1", name="Product 1")
+        product = Product(article="P1", name="Product 1")
         competitor = Competitor(name="CompA")
         session.add_all([product, competitor])
         session.commit()

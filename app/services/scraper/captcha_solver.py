@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import time
-from typing import Any, Optional
+from typing import Any
 
 import httpx
 
@@ -28,7 +28,7 @@ def _poll_result(api_key: str, task_id: str, base_url: str = "https://2captcha.c
     raise CaptchaSolveError("captcha timeout waiting for solution")
 
 
-def solve_recaptcha_v2(site_key: str, page_url: str, api_key: Optional[str] = None) -> str:
+def solve_recaptcha_v2(site_key: str, page_url: str, api_key: str | None = None) -> str:
     """
     Solve reCAPTCHA v2 via 2captcha.
     Returns the g-recaptcha-response token.
@@ -53,7 +53,7 @@ def solve_recaptcha_v2(site_key: str, page_url: str, api_key: Optional[str] = No
     return _poll_result(key, task_id)
 
 
-def solve_hcaptcha(site_key: str, page_url: str, api_key: Optional[str] = None) -> str:
+def solve_hcaptcha(site_key: str, page_url: str, api_key: str | None = None) -> str:
     """
     Solve hCaptcha via 2captcha.
     Returns the token.
@@ -78,7 +78,7 @@ def solve_hcaptcha(site_key: str, page_url: str, api_key: Optional[str] = None) 
     return _poll_result(key, task_id)
 
 
-def solve_yandex_smartcaptcha(site_key: str, page_url: str, api_key: Optional[str] = None) -> str:
+def solve_yandex_smartcaptcha(site_key: str, page_url: str, api_key: str | None = None) -> str:
     """
     Solve Yandex SmartCaptcha via 2captcha (method=yandexsmart).
     """

@@ -1,0 +1,9 @@
+# Daily display supplier lead-time and road seasonality report.
+#
+# Runs every morning at 06:20 Europe/Moscow and writes reports to:
+# /opt/MM/pricing-service/reports/assortment_lifecycle/<date>/
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+CRON_TZ=Europe/Moscow
+
+20 6 * * * root /opt/MM/pricing-service/infra/cron/display_supplier_lead_time_refresh.sh >> /var/log/pricing/display_supplier_lead_time_refresh.cron.log 2>&1

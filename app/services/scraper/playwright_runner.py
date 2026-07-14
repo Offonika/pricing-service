@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, Optional
 from urllib.parse import urlsplit
 
 from playwright.async_api import async_playwright
@@ -13,7 +13,7 @@ from app.core.config import get_settings
 logger = logging.getLogger("app.scraper.playwright")
 
 
-def _proxy_options(proxy_url: Optional[str]):
+def _proxy_options(proxy_url: str | None):
     if not proxy_url:
         return None
     parsed = urlsplit(proxy_url)
@@ -51,7 +51,14 @@ async def fetch_pages_with_playwright(urls: Iterable[str], output_dir: Path) -> 
                 if "=" not in item:
                     continue
                 name, value = item.split("=", 1)
-                cookies.append({"name": name.strip(), "value": value.strip(), "domain": ".moba.ru", "path": "/"})
+                cookies.append(
+                    {
+                        "name": name.strip(),
+                        "value": value.strip(),
+                        "domain": ".moba.ru",
+                        "path": "/",
+                    }
+                )
             if cookies:
                 await context.add_cookies(cookies)
 

@@ -1,15 +1,17 @@
 from datetime import date, datetime
 
 from app.core.config import get_settings
-from app.models import ReleaseStatus, SmartphoneRelease, PhoneModel, Keyword
+from app.models import Keyword, PhoneModel, ReleaseStatus, SmartphoneRelease
 from app.services.smartphone_releases import (
     NormalizedReleaseCandidate,
     RawNewsItem,
     SmartphoneReleaseService,
 )
 from app.services.smartphone_releases.service import HIGHLIGHT_LIMIT
-from app.workers.smartphone_releases import run_smartphone_release_job
-from app.workers.smartphone_releases import sync_releases_to_phone_models
+from app.workers.smartphone_releases import (
+    run_smartphone_release_job,
+    sync_releases_to_phone_models,
+)
 
 
 class FakeNewsClient:
@@ -144,7 +146,10 @@ def test_service_merges_api_and_extra_sources(db_session):
     assert extra_source.called is True
     releases = db_session.query(SmartphoneRelease).all()
     assert {release.brand for release in releases} == {"NewsCo", "RSSCo"}
-    assert sorted([release.model for release in releases if release.brand == "NewsCo"]) == ["Alpha", "Alpha Plus"]
+    assert sorted([release.model for release in releases if release.brand == "NewsCo"]) == [
+        "Alpha",
+        "Alpha Plus",
+    ]
 
 
 def test_service_returns_highlights(db_session):
@@ -214,7 +219,12 @@ def test_service_splits_models_from_single_field(db_session):
     result = service.ingest_latest()
 
     assert result["created"] == 3
-    models = sorted([release.model for release in db_session.query(SmartphoneRelease).filter_by(brand="SplitCo").all()])
+    models = sorted(
+        [
+            release.model
+            for release in db_session.query(SmartphoneRelease).filter_by(brand="SplitCo").all()
+        ]
+    )
     assert models == ["R1", "R1 Pro", "R1 Ultra"]
 
 
@@ -242,7 +252,14 @@ def test_job_uses_injected_service(monkeypatch):
 
         def ingest_latest(self):
             self.called = True
-            return {"created": 0, "updated": 0, "processed": 0, "errors": 0, "fetched": 0, "skipped": 0}
+            return {
+                "created": 0,
+                "updated": 0,
+                "processed": 0,
+                "errors": 0,
+                "fetched": 0,
+                "skipped": 0,
+            }
 
     service = RecordingService()
     result = run_smartphone_release_job(service=service)
@@ -269,7 +286,9 @@ def test_sync_releases_to_phone_models(db_session):
 
     stats = sync_releases_to_phone_models(db_session)
     assert stats["synced_models"] == 1
-    model = db_session.query(PhoneModel).filter_by(brand="SyncBrand", model_name="SyncModel").first()
+    model = (
+        db_session.query(PhoneModel).filter_by(brand="SyncBrand", model_name="SyncModel").first()
+    )
     assert model is not None
     keywords = db_session.query(Keyword).filter_by(phone_model_id=model.id).all()
     assert keywords  # keywords generated

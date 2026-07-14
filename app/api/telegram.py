@@ -1,4 +1,6 @@
-from typing import List, Optional
+from __future__ import annotations
+
+from typing import List
 
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
@@ -13,12 +15,14 @@ router = APIRouter()
 @router.get("/today", response_model=List[TelegramItem])
 def today_summary(
     limit: int = 20,
-    brand: Optional[List[str]] = Query(default=None),
-    category: Optional[List[str]] = Query(default=None),
-    search: Optional[str] = None,
+    brand: list[str] | None = Query(default=None),
+    category: list[str] | None = Query(default=None),
+    search: str | None = None,
     db: Session = Depends(get_db),
 ):
-    return tg_service.get_today_items(db, limit=limit, brands=brand, categories=category, search=search)
+    return tg_service.get_today_items(
+        db, limit=limit, brands=brand, categories=category, search=search
+    )
 
 
 @router.get("/alerts", response_model=List[TelegramAlert])

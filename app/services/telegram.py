@@ -1,7 +1,7 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from decimal import Decimal
-from typing import Iterable, List, Optional
 
 from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
@@ -29,23 +29,25 @@ def _latest_recommendations_query(session: Session):
     )
 
 
-def _apply_filters(query, brands: Optional[Iterable[str]], categories: Optional[Iterable[str]], search: Optional[str]):
+def _apply_filters(
+    query, brands: Iterable[str] | None, categories: Iterable[str] | None, search: str | None
+):
     if brands:
         query = query.filter(Product.brand.in_(brands))
     if categories:
         query = query.filter(Product.category.in_(categories))
     if search:
         like = f"%{search}%"
-        query = query.filter(or_(Product.sku.ilike(like), Product.name.ilike(like)))
+        query = query.filter(or_(Product.article.ilike(like), Product.name.ilike(like)))
     return query
 
 
 def get_today_items(
     session: Session,
     limit: int = 20,
-    brands: Optional[list[str]] = None,
-    categories: Optional[list[str]] = None,
-    search: Optional[str] = None,
+    brands: list[str] | None = None,
+    categories: list[str] | None = None,
+    search: str | None = None,
 ):
     query = _latest_recommendations_query(session)
     query = _apply_filters(query, brands, categories, search)
@@ -53,16 +55,18 @@ def get_today_items(
     if limit:
         query = query.limit(limit)
 
-    items: List[dict] = []
+    items: list[dict] = []
     for rec, product in query.all():
-        stock: Optional[ProductStock] = product.stock
-        purchase = Decimal(stock.purchase_price) if stock and stock.purchase_price is not None else None
+        stock: ProductStock | None = product.stock
+        purchase = (
+            Decimal(stock.purchase_price) if stock and stock.purchase_price is not None else None
+        )
         delta = None
         if purchase is not None:
             delta = Decimal(rec.recommended_price) - purchase
         items.append(
             {
-                "sku": product.sku,
+                "article": product.article,
                 "name": product.name,
                 "brand": product.brand,
                 "category": product.category,
@@ -75,7 +79,7 @@ def get_today_items(
     return items
 
 
-def get_alerts(session: Session, limit: int = 20) -> List[dict]:
+def get_alerts(session: Session, limit: int = 20) -> list[dict]:
     """
     Простейшие алерты:
     - рекомендованная цена ниже закупки
@@ -85,14 +89,16 @@ def get_alerts(session: Session, limit: int = 20) -> List[dict]:
     if limit:
         query = query.limit(limit * 2)
 
-    alerts: List[dict] = []
+    alerts: list[dict] = []
     for rec, product in query.all():
-        stock: Optional[ProductStock] = product.stock
-        purchase = Decimal(stock.purchase_price) if stock and stock.purchase_price is not None else None
+        stock: ProductStock | None = product.stock
+        purchase = (
+            Decimal(stock.purchase_price) if stock and stock.purchase_price is not None else None
+        )
         if purchase is None:
             alerts.append(
                 {
-                    "sku": product.sku,
+                    "article": product.article,
                     "name": product.name,
                     "brand": product.brand,
                     "category": product.category,
@@ -106,7 +112,7 @@ def get_alerts(session: Session, limit: int = 20) -> List[dict]:
         elif rec.recommended_price < purchase:
             alerts.append(
                 {
-                    "sku": product.sku,
+                    "article": product.article,
                     "name": product.name,
                     "brand": product.brand,
                     "category": product.category,

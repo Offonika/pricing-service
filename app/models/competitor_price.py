@@ -11,7 +11,9 @@ class CompetitorPrice(Base):
     competitor_id: Mapped[int] = mapped_column(ForeignKey("competitor.id"), index=True)
     price: Mapped[float] = mapped_column(Numeric(12, 2))
     in_stock: Mapped[bool] = mapped_column(default=True)
-    collected_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    collected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
     product = relationship("Product", back_populates="competitor_prices")
     competitor = relationship("Competitor", back_populates="prices")

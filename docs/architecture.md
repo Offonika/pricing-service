@@ -109,6 +109,12 @@ Cron отвечает только за расписание, lock и техни
 application services. Redis используется только в контурах, где очередь реализована
 явно, и не считается общей очередью всех jobs.
 
+DB access постоянной команды объявляется в `docs/registry/cli-jobs.json`.
+Read-only PostgreSQL-команды используют `session_scope(read_only=True)`, который
+завершает scope rollback без commit. Команды записи используют явный Unit of Work;
+generic `build_engine` остаётся временным compatibility API только до завершения
+Release B и не должен появляться в новых постоянных jobs.
+
 ### 2.4. Внешние интеграции
 
 #### 1С

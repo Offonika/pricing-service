@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import fnmatch
 import json
 import re
@@ -27,6 +28,36 @@ REQUIRED_FIELDS = {
 ALLOWED_KINDS = {"permanent_cli", "maintenance", "report", "export", "backfill"}
 ALLOWED_DRY_RUN = {"supported", "not_supported", "not_applicable", "not_verified"}
 ALLOWED_SIDE_EFFECTS = {"read_only", "artifact_write", "db_write", "external_write", "mixed"}
+ALLOWED_DB_ACCESS = {
+    "none",
+    "application_read_only",
+    "application_write",
+    "onec_read_only",
+    "mixed",
+}
+
+
+def _uses_central_read_only_scope(path: Path) -> bool:
+    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    imports_scope = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module in {"app.infrastructure.db", "app.infrastructure.db.session"}
+        and any(alias.name == "session_scope" for alias in node.names)
+        for node in ast.walk(tree)
+    )
+    calls_read_only_scope = any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "session_scope"
+        and any(
+            keyword.arg == "read_only"
+            and isinstance(keyword.value, ast.Constant)
+            and keyword.value.value is True
+            for keyword in node.keywords
+        )
+        for node in ast.walk(tree)
+    )
+    return imports_scope and calls_read_only_scope
 
 
 def load_registry(path: Path = REGISTRY_PATH) -> dict[str, Any]:
@@ -75,6 +106,19 @@ def find_errors(registry: dict[str, Any] | None = None) -> list[str]:
             errors.append(
                 f"{path.name}: unsupported side_effect_level {metadata['side_effect_level']!r}"
             )
+        db_access = metadata.get("db_access")
+        if db_access is not None and db_access not in ALLOWED_DB_ACCESS:
+            errors.append(f"{path.name}: unsupported db_access {db_access!r}")
+        if db_access == "application_read_only":
+            source = path.read_text(encoding="utf-8")
+            if not _uses_central_read_only_scope(path):
+                errors.append(
+                    f"{path.name}: application_read_only requires session_scope(read_only=True)"
+                )
+            if "build_engine" in source or "get_application_engine(" in source:
+                errors.append(
+                    f"{path.name}: application_read_only must not construct/access an engine"
+                )
         spec_path = REPO_ROOT / str(metadata["spec"])
         if not spec_path.is_file():
             errors.append(f"{path.name}: spec does not exist: {metadata['spec']}")

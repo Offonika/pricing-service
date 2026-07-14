@@ -79,7 +79,7 @@ documents:
     title: Pricing Service Architecture Hardening
     doc_type: spec
     domain: architecture
-    status: accepted
+    status: implemented
     owner: engineering
     source_of_truth: true
     related_code:
@@ -95,6 +95,24 @@ documents:
       - tests/test_product_compatibility.py
       - tests/test_weekly_kpi_reports_api.py
     keywords: [architecture, modular-monolith, onec, database, contracts, cron, hardening, dependencies, boundaries, оздоровление]
+  - path: docs/specs/pricing-service-db-cli-cron-hardening.md
+    title: Pricing Service DB, CLI And Cron Hardening
+    doc_type: spec
+    domain: architecture
+    status: accepted
+    owner: engineering
+    source_of_truth: true
+    related_code:
+      - app/infrastructure/db/
+      - tasks/
+      - infra/cron/
+      - scripts/validate_cli_registry.py
+      - docs/registry/cli-jobs.json
+    related_tests:
+      - tests/test_architecture_boundaries.py
+      - tests/test_cli_registry.py
+      - tests/test_database_infrastructure.py
+    keywords: [architecture, database, cli, cron, unit-of-work, read-only]
   - path: docs/registry/cli-jobs.json
     title: Pricing CLI And Backfill Registry
     doc_type: registry

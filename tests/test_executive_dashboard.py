@@ -1150,6 +1150,8 @@ def test_sales_period_response_calculates_forecast_comparison_and_filters(
     assert diagnostics["margin_gap_pp"].value == Decimal("1.6700")
     assert diagnostics["stores_below_plan_count"].value == 0
     assert diagnostics["managers_below_target_margin_count"].value == 0
+    assert diagnostics["stores_below_plan_count"].meta["problem"] == []
+    assert diagnostics["managers_below_target_margin_count"].meta["problem"] == []
     store_meta = {item.key: item.meta for item in result.by_store}
     assert store_meta["store-1"]["approved_revenue"] == Decimal("3000.00")
     assert store_meta["store-2"]["plan_attainment_pct"] == Decimal("1")
@@ -1217,6 +1219,49 @@ def test_sales_period_manager_uses_weighted_store_margin_without_revenue_plan(
     diagnostics = {item.key: item for item in result.diagnostic_kpis}
     assert diagnostics["stores_below_plan_count"].source_status == "not_applicable"
     assert diagnostics["managers_below_target_margin_count"].value == 1
+    assert diagnostics["managers_below_target_margin_count"].meta["problem"] == [
+        {"key": "mgr-1", "label": "Менеджер 1"}
+    ]
+
+
+def test_sales_period_diagnostics_include_exact_problem_entities(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path / "missing.json")
+    _write_sales_plan_snapshot(
+        Path(settings.executive_dashboard_sales_plan_snapshot_path),
+        stores=[
+            {
+                "scope_key": "store-1",
+                "scope_name": "Горбушкин Двор",
+                "approved_revenue": "2000.00",
+                "approved_margin_pct": "50.00",
+                "approved_gross_profit": "1000.00",
+            }
+        ],
+    )
+    _override_settings(monkeypatch, settings)
+    db_session.add(_sales_kpi(date(2026, 6, 30)))
+    db_session.commit()
+
+    result = build_executive_sales_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 30),
+        today=date(2026, 7, 1),
+    )
+
+    diagnostics = {item.key: item for item in result.diagnostic_kpis}
+    assert diagnostics["stores_below_plan_count"].value == 1
+    assert diagnostics["stores_below_plan_count"].meta["problem"] == [
+        {"key": "store-1", "label": "Горбушкин Двор"}
+    ]
+    assert diagnostics["managers_below_target_margin_count"].value == 1
+    assert diagnostics["managers_below_target_margin_count"].meta["problem"] == [
+        {"key": "mgr-1", "label": "Менеджер 1"}
+    ]
 
 
 def test_sales_period_requires_complete_store_plan_coverage(
@@ -1396,6 +1441,27 @@ def test_sales_period_does_not_recalculate_forecast_for_closed_month(
 
     assert result.forecast_status == "not_applicable"
     assert result.totals["forecast_revenue_period_end"] is None
+
+
+def test_sales_period_marks_fully_collected_current_period_complete(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _override_settings(monkeypatch, _settings(tmp_path / "missing.json"))
+    db_session.add(_sales_kpi(date(2026, 6, 30)))
+    db_session.commit()
+
+    result = build_executive_sales_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 30),
+        today=date(2026, 6, 30),
+    )
+
+    assert result.forecast_status == "complete"
+    assert result.forecast_note == "Период полностью закрыт фактическими данными."
+    assert result.totals["forecast_revenue_period_end"] == Decimal("1000.00")
 
 
 def test_debtors_block_uses_buyer_cases_not_other_receivables(

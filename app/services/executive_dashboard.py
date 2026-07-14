@@ -1856,6 +1856,7 @@ def _empty_sales_diagnostics(status: str, note: str | None) -> list[ExecutiveSal
             unit="COUNT",
             source_status=status,
             note=note,
+            meta={"problem": []},
         ),
         _sales_diagnostic(
             "managers_below_target_margin_count",
@@ -1863,6 +1864,7 @@ def _empty_sales_diagnostics(status: str, note: str | None) -> list[ExecutiveSal
             unit="COUNT",
             source_status=status,
             note=note,
+            meta={"problem": []},
         ),
     ]
 
@@ -1911,7 +1913,7 @@ def _sales_forecast_from_history_rows(
     as_of: date,
 ) -> tuple[dict[date, Decimal] | None, str, str | None]:
     if as_of >= date_to:
-        return {}, "complete", "Месяц закрыт фактическими данными."
+        return {}, "complete", "Период полностью закрыт фактическими данными."
     if not history_rows:
         return None, "insufficient_history", "Для прогноза нужна история продаж за четыре недели."
     history_dates = {row.sales_date for row in history_rows}
@@ -2294,6 +2296,7 @@ def build_executive_sales_period_response(
     store_metric_note = plan_note
     stores_below_plan: int | None = None
     stores_evaluated = 0
+    store_problems: list[dict[str, str]] = []
     if manager_ref:
         store_metric_status = "not_applicable"
         store_metric_note = "План выручки не распределён по менеджерам."
@@ -2322,12 +2325,17 @@ def build_executive_sales_period_response(
                 )
             else:
                 stores_evaluated = len(selected_store_keys)
-                stores_below_plan = sum(
-                    1
+                store_problems = [
+                    {
+                        "key": key,
+                        "label": str((store_plans.get(key) or {}).get("scope_name") or "").strip()
+                        or key,
+                    }
                     for key in selected_store_keys
                     if store_projections[key]
                     < (_sales_plan_revenue(store_plans.get(key)) or Decimal("0"))
-                )
+                ]
+                stores_below_plan = len(store_problems)
 
     managers_by_key: dict[str, list[OneCSalesDailyKpi]] = defaultdict(list)
     for row in rows:
@@ -2336,13 +2344,13 @@ def build_executive_sales_period_response(
     manager_metric_status = plan_status
     manager_metric_note = plan_note
     managers_below_target: int | None = None
+    manager_problems: list[dict[str, str]] = []
     if plan_status in {"ready", "partial"} and store_plans:
         if not managers_by_key or "" in managers_by_key:
             manager_metric_status = "partial"
             manager_metric_note = "Не у всех продаж заполнен менеджер."
         else:
             manager_failures: list[str] = []
-            below_count = 0
             for key, manager_rows in managers_by_key.items():
                 manager_target, _, manager_status, manager_note = _sales_target_for_rows(
                     manager_rows,
@@ -2359,14 +2367,20 @@ def build_executive_sales_period_response(
                     (manager_actual - manager_target) * Decimal("100"),
                 )
                 if manager_actual < manager_target:
-                    below_count += 1
+                    manager_problems.append(
+                        {
+                            "key": key,
+                            "label": str(manager_rows[0].manager_name or "").strip() or key,
+                        }
+                    )
             if manager_failures:
                 manager_metric_status = "partial"
                 manager_metric_note = "Не все менеджеры сопоставлены с целевой маржой."
+                manager_problems = []
             else:
                 manager_metric_status = "ready"
                 manager_metric_note = None
-                managers_below_target = below_count
+                managers_below_target = len(manager_problems)
 
     for item in by_store:
         plan_row = store_plans.get(item.key)
@@ -2438,6 +2452,7 @@ def build_executive_sales_period_response(
             meta={
                 "evaluated_count": stores_evaluated,
                 "comparison_basis": comparison_basis,
+                "problem": store_problems,
             },
         ),
         _sales_diagnostic(
@@ -2446,7 +2461,7 @@ def build_executive_sales_period_response(
             unit="COUNT",
             source_status=manager_metric_status,
             note=manager_metric_note,
-            meta={"evaluated_count": len(manager_targets)},
+            meta={"evaluated_count": len(manager_targets), "problem": manager_problems},
         ),
     ]
     base_response["plan_status"] = plan_status

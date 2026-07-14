@@ -251,7 +251,7 @@ function statusLabel(status: string) {
     source_error: "ошибка",
     insufficient_history: "недостаточно истории",
     not_applicable: "не рассчитывается",
-    complete: "месяц закрыт",
+    complete: "период закрыт",
   };
   return labels[status] || status;
 }
@@ -2677,37 +2677,33 @@ function diagnosticCountLabel(value: number, one: string, few: string, many: str
   return `${value} ${word}`;
 }
 
-function salesBreakdownPlanStatus(row: ExecutiveSalesBreakdownRow) {
-  const status = row.meta?.plan_status;
-  return typeof status === "string" ? status : null;
-}
-
-function salesStoreNeedsAttention(row: ExecutiveSalesBreakdownRow) {
-  const status = salesBreakdownPlanStatus(row);
-  const attainment = numericValue(
-    row.meta?.plan_attainment_pct as string | number | null | undefined
-  );
-  const approvedRevenueMissing =
-    Object.prototype.hasOwnProperty.call(row.meta, "approved_revenue") &&
-    numericValue(row.meta?.approved_revenue as string | number | null | undefined) === null;
-  return (
-    Boolean(status && !["ready", "complete"].includes(status)) ||
-    approvedRevenueMissing ||
-    (attainment !== null && attainment < 1)
-  );
-}
-
-function salesManagerNeedsAttention(row: ExecutiveSalesBreakdownRow) {
-  const status = salesBreakdownPlanStatus(row);
-  const marginGap = numericValue(row.meta?.margin_gap_pp as string | number | null | undefined);
-  const approvedMarginMissing =
-    Object.prototype.hasOwnProperty.call(row.meta, "approved_margin_pct") &&
-    numericValue(row.meta?.approved_margin_pct as string | number | null | undefined) === null;
-  return (
-    Boolean(status && !["ready", "complete"].includes(status)) ||
-    approvedMarginMissing ||
-    (marginGap !== null && marginGap < 0)
-  );
+function salesProblemRows(
+  metric: ExecutiveSalesDiagnosticKpi | undefined,
+  rows: ExecutiveSalesBreakdownRow[]
+): ExecutiveSalesBreakdownRow[] {
+  const raw = metric?.meta?.problem;
+  if (!Array.isArray(raw)) return [];
+  const rowByKey = new Map(rows.map((row) => [row.key, row]));
+  return raw.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const entry = item as Record<string, unknown>;
+    const key = typeof entry.key === "string" ? entry.key : "";
+    if (!key) return [];
+    const existing = rowByKey.get(key);
+    if (existing) return [existing];
+    const label = (typeof entry.label === "string" && entry.label) || key;
+    return [
+      {
+        key,
+        label,
+        revenue: "0",
+        gross_profit: "0",
+        sales_count: "0",
+        gross_margin_pct: null,
+        meta: {},
+      },
+    ];
+  });
 }
 
 export function SalesPeriodPanel({
@@ -2738,11 +2734,21 @@ export function SalesPeriodPanel({
   const diagnosticMetrics = data?.diagnostic_kpis || [];
   const diagnosticMetricsByKey = new Map(diagnosticMetrics.map((metric) => [metric.key, metric]));
   const problemStores = useMemo(
-    () => (data?.by_store || []).filter(salesStoreNeedsAttention),
+    () =>
+      salesProblemRows(
+        (data?.diagnostic_kpis || []).find((metric) => metric.key === "stores_below_plan_count"),
+        data?.by_store || []
+      ),
     [data]
   );
   const problemManagers = useMemo(
-    () => (data?.by_manager || []).filter(salesManagerNeedsAttention),
+    () =>
+      salesProblemRows(
+        (data?.diagnostic_kpis || []).find(
+          (metric) => metric.key === "managers_below_target_margin_count"
+        ),
+        data?.by_manager || []
+      ),
     [data]
   );
   const attentionCount = diagnosticMetrics.filter((metric) =>
@@ -2770,14 +2776,8 @@ export function SalesPeriodPanel({
       : data?.plan_status;
   const storeDiagnostic = diagnosticMetricsByKey.get("stores_below_plan_count");
   const managerDiagnostic = diagnosticMetricsByKey.get("managers_below_target_margin_count");
-  const storeDiagnosticValue = numericValue(storeDiagnostic?.value);
-  const managerDiagnosticValue = numericValue(managerDiagnostic?.value);
-  const storeListIsPartial =
-    storeDiagnostic?.source_status === "partial" ||
-    (storeDiagnosticValue !== null && storeDiagnosticValue !== problemStores.length);
-  const managerListIsPartial =
-    managerDiagnostic?.source_status === "partial" ||
-    (managerDiagnosticValue !== null && managerDiagnosticValue !== problemManagers.length);
+  const storeListIsPartial = storeDiagnostic?.source_status === "partial";
+  const managerListIsPartial = managerDiagnostic?.source_status === "partial";
 
   const showProblems = (focus: Exclude<SalesProblemFocus, null>) => {
     setProblemFocus(focus);
@@ -2844,7 +2844,7 @@ export function SalesPeriodPanel({
                 <MetricCard
                   hint={data.forecast_status === "ready" ? "на конец периода" : statusLabel(data.forecast_status)}
                   label="Прогноз выручки"
-                  tone={data.forecast_status === "ready" ? "neutral" : "warning"}
+                  tone={["ready", "complete"].includes(data.forecast_status) ? "neutral" : "warning"}
                   tooltip="Медиана выручки по тому же дню недели за 4 предыдущие недели; для периода, уже полностью в прошлом, не строится."
                   value={forecastRevenueNum === null ? "нет данных" : formatMoney(forecastRevenueNum)}
                 />

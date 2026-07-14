@@ -207,8 +207,8 @@ function salesPeriodResponse(): ExecutiveSalesPeriodResponse {
       { key: "gross_profit_per_unit", value: "80.00", unit: "RUB_PER_UNIT", source_status: "ready", note: null, meta: {} },
       { key: "cost_per_unit", value: "120.00", unit: "RUB_PER_UNIT", source_status: "ready", note: null, meta: {} },
       { key: "margin_gap_pp", value: "5.00", unit: "PERCENTAGE_POINT", source_status: "ready", note: null, meta: {} },
-      { key: "stores_below_plan_count", value: 0, unit: "COUNT", source_status: "ready", note: null, meta: { evaluated_count: 1 } },
-      { key: "managers_below_target_margin_count", value: 0, unit: "COUNT", source_status: "ready", note: null, meta: { evaluated_count: 1 } },
+      { key: "stores_below_plan_count", value: 0, unit: "COUNT", source_status: "ready", note: null, meta: { evaluated_count: 1, problem: [] } },
+      { key: "managers_below_target_margin_count", value: 0, unit: "COUNT", source_status: "ready", note: null, meta: { evaluated_count: 1, problem: [] } },
     ],
     totals: {
       revenue: "1000.00",
@@ -430,10 +430,28 @@ describe("executive sales period", () => {
       plan_status: "partial",
       diagnostic_kpis: (response.diagnostic_kpis || []).map((metric) => {
         if (metric.key === "stores_below_plan_count") {
-          return { ...metric, source_status: "partial", value: 1 };
+          return {
+            ...metric,
+            source_status: "partial",
+            value: 2,
+            meta: {
+              ...metric.meta,
+              problem: [
+                { key: "store-low", label: "Магазин ниже плана" },
+                { key: "store-missing", label: "Магазин без плана" },
+              ],
+            },
+          };
         }
         if (metric.key === "managers_below_target_margin_count") {
-          return { ...metric, value: 1 };
+          return {
+            ...metric,
+            value: 1,
+            meta: {
+              ...metric.meta,
+              problem: [{ key: "manager-low", label: "Менеджер ниже маржи" }],
+            },
+          };
         }
         return metric;
       }),
@@ -500,6 +518,18 @@ describe("executive sales period", () => {
         (cell) => cell.textContent === "—"
       )
     ).toHaveLength(4);
+  });
+
+  it("shows a fully collected forecast period as complete", async () => {
+    const response = salesPeriodResponse();
+    await renderSalesTab({
+      ...response,
+      forecast_status: "complete",
+      forecast_note: "Период полностью закрыт фактическими данными.",
+    });
+
+    expect(screen.getByText("период закрыт")).toBeVisible();
+    expect(screen.queryByText("месяц закрыт")).not.toBeInTheDocument();
   });
 
   it("renders an info tooltip on the sales KPI cards", async () => {

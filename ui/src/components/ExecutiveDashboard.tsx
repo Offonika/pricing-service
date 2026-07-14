@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   fetchExecutiveCashflowPeriod,
   closeExecutiveManagementBalance,
@@ -2234,10 +2234,16 @@ function salesDelta(
 }
 
 export function SalesBreakdown({
+  emptyMessage = "Нет продаж в выбранном периоде.",
+  note,
+  onReset,
   title,
   rows,
   onSelect,
 }: {
+  emptyMessage?: string;
+  note?: string;
+  onReset?: () => void;
   title: string;
   rows: ExecutiveSalesBreakdownRow[];
   onSelect: (key: string) => void;
@@ -2245,10 +2251,18 @@ export function SalesBreakdown({
   const visibleRows = rows.slice(0, 8);
   const maxRevenue = Math.max(1, ...visibleRows.map((row) => Math.abs(numericValue(row.revenue) || 0)));
   return (
-    <div>
-      <h3>{title}</h3>
+    <section aria-label={title} className="executive-sales-breakdown-section">
+      <header className="executive-sales-breakdown-section__header">
+        <h3>{title}</h3>
+        {onReset && (
+          <button className="executive-sales-breakdown-section__reset" onClick={onReset} type="button">
+            Показать всех
+          </button>
+        )}
+      </header>
+      {note && <div className="executive-sales-breakdown-section__note" role="status">{note}</div>}
       {visibleRows.length === 0 ? (
-        <div className="executive-cashflow-period__empty">Нет продаж в выбранном периоде.</div>
+        <div className="executive-cashflow-period__empty">{emptyMessage}</div>
       ) : (
         visibleRows.map((row) => {
           const revenue = Math.abs(numericValue(row.revenue) || 0);
@@ -2275,7 +2289,7 @@ export function SalesBreakdown({
           );
         })
       )}
-    </div>
+    </section>
   );
 }
 
@@ -2562,22 +2576,29 @@ const SALES_DIAGNOSTIC_LABELS: Record<string, string> = {
   managers_below_target_margin_count: "Менеджеры ниже целевой маржи",
 };
 
-const SALES_PLAN_DIAGNOSTIC_KEYS = new Set([
-  "lost_gross_profit_margin_gap",
-  "margin_gap_pp",
-  "stores_below_plan_count",
-  "managers_below_target_margin_count",
-]);
+const SALES_DIAGNOSTIC_GROUPS = [
+  {
+    key: "economics",
+    label: "Экономика продаж",
+    metricKeys: [
+      "lost_gross_profit_margin_gap",
+      "gross_profit_per_unit",
+      "cost_per_unit",
+      "margin_gap_pp",
+    ],
+  },
+  {
+    key: "data_quality",
+    label: "Качество данных и плана",
+    metricKeys: ["stores_below_plan_count", "managers_below_target_margin_count"],
+  },
+] as const;
+
+type SalesProblemFocus = "stores" | "managers" | null;
 
 function salesDiagnosticValue(metric: ExecutiveSalesDiagnosticKpi) {
   const value = numericValue(metric.value);
-  if (value === null) {
-    if (metric.source_status === "not_applicable") return "Только режим «Месяц»";
-    if (metric.source_status === "source_missing" && SALES_PLAN_DIAGNOSTIC_KEYS.has(metric.key)) {
-      return "План не утверждён";
-    }
-    return statusLabel(metric.source_status);
-  }
+  if (value === null) return "—";
   if (metric.unit === "RUB" || metric.unit === "RUB_PER_UNIT") return formatMoney(value);
   if (metric.unit === "PERCENTAGE_POINT") {
     return `${value > 0 ? "+" : ""}${value.toFixed(1)} п.п.`;
@@ -2587,6 +2608,7 @@ function salesDiagnosticValue(metric: ExecutiveSalesDiagnosticKpi) {
 
 function salesDiagnosticTone(metric: ExecutiveSalesDiagnosticKpi): MetricTone {
   if (metric.source_status === "source_error") return "danger";
+  if (metric.source_status === "not_applicable") return "neutral";
   if (!["ready", "complete"].includes(metric.source_status)) return "warning";
   const value = numericValue(metric.value);
   if (value === null) return "neutral";
@@ -2620,10 +2642,72 @@ function salesDiagnosticDetail(metric: ExecutiveSalesDiagnosticKpi) {
   if (note.startsWith("Не все продажи сопоставлены с frozen-планом магазинов")) {
     return "Не все продажи сопоставлены с утверждённым планом магазинов.";
   }
+  if (note.startsWith("Не все магазины факта присутствуют во frozen-плане")) {
+    return "Не все магазины из фактических продаж найдены в утверждённом плане.";
+  }
   if (note.startsWith("У магазинов отсутствует утверждённый план выручки")) {
     return "Не у всех магазинов есть утверждённый план выручки.";
   }
-  return note;
+  if (/\b0x[0-9a-f]{16,}\b/i.test(note)) {
+    const summary = note.split(":", 1)[0].trim();
+    return `${summary
+      .replace("frozen-планом", "утверждённым планом")
+      .replace("frozen-плане", "утверждённом плане")}.`;
+  }
+  return note
+    .replaceAll("frozen-планом", "утверждённым планом")
+    .replaceAll("frozen-плане", "утверждённом плане")
+    .replaceAll("frozen-планов", "утверждённых планов")
+    .replaceAll("frozen-план", "утверждённый план")
+    .replaceAll("snapshot", "источник данных");
+}
+
+function salesPlanSummary(status?: string) {
+  if (status === "ready" || status === "complete") return "План сопоставлен";
+  if (status === "partial") return "План сопоставлен частично";
+  if (status === "not_applicable") return "План не применяется";
+  if (status === "source_error") return "Ошибка плана";
+  return "План не утверждён";
+}
+
+function diagnosticCountLabel(value: number, one: string, few: string, many: string) {
+  const mod10 = value % 10;
+  const mod100 = value % 100;
+  const word = mod10 === 1 && mod100 !== 11 ? one : mod10 >= 2 && mod10 <= 4 && !(mod100 >= 12 && mod100 <= 14) ? few : many;
+  return `${value} ${word}`;
+}
+
+function salesBreakdownPlanStatus(row: ExecutiveSalesBreakdownRow) {
+  const status = row.meta?.plan_status;
+  return typeof status === "string" ? status : null;
+}
+
+function salesStoreNeedsAttention(row: ExecutiveSalesBreakdownRow) {
+  const status = salesBreakdownPlanStatus(row);
+  const attainment = numericValue(
+    row.meta?.plan_attainment_pct as string | number | null | undefined
+  );
+  const approvedRevenueMissing =
+    Object.prototype.hasOwnProperty.call(row.meta, "approved_revenue") &&
+    numericValue(row.meta?.approved_revenue as string | number | null | undefined) === null;
+  return (
+    Boolean(status && !["ready", "complete"].includes(status)) ||
+    approvedRevenueMissing ||
+    (attainment !== null && attainment < 1)
+  );
+}
+
+function salesManagerNeedsAttention(row: ExecutiveSalesBreakdownRow) {
+  const status = salesBreakdownPlanStatus(row);
+  const marginGap = numericValue(row.meta?.margin_gap_pp as string | number | null | undefined);
+  const approvedMarginMissing =
+    Object.prototype.hasOwnProperty.call(row.meta, "approved_margin_pct") &&
+    numericValue(row.meta?.approved_margin_pct as string | number | null | undefined) === null;
+  return (
+    Boolean(status && !["ready", "complete"].includes(status)) ||
+    approvedMarginMissing ||
+    (marginGap !== null && marginGap < 0)
+  );
 }
 
 export function SalesPeriodPanel({
@@ -2643,10 +2727,62 @@ export function SalesPeriodPanel({
 }) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [hoveredIndexForData, setHoveredIndexForData] = useState(data);
+  const [problemFocus, setProblemFocus] = useState<SalesProblemFocus>(null);
+  const breakdownsRef = useRef<HTMLDivElement>(null);
   if (data !== hoveredIndexForData) {
     setHoveredIndexForData(data);
     setHoveredIndex(null);
+    setProblemFocus(null);
   }
+
+  const diagnosticMetrics = data?.diagnostic_kpis || [];
+  const diagnosticMetricsByKey = new Map(diagnosticMetrics.map((metric) => [metric.key, metric]));
+  const problemStores = useMemo(
+    () => (data?.by_store || []).filter(salesStoreNeedsAttention),
+    [data]
+  );
+  const problemManagers = useMemo(
+    () => (data?.by_manager || []).filter(salesManagerNeedsAttention),
+    [data]
+  );
+  const attentionCount = diagnosticMetrics.filter((metric) =>
+    ["warning", "danger"].includes(salesDiagnosticTone(metric))
+  ).length;
+  const calculatedCount = diagnosticMetrics.filter(
+    (metric) =>
+      numericValue(metric.value) !== null &&
+      ["ready", "complete"].includes(metric.source_status)
+  ).length;
+  const planDiagnosticStatuses = diagnosticMetrics
+    .filter((metric) =>
+      [
+        "lost_gross_profit_margin_gap",
+        "margin_gap_pp",
+        "stores_below_plan_count",
+        "managers_below_target_margin_count",
+      ].includes(metric.key)
+    )
+    .map((metric) => metric.source_status);
+  const effectivePlanStatus = planDiagnosticStatuses.includes("source_error")
+    ? "source_error"
+    : planDiagnosticStatuses.includes("partial")
+      ? "partial"
+      : data?.plan_status;
+  const storeDiagnostic = diagnosticMetricsByKey.get("stores_below_plan_count");
+  const managerDiagnostic = diagnosticMetricsByKey.get("managers_below_target_margin_count");
+  const storeDiagnosticValue = numericValue(storeDiagnostic?.value);
+  const managerDiagnosticValue = numericValue(managerDiagnostic?.value);
+  const storeListIsPartial =
+    storeDiagnostic?.source_status === "partial" ||
+    (storeDiagnosticValue !== null && storeDiagnosticValue !== problemStores.length);
+  const managerListIsPartial =
+    managerDiagnostic?.source_status === "partial" ||
+    (managerDiagnosticValue !== null && managerDiagnosticValue !== problemManagers.length);
+
+  const showProblems = (focus: Exclude<SalesProblemFocus, null>) => {
+    setProblemFocus(focus);
+    breakdownsRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
+  };
 
   const actualRevenue = salesValue(data, "revenue");
   const grossProfit = salesValue(data, "gross_profit");
@@ -2740,7 +2876,7 @@ export function SalesPeriodPanel({
                   hint={approvedPlanRevenue === null ? data.plan_note || data.plan?.note : `план ${formatMoney(approvedPlanRevenue)}`}
                   label="Выполнение плана"
                   tone={planAttainmentTone}
-                  tooltip="Для открытого месяца прогноз выручки сравнивается с frozen-планом; для закрытого месяца используется факт."
+                  tooltip="Для открытого месяца прогноз выручки сравнивается с утверждённым планом; для закрытого месяца используется факт."
                   value={planAttainmentValue}
                 />
               </div>
@@ -2753,7 +2889,16 @@ export function SalesPeriodPanel({
             )}
             diagnosticKpis={(
               <section aria-label="Диагностические KPI продаж" className="executive-sales-diagnostics">
-                <h3>Диагностика продаж</h3>
+                <div className="executive-sales-diagnostics__header">
+                  <h3>Диагностика продаж</h3>
+                  <div aria-label="Сводка диагностики продаж" className="executive-sales-diagnostics__summary">
+                    <span className={attentionCount > 0 ? "executive-sales-diagnostics__summary-item--warning" : undefined}>
+                      {diagnosticCountLabel(attentionCount, "требует внимания", "требуют внимания", "требуют внимания")}
+                    </span>
+                    <span>{diagnosticCountLabel(calculatedCount, "рассчитан", "рассчитаны", "рассчитано")}</span>
+                    <span>{salesPlanSummary(effectivePlanStatus)}</span>
+                  </div>
+                </div>
                 <div className="executive-sales-diagnostics__table-wrap">
                   <table className="executive-sales-diagnostics__table">
                     <caption className="visually-hidden">Показатели диагностики продаж</caption>
@@ -2765,31 +2910,75 @@ export function SalesPeriodPanel({
                         <th scope="col">Что это значит</th>
                       </tr>
                     </thead>
-                    <tbody>
-                      {(data.diagnostic_kpis || []).map((metric) => {
-                        const diagnosticStatus = salesDiagnosticStatus(metric);
-                        return (
-                          <tr key={metric.key}>
-                            <th scope="row">{SALES_DIAGNOSTIC_LABELS[metric.key] || metric.key}</th>
-                            <td className={`executive-sales-diagnostics__value executive-sales-diagnostics__value--${salesDiagnosticTone(metric)}`}>
-                              {salesDiagnosticValue(metric)}
-                            </td>
-                            <td>
-                              <StatusBadge tone={diagnosticStatus.tone}>{diagnosticStatus.label}</StatusBadge>
-                            </td>
-                            <td className="executive-sales-diagnostics__detail">{salesDiagnosticDetail(metric)}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
+                    {SALES_DIAGNOSTIC_GROUPS.map((group) => (
+                      <tbody aria-label={group.label} key={group.key}>
+                        <tr className="executive-sales-diagnostics__group-row">
+                          <th colSpan={4} scope="rowgroup">{group.label}</th>
+                        </tr>
+                        {group.metricKeys.map((metricKey) => diagnosticMetricsByKey.get(metricKey)).filter(Boolean).map((metric) => {
+                          const diagnosticMetric = metric as ExecutiveSalesDiagnosticKpi;
+                          const diagnosticStatus = salesDiagnosticStatus(diagnosticMetric);
+                          const diagnosticTone = salesDiagnosticTone(diagnosticMetric);
+                          const focusTarget: SalesProblemFocus =
+                            diagnosticMetric.key === "managers_below_target_margin_count"
+                              ? "managers"
+                              : ["lost_gross_profit_margin_gap", "margin_gap_pp", "stores_below_plan_count"].includes(diagnosticMetric.key)
+                                ? "stores"
+                                : null;
+                          const focusCount = focusTarget === "stores" ? problemStores.length : focusTarget === "managers" ? problemManagers.length : 0;
+                          const showAction = focusTarget && focusCount > 0 && ["warning", "danger"].includes(diagnosticTone);
+                          return (
+                            <tr key={diagnosticMetric.key}>
+                              <th scope="row">{SALES_DIAGNOSTIC_LABELS[diagnosticMetric.key] || diagnosticMetric.key}</th>
+                              <td className={`executive-sales-diagnostics__value executive-sales-diagnostics__value--${diagnosticTone}`}>
+                                {salesDiagnosticValue(diagnosticMetric)}
+                              </td>
+                              <td>
+                                {["warning", "danger"].includes(diagnosticStatus.tone) ? (
+                                  <StatusBadge tone={diagnosticStatus.tone}>{diagnosticStatus.label}</StatusBadge>
+                                ) : (
+                                  <span className="executive-sales-diagnostics__calm-status">{diagnosticStatus.label}</span>
+                                )}
+                              </td>
+                              <td className="executive-sales-diagnostics__detail">
+                                <span>{salesDiagnosticDetail(diagnosticMetric)}</span>
+                                {showAction && (
+                                  <button
+                                    className="executive-sales-diagnostics__action"
+                                    onClick={() => focusTarget && showProblems(focusTarget)}
+                                    type="button"
+                                  >
+                                    {focusTarget === "stores" ? "Показать проблемные магазины" : "Показать менеджеров ниже маржи"}
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    ))}
                   </table>
                 </div>
               </section>
             )}
             breakdowns={(
-              <div className="executive-cashflow-period__tables executive-sales-period__tables">
-                <SalesBreakdown title="По магазинам" rows={data.by_store} onSelect={onSelectStore} />
-                <SalesBreakdown title="По менеджерам" rows={data.by_manager} onSelect={onSelectManager} />
+              <div className="executive-cashflow-period__tables executive-sales-period__tables" ref={breakdownsRef}>
+                <SalesBreakdown
+                  emptyMessage="Проблемных магазинов не найдено."
+                  note={problemFocus === "stores" && storeListIsPartial ? "Данные сопоставлены частично" : undefined}
+                  onReset={problemFocus === "stores" ? () => setProblemFocus(null) : undefined}
+                  onSelect={onSelectStore}
+                  rows={problemFocus === "stores" ? problemStores : data.by_store}
+                  title={problemFocus === "stores" ? "Проблемные магазины" : "По магазинам"}
+                />
+                <SalesBreakdown
+                  emptyMessage="Проблемных менеджеров не найдено."
+                  note={problemFocus === "managers" && managerListIsPartial ? "Данные сопоставлены частично" : undefined}
+                  onReset={problemFocus === "managers" ? () => setProblemFocus(null) : undefined}
+                  onSelect={onSelectManager}
+                  rows={problemFocus === "managers" ? problemManagers : data.by_manager}
+                  title={problemFocus === "managers" ? "Проблемные менеджеры" : "По менеджерам"}
+                />
               </div>
             )}
             actions={actions}

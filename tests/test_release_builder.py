@@ -4,11 +4,12 @@ import json
 import os
 import stat
 import subprocess
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER = REPO_ROOT / "scripts" / "build_pricing_service_release.sh"
-PYTHON_BIN = REPO_ROOT.parent / "pricing-service" / ".venv" / "bin" / "python"
+PYTHON_BIN = Path(sys.executable)
 
 
 def _git(source: Path, *args: str) -> None:

@@ -48,6 +48,9 @@ Recommended Agent: pricing-backend
   Актуализация `docs/architecture.md`, потоки данных, очередь задач.
 - [x] S1.6 — Добавить первые интеграционные тесты  
   Тесты для `/health` и подключения к БД.
+- [ ] S1.7 — Завершить централизацию DB/CLI/cron (Release B)
+  Spec: `docs/specs/pricing-service-db-cli-cron-hardening.md`. Первый slice
+  read-only nightly matching переведён на central session scope; далее — write jobs/UoW.
 
 ## S2. Импорт данных и ядро ценообразования
 Фокус: импорт 1С и конкурентов, матчинги, базовые стратегии.

@@ -5,6 +5,7 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.infrastructure.db.engines import build_application_engine
+from app.infrastructure.db.session import session_scope
 from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
 
 
@@ -45,3 +46,31 @@ def test_application_engine_enables_pre_ping_without_forcing_pool_overrides(tmp_
         assert engine.pool._pre_ping is True
     finally:
         engine.dispose()
+
+
+def test_read_only_session_scope_rolls_back_accidental_write(monkeypatch) -> None:
+    engine, factory = _factory()
+    monkeypatch.setattr(
+        "app.infrastructure.db.session.get_application_session_factory",
+        lambda: factory,
+    )
+
+    with session_scope(read_only=True) as session:
+        session.execute(text("INSERT INTO event (id, value) VALUES (1, 'must rollback')"))
+
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM event")).scalar_one() == 0
+
+
+def test_write_session_scope_commits_complete_command(monkeypatch) -> None:
+    engine, factory = _factory()
+    monkeypatch.setattr(
+        "app.infrastructure.db.session.get_application_session_factory",
+        lambda: factory,
+    )
+
+    with session_scope() as session:
+        session.execute(text("INSERT INTO event (id, value) VALUES (1, 'committed')"))
+
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT value FROM event")).scalar_one() == "committed"

@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ExecutiveDashboardAction,
@@ -380,7 +380,18 @@ describe("executive sales period", () => {
 
     expect(screen.getByLabelText("Основные KPI продаж").children).toHaveLength(7);
     const diagnosticTable = screen.getByRole("table", { name: "Показатели диагностики продаж" });
-    expect(diagnosticTable.querySelectorAll("tbody tr")).toHaveLength(6);
+    expect(diagnosticTable.querySelectorAll("tbody tr:not(.executive-sales-diagnostics__group-row)")).toHaveLength(6);
+    expect(
+      Array.from(diagnosticTable.querySelectorAll(".executive-sales-diagnostics__group-row")).map((row) => row.textContent)
+    ).toEqual(["Экономика продаж", "Качество данных и плана"]);
+    expect(
+      Array.from(diagnosticTable.querySelectorAll(".executive-sales-diagnostics__group-row th")).map(
+        (header) => header.getAttribute("scope")
+      )
+    ).toEqual(["rowgroup", "rowgroup"]);
+    expect(screen.getByLabelText("Сводка диагностики продаж")).toHaveTextContent(
+      "0 требуют внимания6 рассчитаноПлан сопоставлен"
+    );
     expect(screen.getByText("Выручка на единицу")).toBeVisible();
     expect(screen.getByText("Выполнение плана")).toBeVisible();
     expect(screen.queryByText("Средний чек")).not.toBeInTheDocument();
@@ -407,6 +418,50 @@ describe("executive sales period", () => {
       screen.getByText("Не все магазины из фактических продаж найдены в утверждённом плане.")
     ).toBeVisible();
     expect(screen.queryByText(/0x[0-9a-f]{16,}/i)).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Сводка диагностики продаж")).toHaveTextContent(
+      "План сопоставлен частично"
+    );
+  });
+
+  it("opens filtered problem lists and restores the full breakdown", async () => {
+    const response = salesPeriodResponse();
+    await renderSalesTab({
+      ...response,
+      plan_status: "partial",
+      diagnostic_kpis: (response.diagnostic_kpis || []).map((metric) => {
+        if (metric.key === "stores_below_plan_count") {
+          return { ...metric, source_status: "partial", value: 1 };
+        }
+        if (metric.key === "managers_below_target_margin_count") {
+          return { ...metric, value: 1 };
+        }
+        return metric;
+      }),
+      by_store: [
+        { key: "store-low", label: "Магазин ниже плана", revenue: "800", gross_profit: "200", sales_count: "4", gross_margin_pct: "0.25", meta: { plan_status: "ready", plan_attainment_pct: "0.8" } },
+        { key: "store-ok", label: "Магазин в плане", revenue: "1200", gross_profit: "500", sales_count: "5", gross_margin_pct: "0.42", meta: { plan_status: "ready", plan_attainment_pct: "1.1" } },
+        { key: "store-missing", label: "Магазин без плана", revenue: "400", gross_profit: "100", sales_count: "2", gross_margin_pct: "0.25", meta: { plan_status: "ready", approved_revenue: null, plan_attainment_pct: null } },
+      ],
+      by_manager: [
+        { key: "manager-low", label: "Менеджер ниже маржи", revenue: "900", gross_profit: "180", sales_count: "4", gross_margin_pct: "0.2", meta: { plan_status: "ready", margin_gap_pp: "-3" } },
+        { key: "manager-ok", label: "Менеджер в норме", revenue: "1500", gross_profit: "600", sales_count: "6", gross_margin_pct: "0.4", meta: { plan_status: "ready", margin_gap_pp: "2" } },
+      ],
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "Показать проблемные магазины" }));
+    const problemStores = screen.getByRole("region", { name: "Проблемные магазины" });
+    expect(within(problemStores).getByRole("button", { name: /Магазин ниже плана/ })).toBeVisible();
+    expect(within(problemStores).getByRole("button", { name: /Магазин без плана/ })).toBeVisible();
+    expect(within(problemStores).queryByRole("button", { name: /Магазин в плане/ })).not.toBeInTheDocument();
+    expect(within(problemStores).getByText("Данные сопоставлены частично")).toBeVisible();
+
+    fireEvent.click(within(problemStores).getByRole("button", { name: "Показать всех" }));
+    expect(within(screen.getByRole("region", { name: "По магазинам" })).getByRole("button", { name: /Магазин в плане/ })).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Показать менеджеров ниже маржи" }));
+    const problemManagers = screen.getByRole("region", { name: "Проблемные менеджеры" });
+    expect(within(problemManagers).getByRole("button", { name: /Менеджер ниже маржи/ })).toBeVisible();
+    expect(within(problemManagers).queryByRole("button", { name: /Менеджер в норме/ })).not.toBeInTheDocument();
   });
 
   it("shows plan-only metrics as unavailable outside full-month mode", async () => {
@@ -434,7 +489,17 @@ describe("executive sales period", () => {
 
     render(<ExecutiveDashboard />);
 
-    expect((await screen.findAllByText("Только режим «Месяц»")).length).toBeGreaterThanOrEqual(5);
+    expect(await screen.findByText("Только режим «Месяц»")).toBeVisible();
+    expect(screen.getAllByText("Не применяется")).toHaveLength(4);
+    expect(screen.getByLabelText("Сводка диагностики продаж")).toHaveTextContent(
+      "0 требуют внимания"
+    );
+    const diagnosticTable = screen.getByRole("table", { name: "Показатели диагностики продаж" });
+    expect(
+      Array.from(diagnosticTable.querySelectorAll(".executive-sales-diagnostics__value")).filter(
+        (cell) => cell.textContent === "—"
+      )
+    ).toHaveLength(4);
   });
 
   it("renders an info tooltip on the sales KPI cards", async () => {
@@ -445,6 +510,11 @@ describe("executive sales period", () => {
     expect(screen.getByRole("tooltip")).toHaveTextContent("Сумма продаж 1С за выбранный период");
     fireEvent.mouseLeave(trigger);
     expect(screen.queryByRole("tooltip")).toBeNull();
+
+    const planTrigger = screen.getByRole("button", { name: "Пояснение: Выполнение плана" });
+    fireEvent.mouseEnter(planTrigger);
+    expect(screen.getByRole("tooltip")).toHaveTextContent("утверждённым планом");
+    expect(screen.getByRole("tooltip")).not.toHaveTextContent("frozen");
   });
 
   it("moves the date range/store/manager filters into the page header, replacing the redundant global date field", async () => {

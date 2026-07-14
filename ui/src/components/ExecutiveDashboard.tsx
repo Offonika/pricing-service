@@ -23,6 +23,7 @@ import {
   type ExecutiveProfitLossPeriodResponse,
   type ExecutiveProfitLossRatio,
   type ExecutiveSalesBreakdownRow,
+  type ExecutiveSalesDailyRow,
   type ExecutiveSalesDiagnosticKpi,
   type ExecutiveSalesMonthlyRow,
   type ExecutiveSalesPeriodResponse,
@@ -2235,14 +2236,12 @@ function salesDelta(
 
 export function SalesBreakdown({
   emptyMessage = "Нет продаж в выбранном периоде.",
-  note,
   onReset,
   title,
   rows,
   onSelect,
 }: {
   emptyMessage?: string;
-  note?: string;
   onReset?: () => void;
   title: string;
   rows: ExecutiveSalesBreakdownRow[];
@@ -2260,7 +2259,6 @@ export function SalesBreakdown({
           </button>
         )}
       </header>
-      {note && <div className="executive-sales-breakdown-section__note" role="status">{note}</div>}
       {visibleRows.length === 0 ? (
         <div className="executive-cashflow-period__empty">{emptyMessage}</div>
       ) : (
@@ -2504,6 +2502,41 @@ function SalesLineChart({
           />
         ))}
       </svg>
+    </div>
+  );
+}
+
+function SalesDailyChart({ daily }: { daily: ExecutiveSalesDailyRow[] }) {
+  const visibleDays = daily.slice(-31);
+  const values = visibleDays.map(
+    (row) => numericValue(row.actual_revenue) ?? numericValue(row.forecast_revenue) ?? 0
+  );
+  if (!values.some((value) => value !== 0)) return null;
+  const maxValue = Math.max(1, ...values.map((value) => Math.abs(value)));
+  return (
+    <div aria-label="Выручка по дням выбранного периода" className="executive-sales-daily">
+      <h3>По дням выбранного периода</h3>
+      {visibleDays.map((row, index) => {
+        const actual = numericValue(row.actual_revenue);
+        const isForecast = actual === null && numericValue(row.forecast_revenue) !== null;
+        const value = values[index];
+        const width = `${Math.max(2, Math.round((Math.abs(value) / maxValue) * 100))}%`;
+        return (
+          <div className="executive-sales-day" key={row.business_date}>
+            <span>{formatDate(row.business_date)}</span>
+            <div>
+              <i
+                className={isForecast ? "executive-sales-day__bar--forecast" : undefined}
+                style={{ width }}
+              />
+            </div>
+            <strong>
+              {formatMoney(value)}
+              {isForecast && <small>прогноз</small>}
+            </strong>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -2774,11 +2807,6 @@ export function SalesPeriodPanel({
     : planDiagnosticStatuses.includes("partial")
       ? "partial"
       : data?.plan_status;
-  const storeDiagnostic = diagnosticMetricsByKey.get("stores_below_plan_count");
-  const managerDiagnostic = diagnosticMetricsByKey.get("managers_below_target_margin_count");
-  const storeListIsPartial = storeDiagnostic?.source_status === "partial";
-  const managerListIsPartial = managerDiagnostic?.source_status === "partial";
-
   const showProblems = (focus: Exclude<SalesProblemFocus, null>) => {
     setProblemFocus(focus);
     breakdownsRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
@@ -2882,10 +2910,13 @@ export function SalesPeriodPanel({
               </div>
             )}
             mainChart={data.monthly.length > 0 && (
-              <div className="executive-sales-charts">
-                <SalesLineChart hoveredIndex={hoveredIndex} monthly={data.monthly} onHover={setHoveredIndex} />
-                <SalesMonthTooltip hoveredIndex={hoveredIndex} monthly={data.monthly} />
-              </div>
+              <>
+                <div className="executive-sales-charts">
+                  <SalesLineChart hoveredIndex={hoveredIndex} monthly={data.monthly} onHover={setHoveredIndex} />
+                  <SalesMonthTooltip hoveredIndex={hoveredIndex} monthly={data.monthly} />
+                </div>
+                <SalesDailyChart daily={data.daily} />
+              </>
             )}
             diagnosticKpis={(
               <section aria-label="Диагностические KPI продаж" className="executive-sales-diagnostics">
@@ -2965,7 +2996,6 @@ export function SalesPeriodPanel({
               <div className="executive-cashflow-period__tables executive-sales-period__tables" ref={breakdownsRef}>
                 <SalesBreakdown
                   emptyMessage="Проблемных магазинов не найдено."
-                  note={problemFocus === "stores" && storeListIsPartial ? "Данные сопоставлены частично" : undefined}
                   onReset={problemFocus === "stores" ? () => setProblemFocus(null) : undefined}
                   onSelect={onSelectStore}
                   rows={problemFocus === "stores" ? problemStores : data.by_store}
@@ -2973,7 +3003,6 @@ export function SalesPeriodPanel({
                 />
                 <SalesBreakdown
                   emptyMessage="Проблемных менеджеров не найдено."
-                  note={problemFocus === "managers" && managerListIsPartial ? "Данные сопоставлены частично" : undefined}
                   onReset={problemFocus === "managers" ? () => setProblemFocus(null) : undefined}
                   onSelect={onSelectManager}
                   rows={problemFocus === "managers" ? problemManagers : data.by_manager}

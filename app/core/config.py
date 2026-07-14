@@ -46,6 +46,10 @@ class Settings(BaseSettings):
     zenlogs_sources: str | None = None
     zenlogs_http_timeout_sec: float = 30.0
     zenlogs_verify_ssl: bool = True
+    competitor_http_import_enabled: bool = False
+    competitor_http_sources: str | None = None  # name:https-url-with-{date}, comma-separated
+    competitor_http_timeout_sec: float = 30.0
+    competitor_http_max_files_per_source: int = 2
     competitor_ftp_import_enabled: bool = False
     competitor_ftp_host: str | None = None
     competitor_ftp_port: int = 21

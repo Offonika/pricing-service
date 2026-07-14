@@ -154,7 +154,7 @@ Release B и не должен появляться в новых постоян
 - Способ интеграции:
   - скрипт/бот парсинга складывает файлы в подготовленную директорию или отдаёт по API;
   - модуль импорта читает файл и заполняет `Competitor`, `CompetitorPrice`, обновляет `ProductMatch`.
-  - Для FTP-выгрузок конкурентов (poiskzip-moba, poiskzip-liberti) используется поток `FTP → XLSX → job import_competitor_ftp`. Источники задаются через `COMPETITOR_FTP_SOURCES` (`name:directory:pattern`, где pattern содержит `{date}`, напр. `moba-{date}.xlsx`). Job подключается к FTP (`COMPETITOR_FTP_HOST`/`PORT`/`USER`/`PASSWORD`, `COMPETITOR_FTP_TLS`, `COMPETITOR_FTP_TIMEOUT_SEC`), ищет датированные файлы, валидирует обязательные колонки (`group, sku, name, price_opt, price_roz, link, time`, опционально `amount`/`stock`), приводит `time` к MSK ISO8601, сверяет дату имени и содержимого, и пишет данные в `competitor_ftp_file` (метаданные), `competitor_ftp_raw_row` (сырьё, ошибки) и `competitor_ftp_record` (нормализованные строки). Дедуп по `(source, file_date)`, при повторной заливке файл перезаписывается. Цепочка ZenLogs (HTTP) и каталог `competitor_item`/`competitor_item_snapshot` удалены, используем только FTP-поток.
+  - Для датированных выгрузок конкурентов (poiskzip-moba, poiskzip-liberti) используется поток `HTTPS → XLSX → job import_competitor_http`. Источники задаются через `COMPETITOR_HTTP_SOURCES` (`name:https-url-with-{date}`), job проверяет текущую и предыдущую даты. Обязательные колонки (`group, sku, name, price_opt, price_roz, link, time`, опционально `amount`/`stock`) и хранилище `competitor_ftp_*` сохранены для обратной совместимости с matching. Дедуп остаётся по `(source, file_date)`, при повторной загрузке файл перезаписывается. Старый `import_competitor_ftp` остаётся выключенным fallback на переходный период.
   - Матчинг цен: job `./.venv/bin/python -m tasks.match_competitor_ftp` берёт `competitor_ftp_record`, нормализует SKU и сопоставляет с `product.article`, создаёт `CompetitorPrice` (price = `price_roz` или `price_opt`, in_stock из файла, collected_at = `observed_at`) и `ProductMatch` (confidence=1.0). unmatched/ambiguous логируются, много-матч по SKU не записывается.
 
 #### Агент по рынку смартфонов (пресс-релизы/новости)
@@ -419,7 +419,7 @@ Release B и не должен появляться в новых постоян
    - Фоновая задача `import_competitor_prices`:
      - обновляет `Competitor` и `CompetitorPrice`;
      - при необходимости обновляет/создаёт связи в `ProductMatch`.
-  - В режиме `COMPETITOR_SOURCE_MODE=zenno` используется job `./.venv/bin/python -m tasks.import_zenlogs_competitors`, которая проходит по всем источникам из `ZENLOGS_SOURCES`, скачивает XLSX ZenLogs (`group`, `sku`, `name`, `price_opt`, `link`, `stock`) и пишет данные в `competitor_item` + `competitor_item_snapshot`, фиксируя историю цен/наличия без привязки к нашим SKU. Для FTP-прайсов есть отдельная job `./.venv/bin/python -m tasks.import_competitor_ftp`, которая выкачивает датированные XLSX по маске, валидирует и сохраняет в `competitor_ftp_*` таблицы с дедупликацией по дате файла.
+  - Активная job `./.venv/bin/python -m tasks.import_competitor_http` скачивает датированные XLSX по прямым HTTPS-ссылкам и сохраняет их в совместимые таблицы `competitor_ftp_*`, которые читает текущий matching. Legacy job `tasks.import_competitor_ftp` используется только как выключенный fallback.
 
 4. **Матчинг товаров и карточек конкурентов**
    - Запускается по расписанию или после импорта.

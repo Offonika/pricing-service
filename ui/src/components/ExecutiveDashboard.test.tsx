@@ -207,8 +207,8 @@ function salesPeriodResponse(): ExecutiveSalesPeriodResponse {
       { key: "gross_profit_per_unit", value: "80.00", unit: "RUB_PER_UNIT", source_status: "ready", note: null, meta: {} },
       { key: "cost_per_unit", value: "120.00", unit: "RUB_PER_UNIT", source_status: "ready", note: null, meta: {} },
       { key: "margin_gap_pp", value: "5.00", unit: "PERCENTAGE_POINT", source_status: "ready", note: null, meta: {} },
-      { key: "stores_below_plan_count", value: 0, unit: "COUNT", source_status: "ready", note: null, meta: { evaluated_count: 1 } },
-      { key: "managers_below_target_margin_count", value: 0, unit: "COUNT", source_status: "ready", note: null, meta: { evaluated_count: 1 } },
+      { key: "stores_below_plan_count", value: 0, unit: "COUNT", source_status: "ready", note: null, meta: { evaluated_count: 1, problem: [] } },
+      { key: "managers_below_target_margin_count", value: 0, unit: "COUNT", source_status: "ready", note: null, meta: { evaluated_count: 1, problem: [] } },
     ],
     totals: {
       revenue: "1000.00",
@@ -324,6 +324,19 @@ describe("executive sales period", () => {
     expect(container.querySelector("[title]")).toBeNull();
   });
 
+  it("renders the daily dynamics of the selected period with dashed forecast days", async () => {
+    const { container } = await renderSalesTab();
+
+    const dailyChart = screen.getByLabelText("Выручка по дням выбранного периода");
+    expect(within(dailyChart).getByText("По дням выбранного периода")).toBeVisible();
+    const days = dailyChart.querySelectorAll(".executive-sales-day");
+    expect(days).toHaveLength(2);
+    expect(days[0].querySelector(".executive-sales-day__bar--forecast")).toBeNull();
+    expect(days[1].querySelector(".executive-sales-day__bar--forecast")).not.toBeNull();
+    expect(days[1]).toHaveTextContent("прогноз");
+    expect(container.querySelectorAll(".executive-sales-daily")).toHaveLength(1);
+  });
+
   it("shows the shared tooltip and crosshair on hover", async () => {
     const { container } = await renderSalesTab();
 
@@ -423,24 +436,39 @@ describe("executive sales period", () => {
     );
   });
 
-  it("opens filtered problem lists and restores the full breakdown", async () => {
+  it("opens backend-provided problem lists and restores the full breakdown", async () => {
     const response = salesPeriodResponse();
     await renderSalesTab({
       ...response,
-      plan_status: "partial",
       diagnostic_kpis: (response.diagnostic_kpis || []).map((metric) => {
         if (metric.key === "stores_below_plan_count") {
-          return { ...metric, source_status: "partial", value: 1 };
+          return {
+            ...metric,
+            value: 2,
+            meta: {
+              evaluated_count: 3,
+              problem: [
+                { key: "store-low", label: "Магазин ниже плана" },
+                { key: "store-silent", label: "Магазин без продаж" },
+              ],
+            },
+          };
         }
         if (metric.key === "managers_below_target_margin_count") {
-          return { ...metric, value: 1 };
+          return {
+            ...metric,
+            value: 1,
+            meta: {
+              evaluated_count: 2,
+              problem: [{ key: "manager-low", label: "Менеджер ниже маржи" }],
+            },
+          };
         }
         return metric;
       }),
       by_store: [
         { key: "store-low", label: "Магазин ниже плана", revenue: "800", gross_profit: "200", sales_count: "4", gross_margin_pct: "0.25", meta: { plan_status: "ready", plan_attainment_pct: "0.8" } },
         { key: "store-ok", label: "Магазин в плане", revenue: "1200", gross_profit: "500", sales_count: "5", gross_margin_pct: "0.42", meta: { plan_status: "ready", plan_attainment_pct: "1.1" } },
-        { key: "store-missing", label: "Магазин без плана", revenue: "400", gross_profit: "100", sales_count: "2", gross_margin_pct: "0.25", meta: { plan_status: "ready", approved_revenue: null, plan_attainment_pct: null } },
       ],
       by_manager: [
         { key: "manager-low", label: "Менеджер ниже маржи", revenue: "900", gross_profit: "180", sales_count: "4", gross_margin_pct: "0.2", meta: { plan_status: "ready", margin_gap_pp: "-3" } },
@@ -451,12 +479,13 @@ describe("executive sales period", () => {
     fireEvent.click(screen.getByRole("button", { name: "Показать проблемные магазины" }));
     const problemStores = screen.getByRole("region", { name: "Проблемные магазины" });
     expect(within(problemStores).getByRole("button", { name: /Магазин ниже плана/ })).toBeVisible();
-    expect(within(problemStores).getByRole("button", { name: /Магазин без плана/ })).toBeVisible();
+    expect(within(problemStores).getByRole("button", { name: /Магазин без продаж/ })).toBeVisible();
     expect(within(problemStores).queryByRole("button", { name: /Магазин в плане/ })).not.toBeInTheDocument();
-    expect(within(problemStores).getByText("Данные сопоставлены частично")).toBeVisible();
 
     fireEvent.click(within(problemStores).getByRole("button", { name: "Показать всех" }));
-    expect(within(screen.getByRole("region", { name: "По магазинам" })).getByRole("button", { name: /Магазин в плане/ })).toBeVisible();
+    const allStores = screen.getByRole("region", { name: "По магазинам" });
+    expect(within(allStores).getByRole("button", { name: /Магазин в плане/ })).toBeVisible();
+    expect(within(allStores).queryByRole("button", { name: /Магазин без продаж/ })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Показать менеджеров ниже маржи" }));
     const problemManagers = screen.getByRole("region", { name: "Проблемные менеджеры" });
@@ -500,6 +529,18 @@ describe("executive sales period", () => {
         (cell) => cell.textContent === "—"
       )
     ).toHaveLength(4);
+  });
+
+  it("shows a fully collected forecast period as complete", async () => {
+    const response = salesPeriodResponse();
+    await renderSalesTab({
+      ...response,
+      forecast_status: "complete",
+      forecast_note: "Период полностью закрыт фактическими данными.",
+    });
+
+    expect(screen.getByText("период закрыт")).toBeVisible();
+    expect(screen.queryByText("месяц закрыт")).not.toBeInTheDocument();
   });
 
   it("renders an info tooltip on the sales KPI cards", async () => {

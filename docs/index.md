@@ -5,14 +5,16 @@
 
 ## Читать сначала
 
-1. `../AGENTS.md` — роли агентов, workflow и проверки.
-2. `../README.md` — быстрый старт и текущие операционные сценарии.
-3. `PRD.md` — бизнес-требования.
-4. `architecture.md` — high-level архитектура и основные контуры.
-5. `../openapi.yaml` — зафиксированный API-контракт FastAPI.
-6. `plan.md` — статусы задач и дальнейшая очередь работ.
-7. `specs/README.md` — lifecycle новых крупных спецификаций проекта.
-8. `specs/pricing-service-architecture-hardening.md` — принятый план архитектурного
+1. `../AGENTS.md` — короткие инварианты, навигация и обязательные проверки.
+2. `../.agents/skills/pricing-service-workflows/SKILL.md` — выбор ролевого workflow;
+   подробности роли читаются из одного подходящего reference.
+3. `../README.md` — быстрый старт и текущие операционные сценарии.
+4. `PRD.md` — бизнес-требования.
+5. `architecture.md` — high-level архитектура и основные контуры.
+6. `../openapi.yaml` — зафиксированный API-контракт FastAPI.
+7. `plan.md` — статусы задач и дальнейшая очередь работ.
+8. `specs/README.md` — lifecycle новых крупных спецификаций проекта.
+9. `specs/pricing-service-architecture-hardening.md` — принятый план архитектурного
    оздоровления, вывода устаревшего источника и усиления границ между проектами.
 9. `registry/cli-jobs.json` — обязательные owner/dry-run/idempotency/side-effect
    metadata для постоянных CLI и одноразовых backfill-команд.

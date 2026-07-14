@@ -1436,6 +1436,67 @@
   gap: 12px;
 }
 
+.executive-sales-daily {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #e4e9f0;
+  border-radius: 6px;
+  background: #fcfcfd;
+}
+
+.executive-sales-daily h3 {
+  margin: 0 0 4px;
+  color: #18202a;
+  font-size: 13px;
+}
+
+.executive-sales-day {
+  display: grid;
+  grid-template-columns: 86px minmax(90px, 1fr) minmax(96px, auto);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.executive-sales-day span,
+.executive-sales-day strong {
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.executive-sales-day span {
+  color: #667085;
+  font-weight: 750;
+}
+
+.executive-sales-day strong {
+  color: #18202a;
+  text-align: right;
+}
+
+.executive-sales-day strong small {
+  margin-left: 4px;
+  color: #b54708;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.executive-sales-day i {
+  display: block;
+  height: 6px;
+  border-radius: 999px;
+  background: #2e90fa;
+}
+
+.executive-sales-day i.executive-sales-day__bar--forecast {
+  border: 1px dashed #f79009;
+  background: #fffaeb;
+}
+
 .executive-sales-month-tooltip {
   position: absolute;
   top: 0;
@@ -1484,15 +1545,6 @@
 .executive-sales-breakdown-section__reset {
   margin-top: 0;
   white-space: nowrap;
-}
-
-.executive-sales-breakdown-section__note {
-  padding: 6px 8px;
-  border-radius: 6px;
-  background: #fffaeb;
-  color: #b54708;
-  font-size: 11px;
-  font-weight: 750;
 }
 
 .executive-sales-breakdown {

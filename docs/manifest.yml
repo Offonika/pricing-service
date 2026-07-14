@@ -21,6 +21,30 @@ documents:
     related_code: [app/, tasks/]
     related_tests: [tests/]
     keywords: [agents, workflow, codex]
+  - path: .agents/skills/pricing-service-workflows/SKILL.md
+    title: Pricing Service Workflows Skill
+    doc_type: agent_skill
+    domain: governance
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code:
+      - .agents/skills/pricing-service-workflows/references/
+      - app/
+      - tasks/
+      - infra/
+    related_tests: [tests/]
+    keywords: [agents, skill, workflow, routing, progressive-disclosure]
+  - path: .codex/config.toml
+    title: Pricing Service Codex Project Config
+    doc_type: project_config
+    domain: tooling
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [.agents/skills/pricing-service-workflows/]
+    related_tests: []
+    keywords: [codex, reasoning, medium, project-config]
   - path: openapi.yaml
     title: Pricing Service OpenAPI
     doc_type: openapi
@@ -65,10 +89,12 @@ documents:
       - infra/cron/competitor_matching_nightly.sh
       - scripts/export_openapi.py
     related_tests:
+      - tests/test_architecture_boundaries.py
+      - tests/test_database_infrastructure.py
       - tests/test_import_onec_products.py
       - tests/test_product_compatibility.py
       - tests/test_weekly_kpi_reports_api.py
-    keywords: [architecture, modular-monolith, onec, database, contracts, cron]
+    keywords: [architecture, modular-monolith, onec, database, contracts, cron, hardening, dependencies, boundaries, оздоровление]
   - path: docs/specs/pricing-service-db-cli-cron-hardening.md
     title: Pricing Service DB, CLI And Cron Hardening
     doc_type: spec
@@ -535,8 +561,8 @@ documents:
     owner: engineering
     source_of_truth: true
     related_code: [app/services/competitor_matching.py, app/api/matching.py]
-    related_tests: [tests/]
-    keywords: [matching, competitors, sku]
+    related_tests: [tests/test_competitor_matching.py, tests/test_competitor_matching_quality.py, tests/test_matching_api.py]
+    keywords: [matching, competitors, implementation, pipeline, service, реализацию, сопоставления, товаров]
   - path: docs/specs/competitor-matching-ui-v1.md
     title: Competitor Matching UI V1
     doc_type: spec
@@ -604,9 +630,9 @@ documents:
     status: active
     owner: engineering
     source_of_truth: true
-    related_code: [agents/, app/services/market_research/]
-    related_tests: [tests/]
-    keywords: [agents, demand, yandex-direct]
+    related_code: [app/services/market_research/, app/api/agents.py, agents/discovery.py]
+    related_tests: [tests/test_demand_service.py, tests/test_monthly_online_demand_report.py, tests/test_online_demand_metrics.py]
+    keywords: [agents, market-research, demand, device-model, repository, yandex-direct, backend]
   - path: docs/agents-market-research.md
     title: Market Research Agents
     doc_type: runbook
@@ -835,5 +861,5 @@ documents:
     owner: product
     source_of_truth: true
     related_code: [app/services/sku.py]
-    related_tests: [tests/]
+    related_tests: [tests/test_sku.py, tests/test_generate_product_skus_task.py]
     keywords: [sku, policy, nomenclature]

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Pricing Service Workflows"
+  short_description: "Routes pricing-service implementation work"
+  default_prompt: "Use $pricing-service-workflows to select the minimal implementation role and checks for this pricing-service change."

@@ -15,7 +15,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import session_scope
 from app.models import CompetitorFtpFile, CompetitorItem, ProductLiveCandidateCache
 from app.models.competitor_item_match import CompetitorItemMatch
 
@@ -250,8 +250,7 @@ def main() -> None:
     settings = get_settings()
     embeddings_dir = args.embeddings_dir or Path(settings.embeddings_dir)
     latest_report = args.latest_report or Path("build/logs/competitor_matching_nightly_latest.json")
-    engine = build_engine(settings.database_url)
-    with Session(engine) as session:
+    with session_scope(read_only=True) as session:
         report = build_report(
             session,
             embeddings_dir=embeddings_dir,

@@ -12,8 +12,7 @@ from typing import Any
 from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import session_scope
 from app.models import CompetitorItem, CompetitorItemCompatibility
 from app.services.matching_guardrails import competitor_item_requires_compatibility
 
@@ -105,9 +104,7 @@ def main() -> None:
     parser.add_argument("--report-csv", help="Write CSV report to file")
     args = parser.parse_args()
 
-    settings = get_settings()
-    engine = build_engine(settings.database_url)
-    with Session(engine) as session:
+    with session_scope(read_only=True) as session:
         items = build_review_items(
             session,
             first_seen_after=args.first_seen_after,

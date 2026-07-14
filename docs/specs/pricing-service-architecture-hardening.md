@@ -172,10 +172,11 @@ pricing read models -> root delivery adapter -> Bitrix24/Telegram
 
 # Review Notes / Risks
 
-- Dashboard/UI-контур консолидирован вместе с архитектурными изменениями в commit
-  `4a021cd`; live release собран из полного clean source tree без overlay-цепочки.
+- Dashboard/UI-контур консолидирован вместе с архитектурными изменениями; canonical
+  `main` зафиксирован merge commit `3915d47`, live release собран из полного clean
+  source tree без overlay-цепочки.
 - Live-сервис запускается через `/opt/MM/pricing-service-task43-current`, который
-  указывает на `pricing-clean-ui-consolidation-20260714-132116`.
+  указывает на `pricing-main-canonical-20260714-143050`.
 - Финансовый `source_status=partial`, расхождение баланса и неполные источники
   остаются отдельной задачей качества данных и не меняют статус hardening-релиза.
 - Direct 1C SQL и application Postgres — разные engines и разные access policies.
@@ -214,3 +215,5 @@ pricing read models -> root delivery adapter -> Bitrix24/Telegram
 - 2026-07-14 — clean release `pricing-clean-ui-consolidation-20260714-132116`
   переключён в production; сохранены три проверенных rollback, остальные release
   catalogs удалены после dry-run retention.
+- 2026-07-14 — canonical clean release `pricing-main-canonical-20260714-143050`
+  собран из merged `main` (`3915d47`) и переключён после API/UI smoke.

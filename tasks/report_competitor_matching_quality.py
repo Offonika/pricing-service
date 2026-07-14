@@ -11,8 +11,7 @@ from pathlib import Path
 from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session
 
-from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import session_scope
 from app.models import CompetitorItem, CompetitorItemCompatibility, CompetitorItemSnapshot
 from app.models.competitor_item_match import CompetitorItemMatch, CompetitorItemMatchStatus
 from app.services.matching_guardrails import competitor_item_requires_compatibility
@@ -132,9 +131,7 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    settings = get_settings()
-    engine = build_engine(settings.database_url)
-    with Session(engine) as session:
+    with session_scope(read_only=True) as session:
         report = build_report(session, first_seen_after=args.first_seen_after)
 
     payload = json.dumps(report, ensure_ascii=False, indent=2)

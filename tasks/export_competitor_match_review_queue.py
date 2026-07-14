@@ -14,8 +14,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
-from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db import session_scope
 from app.models import CompetitorItem, Product
 from app.models.competitor_item_compatibility import CompetitorItemCompatibility
 from app.models.competitor_item_match import CompetitorItemMatch, CompetitorItemMatchStatus
@@ -454,9 +453,7 @@ def main() -> None:
     parser.add_argument("--report-csv", help="Write CSV report")
     args = parser.parse_args()
 
-    settings = get_settings()
-    engine = build_engine(settings.database_url)
-    with Session(engine) as session:
+    with session_scope(read_only=True) as session:
         payload = build_review_queue(
             session,
             first_seen_after=args.first_seen_after,

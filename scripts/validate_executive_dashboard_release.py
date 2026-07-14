@@ -3,22 +3,12 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 from pathlib import Path
 
-from alembic.config import Config
-from alembic.runtime.migration import MigrationContext
-from alembic.script import ScriptDirectory
-
-from app.core.config import get_settings
-from app.infrastructure.contracts import ContractIntegrityError, read_json_contract
-from app.infrastructure.db.engines import get_application_engine
-from app.main import app
-from app.services.executive_dashboard import (
-    _resolve_cashflow_period_cache_path,
-    _resolve_sales_plan_snapshot_path,
-    _resolve_snapshot_path,
-    _resolve_warehouse_snapshot_path,
-)
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 REQUIRED_ROUTES = {
     ("GET", "/bitrix/executive-dashboard/"),
@@ -36,6 +26,21 @@ ASSET_RE = re.compile(r"(?:src|href)=[\"'](?:\./|/)?assets/([^\"']+)[\"']")
 
 
 def main() -> None:
+    from alembic.config import Config
+    from alembic.runtime.migration import MigrationContext
+    from alembic.script import ScriptDirectory
+
+    from app.core.config import get_settings
+    from app.infrastructure.contracts import ContractIntegrityError, read_json_contract
+    from app.infrastructure.db.engines import get_application_engine
+    from app.main import app
+    from app.services.executive_dashboard import (
+        _resolve_cashflow_period_cache_path,
+        _resolve_sales_plan_snapshot_path,
+        _resolve_snapshot_path,
+        _resolve_warehouse_snapshot_path,
+    )
+
     root = Path.cwd().resolve()
     index_path = root / "ui" / "dist" / "index.html"
     errors: list[str] = []

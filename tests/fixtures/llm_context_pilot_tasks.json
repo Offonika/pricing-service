@@ -1,0 +1,82 @@
+[
+  {
+    "id": "01-competitor-matching",
+    "query": "Найди реализацию сопоставления товаров конкурентов и релевантные тесты.",
+    "expected_document": "docs/TechDesign.CompetitorMatching.md",
+    "expected_code": "app/services/competitor_matching.py",
+    "expected_test": "tests/test_competitor_matching.py",
+    "structural": true
+  },
+  {
+    "id": "02-procurement-order-formation",
+    "query": "В pricing-service найди procurement order formation Bitrix OAuth app: canonical spec, service и тесты.",
+    "expected_document": "docs/specs/procurement-order-formation-smart-process.md",
+    "expected_code": "app/services/procurement_order_formation.py",
+    "expected_test": "tests/test_procurement_order_formation.py",
+    "structural": true
+  },
+  {
+    "id": "03-receivables-workplace",
+    "query": "В pricing-service найди receivables smart process workplace: canonical spec, service и тесты.",
+    "expected_document": "docs/specs/receivables-smart-process-workflow.md",
+    "expected_code": "app/services/receivable_workplace.py",
+    "expected_test": "tests/test_receivable_workplace.py",
+    "structural": false
+  },
+  {
+    "id": "04-executive-dashboard",
+    "query": "В pricing-service найди executive management dashboard service executive_dashboard: canonical spec и тесты.",
+    "expected_document": "docs/specs/executive-management-dashboard-bitrix.md",
+    "expected_code": "app/services/executive_dashboard.py",
+    "expected_test": "tests/test_executive_dashboard.py",
+    "structural": true
+  },
+  {
+    "id": "05-transfer-assistant",
+    "query": "В pricing-service найди transfer assistant readonly v1: canonical spec, service и тесты.",
+    "expected_document": "docs/specs/transfer-assistant-readonly-v1.md",
+    "expected_code": "app/services/transfer_assistant.py",
+    "expected_test": "tests/test_transfer_assistant.py",
+    "structural": false
+  },
+  {
+    "id": "06-site-order-fulfillment",
+    "query": "В pricing-service найди site order fulfillment control contour: основной spec, service и regression tests.",
+    "expected_document": "docs/specs/site-order-fulfillment-control-contour.md",
+    "expected_code": "app/services/site_order_fulfillment.py",
+    "expected_test": "tests/test_order_fulfillment_sync.py",
+    "structural": true
+  },
+  {
+    "id": "07-sku-generation",
+    "query": "Где находятся правила генерации SKU, реализация и базовые тесты?",
+    "expected_document": "docs/sku_policy.md",
+    "expected_code": "app/services/sku.py",
+    "expected_test": "tests/test_sku.py",
+    "structural": false
+  },
+  {
+    "id": "08-market-demand",
+    "query": "В pricing-service найди market research agents demand DeviceModelRepository и Yandex Direct: дизайн, backend и тесты.",
+    "expected_document": "docs/TechDesign.AgentsMarketDemand.md",
+    "expected_code": "app/services/market_research",
+    "expected_test": "tests/test_demand_service.py",
+    "structural": false
+  },
+  {
+    "id": "09-architecture-boundaries",
+    "query": "Где зафиксировано архитектурное оздоровление pricing-service, какие dependency boundaries меняются и чем они проверяются?",
+    "expected_document": "docs/specs/pricing-service-architecture-hardening.md",
+    "expected_code": "app/api/dependencies.py",
+    "expected_test": "tests/test_architecture_boundaries.py",
+    "structural": true
+  },
+  {
+    "id": "10-competitor-ftp-import",
+    "query": "Найди технический дизайн, importer и тесты импорта файлов конкурентов с FTP.",
+    "expected_document": "docs/TechDesign.CompetitorFTPImport.md",
+    "expected_code": "app/services/importers/competitor_ftp.py",
+    "expected_test": "tests/test_competitor_importer.py",
+    "structural": true
+  }
+]

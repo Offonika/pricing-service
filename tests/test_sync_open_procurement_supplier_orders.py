@@ -70,6 +70,8 @@ def test_ved_import_with_confirmed_receipt_routes_to_receiving() -> None:
     )
 
     assert order is not None
+    assert order["procurement_contour_key"] == "ved_import"
+    assert order["expected_receipt_date"] == "2026-08-01T00:00:00"
     assert order["procurement_stage_key"] == "receiving"
 
 

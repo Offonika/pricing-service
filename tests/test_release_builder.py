@@ -22,11 +22,17 @@ def _source_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
     runtime = tmp_path / "runtime"
     (source / "ui" / "dist" / "assets").mkdir(parents=True)
     (source / "pkg" / "__pycache__").mkdir(parents=True)
+    (source / "embeddings").mkdir()
     (source / ".pytest_cache").mkdir()
     (source / ".ruff_cache").mkdir()
     runtime.mkdir()
+    (runtime / "embeddings").mkdir()
     (runtime / ".env").write_text("DATABASE_URL=test\n", encoding="utf-8")
     (source / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (source / "embeddings" / "source-only.npy").write_bytes(b"must-not-be-released")
+    (runtime / "embeddings" / "persistent-index.json").write_text(
+        '{"meta": {}}\n', encoding="utf-8"
+    )
     (source / "pkg" / "__pycache__" / "module.pyc").write_bytes(b"cache")
     (source / ".pytest_cache" / "state").write_text("cache", encoding="utf-8")
     (source / ".ruff_cache" / "state").write_text("cache", encoding="utf-8")
@@ -112,6 +118,10 @@ def test_builder_excludes_caches_and_makes_release_read_only(tmp_path: Path) -> 
         mode = path.stat().st_mode
         assert mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH) == 0
     assert (release / "build").is_symlink()
+    assert (release / "embeddings").is_symlink()
+    assert (release / "embeddings").resolve() == (runtime / "embeddings").resolve()
+    assert not (release / "embeddings" / "source-only.npy").exists()
+    assert (release / "embeddings" / "persistent-index.json").is_file()
     assert os.access(runtime / "build", os.W_OK)
 
 

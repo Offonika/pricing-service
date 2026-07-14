@@ -56,6 +56,7 @@ rsync_excludes=(
   --exclude '/.artifacts/'
   --exclude '/build/'
   --exclude '/data/'
+  --exclude '/embeddings/'
   --exclude '/reports/'
   --exclude '/ui/node_modules/'
   --exclude '/ui/.vite/'
@@ -135,7 +136,7 @@ else
   rsync -a "${rsync_excludes[@]}" "$SOURCE_ROOT/" "$TEMP_DIR/"
 fi
 
-for mutable_name in .local .artifacts build data reports; do
+for mutable_name in .local .artifacts build data embeddings reports; do
   rm -rf "$TEMP_DIR/$mutable_name"
   mkdir -p "$RUNTIME_ROOT/$mutable_name"
   ln -s "$RUNTIME_ROOT/$mutable_name" "$TEMP_DIR/$mutable_name"

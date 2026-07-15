@@ -10,6 +10,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILDER = REPO_ROOT / "scripts" / "build_pricing_service_release.sh"
 PYTHON_BIN = Path(sys.executable)
+RELEASE_PYTHON_SCRIPTS = (
+    REPO_ROOT / "scripts" / "validate_executive_dashboard_release.py",
+    REPO_ROOT / "scripts" / "validate_receivables_release.py",
+    REPO_ROOT / "scripts" / "check_executive_dashboard_runtime.py",
+)
 
 
 def _git(source: Path, *args: str) -> None:
@@ -113,6 +118,39 @@ def test_builder_excludes_caches_and_makes_release_read_only(tmp_path: Path) -> 
         assert mode & (stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH) == 0
     assert (release / "build").is_symlink()
     assert os.access(runtime / "build", os.W_OK)
+
+
+def test_builder_excludes_linked_worktree_git_pointer(tmp_path: Path) -> None:
+    source, releases, runtime = _source_tree(tmp_path)
+    linked_worktree = tmp_path / "linked-worktree"
+    _git(source, "worktree", "add", "--detach", str(linked_worktree))
+    assert (linked_worktree / ".git").is_file()
+
+    result = _run_builder(linked_worktree, releases, runtime, "linked")
+
+    assert result.returncode == 0, result.stderr
+    release = releases / "linked"
+    assert not (release / ".git").exists()
+    assert (release / "app.py").is_file()
+
+
+def test_release_python_scripts_disable_bytecode_writes() -> None:
+    for script in RELEASE_PYTHON_SCRIPTS:
+        result = subprocess.run(
+            [
+                str(PYTHON_BIN),
+                "-c",
+                (
+                    "import runpy, sys; "
+                    f"runpy.run_path({str(script)!r}); "
+                    "print(sys.dont_write_bytecode)"
+                ),
+            ],
+            text=True,
+            capture_output=True,
+            check=True,
+        )
+        assert result.stdout.strip() == "True"
 
 
 def test_overlay_requires_clean_base_and_replaces_ui_assets(tmp_path: Path) -> None:

@@ -48,6 +48,7 @@ trap 'rm -rf "$TEMP_DIR"' EXIT
 mkdir -p "$TEMP_DIR"
 
 rsync_excludes=(
+  --exclude '/.git'
   --exclude '/.git/'
   --exclude '/.venv/'
   --exclude '/.env'

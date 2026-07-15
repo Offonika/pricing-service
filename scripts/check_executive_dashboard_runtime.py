@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import date, datetime, time
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
 
-from app.core.config import get_settings
+sys.dont_write_bytecode = True
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 KNOWN_INCOMPLETE_BLOCKS = {"tasks", "daily_focus"}
@@ -359,6 +360,8 @@ def _parse_clock(value: str) -> time:
 
 
 def main() -> None:
+    from app.core.config import get_settings
+
     parser = argparse.ArgumentParser(description="Check the live executive dashboard surface.")
     parser.add_argument("--base-url", default="http://127.0.0.1:18080")
     parser.add_argument("--date", default=date.today().isoformat())

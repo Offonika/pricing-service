@@ -205,19 +205,11 @@ if run_step "sync_onec_product_catalog" \
   fi
 else
   product_refresh_ok=0
-  echo "[$(date -Iseconds)] product refresh failed; FTP catalog refresh will continue, matching will be skipped" >> "${LOG_FILE}"
+  echo "[$(date -Iseconds)] product refresh failed; HTTPS catalog refresh will continue, matching will be skipped" >> "${LOG_FILE}"
 fi
 
-case "${COMPETITOR_HTTP_IMPORT_ENABLED:-false}" in
-  1|true|TRUE|yes|YES)
-    run_step "import_competitor_http" \
-      "${PYTHON_BIN}" -m tasks.import_competitor_http
-    ;;
-  *)
-    run_step "import_competitor_ftp" \
-      "${PYTHON_BIN}" -m tasks.import_competitor_ftp
-    ;;
-esac
+run_step "import_competitor_http" \
+  "${PYTHON_BIN}" -m tasks.import_competitor_http
 
 current_step="check_competitor_ftp_freshness"
 set +e

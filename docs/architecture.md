@@ -154,7 +154,7 @@ Release B и не должен появляться в новых постоян
 - Способ интеграции:
   - скрипт/бот парсинга складывает файлы в подготовленную директорию или отдаёт по API;
   - модуль импорта читает файл и заполняет `Competitor`, `CompetitorPrice`, обновляет `ProductMatch`.
-  - Для датированных выгрузок конкурентов (poiskzip-moba, poiskzip-liberti) используется поток `HTTPS → XLSX → job import_competitor_http`. Источники задаются через `COMPETITOR_HTTP_SOURCES` (`name:https-url-with-{date}`), job проверяет текущую и предыдущую даты. Обязательные колонки (`group, sku, name, price_opt, price_roz, link, time`, опционально `amount`/`stock`) и хранилище `competitor_ftp_*` сохранены для обратной совместимости с matching. Дедуп остаётся по `(source, file_date)`, при повторной загрузке файл перезаписывается. Старый `import_competitor_ftp` остаётся выключенным fallback на переходный период.
+  - Для датированных выгрузок конкурентов (poiskzip-moba, poiskzip-liberti) используется поток `HTTPS → XLSX → job import_competitor_http`. Источники задаются через `COMPETITOR_HTTP_SOURCES` (`name:https-url-with-{date}`), job проверяет текущую и предыдущую даты. Обязательные колонки (`group, sku, name, price_opt, price_roz, link, time`, опционально `amount`/`stock`) и хранилище `competitor_ftp_*` сохранены для обратной совместимости с matching. Дедуп остаётся по `(source, file_date)`, при повторной загрузке файл перезаписывается. FTP-транспорт и его runtime-настройки удалены после успешного scheduled-run HTTPS-контура.
   - Матчинг цен: job `./.venv/bin/python -m tasks.match_competitor_ftp` берёт `competitor_ftp_record`, нормализует SKU и сопоставляет с `product.article`, создаёт `CompetitorPrice` (price = `price_roz` или `price_opt`, in_stock из файла, collected_at = `observed_at`) и `ProductMatch` (confidence=1.0). unmatched/ambiguous логируются, много-матч по SKU не записывается.
 
 #### Агент по рынку смартфонов (пресс-релизы/новости)
@@ -419,7 +419,7 @@ Release B и не должен появляться в новых постоян
    - Фоновая задача `import_competitor_prices`:
      - обновляет `Competitor` и `CompetitorPrice`;
      - при необходимости обновляет/создаёт связи в `ProductMatch`.
-  - Активная job `./.venv/bin/python -m tasks.import_competitor_http` скачивает датированные XLSX по прямым HTTPS-ссылкам и сохраняет их в совместимые таблицы `competitor_ftp_*`, которые читает текущий matching. Legacy job `tasks.import_competitor_ftp` используется только как выключенный fallback.
+  - Активная job `./.venv/bin/python -m tasks.import_competitor_http` скачивает датированные XLSX по прямым HTTPS-ссылкам и сохраняет их в совместимые таблицы `competitor_ftp_*`, которые читает текущий matching. Названия таблиц и внутренних freshness-полей с `ftp` временно сохранены как совместимый schema contract; сетевого FTP-контура больше нет.
 
 4. **Матчинг товаров и карточек конкурентов**
    - Запускается по расписанию или после импорта.

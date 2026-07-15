@@ -24,3 +24,11 @@ def test_nightly_marks_stale_ftp_as_degraded_without_retrying_same_day() -> None
     assert 'ftp_status="stale"' in source
     assert 'overall_status="degraded_source_stale"' in source
     assert '{"success", "degraded_source_stale"}' in source
+
+
+def test_nightly_uses_https_import_without_ftp_fallback() -> None:
+    source = NIGHTLY.read_text(encoding="utf-8")
+
+    assert "tasks.import_competitor_http" in source
+    assert "tasks.import_competitor_ftp" not in source
+    assert "COMPETITOR_FTP_IMPORT_ENABLED" not in source

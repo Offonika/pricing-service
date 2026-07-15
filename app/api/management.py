@@ -49,6 +49,7 @@ from app.schemas.management import (
     ManagementHealthResponse,
     ManagementTaskPayload,
     ManagementTaskPayloadListResponse,
+    RetailCounterpartyZeroBalanceResponse,
     RetailCustomerPriceTypeRecommendation,
     RetailCustomerPriceTypeRecommendationResponse,
     RetailDirectorMonthlyKpiPayload,
@@ -116,6 +117,11 @@ from app.services.receivables import (
     fetch_contract_price_type_mapping_from_onec,
     fetch_counterparty_code_mapping_from_onec_group,
     fetch_counterparty_purchase_amounts_from_onec_sales_returns,
+)
+from app.services.retail_counterparty_balances import (
+    build_retail_counterparty_zero_balances,
+    build_unavailable_retail_counterparty_zero_balances,
+    normalize_counterparty_codes,
 )
 from app.services.retail_customer_price_types import (
     BUYERS_COUNTERPARTY_GROUP_NAME,
@@ -731,6 +737,47 @@ def get_exchange_counterparty_settlements(
         raise HTTPException(status_code=503, detail="1C source is unavailable") from error
     finally:
         onec_engine.dispose()
+
+
+@router.get(
+    "/retail-counterparty-zero-balances",
+    response_model=RetailCounterpartyZeroBalanceResponse,
+)
+def get_retail_counterparty_zero_balances(
+    counterparty_code: list[str] = Query(...),
+    period_start: date | None = Query(default=None),
+    as_of: datetime | None = Query(default=None),
+    _: str = Depends(require_management_internal_token),
+) -> RetailCounterpartyZeroBalanceResponse:
+    codes = normalize_counterparty_codes(counterparty_code)
+    if not codes:
+        raise HTTPException(status_code=422, detail="At least one counterparty code is required")
+    if len(codes) > 50:
+        raise HTTPException(status_code=422, detail="At most 50 counterparty codes are allowed")
+    if any(len(code) > 32 for code in codes):
+        raise HTTPException(status_code=422, detail="Counterparty code is too long")
+
+    try:
+        onec_engine = _build_onec_engine()
+    except HTTPException as error:
+        if error.status_code != 503:
+            raise
+        return RetailCounterpartyZeroBalanceResponse.model_validate(
+            build_unavailable_retail_counterparty_zero_balances(codes, as_of=as_of)
+        )
+
+    try:
+        payload = build_retail_counterparty_zero_balances(
+            onec_engine,
+            counterparty_codes=codes,
+            period_start=period_start,
+            as_of=as_of,
+        )
+    except SQLAlchemyError:
+        payload = build_unavailable_retail_counterparty_zero_balances(codes, as_of=as_of)
+    finally:
+        onec_engine.dispose()
+    return RetailCounterpartyZeroBalanceResponse.model_validate(payload)
 
 
 @router.get("/cash-position")

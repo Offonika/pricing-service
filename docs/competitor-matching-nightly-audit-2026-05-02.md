@@ -118,3 +118,16 @@
    - обязательный: FTP, catalog, item_type rules, embeddings, matcher;
    - тяжёлый: LLM attrs, rerun `only_bad`, LLM arbiter, отчёты качества.
 7. Согласовать статусную модель главной таблицы: сейчас `status` отражает сохранённые `CompetitorItemMatch`, а `live_candidate_count` отражает живой поиск. Это правильно, но в UI стоит явно различать “сохранённые кандидаты” и “есть live-кандидаты”.
+
+## Hotfix постоянного runtime-состояния 2026-07-14
+
+- Индексы `embeddings` подключаются к immutable release как внешний runtime-каталог,
+  поэтому переключение release больше не вызывает полную повторную генерацию индексов.
+- Nightly загружает `.env` до вычисления feature flags; nightly и watchdog используют
+  одно значение `COMPETITOR_MATCHING_EMBEDDINGS_ENABLED`.
+- После FTP-импорта отдельная read-only проверка контролирует максимальную дату файла.
+  Устаревший источник завершает pipeline со статусом `degraded_source_stale`, а не
+  маскируется статусом `success`; техническая ошибка проверки по-прежнему завершает job
+  ошибкой.
+- Повторный запуск в 04:45 пропускает уже завершённый за день pipeline как для
+  `success`, так и для `degraded_source_stale`.

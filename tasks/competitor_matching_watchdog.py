@@ -19,6 +19,8 @@ from app.infrastructure.db import session_scope
 from app.models import CompetitorFtpFile, CompetitorItem, ProductLiveCandidateCache
 from app.models.competitor_item_match import CompetitorItemMatch
 
+FTP_FRESHNESS_STALE_EXIT_CODE = 3
+
 
 def _json_default(value: Any) -> str | None:
     if value is None:
@@ -103,14 +105,10 @@ def _latest_report_disables_embeddings(payload: dict[str, Any]) -> bool:
     )
 
 
-def build_report(
+def build_ftp_freshness_report(
     session: Session,
     *,
-    embeddings_dir: Path,
-    latest_report: Path,
-    embeddings_enabled: bool,
-    max_ftp_lag_days: int,
-    max_runtime_lag_hours: int,
+    max_lag_days: int,
 ) -> dict[str, Any]:
     ftp_rows = list(
         session.execute(
@@ -123,6 +121,34 @@ def build_report(
             .order_by(CompetitorFtpFile.source)
         )
     )
+    ftp = {
+        source: {
+            "max_file_date": max_file_date,
+            "max_ingested_at": max_ingested_at,
+            "status": _status_for_date(max_file_date, max_lag_days=max_lag_days),
+        }
+        for source, max_file_date, max_ingested_at in ftp_rows
+    }
+    ftp_status = "fresh" if ftp and all(row["status"] == "fresh" for row in ftp.values()) else "bad"
+    return {
+        "checked_at": datetime.now(UTC),
+        "ok": ftp_status == "fresh",
+        "checks": {"ftp": ftp_status},
+        "ftp": ftp,
+    }
+
+
+def build_report(
+    session: Session,
+    *,
+    embeddings_dir: Path,
+    latest_report: Path,
+    embeddings_enabled: bool,
+    max_ftp_lag_days: int,
+    max_runtime_lag_hours: int,
+) -> dict[str, Any]:
+    ftp_report = build_ftp_freshness_report(session, max_lag_days=max_ftp_lag_days)
+    ftp = ftp_report["ftp"]
     latest_payload: dict[str, Any] = {}
     if latest_report.exists():
         try:
@@ -130,14 +156,6 @@ def build_report(
         except Exception as exc:  # noqa: BLE001
             latest_payload = {"error": type(exc).__name__}
     latest_finished_at = _parse_datetime(latest_payload.get("finished_at"))
-    ftp = {
-        source: {
-            "max_file_date": max_file_date,
-            "max_ingested_at": max_ingested_at,
-            "status": _status_for_date(max_file_date, max_lag_days=max_ftp_lag_days),
-        }
-        for source, max_file_date, max_ingested_at in ftp_rows
-    }
     item_scraped_at = session.scalar(select(func.max(CompetitorItem.scraped_at)))
     item_updated_at = session.scalar(select(func.max(CompetitorItem.updated_at)))
     item_last_seen_at = session.scalar(select(func.max(CompetitorItem.last_seen_at)))
@@ -156,7 +174,7 @@ def build_report(
     )
 
     checks = {
-        "ftp": "fresh" if ftp and all(row["status"] == "fresh" for row in ftp.values()) else "bad",
+        "ftp": ftp_report["checks"]["ftp"],
         "competitor_items": _status_for_datetime(
             item_activity_at, max_lag_hours=max_runtime_lag_hours
         ),
@@ -242,6 +260,11 @@ def main() -> None:
     parser.add_argument("--latest-report", type=Path, default=None)
     parser.add_argument("--embeddings-dir", type=Path, default=None)
     parser.add_argument("--embeddings-disabled", action="store_true")
+    parser.add_argument(
+        "--ftp-only",
+        action="store_true",
+        help="Check only FTP source freshness; stale data exits with status 3",
+    )
     parser.add_argument("--max-ftp-lag-days", type=int, default=1)
     parser.add_argument("--max-runtime-lag-hours", type=int, default=30)
     parser.add_argument("--no-telegram", action="store_true")
@@ -251,17 +274,23 @@ def main() -> None:
     embeddings_dir = args.embeddings_dir or Path(settings.embeddings_dir)
     latest_report = args.latest_report or Path("build/logs/competitor_matching_nightly_latest.json")
     with session_scope(read_only=True) as session:
-        report = build_report(
-            session,
-            embeddings_dir=embeddings_dir,
-            latest_report=latest_report,
-            embeddings_enabled=(
-                not args.embeddings_disabled
-                and os.environ.get("COMPETITOR_MATCHING_EMBEDDINGS_ENABLED", "1") == "1"
-            ),
-            max_ftp_lag_days=args.max_ftp_lag_days,
-            max_runtime_lag_hours=args.max_runtime_lag_hours,
-        )
+        if args.ftp_only:
+            report = build_ftp_freshness_report(
+                session,
+                max_lag_days=args.max_ftp_lag_days,
+            )
+        else:
+            report = build_report(
+                session,
+                embeddings_dir=embeddings_dir,
+                latest_report=latest_report,
+                embeddings_enabled=(
+                    not args.embeddings_disabled
+                    and os.environ.get("COMPETITOR_MATCHING_EMBEDDINGS_ENABLED", "1") == "1"
+                ),
+                max_ftp_lag_days=args.max_ftp_lag_days,
+                max_runtime_lag_hours=args.max_runtime_lag_hours,
+            )
 
     output = json.dumps(report, ensure_ascii=False, indent=2, default=_json_default)
     if args.report_file:
@@ -270,7 +299,9 @@ def main() -> None:
     print(output)
     if not report["ok"] and not args.no_telegram:
         _send_telegram(_alert_text(report))
-    sys.exit(0 if report["ok"] else 1)
+    if report["ok"]:
+        sys.exit(0)
+    sys.exit(FTP_FRESHNESS_STALE_EXIT_CODE if args.ftp_only else 1)
 
 
 if __name__ == "__main__":

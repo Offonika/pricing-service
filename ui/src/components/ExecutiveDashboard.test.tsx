@@ -38,7 +38,7 @@ function action(index: number): ExecutiveDashboardAction {
     stable_key: `procurement:${index}`,
     business_date: "2026-07-11",
     domain: "procurement_import",
-    severity: "high",
+    severity: index === 1 ? "critical" : "warning",
     title: `Заказ РБГУ${String(index).padStart(4, "0")}: заполнить «Сдача в карго»`,
     amount: "1000.00",
     currency: "RUB",
@@ -52,6 +52,14 @@ function action(index: number): ExecutiveDashboardAction {
       correction_document: "Заказ поставщику",
       correction_field: "Сдача в карго",
       recommendation: "Заполнить поле в документе 1С.",
+      supplier_title: "Shenzhen Parts",
+      responsible_name: "Ирина Закупкина",
+      management_stage_label: "Обработка поставщиком",
+      deadline_date: "2026-07-09",
+      days_overdue: 2,
+      reason_code: "supplier_preparation_critical",
+      reason: "Срок подготовки поставщиком превышен.",
+      risk_formula: "p75=18; critical=max(p75×1,6; p75+7)=29",
     },
   };
 }
@@ -77,6 +85,187 @@ describe("executive procurement actions", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent("Заказ поставщику");
     expect(screen.getByRole("dialog")).toHaveTextContent("Сдача в карго");
     expect(screen.getByText(/исчезнет после следующего обновления/)).toBeVisible();
+  });
+});
+
+function procurementDashboardResponse(): ExecutiveDashboardResponse {
+  return {
+    as_of: "2026-07-11",
+    generated_at: "2026-07-11T10:00:00Z",
+    freshness_status: "fresh",
+    source_status: "ready",
+    access_level: "full",
+    roles: [],
+    allowed_blocks: ["procurement_import"],
+    allowed_action_domains: ["procurement_import"],
+    blocks: [
+      {
+        key: "procurement_import",
+        title: "Закупки / импорт",
+        source_status: "ready",
+        freshness_status: "fresh",
+        as_of: "2026-07-11",
+        summary: {
+          note: "Открытые заказы из 1С.",
+          risk_scoring_version: 2,
+          risk_summary: { at_risk_count: 2, at_risk_amount_rub: "350000", at_risk_share_pct: "28.0", critical_count: 1 },
+          stage_breakdown: [
+            { key: "supplier_processing", label: "Обработка поставщиком", count: 3, amount_rub: "900000" },
+            { key: "in_transit", label: "В пути", count: 1, amount_rub: "350000" },
+          ],
+          currency_breakdown: [
+            { currency: "RMB", count: 3, amount_rub: "900000" },
+            { currency: "RUB", count: 1, amount_rub: "350000" },
+          ],
+          data_quality: { responsible_coverage_pct: "75.0", missing_responsible_count: 1, missing_expected_receipt_after_cargo_count: 0 },
+        },
+        metrics: [
+          { key: "open_supplier_orders", label: "Заказы поставщику", value: 4, unit: "COUNT", tone: "neutral", source_status: "ready", masked: false },
+          { key: "open_order_amount_rub", label: "Сумма открытых заказов", value: "1250000", unit: "RUB", tone: "neutral", source_status: "ready", masked: false },
+          { key: "procurement_at_risk_count", label: "Заказы под риском", value: 2, unit: "COUNT", tone: "warning", source_status: "ready", masked: false },
+          { key: "procurement_at_risk_amount_rub", label: "Сумма под риском", value: "350000", unit: "RUB", tone: "warning", source_status: "ready", masked: false },
+          { key: "critical_overdue_count", label: "Критические просрочки", value: 1, unit: "COUNT", tone: "danger", source_status: "ready", masked: false },
+          { key: "foreign_open_order_amount_rub", label: "Открытые закупки в валюте", value: "120000", unit: "RUB", tone: "neutral", source_status: "ready", masked: false },
+        ],
+      },
+    ],
+    source_freshness: [],
+    top_actions: [],
+    summary: {},
+  };
+}
+
+describe("executive procurement tab", () => {
+  beforeEach(() => {
+    vi.mocked(fetchExecutiveDashboard).mockReset();
+    vi.mocked(fetchExecutiveDashboardActions).mockReset();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("shows procurement KPIs and decisions in one operational panel", async () => {
+    window.history.pushState({}, "", "?tab=procurement_import&date=2026-07-11");
+    vi.mocked(fetchExecutiveDashboard).mockResolvedValue(procurementDashboardResponse());
+    vi.mocked(fetchExecutiveDashboardActions).mockResolvedValue({
+      as_of: "2026-07-11",
+      freshness_status: "fresh",
+      source_status: "ready",
+      total_count: 1,
+      payload: [action(1)],
+    });
+
+    render(<ExecutiveDashboard />);
+
+    const panel = await screen.findByLabelText("Закупки");
+    expect(within(panel).getByLabelText("Основные KPI закупок")).toHaveTextContent("Открытые заказы");
+    expect(within(panel).getByLabelText("Основные KPI закупок")).toHaveTextContent("Сумма: 1 250 000 ₽");
+    expect(within(panel).getByLabelText("Основные KPI закупок")).toHaveTextContent("2 заказов · 28.0% открытых закупок");
+    expect(within(panel).getByLabelText("Основные KPI закупок")).toHaveTextContent("Критично");
+    expect(within(panel).getByLabelText("Основные KPI закупок")).toHaveTextContent("Открытые закупки в валюте");
+    expect(within(panel).getByLabelText("Этапы закупок")).toHaveTextContent("Обработка поставщиком · 72%");
+    expect(within(panel).getByLabelText("Валютная структура закупок")).toHaveTextContent("Рублёвые заказы");
+    expect(within(panel).getByLabelText("Фильтры закупочной очереди")).toBeVisible();
+    expect(within(panel).getByLabelText("Решения по закупкам")).toHaveTextContent("РБГУ0001");
+    expect(within(panel).getByText("Заказы в зоне внимания").compareDocumentPosition(within(panel).getByText("Этапы открытых заказов")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByLabelText("Состояние витрины")).not.toBeInTheDocument();
+    expect(screen.queryByText("Решения: Закупки")).not.toBeInTheDocument();
+  });
+
+  it("shows five priority orders first and filters the complete queue", async () => {
+    window.history.pushState({}, "", "?tab=procurement_import&date=2026-07-11");
+    vi.mocked(fetchExecutiveDashboard).mockResolvedValue(procurementDashboardResponse());
+    vi.mocked(fetchExecutiveDashboardActions).mockResolvedValue({
+      as_of: "2026-07-11",
+      freshness_status: "fresh",
+      source_status: "ready",
+      total_count: 7,
+      payload: Array.from({ length: 7 }, (_, index) => ({
+        ...action(index + 1),
+        payload: {
+          ...action(index + 1).payload,
+          responsible_name: index === 6 ? "Пётр ВЭД" : "Ирина Закупкина",
+        },
+      })),
+    });
+
+    render(<ExecutiveDashboard />);
+
+    const queue = await screen.findByLabelText("Решения по закупкам");
+    expect(within(queue).getAllByRole("row")).toHaveLength(6);
+    expect(within(queue).queryByText("РБГУ0007")).not.toBeInTheDocument();
+    fireEvent.change(within(queue).getByLabelText("Ответственный"), { target: { value: "Пётр ВЭД" } });
+    expect(within(queue).getByText("РБГУ0007")).toBeVisible();
+    expect(within(queue).queryByRole("button", { name: "Показать все 1" })).not.toBeInTheDocument();
+    fireEvent.change(within(queue).getByLabelText("Ответственный"), { target: { value: "" } });
+    fireEvent.click(within(queue).getByRole("button", { name: "Показать все 7" }));
+    expect(within(queue).getAllByRole("row")).toHaveLength(8);
+  });
+
+  it("keeps the v1 and stale states explicit without calculated shares", async () => {
+    const response = procurementDashboardResponse();
+    response.blocks[0].freshness_status = "stale";
+    response.blocks[0].summary = {
+      note: "Старый снимок",
+      stage_breakdown: response.blocks[0].summary.stage_breakdown,
+      currency_breakdown: response.blocks[0].summary.currency_breakdown,
+    };
+    window.history.pushState({}, "", "?tab=procurement_import&date=2026-07-11");
+    vi.mocked(fetchExecutiveDashboard).mockResolvedValue(response);
+    vi.mocked(fetchExecutiveDashboardActions).mockResolvedValue({
+      as_of: "2026-07-11",
+      freshness_status: "stale",
+      source_status: "ready",
+      total_count: 0,
+      payload: [],
+    });
+
+    render(<ExecutiveDashboard />);
+
+    const panel = await screen.findByLabelText("Закупки");
+    expect(within(panel).getByLabelText("Статус источника закупок")).toHaveTextContent("устарело");
+    expect(within(panel).getByText(/Источник v1/)).toBeVisible();
+    expect(within(panel).getByLabelText("Этапы закупок")).not.toHaveTextContent("72%");
+    expect(within(panel).getByText("Заказов по выбранным фильтрам нет.")).toBeVisible();
+  });
+
+  it("preserves amount masking and the source error fallback", async () => {
+    const masked = procurementDashboardResponse();
+    masked.blocks[0].metrics = masked.blocks[0].metrics.map((metric) =>
+      metric.unit === "RUB" ? { ...metric, masked: true, value: null } : metric
+    );
+    window.history.pushState({}, "", "?tab=procurement_import&date=2026-07-11");
+    vi.mocked(fetchExecutiveDashboard).mockResolvedValue(masked);
+    vi.mocked(fetchExecutiveDashboardActions).mockResolvedValue({
+      as_of: "2026-07-11",
+      freshness_status: "fresh",
+      source_status: "ready",
+      total_count: 1,
+      payload: [{ ...action(1), amount: null }],
+    });
+
+    const { unmount } = render(<ExecutiveDashboard />);
+    const panel = await screen.findByLabelText("Закупки");
+    expect(within(panel).getByLabelText("Основные KPI закупок")).toHaveTextContent("скрыто");
+    expect(within(panel).getByLabelText("Решения по закупкам")).toHaveTextContent("скрыто");
+    expect(within(panel).getByLabelText("Основные KPI закупок")).not.toHaveTextContent("% суммы открытых заказов");
+
+    unmount();
+    const sourceError = procurementDashboardResponse();
+    sourceError.blocks[0].source_status = "source_error";
+    sourceError.blocks[0].summary.note = "Источник временно недоступен.";
+    vi.mocked(fetchExecutiveDashboard).mockResolvedValue(sourceError);
+    vi.mocked(fetchExecutiveDashboardActions).mockResolvedValue({
+      as_of: "2026-07-11",
+      freshness_status: "source_error",
+      source_status: "source_error",
+      total_count: 0,
+      payload: [],
+    });
+
+    render(<ExecutiveDashboard />);
+    expect(await screen.findByText("Источник временно недоступен.")).toBeVisible();
   });
 });
 

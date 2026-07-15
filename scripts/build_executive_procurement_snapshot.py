@@ -5,10 +5,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 import tempfile
-from datetime import UTC, date, datetime
+from collections import defaultdict
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -21,6 +23,7 @@ from scripts.ensure_procurement_bitrix_process import DEFAULT_ENV_FILE, load_env
 from scripts.sync_open_cargo_supplier_orders_to_bitrix import (  # noqa: E402
     clean,
     fetch_open_supplier_orders,
+    fetch_supplier_prepare_history,
     json_default,
 )
 
@@ -30,6 +33,62 @@ DEFAULT_OUTPUT = Path(
 ALLOWED_CONTOURS = frozenset({"cargo", "ved_import"})
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 MAX_LIMIT = 5000
+PROFILE_HISTORY_DAYS = 180
+
+
+def _p75(values: list[int]) -> int:
+    ordered = sorted(values)
+    if not ordered:
+        raise ValueError("cannot calculate p75 without observations")
+    return ordered[max(0, math.ceil(len(ordered) * 0.75) - 1)]
+
+
+def build_supplier_prepare_profiles(
+    observations: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    supplier_contour: dict[tuple[str, str], list[int]] = defaultdict(list)
+    contour: dict[str, list[int]] = defaultdict(list)
+    for observation in observations:
+        supplier_ref = clean(observation.get("supplier_ref"))
+        contour_key = clean(observation.get("procurement_contour_key"))
+        try:
+            lead_days = int(observation.get("lead_days"))
+        except (TypeError, ValueError):
+            continue
+        if contour_key not in ALLOWED_CONTOURS or lead_days <= 0:
+            continue
+        contour[contour_key].append(lead_days)
+        if supplier_ref:
+            supplier_contour[(supplier_ref, contour_key)].append(lead_days)
+
+    profiles = [
+        {
+            "level": "supplier_contour",
+            "supplier_ref": supplier_ref,
+            "procurement_contour_key": contour_key,
+            "sample_size": len(values),
+            "p75_days": _p75(values),
+        }
+        for (supplier_ref, contour_key), values in supplier_contour.items()
+    ]
+    profiles.extend(
+        {
+            "level": "contour",
+            "supplier_ref": "",
+            "procurement_contour_key": contour_key,
+            "sample_size": len(values),
+            "p75_days": _p75(values),
+        }
+        for contour_key, values in contour.items()
+    )
+    return sorted(
+        profiles,
+        key=lambda item: (
+            item["level"],
+            item["procurement_contour_key"],
+            item["supplier_ref"],
+        ),
+    )
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -74,19 +133,22 @@ def validate_orders(orders: list[dict[str, Any]], *, limit: int) -> list[dict[st
 def build_payload(
     orders: list[dict[str, Any]],
     *,
+    supplier_prepare_profiles: list[dict[str, Any]] | None = None,
     limit: int,
     as_of: date,
     generated_at: datetime,
 ) -> dict[str, Any]:
     validated_orders = validate_orders(orders, limit=limit)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": generated_at.astimezone(UTC).isoformat(),
         "as_of": as_of.isoformat(),
         "source_status": "ready",
         "contours": sorted(ALLOWED_CONTOURS),
         "order_count": len(validated_orders),
         "orders": validated_orders,
+        "supplier_prepare_profiles": supplier_prepare_profiles or [],
+        "profile_history_days": PROFILE_HISTORY_DAYS,
     }
 
 
@@ -133,8 +195,14 @@ def build_snapshot(
         filter_contours_in_sql=True,
         fail_on_query_limit=True,
     )
+    observations = fetch_supplier_prepare_history(
+        onec_database_url,
+        date_from=effective_as_of - timedelta(days=PROFILE_HISTORY_DAYS),
+        date_to=effective_as_of + timedelta(days=1),
+    )
     payload = build_payload(
         orders,
+        supplier_prepare_profiles=build_supplier_prepare_profiles(observations),
         limit=limit,
         as_of=effective_as_of,
         generated_at=effective_generated_at,

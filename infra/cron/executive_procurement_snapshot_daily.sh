@@ -41,7 +41,7 @@ echo "=== $(date '+%Y-%m-%d %H:%M:%S %Z') start executive_procurement_snapshot =
     --source "${tmp_file}" \
     --target "${OUTPUT_FILE}" \
     --schema "/opt/MM/docs/contracts/executive-procurement-snapshot.schema.json" \
-    --contract-version "executive-procurement-snapshot.v1" \
+    --contract-version "executive-procurement-snapshot.v2" \
     --source-project "pricing-service"
   rm -f "${tmp_file}"
   trap - EXIT

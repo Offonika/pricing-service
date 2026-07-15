@@ -261,6 +261,7 @@ function severityLabel(value: string) {
   const labels: Record<string, string> = {
     critical: "критично",
     high: "важно",
+    warning: "предупреждение",
     medium: "средне",
     low: "низко",
   };
@@ -433,6 +434,13 @@ function summaryString(summary: Record<string, unknown>, key: string) {
 function summaryArray<T>(summary: Record<string, unknown>, key: string): T[] {
   const value = summary[key];
   return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function summaryRecord(summary: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = summary[key];
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function metricByKey(block: ExecutiveDashboardBlock, keys: string[]) {
@@ -814,6 +822,234 @@ function TabKpiOverview({ block, data }: { block: ExecutiveDashboardBlock; data:
           ))
         )}
       </div>
+    </section>
+  );
+}
+
+function ProcurementImportPanel({
+  actions,
+  block,
+  dashboardSourceStatus,
+  generatedAt,
+  onOpenAction,
+}: {
+  actions: ExecutiveDashboardAction[];
+  block: ExecutiveDashboardBlock | null;
+  dashboardSourceStatus: string;
+  generatedAt: string;
+  onOpenAction: (action: ExecutiveDashboardAction) => void;
+}) {
+  const [severityFilter, setSeverityFilter] = useState("");
+  const [responsibleFilter, setResponsibleFilter] = useState("");
+  const [supplierFilter, setSupplierFilter] = useState("");
+  const [reasonFilter, setReasonFilter] = useState("");
+  const [showAllActions, setShowAllActions] = useState(false);
+  const note = block ? summaryString(block.summary, "note") : null;
+  const orders = block ? metricBySingleKey(block, "open_supplier_orders") : null;
+  const openAmount = block ? metricBySingleKey(block, "open_order_amount_rub") : null;
+  const riskCountMetric = block ? metricBySingleKey(block, "procurement_at_risk_count") : null;
+  const riskAmount = block ? metricBySingleKey(block, "procurement_at_risk_amount_rub") : null;
+  const criticalCount = block ? metricBySingleKey(block, "critical_overdue_count") : null;
+  const foreignAmount = block ? metricBySingleKey(block, "foreign_open_order_amount_rub") : null;
+  const riskSummary = block ? summaryRecord(block.summary, "risk_summary") : {};
+  const stages = block ? summaryArray<Record<string, unknown>>(block.summary, "stage_breakdown") : [];
+  const currencies = block ? summaryArray<Record<string, unknown>>(block.summary, "currency_breakdown") : [];
+  const dataQuality = block ? summaryRecord(block.summary, "data_quality") : {};
+  const sourceStatus = block?.source_status || "source_missing";
+  const effectiveSourceStatus = block?.freshness_status === "stale" ? "stale" : sourceStatus;
+  const usePlaceholder = !block || blockUsesPlaceholder(block);
+  const riskCount = metricNumberValue(riskCountMetric);
+  const riskShare = riskSummary.at_risk_share_pct;
+  const scoringV2 = block?.summary.risk_scoring_version === 2;
+  const openAmountValue = metricNumberValue(openAmount);
+  const foreignAmountValue = metricNumberValue(foreignAmount);
+  const foreignShare =
+    scoringV2 && !openAmount?.masked && !foreignAmount?.masked && openAmountValue && foreignAmountValue !== null
+      ? (foreignAmountValue / openAmountValue) * 100
+      : null;
+  const filterOptions = (key: string) => Array.from(
+    new Set(actions.flatMap((action) => {
+      const value = actionPayloadText(action, key);
+      return value ? [value] : [];
+    }))
+  ).sort();
+  const filteredActions = actions
+    .filter((action) =>
+      (!severityFilter || action.severity === severityFilter) &&
+      (!responsibleFilter || actionPayloadText(action, "responsible_name") === responsibleFilter) &&
+      (!supplierFilter || actionPayloadText(action, "supplier_title") === supplierFilter) &&
+      (!reasonFilter || actionPayloadText(action, "reason_code") === reasonFilter)
+    )
+    .sort((first, second) => {
+      const severityRank: Record<string, number> = { critical: 0, high: 1, warning: 2, medium: 3, low: 4 };
+      const severityDiff = (severityRank[first.severity] ?? 5) - (severityRank[second.severity] ?? 5);
+      if (severityDiff) return severityDiff;
+      const firstDeadline = Date.parse(actionPayloadText(first, "deadline_date") || "") || Number.POSITIVE_INFINITY;
+      const secondDeadline = Date.parse(actionPayloadText(second, "deadline_date") || "") || Number.POSITIVE_INFINITY;
+      if (firstDeadline !== secondDeadline) return firstDeadline - secondDeadline;
+      return Number(second.amount || 0) - Number(first.amount || 0);
+    });
+  const visibleActions = showAllActions ? filteredActions : filteredActions.slice(0, 5);
+  const totalOrders = metricNumberValue(orders) || stages.reduce((sum, row) => sum + Number(row.count || 0), 0);
+  const visibleCurrencies = currencies.filter((row) => String(row.currency || "").toUpperCase() !== "RUB");
+  const rubCurrency = currencies.find((row) => String(row.currency || "").toUpperCase() === "RUB");
+  const rowShare = (row: Record<string, unknown>) => {
+    if (!scoringV2) return null;
+    const amount = Number(row.amount_rub);
+    if (!openAmount?.masked && openAmountValue && Number.isFinite(amount)) return (amount / openAmountValue) * 100;
+    const count = Number(row.count);
+    return totalOrders && Number.isFinite(count) ? (count / totalOrders) * 100 : null;
+  };
+  const resetPreview = () => setShowAllActions(false);
+
+  return (
+    <section className="executive-cashflow-period executive-procurement-period" aria-label="Закупки">
+      <header className="executive-panel__header">
+        <div>
+          <h2>Закупки</h2>
+          <span>Открытые заказы, этапы поставки и приоритетная очередь действий</span>
+        </div>
+      </header>
+      {usePlaceholder ? (
+        <div className="executive-cashflow-period__empty">
+          {note || "Источник закупок пока не подключен к витрине."}
+        </div>
+      ) : (
+        <>
+          <div aria-label="Статус источника закупок" className={`executive-procurement-status executive-procurement-status--${effectiveSourceStatus}`}>
+            <div>
+              <StatusBadge tone={effectiveSourceStatus === "ready" ? "success" : effectiveSourceStatus === "source_error" ? "danger" : "warning"}>
+                {statusLabel(effectiveSourceStatus)}
+              </StatusBadge>
+              <strong>Данные актуальны на {block?.as_of ? formatDate(block.as_of) : "—"}</strong>
+              <span>Свежесть: {statusLabel(block?.freshness_status || sourceStatus)}</span>
+            </div>
+            <span><strong>{actions.length}</strong> решений в работе</span>
+          </div>
+          {dashboardSourceStatus === "partial" && sourceStatus === "ready" && (
+            <div className="executive-procurement-context-note" role="status">
+              Закупки готовы. Статус «частично» относится к другим разделам управленческой витрины.
+            </div>
+          )}
+          <div aria-label="Основные KPI закупок" className="executive-panel__kpis">
+            <MetricCard
+              className="executive-procurement-kpi"
+              hint={`Сумма: ${metricDisplay(openAmount)}`}
+              label="Открытые заказы"
+              tooltip="Количество открытых заказов поставщикам в контурах карго и ВЭД-импорта."
+              value={metricDisplay(orders)}
+            />
+            <MetricCard
+              className="executive-procurement-kpi executive-procurement-kpi--warning"
+              hint={`${metricDisplay(riskCountMetric)} заказов${riskShare !== undefined ? ` · ${riskShare}% открытых закупок` : ""}`}
+              label="Заказы под риском"
+              tone={riskCount && riskCount > 0 ? "warning" : "neutral"}
+              tooltip="Только просрочка ожидаемого поступления или превышение нормального срока подготовки поставщиком."
+              value={metricDisplay(riskAmount)}
+            />
+            <MetricCard
+              className="executive-procurement-kpi executive-procurement-kpi--danger"
+              hint={metricNumberValue(criticalCount) ? <StatusBadge tone="danger">Критично</StatusBadge> : "Критических заказов нет"}
+              label="Критически просрочено"
+              tone={metricNumberValue(criticalCount) ? "danger" : "neutral"}
+              tooltip="Ожидаемая дата поступления прошла либо критически превышен срок подготовки."
+              value={metricDisplay(criticalCount)}
+            />
+            <MetricCard
+              className="executive-procurement-kpi"
+              hint={foreignShare === null ? "Рублёвый эквивалент" : `${foreignShare.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}% суммы открытых заказов`}
+              label="Открытые закупки в валюте"
+              tooltip="Рублёвый эквивалент открытых валютных заказов. Это не расчёт курсового риска."
+              value={metricDisplay(foreignAmount)}
+            />
+          </div>
+          {!scoringV2 && (
+            <div className="executive-cashflow-period__note">
+              Источник v1: показаны прежние признаки незаполненных дат без нового риск-скоринга.
+            </div>
+          )}
+          <section className="executive-procurement-period__actions" aria-label="Решения по закупкам">
+            <header>
+              <div>
+                <h3>Заказы в зоне внимания</h3>
+                <span>Критические — первыми; откройте строку для формулы риска и действия в 1С.</span>
+              </div>
+            </header>
+            <div className="executive-procurement-filters" aria-label="Фильтры закупочной очереди">
+              <select aria-label="Важность" onChange={(event) => { setSeverityFilter(event.target.value); resetPreview(); }} value={severityFilter}>
+                <option value="">Вся важность</option>
+                <option value="critical">Критично</option><option value="warning">Предупреждение</option>
+              </select>
+              <select aria-label="Ответственный" onChange={(event) => { setResponsibleFilter(event.target.value); resetPreview(); }} value={responsibleFilter}>
+                <option value="">Все ответственные</option>{filterOptions("responsible_name").map((value) => <option key={value}>{value}</option>)}
+              </select>
+              <select aria-label="Поставщик" onChange={(event) => { setSupplierFilter(event.target.value); resetPreview(); }} value={supplierFilter}>
+                <option value="">Все поставщики</option>{filterOptions("supplier_title").map((value) => <option key={value}>{value}</option>)}
+              </select>
+              <select aria-label="Причина" onChange={(event) => { setReasonFilter(event.target.value); resetPreview(); }} value={reasonFilter}>
+                <option value="">Все причины</option>{filterOptions("reason_code").map((value) => <option key={value} value={value}>{actionPayloadText(actions.find((action) => actionPayloadText(action, "reason_code") === value)!, "reason") || value}</option>)}
+              </select>
+            </div>
+            {filteredActions.length === 0 ? <div className="executive-actions__empty">Заказов по выбранным фильтрам нет.</div> : (
+              <div className="executive-actions__table-wrap">
+                <table className="executive-actions__table executive-procurement-table">
+                  <thead><tr><th>Заказ</th><th>Этап</th><th>Сумма</th><th>Срок</th><th>Просрочка</th><th>Ответственный</th><th>Причина</th></tr></thead>
+                  <tbody>{visibleActions.map((action) => <tr aria-label={`Открыть заказ ${actionPayloadText(action, "onec_source_number") || action.source_ref}`} key={action.stable_key} onClick={() => onOpenAction(action)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpenAction(action); } }} tabIndex={0}>
+                    <td data-label="Заказ"><strong>{actionPayloadText(action, "onec_source_number") || action.source_ref}</strong><small>{actionPayloadText(action, "supplier_title")}</small></td>
+                    <td data-label="Этап">{actionPayloadText(action, "management_stage_label") || "—"}</td>
+                    <td data-label="Сумма">{action.amount ? formatMoney(action.amount, action.currency) : "скрыто"}</td>
+                    <td data-label="Срок">{formatDate(actionPayloadText(action, "deadline_date")) || "—"}</td>
+                    <td data-label="Просрочка">{actionPayloadText(action, "days_overdue") ? `${actionPayloadText(action, "days_overdue")} дн.` : "—"}</td>
+                    <td data-label="Ответственный">{actionPayloadText(action, "responsible_name") || "Не указан"}</td>
+                    <td data-label="Причина"><StatusBadge tone={action.severity === "critical" ? "danger" : "warning"}>{severityLabel(action.severity)}</StatusBadge><span>{actionPayloadText(action, "reason")}</span></td>
+                  </tr>)}</tbody>
+                </table>
+              </div>
+            )}
+            {!showAllActions && filteredActions.length > 5 && (
+              <Button onClick={() => setShowAllActions(true)} variant="secondary">Показать все {filteredActions.length}</Button>
+            )}
+          </section>
+          {(stages.length > 0 || currencies.length > 0) && (
+            <div className="executive-procurement-breakdowns">
+              <section aria-label="Этапы закупок">
+                <h3>Этапы открытых заказов</h3>
+                {scoringV2 && <div aria-hidden="true" className="executive-procurement-distribution">{stages.map((row) => <i key={String(row.key)} style={{ flexGrow: Math.max(0, Number(row.count || 0)) }} />)}</div>}
+                {stages.map((row) => {
+                  const share = rowShare(row);
+                  return <div className="executive-procurement-breakdown-row" key={String(row.key)}>
+                    <span>{String(row.label || row.key)}{share === null ? "" : ` · ${share.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`}</span>
+                    <strong>{String(row.count || 0)} · {row.amount_rub == null ? "скрыто" : formatMoney(row.amount_rub as string | number)}</strong>
+                  </div>;
+                })}
+              </section>
+              <section aria-label="Валютная структура закупок">
+                <h3>Открытые закупки в иностранной валюте</h3>
+                {scoringV2 && visibleCurrencies.length > 0 && <div aria-hidden="true" className="executive-procurement-distribution executive-procurement-distribution--currency">{visibleCurrencies.map((row) => <i key={String(row.currency)} style={{ flexGrow: Math.max(0, Number(row.count || 0)) }} />)}</div>}
+                {visibleCurrencies.map((row) => {
+                  const share = rowShare(row);
+                  return <div className="executive-procurement-breakdown-row" key={String(row.currency)}>
+                    <span>{String(row.currency || "—")}{share === null ? "" : ` · ${share.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`}</span>
+                    <strong>{String(row.count || 0)} · {row.amount_rub == null ? "скрыто" : formatMoney(row.amount_rub as string | number)}</strong>
+                  </div>;
+                })}
+                {rubCurrency && <div className="executive-procurement-rub-row"><span>Рублёвые заказы</span><strong>{String(rubCurrency.count || 0)} · {rubCurrency.amount_rub == null ? "скрыто" : formatMoney(rubCurrency.amount_rub as string | number)}</strong></div>}
+              </section>
+            </div>
+          )}
+          {Object.keys(dataQuality).length > 0 && (
+            <details className="executive-procurement-quality">
+              <summary>Проблемы в данных</summary>
+              <p>Полнота ответственных: {String(dataQuality.responsible_coverage_pct ?? "—")}% · без ответственного: {String(dataQuality.missing_responsible_count ?? 0)} · без ожидаемой даты после карго: {String(dataQuality.missing_expected_receipt_after_cargo_count ?? 0)}</p>
+            </details>
+          )}
+          <details className="executive-procurement-source">
+            <summary>Об источнике</summary>
+            <p>Текущие открытые заказы карго и ВЭД из 1С. Витрина работает только на чтение и не является платёжным календарём.</p>
+            <span>Источник сформирован {formatDateTime(generatedAt)}.</span>
+          </details>
+        </>
+      )}
     </section>
   );
 }
@@ -2807,6 +3043,7 @@ export function SalesPeriodPanel({
     : planDiagnosticStatuses.includes("partial")
       ? "partial"
       : data?.plan_status;
+
   const showProblems = (focus: Exclude<SalesProblemFocus, null>) => {
     setProblemFocus(focus);
     breakdownsRef.current?.scrollIntoView?.({ behavior: "smooth", block: "start" });
@@ -3119,6 +3356,11 @@ export function ActionDetail({
   const correctionSystem = actionPayloadText(action, "correction_system") || action.source_system;
   const correctionDocument = actionPayloadText(action, "correction_document");
   const correctionField = actionPayloadText(action, "correction_field");
+  const managementStage = actionPayloadText(action, "management_stage_label");
+  const deadlineDate = actionPayloadText(action, "deadline_date");
+  const daysOverdue = actionPayloadText(action, "days_overdue");
+  const responsibleName = actionPayloadText(action, "responsible_name");
+  const riskFormula = actionPayloadText(action, "risk_formula");
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -3156,8 +3398,14 @@ export function ActionDetail({
           <dt>Система факта</dt><dd>{correctionSystem}</dd>
           {correctionDocument && <><dt>Документ</dt><dd>{correctionDocument}</dd></>}
           {correctionField && <><dt>Поле</dt><dd>{correctionField}</dd></>}
+          {managementStage && <><dt>Этап</dt><dd>{managementStage}</dd></>}
+          {deadlineDate && <><dt>Расчётный срок</dt><dd>{formatDate(deadlineDate)}</dd></>}
+          {daysOverdue && <><dt>Просрочка</dt><dd>{daysOverdue} дн.</dd></>}
+          {responsibleName && <><dt>Ответственный</dt><dd>{responsibleName}</dd></>}
           {action.amount && <><dt>Сумма</dt><dd>{formatMoney(action.amount, action.currency)}</dd></>}
         </dl>
+
+        {riskFormula && <div className="executive-action-detail__formula"><strong>Почему это риск</strong><p>{riskFormula}</p></div>}
 
         <div className="executive-action-detail__instruction">
           <strong>Что сделать</strong>
@@ -3485,7 +3733,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
 
       {data && (
         <>
-          <section aria-label="Состояние витрины" aria-live="polite" className="executive__topline">
+          {tab !== "procurement_import" && <section aria-label="Состояние витрины" aria-live="polite" className="executive__topline">
             <div>
               <span>Данные</span>
               <strong>{statusLabel(data.source_status)}</strong>
@@ -3502,7 +3750,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
               <span>Решений в фокусе</span>
               <strong>{data.top_actions.length}</strong>
             </div>
-          </section>
+          </section>}
 
           {tab === "today" ? (
             <FlowMap
@@ -3511,7 +3759,9 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
               onSelect={(nextTab) => navigateDashboard({ tab: nextTab })}
             />
           ) : (
-            tabOverviewBlock && <TabKpiOverview block={tabOverviewBlock} data={data} />
+            tabOverviewBlock &&
+            ![SALES_TAB_KEY, "procurement_import"].includes(tab) &&
+            <TabKpiOverview block={tabOverviewBlock} data={data} />
           )}
 
           {tab === PROFIT_LOSS_TAB_KEY && <ProfitLossPeriodPanel asOf={date} />}
@@ -3537,9 +3787,19 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
             />
           )}
 
+          {tab === "procurement_import" && (
+            <ProcurementImportPanel
+              actions={actions}
+              block={data.blocks.find((block) => block.key === "procurement_import") || null}
+              dashboardSourceStatus={data.source_status}
+              generatedAt={data.generated_at}
+              onOpenAction={setSelectedAction}
+            />
+          )}
+
           {tab === ODDS_CASHFLOW_TAB_KEY && <CashflowPeriodPanel asOf={date} />}
 
-          {metricBlocks.length > 0 && (
+          {metricBlocks.length > 0 && tab !== "procurement_import" && (
             <div className="executive-grid">
               {metricBlocks.map((block) => (
                 <BlockCard
@@ -3563,7 +3823,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
             </div>
           )}
 
-          {tab !== SALES_TAB_KEY && (
+          {![SALES_TAB_KEY, "procurement_import"].includes(tab) && (
             <section className="executive-actions">
               <header className="executive-actions__header">
                 <div>

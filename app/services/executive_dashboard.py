@@ -73,8 +73,9 @@ _RECEIVABLE_CLOSED_STATUSES = {"closed", "paid"}
 _SEVERITY_RANK = {
     "critical": 0,
     "high": 1,
-    "medium": 2,
-    "low": 3,
+    "warning": 2,
+    "medium": 3,
+    "low": 4,
 }
 
 
@@ -3088,6 +3089,17 @@ def _build_procurement_block(
     section = _finance_section(finance_payload, "procurement_import")
     source_status = str(section.get("source_status") or "source_missing")
     masked = _mask_finance("procurement_import", access_context)
+    risk_summary = dict(section.get("risk_summary") or {})
+    stage_breakdown = [
+        dict(item) for item in section.get("stage_breakdown") or [] if isinstance(item, dict)
+    ]
+    currency_breakdown = [
+        dict(item) for item in section.get("currency_breakdown") or [] if isinstance(item, dict)
+    ]
+    if masked:
+        risk_summary["at_risk_amount_rub"] = None
+        for item in [*stage_breakdown, *currency_breakdown]:
+            item["amount_rub"] = None
     return ExecutiveDashboardBlock(
         key="procurement_import",
         title="Закупки / импорт",
@@ -3097,6 +3109,11 @@ def _build_procurement_block(
         summary={
             "note": section.get("note") or "Нужен compact snapshot из procurement decision contour",
             "risk_items": section.get("risk_items") or [],
+            "risk_scoring_version": section.get("risk_scoring_version"),
+            "risk_summary": risk_summary,
+            "stage_breakdown": stage_breakdown,
+            "currency_breakdown": currency_breakdown,
+            "data_quality": section.get("data_quality") or {},
         },
         metrics=[
             _metric(
@@ -3105,6 +3122,47 @@ def _build_procurement_block(
                 int(section.get("open_supplier_orders") or 0),
                 source_status=source_status,
             ),
+            _metric(
+                "open_order_amount_rub",
+                "Сумма открытых заказов",
+                _decimal(section.get("open_order_amount_rub")),
+                unit="RUB",
+                masked=masked,
+                source_status=source_status,
+            ),
+            _metric(
+                "procurement_at_risk_count",
+                "Заказы под риском",
+                int(risk_summary.get("at_risk_count") or section.get("cargo_risk_count") or 0),
+                tone="warning",
+                source_status=source_status,
+            ),
+            _metric(
+                "procurement_at_risk_amount_rub",
+                "Сумма под риском",
+                _decimal(risk_summary.get("at_risk_amount_rub")),
+                unit="RUB",
+                masked=masked,
+                source_status=source_status,
+            ),
+            _metric(
+                "critical_overdue_count",
+                "Критические просрочки",
+                int(risk_summary.get("critical_count") or 0),
+                tone="danger",
+                source_status=source_status,
+            ),
+            _metric(
+                "foreign_open_order_amount_rub",
+                "Открытые закупки в валюте",
+                _decimal(
+                    section.get("foreign_open_order_amount_rub") or section.get("currency_exposure")
+                ),
+                unit="RUB",
+                masked=masked,
+                source_status=source_status,
+            ),
+            # Legacy metrics stay in the API until all consumers switch to v2.
             _metric(
                 "payment_ready_amount",
                 "Готовность к оплате",
@@ -3852,13 +3910,20 @@ def _procurement_attention_actions(
         if not access_context.can_view_money_block("procurement_import"):
             amount = None
         description = " · ".join(part for part in (supplier_title, reason) if part)
+        severity = str(raw_item.get("severity") or "high").strip()
+        deadline = _as_date(raw_item.get("deadline_date"))
+        correction_field = (
+            "Ожидаемая дата поступления"
+            if reason_code in {"overdue_expected_receipt", "missing_expected_receipt_date"}
+            else "Сдача в карго"
+        )
         actions.append(
             ExecutiveDashboardAction(
                 stable_key=stable_key,
                 business_date=source_date,
                 domain="procurement_import",
-                severity="high",
-                title=f"Заказ {source_number}: заполнить «Сдача в карго»",
+                severity=severity,
+                title=f"Заказ {source_number}: {reason}",
                 description=description,
                 amount=amount,
                 currency="RUB",
@@ -3866,11 +3931,16 @@ def _procurement_attention_actions(
                 source_system=str(raw_item.get("source_system") or "1C"),
                 source_ref=onec_ref,
                 dedupe_key=stable_key,
+                deadline_at=(
+                    datetime.combine(deadline, datetime.min.time(), tzinfo=UTC)
+                    if deadline
+                    else None
+                ),
                 payload={
                     **raw_item,
                     "correction_system": "1C",
                     "correction_document": "Заказ поставщику",
-                    "correction_field": "Сдача в карго",
+                    "correction_field": correction_field,
                     "recommendation": recommendation,
                 },
             )
@@ -3878,7 +3948,7 @@ def _procurement_attention_actions(
     return actions
 
 
-def _action_sort_key(action: ExecutiveDashboardAction) -> tuple[int, float, str]:
+def _action_sort_key(action: ExecutiveDashboardAction) -> tuple[int, float, Decimal, str]:
     deadline = action.deadline_at
     if deadline is None:
         deadline_value = float("inf")
@@ -3886,7 +3956,15 @@ def _action_sort_key(action: ExecutiveDashboardAction) -> tuple[int, float, str]
         if deadline.tzinfo is None:
             deadline = deadline.replace(tzinfo=UTC)
         deadline_value = deadline.timestamp()
-    return (_SEVERITY_RANK.get(action.severity, 9), deadline_value, action.stable_key)
+    amount_priority = (
+        -(action.amount or Decimal("0")) if action.domain == "procurement_import" else Decimal("0")
+    )
+    return (
+        _SEVERITY_RANK.get(action.severity, 9),
+        deadline_value,
+        amount_priority,
+        action.stable_key,
+    )
 
 
 def _merge_executive_actions(
@@ -3994,9 +4072,13 @@ def _source_freshness(
 
 
 def _tasks_block(actions: list[ExecutiveDashboardAction]) -> ExecutiveDashboardBlock:
-    overdue_count = sum(
-        1 for item in actions if item.deadline_at and item.deadline_at < datetime.now()
-    )
+    def is_overdue(value: datetime | None) -> bool:
+        if value is None:
+            return False
+        now = datetime.now(UTC) if value.tzinfo is not None else datetime.now()
+        return value < now
+
+    overdue_count = sum(1 for item in actions if is_overdue(item.deadline_at))
     critical_count = sum(1 for item in actions if item.severity == "critical")
     return ExecutiveDashboardBlock(
         key="tasks",

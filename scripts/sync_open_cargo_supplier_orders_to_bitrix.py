@@ -8,7 +8,7 @@ import json
 import sys
 from collections import Counter
 from copy import deepcopy
-from datetime import date, datetime
+from datetime import date, datetime, time
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -228,6 +228,10 @@ def order_from_open_supplier_order_row(
             "onec_ref": clean(row.get("supplier_ref")),
             "title": clean(row.get("supplier_name")),
         },
+        "responsible": {
+            "onec_ref": clean(row.get("responsible_ref")),
+            "title": clean(row.get("responsible_name")),
+        },
         "currency": currency,
         "amount": row.get("open_amount"),
         "planned_warehouse": clean(row.get("store_name")),
@@ -313,6 +317,8 @@ def fetch_open_supplier_orders(
             CASE WHEN doc._Posted = 0x01 THEN 1 ELSE 0 END AS posted,
             COALESCE(CONVERT(varchar(34), doc._Fld2498RRef, 1), '') AS supplier_ref,
             COALESCE(supplier_ref._Description, '') AS supplier_name,
+            COALESCE(CONVERT(varchar(34), doc._Fld2504RRef, 1), '') AS responsible_ref,
+            COALESCE(responsible_ref._Description, '') AS responsible_name,
             COALESCE(CONVERT(varchar(34), doc._Fld2494RRef, 1), '') AS contract_ref,
             COALESCE(contract_ref._Description, '') AS contract_name,
             COALESCE(CONVERT(varchar(34), doc._Fld2506RRef, 1), '') AS store_ref,
@@ -334,6 +340,8 @@ def fetch_open_supplier_orders(
             ON doc._IDRRef = open_balance.order_ref
         LEFT JOIN dbo._Reference54 AS supplier_ref WITH (NOLOCK)
             ON supplier_ref._IDRRef = doc._Fld2498RRef
+        LEFT JOIN dbo._Reference69 AS responsible_ref WITH (NOLOCK)
+            ON responsible_ref._IDRRef = doc._Fld2504RRef
         LEFT JOIN dbo._Reference37 AS contract_ref WITH (NOLOCK)
             ON contract_ref._IDRRef = doc._Fld2494RRef
         LEFT JOIN dbo._Reference80 AS store_ref WITH (NOLOCK)
@@ -359,6 +367,76 @@ def fetch_open_supplier_orders(
         if order:
             orders.append(order)
     return orders
+
+
+def fetch_supplier_prepare_history(
+    onec_database_url: str,
+    *,
+    date_from: date,
+    date_to: date,
+) -> list[dict[str, Any]]:
+    """Read completed supplier preparation intervals for management profiling."""
+    sql = text("""
+        SELECT
+            CONVERT(varchar(34), doc._Fld2498RRef, 1) AS supplier_ref,
+            COALESCE(currency_ref._Description, '') AS currency_name,
+            contour._EnumOrder AS contour_enum_order,
+            doc._Date_Time AS order_date,
+            doc._Fld8852 AS cargo_dropoff_date
+        FROM dbo._Document133 AS doc WITH (NOLOCK)
+        LEFT JOIN dbo._Reference20 AS currency_ref WITH (NOLOCK)
+            ON currency_ref._IDRRef = doc._Fld2490RRef
+        LEFT JOIN dbo._Enum10091 AS contour WITH (NOLOCK)
+            ON contour._IDRRef = doc._Fld10092RRef
+        WHERE doc._Marked = 0x00
+          AND doc._Posted = 0x01
+          AND doc._Date_Time >= :date_from
+          AND doc._Date_Time < :date_to
+          AND doc._Fld8852 > doc._Date_Time
+    """)
+    engine = build_engine(onec_database_url, pool_pre_ping=True)
+    with engine.connect() as conn:
+        rows = [
+            dict(row)
+            for row in conn.execute(
+                sql,
+                {
+                    "date_from": datetime.combine(date_from, time.min),
+                    "date_to": datetime.combine(date_to, time.min),
+                },
+            ).mappings()
+        ]
+
+    observations: list[dict[str, Any]] = []
+    for row in rows:
+        order_date = row.get("order_date")
+        cargo_date = row.get("cargo_dropoff_date")
+        if not isinstance(order_date, (date, datetime)) or not isinstance(
+            cargo_date, (date, datetime)
+        ):
+            continue
+        order_day = order_date.date() if isinstance(order_date, datetime) else order_date
+        cargo_day = cargo_date.date() if isinstance(cargo_date, datetime) else cargo_date
+        lead_days = (cargo_day - order_day).days
+        if lead_days <= 0:
+            continue
+        contour = contour_value(row)
+        logical_key = normalize_procurement_contour(
+            contour,
+            is_open_supplier_order=False,
+            currency=clean(row.get("currency_name")),
+            has_cargo_dropoff=True,
+        )
+        if logical_key not in {"cargo", "ved_import"}:
+            continue
+        observations.append(
+            {
+                "supplier_ref": clean(row.get("supplier_ref")),
+                "procurement_contour_key": logical_key,
+                "lead_days": lead_days,
+            }
+        )
+    return observations
 
 
 def write_json(path: Path, payload: Any) -> None:

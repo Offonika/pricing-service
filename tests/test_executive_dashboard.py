@@ -1149,8 +1149,8 @@ def test_sales_period_response_calculates_forecast_comparison_and_filters(
     assert diagnostics["cost_per_unit"].value == Decimal("40.00")
     assert diagnostics["margin_gap_pp"].value == Decimal("1.6700")
     assert diagnostics["stores_below_plan_count"].value == 0
-    assert diagnostics["managers_below_target_margin_count"].value == 0
     assert diagnostics["stores_below_plan_count"].meta["problem"] == []
+    assert diagnostics["managers_below_target_margin_count"].value == 0
     assert diagnostics["managers_below_target_margin_count"].meta["problem"] == []
     store_meta = {item.key: item.meta for item in result.by_store}
     assert store_meta["store-1"]["approved_revenue"] == Decimal("3000.00")
@@ -1856,8 +1856,21 @@ def test_procurement_role_receives_only_procurement_block_and_actions(
                 "procurement_import": {
                     "source_status": "ready",
                     "open_supplier_orders": 4,
+                    "open_order_amount_rub": "1250000",
                     "payment_ready_amount": "1250000",
                     "currency_exposure": "1250000",
+                    "risk_summary": {
+                        "at_risk_count": 2,
+                        "at_risk_amount_rub": "500000",
+                        "critical_count": 1,
+                    },
+                    "stage_breakdown": [
+                        {"key": "in_transit", "label": "В пути", "count": 2, "amount_rub": "800000"}
+                    ],
+                    "currency_breakdown": [
+                        {"currency": "RMB", "count": 3, "amount_rub": "1200000"}
+                    ],
+                    "data_quality": {"responsible_coverage_pct": "75.0"},
                 },
                 "creditors_payables": {
                     "source_status": "ready",
@@ -1910,6 +1923,8 @@ def test_procurement_role_receives_only_procurement_block_and_actions(
     metric_by_key = {metric.key: metric for metric in procurement.metrics}
     assert metric_by_key["payment_ready_amount"].masked is False
     assert metric_by_key["payment_ready_amount"].value == Decimal("1250000")
+    assert metric_by_key["procurement_at_risk_count"].value == 2
+    assert procurement.summary["stage_breakdown"][0]["amount_rub"] == "800000"
     assert [item.stable_key for item in result.top_actions] == ["procurement-visible"]
     assert result.source_freshness[0].source_key == "procurement_import"
 
@@ -1941,6 +1956,53 @@ def test_actions_filter_for_domain_user_and_status(
     assert {item.stable_key for item in result.payload} == {"a-visible", "a-public"}
 
 
+def test_procurement_nested_amounts_are_masked_without_money_permission(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_path = tmp_path / "finance_snapshot.json"
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "as_of": "2026-07-11",
+                "source_status": "ready",
+                "procurement_import": {
+                    "as_of": "2026-07-11",
+                    "source_status": "ready",
+                    "open_supplier_orders": 1,
+                    "open_order_amount_rub": "1000",
+                    "risk_summary": {"at_risk_count": 1, "at_risk_amount_rub": "1000"},
+                    "stage_breakdown": [{"key": "in_transit", "count": 1, "amount_rub": "1000"}],
+                    "currency_breakdown": [{"currency": "RMB", "count": 1, "amount_rub": "1000"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    _override_settings(monkeypatch, _settings(snapshot_path))
+    context = bitrix_executive_dashboard_auth.ExecutiveDashboardAuthContext(
+        actor="test",
+        source="internal",
+        access_level="domain",
+        allowed_blocks=("procurement_import",),
+        allowed_action_domains=("procurement_import",),
+        money_blocks=(),
+    )
+
+    result = build_executive_dashboard(
+        db_session,
+        requested_date=date(2026, 7, 11),
+        access_context=context,
+    )
+
+    block = result.blocks[0]
+    assert block.summary["risk_summary"]["at_risk_amount_rub"] is None
+    assert block.summary["stage_breakdown"][0]["amount_rub"] is None
+    assert block.summary["currency_breakdown"][0]["amount_rub"] is None
+    assert next(metric for metric in block.metrics if metric.key == "open_order_amount_rub").masked
+
+
 def test_procurement_snapshot_attention_becomes_clickable_action_and_disappears_after_fix(
     db_session: Session,
     tmp_path: Path,
@@ -1962,6 +2024,8 @@ def test_procurement_snapshot_attention_becomes_clickable_action_and_disappears_
                     "currency": "RMB",
                     "reason_code": "missing_cargo_handoff_date",
                     "reason": "Не заполнена дата «Сдача в карго».",
+                    "severity": "warning",
+                    "deadline_date": "2026-07-10",
                     "recommendation": "Заполнить поле в документе 1С.",
                     "source_system": "1C",
                 }
@@ -1981,11 +2045,20 @@ def test_procurement_snapshot_attention_becomes_clickable_action_and_disappears_
 
     assert result.total_count == 1
     action = result.payload[0]
-    assert action.title == "Заказ РБГУ0001: заполнить «Сдача в карго»"
+    assert action.title == "Заказ РБГУ0001: Не заполнена дата «Сдача в карго»."
+    assert action.severity == "warning"
+    assert action.deadline_at.date() == date(2026, 7, 10)
     assert action.amount == Decimal("1000.00")
     assert action.source_ref == "0x01"
     assert action.payload["correction_system"] == "1C"
     assert action.payload["correction_field"] == "Сдача в карго"
+
+    dashboard = build_executive_dashboard(
+        db_session,
+        requested_date=date(2026, 7, 11),
+        access_level="full",
+    )
+    assert next(block for block in dashboard.blocks if block.key == "tasks")
 
     snapshot["procurement_import"]["attention_items"] = []
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")

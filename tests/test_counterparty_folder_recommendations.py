@@ -18,6 +18,11 @@ from app.models.counterparty_folder_snapshot import CounterpartyFolderSnapshot
 from app.models.receivable_balance_snapshot import ReceivableBalanceSnapshot
 from app.models.receivable_ledger_event import ReceivableLedgerEvent
 from app.services.counterparty_folder_recommendations import (
+    OPEN_DEBT_DIAGNOSTIC_MATCHED,
+    OPEN_DEBT_DIAGNOSTIC_STATEMENT_MISSING,
+    OPEN_DEBT_DIAGNOSTIC_STRUCTURE_UNCONFIRMED,
+    OPEN_DEBT_DIAGNOSTIC_TOTAL_ABOVE_BALANCE,
+    OPEN_DEBT_DIAGNOSTIC_TOTAL_BELOW_BALANCE,
     STATUS_MOVE_RECOMMENDED,
     STATUS_NEEDS_REVIEW,
     STATUS_NO_OVERDUE,
@@ -26,6 +31,8 @@ from app.services.counterparty_folder_recommendations import (
     SaleDocumentDepartmentRow,
     _build_item,
     build_counterparty_folder_recommendations,
+    classify_open_debt_documents,
+    open_debt_documents_match_balance,
 )
 from app.services.counterparty_folder_snapshots import (
     build_counterparty_folder_changes,
@@ -392,6 +399,44 @@ def test_statement_debt_resolver_caps_single_large_bottom_up_sale_to_balance() -
     assert [item.document_number for item in docs] == ["РТУ-1"]
     assert docs[0].statement_selection_rule == "statement_bottom_up_balance_cutoff"
     assert docs[0].open_amount == Decimal("3000.00")
+
+
+def test_open_debt_diagnostics_do_not_accept_missing_or_mismatched_documents() -> None:
+    assert not open_debt_documents_match_balance([], current_balance=Decimal("100.00"))
+    assert (
+        classify_open_debt_documents([], current_balance=Decimal("100.00"), statement_sale_count=0)
+        == OPEN_DEBT_DIAGNOSTIC_STATEMENT_MISSING
+    )
+    assert (
+        classify_open_debt_documents([], current_balance=Decimal("100.00"), statement_sale_count=1)
+        == OPEN_DEBT_DIAGNOSTIC_STRUCTURE_UNCONFIRMED
+    )
+    confirmed = {
+        "open_amount": "100.00",
+        "document_structure_status": "confirmed_open",
+    }
+    assert (
+        classify_open_debt_documents(
+            [confirmed], current_balance=Decimal("100.00"), statement_sale_count=1
+        )
+        == OPEN_DEBT_DIAGNOSTIC_MATCHED
+    )
+    assert (
+        classify_open_debt_documents(
+            [{**confirmed, "open_amount": "90.00"}],
+            current_balance=Decimal("100.00"),
+            statement_sale_count=1,
+        )
+        == OPEN_DEBT_DIAGNOSTIC_TOTAL_BELOW_BALANCE
+    )
+    assert (
+        classify_open_debt_documents(
+            [{**confirmed, "open_amount": "110.00"}],
+            current_balance=Decimal("100.00"),
+            statement_sale_count=1,
+        )
+        == OPEN_DEBT_DIAGNOSTIC_TOTAL_ABOVE_BALANCE
+    )
 
 
 def test_folder_alias_treats_site_and_online_store_as_equivalent() -> None:

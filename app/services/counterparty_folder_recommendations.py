@@ -76,6 +76,16 @@ REVIEW_REASON_ORIGIN_DOCUMENT_CLOSED_BY_STRUCTURE = "origin_document_closed_by_s
 REVIEW_REASON_DOCUMENT_COMMENT_HISTORY_REQUIRED = "document_comment_history_required"
 REVIEW_REASON_OPEN_DEBT_SOURCE_STALE = "open_debt_source_stale"
 REVIEW_REASON_OPEN_DEBT_AMOUNT_MISMATCH = "open_debt_document_amount_mismatch"
+REVIEW_REASON_OPEN_DEBT_STATEMENT_MISSING = "open_debt_statement_missing"
+REVIEW_REASON_OPEN_DEBT_STRUCTURE_UNCONFIRMED = "open_debt_structure_unconfirmed"
+REVIEW_REASON_OPEN_DEBT_TOTAL_BELOW_BALANCE = "open_debt_document_total_below_balance"
+REVIEW_REASON_OPEN_DEBT_TOTAL_ABOVE_BALANCE = "open_debt_document_total_above_balance"
+
+OPEN_DEBT_DIAGNOSTIC_MATCHED = "matched"
+OPEN_DEBT_DIAGNOSTIC_STATEMENT_MISSING = "statement_missing"
+OPEN_DEBT_DIAGNOSTIC_STRUCTURE_UNCONFIRMED = "structure_unconfirmed"
+OPEN_DEBT_DIAGNOSTIC_TOTAL_BELOW_BALANCE = "document_total_below_balance"
+OPEN_DEBT_DIAGNOSTIC_TOTAL_ABOVE_BALANCE = "document_total_above_balance"
 
 
 @dataclass(frozen=True)
@@ -91,12 +101,52 @@ def open_debt_documents_match_balance(
     current_balance: Decimal,
 ) -> bool:
     if not documents:
-        return True
-    document_total = sum(
+        return Decimal(current_balance).quantize(Decimal("0.01")) == Decimal("0.00")
+    return open_debt_document_total(documents) == Decimal(current_balance).quantize(Decimal("0.01"))
+
+
+def open_debt_document_total(documents: Sequence[dict[str, Any]]) -> Decimal:
+    return sum(
         (Decimal(str(document.get("open_amount") or "0")) for document in documents),
         Decimal("0.00"),
     ).quantize(Decimal("0.01"))
-    return document_total == Decimal(current_balance).quantize(Decimal("0.01"))
+
+
+def classify_open_debt_documents(
+    documents: Sequence[dict[str, Any]],
+    *,
+    current_balance: Decimal,
+    statement_sale_count: int,
+) -> str:
+    balance = Decimal(current_balance).quantize(Decimal("0.01"))
+    if not documents:
+        return (
+            OPEN_DEBT_DIAGNOSTIC_STRUCTURE_UNCONFIRMED
+            if statement_sale_count
+            else OPEN_DEBT_DIAGNOSTIC_STATEMENT_MISSING
+        )
+    total = open_debt_document_total(documents)
+    if total == balance:
+        return OPEN_DEBT_DIAGNOSTIC_MATCHED
+    if any(
+        str(document.get("document_structure_status") or "") != DOCUMENT_STRUCTURE_CONFIRMED_OPEN
+        for document in documents
+    ):
+        return OPEN_DEBT_DIAGNOSTIC_STRUCTURE_UNCONFIRMED
+    return (
+        OPEN_DEBT_DIAGNOSTIC_TOTAL_BELOW_BALANCE
+        if total < balance
+        else OPEN_DEBT_DIAGNOSTIC_TOTAL_ABOVE_BALANCE
+    )
+
+
+def open_debt_review_reason(diagnostic: str) -> str:
+    return {
+        OPEN_DEBT_DIAGNOSTIC_STATEMENT_MISSING: REVIEW_REASON_OPEN_DEBT_STATEMENT_MISSING,
+        OPEN_DEBT_DIAGNOSTIC_STRUCTURE_UNCONFIRMED: (REVIEW_REASON_OPEN_DEBT_STRUCTURE_UNCONFIRMED),
+        OPEN_DEBT_DIAGNOSTIC_TOTAL_BELOW_BALANCE: (REVIEW_REASON_OPEN_DEBT_TOTAL_BELOW_BALANCE),
+        OPEN_DEBT_DIAGNOSTIC_TOTAL_ABOVE_BALANCE: (REVIEW_REASON_OPEN_DEBT_TOTAL_ABOVE_BALANCE),
+    }.get(diagnostic, REVIEW_REASON_OPEN_DEBT_AMOUNT_MISMATCH)
 
 
 def evaluate_open_debt_source_freshness(
@@ -1094,6 +1144,7 @@ def build_open_debt_documents_by_counterparty(
     snapshot_date: date,
     status: str | None = None,
     include_onec_enrichment: bool = True,
+    diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     structure_candidate_refs = [
         snapshot.counterparty_ref
@@ -1105,6 +1156,15 @@ def build_open_debt_documents_by_counterparty(
         counterparty_refs=structure_candidate_refs,
         snapshot_date=snapshot_date,
     )
+    if diagnostics is not None:
+        diagnostics["statement_sale_counts"] = {
+            key: sum(
+                1
+                for event in events
+                if event.event_type == "sale" and Decimal(event.amount_delta) > Decimal("0")
+            )
+            for key, events in statement_events_by_counterparty.items()
+        }
     document_departments: dict[str, SaleDocumentDepartmentRow] = {}
     document_structure_checks: dict[str, ReceivableDocumentStructureCheck] = {}
     origin_document_refs = sorted(
@@ -1514,6 +1574,7 @@ def build_counterparty_folder_recommendations(
         onec_engine,
         counterparty_refs=counterparty_refs,
     )
+    open_debt_diagnostics: dict[str, Any] = {}
     open_debt_documents_by_counterparty = (
         build_open_debt_documents_by_counterparty(
             session,
@@ -1521,6 +1582,7 @@ def build_counterparty_folder_recommendations(
             snapshots=snapshots,
             snapshot_date=snapshot_date,
             status=status,
+            diagnostics=open_debt_diagnostics,
         )
         if source_freshness.source_status == "cache_ready"
         else {}
@@ -1557,13 +1619,16 @@ def build_counterparty_folder_recommendations(
     }
 
     items = []
+    statement_sale_counts = open_debt_diagnostics.get("statement_sale_counts") or {}
     for snapshot in snapshots:
         counterparty_key = _ref_key(snapshot.counterparty_ref)
         open_debt_documents = open_debt_documents_by_counterparty.get(counterparty_key, [])
-        document_amount_mismatch = not open_debt_documents_match_balance(
+        document_diagnostic = classify_open_debt_documents(
             open_debt_documents,
             current_balance=snapshot.current_balance,
+            statement_sale_count=int(statement_sale_counts.get(counterparty_key) or 0),
         )
+        document_amount_mismatch = document_diagnostic != OPEN_DEBT_DIAGNOSTIC_MATCHED
         if document_amount_mismatch:
             open_debt_documents = []
         primary_document_ref = (
@@ -1579,12 +1644,12 @@ def build_counterparty_folder_recommendations(
             open_debt_documents=open_debt_documents,
             is_excluded_china_supplier=counterparty_key in china_supplier_refs,
         )
-        if document_amount_mismatch:
+        if document_amount_mismatch and not _is_excluded_reason(item.get("review_reason")):
             item = dict(item)
             item.update(
                 {
                     "status": STATUS_NEEDS_REVIEW,
-                    "review_reason": REVIEW_REASON_OPEN_DEBT_AMOUNT_MISMATCH,
+                    "review_reason": open_debt_review_reason(document_diagnostic),
                     "recommended_folder_ref": None,
                     "recommended_folder_name": None,
                     "recommended_folder_display_name": None,

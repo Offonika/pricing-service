@@ -16,13 +16,14 @@ from app.models import (
     ReceivableOpenDebtCache,
 )
 from app.services.counterparty_folder_recommendations import (
+    OPEN_DEBT_DIAGNOSTIC_MATCHED,
     STATUS_MOVE_RECOMMENDED,
     STATUS_NEEDS_REVIEW,
     STATUS_NO_OVERDUE,
     STATUS_OK,
     build_open_debt_documents_by_counterparty,
+    classify_open_debt_documents,
     evaluate_open_debt_source_freshness,
-    open_debt_documents_match_balance,
 )
 from app.services.receivables import CASE_BUYERS
 
@@ -229,6 +230,7 @@ def rebuild_open_debt_cache(
             ReceivableOpenDebtCache.counterparty_ref.not_in(active_counterparty_refs)
         )
     deleted_count = session.execute(stale_cache_delete).rowcount or 0
+    open_debt_diagnostics: dict[str, Any] = {}
     documents_by_counterparty = (
         build_open_debt_documents_by_counterparty(
             session,
@@ -236,19 +238,29 @@ def rebuild_open_debt_cache(
             snapshots=snapshots,
             snapshot_date=snapshot_date,
             include_onec_enrichment=include_onec_enrichment,
+            diagnostics=open_debt_diagnostics,
         )
         if freshness.source_status == "cache_ready"
         else {}
     )
     now = datetime.utcnow()
     updated_count = 0
+    diagnostic_counts: Counter[str] = Counter()
+    statement_sale_counts = open_debt_diagnostics.get("statement_sale_counts") or {}
     for snapshot in snapshots:
         key = _ref_key(snapshot.counterparty_ref)
         documents = documents_by_counterparty.get(key, [])
-        document_amount_mismatch = not open_debt_documents_match_balance(
-            documents,
-            current_balance=snapshot.current_balance,
+        document_diagnostic = (
+            classify_open_debt_documents(
+                documents,
+                current_balance=snapshot.current_balance,
+                statement_sale_count=int(statement_sale_counts.get(key) or 0),
+            )
+            if freshness.source_status == "cache_ready"
+            else freshness.source_status
         )
+        diagnostic_counts[document_diagnostic] += 1
+        document_amount_mismatch = document_diagnostic != OPEN_DEBT_DIAGNOSTIC_MATCHED
         row = session.scalar(
             select(ReceivableOpenDebtCache).where(
                 ReceivableOpenDebtCache.snapshot_date == snapshot_date,
@@ -281,6 +293,14 @@ def rebuild_open_debt_cache(
         "source_status": freshness.source_status,
         "source_max_document_date": freshness.source_max_document_date,
         "source_lag_days": freshness.source_lag_days,
+        "document_diagnostic_counts": dict(sorted(diagnostic_counts.items())),
+        "document_mismatch_count": sum(
+            count
+            for diagnostic, count in diagnostic_counts.items()
+            if diagnostic != OPEN_DEBT_DIAGNOSTIC_MATCHED
+        ),
+        "revealed_document_mismatch_count": 0,
+        "extra_cache_rows": 0,
     }
 
 

@@ -19,6 +19,7 @@ import {
   type ExecutiveManagementBalanceView,
   type ExecutiveProfitLossBreakdownRow,
   type ExecutiveProfitLossExpenseBreakdownRow,
+  type ExecutiveProfitLossInventoryLoss,
   type ExecutiveProfitLossOpenQuestion,
   type ExecutiveProfitLossPeriodResponse,
   type ExecutiveProfitLossRatio,
@@ -253,6 +254,12 @@ function statusLabel(status: string) {
     insufficient_history: "недостаточно истории",
     not_applicable: "не рассчитывается",
     complete: "период закрыт",
+    approved: "утверждено",
+    draft: "черновик",
+    provided: "задан вручную",
+    fallback: "резервный источник",
+    missing: "нет источника",
+    unknown: "статус не указан",
   };
   return labels[status] || status;
 }
@@ -306,6 +313,11 @@ function formatPlainNumber(value: string | number | null | undefined) {
     maximumFractionDigits: 2,
     minimumFractionDigits: Math.abs(numberValue) < 1000 && numberValue !== 0 ? 2 : 0,
   }).format(numberValue);
+}
+
+function formatPercentPoints(value: string | number | null | undefined) {
+  if (value === null || value === undefined || value === "") return "нет данных";
+  return `${formatPlainNumber(value)}%`;
 }
 
 function formatDate(value?: string | null) {
@@ -1804,6 +1816,25 @@ function formatProfitLossAmount(value: string | number | null | undefined) {
   return value === null || value === undefined ? "не подключено" : formatMoney(value);
 }
 
+function isReceiptSurplus(value: string | number | null | undefined) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed < 0;
+}
+
+function formatInventoryLossMagnitude(value: string | number | null | undefined) {
+  if (!isReceiptSurplus(value)) return formatProfitLossAmount(value);
+  return formatMoney(Math.abs(Number(value)));
+}
+
+function formatInventoryLossResult(value: string | number | null | undefined) {
+  if (!isReceiptSurplus(value)) return formatProfitLossAmount(value);
+  return `Превышение оприходований: ${formatMoney(Math.abs(Number(value)))}`;
+}
+
+function inventoryStoreKey(store: { store_ref: string; store_name: string }) {
+  return store.store_ref || `name:${store.store_name}`;
+}
+
 function profitLossRowDetail(row: ExecutiveProfitLossBreakdownRow) {
   const margin = row.gross_margin_pct === null || row.gross_margin_pct === undefined
     ? "маржа: нет данных"
@@ -2188,6 +2219,316 @@ function CashflowPeriodPanel({ asOf }: { asOf: string }) {
   );
 }
 
+export function InventoryLossPanel({ data }: { data?: ExecutiveProfitLossInventoryLoss | null }) {
+  const [storeMode, setStoreMode] = useState<"all" | "above_norm">("all");
+  const [storeRef, setStoreRef] = useState("");
+  const [operationMode, setOperationMode] = useState<"all" | "writeoff" | "receipt">("all");
+
+  if (!data || ["source_missing", "source_error"].includes(data.source_status)) {
+    return (
+      <section className="executive-profit-loss-lines" aria-label="Товарные потери за месяц">
+        <header>
+          <h3>Товарные потери за месяц</h3>
+          <span>{data ? statusLabel(data.source_status) : "нет данных"}</span>
+        </header>
+        <div className="executive-cashflow-period__empty">
+          {data?.note || "Месячный отчет по списаниям и оприходованиям не подключен."}
+        </div>
+      </section>
+    );
+  }
+
+  const visibleStores = data.stores.filter((store) => storeMode === "all" || store.above_norm);
+  const visibleDocuments = data.top_documents.filter((document) => {
+    if (storeRef && inventoryStoreKey(document) !== storeRef) return false;
+    if (operationMode === "receipt") return document.operation_kind === "inventory_receipt";
+    if (operationMode === "writeoff") return document.operation_kind !== "inventory_receipt";
+    return true;
+  });
+  const maxHistoryLoss = Math.max(
+    ...data.history.map((item) => Math.abs(Number(item.loss_amount) || 0)),
+    1
+  );
+  const detailReady = !["source_missing", "source_error"].includes(data.detail_source_status);
+  const receiptSurplus = isReceiptSurplus(data.loss_amount);
+  const normSourceStatus = data.data_quality.norm_source_status || "unknown";
+  const storeScopeStatus = data.data_quality.store_scope_status || "unknown";
+  const normHint = {
+    approved: "утвержденный KPI",
+    provided: "явно заданный норматив",
+    fallback: "резервный норматив",
+    missing: "норматив не найден",
+    unknown: "источник не указан",
+  }[normSourceStatus] || statusLabel(normSourceStatus);
+  const storeScopeCountLabel = storeScopeStatus === "approved"
+    ? "Утверждено магазинов"
+    : storeScopeStatus === "draft"
+      ? "Магазинов в черновике"
+      : "Магазинов в контуре";
+
+  return (
+    <section className="executive-inventory-loss" aria-label="Товарные потери за месяц">
+      <header className="executive-inventory-loss__header">
+        <div>
+          <h3>Товарные потери за месяц</h3>
+          <span>{data.note || "Справочный блок вне расчета операционной прибыли."}</span>
+        </div>
+        <strong>{`${data.month} · ${statusLabel(data.source_status)}`}</strong>
+      </header>
+
+      <div className="executive-profit-loss-lines__rows">
+        <div className="executive-profit-loss-line executive-profit-loss-line--metric">
+          <span>Списания товаров</span>
+          <strong>{formatProfitLossAmount(data.writeoff_amount)}</strong>
+          <small>Инвентаризационные и дополнительные списания.</small>
+        </div>
+        <div className="executive-profit-loss-line executive-profit-loss-line--metric">
+          <span>Оприходования товаров</span>
+          <strong>{formatProfitLossAmount(data.receipt_amount)}</strong>
+          <small>Оприходования по результатам инвентаризаций.</small>
+        </div>
+        <div className={`executive-profit-loss-line executive-profit-loss-line--total${receiptSurplus ? " executive-profit-loss-line--receipt-surplus" : ""}`}>
+          <span>{receiptSurplus ? "Превышение оприходований" : "Чистые товарные потери"}</span>
+          <strong>{formatInventoryLossMagnitude(data.loss_amount)}</strong>
+          <small>
+            {receiptSurplus ? "Оприходования минус списания" : "Списания минус оприходования"}
+            {data.loss_pct !== null && data.loss_pct !== undefined
+              ? ` · ${formatPercentPoints(receiptSurplus ? Math.abs(Number(data.loss_pct)) : data.loss_pct)} от продаж`
+              : ""}
+          </small>
+        </div>
+      </div>
+
+      <div className="executive-panel__kpis executive-inventory-loss__kpis">
+        <MetricCard
+          hint={normHint}
+          label="Норматив"
+          tooltip={`Норматив shrinkage_rate для руководителя сети. Статус источника: ${statusLabel(normSourceStatus)}.`}
+          value={formatPercentPoints(data.norm_pct)}
+        />
+        <MetricCard
+          hint="факт минус норматив"
+          label="Отклонение"
+          tone={
+            data.variance_to_norm_pct === null || data.variance_to_norm_pct === undefined
+              ? "neutral"
+              : Number(data.variance_to_norm_pct) > 0
+                ? "warning"
+                : "success"
+          }
+          tooltip="Положительное значение означает превышение норматива."
+          value={formatPercentPoints(data.variance_to_norm_pct)}
+        />
+        <MetricCard
+          hint={data.previous_month?.month || "нет опубликованного месяца"}
+          label="Прошлый месяц"
+          tooltip="Чистые товарные потери за непосредственно предыдущий календарный месяц."
+          value={formatInventoryLossResult(data.previous_month?.loss_amount)}
+        />
+        <MetricCard
+          hint={statusLabel(data.history_source_status)}
+          label="Среднее за 3 месяца"
+          tooltip="Среднее по трем предыдущим опубликованным месяцам в пределах года."
+          value={formatInventoryLossResult(data.average_loss_amount_3m)}
+        />
+      </div>
+
+      {data.history.length > 0 && (
+        <section className="executive-inventory-loss__history" aria-label="Динамика товарных потерь">
+          <h4>Динамика</h4>
+          {data.history.map((item) => (
+            <div className="executive-cashflow-day" key={item.month}>
+              <span>{item.month}</span>
+              <div>
+                <b
+                  className={isReceiptSurplus(item.loss_amount) ? "is-receipt-surplus" : undefined}
+                  style={{
+                    width: `${Math.max(3, Math.round((Math.abs(Number(item.loss_amount) || 0) / maxHistoryLoss) * 100))}%`,
+                  }}
+                />
+              </div>
+              <strong>{formatInventoryLossResult(item.loss_amount)}</strong>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {!detailReady ? (
+        <div className="executive-cashflow-period__empty">
+          {data.schema_version < 2
+            ? "Источник v1 содержит только сетевые итоги. Детализация по магазинам и документам недоступна."
+            : "Источник v2 опубликован без доступной детализации по магазинам и документам."}
+        </div>
+      ) : (
+        <>
+          <section className="executive-inventory-loss__section" aria-label="Потери по магазинам">
+            <header>
+              <div>
+                <h4>По магазинам</h4>
+                <span>Сначала показаны точки с наибольшими чистыми потерями.</span>
+              </div>
+              <div className="executive-panel__filters">
+                <button
+                  aria-pressed={storeMode === "all"}
+                  onClick={() => setStoreMode("all")}
+                  type="button"
+                >
+                  Все
+                </button>
+                <button
+                  aria-pressed={storeMode === "above_norm"}
+                  onClick={() => setStoreMode("above_norm")}
+                  type="button"
+                >
+                  Выше норматива
+                </button>
+              </div>
+            </header>
+            <div className="executive-inventory-loss__table-wrap">
+              <table className="executive-inventory-loss__table">
+                <thead>
+                  <tr>
+                    <th>Магазин</th>
+                    <th>Списания</th>
+                    <th>Оприходования</th>
+                    <th>Результат</th>
+                    <th>Доля / норматив</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleStores.map((store) => (
+                    <tr
+                      className={store.above_norm ? "is-warning" : isReceiptSurplus(store.loss_amount) ? "is-receipt-surplus" : ""}
+                      key={inventoryStoreKey(store)}
+                    >
+                      <td>{store.store_name}</td>
+                      <td>{formatProfitLossAmount(store.writeoff_amount)}</td>
+                      <td>{formatProfitLossAmount(store.receipt_amount)}</td>
+                      <td>{formatInventoryLossResult(store.loss_amount)}</td>
+                      <td>
+                        {formatPercentPoints(store.loss_pct)} / {formatPercentPoints(store.norm_pct)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {visibleStores.length === 0 && (
+                <div className="executive-cashflow-period__empty">Нет магазинов по выбранному фильтру.</div>
+              )}
+            </div>
+          </section>
+
+          <section className="executive-inventory-loss__section" aria-label="Крупнейшие товарные операции">
+            <header>
+              <div>
+                <h4>Крупнейшие операции</h4>
+                <span>До 20 документов из опубликованного месячного снимка.</span>
+              </div>
+              <div className="executive-panel__filters">
+                <label>
+                  Магазин
+                  <select aria-label="Магазин документов" onChange={(event) => setStoreRef(event.target.value)} value={storeRef}>
+                    <option value="">Все</option>
+                    {data.stores.map((store) => (
+                      <option key={inventoryStoreKey(store)} value={inventoryStoreKey(store)}>{store.store_name}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Операция
+                  <select
+                    aria-label="Тип товарной операции"
+                    onChange={(event) => setOperationMode(event.target.value as "all" | "writeoff" | "receipt")}
+                    value={operationMode}
+                  >
+                    <option value="all">Все</option>
+                    <option value="writeoff">Списания</option>
+                    <option value="receipt">Оприходования</option>
+                  </select>
+                </label>
+              </div>
+            </header>
+            <div className="executive-inventory-loss__table-wrap">
+              <table className="executive-inventory-loss__table">
+                <thead>
+                  <tr>
+                    <th>Документ</th>
+                    <th>Дата</th>
+                    <th>Операция</th>
+                    <th>Магазин</th>
+                    <th>Сумма</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleDocuments.map((document) => (
+                    <tr key={document.stable_key}>
+                      <td>{document.document_number || "Без номера"}</td>
+                      <td>{formatDate(document.document_date)}</td>
+                      <td>{document.operation_label}</td>
+                      <td>{document.store_name}</td>
+                      <td>{formatProfitLossAmount(document.amount)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {visibleDocuments.length === 0 && (
+                <div className="executive-cashflow-period__empty">Нет документов по выбранному фильтру.</div>
+              )}
+            </div>
+          </section>
+
+          <section className="executive-inventory-loss__section" aria-label="Требует действий">
+            <header>
+              <div>
+                <h4>Требует действий</h4>
+                <span>Read-only очередь: задачи в Bitrix24 не создаются.</span>
+              </div>
+              <strong>{data.actions.length}</strong>
+            </header>
+            {data.actions.length === 0 ? (
+              <div className="executive-cashflow-period__empty">Сигналов по нормативу и качеству данных нет.</div>
+            ) : (
+              <div className="executive-inventory-loss__actions">
+                {data.actions.map((action) => (
+                  <article key={action.stable_key}>
+                    <div>
+                      <strong>{action.title}</strong>
+                      <span>{action.description}</span>
+                    </div>
+                    <small>
+                      Ответственный: {action.responsible_name || "Руководитель сети"}. {action.recommended_action}
+                    </small>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        </>
+      )}
+
+      <details className="executive-inventory-loss__quality">
+        <summary>Контроль качества данных · {statusLabel(data.data_quality.source_status)}</summary>
+        <dl>
+          <div><dt>{storeScopeCountLabel}</dt><dd>{data.data_quality.approved_store_count}</dd></div>
+          <div><dt>Статус контура</dt><dd>{statusLabel(storeScopeStatus)}{data.data_quality.store_scope_month ? ` · ${data.data_quality.store_scope_month}` : ""}</dd></div>
+          <div><dt>Источник норматива</dt><dd>{statusLabel(normSourceStatus)}</dd></div>
+          <div><dt>Сопоставлено магазинов</dt><dd>{data.data_quality.matched_store_count}</dd></div>
+          <div><dt>Несопоставлено документов</dt><dd>{data.data_quality.unmatched_document_count}</dd></div>
+          <div><dt>Исключено тех. документов</dt><dd>{data.data_quality.excluded_document_count || 0}</dd></div>
+          <div><dt>Исключённые тех. списания</dt><dd>{formatMoney(data.data_quality.excluded_writeoff_amount)}</dd></div>
+          <div><dt>Исключённые тех. оприходования</dt><dd>{formatMoney(data.data_quality.excluded_receipt_amount)}</dd></div>
+          <div><dt>Несопоставленные списания</dt><dd>{formatMoney(data.data_quality.unmatched_writeoff_amount)}</dd></div>
+          <div><dt>Несопоставленные оприходования</dt><dd>{formatMoney(data.data_quality.unmatched_receipt_amount)}</dd></div>
+        </dl>
+      </details>
+
+      {data.warnings.map((warning) => (
+        <div className="executive-cashflow-period__note" key={warning}>{warning}</div>
+      ))}
+    </section>
+  );
+}
+
 function ProfitLossPeriodPanel({ asOf }: { asOf: string }) {
   const [dateFrom, setDateFrom] = useState(monthStartIso(asOf));
   const [dateTo, setDateTo] = useState(asOf);
@@ -2347,6 +2688,11 @@ function ProfitLossPeriodPanel({ asOf }: { asOf: string }) {
               ))}
             </div>
           </section>
+
+          <InventoryLossPanel
+            data={data.inventory_loss}
+            key={data.inventory_loss?.month || "inventory-loss-missing"}
+          />
 
           <div className="executive-cashflow-period__chart" aria-label="Динамика ОПУ по дням">
             {data.daily.slice(-31).map((row) => {

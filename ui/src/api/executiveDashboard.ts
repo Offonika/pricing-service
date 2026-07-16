@@ -256,6 +256,112 @@ export interface ExecutiveProfitLossOpenQuestion {
   meta: Record<string, unknown>;
 }
 
+export interface ExecutiveProfitLossInventoryLoss {
+  schema_version: number;
+  month: string;
+  source_status: string;
+  detail_source_status: string;
+  writeoff_amount?: string | number | null;
+  receipt_amount?: string | number | null;
+  loss_amount?: string | number | null;
+  loss_pct?: string | number | null;
+  norm_pct?: string | number | null;
+  variance_to_norm_pct?: string | number | null;
+  matched_store_count?: number | null;
+  previous_month?: ExecutiveProfitLossInventoryHistoryItem | null;
+  average_loss_amount_3m?: string | number | null;
+  average_loss_pct_3m?: string | number | null;
+  history_source_status: string;
+  history: ExecutiveProfitLossInventoryHistoryItem[];
+  stores: ExecutiveProfitLossInventoryStore[];
+  top_documents: ExecutiveProfitLossInventoryDocument[];
+  actions: ExecutiveProfitLossInventoryAction[];
+  data_quality: ExecutiveProfitLossInventoryDataQuality;
+  owner?: ExecutiveProfitLossInventoryOwner | null;
+  warnings: string[];
+  note?: string | null;
+}
+
+export interface ExecutiveProfitLossInventoryHistoryItem {
+  month: string;
+  source_status: string;
+  writeoff_amount?: string | number | null;
+  receipt_amount?: string | number | null;
+  loss_amount?: string | number | null;
+  loss_pct?: string | number | null;
+}
+
+export interface ExecutiveProfitLossInventoryStore {
+  store_ref: string;
+  store_name: string;
+  sales_amount?: string | number | null;
+  writeoff_amount?: string | number | null;
+  receipt_amount?: string | number | null;
+  loss_amount?: string | number | null;
+  loss_pct?: string | number | null;
+  norm_pct?: string | number | null;
+  variance_to_norm_pct?: string | number | null;
+  above_norm: boolean;
+  source_status: string;
+  has_operations: boolean;
+}
+
+export interface ExecutiveProfitLossInventoryDocument {
+  stable_key: string;
+  operation_kind: string;
+  operation_label: string;
+  document_type: string;
+  document_ref: string;
+  document_number: string;
+  document_date?: string | null;
+  store_ref: string;
+  store_name: string;
+  amount: string | number;
+  effect_amount: string | number;
+}
+
+export interface ExecutiveProfitLossInventoryAction {
+  stable_key: string;
+  action_type: string;
+  severity: string;
+  title: string;
+  description: string;
+  amount?: string | number | null;
+  store_ref?: string | null;
+  store_name?: string | null;
+  responsible_name?: string | null;
+  recommended_action: string;
+}
+
+export interface ExecutiveProfitLossInventoryDataQuality {
+  source_status: string;
+  approved_store_count: number;
+  source_store_count: number;
+  matched_store_count: number;
+  unmatched_store_count: number;
+  source_document_count: number;
+  matched_document_count: number;
+  unmatched_document_count: number;
+  unmatched_writeoff_amount: string | number;
+  unmatched_receipt_amount: string | number;
+  excluded_store_count?: number;
+  excluded_document_count?: number;
+  excluded_writeoff_amount?: string | number;
+  excluded_receipt_amount?: string | number;
+  store_scope_status?: string;
+  store_scope_source?: string | null;
+  store_scope_month?: string | null;
+  norm_source_status?: string;
+  norm_source?: string | null;
+}
+
+export interface ExecutiveProfitLossInventoryOwner {
+  employee_key?: string | null;
+  employee_bitrix_id?: string | null;
+  employee_name?: string | null;
+  role_code?: string | null;
+}
+
 export interface ExecutiveProfitLossPeriodResponse {
   date_from: string;
   date_to: string;
@@ -272,6 +378,7 @@ export interface ExecutiveProfitLossPeriodResponse {
   expense_source_status: string;
   expense_breakdown: ExecutiveProfitLossExpenseBreakdownRow[];
   expense_open_questions: ExecutiveProfitLossOpenQuestion[];
+  inventory_loss?: ExecutiveProfitLossInventoryLoss | null;
   filters: Record<string, unknown>;
 }
 

@@ -5,6 +5,7 @@ import type {
   ExecutiveDashboardAction,
   ExecutiveDashboardBlock,
   ExecutiveDashboardResponse,
+  ExecutiveProfitLossInventoryLoss,
   ExecutiveSalesPeriodResponse,
 } from "../api/executiveDashboard";
 import {
@@ -28,10 +29,251 @@ import {
   ActionDetail,
   ActionTable,
   ExecutiveDashboard,
+  InventoryLossPanel,
   ManagementBalanceBlockCard,
   MonthlyManagementBalance,
 } from "./ExecutiveDashboard";
 import { splitManagementBalanceBlock } from "./executiveDashboardLayout";
+
+function inventoryLoss(): ExecutiveProfitLossInventoryLoss {
+  return {
+    schema_version: 2,
+    month: "2026-06",
+    source_status: "ready",
+    detail_source_status: "partial",
+    writeoff_amount: "1229121.82",
+    receipt_amount: "526672.97",
+    loss_amount: "702448.85",
+    loss_pct: "0.8499",
+    norm_pct: "0.3000",
+    variance_to_norm_pct: "0.5499",
+    matched_store_count: 2,
+    previous_month: {
+      month: "2026-05",
+      source_status: "ready",
+      loss_amount: "600000.00",
+      loss_pct: "0.7000",
+    },
+    average_loss_amount_3m: "500000.00",
+    average_loss_pct_3m: "0.6000",
+    history_source_status: "ready",
+    history: [
+      { month: "2026-04", source_status: "ready", loss_amount: "400000.00", loss_pct: "0.5" },
+      { month: "2026-05", source_status: "ready", loss_amount: "600000.00", loss_pct: "0.7" },
+      { month: "2026-06", source_status: "ready", loss_amount: "702448.85", loss_pct: "0.8499" },
+    ],
+    stores: [
+      {
+        store_ref: "store-1",
+        store_name: "Горбушкин Двор с очень длинным названием магазина",
+        sales_amount: "1000000",
+        writeoff_amount: "8000",
+        receipt_amount: "1000",
+        loss_amount: "7000",
+        loss_pct: "0.7000",
+        norm_pct: "0.3000",
+        variance_to_norm_pct: "0.4000",
+        above_norm: true,
+        source_status: "ready",
+        has_operations: true,
+      },
+      {
+        store_ref: "store-2",
+        store_name: "Склад Сайт",
+        sales_amount: "250000",
+        writeoff_amount: "100",
+        receipt_amount: "200",
+        loss_amount: "-100",
+        loss_pct: "-0.0400",
+        norm_pct: "0.3000",
+        variance_to_norm_pct: "-0.3400",
+        above_norm: false,
+        source_status: "ready",
+        has_operations: true,
+      },
+    ],
+    top_documents: [
+      {
+        stable_key: "writeoff-1",
+        operation_kind: "inventory_writeoff",
+        operation_label: "Инвентаризационное списание",
+        document_type: "_Document210",
+        document_ref: "doc-1",
+        document_number: "СП-1",
+        document_date: "2026-06-20",
+        store_ref: "store-1",
+        store_name: "Горбушкин Двор с очень длинным названием магазина",
+        amount: "8000",
+        effect_amount: "8000",
+      },
+      {
+        stable_key: "receipt-1",
+        operation_kind: "inventory_receipt",
+        operation_label: "Оприходование по инвентаризации",
+        document_type: "_Document170",
+        document_ref: "doc-2",
+        document_number: "ОП-1",
+        document_date: "2026-06-21",
+        store_ref: "store-2",
+        store_name: "Склад Сайт",
+        amount: "200",
+        effect_amount: "-200",
+      },
+    ],
+    actions: [
+      {
+        stable_key: "action-1",
+        action_type: "store_above_norm",
+        severity: "warning",
+        title: "Потери выше норматива: Горбушкин Двор",
+        description: "Факт 0.7% при нормативе 0.3%.",
+        amount: "7000",
+        store_ref: "store-1",
+        store_name: "Горбушкин Двор",
+        responsible_name: "Руководитель сети",
+        recommended_action: "Проверить крупнейшие документы.",
+      },
+    ],
+    data_quality: {
+      source_status: "partial",
+      approved_store_count: 3,
+      source_store_count: 3,
+      matched_store_count: 2,
+      unmatched_store_count: 1,
+      source_document_count: 3,
+      matched_document_count: 2,
+      unmatched_document_count: 1,
+      unmatched_writeoff_amount: "500",
+      unmatched_receipt_amount: "0",
+      excluded_store_count: 1,
+      excluded_document_count: 2,
+      excluded_writeoff_amount: "100",
+      excluded_receipt_amount: "20",
+      store_scope_status: "approved",
+      store_scope_source: "approved_freeze",
+      store_scope_month: "2026-06",
+      norm_source_status: "approved",
+      norm_source: "bitrix_kpi_v2_export",
+    },
+    owner: { employee_name: "Руководитель сети", role_code: "retail_director" },
+    warnings: ["Одна операция требует сопоставления."],
+    note: "Товарные потери показаны справочно.",
+  };
+}
+
+describe("executive inventory loss", () => {
+  afterEach(cleanup);
+
+  it("renders comparisons, filters stores and filters both operation types", () => {
+    render(<InventoryLossPanel data={inventoryLoss()} />);
+
+    expect(screen.getByText("Норматив").parentElement).toHaveTextContent("0,30%");
+    expect(screen.getByText("Прошлый месяц").parentElement).toHaveTextContent(/600\s*000/);
+    expect(screen.getByLabelText("Динамика товарных потерь")).toHaveTextContent("2026-04");
+
+    const stores = screen.getByLabelText("Потери по магазинам");
+    expect(within(stores).getByText("Склад Сайт")).toBeVisible();
+    fireEvent.click(within(stores).getByRole("button", { name: "Выше норматива" }));
+    expect(within(stores).queryByText("Склад Сайт")).not.toBeInTheDocument();
+
+    const documents = screen.getByLabelText("Крупнейшие товарные операции");
+    fireEvent.change(within(documents).getByLabelText("Тип товарной операции"), {
+      target: { value: "receipt" },
+    });
+    expect(within(documents).getByText("ОП-1")).toBeVisible();
+    expect(within(documents).queryByText("СП-1")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Требует действий")).toHaveTextContent("Read-only очередь");
+  });
+
+  it("keeps v1 totals visible and explains missing detail", () => {
+    const data = inventoryLoss();
+    data.schema_version = 1;
+    data.detail_source_status = "source_missing";
+    data.stores = [];
+    data.top_documents = [];
+    data.actions = [];
+
+    render(<InventoryLossPanel data={data} />);
+
+    expect(screen.getByText("Чистые товарные потери").parentElement).toHaveTextContent(/702\s*449/);
+    expect(screen.getByText(/Источник v1 содержит только сетевые итоги/)).toBeVisible();
+  });
+
+  it("labels receipt surplus without presenting it as a loss", () => {
+    const data = inventoryLoss();
+    data.loss_amount = "-250.00";
+    data.loss_pct = "-0.0500";
+    data.previous_month = {
+      month: "2026-05",
+      source_status: "ready",
+      loss_amount: "-100.00",
+      loss_pct: "-0.0200",
+    };
+    data.history = [
+      { month: "2026-05", source_status: "ready", loss_amount: "-100.00", loss_pct: "-0.0200" },
+    ];
+
+    render(<InventoryLossPanel data={data} />);
+
+    expect(screen.getByText("Превышение оприходований").parentElement).toHaveTextContent(/250/);
+    expect(screen.getByText("Прошлый месяц").parentElement).toHaveTextContent(/Превышение оприходований/);
+    expect(screen.getByLabelText("Динамика товарных потерь")).toHaveTextContent(/Превышение оприходований/);
+    expect(screen.getByLabelText("Динамика товарных потерь").querySelector("b")).toHaveClass("is-receipt-surplus");
+  });
+
+  it("filters documents for a store without store_ref by its name", () => {
+    const data = inventoryLoss();
+    data.stores[0].store_ref = "";
+    data.top_documents[0].store_ref = "";
+
+    render(<InventoryLossPanel data={data} />);
+
+    const documents = screen.getByLabelText("Крупнейшие товарные операции");
+    fireEvent.change(within(documents).getByLabelText("Магазин документов"), {
+      target: { value: `name:${data.stores[0].store_name}` },
+    });
+
+    expect(within(documents).getByText("СП-1")).toBeVisible();
+    expect(within(documents).queryByText("ОП-1")).not.toBeInTheDocument();
+  });
+
+  it("distinguishes a v2 detail error from the v1 fallback", () => {
+    const data = inventoryLoss();
+    data.detail_source_status = "source_error";
+    data.stores = [];
+    data.top_documents = [];
+
+    render(<InventoryLossPanel data={data} />);
+
+    expect(screen.getByText(/Источник v2 опубликован без доступной детализации/)).toBeVisible();
+    expect(screen.queryByText(/Источник v1 содержит только сетевые итоги/)).not.toBeInTheDocument();
+  });
+
+  it("shows draft store scope and fallback norm honestly", () => {
+    const data = inventoryLoss();
+    data.data_quality.store_scope_status = "draft";
+    data.data_quality.norm_source_status = "fallback";
+
+    render(<InventoryLossPanel data={data} />);
+
+    expect(screen.getByText("Норматив").parentElement).toHaveTextContent("резервный норматив");
+    fireEvent.click(screen.getByText(/Контроль качества данных/));
+    expect(screen.getByText("Магазинов в черновике")).toBeVisible();
+    expect(screen.getByText("Статус контура").parentElement).toHaveTextContent("черновик");
+  });
+
+  it("uses a neutral tone when variance to norm is unavailable", () => {
+    const data = inventoryLoss();
+    data.variance_to_norm_pct = null;
+
+    render(<InventoryLossPanel data={data} />);
+
+    const card = screen.getByText("Отклонение").parentElement;
+    expect(card).toHaveTextContent("нет данных");
+    expect(card?.className).toContain("metric_neutral");
+    expect(card?.className).not.toContain("metric_success");
+  });
+});
 
 function action(index: number): ExecutiveDashboardAction {
   return {

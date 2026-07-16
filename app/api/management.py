@@ -25,6 +25,7 @@ from app.domains.management.contracts import (
     WeeklyKpiSnapshotBatchIngest,
     WeeklyKpiSnapshotIngestResponse,
 )
+from app.infrastructure.contracts import ContractIntegrityError
 from app.infrastructure.db.engines import DatabaseNotConfiguredError, get_onec_engine
 from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
 from app.schemas.bi import BIDailySalesKPI
@@ -440,15 +441,25 @@ def get_retail_director_monthly_kpi(
     month: str = Query(pattern=r"^\d{4}-\d{2}$"),
     _: str = Depends(require_management_internal_token),
 ):
-    payload = load_retail_director_monthly_kpi(month)
+    try:
+        payload = load_retail_director_monthly_kpi(month)
+        validated_payload = (
+            RetailDirectorMonthlyKpiPayload.model_validate(payload) if payload is not None else None
+        )
+    except (ContractIntegrityError, OSError, TypeError, ValueError):
+        return RetailDirectorMonthlyKpiResponse(
+            as_of=month,
+            month=month,
+            freshness_status="error",
+            source_status="source_error",
+            payload=None,
+        )
     return RetailDirectorMonthlyKpiResponse(
         as_of=month,
         month=month,
         freshness_status="fresh" if payload else "missing",
         source_status="ready" if payload else "empty",
-        payload=(
-            RetailDirectorMonthlyKpiPayload.model_validate(payload) if payload is not None else None
-        ),
+        payload=validated_payload,
     )
 
 

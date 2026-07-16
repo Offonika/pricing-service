@@ -12389,6 +12389,442 @@ components:
       - key
       - label
       title: ExecutiveProfitLossExpenseBreakdownRow
+    ExecutiveProfitLossInventoryAction:
+      properties:
+        stable_key:
+          type: string
+          title: Stable Key
+        action_type:
+          type: string
+          title: Action Type
+        severity:
+          type: string
+          title: Severity
+        title:
+          type: string
+          title: Title
+        description:
+          type: string
+          title: Description
+        amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Amount
+        store_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Store Ref
+        store_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Store Name
+        responsible_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Responsible Name
+        recommended_action:
+          type: string
+          title: Recommended Action
+      type: object
+      required:
+      - stable_key
+      - action_type
+      - severity
+      - title
+      - description
+      - recommended_action
+      title: ExecutiveProfitLossInventoryAction
+    ExecutiveProfitLossInventoryDataQuality:
+      properties:
+        source_status:
+          type: string
+          title: Source Status
+          default: source_missing
+        approved_store_count:
+          type: integer
+          title: Approved Store Count
+          default: 0
+        source_store_count:
+          type: integer
+          title: Source Store Count
+          default: 0
+        matched_store_count:
+          type: integer
+          title: Matched Store Count
+          default: 0
+        unmatched_store_count:
+          type: integer
+          title: Unmatched Store Count
+          default: 0
+        source_document_count:
+          type: integer
+          title: Source Document Count
+          default: 0
+        matched_document_count:
+          type: integer
+          title: Matched Document Count
+          default: 0
+        unmatched_document_count:
+          type: integer
+          title: Unmatched Document Count
+          default: 0
+        unmatched_writeoff_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Unmatched Writeoff Amount
+          default: '0'
+        unmatched_receipt_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Unmatched Receipt Amount
+          default: '0'
+        excluded_store_count:
+          type: integer
+          title: Excluded Store Count
+          default: 0
+        excluded_document_count:
+          type: integer
+          title: Excluded Document Count
+          default: 0
+        excluded_writeoff_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Excluded Writeoff Amount
+          default: '0'
+        excluded_receipt_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Excluded Receipt Amount
+          default: '0'
+        store_scope_status:
+          type: string
+          title: Store Scope Status
+          default: unknown
+        store_scope_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Store Scope Source
+        store_scope_month:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Store Scope Month
+        norm_source_status:
+          type: string
+          title: Norm Source Status
+          default: unknown
+        norm_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Norm Source
+      type: object
+      title: ExecutiveProfitLossInventoryDataQuality
+    ExecutiveProfitLossInventoryDocument:
+      properties:
+        stable_key:
+          type: string
+          title: Stable Key
+        operation_kind:
+          type: string
+          title: Operation Kind
+        operation_label:
+          type: string
+          title: Operation Label
+        document_type:
+          type: string
+          title: Document Type
+        document_ref:
+          type: string
+          title: Document Ref
+        document_number:
+          type: string
+          title: Document Number
+        document_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Document Date
+        store_ref:
+          type: string
+          title: Store Ref
+        store_name:
+          type: string
+          title: Store Name
+        amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Amount
+        effect_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Effect Amount
+      type: object
+      required:
+      - stable_key
+      - operation_kind
+      - operation_label
+      - document_type
+      - document_ref
+      - document_number
+      - store_ref
+      - store_name
+      - amount
+      - effect_amount
+      title: ExecutiveProfitLossInventoryDocument
+    ExecutiveProfitLossInventoryHistoryItem:
+      properties:
+        month:
+          type: string
+          title: Month
+        source_status:
+          type: string
+          title: Source Status
+          default: ready
+        writeoff_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Writeoff Amount
+        receipt_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Receipt Amount
+        loss_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Loss Amount
+        loss_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Loss Pct
+      type: object
+      required:
+      - month
+      title: ExecutiveProfitLossInventoryHistoryItem
+    ExecutiveProfitLossInventoryLoss:
+      properties:
+        schema_version:
+          type: integer
+          title: Schema Version
+          default: 1
+        month:
+          type: string
+          title: Month
+        source_status:
+          type: string
+          title: Source Status
+          default: source_missing
+        detail_source_status:
+          type: string
+          title: Detail Source Status
+          default: source_missing
+        writeoff_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Writeoff Amount
+        receipt_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Receipt Amount
+        loss_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Loss Amount
+        loss_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Loss Pct
+        norm_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Norm Pct
+        variance_to_norm_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Variance To Norm Pct
+        matched_store_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Matched Store Count
+        previous_month:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutiveProfitLossInventoryHistoryItem'
+          - type: 'null'
+        average_loss_amount_3m:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Average Loss Amount 3M
+        average_loss_pct_3m:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Average Loss Pct 3M
+        history_source_status:
+          type: string
+          title: History Source Status
+          default: source_missing
+        history:
+          items:
+            $ref: '#/components/schemas/ExecutiveProfitLossInventoryHistoryItem'
+          type: array
+          title: History
+        stores:
+          items:
+            $ref: '#/components/schemas/ExecutiveProfitLossInventoryStore'
+          type: array
+          title: Stores
+        top_documents:
+          items:
+            $ref: '#/components/schemas/ExecutiveProfitLossInventoryDocument'
+          type: array
+          title: Top Documents
+        actions:
+          items:
+            $ref: '#/components/schemas/ExecutiveProfitLossInventoryAction'
+          type: array
+          title: Actions
+        data_quality:
+          $ref: '#/components/schemas/ExecutiveProfitLossInventoryDataQuality'
+        owner:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutiveProfitLossInventoryOwner'
+          - type: 'null'
+        warnings:
+          items:
+            type: string
+          type: array
+          title: Warnings
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+      type: object
+      required:
+      - month
+      title: ExecutiveProfitLossInventoryLoss
+    ExecutiveProfitLossInventoryOwner:
+      properties:
+        employee_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Employee Key
+        employee_bitrix_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Employee Bitrix Id
+        employee_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Employee Name
+        role_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Role Code
+      type: object
+      title: ExecutiveProfitLossInventoryOwner
+    ExecutiveProfitLossInventoryStore:
+      properties:
+        store_ref:
+          type: string
+          title: Store Ref
+        store_name:
+          type: string
+          title: Store Name
+        sales_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Sales Amount
+        writeoff_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Writeoff Amount
+        receipt_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Receipt Amount
+        loss_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Loss Amount
+        loss_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Loss Pct
+        norm_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Norm Pct
+        variance_to_norm_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Variance To Norm Pct
+        above_norm:
+          type: boolean
+          title: Above Norm
+          default: false
+        source_status:
+          type: string
+          title: Source Status
+          default: ready
+        has_operations:
+          type: boolean
+          title: Has Operations
+          default: false
+      type: object
+      required:
+      - store_ref
+      - store_name
+      title: ExecutiveProfitLossInventoryStore
     ExecutiveProfitLossLineItem:
       properties:
         key:
@@ -12553,6 +12989,10 @@ components:
             $ref: '#/components/schemas/ExecutiveProfitLossOpenQuestion'
           type: array
           title: Expense Open Questions
+        inventory_loss:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutiveProfitLossInventoryLoss'
+          - type: 'null'
         filters:
           additionalProperties: true
           type: object

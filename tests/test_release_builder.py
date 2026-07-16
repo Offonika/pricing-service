@@ -34,6 +34,7 @@ def _source_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
     (runtime / "embeddings").mkdir()
     (runtime / ".env").write_text("DATABASE_URL=test\n", encoding="utf-8")
     (source / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (source / "requirements.lock").write_text("", encoding="utf-8")
     (source / "embeddings" / "source-only.npy").write_bytes(b"must-not-be-released")
     (runtime / "embeddings" / "persistent-index.json").write_text(
         '{"meta": {}}\n', encoding="utf-8"
@@ -69,9 +70,12 @@ def _run_builder(
         "PRICING_SERVICE_RELEASE_ROOT": str(releases),
         "PRICING_SERVICE_PYTHON_BIN": str(PYTHON_BIN),
         "PRICING_SERVICE_ALEMBIC_REVISION": "test-revision",
+        "PRICING_SERVICE_BUILD_UI": "0",
+        "PRICING_SERVICE_INSTALL_VENV": "0",
     }
     if base_release is not None:
         env["PRICING_SERVICE_BASE_RELEASE"] = str(base_release)
+        env["PRICING_SERVICE_ALLOW_OVERLAY"] = "1"
     if overlay_paths is not None:
         env["PRICING_SERVICE_RELEASE_OVERLAY_PATHS"] = overlay_paths
     return subprocess.run(

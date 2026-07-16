@@ -718,6 +718,7 @@ def _sync_bitrix_item(
     summary: ReceivableWorkflowSummary,
     dry_run_bitrix: bool,
     bitrix_documents: list[dict[str, Any]] | None = None,
+    create_missing: bool = True,
 ) -> None:
     if dry_run_bitrix or client is None or settings.receivable_bitrix_entity_type_id is None:
         return
@@ -770,6 +771,9 @@ def _sync_bitrix_item(
                     fields=fields,
                 )
                 summary.bitrix_updated += 1
+            elif not create_missing:
+                item.bitrix_last_error = None
+                return
             else:
                 item_id, detail_url = client.add_smart_process_item(
                     entity_type_id=settings.receivable_bitrix_entity_type_id,
@@ -1043,6 +1047,7 @@ def close_stale_receivable_work_items(
             client=bitrix_client,
             summary=summary,
             dry_run_bitrix=dry_run_bitrix,
+            create_missing=False,
         )
 
 

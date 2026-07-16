@@ -1407,9 +1407,358 @@
   background: #f6fef9;
 }
 
+.executive-profit-loss-line--receipt-surplus {
+  border-left-color: #2e90fa;
+  background: #eff8ff;
+}
+
 .executive-profit-loss-line--source_missing {
   border-left-color: #98a2b3;
   background: #fbfcfe;
+}
+
+.executive-inventory-loss {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid #d9e0e8;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.executive-inventory-loss__header,
+.executive-inventory-loss__section > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.executive-inventory-loss__header h3,
+.executive-inventory-loss__section h4,
+.executive-inventory-loss__history h4 {
+  margin: 0;
+  color: #18202a;
+  font-size: 15px;
+  line-height: 1.25;
+}
+
+.executive-inventory-loss__header span,
+.executive-inventory-loss__section header span {
+  display: block;
+  margin-top: 3px;
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.executive-inventory-loss__header > strong,
+.executive-inventory-loss__section > header > strong {
+  color: #475467;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.executive-inventory-loss__section .executive-panel__filters button[aria-pressed="true"] {
+  border-color: #2e90fa;
+  background: #eff8ff;
+  color: #175cd3;
+  box-shadow: inset 0 0 0 1px #b2ddff;
+}
+
+.executive-inventory-loss__kpis {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.executive-inventory-loss__history,
+.executive-inventory-loss__section {
+  display: grid;
+  gap: 10px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #e4e9f0;
+  border-radius: 9px;
+  background: #ffffff;
+}
+
+.executive-inventory-loss__table-wrap {
+  min-width: 0;
+  overflow-x: auto;
+  border: 1px solid #d9e0e8;
+  border-radius: 8px;
+  background: #ffffff;
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+}
+
+.executive-inventory-loss__table {
+  width: 100%;
+  min-width: 820px;
+  border-collapse: collapse;
+  table-layout: fixed;
+  color: #344054;
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.executive-inventory-loss__table--documents {
+  min-width: 900px;
+}
+
+.executive-inventory-loss__table th,
+.executive-inventory-loss__table td {
+  padding: 11px 12px;
+  border-bottom: 1px solid #eef2f6;
+  text-align: left;
+  vertical-align: middle;
+}
+
+.executive-inventory-loss__table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f8fafc;
+  color: #667085;
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.035em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.executive-inventory-loss__table tbody th {
+  color: #18202a;
+  font-weight: 750;
+}
+
+.executive-inventory-loss__table tbody th strong,
+.executive-inventory-loss__table tbody td strong {
+  display: block;
+  min-width: 0;
+  color: inherit;
+  font-weight: 750;
+  overflow-wrap: anywhere;
+}
+
+.executive-inventory-loss__table tbody tr:last-child th,
+.executive-inventory-loss__table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.executive-inventory-loss__table tbody tr:hover th,
+.executive-inventory-loss__table tbody tr:hover td {
+  background: #f9fbfd;
+}
+
+.executive-inventory-loss__table .is-numeric {
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.executive-inventory-loss__table--stores th:first-child {
+  width: 32%;
+}
+
+.executive-inventory-loss__table--stores th:nth-child(2),
+.executive-inventory-loss__table--stores th:nth-child(3),
+.executive-inventory-loss__table--stores th:nth-child(4) {
+  width: 15%;
+}
+
+.executive-inventory-loss__table--stores th:last-child {
+  width: 23%;
+}
+
+.executive-inventory-loss__table--documents th:nth-child(1) { width: 13%; }
+.executive-inventory-loss__table--documents th:nth-child(2) { width: 12%; }
+.executive-inventory-loss__table--documents th:nth-child(3) { width: 25%; }
+.executive-inventory-loss__table--documents th:nth-child(4) { width: 34%; }
+.executive-inventory-loss__table--documents th:nth-child(5) { width: 16%; }
+
+.executive-inventory-loss__table tr.is-warning th,
+.executive-inventory-loss__table tr.is-warning td {
+  background: #fffcf5;
+}
+
+.executive-inventory-loss__table tr.is-warning th:first-child {
+  box-shadow: inset 4px 0 #f79009;
+}
+
+.executive-inventory-loss__table tr.is-receipt-surplus th,
+.executive-inventory-loss__table tr.is-receipt-surplus td {
+  background: #f5faff;
+}
+
+.executive-inventory-loss__table tr.is-receipt-surplus th:first-child {
+  box-shadow: inset 4px 0 #2e90fa;
+}
+
+.executive-inventory-loss__result {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+}
+
+.executive-inventory-loss__result strong {
+  color: #18202a;
+  font-size: 13px;
+}
+
+.executive-inventory-loss__result span {
+  color: #667085;
+  font-size: 10px;
+  font-weight: 650;
+}
+
+.executive-inventory-loss__result.is-receipt-surplus strong,
+.executive-inventory-loss__result.is-receipt-surplus span {
+  color: #175cd3;
+}
+
+.executive-inventory-loss__rate {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.executive-inventory-loss__rate > div {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.executive-inventory-loss__rate > div strong {
+  color: #18202a;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+}
+
+.executive-inventory-loss__rate > div span {
+  color: #667085;
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.executive-inventory-loss__status,
+.executive-inventory-loss__operation {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  padding: 4px 7px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 800;
+  line-height: 1.2;
+}
+
+.executive-inventory-loss__status {
+  white-space: nowrap;
+}
+
+.executive-inventory-loss__status--warning,
+.executive-inventory-loss__operation--writeoff {
+  background: #fff3e0;
+  color: #b54708;
+}
+
+.executive-inventory-loss__status--success {
+  background: #ecfdf3;
+  color: #027a48;
+}
+
+.executive-inventory-loss__status--receipt-surplus,
+.executive-inventory-loss__operation--receipt {
+  background: #eff8ff;
+  color: #175cd3;
+}
+
+.executive-inventory-loss__status--neutral {
+  background: #f2f4f7;
+  color: #475467;
+}
+
+.executive-inventory-loss__operation {
+  border-radius: 6px;
+  white-space: normal;
+}
+
+.executive-inventory-loss__actions {
+  display: grid;
+  gap: 8px;
+}
+
+.executive-inventory-loss__actions article {
+  display: grid;
+  gap: 5px;
+  padding: 9px 10px;
+  border: 1px solid #fedf89;
+  border-left: 4px solid #f79009;
+  border-radius: 7px;
+  background: #fffcf5;
+}
+
+.executive-inventory-loss__actions strong,
+.executive-inventory-loss__actions span,
+.executive-inventory-loss__actions small {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.executive-inventory-loss__actions strong {
+  color: #7a2e0e;
+  font-size: 12px;
+}
+
+.executive-inventory-loss__actions span,
+.executive-inventory-loss__actions small {
+  margin-top: 2px;
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.executive-inventory-loss__quality {
+  padding: 9px 10px;
+  border: 1px dashed #98a2b3;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.executive-inventory-loss__quality summary {
+  color: #475467;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.executive-inventory-loss__quality dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0 0;
+}
+
+.executive-inventory-loss__quality dl div {
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.executive-inventory-loss__quality dt {
+  color: #667085;
+  font-size: 10px;
+}
+
+.executive-inventory-loss__quality dd {
+  margin: 3px 0 0;
+  color: #18202a;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .executive-cashflow-period__chart {
@@ -1465,6 +1814,10 @@
 
 .executive-cashflow-day b {
   background: #f79009;
+}
+
+.executive-inventory-loss__history .executive-cashflow-day b.is-receipt-surplus {
+  background: #2e90fa;
 }
 
 .executive-cashflow-period__tables {
@@ -3031,6 +3384,11 @@
     grid-template-columns: 1fr;
   }
 
+  .executive-inventory-loss__kpis,
+  .executive-inventory-loss__quality dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .executive-sales-period__tables {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -3044,6 +3402,99 @@
 @media (max-width: 720px) {
   .executive {
     padding: 12px;
+  }
+
+  .executive-inventory-loss {
+    padding: 10px;
+  }
+
+  .executive-inventory-loss__header,
+  .executive-inventory-loss__section > header {
+    display: grid;
+  }
+
+  .executive-inventory-loss__kpis,
+  .executive-inventory-loss__quality dl {
+    grid-template-columns: 1fr;
+  }
+
+  .executive-inventory-loss__table-wrap {
+    overflow: visible;
+    border: 0;
+    box-shadow: none;
+  }
+
+  .executive-inventory-loss__table,
+  .executive-inventory-loss__table--documents {
+    min-width: 0;
+    border-collapse: separate;
+  }
+
+  .executive-inventory-loss__table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+  }
+
+  .executive-inventory-loss__table tbody {
+    display: grid;
+    gap: 8px;
+  }
+
+  .executive-inventory-loss__table tbody tr {
+    display: grid;
+    overflow: hidden;
+    border: 1px solid #d9e0e8;
+    border-radius: 8px;
+    background: #ffffff;
+  }
+
+  .executive-inventory-loss__table tbody th,
+  .executive-inventory-loss__table tbody td {
+    display: grid;
+    grid-template-columns: minmax(98px, 0.7fr) minmax(0, 1.3fr);
+    gap: 8px;
+    align-items: center;
+    width: auto;
+    padding: 8px 10px;
+    border-bottom: 1px solid #eef2f6;
+    text-align: left;
+    white-space: normal;
+  }
+
+  .executive-inventory-loss__table tbody th::before,
+  .executive-inventory-loss__table tbody td::before {
+    content: attr(data-label);
+    color: #667085;
+    font-size: 10px;
+    font-weight: 800;
+    letter-spacing: 0.025em;
+    text-transform: uppercase;
+  }
+
+  .executive-inventory-loss__table tbody th strong,
+  .executive-inventory-loss__table tbody td > strong,
+  .executive-inventory-loss__table tbody td > time,
+  .executive-inventory-loss__table tbody td > .executive-inventory-loss__operation {
+    grid-column: 2;
+  }
+
+  .executive-inventory-loss__result {
+    justify-items: start;
+  }
+
+  .executive-inventory-loss__result strong,
+  .executive-inventory-loss__result span,
+  .executive-inventory-loss__rate > div,
+  .executive-inventory-loss__rate > .executive-inventory-loss__status {
+    grid-column: 2;
+  }
+
+  .executive-inventory-loss__rate {
+    display: grid;
   }
 
   .executive-sales-diagnostics__header {

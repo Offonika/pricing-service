@@ -2385,31 +2385,65 @@ export function InventoryLossPanel({ data }: { data?: ExecutiveProfitLossInvento
               </div>
             </header>
             <div className="executive-inventory-loss__table-wrap">
-              <table className="executive-inventory-loss__table">
+              <table className="executive-inventory-loss__table executive-inventory-loss__table--stores">
+                <caption className="visually-hidden">Товарные потери по магазинам</caption>
                 <thead>
                   <tr>
-                    <th>Магазин</th>
-                    <th>Списания</th>
-                    <th>Оприходования</th>
-                    <th>Результат</th>
-                    <th>Доля / норматив</th>
+                    <th scope="col">Магазин</th>
+                    <th className="is-numeric" scope="col">Списания</th>
+                    <th className="is-numeric" scope="col">Оприходования</th>
+                    <th className="is-numeric" scope="col">Результат</th>
+                    <th scope="col">Доля / норматив</th>
                   </tr>
                 </thead>
                 <tbody>
-                  {visibleStores.map((store) => (
-                    <tr
-                      className={store.above_norm ? "is-warning" : isReceiptSurplus(store.loss_amount) ? "is-receipt-surplus" : ""}
-                      key={inventoryStoreKey(store)}
-                    >
-                      <td>{store.store_name}</td>
-                      <td>{formatProfitLossAmount(store.writeoff_amount)}</td>
-                      <td>{formatProfitLossAmount(store.receipt_amount)}</td>
-                      <td>{formatInventoryLossResult(store.loss_amount)}</td>
-                      <td>
-                        {formatPercentPoints(store.loss_pct)} / {formatPercentPoints(store.norm_pct)}
-                      </td>
-                    </tr>
-                  ))}
+                  {visibleStores.map((store) => {
+                    const receiptSurplus = isReceiptSurplus(store.loss_amount);
+                    const hasRate = store.loss_pct !== null && store.loss_pct !== undefined;
+                    const rateTone = receiptSurplus
+                      ? "receipt-surplus"
+                      : !hasRate
+                        ? "neutral"
+                        : store.above_norm
+                          ? "warning"
+                          : "success";
+                    const rateLabel = receiptSurplus
+                      ? "Оприходований больше"
+                      : !hasRate
+                        ? "Нет данных"
+                        : store.above_norm
+                          ? "Выше норматива"
+                          : "В норме";
+                    return (
+                      <tr
+                        className={store.above_norm ? "is-warning" : receiptSurplus ? "is-receipt-surplus" : ""}
+                        key={inventoryStoreKey(store)}
+                      >
+                        <th data-label="Магазин" scope="row">
+                          <strong>{store.store_name}</strong>
+                        </th>
+                        <td className="is-numeric" data-label="Списания">
+                          {formatProfitLossAmount(store.writeoff_amount)}
+                        </td>
+                        <td className="is-numeric" data-label="Оприходования">
+                          {formatProfitLossAmount(store.receipt_amount)}
+                        </td>
+                        <td className={`is-numeric executive-inventory-loss__result${receiptSurplus ? " is-receipt-surplus" : ""}`} data-label="Результат">
+                          <strong>{formatInventoryLossMagnitude(store.loss_amount)}</strong>
+                          <span>{receiptSurplus ? "Оприходований больше" : "Чистые потери"}</span>
+                        </td>
+                        <td className="executive-inventory-loss__rate" data-label="Доля / норматив">
+                          <div>
+                            <strong>{formatPercentPoints(store.loss_pct)}</strong>
+                            <span>Норматив {formatPercentPoints(store.norm_pct)}</span>
+                          </div>
+                          <span className={`executive-inventory-loss__status executive-inventory-loss__status--${rateTone}`}>
+                            {rateLabel}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
               {visibleStores.length === 0 && (
@@ -2449,24 +2483,39 @@ export function InventoryLossPanel({ data }: { data?: ExecutiveProfitLossInvento
               </div>
             </header>
             <div className="executive-inventory-loss__table-wrap">
-              <table className="executive-inventory-loss__table">
+              <table className="executive-inventory-loss__table executive-inventory-loss__table--documents">
+                <caption className="visually-hidden">Крупнейшие товарные операции</caption>
                 <thead>
                   <tr>
-                    <th>Документ</th>
-                    <th>Дата</th>
-                    <th>Операция</th>
-                    <th>Магазин</th>
-                    <th>Сумма</th>
+                    <th scope="col">Документ</th>
+                    <th scope="col">Дата</th>
+                    <th scope="col">Операция</th>
+                    <th scope="col">Магазин</th>
+                    <th className="is-numeric" scope="col">Сумма</th>
                   </tr>
                 </thead>
                 <tbody>
                   {visibleDocuments.map((document) => (
                     <tr key={document.stable_key}>
-                      <td>{document.document_number || "Без номера"}</td>
-                      <td>{formatDate(document.document_date)}</td>
-                      <td>{document.operation_label}</td>
-                      <td>{document.store_name}</td>
-                      <td>{formatProfitLossAmount(document.amount)}</td>
+                      <th data-label="Документ" scope="row">
+                        <strong>{document.document_number || "Без номера"}</strong>
+                      </th>
+                      <td data-label="Дата">
+                        {document.document_date ? (
+                          <time dateTime={document.document_date}>{formatDate(document.document_date)}</time>
+                        ) : "—"}
+                      </td>
+                      <td data-label="Операция">
+                        <span className={`executive-inventory-loss__operation executive-inventory-loss__operation--${document.operation_kind === "inventory_receipt" ? "receipt" : "writeoff"}`}>
+                          {document.operation_label}
+                        </span>
+                      </td>
+                      <td data-label="Магазин">
+                        <strong>{document.store_name || "Не сопоставлен"}</strong>
+                      </td>
+                      <td className="is-numeric" data-label="Сумма">
+                        <strong>{formatProfitLossAmount(document.amount)}</strong>
+                      </td>
                     </tr>
                   ))}
                 </tbody>

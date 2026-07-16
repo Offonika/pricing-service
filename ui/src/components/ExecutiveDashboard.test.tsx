@@ -174,15 +174,27 @@ describe("executive inventory loss", () => {
     expect(screen.getByLabelText("Динамика товарных потерь")).toHaveTextContent("2026-04");
 
     const stores = screen.getByLabelText("Потери по магазинам");
+    const storesTable = within(stores).getByRole("table", { name: "Товарные потери по магазинам" });
+    const warningRow = within(storesTable).getByText(/Горбушкин Двор/).closest("tr");
+    const receiptSurplusRow = within(storesTable).getByText("Склад Сайт").closest("tr");
+    expect(warningRow).toHaveClass("is-warning");
+    expect(warningRow).toHaveTextContent("Выше норматива");
+    expect(warningRow?.querySelector('[data-label="Списания"]')).toHaveClass("is-numeric");
+    expect(receiptSurplusRow).toHaveClass("is-receipt-surplus");
+    expect(receiptSurplusRow).toHaveTextContent("Оприходований больше");
     expect(within(stores).getByText("Склад Сайт")).toBeVisible();
     fireEvent.click(within(stores).getByRole("button", { name: "Выше норматива" }));
     expect(within(stores).queryByText("Склад Сайт")).not.toBeInTheDocument();
 
     const documents = screen.getByLabelText("Крупнейшие товарные операции");
+    expect(within(documents).getByRole("table", { name: "Крупнейшие товарные операции" })).toBeVisible();
     fireEvent.change(within(documents).getByLabelText("Тип товарной операции"), {
       target: { value: "receipt" },
     });
     expect(within(documents).getByText("ОП-1")).toBeVisible();
+    expect(within(documents).getByText("Оприходование по инвентаризации")).toHaveClass(
+      "executive-inventory-loss__operation--receipt"
+    );
     expect(within(documents).queryByText("СП-1")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Требует действий")).toHaveTextContent("Read-only очередь");
   });

@@ -548,6 +548,6 @@ def test_commerceml_readback_reflects_lifecycle_transition(
     )
 
     lifecycle_db.refresh(proposal)
-    assert summary == {"reflected": 1, "pending": 0, "missing": 0}
+    assert summary == {"reflected": 1, "pending": 0, "missing": 0, "unrecognized": 0}
     assert proposal.status == "reflected"
     assert proposal.bitrix_readback_value == "Рабочий"

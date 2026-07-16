@@ -20,6 +20,8 @@ from app.models.procurement_order_formation import (
     ProcurementOrderFormation,
 )
 from app.services.procurement_order_formation import (
+    LIFECYCLE_STATUS_LABELS,
+    MANUAL_STATUS_LABELS,
     get_order,
     normalize_guid,
     normalize_status,
@@ -305,6 +307,28 @@ def refresh_line_catalog_snapshot(
     return get_order(db, order_id)
 
 
+_KNOWN_STATUS_CODES = frozenset({**MANUAL_STATUS_LABELS, **LIFECYCLE_STATUS_LABELS})
+
+_UNRECOGNIZED_READBACK_BLOCKER = "bitrix_readback_unrecognized_status"
+
+
+def _is_unrecognized_bitrix_status(raw_value: str | None) -> bool:
+    """True if a non-empty Bitrix readback value can never match any known status.
+
+    ``normalize_status`` falls back to returning the raw text unchanged when it
+    can't resolve a code or label (e.g. a legacy enum value like "Эксклюзив"
+    that used to be a lifecycle status and no longer is). Such values will
+    never equal ``normalize_status(<any real status>)``, so without this check
+    the row stays "pending" forever, indistinguishable from a genuinely
+    in-flight 1С update.
+    """
+
+    text = (raw_value or "").strip()
+    if not text:
+        return False
+    return normalize_status(text) not in _KNOWN_STATUS_CODES
+
+
 def reflect_classifications_from_bitrix(
     db: Session,
     *,
@@ -320,6 +344,7 @@ def reflect_classifications_from_bitrix(
     reflected = 0
     pending = 0
     missing = 0
+    unrecognized = 0
     for proposal in proposals:
         product = resolve_catalog_product_by_xml_id(
             proposal.line.bitrix_product_xml_id or proposal.line.nomenclature_ref,
@@ -339,6 +364,8 @@ def reflect_classifications_from_bitrix(
             if proposal.manual_minimum is not None:
                 proposal.line.manual_minimum = proposal.manual_minimum
             reflected += 1
+        elif _is_unrecognized_bitrix_status(product.assortment_status):
+            unrecognized += 1
         else:
             pending += 1
 
@@ -361,10 +388,19 @@ def reflect_classifications_from_bitrix(
             proposal.status = "reflected"
             proposal.reflected_at = datetime.now(UTC).replace(tzinfo=None)
             reflected += 1
+        elif _is_unrecognized_bitrix_status(product.assortment_status):
+            unrecognized += 1
+            if _UNRECOGNIZED_READBACK_BLOCKER not in proposal.blockers:
+                proposal.blockers = [*proposal.blockers, _UNRECOGNIZED_READBACK_BLOCKER]
         else:
             pending += 1
     db.commit()
-    return {"reflected": reflected, "pending": pending, "missing": missing}
+    return {
+        "reflected": reflected,
+        "pending": pending,
+        "missing": missing,
+        "unrecognized": unrecognized,
+    }
 
 
 def bitrix_call(

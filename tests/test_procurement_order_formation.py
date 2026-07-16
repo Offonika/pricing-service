@@ -493,6 +493,49 @@ def test_commerceml_readback_marks_classification_reflected(db_session, monkeypa
     )
 
     db_session.refresh(proposal)
-    assert summary == {"reflected": 1, "pending": 0, "missing": 0}
+    assert summary == {"reflected": 1, "pending": 0, "missing": 0, "unrecognized": 0}
     assert proposal.status == "reflected"
     assert proposal.line.assortment_status == "matrix"
+
+
+def test_commerceml_readback_flags_unrecognized_legacy_status_instead_of_pending_forever(
+    db_session, monkeypatch
+) -> None:
+    # Регрессия: до фикса readback-значение вроде "Эксклюзив" (старый Bitrix enum,
+    # который decide_assortment_status больше не знает — это CommercialMark, не статус)
+    # молча оседало как "pending" навсегда, неотличимо от карточки, которая просто
+    # ещё не долетела до 1С. Теперь такие значения помечаются отдельно.
+    order = _order(db_session)
+    proposal = ProcurementClassificationProposal(
+        line=order.lines[0],
+        status="applied",
+        proposed_status="matrix",
+        reason="Матрица",
+        requested_by_actor="actor",
+        requested_by_bitrix_user_id="42",
+        idempotency_key="proposal:readback-legacy",
+        onec_status="success",
+    )
+    db_session.add(proposal)
+    db_session.commit()
+    monkeypatch.setattr(bitrix_order_service, "load_order_formation_mapping", lambda _settings: {})
+    monkeypatch.setattr(
+        bitrix_order_service,
+        "resolve_catalog_product_by_xml_id",
+        lambda *_args, **_kwargs: BitrixCatalogProduct(
+            product_id="1646",
+            name="Дисплей тест",
+            xml_id=PRODUCT_GUID,
+            assortment_status="Эксклюзив",
+        ),
+    )
+
+    summary = bitrix_order_service.reflect_classifications_from_bitrix(
+        db_session,
+        settings=Settings(),
+    )
+
+    db_session.refresh(proposal)
+    assert summary == {"reflected": 0, "pending": 0, "missing": 0, "unrecognized": 1}
+    assert proposal.status == "applied"
+    assert proposal.bitrix_readback_value == "Эксклюзив"

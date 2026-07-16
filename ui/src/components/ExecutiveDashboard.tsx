@@ -2428,18 +2428,22 @@ export function InventoryLossPanel({ data }: { data?: ExecutiveProfitLossInvento
                         <td className="is-numeric" data-label="Оприходования">
                           {formatProfitLossAmount(store.receipt_amount)}
                         </td>
-                        <td className={`is-numeric executive-inventory-loss__result${receiptSurplus ? " is-receipt-surplus" : ""}`} data-label="Результат">
-                          <strong>{formatInventoryLossMagnitude(store.loss_amount)}</strong>
-                          <span>{receiptSurplus ? "Оприходований больше" : "Чистые потери"}</span>
-                        </td>
-                        <td className="executive-inventory-loss__rate" data-label="Доля / норматив">
-                          <div>
-                            <strong>{formatPercentPoints(store.loss_pct)}</strong>
-                            <span>Норматив {formatPercentPoints(store.norm_pct)}</span>
+                        <td className="is-numeric" data-label="Результат">
+                          <div className={`executive-inventory-loss__result${receiptSurplus ? " is-receipt-surplus" : ""}`}>
+                            <strong>{formatInventoryLossMagnitude(store.loss_amount)}</strong>
+                            <span>{receiptSurplus ? "Оприходований больше" : "Чистые потери"}</span>
                           </div>
-                          <span className={`executive-inventory-loss__status executive-inventory-loss__status--${rateTone}`}>
-                            {rateLabel}
-                          </span>
+                        </td>
+                        <td data-label="Доля / норматив">
+                          <div className="executive-inventory-loss__rate">
+                            <div className="executive-inventory-loss__rate-values">
+                              <strong>{formatPercentPoints(store.loss_pct)}</strong>
+                              <span>Норматив {formatPercentPoints(store.norm_pct)}</span>
+                            </div>
+                            <span className={`executive-inventory-loss__status executive-inventory-loss__status--${rateTone}`}>
+                              {rateLabel}
+                            </span>
+                          </div>
                         </td>
                       </tr>
                     );

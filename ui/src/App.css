@@ -1599,6 +1599,7 @@
   display: grid;
   justify-items: end;
   gap: 2px;
+  width: 100%;
 }
 
 .executive-inventory-loss__result strong {
@@ -1622,21 +1623,22 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  min-width: 0;
 }
 
-.executive-inventory-loss__rate > div {
+.executive-inventory-loss__rate-values {
   display: grid;
   gap: 1px;
   min-width: 0;
 }
 
-.executive-inventory-loss__rate > div strong {
+.executive-inventory-loss__rate-values strong {
   color: #18202a;
   font-size: 12px;
   font-variant-numeric: tabular-nums;
 }
 
-.executive-inventory-loss__rate > div span {
+.executive-inventory-loss__rate-values span {
   color: #667085;
   font-size: 10px;
   white-space: nowrap;
@@ -3478,7 +3480,9 @@
   .executive-inventory-loss__table tbody th strong,
   .executive-inventory-loss__table tbody td > strong,
   .executive-inventory-loss__table tbody td > time,
-  .executive-inventory-loss__table tbody td > .executive-inventory-loss__operation {
+  .executive-inventory-loss__table tbody td > .executive-inventory-loss__operation,
+  .executive-inventory-loss__table tbody td > .executive-inventory-loss__result,
+  .executive-inventory-loss__table tbody td > .executive-inventory-loss__rate {
     grid-column: 2;
   }
 
@@ -3486,15 +3490,9 @@
     justify-items: start;
   }
 
-  .executive-inventory-loss__result strong,
-  .executive-inventory-loss__result span,
-  .executive-inventory-loss__rate > div,
-  .executive-inventory-loss__rate > .executive-inventory-loss__status {
-    grid-column: 2;
-  }
-
   .executive-inventory-loss__rate {
     display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
   .executive-sales-diagnostics__header {

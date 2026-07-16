@@ -180,6 +180,14 @@ describe("executive inventory loss", () => {
     expect(warningRow).toHaveClass("is-warning");
     expect(warningRow).toHaveTextContent("Выше норматива");
     expect(warningRow?.querySelector('[data-label="Списания"]')).toHaveClass("is-numeric");
+    const resultCell = warningRow?.querySelector('[data-label="Результат"]');
+    const rateCell = warningRow?.querySelector('[data-label="Доля / норматив"]');
+    expect(resultCell?.tagName).toBe("TD");
+    expect(resultCell).not.toHaveClass("executive-inventory-loss__result");
+    expect(resultCell?.querySelector(".executive-inventory-loss__result")).not.toBeNull();
+    expect(rateCell?.tagName).toBe("TD");
+    expect(rateCell).not.toHaveClass("executive-inventory-loss__rate");
+    expect(rateCell?.querySelector(".executive-inventory-loss__rate")).not.toBeNull();
     expect(receiptSurplusRow).toHaveClass("is-receipt-surplus");
     expect(receiptSurplusRow).toHaveTextContent("Оприходований больше");
     expect(within(stores).getByText("Склад Сайт")).toBeVisible();

@@ -172,6 +172,13 @@ done
 rm -f "$TEMP_DIR/.env"
 ln -s "$RUNTIME_ENV_FILE" "$TEMP_DIR/.env"
 
+if [[ -f "$TEMP_DIR/app/main.py" ]]; then
+  (
+    cd "$TEMP_DIR"
+    PYTHONPATH="$TEMP_DIR" "$TEMP_DIR/.venv/bin/python" -c "import app.main"
+  )
+fi
+
 if [[ -z "$ALEMBIC_REVISION" ]]; then
   ALEMBIC_REVISION="$("$TEMP_DIR/.venv/bin/python" - "$TEMP_DIR/alembic/versions" <<'PY'
 import ast

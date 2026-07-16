@@ -180,6 +180,25 @@ def test_builder_resolves_annotated_alembic_head(tmp_path: Path) -> None:
     assert manifest["alembic_revision"] == "head"
 
 
+def test_builder_rejects_runtime_with_missing_import(tmp_path: Path) -> None:
+    source, releases, runtime = _source_tree(tmp_path)
+    app = source / "app"
+    app.mkdir()
+    (app / "__init__.py").write_text("", encoding="utf-8")
+    (app / "main.py").write_text(
+        "import package_that_is_not_installed_for_release_test\n",
+        encoding="utf-8",
+    )
+    _git(source, "add", ".")
+    _git(source, "commit", "-m", "add broken runtime import")
+
+    result = _run_builder(source, releases, runtime, "missing-import")
+
+    assert result.returncode != 0
+    assert "package_that_is_not_installed_for_release_test" in result.stderr
+    assert not (releases / "missing-import").exists()
+
+
 def test_release_python_scripts_disable_bytecode_writes() -> None:
     for script in RELEASE_PYTHON_SCRIPTS:
         result = subprocess.run(

@@ -39,6 +39,35 @@ class _FakeHTTPResponse:
         return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
 
 
+def test_bitrix_rest_client_retries_transient_server_error(monkeypatch) -> None:
+    attempts = 0
+    sleeps: list[int] = []
+
+    def fake_urlopen(request, timeout):  # noqa: ANN001, ANN202
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise urllib.error.HTTPError(
+                request.full_url,
+                500,
+                "temporary",
+                {},
+                io.BytesIO(b"temporary"),
+            )
+        return _FakeHTTPResponse({"result": {"items": []}})
+
+    monkeypatch.setattr(expertise_bitrix.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(expertise_bitrix.time_module, "sleep", sleeps.append)
+
+    result = expertise_bitrix.BitrixRestClient("https://bitrix.example/rest/1/token").call(
+        "crm.item.list"
+    )
+
+    assert result == {"result": {"items": []}}
+    assert attempts == 3
+    assert sleeps == [2, 4]
+
+
 def _configure_bitrix_env(
     monkeypatch: pytest.MonkeyPatch, *, include_store_map: bool = True
 ) -> None:

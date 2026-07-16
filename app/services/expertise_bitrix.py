@@ -477,6 +477,10 @@ class BitrixRestClient:
                     payload = json.loads(response.read().decode("utf-8"))
                 break
             except urllib.error.HTTPError as error:
+                if 500 <= error.code < 600 and attempt < 3:
+                    error.close()
+                    time_module.sleep(attempt * 2)
+                    continue
                 body = error.read().decode("utf-8", errors="replace")
                 detail = body[:1000]
                 try:

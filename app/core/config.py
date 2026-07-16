@@ -83,6 +83,7 @@ class Settings(BaseSettings):
     counterparty_duplicate_p2_enabled: bool = False
     counterparty_duplicate_fuzzy_threshold: float = 0.9
     management_internal_api_token: str | None = None
+    orchestration_internal_api_token: str | None = None
     logistics_internal_api_token: str | None = None
     expertise_internal_api_token: str | None = None
     expertise_onec_sql: str | None = None

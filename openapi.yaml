@@ -6795,6 +6795,222 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/internal/orchestration/runs/claim:
+    post:
+      tags:
+      - management-orchestration
+      summary: Claim Run
+      operationId: claim_run_api_management_internal_orchestration_runs_claim_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 255
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunClaimRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/internal/orchestration/runs/{run_id}/heartbeat:
+    post:
+      tags:
+      - management-orchestration
+      summary: Heartbeat Run
+      operationId: heartbeat_run_api_management_internal_orchestration_runs__run_id__heartbeat_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Run Id
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 255
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunHeartbeatRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/internal/orchestration/runs/{run_id}/finish:
+    post:
+      tags:
+      - management-orchestration
+      summary: Finish Run
+      operationId: finish_run_api_management_internal_orchestration_runs__run_id__finish_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Run Id
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 255
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunFinishRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/internal/orchestration/delivery-intents/claim:
+    post:
+      tags:
+      - management-orchestration
+      summary: Claim Delivery
+      operationId: claim_delivery_api_management_internal_orchestration_delivery_intents_claim_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 255
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryClaimRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/internal/orchestration/delivery-intents/{intent_id}/finish:
+    post:
+      tags:
+      - management-orchestration
+      summary: Finish Delivery
+      operationId: finish_delivery_api_management_internal_orchestration_delivery_intents__intent_id__finish_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: intent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Intent Id
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 255
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryFinishRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/internal/orchestration/health:
+    get:
+      tags:
+      - management-orchestration
+      summary: Get Orchestration Health
+      operationId: get_orchestration_health_api_management_internal_orchestration_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestrationHealthResponse'
+      security:
+      - HTTPBearer: []
   /api/procurement-labels/session:
     post:
       summary: Create Bitrix Procurement Labels Session
@@ -11349,6 +11565,109 @@ components:
       required:
       - items
       title: DecisionHistoryResponse
+    DeliveryClaimRequest:
+      properties:
+        run_id:
+          type: string
+          format: uuid
+          title: Run Id
+        job_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          pattern: ^[a-z0-9][a-z0-9._-]*$
+          title: Job Id
+        channel:
+          type: string
+          maxLength: 64
+          minLength: 1
+          pattern: ^[a-z0-9][a-z0-9._-]*$
+          title: Channel
+        dedupe_key:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Dedupe Key
+        target_fingerprint:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Target Fingerprint
+        payload_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Payload Sha256
+        artifact_refs:
+          items:
+            type: string
+          type: array
+          maxItems: 50
+          title: Artifact Refs
+        worker_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Worker Id
+        lease_seconds:
+          type: integer
+          maximum: 3600.0
+          minimum: 30.0
+          title: Lease Seconds
+          default: 300
+        max_attempts:
+          type: integer
+          maximum: 10.0
+          minimum: 1.0
+          title: Max Attempts
+          default: 3
+      type: object
+      required:
+      - run_id
+      - job_id
+      - channel
+      - dedupe_key
+      - target_fingerprint
+      - payload_sha256
+      - worker_id
+      title: DeliveryClaimRequest
+    DeliveryFinishRequest:
+      properties:
+        worker_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Worker Id
+        outcome:
+          type: string
+          enum:
+          - delivered
+          - failed
+          - unknown
+          - manual_review
+          - cancelled
+          title: Outcome
+        external_ref:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: External Ref
+        error_code:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Error Code
+        error_detail:
+          anyOf:
+          - type: string
+            maxLength: 4000
+          - type: 'null'
+          title: Error Detail
+      type: object
+      required:
+      - worker_id
+      - outcome
+      title: DeliveryFinishRequest
     DeliveryMethodReportItem:
       properties:
         raw_delivery_method:
@@ -11380,6 +11699,58 @@ components:
           title: Items
       type: object
       title: DeliveryMethodReportResponse
+    DeliveryResponse:
+      properties:
+        intent_id:
+          type: string
+          format: uuid
+          title: Intent Id
+        run_id:
+          type: string
+          format: uuid
+          title: Run Id
+        job_id:
+          type: string
+          title: Job Id
+        channel:
+          type: string
+          title: Channel
+        dedupe_key:
+          type: string
+          title: Dedupe Key
+        status:
+          type: string
+          title: Status
+        should_send:
+          type: boolean
+          title: Should Send
+        attempts_count:
+          type: integer
+          title: Attempts Count
+        manual_review_required:
+          type: boolean
+          title: Manual Review Required
+        external_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: External Ref
+        idempotency_replayed:
+          type: boolean
+          title: Idempotency Replayed
+      type: object
+      required:
+      - intent_id
+      - run_id
+      - job_id
+      - channel
+      - dedupe_key
+      - status
+      - should_send
+      - attempts_count
+      - manual_review_required
+      - idempotency_replayed
+      title: DeliveryResponse
     DeviceModelCreate:
       properties:
         brand:
@@ -16074,6 +16445,43 @@ components:
       - brand
       - model_name
       title: ModelDemandTimeseriesItem
+    OrchestrationHealthResponse:
+      properties:
+        status:
+          type: string
+          enum:
+          - ready
+          - degraded
+          title: Status
+        checked_at:
+          type: string
+          format: date-time
+          title: Checked At
+        run_status_counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Run Status Counts
+        delivery_status_counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Delivery Status Counts
+        stale_run_count:
+          type: integer
+          title: Stale Run Count
+        manual_review_count:
+          type: integer
+          title: Manual Review Count
+      type: object
+      required:
+      - status
+      - checked_at
+      - run_status_counts
+      - delivery_status_counts
+      - stale_run_count
+      - manual_review_count
+      title: OrchestrationHealthResponse
     OrderFulfillmentMentionResponse:
       properties:
         site_order_number:
@@ -20255,6 +20663,153 @@ components:
       required:
       - competitor_item_id
       title: RevokeRequest
+    RunClaimRequest:
+      properties:
+        job_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          pattern: ^[a-z0-9][a-z0-9._-]*$
+          title: Job Id
+        run_key:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Run Key
+        scheduled_for:
+          type: string
+          format: date-time
+          title: Scheduled For
+        input_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Input Sha256
+        mode:
+          type: string
+          enum:
+          - shadow
+          - production
+          - replay
+          title: Mode
+          default: production
+        worker_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Worker Id
+        lease_seconds:
+          type: integer
+          maximum: 3600.0
+          minimum: 30.0
+          title: Lease Seconds
+          default: 300
+      type: object
+      required:
+      - job_id
+      - run_key
+      - scheduled_for
+      - input_sha256
+      - worker_id
+      title: RunClaimRequest
+    RunFinishRequest:
+      properties:
+        worker_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Worker Id
+        status:
+          type: string
+          enum:
+          - succeeded
+          - partial
+          - failed
+          - skipped
+          - blocked
+          title: Status
+        result:
+          additionalProperties: true
+          type: object
+          title: Result
+        error_code:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Error Code
+        error_detail:
+          anyOf:
+          - type: string
+            maxLength: 4000
+          - type: 'null'
+          title: Error Detail
+      type: object
+      required:
+      - worker_id
+      - status
+      title: RunFinishRequest
+    RunHeartbeatRequest:
+      properties:
+        worker_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Worker Id
+        lease_seconds:
+          type: integer
+          maximum: 3600.0
+          minimum: 30.0
+          title: Lease Seconds
+          default: 300
+      type: object
+      required:
+      - worker_id
+      title: RunHeartbeatRequest
+    RunResponse:
+      properties:
+        run_id:
+          type: string
+          format: uuid
+          title: Run Id
+        job_id:
+          type: string
+          title: Job Id
+        run_key:
+          type: string
+          title: Run Key
+        status:
+          type: string
+          title: Status
+        should_execute:
+          type: boolean
+          title: Should Execute
+        resource_replayed:
+          type: boolean
+          title: Resource Replayed
+        idempotency_replayed:
+          type: boolean
+          title: Idempotency Replayed
+        lease_expires_at:
+          type: string
+          format: date-time
+          title: Lease Expires At
+        completed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Completed At
+      type: object
+      required:
+      - run_id
+      - job_id
+      - run_key
+      - status
+      - should_execute
+      - resource_replayed
+      - idempotency_replayed
+      - lease_expires_at
+      title: RunResponse
     ScreenInfo:
       properties:
         size_inch:

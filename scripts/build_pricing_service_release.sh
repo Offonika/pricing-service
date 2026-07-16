@@ -9,7 +9,12 @@ RELEASE_ROOT="${PRICING_SERVICE_RELEASE_ROOT:-/opt/MM/releases/pricing-service}"
 BASE_RELEASE="${PRICING_SERVICE_BASE_RELEASE:-}"
 OVERLAY_PATHS="${PRICING_SERVICE_RELEASE_OVERLAY_PATHS:-}"
 PYTHON_BIN="${PRICING_SERVICE_PYTHON_BIN:-/opt/MM/pricing-service/.venv/bin/python}"
+PYTHON_BOOTSTRAP="${PRICING_SERVICE_PYTHON_BOOTSTRAP:-python3}"
 ALEMBIC_REVISION="${PRICING_SERVICE_ALEMBIC_REVISION:-}"
+ALLOW_OVERLAY="${PRICING_SERVICE_ALLOW_OVERLAY:-0}"
+BUILD_UI="${PRICING_SERVICE_BUILD_UI:-1}"
+INSTALL_VENV="${PRICING_SERVICE_INSTALL_VENV:-1}"
+RUNTIME_ENV_FILE="${PRICING_SERVICE_RUNTIME_ENV_FILE:-$RUNTIME_ROOT/.env}"
 RELEASE_NAME="${1:-architecture-hardening-$(date +%Y%m%d-%H%M%S)}"
 FINAL_DIR="${RELEASE_ROOT}/${RELEASE_NAME}"
 TEMP_DIR="${RELEASE_ROOT}/.${RELEASE_NAME}.tmp.$$"
@@ -30,16 +35,27 @@ if [[ -e "$FINAL_DIR" ]]; then
   echo "release already exists: $FINAL_DIR" >&2
   exit 2
 fi
+if [[ ! -f "$SOURCE_ROOT/requirements.lock" ]]; then
+  echo "requirements.lock is required for an immutable release" >&2
+  exit 2
+fi
+if [[ ! -f "$RUNTIME_ENV_FILE" ]]; then
+  echo "runtime env file is missing: $RUNTIME_ENV_FILE" >&2
+  exit 2
+fi
+if [[ -n "$BASE_RELEASE" ]] && [[ "$ALLOW_OVERLAY" != 1 ]]; then
+  echo "overlay releases require PRICING_SERVICE_ALLOW_OVERLAY=1" >&2
+  exit 2
+fi
 
 source_commit="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
-if [[ -z "$ALEMBIC_REVISION" ]]; then
-  ALEMBIC_REVISION="$({
-    cd "$SOURCE_ROOT"
-    PYTHONPATH="$SOURCE_ROOT" "$PYTHON_BIN" -m alembic heads
-  } | awk 'NR == 1 {print $1}')"
+
+if [[ "$BUILD_UI" == 1 ]] && [[ -f "$SOURCE_ROOT/ui/package-lock.json" ]]; then
+  npm --prefix "$SOURCE_ROOT/ui" ci
+  npm --prefix "$SOURCE_ROOT/ui" run build
 fi
-if [[ -z "$ALEMBIC_REVISION" ]]; then
-  echo "could not resolve Alembic revision" >&2
+if [[ ! -f "$SOURCE_ROOT/ui/dist/index.html" ]]; then
+  echo "ui/dist/index.html is required; build the UI from the release commit" >&2
   exit 2
 fi
 
@@ -70,7 +86,6 @@ rsync_excludes=(
   --exclude '*.pyc'
 )
 
-base_release_manifest=""
 base_release_value="source-tree"
 if [[ -n "$BASE_RELEASE" ]]; then
   if [[ ! -d "$BASE_RELEASE" ]]; then
@@ -137,26 +152,94 @@ else
   rsync -a "${rsync_excludes[@]}" "$SOURCE_ROOT/" "$TEMP_DIR/"
 fi
 
+if [[ "$INSTALL_VENV" == 1 ]]; then
+  "$PYTHON_BOOTSTRAP" -m venv "$TEMP_DIR/.venv"
+  "$TEMP_DIR/.venv/bin/python" -m pip install \
+    --disable-pip-version-check \
+    --no-compile \
+    --require-hashes \
+    -r "$TEMP_DIR/requirements.lock"
+else
+  mkdir -p "$TEMP_DIR/.venv/bin"
+  ln -s "$(command -v "$PYTHON_BOOTSTRAP")" "$TEMP_DIR/.venv/bin/python"
+fi
+
 for mutable_name in .local .artifacts build data embeddings reports; do
   rm -rf "$TEMP_DIR/$mutable_name"
   mkdir -p "$RUNTIME_ROOT/$mutable_name"
   ln -s "$RUNTIME_ROOT/$mutable_name" "$TEMP_DIR/$mutable_name"
 done
 rm -f "$TEMP_DIR/.env"
-ln -s "$RUNTIME_ROOT/.env" "$TEMP_DIR/.env"
+ln -s "$RUNTIME_ENV_FILE" "$TEMP_DIR/.env"
 
+if [[ -z "$ALEMBIC_REVISION" ]]; then
+  ALEMBIC_REVISION="$("$TEMP_DIR/.venv/bin/python" - "$TEMP_DIR/alembic/versions" <<'PY'
+import ast
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+revisions = set()
+parents = set()
+for path in root.glob("*.py"):
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    values = {}
+    for node in tree.body:
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id in {"revision", "down_revision"}
+        ):
+            try:
+                values[node.targets[0].id] = ast.literal_eval(node.value)
+            except (TypeError, ValueError):
+                pass
+    revision = values.get("revision")
+    down_revision = values.get("down_revision")
+    if isinstance(revision, str):
+        revisions.add(revision)
+    if isinstance(down_revision, str):
+        parents.add(down_revision)
+    elif isinstance(down_revision, (tuple, list)):
+        parents.update(item for item in down_revision if isinstance(item, str))
+heads = sorted(revisions - parents)
+if len(heads) != 1:
+    raise SystemExit(f"expected one Alembic head, found: {heads}")
+print(heads[0])
+PY
+)"
+fi
+if [[ -z "$ALEMBIC_REVISION" ]]; then
+  echo "could not resolve Alembic revision" >&2
+  exit 2
+fi
+
+python_version="$("$TEMP_DIR/.venv/bin/python" -c 'import platform; print(platform.python_version())')"
+requirements_lock_sha256="$(sha256sum "$TEMP_DIR/requirements.lock" | awk '{print $1}')"
+pip_freeze_sha256="$("$TEMP_DIR/.venv/bin/python" -m pip freeze --all | sha256sum | awk '{print $1}')"
+ui_asset_sha256="$({
+  cd "$TEMP_DIR/ui/dist"
+  find . -type f -print0 | sort -z | xargs -0 sha256sum
+} | sha256sum | awk '{print $1}')"
 content_sha256="$({
   cd "$TEMP_DIR"
   find . -type f -print0 | sort -z | xargs -0 sha256sum
 } | sha256sum | awk '{print $1}')"
+
 built_at="$(date -Is)"
-"$PYTHON_BIN" - \
+"$TEMP_DIR/.venv/bin/python" - \
   "$TEMP_DIR/release-manifest.json" \
   "$RELEASE_NAME" \
   "$built_at" \
   "$base_release_value" \
   "${OVERLAY_PATHS:-all}" \
   "$source_commit" \
+  "$RUNTIME_ENV_FILE" \
+  "$python_version" \
+  "$requirements_lock_sha256" \
+  "$pip_freeze_sha256" \
+  "$ui_asset_sha256" \
   "$ALEMBIC_REVISION" \
   "$content_sha256" <<'PY'
 import json
@@ -170,6 +253,11 @@ from pathlib import Path
     base_release,
     overlay_paths,
     source_commit,
+    runtime_env_file,
+    python_version,
+    requirements_lock_sha256,
+    pip_freeze_sha256,
+    ui_asset_sha256,
     alembic_revision,
     content_sha256,
 ) = sys.argv[1:]
@@ -179,8 +267,13 @@ payload = {
     "base_release": base_release,
     "overlay_paths": overlay_paths,
     "source_commit": source_commit,
-    "alembic_revision": alembic_revision,
     "source_dirty": False,
+    "runtime_env_file": runtime_env_file,
+    "python_version": python_version,
+    "requirements_lock_sha256": requirements_lock_sha256,
+    "pip_freeze_sha256": pip_freeze_sha256,
+    "ui_asset_sha256": ui_asset_sha256,
+    "alembic_revision": alembic_revision,
     "content_sha256": content_sha256,
 }
 Path(manifest_path).write_text(
@@ -189,6 +282,7 @@ Path(manifest_path).write_text(
 )
 PY
 
+find "$TEMP_DIR" -type d -exec chmod a+rX {} +
 find "$TEMP_DIR" -type f -exec chmod a-w {} +
 find "$TEMP_DIR" -type d -exec chmod a-w {} +
 mv "$TEMP_DIR" "$FINAL_DIR"

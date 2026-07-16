@@ -115,6 +115,19 @@ Read-only PostgreSQL-команды используют `session_scope(read_onl
 generic `build_engine` остаётся временным compatibility API только до завершения
 Release B и не должен появляться в новых постоянных jobs.
 
+#### Durable orchestration management jobs
+
+- Корневой `/opt/MM` хранит runtime registry, генерирует systemd units и запускает
+  только thin wrappers; бизнес-команды остаются в owning project.
+- `pricing-service` хранит в PostgreSQL журнал запусков, delivery intents и attempts.
+- Root runner работает с состоянием только через authenticated internal API
+  `/api/management/internal/orchestration`, без прямого доступа к БД.
+- Повторный `Idempotency-Key` не разрешает повторный запуск или отправку. Если lease
+  внешней отправки истёк без подтверждённого результата, она получает статус
+  `unknown` и требует ручной сверки вместо автоматического retry.
+- Cron и timer одной job не включаются одновременно; переход выполняется волнами с
+  проверкой state и минимум двумя успешными циклами.
+
 ### 2.4. Внешние интеграции
 
 #### 1С
@@ -491,6 +504,14 @@ Dev-окружение:
   - выгрузок.
 - Объяснимость:
   - для каждой рекомендованной цены хранить входные параметры и причины.
+- Воспроизводимый release:
+  - clean Git commit, hash-locked dependencies, release-specific `.venv`, UI и
+    backend в одном immutable каталоге;
+  - active symlink является единой точкой переключения и rollback backend/UI.
+- Надёжность operational jobs:
+  - durable idempotency для запуска и доставки;
+  - явные timeout, memory limit, SLA/freshness и rollback в runtime registry;
+  - неизвестный результат внешнего side effect не ретраится автоматически.
 
 ---
 

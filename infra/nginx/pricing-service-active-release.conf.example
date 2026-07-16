@@ -1,0 +1,19 @@
+# Replace the existing /var/www/pricing-service root with the active release link.
+# The same symlink then controls backend code, virtualenv and frontend assets.
+server {
+    server_name price.mm.offonika.ru;
+    root /opt/MM/pricing-service-task43-current/ui/dist;
+    index index.html;
+
+    location /assets/ {
+        try_files $uri =404;
+        add_header Cache-Control "public, max-age=31536000, immutable" always;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    # Keep the existing API proxy, auth and Bitrix session locations from the
+    # production server block. This example only defines the atomic static root.
+}

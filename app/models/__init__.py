@@ -68,6 +68,12 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         MatchingPropertyValueMap,
     )
     from app.models.onec_sales_daily_kpi import OneCSalesDailyKpi
+    from app.models.orchestration import (
+        OrchestrationApiRequest,
+        OrchestrationDeliveryAttempt,
+        OrchestrationDeliveryIntent,
+        OrchestrationJobRun,
+    )
     from app.models.price_recommendation import PriceRecommendation
     from app.models.pricing_strategy_version import PricingStrategyVersion
     from app.models.procurement_order_formation import (
@@ -188,6 +194,10 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "LogisticsRouteRunItem",
         "LogisticsManualReview",
         "OneCSalesDailyKpi",
+        "OrchestrationApiRequest",
+        "OrchestrationJobRun",
+        "OrchestrationDeliveryIntent",
+        "OrchestrationDeliveryAttempt",
         "MatchingPropertyProfile",
         "MatchingPropertyRule",
         "MatchingPropertyRuleAudit",

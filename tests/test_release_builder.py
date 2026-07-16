@@ -62,6 +62,7 @@ def _run_builder(
     *,
     base_release: Path | None = None,
     overlay_paths: str | None = None,
+    alembic_revision: str | None = "test-revision",
 ) -> subprocess.CompletedProcess[str]:
     env = {
         **os.environ,
@@ -69,10 +70,11 @@ def _run_builder(
         "PRICING_SERVICE_RUNTIME_ROOT": str(runtime),
         "PRICING_SERVICE_RELEASE_ROOT": str(releases),
         "PRICING_SERVICE_PYTHON_BIN": str(PYTHON_BIN),
-        "PRICING_SERVICE_ALEMBIC_REVISION": "test-revision",
         "PRICING_SERVICE_BUILD_UI": "0",
         "PRICING_SERVICE_INSTALL_VENV": "0",
     }
+    if alembic_revision is not None:
+        env["PRICING_SERVICE_ALEMBIC_REVISION"] = alembic_revision
     if base_release is not None:
         env["PRICING_SERVICE_BASE_RELEASE"] = str(base_release)
         env["PRICING_SERVICE_ALLOW_OVERLAY"] = "1"
@@ -146,6 +148,36 @@ def test_builder_excludes_linked_worktree_git_pointer(tmp_path: Path) -> None:
     release = releases / "linked"
     assert not (release / ".git").exists()
     assert (release / "app.py").is_file()
+
+
+def test_builder_resolves_annotated_alembic_head(tmp_path: Path) -> None:
+    source, releases, runtime = _source_tree(tmp_path)
+    versions = source / "alembic" / "versions"
+    versions.mkdir(parents=True)
+    (versions / "base.py").write_text(
+        'revision: str = "base"\ndown_revision: str | None = None\n',
+        encoding="utf-8",
+    )
+    (versions / "head.py").write_text(
+        'revision = "head"\ndown_revision: str | None = "base"\n',
+        encoding="utf-8",
+    )
+    _git(source, "add", ".")
+    _git(source, "commit", "-m", "add migrations")
+
+    result = _run_builder(
+        source,
+        releases,
+        runtime,
+        "annotated-head",
+        alembic_revision=None,
+    )
+
+    assert result.returncode == 0, result.stderr
+    manifest = json.loads(
+        (releases / "annotated-head" / "release-manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["alembic_revision"] == "head"
 
 
 def test_release_python_scripts_disable_bytecode_writes() -> None:

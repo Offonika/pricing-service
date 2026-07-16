@@ -185,14 +185,21 @@ for path in root.glob("*.py"):
     tree = ast.parse(path.read_text(encoding="utf-8"))
     values = {}
     for node in tree.body:
+        target = None
+        value = None
         if (
             isinstance(node, ast.Assign)
             and len(node.targets) == 1
             and isinstance(node.targets[0], ast.Name)
-            and node.targets[0].id in {"revision", "down_revision"}
         ):
+            target = node.targets[0]
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            target = node.target
+            value = node.value
+        if target is not None and target.id in {"revision", "down_revision"}:
             try:
-                values[node.targets[0].id] = ast.literal_eval(node.value)
+                values[target.id] = ast.literal_eval(value)
             except (TypeError, ValueError):
                 pass
     revision = values.get("revision")

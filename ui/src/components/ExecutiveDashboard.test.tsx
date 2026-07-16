@@ -1,17 +1,19 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ExecutiveDashboardAction,
   ExecutiveDashboardBlock,
   ExecutiveDashboardResponse,
   ExecutiveProfitLossInventoryLoss,
+  ExecutiveProfitLossPeriodResponse,
   ExecutiveSalesPeriodResponse,
 } from "../api/executiveDashboard";
 import {
   fetchExecutiveDashboard,
   fetchExecutiveDashboardActions,
   fetchExecutiveManagementBalance,
+  fetchExecutiveProfitLossPeriod,
   fetchExecutiveSalesPeriod,
 } from "../api/executiveDashboard";
 
@@ -601,6 +603,138 @@ describe("executive management balance", () => {
     expect(screen.getByText(/Неподтверждено:/)).toHaveTextContent(/4\s*301\s*900 ₽/);
     expect(screen.getByText(/Неподтверждено:/)).toHaveTextContent("в итог баланса не включено");
     expect(screen.getByText(/Неподтверждено:/)).toHaveTextContent("Сопоставлено сотрудников: 0%");
+  });
+});
+
+function profitLossPeriodResponse(): ExecutiveProfitLossPeriodResponse {
+  return {
+    date_from: "2026-06-01",
+    date_to: "2026-06-30",
+    generated_at: "2026-06-30T10:00:00Z",
+    source_status: "partial",
+    freshness_status: "fresh",
+    note: "Операционная прибыль не включает товарные потери.",
+    totals: {
+      revenue: "1000000.00",
+      cost_of_sales: "700000.00",
+      gross_profit: "300000.00",
+      operating_expenses: "100000.00",
+      operating_profit: "200000.00",
+      expense_open_question_count: "0",
+    },
+    ratios: [
+      { key: "gross_margin_pct", label: "Валовая маржа", value: "0.3", unit: "PCT", tone: "neutral" },
+      { key: "operating_margin_pct", label: "Операционная маржа", value: "0.2", unit: "PCT", tone: "neutral" },
+    ],
+    lines: [],
+    daily: [],
+    by_store: [],
+    by_manager: [],
+    expense_source_status: "ready",
+    expense_breakdown: [],
+    expense_open_questions: [],
+    inventory_loss: inventoryLoss(),
+    filters: {},
+  };
+}
+
+function profitLossDashboardResponse(): ExecutiveDashboardResponse {
+  return {
+    as_of: "2026-06-30",
+    generated_at: "2026-06-30T10:00:00Z",
+    freshness_status: "fresh",
+    source_status: "partial",
+    access_level: "full",
+    roles: [],
+    allowed_blocks: ["profit_loss"],
+    allowed_action_domains: ["profit_loss"],
+    blocks: [
+      {
+        key: "profit_loss",
+        title: "Прибыли / убытки",
+        source_status: "partial",
+        freshness_status: "fresh",
+        as_of: "2026-06-30",
+        summary: {},
+        metrics: [],
+      },
+    ],
+    source_freshness: [],
+    top_actions: [],
+    summary: {},
+  };
+}
+
+async function renderProfitLossTab() {
+  window.history.pushState({}, "", "?tab=profit_loss&date=2026-06-30");
+  vi.mocked(fetchExecutiveDashboard).mockResolvedValue(profitLossDashboardResponse());
+  vi.mocked(fetchExecutiveDashboardActions).mockResolvedValue({
+    as_of: "2026-06-30",
+    freshness_status: "fresh",
+    source_status: "ready",
+    total_count: 0,
+    payload: [],
+  });
+  vi.mocked(fetchExecutiveProfitLossPeriod).mockResolvedValue(profitLossPeriodResponse());
+
+  const result = render(<ExecutiveDashboard />);
+  await screen.findByRole("heading", { name: "Товарные потери за месяц" });
+  return result;
+}
+
+describe("executive profit and loss period", () => {
+  beforeEach(() => {
+    vi.mocked(fetchExecutiveDashboard).mockReset();
+    vi.mocked(fetchExecutiveDashboardActions).mockReset();
+    vi.mocked(fetchExecutiveProfitLossPeriod).mockReset();
+  });
+
+  afterEach(cleanup);
+
+  it("moves the period controls into the page header and keeps them connected to the report", async () => {
+    const { container } = await renderProfitLossTab();
+    const pageHeader = container.querySelector(".executive__header");
+    expect(pageHeader).not.toBeNull();
+
+    expect(within(pageHeader as HTMLElement).getByRole("button", { name: "7 дней" })).toBeVisible();
+    expect(within(pageHeader as HTMLElement).getByRole("button", { name: "30 дней" })).toBeVisible();
+    expect(within(pageHeader as HTMLElement).getByRole("button", { name: "Месяц" })).toBeVisible();
+    expect(screen.getByLabelText("Начало периода прибыли и убытков")).toHaveValue("2026-06-01");
+    expect(screen.getByLabelText("Конец периода прибыли и убытков")).toHaveValue("2026-06-30");
+    expect(screen.queryByLabelText("Дата управленческой витрины")).not.toBeInTheDocument();
+
+    const report = screen.getByLabelText("Отчет о прибылях и убытках за период");
+    expect(within(report).queryByRole("button", { name: "7 дней" })).not.toBeInTheDocument();
+    expect(within(report).queryByRole("button", { name: "Месяц" })).not.toBeInTheDocument();
+
+    fireEvent.click(within(pageHeader as HTMLElement).getByRole("button", { name: "7 дней" }));
+    await waitFor(() => {
+      expect(fetchExecutiveProfitLossPeriod).toHaveBeenLastCalledWith({
+        date_from: "2026-06-24",
+        date_to: "2026-06-30",
+      });
+    });
+
+    fireEvent.change(screen.getByLabelText("Начало периода прибыли и убытков"), {
+      target: { value: "2026-06-01" },
+    });
+    fireEvent.change(screen.getByLabelText("Конец периода прибыли и убытков"), {
+      target: { value: "2026-06-15" },
+    });
+    await waitFor(() => {
+      expect(fetchExecutiveProfitLossPeriod).toHaveBeenLastCalledWith({
+        date_from: "2026-06-01",
+        date_to: "2026-06-15",
+      });
+    });
+
+    fireEvent.click(within(pageHeader as HTMLElement).getByRole("button", { name: "Месяц" }));
+    await waitFor(() => {
+      expect(fetchExecutiveProfitLossPeriod).toHaveBeenLastCalledWith({
+        date_from: "2026-06-01",
+        date_to: "2026-06-30",
+      });
+    });
   });
 });
 

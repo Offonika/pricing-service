@@ -2529,21 +2529,24 @@ export function InventoryLossPanel({ data }: { data?: ExecutiveProfitLossInvento
   );
 }
 
-function ProfitLossPeriodPanel({ asOf }: { asOf: string }) {
-  const [dateFrom, setDateFrom] = useState(monthStartIso(asOf));
-  const [dateTo, setDateTo] = useState(asOf);
+function ProfitLossPeriodPanel({
+  dateFrom,
+  dateTo,
+  refreshNonce,
+}: {
+  dateFrom: string;
+  dateTo: string;
+  refreshNonce: number;
+}) {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [message, setMessage] = useState("");
   const [data, setData] = useState<ExecutiveProfitLossPeriodResponse | null>(null);
 
   useEffect(() => {
-    setDateFrom(monthStartIso(asOf));
-    setDateTo(asOf);
-  }, [asOf]);
-
-  useEffect(() => {
     let cancelled = false;
-    setStatus("loading");
+    Promise.resolve().then(() => {
+      if (!cancelled) setStatus("loading");
+    });
     fetchExecutiveProfitLossPeriod({
       date_from: dateFrom,
       date_to: dateTo,
@@ -2562,7 +2565,7 @@ function ProfitLossPeriodPanel({ asOf }: { asOf: string }) {
     return () => {
       cancelled = true;
     };
-  }, [dateFrom, dateTo]);
+  }, [dateFrom, dateTo, refreshNonce]);
 
   const grossMargin = profitLossRatioByKey(data, "gross_margin_pct");
   const operatingMargin = profitLossRatioByKey(data, "operating_margin_pct");
@@ -2576,30 +2579,12 @@ function ProfitLossPeriodPanel({ asOf }: { asOf: string }) {
     data && !["source_missing", "source_error"].includes(data.expense_source_status)
   );
 
-  const setQuickRange = (days: number) => {
-    setDateTo(asOf);
-    setDateFrom(addDaysIso(asOf, -(days - 1)));
-  };
-
   return (
     <section className="executive-cashflow-period executive-profit-loss-period" aria-label="Отчет о прибылях и убытках за период">
       <header className="executive-panel__header">
         <div>
           <h2>Отчет о прибылях и убытках</h2>
           <span>Выручка, себестоимость, валовая прибыль и расходы по оплатам ДДС</span>
-        </div>
-        <div className="executive-panel__filters">
-          <button type="button" onClick={() => setQuickRange(7)}>
-            7 дней
-          </button>
-          <button type="button" onClick={() => setQuickRange(30)}>
-            30 дней
-          </button>
-          <button type="button" onClick={() => setDateFrom(monthStartIso(asOf))}>
-            Месяц
-          </button>
-          <input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} />
-          <input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} />
         </div>
       </header>
 
@@ -3790,6 +3775,15 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
   const [selectedAction, setSelectedAction] = useState<ExecutiveDashboardAction | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
 
+  const [profitLossDateFrom, setProfitLossDateFrom] = useState(() => monthStartIso(date));
+  const [profitLossDateTo, setProfitLossDateTo] = useState(date);
+  const [profitLossFiltersForDate, setProfitLossFiltersForDate] = useState(date);
+  if (date !== profitLossFiltersForDate) {
+    setProfitLossFiltersForDate(date);
+    setProfitLossDateFrom(monthStartIso(date));
+    setProfitLossDateTo(date);
+  }
+
   const [salesDateFrom, setSalesDateFrom] = useState(() => monthStartIso(date));
   const [salesDateTo, setSalesDateTo] = useState(() => monthEndIso(date));
   const [salesStoreRef, setSalesStoreRef] = useState("");
@@ -3817,6 +3811,14 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
     setSalesDateTo(monthEndIso(date));
     setSalesStoreRef("");
     setSalesManagerRef("");
+  };
+  const setProfitLossQuickRange = (days: number) => {
+    setProfitLossDateTo(date);
+    setProfitLossDateFrom(addDaysIso(date, -(days - 1)));
+  };
+  const setProfitLossCurrentMonth = () => {
+    setProfitLossDateFrom(monthStartIso(date));
+    setProfitLossDateTo(date);
   };
 
   useEffect(() => {
@@ -3948,7 +3950,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
           </span>
         </div>
         <div className="executive__controls">
-          {tab !== SALES_TAB_KEY && (
+          {![PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY].includes(tab) && (
             <label className="executive__date-field">
               <span>Дата</span>
               <input
@@ -3959,6 +3961,40 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
                 value={date}
               />
             </label>
+          )}
+          {tab === PROFIT_LOSS_TAB_KEY && (
+            <div className="executive__controls-group">
+              <span className="executive__controls-divider" aria-hidden="true" />
+              <Button onClick={() => setProfitLossQuickRange(7)} variant="secondary">
+                7 дней
+              </Button>
+              <Button onClick={() => setProfitLossQuickRange(30)} variant="secondary">
+                30 дней
+              </Button>
+              <Button onClick={setProfitLossCurrentMonth} variant="secondary">
+                Месяц
+              </Button>
+              <label className="executive__date-field">
+                <span>С</span>
+                <input
+                  aria-label="Начало периода прибыли и убытков"
+                  className="app__select executive__date"
+                  onChange={(event) => setProfitLossDateFrom(event.target.value)}
+                  type="date"
+                  value={profitLossDateFrom}
+                />
+              </label>
+              <label className="executive__date-field">
+                <span>По</span>
+                <input
+                  aria-label="Конец периода прибыли и убытков"
+                  className="app__select executive__date"
+                  onChange={(event) => setProfitLossDateTo(event.target.value)}
+                  type="date"
+                  value={profitLossDateTo}
+                />
+              </label>
+            </div>
           )}
           {tab === SALES_TAB_KEY && (
             <div className="executive__controls-group">
@@ -4110,7 +4146,13 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
             <TabKpiOverview block={tabOverviewBlock} data={data} />
           )}
 
-          {tab === PROFIT_LOSS_TAB_KEY && <ProfitLossPeriodPanel asOf={date} />}
+          {tab === PROFIT_LOSS_TAB_KEY && (
+            <ProfitLossPeriodPanel
+              dateFrom={profitLossDateFrom}
+              dateTo={profitLossDateTo}
+              refreshNonce={refreshNonce}
+            />
+          )}
 
           {tab === SALES_TAB_KEY && (
             <SalesPeriodPanel

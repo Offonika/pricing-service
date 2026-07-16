@@ -27,7 +27,7 @@ from app.models import (
     TelephonyUserLineSnapshot,
 )
 from app.schemas.receivable_workplace import ReceivableWorkplaceActionRequest
-from app.services import bitrix_receivables_auth
+from app.services import bitrix_receivables_auth, receivable_workplace_cache
 from app.services import receivable_workplace as receivable_workplace_service
 from app.services.bitrix_receivables_auth import (
     ReceivablesAccess,
@@ -639,6 +639,90 @@ def test_open_debt_source_freshness_accepts_recent_ledger(
 
     assert freshness.source_status == "cache_ready"
     assert freshness.source_lag_days == 1
+
+
+def test_rebuild_open_debt_cache_reports_diagnostics_and_removes_extra_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 7, 13)
+    snapshots = [
+        ReceivableBalanceSnapshot(
+            snapshot_date=as_of,
+            counterparty_ref=counterparty_ref,
+            counterparty_name=counterparty_ref,
+            current_balance=balance,
+            department_ref="dep-1",
+            aged_bucket="1-30",
+            activity_segment="active",
+            is_overdue=True,
+        )
+        for counterparty_ref, balance in (
+            ("cp-match", Decimal("100.00")),
+            ("cp-missing", Decimal("200.00")),
+        )
+    ]
+    db_session.add_all(
+        [
+            *snapshots,
+            _ledger_event(
+                document_date=datetime(2026, 7, 12, 18, 0),
+                business_key="fresh-source",
+            ),
+            ReceivableOpenDebtCache(
+                snapshot_date=as_of,
+                counterparty_ref="cp-extra",
+                department_ref="dep-1",
+                source_status="ready",
+                documents=[{"open_amount": "999.00"}],
+            ),
+        ]
+    )
+    db_session.flush()
+
+    def fake_build(*args, diagnostics=None, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        diagnostics["statement_sale_counts"] = {"cp-match": 1, "cp-missing": 0}
+        return {
+            "cp-match": [
+                {
+                    "document_ref": "sale-match",
+                    "document_number": "РТУ-100",
+                    "document_date": datetime(2026, 7, 10, 9, 0),
+                    "document_structure_status": "confirmed_open",
+                    "open_amount": Decimal("100.00"),
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        receivable_workplace_cache,
+        "build_open_debt_documents_by_counterparty",
+        fake_build,
+    )
+
+    result = receivable_workplace_cache.rebuild_open_debt_cache(
+        db_session,
+        snapshot_date=as_of,
+    )
+    db_session.flush()
+
+    rows = db_session.scalars(
+        select(ReceivableOpenDebtCache).where(ReceivableOpenDebtCache.snapshot_date == as_of)
+    ).all()
+    rows_by_ref = {row.counterparty_ref: row for row in rows}
+    assert result["document_diagnostic_counts"] == {
+        "matched": 1,
+        "statement_missing": 1,
+    }
+    assert result["document_mismatch_count"] == 1
+    assert result["revealed_document_mismatch_count"] == 0
+    assert result["deleted_count"] == 1
+    assert result["extra_cache_rows"] == 0
+    assert set(rows_by_ref) == {"cp-match", "cp-missing"}
+    assert rows_by_ref["cp-match"].source_status == "ready"
+    assert rows_by_ref["cp-match"].documents[0]["open_amount"] == "100.00"
+    assert rows_by_ref["cp-missing"].source_status == "document_mismatch"
+    assert rows_by_ref["cp-missing"].documents == []
 
 
 def test_receivable_workplace_hides_documents_from_stale_cache(

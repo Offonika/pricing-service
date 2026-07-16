@@ -161,6 +161,10 @@ function folderReviewReasonLabel(value?: string | null) {
   const labels: Record<string, string> = {
     department_folder_missing: "не найдена папка подразделения",
     open_structure_document_not_found: "не найден открытый документ по структуре 1С",
+    open_debt_statement_missing: "в ведомости нет документов для подтверждения долга",
+    open_debt_structure_unconfirmed: "структура документов 1С не подтверждена",
+    open_debt_document_total_below_balance: "сумма найденных накладных меньше долга",
+    open_debt_document_total_above_balance: "сумма найденных накладных больше долга",
     origin_document_structure_confirmed_manual_review: "исходная накладная требует ручной сверки",
     spb_cross_folder_manual_review: "СПБ: нужна ручная проверка между папками",
   };

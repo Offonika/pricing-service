@@ -685,7 +685,7 @@ function profitLossDashboardResponse(): ExecutiveDashboardResponse {
   };
 }
 
-async function renderProfitLossTab() {
+async function renderProfitLossTab(response = profitLossPeriodResponse()) {
   window.history.pushState({}, "", "?tab=profit_loss&date=2026-06-30");
   vi.mocked(fetchExecutiveDashboard).mockResolvedValue(profitLossDashboardResponse());
   vi.mocked(fetchExecutiveDashboardActions).mockResolvedValue({
@@ -695,7 +695,7 @@ async function renderProfitLossTab() {
     total_count: 0,
     payload: [],
   });
-  vi.mocked(fetchExecutiveProfitLossPeriod).mockResolvedValue(profitLossPeriodResponse());
+  vi.mocked(fetchExecutiveProfitLossPeriod).mockResolvedValue(response);
 
   const result = render(<ExecutiveDashboard />);
   await screen.findByRole("heading", { name: "Товарные потери за месяц" });
@@ -755,6 +755,37 @@ describe("executive profit and loss period", () => {
         date_to: "2026-06-30",
       });
     });
+  });
+
+  it("shows inventory loss inside the profit and loss statement without changing operating profit", async () => {
+    const response = profitLossPeriodResponse();
+    const operatingProfit = response.totals.operating_profit;
+
+    await renderProfitLossTab(response);
+
+    const statement = screen.getByLabelText("Структура ОПиУ");
+    const inventoryRow = within(statement).getByText("Товарные потери (справочно)").closest("div");
+    expect(inventoryRow).toHaveTextContent(/-702\s*449\s*₽/);
+    expect(inventoryRow).toHaveTextContent("операционная прибыль не пересчитана");
+    expect(response.totals.operating_profit).toBe(operatingProfit);
+  });
+
+  it("shows the inventory source error in the profit and loss statement", async () => {
+    const response = profitLossPeriodResponse();
+    response.inventory_loss = {
+      ...inventoryLoss(),
+      source_status: "source_error",
+      loss_amount: null,
+      note: "Месячный отчет по товарным потерям не удалось прочитать.",
+    };
+
+    await renderProfitLossTab(response);
+
+    const statement = screen.getByLabelText("Структура ОПиУ");
+    const inventoryRow = within(statement).getByText("Товарные потери (справочно)").closest("div");
+    expect(inventoryRow).toHaveTextContent("ошибка");
+    expect(inventoryRow).toHaveTextContent("Месячный отчет по товарным потерям не удалось прочитать.");
+    expect(inventoryRow).toHaveClass("executive-profit-loss-line--source_error");
   });
 });
 

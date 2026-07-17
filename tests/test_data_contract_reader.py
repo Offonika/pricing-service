@@ -114,3 +114,64 @@ def test_schema_hash_has_one_release_compatibility_window(
     assert "compatibility window" in caplog.text
     with pytest.raises(ContractIntegrityError, match="schema_sha256 is missing"):
         read_json_contract(path, now=now, require_schema_sha256=True)
+
+
+def test_retail_director_monthly_contract_path_family_is_allowlisted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 7, 17, 6, tzinfo=UTC)
+    path = tmp_path / "retail-director-monthly/2026-06/retail-director-summary-2026-06.json"
+    path.parent.mkdir(parents=True)
+    content = b'{"schema_version":2,"shrinkage":{}}\n'
+    path.write_bytes(content)
+    path.with_suffix(".json.manifest.json").write_text(
+        json.dumps(
+            {
+                "contract_version": "retail-director-monthly-snapshot.v2",
+                "generated_at": now.isoformat(),
+                "source_project": "mm-compensation",
+                "content_sha256": hashlib.sha256(content).hexdigest(),
+                "schema": "retail-director-monthly-snapshot.schema.json",
+                "schema_sha256": (
+                    "7306d10df7a489b985216ea856f1bbd7518a421bfd5deaeadd552e637cd70154"
+                ),
+                "artifact": path.name,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(contracts, "CONTRACT_ROOT", tmp_path)
+
+    assert read_json_contract(path, now=now)["schema_version"] == 2
+
+
+def test_retail_director_monthly_contract_rejects_mismatched_month_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 7, 17, 6, tzinfo=UTC)
+    path = tmp_path / "retail-director-monthly/2026-06/retail-director-summary-2026-05.json"
+    path.parent.mkdir(parents=True)
+    content = b'{"schema_version":2,"shrinkage":{}}\n'
+    path.write_bytes(content)
+    path.with_suffix(".json.manifest.json").write_text(
+        json.dumps(
+            {
+                "contract_version": "retail-director-monthly-snapshot.v2",
+                "generated_at": now.isoformat(),
+                "source_project": "mm-compensation",
+                "content_sha256": hashlib.sha256(content).hexdigest(),
+                "schema": "retail-director-monthly-snapshot.schema.json",
+                "schema_sha256": (
+                    "7306d10df7a489b985216ea856f1bbd7518a421bfd5deaeadd552e637cd70154"
+                ),
+                "artifact": path.name,
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(contracts, "CONTRACT_ROOT", tmp_path)
+
+    with pytest.raises(ContractIntegrityError, match="not allowlisted"):
+        read_json_contract(path, now=now)

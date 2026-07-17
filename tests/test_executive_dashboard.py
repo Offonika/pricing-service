@@ -15,9 +15,11 @@ from app.core.config import Settings
 from app.main import app
 from app.models import (
     ExecutiveActionItem,
+    ExecutiveSourceFreshness,
     OneCSalesDailyKpi,
     ReceivableCase,
     ReceivableFolderRecommendationCache,
+    ReceivableLedgerEvent,
     ReceivableWorkItem,
 )
 from app.schemas.executive_dashboard import (
@@ -184,6 +186,54 @@ def _sales_kpi(
         revenue=revenue,
         cost_of_sales=cost_of_sales,
         sales_count=sales_count,
+    )
+
+
+def _debt_adjustment_event(
+    *,
+    business_key: str,
+    amount: Decimal,
+    occurred_at: datetime = datetime(2026, 6, 27, 12, 0),
+    source_layer: str = "profit_loss_debt_adjustments",
+) -> ReceivableLedgerEvent:
+    return ReceivableLedgerEvent(
+        source="onec",
+        business_key=business_key,
+        event_type="debt_adjustment",
+        external_document_ref=f"document-{business_key}",
+        external_document_number=business_key,
+        external_document_date=occurred_at,
+        counterparty_ref=f"counterparty-{business_key}",
+        counterparty_name="Контрагент",
+        contract_ref=None,
+        contract_name=None,
+        contract_kind_ref=None,
+        contract_kind_name="С покупателем",
+        manager_ref=None,
+        manager_name=None,
+        store_ref=None,
+        store_name=None,
+        source_layer=source_layer,
+        planned_payment_date=None,
+        credit_depth_days=None,
+        shipment_ban=None,
+        line_no=1,
+        amount_delta=amount,
+    )
+
+
+def _debt_adjustment_publication(
+    *,
+    business_date: date = date(2026, 6, 30),
+    source_status: str = "ready",
+) -> ExecutiveSourceFreshness:
+    return ExecutiveSourceFreshness(
+        source_key="finance.profit_loss_debt_adjustments",
+        business_date=business_date,
+        source_status=source_status,
+        source_as_of=datetime.combine(business_date, datetime.min.time()),
+        max_lag_days=31,
+        payload={"event_count": 0},
     )
 
 
@@ -1019,7 +1069,7 @@ def test_profit_loss_block_reads_sales_kpi(
     assert metrics["operating_profit"] == Decimal("450.00")
     assert block.summary["expense_source_status"] == "partial"
     assert block.summary["expense_open_question_count"] == 1
-    assert block.summary["missing_expense_line_count"] == 2
+    assert block.summary["missing_expense_line_count"] == 5
     assert "profit_loss" in {source.source_key for source in result.source_freshness}
 
 
@@ -1190,6 +1240,8 @@ def test_profit_loss_period_response_aggregates_sales_kpi(
     assert line_by_key["operating_expenses"].amount == Decimal("-150.00")
     assert line_by_key["operating_profit"].amount == Decimal("350.00")
     assert line_by_key["operating_profit"].source_status == "partial"
+    assert line_by_key["other_income_expenses"].source_status == "source_missing"
+    assert line_by_key["profit_before_tax"].amount is None
     assert line_by_key["net_profit"].source_status == "source_missing"
     assert result.expense_source_status == "partial"
     assert {row.key for row in result.expense_breakdown} == {"rent", "bank_fees"}
@@ -1218,6 +1270,126 @@ def test_profit_loss_period_response_aggregates_sales_kpi(
     assert result.inventory_loss.data_quality.norm_source_status == "approved"
     assert result.daily[-1].business_date == date(2026, 6, 27)
     assert {row.label for row in result.by_store} == {"Горбушкин Двор", "Склад Сайт"}
+
+
+def test_profit_loss_includes_debt_adjustments_before_tax(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_path = tmp_path / "missing.json"
+    _write_profit_loss_cashflow_cache(tmp_path / "cashflow_period_cache.json")
+    _override_settings(monkeypatch, _settings(snapshot_path))
+    db_session.add_all(
+        [
+            _sales_kpi(
+                date(2026, 6, 27),
+                revenue=Decimal("1000.00"),
+                cost_of_sales=Decimal("600.00"),
+            ),
+            _debt_adjustment_event(
+                business_key="debt-income",
+                amount=Decimal("120.00"),
+            ),
+            _debt_adjustment_event(
+                business_key="debt-expense",
+                amount=Decimal("-30.00"),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    result = build_executive_profit_loss_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 30),
+    )
+
+    line_by_key = {line.key: line for line in result.lines}
+    assert result.totals["operating_profit"] == Decimal("250.00")
+    assert result.totals["debt_adjustment_income"] == Decimal("120.00")
+    assert result.totals["debt_adjustment_expense"] == Decimal("30.00")
+    assert result.totals["other_income_expenses"] == Decimal("90.00")
+    assert result.totals["profit_before_tax"] == Decimal("340.00")
+    assert result.totals["debt_adjustment_event_count"] == 2
+    assert result.totals["missing_expense_line_count"] == 2
+    assert line_by_key["debt_adjustment_income"].amount == Decimal("120.00")
+    assert line_by_key["debt_adjustment_expense"].amount == Decimal("-30.00")
+    assert line_by_key["other_income_expenses"].amount == Decimal("90.00")
+    assert line_by_key["other_income_expenses"].source_status == "ready"
+    assert line_by_key["profit_before_tax"].amount == Decimal("340.00")
+    assert line_by_key["taxes"].amount is None
+    assert line_by_key["net_profit"].amount is None
+    assert line_by_key["net_profit"].note == "Не считаем до подключения налогов."
+
+
+def test_profit_loss_ignores_unclassified_receivable_adjustments(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_path = tmp_path / "missing.json"
+    _write_profit_loss_cashflow_cache(tmp_path / "cashflow_period_cache.json")
+    _override_settings(monkeypatch, _settings(snapshot_path))
+    db_session.add_all(
+        [
+            _sales_kpi(date(2026, 6, 27)),
+            _debt_adjustment_event(
+                business_key="raw-employee-summary",
+                amount=Decimal("235.60"),
+                source_layer="employee_summary",
+            ),
+        ]
+    )
+    db_session.commit()
+
+    result = build_executive_profit_loss_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 30),
+    )
+
+    line_by_key = {line.key: line for line in result.lines}
+    assert result.totals["debt_adjustment_event_count"] == 0
+    assert result.totals["other_income_expenses"] is None
+    assert result.totals["profit_before_tax"] is None
+    assert line_by_key["debt_adjustment_income"].amount is None
+    assert line_by_key["other_income_expenses"].source_status == "source_missing"
+    assert "не опубликованы" in str(line_by_key["other_income_expenses"].note)
+
+
+def test_profit_loss_distinguishes_published_zero_debt_adjustments(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_path = tmp_path / "missing.json"
+    _write_profit_loss_cashflow_cache(tmp_path / "cashflow_period_cache.json")
+    _override_settings(monkeypatch, _settings(snapshot_path))
+    db_session.add_all(
+        [
+            _sales_kpi(date(2026, 6, 27)),
+            _debt_adjustment_publication(),
+        ]
+    )
+    db_session.commit()
+
+    result = build_executive_profit_loss_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 30),
+    )
+
+    line_by_key = {line.key: line for line in result.lines}
+    assert result.totals["debt_adjustment_event_count"] == 0
+    assert result.totals["other_income_expenses"] == Decimal("0")
+    assert result.totals["profit_before_tax"] == result.totals["operating_profit"]
+    assert line_by_key["debt_adjustment_income"].amount == Decimal("0")
+    assert line_by_key["debt_adjustment_expense"].amount == Decimal("0")
+    assert line_by_key["other_income_expenses"].source_status == "ready"
+    assert "корректировок задолженности за период нет" in str(
+        line_by_key["other_income_expenses"].note
+    )
 
 
 def test_profit_loss_period_marks_missing_inventory_loss_report(

@@ -644,13 +644,29 @@ function profitLossPeriodResponse(): ExecutiveProfitLossPeriodResponse {
       gross_profit: "300000.00",
       operating_expenses: "100000.00",
       operating_profit: "200000.00",
+      debt_adjustment_income: "25000.00",
+      debt_adjustment_expense: "10000.00",
+      other_income_expenses: "15000.00",
+      profit_before_tax: "215000.00",
       expense_open_question_count: "0",
     },
     ratios: [
       { key: "gross_margin_pct", label: "Валовая маржа", value: "0.3", unit: "PCT", tone: "neutral" },
       { key: "operating_margin_pct", label: "Операционная маржа", value: "0.2", unit: "PCT", tone: "neutral" },
     ],
-    lines: [],
+    lines: [
+      { key: "revenue", label: "Выручка", amount: "1000000.00", line_type: "income", tone: "info", source_status: "ready" },
+      { key: "cost_of_sales", label: "Себестоимость продаж", amount: "-700000.00", line_type: "expense", tone: "warning", source_status: "ready" },
+      { key: "gross_profit", label: "Валовая прибыль", amount: "300000.00", line_type: "subtotal", tone: "info", source_status: "ready" },
+      { key: "operating_expenses", label: "Операционные расходы по ДДС", amount: "-100000.00", line_type: "expense", tone: "warning", source_status: "ready" },
+      { key: "operating_profit", label: "Операционная прибыль", amount: "200000.00", line_type: "subtotal", tone: "info", source_status: "ready" },
+      { key: "debt_adjustment_income", label: "Доходы от корректировок задолженности", amount: "25000.00", line_type: "income", tone: "info", source_status: "partial" },
+      { key: "debt_adjustment_expense", label: "Списания и отрицательные корректировки задолженности", amount: "-10000.00", line_type: "expense", tone: "warning", source_status: "partial" },
+      { key: "other_income_expenses", label: "Прочие доходы / расходы", amount: "15000.00", line_type: "subtotal", tone: "info", source_status: "partial" },
+      { key: "profit_before_tax", label: "Прибыль до налогообложения", amount: "215000.00", line_type: "total", tone: "info", source_status: "partial" },
+      { key: "taxes", label: "Налоги", amount: null, line_type: "expense", tone: "warning", source_status: "source_missing", note: "Не опубликовано." },
+      { key: "net_profit", label: "Чистая прибыль", amount: null, line_type: "total", tone: "neutral", source_status: "source_missing", note: "Не считаем до подключения налогов." },
+    ],
     daily: [],
     by_store: [],
     by_manager: [],
@@ -772,6 +788,29 @@ describe("executive profit and loss period", () => {
     expect(inventoryRow).toHaveTextContent(/-702\s*449\s*₽/);
     expect(inventoryRow).toHaveTextContent("операционная прибыль не пересчитана");
     expect(response.totals.operating_profit).toBe(operatingProfit);
+
+    const labels = Array.from(statement.querySelectorAll(".executive-profit-loss-line > span"))
+      .map((node) => node.textContent);
+    expect(labels.indexOf("Себестоимость продаж")).toBeLessThan(labels.indexOf("Товарные потери (справочно)"));
+    expect(labels.indexOf("Товарные потери (справочно)")).toBeLessThan(labels.indexOf("Валовая прибыль"));
+  });
+
+  it("shows debt adjustments in other income and expenses before profit before tax", async () => {
+    await renderProfitLossTab();
+
+    const statement = screen.getByLabelText("Структура ОПиУ");
+    expect(within(statement).getByText("Доходы от корректировок задолженности").parentElement)
+      .toHaveTextContent(/25\s*000\s*₽/);
+    expect(within(statement).getByText("Списания и отрицательные корректировки задолженности").parentElement)
+      .toHaveTextContent(/-10\s*000\s*₽/);
+    expect(within(statement).getByText("Прочие доходы / расходы").parentElement)
+      .toHaveTextContent(/15\s*000\s*₽/);
+    expect(within(statement).getByText("Прибыль до налогообложения").parentElement)
+      .toHaveTextContent(/215\s*000\s*₽/);
+    expect(within(statement).getByText("Налоги").parentElement)
+      .toHaveTextContent("Не опубликовано.");
+    expect(within(statement).getByText("Чистая прибыль").parentElement)
+      .toHaveTextContent("Не считаем до подключения налогов.");
   });
 
   it("shows the inventory source error in the profit and loss statement", async () => {

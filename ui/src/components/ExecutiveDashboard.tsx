@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   fetchExecutiveCashflowPeriod,
   closeExecutiveManagementBalance,
@@ -1862,6 +1862,29 @@ function inventoryLossStatementNote(
   return "Справочно: списания минус оприходования; операционная прибыль не пересчитана.";
 }
 
+function InventoryLossStatementLine({
+  data,
+}: {
+  data: ExecutiveProfitLossInventoryLoss | null | undefined;
+}) {
+  return (
+    <div
+      className={[
+        "executive-profit-loss-line",
+        "executive-profit-loss-line--inventory-loss",
+        `executive-profit-loss-line--${data?.source_status || "source_missing"}`,
+        isReceiptSurplus(data?.loss_amount)
+          ? "executive-profit-loss-line--receipt-surplus"
+          : "executive-profit-loss-line--expense",
+      ].join(" ")}
+    >
+      <span>Товарные потери (справочно)</span>
+      <strong>{formatInventoryLossStatementAmount(data)}</strong>
+      <small>{inventoryLossStatementNote(data)}</small>
+    </div>
+  );
+}
+
 function inventoryStoreKey(store: { store_ref: string; store_name: string }) {
   return store.store_ref || `name:${store.store_name}`;
 }
@@ -2740,35 +2763,28 @@ function ProfitLossPeriodPanel({
             </header>
             <div className="executive-profit-loss-lines__rows">
               {data.lines.map((line) => (
-                <div
-                  className={[
-                    "executive-profit-loss-line",
-                    `executive-profit-loss-line--${line.source_status}`,
-                    `executive-profit-loss-line--${line.line_type}`,
-                  ]
-                    .filter(Boolean)
-                    .join(" ")}
-                  key={line.key}
-                >
-                  <span>{line.label}</span>
-                  <strong>{formatProfitLossAmount(line.amount)}</strong>
-                  <small>{line.note || statusLabel(line.source_status)}</small>
-                </div>
+                <Fragment key={line.key}>
+                  {line.key === "gross_profit" && (
+                    <InventoryLossStatementLine data={data.inventory_loss} />
+                  )}
+                  <div
+                    className={[
+                      "executive-profit-loss-line",
+                      `executive-profit-loss-line--${line.source_status}`,
+                      `executive-profit-loss-line--${line.line_type}`,
+                    ]
+                      .filter(Boolean)
+                      .join(" ")}
+                  >
+                    <span>{line.label}</span>
+                    <strong>{formatProfitLossAmount(line.amount)}</strong>
+                    <small>{line.note || statusLabel(line.source_status)}</small>
+                  </div>
+                </Fragment>
               ))}
-              <div
-                className={[
-                  "executive-profit-loss-line",
-                  "executive-profit-loss-line--inventory-loss",
-                  `executive-profit-loss-line--${data.inventory_loss?.source_status || "source_missing"}`,
-                  isReceiptSurplus(data.inventory_loss?.loss_amount)
-                    ? "executive-profit-loss-line--receipt-surplus"
-                    : "executive-profit-loss-line--expense",
-                ].join(" ")}
-              >
-                <span>Товарные потери (справочно)</span>
-                <strong>{formatInventoryLossStatementAmount(data.inventory_loss)}</strong>
-                <small>{inventoryLossStatementNote(data.inventory_loss)}</small>
-              </div>
+              {!data.lines.some((line) => line.key === "gross_profit") && (
+                <InventoryLossStatementLine data={data.inventory_loss} />
+              )}
             </div>
           </section>
 

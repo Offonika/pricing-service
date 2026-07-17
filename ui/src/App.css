@@ -2025,6 +2025,31 @@
   font-size: 13px;
 }
 
+.executive-online-store__analysis {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+  gap: 10px;
+}
+
+.executive-online-store__analysis .executive-sales-daily {
+  margin-top: 0;
+}
+
+.executive-online-store__funnel .executive-sales-day {
+  grid-template-columns: minmax(130px, 0.8fr) minmax(90px, 1fr) minmax(52px, auto);
+}
+
+.executive-online-store__tables {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.executive-online-store__tables a {
+  color: #1769e0;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
 .executive-sales-day {
   display: grid;
   grid-template-columns: 86px minmax(90px, 1fr) minmax(96px, auto);
@@ -3388,6 +3413,10 @@
   }
 
   .executive-cashflow-period__tables {
+    grid-template-columns: 1fr;
+  }
+
+  .executive-online-store__analysis {
     grid-template-columns: 1fr;
   }
 

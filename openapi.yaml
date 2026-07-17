@@ -3079,6 +3079,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/executive-dashboard/online-store-period:
+    get:
+      summary: Get Executive Dashboard Online Store Period
+      operationId: get_executive_dashboard_online_store_period_api_management_executive_dashboard_online_store_period_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date From
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date To
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutiveOnlineStorePeriodResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/management/retail-director-monthly-kpi:
     get:
       summary: Get Retail Director Monthly Kpi
@@ -12601,6 +12639,199 @@ components:
       - freshness_status
       - generated_at
       title: ExecutiveManagementBalanceResponse
+    ExecutiveOnlineStoreDailyRow:
+      properties:
+        business_date:
+          type: string
+          format: date
+          title: Business Date
+        visits:
+          type: integer
+          title: Visits
+          default: 0
+        visitors:
+          type: integer
+          title: Visitors
+          default: 0
+        purchases:
+          type: integer
+          title: Purchases
+          default: 0
+        click_buy:
+          type: integer
+          title: Click Buy
+          default: 0
+        begin_checkout:
+          type: integer
+          title: Begin Checkout
+          default: 0
+        phone_clicks:
+          type: integer
+          title: Phone Clicks
+          default: 0
+        site_searches:
+          type: integer
+          title: Site Searches
+          default: 0
+        purchase_conversion_pct:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Purchase Conversion Pct
+          default: '0'
+      type: object
+      required:
+      - business_date
+      title: ExecutiveOnlineStoreDailyRow
+    ExecutiveOnlineStoreLandingPageRow:
+      properties:
+        url:
+          type: string
+          title: Url
+        visits:
+          type: integer
+          title: Visits
+          default: 0
+        visitors:
+          type: integer
+          title: Visitors
+          default: 0
+        purchases:
+          type: integer
+          title: Purchases
+          default: 0
+        click_buy:
+          type: integer
+          title: Click Buy
+          default: 0
+        begin_checkout:
+          type: integer
+          title: Begin Checkout
+          default: 0
+        purchase_conversion_pct:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Purchase Conversion Pct
+          default: '0'
+      type: object
+      required:
+      - url
+      title: ExecutiveOnlineStoreLandingPageRow
+    ExecutiveOnlineStorePeriodResponse:
+      properties:
+        date_from:
+          type: string
+          format: date
+          title: Date From
+        date_to:
+          type: string
+          format: date
+          title: Date To
+        compare_date_from:
+          type: string
+          format: date
+          title: Compare Date From
+        compare_date_to:
+          type: string
+          format: date
+          title: Compare Date To
+        generated_at:
+          type: string
+          format: date-time
+          title: Generated At
+        source_status:
+          type: string
+          title: Source Status
+          default: ready
+        freshness_status:
+          type: string
+          title: Freshness Status
+          default: fresh
+        counter_id:
+          type: string
+          title: Counter Id
+        site:
+          type: string
+          title: Site
+          default: master-mobile.ru
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+        totals:
+          additionalProperties:
+            anyOf:
+            - type: string
+              pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+            - type: integer
+            - type: string
+            - type: 'null'
+          type: object
+          title: Totals
+        comparison:
+          additionalProperties:
+            anyOf:
+            - type: string
+              pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+            - type: integer
+            - type: string
+            - type: 'null'
+          type: object
+          title: Comparison
+        daily:
+          items:
+            $ref: '#/components/schemas/ExecutiveOnlineStoreDailyRow'
+          type: array
+          title: Daily
+        traffic_sources:
+          items:
+            $ref: '#/components/schemas/ExecutiveOnlineStoreTrafficSourceRow'
+          type: array
+          title: Traffic Sources
+        landing_pages:
+          items:
+            $ref: '#/components/schemas/ExecutiveOnlineStoreLandingPageRow'
+          type: array
+          title: Landing Pages
+      type: object
+      required:
+      - date_from
+      - date_to
+      - compare_date_from
+      - compare_date_to
+      - generated_at
+      - counter_id
+      title: ExecutiveOnlineStorePeriodResponse
+    ExecutiveOnlineStoreTrafficSourceRow:
+      properties:
+        key:
+          type: string
+          title: Key
+        label:
+          type: string
+          title: Label
+        visits:
+          type: integer
+          title: Visits
+          default: 0
+        visitors:
+          type: integer
+          title: Visitors
+          default: 0
+        purchases:
+          type: integer
+          title: Purchases
+          default: 0
+        purchase_conversion_pct:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Purchase Conversion Pct
+          default: '0'
+      type: object
+      required:
+      - key
+      - label
+      title: ExecutiveOnlineStoreTrafficSourceRow
     ExecutiveProfitLossBreakdownRow:
       properties:
         key:

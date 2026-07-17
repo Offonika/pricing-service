@@ -465,6 +465,55 @@ export interface ExecutiveSalesPeriodResponse {
   filters: Record<string, unknown>;
 }
 
+export interface ExecutiveOnlineStoreDailyRow {
+  business_date: string;
+  visits: number;
+  visitors: number;
+  purchases: number;
+  click_buy: number;
+  begin_checkout: number;
+  phone_clicks: number;
+  site_searches: number;
+  purchase_conversion_pct: string | number;
+}
+
+export interface ExecutiveOnlineStoreTrafficSourceRow {
+  key: string;
+  label: string;
+  visits: number;
+  visitors: number;
+  purchases: number;
+  purchase_conversion_pct: string | number;
+}
+
+export interface ExecutiveOnlineStoreLandingPageRow {
+  url: string;
+  visits: number;
+  visitors: number;
+  purchases: number;
+  click_buy: number;
+  begin_checkout: number;
+  purchase_conversion_pct: string | number;
+}
+
+export interface ExecutiveOnlineStorePeriodResponse {
+  date_from: string;
+  date_to: string;
+  compare_date_from: string;
+  compare_date_to: string;
+  generated_at: string;
+  source_status: string;
+  freshness_status: string;
+  counter_id: string;
+  site: string;
+  note?: string | null;
+  totals: Record<string, string | number | null>;
+  comparison: Record<string, string | number | null>;
+  daily: ExecutiveOnlineStoreDailyRow[];
+  traffic_sources: ExecutiveOnlineStoreTrafficSourceRow[];
+  landing_pages: ExecutiveOnlineStoreLandingPageRow[];
+}
+
 export async function fetchExecutiveDashboard(date?: string) {
   const response = await api.get<ExecutiveDashboardResponse>("/management/executive-dashboard", {
     params: { date: date || undefined },
@@ -544,6 +593,22 @@ export async function fetchExecutiveSalesPeriod(params: {
         date_to: params.date_to || undefined,
         store_ref: params.store_ref || undefined,
         manager_ref: params.manager_ref || undefined,
+      },
+    }
+  );
+  return response.data;
+}
+
+export async function fetchExecutiveOnlineStorePeriod(params: {
+  date_from?: string;
+  date_to?: string;
+}) {
+  const response = await api.get<ExecutiveOnlineStorePeriodResponse>(
+    "/management/executive-dashboard/online-store-period",
+    {
+      params: {
+        date_from: params.date_from || undefined,
+        date_to: params.date_to || undefined,
       },
     }
   );

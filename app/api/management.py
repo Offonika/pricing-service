@@ -35,6 +35,7 @@ from app.schemas.executive_dashboard import (
     ExecutiveDashboardResponse,
     ExecutiveManagementBalanceCloseRequest,
     ExecutiveManagementBalanceResponse,
+    ExecutiveOnlineStorePeriodResponse,
     ExecutiveProfitLossPeriodResponse,
     ExecutiveSalesPeriodResponse,
     ExecutiveServiceAccrualItem,
@@ -106,6 +107,9 @@ from app.services.executive_management_balance import (
     close_management_balance,
     get_management_balance,
     month_end,
+)
+from app.services.executive_online_store import (
+    build_executive_online_store_period_response,
 )
 from app.services.executive_service_accruals import (
     service_accrual_entries,
@@ -410,6 +414,39 @@ def get_executive_dashboard_sales_period(
         store_ref=store_ref,
         manager_ref=manager_ref,
     )
+
+
+@router.get(
+    "/executive-dashboard/online-store-period",
+    response_model=ExecutiveOnlineStorePeriodResponse,
+)
+def get_executive_dashboard_online_store_period(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    access: ExecutiveDashboardAuthContext = Depends(require_executive_dashboard_access),
+) -> ExecutiveOnlineStorePeriodResponse:
+    requested_to = date_to or date.today()
+    requested_from = date_from or requested_to.replace(day=1)
+    if requested_from > requested_to:
+        raise HTTPException(status_code=422, detail="date_from must be before date_to")
+    if (requested_to - requested_from).days > 365:
+        raise HTTPException(status_code=422, detail="online store period must not exceed 366 days")
+    if not access.allows_block("online_store"):
+        raise HTTPException(status_code=403, detail="Нет доступа к аналитике интернет-магазина")
+
+    settings = get_settings()
+    if not settings.yandex_metrika_token:
+        raise HTTPException(status_code=503, detail="Яндекс Метрика не настроена")
+    try:
+        return build_executive_online_store_period_response(
+            token=settings.yandex_metrika_token,
+            counter_id=settings.yandex_metrika_counter_id,
+            date_from=requested_from,
+            date_to=requested_to,
+            timeout=settings.yandex_metrika_timeout_seconds,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail="Яндекс Метрика временно недоступна") from exc
 
 
 def _filter_real_rb_counterparty_codes(mapping: dict[str, str]) -> dict[str, str]:

@@ -5,6 +5,7 @@ import type {
   ExecutiveDashboardAction,
   ExecutiveDashboardBlock,
   ExecutiveDashboardResponse,
+  ExecutiveOnlineStorePeriodResponse,
   ExecutiveProfitLossInventoryLoss,
   ExecutiveProfitLossPeriodResponse,
   ExecutiveSalesPeriodResponse,
@@ -13,6 +14,7 @@ import {
   fetchExecutiveDashboard,
   fetchExecutiveDashboardActions,
   fetchExecutiveManagementBalance,
+  fetchExecutiveOnlineStorePeriod,
   fetchExecutiveProfitLossPeriod,
   fetchExecutiveSalesPeriod,
 } from "../api/executiveDashboard";
@@ -23,6 +25,7 @@ vi.mock("../api/executiveDashboard", () => ({
   fetchExecutiveDashboard: vi.fn(),
   fetchExecutiveDashboardActions: vi.fn(),
   fetchExecutiveManagementBalance: vi.fn(),
+  fetchExecutiveOnlineStorePeriod: vi.fn(),
   fetchExecutiveProfitLossPeriod: vi.fn(),
   fetchExecutiveSalesPeriod: vi.fn(),
 }));
@@ -34,6 +37,7 @@ import {
   InventoryLossPanel,
   ManagementBalanceBlockCard,
   MonthlyManagementBalance,
+  OnlineStorePanel,
 } from "./ExecutiveDashboard";
 import { splitManagementBalanceBlock } from "./executiveDashboardLayout";
 
@@ -1246,5 +1250,123 @@ describe("executive dashboard tab overview de-duplication", () => {
     expect(await screen.findByText("Выручка факт")).toBeVisible();
     expect(screen.queryByText("Выручка с начала месяца")).toBeNull();
     expect(container.querySelector(".executive-grid")).toBeNull();
+  });
+});
+function onlineStorePeriodResponse(): ExecutiveOnlineStorePeriodResponse {
+  return {
+    date_from: "2026-07-01",
+    date_to: "2026-07-07",
+    compare_date_from: "2026-06-24",
+    compare_date_to: "2026-06-30",
+    generated_at: "2026-07-07T12:00:00Z",
+    source_status: "ready",
+    freshness_status: "fresh",
+    counter_id: "49993429",
+    site: "master-mobile.ru",
+    note: "Яндекс Метрика показывает онлайн-спрос; это не финансовая выручка 1С.",
+    totals: {
+      visits: 1000,
+      visitors: 700,
+      purchases: 25,
+      purchase_conversion_pct: "2.50",
+      click_buy: 80,
+      begin_checkout: 40,
+      phone_clicks: 7,
+      site_searches: 120,
+      primary_source_name: "Переходы из поисковых систем",
+      primary_source_purchases: 20,
+      primary_source_purchase_share_pct: "80.00",
+    },
+    comparison: {
+      visits: 800,
+      visitors: 600,
+      purchases: 16,
+      purchase_conversion_pct: "2.00",
+    },
+    daily: [
+      {
+        business_date: "2026-07-01",
+        visits: 120,
+        visitors: 90,
+        purchases: 4,
+        click_buy: 12,
+        begin_checkout: 5,
+        phone_clicks: 1,
+        site_searches: 8,
+        purchase_conversion_pct: "3.33",
+      },
+    ],
+    traffic_sources: [
+      {
+        key: "organic",
+        label: "Переходы из поисковых систем",
+        visits: 600,
+        visitors: 350,
+        purchases: 20,
+        purchase_conversion_pct: "3.33",
+      },
+    ],
+    landing_pages: [
+      {
+        url: "https://master-mobile.ru/catalog/item/",
+        visits: 120,
+        visitors: 90,
+        purchases: 4,
+        click_buy: 12,
+        begin_checkout: 5,
+        purchase_conversion_pct: "3.33",
+      },
+    ],
+  };
+}
+
+describe("executive online store tab", () => {
+  beforeEach(() => {
+    vi.mocked(fetchExecutiveDashboard).mockReset();
+    vi.mocked(fetchExecutiveDashboardActions).mockReset();
+    vi.mocked(fetchExecutiveOnlineStorePeriod).mockReset();
+  });
+
+  afterEach(cleanup);
+
+  it("renders traffic, conversion, funnel, sources and landing pages", () => {
+    render(<OnlineStorePanel data={onlineStorePeriodResponse()} message="" status="ready" />);
+
+    expect(screen.getByLabelText("Основные KPI интернет-магазина")).toHaveTextContent("1 000");
+    expect(screen.getByLabelText("Основные KPI интернет-магазина")).toHaveTextContent("2,50%");
+    expect(screen.getByLabelText("Воронка интернет-магазина")).toHaveTextContent("Начали оформление");
+    expect(screen.getByLabelText("Каналы трафика интернет-магазина")).toHaveTextContent("20 покупок");
+    expect(screen.getByLabelText("Посадочные страницы интернет-магазина")).toHaveTextContent("/catalog/item/");
+    expect(screen.getByText(/не финансовая выручка 1С/)).toBeVisible();
+  });
+
+  it("loads the tab from the allowed-block policy without requesting action items", async () => {
+    window.history.pushState({}, "", "?tab=online_store&date=2026-07-07");
+    vi.mocked(fetchExecutiveDashboard).mockResolvedValue({
+      as_of: "2026-07-07",
+      generated_at: "2026-07-07T10:00:00Z",
+      freshness_status: "fresh",
+      source_status: "ready",
+      access_level: "full",
+      roles: ["full"],
+      allowed_blocks: ["online_store"],
+      allowed_action_domains: [],
+      blocks: [],
+      source_freshness: [],
+      top_actions: [],
+      summary: {},
+    });
+    vi.mocked(fetchExecutiveOnlineStorePeriod).mockResolvedValue(onlineStorePeriodResponse());
+
+    render(<ExecutiveDashboard />);
+
+    expect(await screen.findByLabelText("Интернет-магазин")).toBeVisible();
+    expect(fetchExecutiveOnlineStorePeriod).toHaveBeenCalledWith({
+      date_from: "2026-07-01",
+      date_to: "2026-07-07",
+    });
+    expect(fetchExecutiveDashboardActions).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Начало периода интернет-магазина")).toBeVisible();
+    expect(screen.queryByLabelText("Дата управленческой витрины")).not.toBeInTheDocument();
   });
 });

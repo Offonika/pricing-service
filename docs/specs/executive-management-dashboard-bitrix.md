@@ -26,7 +26,7 @@ contracts:
 depends_on: []
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-14"
+updated_at: "2026-07-17"
 ---
 
 # Executive Management Dashboard In Bitrix
@@ -59,6 +59,7 @@ Draft / v1 implementation foundation.
 - API `/api/management/executive-dashboard/actions`;
 - API `/api/management/executive-dashboard/profit-loss-period`;
 - API `/api/management/executive-dashboard/sales-period`;
+- API `/api/management/executive-dashboard/online-store-period`;
 - короткая Bitrix-сессия через `POST /api/bitrix/executive-dashboard/session`;
 - одиннадцать обязательных блоков: деньги, отчет о прибылях и убытках, продажи,
   дебиторка покупателей, контроль дебиторки, кредиторка, закупки, склад, сверки,
@@ -81,6 +82,7 @@ Draft / v1 implementation foundation.
 | Деньги / ДДС | `mm-compensation` / `finance.fact_cash_position_daily`, `finance.fact_cashflow_daily`, `finance.fact_cashflow_movement` | `pricing-service` читает compact JSON |
 | Отчет о прибылях и убытках | `1C` факт продаж, v1 таблица `onec_sales_daily_kpi`; расходы v1 по оплатам ДДС из `mm-compensation` | `pricing-service` |
 | Продажи | факт `1C` из `onec_sales_daily_kpi`; план — только активная frozen-ревизия `sales_plan_monthly_snapshot` из `mm-compensation` | `pricing-service` объединяет факт и verified JSON-контракт плана |
+| Интернет-магазин | Яндекс Метрика, read-only счётчик `master-mobile.ru` | `pricing-service` читает агрегаты и цели через API Метрики только при открытии вкладки |
 | Дебиторка покупателей | buyers-сегмент текущих receivables cases в `pricing-service` | `pricing-service` |
 | Контроль дебиторки | рабочее место дебиторки, work items, кеш `Контроль папок` | `pricing-service` |
 | Управленческий баланс | остатки денег 1С, buyers-дебиторка, взаиморасчеты `Поставщики`, `СОТРУДНИКИ` и утвержденные собственники из `Прочие` | `pricing-service` объединяет verified sources |
@@ -351,6 +353,28 @@ Endpoint возвращает данные только пользователя
 нулевой выручкой (название берётся из `scope_name` плана). При статусах
 `partial`/`source_error` список пуст, а причина видна в note диагностики.
 
+### `GET /api/management/executive-dashboard/online-store-period`
+
+Вкладка `Интернет-магазин` показывает онлайн-спрос и конверсию сайта
+`master-mobile.ru` из read-only Яндекс Метрики. Параметры: `date_from`,
+`date_to`; максимальный диапазон — 366 дней. Для сравнения backend автоматически
+берёт непосредственно предшествующий период той же длины.
+
+Ответ содержит:
+
+- `totals` и `comparison`: визиты, посетители, e-commerce покупки, конверсию,
+  клики `Купить`, начало оформления, клики по телефону, поиск по сайту и основной
+  канал покупок;
+- `daily`: дневную динамику трафика и покупок;
+- `traffic_sources`: каналы трафика с визитами, покупками и конверсией;
+- `landing_pages`: наиболее посещаемые посадочные страницы и их сигналы
+  намерения.
+
+Метрика является источником онлайн-показателей, но не финансовой выручки.
+Финансовый факт остаётся в 1С. Токен не попадает в API-ответ, логи и UI. Вкладка
+доступна только пользователям, которым backend-policy разрешает блок
+`online_store`; у полного управленческого доступа он разрешён по умолчанию.
+
 Витрина показывает отдельную вкладку `ОДДС CashFlow`. Она использует тот же
 доступ к денежному блоку `money_today`, но отделяет финансовую форму от
 оперативной карточки `Деньги / ДДС`. Вкладка читает отдельный rolling cache:
@@ -495,6 +519,8 @@ fallback-режимом: пользователь видит прежнюю ст
 - `EXECUTIVE_DASHBOARD_ACCESS_RULES_JSON`;
 - `EXECUTIVE_DASHBOARD_BITRIX_SESSION_SECRET`;
 - `EXECUTIVE_DASHBOARD_FINANCE_SNAPSHOT_PATH`.
+- `YANDEX_METRIKA_TOKEN`, `YANDEX_METRIKA_COUNTER_ID`,
+  `YANDEX_METRIKA_TIMEOUT_SECONDS` — read-only источник вкладки интернет-магазина.
 
 Пример `EXECUTIVE_DASHBOARD_ACCESS_RULES_JSON`:
 
@@ -650,6 +676,9 @@ app/admin context или через OAuth-контекст установлен�
   `partial`/`source_error` список пуст.
 - Sales daily chart: дневная динамика периода из `daily[]`, прогнозные дни
   помечены отдельно; блок скрыт при пустых данных.
+- Internet store: равные периоды сравнения, дневная динамика, каналы и посадочные
+  страницы читаются из Метрики; пользователю без `online_store` API возвращает
+  `403`, а токен не включается в ответ.
 - Idempotency: повторный запуск не создает дубли actions.
 - Bitrix iframe smoke: страница, session, загрузка блоков, drill-down links.
 - Docs/OpenAPI: manifest и generated contract без drift.

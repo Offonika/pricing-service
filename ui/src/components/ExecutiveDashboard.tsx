@@ -5,6 +5,7 @@ import {
   fetchExecutiveDashboard,
   fetchExecutiveDashboardActions,
   fetchExecutiveManagementBalance,
+  fetchExecutiveOnlineStorePeriod,
   fetchExecutiveProfitLossPeriod,
   fetchExecutiveSalesPeriod,
   type ExecutiveAccessLevel,
@@ -17,6 +18,7 @@ import {
   type ExecutiveManagementBalanceLineItem,
   type ExecutiveManagementBalanceResponse,
   type ExecutiveManagementBalanceView,
+  type ExecutiveOnlineStorePeriodResponse,
   type ExecutiveProfitLossBreakdownRow,
   type ExecutiveProfitLossExpenseBreakdownRow,
   type ExecutiveProfitLossInventoryLoss,
@@ -92,6 +94,7 @@ type ManagementBalanceLine = {
 const MONEY_TAB_KEY = "money_today";
 const PROFIT_LOSS_TAB_KEY = "profit_loss";
 const SALES_TAB_KEY = "sales";
+const ONLINE_STORE_TAB_KEY = "online_store";
 const ODDS_CASHFLOW_TAB_KEY = "odds_cashflow";
 
 const TAB_DEFINITIONS = [
@@ -99,6 +102,7 @@ const TAB_DEFINITIONS = [
   { key: MONEY_TAB_KEY, label: "Деньги / ДДС" },
   { key: PROFIT_LOSS_TAB_KEY, label: "Прибыли / убытки" },
   { key: SALES_TAB_KEY, label: "Продажи" },
+  { key: ONLINE_STORE_TAB_KEY, label: "Интернет-магазин" },
   { key: ODDS_CASHFLOW_TAB_KEY, label: "ОДДС CashFlow" },
   { key: "debtors", label: "Дебиторка покупателей" },
   { key: "receivables_control", label: "Контроль" },
@@ -115,6 +119,7 @@ const DOMAIN_LABELS: Record<string, string> = {
   money_today: "Деньги / ДДС",
   profit_loss: "Прибыли / убытки",
   sales: "Продажи",
+  online_store: "Интернет-магазин",
   odds_cashflow: "ОДДС CashFlow",
   debtors: "Дебиторка покупателей",
   receivables_control: "Контроль дебиторки",
@@ -130,6 +135,7 @@ const SOURCE_FRESHNESS_KEY_BY_TAB: Record<string, string> = {
   money_today: "money_today",
   [PROFIT_LOSS_TAB_KEY]: "profit_loss",
   [SALES_TAB_KEY]: "sales",
+  [ONLINE_STORE_TAB_KEY]: "online_store",
   [ODDS_CASHFLOW_TAB_KEY]: "money_today",
   debtors: "debtors",
   receivables_control: "receivables_control",
@@ -361,19 +367,21 @@ function moneyBlock(data: ExecutiveDashboardResponse | null) {
 function isTabAllowed(data: ExecutiveDashboardResponse, tab: string) {
   if (tab === "today") return true;
   if (tab === ODDS_CASHFLOW_TAB_KEY) return Boolean(moneyBlock(data));
+  if (tab === ONLINE_STORE_TAB_KEY) return data.allowed_blocks.includes(ONLINE_STORE_TAB_KEY);
   return data.blocks.some((block) => block.key === tab);
 }
 
 function actionDomainForTab(tab: string) {
   if (tab === "today") return undefined;
   if (tab === ODDS_CASHFLOW_TAB_KEY) return MONEY_TAB_KEY;
+  if (tab === ONLINE_STORE_TAB_KEY) return undefined;
   return tab;
 }
 
 function visibleBlocks(data: ExecutiveDashboardResponse | null, tab: string) {
   if (!data) return [];
   if (tab === "today") return data.blocks.filter((block) => block.key !== "daily_focus");
-  if ([ODDS_CASHFLOW_TAB_KEY, PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY].includes(tab)) return [];
+  if ([ODDS_CASHFLOW_TAB_KEY, PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, ONLINE_STORE_TAB_KEY].includes(tab)) return [];
   return data.blocks.filter((block) => block.key === tab);
 }
 
@@ -384,6 +392,7 @@ function tabsForData(data: ExecutiveDashboardResponse | null) {
     (item) =>
       item.key === "today" ||
       availableKeys.has(item.key) ||
+      (item.key === ONLINE_STORE_TAB_KEY && data.allowed_blocks.includes(ONLINE_STORE_TAB_KEY)) ||
       (item.key === ODDS_CASHFLOW_TAB_KEY && availableKeys.has(MONEY_TAB_KEY))
   );
 }
@@ -2860,6 +2869,217 @@ function ProfitLossPeriodPanel({
   );
 }
 
+function onlineStoreValue(
+  data: ExecutiveOnlineStorePeriodResponse | null,
+  key: string,
+  scope: "totals" | "comparison" = "totals"
+) {
+  const value = data?.[scope]?.[key];
+  return value === null || value === undefined ? null : value;
+}
+
+function onlineStoreDelta(
+  current: string | number | null,
+  previous: string | number | null
+): MetricDelta {
+  const currentValue = numericValue(current);
+  const previousValue = numericValue(previous);
+  if (currentValue === null || previousValue === null || previousValue === 0) {
+    return { text: "нет сопоставимой базы", direction: "flat", isFavorable: null };
+  }
+  const delta = ((currentValue - previousValue) / Math.abs(previousValue)) * 100;
+  const direction: MetricDelta["direction"] = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
+  return {
+    text: `${delta > 0 ? "+" : ""}${delta.toFixed(1)}% к прошлому периоду`,
+    direction,
+    isFavorable: direction === "flat" ? null : direction === "up",
+  };
+}
+
+function onlineStoreConversionDelta(
+  current: string | number | null,
+  previous: string | number | null
+): MetricDelta {
+  const currentValue = numericValue(current);
+  const previousValue = numericValue(previous);
+  if (currentValue === null || previousValue === null) {
+    return { text: "нет сопоставимой базы", direction: "flat", isFavorable: null };
+  }
+  const delta = currentValue - previousValue;
+  const direction: MetricDelta["direction"] = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
+  return {
+    text: `${delta > 0 ? "+" : ""}${delta.toFixed(2)} п.п. к прошлому периоду`,
+    direction,
+    isFavorable: direction === "flat" ? null : direction === "up",
+  };
+}
+
+function landingPageLabel(value: string) {
+  try {
+    const url = new URL(value);
+    return `${url.pathname}${url.search}` || "/";
+  } catch {
+    return value;
+  }
+}
+
+function landingPageHref(value: string) {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+export function OnlineStorePanel({
+  data,
+  message,
+  status,
+}: {
+  data: ExecutiveOnlineStorePeriodResponse | null;
+  message: string;
+  status: "loading" | "ready" | "error";
+}) {
+  const daily = data?.daily.slice(-31) || [];
+  const maxDailyVisits = Math.max(1, ...daily.map((row) => row.visits));
+  const funnel = data
+    ? [
+        { key: "click_buy", label: "Кликнули «Купить»", value: numericValue(onlineStoreValue(data, "click_buy")) || 0 },
+        { key: "begin_checkout", label: "Начали оформление", value: numericValue(onlineStoreValue(data, "begin_checkout")) || 0 },
+        { key: "purchases", label: "Покупки", value: numericValue(onlineStoreValue(data, "purchases")) || 0 },
+      ]
+    : [];
+  const maxFunnelValue = Math.max(1, ...funnel.map((row) => row.value));
+
+  return (
+    <section className="executive-cashflow-period executive-online-store" aria-label="Интернет-магазин">
+      <header className="executive-panel__header">
+        <div>
+          <h2>Интернет-магазин</h2>
+          <span>Спрос, поведение и покупки на master-mobile.ru по данным Яндекс Метрики</span>
+        </div>
+      </header>
+
+      {status === "error" && <div className="executive-cashflow-period__empty">{message}</div>}
+      {status === "loading" && !data && <div className="executive-cashflow-period__empty">Загрузка Яндекс Метрики...</div>}
+      {data && (
+        <>
+          <div aria-label="Статус источника интернет-магазина" className="executive__topline">
+            <div><span>Источник</span><strong>Яндекс Метрика</strong></div>
+            <div><span>Статус</span><strong>{statusLabel(data.source_status)}</strong></div>
+            <div><span>Период</span><strong>{formatDate(data.date_from)} — {formatDate(data.date_to)}</strong></div>
+            <div><span>Обновлено</span><strong>{formatDateTime(data.generated_at)}</strong></div>
+          </div>
+
+          {data.note && <div className="executive-cashflow-period__note">{data.note}</div>}
+
+          <div aria-label="Основные KPI интернет-магазина" className="executive-panel__kpis">
+            <MetricCard
+              delta={onlineStoreDelta(onlineStoreValue(data, "visits"), onlineStoreValue(data, "visits", "comparison"))}
+              label="Визиты"
+              tooltip="Сессии на сайте за выбранный период."
+              value={formatMetricValue(onlineStoreValue(data, "visits"))}
+            />
+            <MetricCard
+              delta={onlineStoreDelta(onlineStoreValue(data, "visitors"), onlineStoreValue(data, "visitors", "comparison"))}
+              label="Посетители"
+              tooltip="Уникальные посетители сайта по модели Яндекс Метрики."
+              value={formatMetricValue(onlineStoreValue(data, "visitors"))}
+            />
+            <MetricCard
+              delta={onlineStoreDelta(onlineStoreValue(data, "purchases"), onlineStoreValue(data, "purchases", "comparison"))}
+              label="Покупки на сайте"
+              tooltip="Достижения e-commerce цели «Покупка»; это не финансовая выручка 1С."
+              value={formatMetricValue(onlineStoreValue(data, "purchases"))}
+            />
+            <MetricCard
+              delta={onlineStoreConversionDelta(
+                onlineStoreValue(data, "purchase_conversion_pct"),
+                onlineStoreValue(data, "purchase_conversion_pct", "comparison")
+              )}
+              label="Конверсия в покупку"
+              tooltip="Покупки, делённые на визиты выбранного периода."
+              value={formatPercentPoints(onlineStoreValue(data, "purchase_conversion_pct"))}
+            />
+            <MetricCard
+              hint={`${formatMetricValue(onlineStoreValue(data, "primary_source_purchases"))} покупок · ${formatPercentPoints(onlineStoreValue(data, "primary_source_purchase_share_pct"))}`}
+              label="Главный канал покупок"
+              tooltip="Канал, выбранный текущим управленческим правилом Метрики."
+              value={String(onlineStoreValue(data, "primary_source_name") || "Не определено")}
+            />
+          </div>
+
+          <div aria-label="Сигналы намерения посетителей" className="executive-panel__kpis">
+            <MetricCard label="Клики «Купить»" value={formatMetricValue(onlineStoreValue(data, "click_buy"))} />
+            <MetricCard label="Начали оформление" value={formatMetricValue(onlineStoreValue(data, "begin_checkout"))} />
+            <MetricCard label="Клики по телефону" value={formatMetricValue(onlineStoreValue(data, "phone_clicks"))} />
+            <MetricCard label="Поиск по сайту" value={formatMetricValue(onlineStoreValue(data, "site_searches"))} />
+          </div>
+
+          <div className="executive-online-store__analysis">
+            <section aria-label="Динамика трафика интернет-магазина" className="executive-sales-daily">
+              <h3>Визиты и покупки по дням</h3>
+              {daily.length === 0 ? (
+                <div className="executive-cashflow-period__empty">За период нет дневных данных.</div>
+              ) : (
+                daily.map((row) => (
+                  <div className="executive-sales-day" key={row.business_date}>
+                    <span>{formatDate(row.business_date)}</span>
+                    <div><i style={{ width: `${Math.max(2, Math.round((row.visits / maxDailyVisits) * 100))}%` }} /></div>
+                    <strong>{formatMetricValue(row.visits)} визитов · {formatMetricValue(row.purchases)} покупок</strong>
+                  </div>
+                ))
+              )}
+            </section>
+
+            <section aria-label="Воронка интернет-магазина" className="executive-sales-daily executive-online-store__funnel">
+              <h3>Воронка намерения</h3>
+              {funnel.map((row) => (
+                <div className="executive-sales-day" key={row.key}>
+                  <span>{row.label}</span>
+                  <div><i style={{ width: `${Math.max(2, Math.round((row.value / maxFunnelValue) * 100))}%` }} /></div>
+                  <strong>{formatMetricValue(row.value)}</strong>
+                </div>
+              ))}
+            </section>
+          </div>
+
+          <div className="executive-cashflow-period__tables executive-online-store__tables">
+            <section aria-label="Каналы трафика интернет-магазина">
+              <h3>Каналы трафика</h3>
+              {data.traffic_sources.slice(0, 8).map((row) => (
+                <div className="executive-cashflow-row" key={row.key}>
+                  <span>{row.label}</span>
+                  <strong>{formatMetricValue(row.purchases)} покупок</strong>
+                  <small>{formatMetricValue(row.visits)} визитов · конверсия {formatPercentPoints(row.purchase_conversion_pct)}</small>
+                </div>
+              ))}
+              {data.traffic_sources.length === 0 && <div className="executive-cashflow-period__empty">Нет данных по каналам.</div>}
+            </section>
+            <section aria-label="Посадочные страницы интернет-магазина">
+              <h3>Посадочные страницы</h3>
+              {data.landing_pages.slice(0, 10).map((row) => {
+                const href = landingPageHref(row.url);
+                return (
+                  <div className="executive-cashflow-row" key={row.url}>
+                    <span>
+                      {href ? <a href={href} rel="noreferrer" target="_blank">{landingPageLabel(row.url)}</a> : landingPageLabel(row.url)}
+                    </span>
+                    <strong>{formatMetricValue(row.purchases)} покупок</strong>
+                    <small>{formatMetricValue(row.visits)} визитов · {formatMetricValue(row.click_buy)} кликов «Купить» · конверсия {formatPercentPoints(row.purchase_conversion_pct)}</small>
+                  </div>
+                );
+              })}
+              {data.landing_pages.length === 0 && <div className="executive-cashflow-period__empty">Нет данных по посадочным страницам.</div>}
+            </section>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 function salesValue(
   data: ExecutiveSalesPeriodResponse | null,
   key: string,
@@ -3889,6 +4109,18 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
     setSalesManagerRef("");
   }
 
+  const [onlineStoreDateFrom, setOnlineStoreDateFrom] = useState(() => monthStartIso(date));
+  const [onlineStoreDateTo, setOnlineStoreDateTo] = useState(date);
+  const [onlineStoreStatus, setOnlineStoreStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [onlineStoreMessage, setOnlineStoreMessage] = useState("");
+  const [onlineStoreData, setOnlineStoreData] = useState<ExecutiveOnlineStorePeriodResponse | null>(null);
+  const [onlineStoreFiltersForDate, setOnlineStoreFiltersForDate] = useState(date);
+  if (date !== onlineStoreFiltersForDate) {
+    setOnlineStoreFiltersForDate(date);
+    setOnlineStoreDateFrom(monthStartIso(date));
+    setOnlineStoreDateTo(date);
+  }
+
   const setSalesQuickRange = (days: number) => {
     setSalesDateTo(date);
     setSalesDateFrom(addDaysIso(date, -(days - 1)));
@@ -3900,6 +4132,14 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
     setSalesDateTo(monthEndIso(date));
     setSalesStoreRef("");
     setSalesManagerRef("");
+  };
+  const setOnlineStoreQuickRange = (days: number) => {
+    setOnlineStoreDateTo(date);
+    setOnlineStoreDateFrom(addDaysIso(date, -(days - 1)));
+  };
+  const setOnlineStoreCurrentMonth = () => {
+    setOnlineStoreDateFrom(monthStartIso(date));
+    setOnlineStoreDateTo(date);
   };
   const setProfitLossQuickRange = (days: number) => {
     setProfitLossDateTo(date);
@@ -3937,6 +4177,32 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
       cancelled = true;
     };
   }, [tab, salesDateFrom, salesDateTo, salesStoreRef, salesManagerRef, refreshNonce]);
+
+  useEffect(() => {
+    if (tab !== ONLINE_STORE_TAB_KEY) return;
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (!cancelled) setOnlineStoreStatus("loading");
+    });
+    fetchExecutiveOnlineStorePeriod({
+      date_from: onlineStoreDateFrom,
+      date_to: onlineStoreDateTo,
+    })
+      .then((payload) => {
+        if (cancelled) return;
+        setOnlineStoreData(payload);
+        setOnlineStoreStatus("ready");
+        setOnlineStoreMessage("");
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setOnlineStoreStatus("error");
+        setOnlineStoreMessage(errorMessage(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, onlineStoreDateFrom, onlineStoreDateTo, refreshNonce]);
 
   const navigateDashboard = useCallback(
     (next: { date?: string; tab?: string }, mode: "push" | "replace" = "push") => {
@@ -3981,6 +4247,18 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
         const tabAllowed = isTabAllowed(dashboard, tab);
         const effectiveTab = tabAllowed ? tab : "today";
         if (!tabAllowed && !cancelled) navigateDashboard({ tab: "today" }, "replace");
+        if (effectiveTab === ONLINE_STORE_TAB_KEY) {
+          return [
+            dashboard,
+            {
+              as_of: date,
+              freshness_status: "fresh",
+              source_status: "ready",
+              total_count: 0,
+              payload: [] as ExecutiveDashboardAction[],
+            },
+          ] as const;
+        }
         return fetchExecutiveDashboardActions({
           date,
           status: "open",
@@ -4021,7 +4299,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
   const tabOverviewBlock = useMemo(() => {
     if (!data || tab === "today") return null;
     if (tab === ODDS_CASHFLOW_TAB_KEY) return moneyBlock(data);
-    if ([PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, "creditors_payables"].includes(tab)) return null;
+    if ([PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, ONLINE_STORE_TAB_KEY, "creditors_payables"].includes(tab)) return null;
     return blocks[0] || null;
   }, [blocks, data, tab]);
   const currentAccess = accessLevel || data?.access_level;
@@ -4039,7 +4317,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
           </span>
         </div>
         <div className="executive__controls">
-          {![PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY].includes(tab) && (
+          {![PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, ONLINE_STORE_TAB_KEY].includes(tab) && (
             <label className="executive__date-field">
               <span>Дата</span>
               <input
@@ -4155,6 +4433,40 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
               </label>
             </div>
           )}
+          {tab === ONLINE_STORE_TAB_KEY && (
+            <div className="executive__controls-group">
+              <span className="executive__controls-divider" aria-hidden="true" />
+              <Button disabled={onlineStoreStatus === "loading"} onClick={() => setOnlineStoreQuickRange(7)} variant="secondary">
+                7 дней
+              </Button>
+              <Button disabled={onlineStoreStatus === "loading"} onClick={() => setOnlineStoreQuickRange(30)} variant="secondary">
+                30 дней
+              </Button>
+              <Button disabled={onlineStoreStatus === "loading"} onClick={setOnlineStoreCurrentMonth} variant="secondary">
+                Месяц
+              </Button>
+              <label className="executive__date-field">
+                <span>С</span>
+                <input
+                  aria-label="Начало периода интернет-магазина"
+                  className="app__select executive__date"
+                  onChange={(event) => setOnlineStoreDateFrom(event.target.value)}
+                  type="date"
+                  value={onlineStoreDateFrom}
+                />
+              </label>
+              <label className="executive__date-field">
+                <span>По</span>
+                <input
+                  aria-label="Конец периода интернет-магазина"
+                  className="app__select executive__date"
+                  onChange={(event) => setOnlineStoreDateTo(event.target.value)}
+                  type="date"
+                  value={onlineStoreDateTo}
+                />
+              </label>
+            </div>
+          )}
           <Button
             disabled={status === "loading"}
             onClick={() => navigateDashboard({ date: todayIso() })}
@@ -4204,7 +4516,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
 
       {data && (
         <>
-          {tab !== "procurement_import" && <section aria-label="Состояние витрины" aria-live="polite" className="executive__topline">
+          {!['procurement_import', ONLINE_STORE_TAB_KEY].includes(tab) && <section aria-label="Состояние витрины" aria-live="polite" className="executive__topline">
             <div>
               <span>Данные</span>
               <strong>{statusLabel(data.source_status)}</strong>
@@ -4231,7 +4543,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
             />
           ) : (
             tabOverviewBlock &&
-            ![SALES_TAB_KEY, "procurement_import"].includes(tab) &&
+            ![SALES_TAB_KEY, ONLINE_STORE_TAB_KEY, "procurement_import"].includes(tab) &&
             <TabKpiOverview block={tabOverviewBlock} data={data} />
           )}
 
@@ -4261,6 +4573,14 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
               onSelectManager={setSalesManagerRef}
               onSelectStore={setSalesStoreRef}
               status={salesStatus}
+            />
+          )}
+
+          {tab === ONLINE_STORE_TAB_KEY && (
+            <OnlineStorePanel
+              data={onlineStoreData}
+              message={onlineStoreMessage}
+              status={onlineStoreStatus}
             />
           )}
 
@@ -4300,7 +4620,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
             </div>
           )}
 
-          {![SALES_TAB_KEY, "procurement_import"].includes(tab) && (
+          {![SALES_TAB_KEY, ONLINE_STORE_TAB_KEY, "procurement_import"].includes(tab) && (
             <section className="executive-actions">
               <header className="executive-actions__header">
                 <div>

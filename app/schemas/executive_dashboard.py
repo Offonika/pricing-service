@@ -504,6 +504,55 @@ class ExecutiveSalesPeriodResponse(BaseModel):
     filters: dict[str, Any] = Field(default_factory=dict)
 
 
+class ExecutiveOnlineStoreDailyRow(BaseModel):
+    business_date: date
+    visits: int = 0
+    visitors: int = 0
+    purchases: int = 0
+    click_buy: int = 0
+    begin_checkout: int = 0
+    phone_clicks: int = 0
+    site_searches: int = 0
+    purchase_conversion_pct: Decimal = Decimal("0")
+
+
+class ExecutiveOnlineStoreTrafficSourceRow(BaseModel):
+    key: str
+    label: str
+    visits: int = 0
+    visitors: int = 0
+    purchases: int = 0
+    purchase_conversion_pct: Decimal = Decimal("0")
+
+
+class ExecutiveOnlineStoreLandingPageRow(BaseModel):
+    url: str
+    visits: int = 0
+    visitors: int = 0
+    purchases: int = 0
+    click_buy: int = 0
+    begin_checkout: int = 0
+    purchase_conversion_pct: Decimal = Decimal("0")
+
+
+class ExecutiveOnlineStorePeriodResponse(BaseModel):
+    date_from: date
+    date_to: date
+    compare_date_from: date
+    compare_date_to: date
+    generated_at: datetime
+    source_status: str = "ready"
+    freshness_status: str = "fresh"
+    counter_id: str
+    site: str = "master-mobile.ru"
+    note: str | None = None
+    totals: dict[str, Decimal | int | str | None] = Field(default_factory=dict)
+    comparison: dict[str, Decimal | int | str | None] = Field(default_factory=dict)
+    daily: list[ExecutiveOnlineStoreDailyRow] = Field(default_factory=list)
+    traffic_sources: list[ExecutiveOnlineStoreTrafficSourceRow] = Field(default_factory=list)
+    landing_pages: list[ExecutiveOnlineStoreLandingPageRow] = Field(default_factory=list)
+
+
 class BitrixExecutiveDashboardSessionRequest(BaseModel):
     access_token: str = Field(min_length=1)
     domain: str = Field(min_length=1)

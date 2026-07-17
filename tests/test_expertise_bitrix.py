@@ -579,7 +579,13 @@ def test_sync_case_to_bitrix_treats_terminal_task_readback_as_best_effort(
             )
             assert event is not None
             assert "readback failed" in (event.comment or "")
-        assert calls == ["disk.folder.get", "crm.item.update", "tasks.task.get"]
+        assert calls == [
+            "disk.folder.get",
+            "crm.item.update",
+            "tasks.task.get",
+            "tasks.task.get",
+            "tasks.task.get",
+        ]
     finally:
         get_settings.cache_clear()
         engine.dispose()

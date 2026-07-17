@@ -52,7 +52,7 @@ def test_release_builder_creates_locked_release_specific_runtime(tmp_path: Path)
         "PRICING_SERVICE_RUNTIME_ROOT": str(source),
         "PRICING_SERVICE_RELEASE_ROOT": str(release_root),
         "PRICING_SERVICE_BUILD_UI": "0",
-        "PRICING_SERVICE_INSTALL_VENV": "0",
+        "PRICING_SERVICE_INSTALL_VENV": "1",
     }
     result = _run([str(BUILD_SCRIPT), "test-release"], env=env)
     assert result.returncode == 0, result.stderr
@@ -66,6 +66,13 @@ def test_release_builder_creates_locked_release_specific_runtime(tmp_path: Path)
     assert len(manifest["pip_freeze_sha256"]) == 64
     assert len(manifest["ui_asset_sha256"]) == 64
     assert (release / ".venv/bin/python").exists()
+    pip_entrypoint = release / ".venv/bin/pip"
+    assert pip_entrypoint.exists()
+    pip_shebang = pip_entrypoint.read_text(encoding="utf-8").splitlines()[0]
+    assert pip_shebang.startswith(f"#!{release}/.venv/bin/python")
+    assert ".tmp." not in pip_shebang
+    pip_result = _run([str(pip_entrypoint), "--version"])
+    assert pip_result.returncode == 0, pip_result.stderr
     assert (release / ".env").resolve() == source / ".env"
     assert (release / "ui/dist/index.html").stat().st_mode & 0o222 == 0
 

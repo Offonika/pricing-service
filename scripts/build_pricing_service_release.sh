@@ -236,6 +236,25 @@ ui_asset_sha256="$({
   cd "$TEMP_DIR/ui/dist"
   find . -type f -print0 | sort -z | xargs -0 sha256sum
 } | sha256sum | awk '{print $1}')"
+
+# A venv records its creation directory in console-script shebangs and activation
+# helpers. Rewrite the temporary prefix before the atomic rename so entrypoints such
+# as `alembic` keep working from the immutable release directory.
+"$TEMP_DIR/.venv/bin/python" - "$TEMP_DIR/.venv/bin" "$TEMP_DIR" "$FINAL_DIR" <<'PY'
+from pathlib import Path
+import sys
+
+bin_dir = Path(sys.argv[1])
+old_prefix = sys.argv[2].encode()
+new_prefix = sys.argv[3].encode()
+for path in bin_dir.iterdir():
+    if path.is_symlink() or not path.is_file():
+        continue
+    content = path.read_bytes()
+    if old_prefix in content:
+        path.write_bytes(content.replace(old_prefix, new_prefix))
+PY
+
 content_sha256="$({
   cd "$TEMP_DIR"
   find . -type f -print0 | sort -z | xargs -0 sha256sum

@@ -31,7 +31,7 @@ depends_on:
   - docs/specs/README.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-16"
+updated_at: "2026-07-17"
 ---
 
 # Назначение
@@ -243,3 +243,5 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 - 2026-07-14 — canonical clean release `pricing-main-canonical-20260714-143050`
   собран из merged `main` (`3915d47`) и переключён после API/UI smoke.
 - 2026-07-16 — durable orchestration and atomic release hardening implemented in repository; production cutover remains gated.
+- 2026-07-17 — release builder rewrites temporary venv prefixes before atomic rename,
+  so installed console entrypoints remain executable from the immutable release path.

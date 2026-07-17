@@ -660,11 +660,22 @@ def test_rebuild_open_debt_cache_reports_diagnostics_and_removes_extra_rows(
         for counterparty_ref, balance in (
             ("cp-match", Decimal("100.00")),
             ("cp-missing", Decimal("200.00")),
+            ("cp-non-buyer", Decimal("300.00")),
         )
     ]
     db_session.add_all(
         [
             *snapshots,
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-match",
+                balance=Decimal("100.00"),
+            ),
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-missing",
+                balance=Decimal("200.00"),
+            ),
             _ledger_event(
                 document_date=datetime(2026, 7, 12, 18, 0),
                 business_key="fresh-source",
@@ -675,6 +686,13 @@ def test_rebuild_open_debt_cache_reports_diagnostics_and_removes_extra_rows(
                 department_ref="dep-1",
                 source_status="ready",
                 documents=[{"open_amount": "999.00"}],
+            ),
+            ReceivableOpenDebtCache(
+                snapshot_date=as_of,
+                counterparty_ref="cp-non-buyer",
+                department_ref="dep-1",
+                source_status="ready",
+                documents=[{"open_amount": "300.00"}],
             ),
         ]
     )
@@ -716,7 +734,8 @@ def test_rebuild_open_debt_cache_reports_diagnostics_and_removes_extra_rows(
     }
     assert result["document_mismatch_count"] == 1
     assert result["revealed_document_mismatch_count"] == 0
-    assert result["deleted_count"] == 1
+    assert result["source_snapshot_count"] == 2
+    assert result["deleted_count"] == 2
     assert result["extra_cache_rows"] == 0
     assert set(rows_by_ref) == {"cp-match", "cp-missing"}
     assert rows_by_ref["cp-match"].source_status == "ready"
@@ -2195,6 +2214,8 @@ def test_receivables_folder_recommendations_are_filtered_for_bitrix_department(
             return None
 
     captured_kwargs = {}
+    db_session.add(_case(snapshot_date=as_of, counterparty_ref="cp-1"))
+    db_session.flush()
 
     def fake_build_counterparty_folder_recommendations(*args, **kwargs):
         captured_kwargs.update(kwargs)
@@ -2252,6 +2273,7 @@ def test_receivables_folder_recommendations_are_filtered_for_bitrix_department(
     assert [item["counterparty_ref"] for item in body["payload"]] == ["cp-1"]
     assert body["summary"]["total_count"] == 1
     assert captured_kwargs["snapshot_department_refs"] == frozenset({"dep-1"})
+    assert captured_kwargs["counterparty_refs"] == frozenset({"cp-1"})
 
 
 def test_receivables_folder_recommendations_use_cache_without_onec(
@@ -2261,26 +2283,39 @@ def test_receivables_folder_recommendations_use_cache_without_onec(
     as_of = date(2026, 6, 23)
     settings = _bitrix_settings()
     _override_receivables_settings(monkeypatch, settings)
-    db_session.add(
-        ReceivableFolderRecommendationCache(
-            snapshot_date=as_of,
-            status_scope="all",
-            report_revision="cached-1",
-            summary={"source_snapshot_count": 1, "total_count": 1},
-            payload=[
-                {
-                    "snapshot_date": as_of.isoformat(),
-                    "counterparty_ref": "cp-1",
-                    "counterparty_name": "Клиент 1",
-                    "current_balance": "1000.00",
-                    "snapshot_department_ref": "dep-1",
-                    "debt_department_ref": "dep-1",
-                    "is_overdue": True,
-                    "status": "needs_review",
-                }
-            ],
-            source_status="cached",
-        )
+    db_session.add_all(
+        [
+            _case(snapshot_date=as_of, counterparty_ref="cp-1"),
+            ReceivableFolderRecommendationCache(
+                snapshot_date=as_of,
+                status_scope="all",
+                report_revision="cached-1",
+                summary={"source_snapshot_count": 2, "total_count": 2},
+                payload=[
+                    {
+                        "snapshot_date": as_of.isoformat(),
+                        "counterparty_ref": "cp-1",
+                        "counterparty_name": "Клиент 1",
+                        "current_balance": "1000.00",
+                        "snapshot_department_ref": "dep-1",
+                        "debt_department_ref": "dep-1",
+                        "is_overdue": True,
+                        "status": "needs_review",
+                    },
+                    {
+                        "snapshot_date": as_of.isoformat(),
+                        "counterparty_ref": "cp-non-buyer",
+                        "counterparty_name": "Поставщик",
+                        "current_balance": "5000.00",
+                        "snapshot_department_ref": "dep-1",
+                        "debt_department_ref": "dep-1",
+                        "is_overdue": True,
+                        "status": "needs_review",
+                    },
+                ],
+                source_status="cached",
+            ),
+        ]
     )
     db_session.commit()
     token = _bitrix_token(
@@ -2312,4 +2347,5 @@ def test_receivables_folder_recommendations_use_cache_without_onec(
     body = response.json()
     assert body["source_status"] == "cache_ready"
     assert body["report_revision"] == "cached-1"
-    assert body["payload"][0]["counterparty_ref"] == "cp-1"
+    assert [item["counterparty_ref"] for item in body["payload"]] == ["cp-1"]
+    assert body["summary"]["source_snapshot_count"] == 1

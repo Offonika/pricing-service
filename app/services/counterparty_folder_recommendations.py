@@ -1528,6 +1528,7 @@ def build_counterparty_folder_recommendations(
     status: str | None = None,
     candidate_limit: int | None = None,
     snapshot_department_refs: set[str] | frozenset[str] | None = None,
+    counterparty_refs: set[str] | frozenset[str] | None = None,
 ) -> dict[str, Any]:
     allowed_statuses = {
         STATUS_MOVE_RECOMMENDED,
@@ -1553,6 +1554,13 @@ def build_counterparty_folder_recommendations(
         .scalars()
         .all()
     )
+    if counterparty_refs is not None:
+        allowed_counterparties = {_ref_key(value) for value in counterparty_refs if value}
+        snapshots = [
+            snapshot
+            for snapshot in snapshots
+            if _ref_key(snapshot.counterparty_ref) in allowed_counterparties
+        ]
     source_snapshot_count = len(snapshots)
     if snapshot_department_refs is not None:
         allowed_departments = {_ref_key(value) for value in snapshot_department_refs if value}

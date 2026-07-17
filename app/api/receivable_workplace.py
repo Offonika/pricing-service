@@ -38,7 +38,10 @@ from app.services.receivable_workplace import (
     build_receivable_workplace,
     build_receivable_workplace_meta,
 )
-from app.services.receivable_workplace_cache import load_cached_folder_recommendation_report
+from app.services.receivable_workplace_cache import (
+    load_buyer_counterparty_refs,
+    load_cached_folder_recommendation_report,
+)
 
 router = APIRouter()
 page_router = APIRouter()
@@ -262,6 +265,7 @@ def get_receivable_workplace_folder_recommendations(
     if report is None:
         onec_engine = _build_onec_engine()
         try:
+            buyer_refs = load_buyer_counterparty_refs(db, snapshot_date=date_value)
             report = build_counterparty_folder_recommendations(
                 db,
                 onec_engine=onec_engine,
@@ -270,6 +274,7 @@ def get_receivable_workplace_folder_recommendations(
                 status=status,
                 candidate_limit=_folder_candidate_limit(limit),
                 snapshot_department_refs=access.allowed_department_refs,
+                counterparty_refs=buyer_refs,
             )
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error

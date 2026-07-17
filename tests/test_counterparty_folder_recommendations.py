@@ -1442,6 +1442,27 @@ def test_counterparty_folder_recommendations_can_limit_ui_candidates(tmp_path) -
     onec_engine.dispose()
 
 
+def test_counterparty_folder_recommendations_filters_to_explicit_buyers(tmp_path) -> None:
+    app_db_path = tmp_path / "app.db"
+    app_engine = _make_sqlite_engine(str(app_db_path))
+    onec_engine = _seed_onec_engine()
+    _seed_app_db(app_engine)
+
+    with Session(app_engine) as session:
+        report = build_counterparty_folder_recommendations(
+            session,
+            onec_engine=onec_engine,
+            snapshot_date=SNAPSHOT_DATE,
+            counterparty_refs=frozenset({"cp-site"}),
+        )
+
+    assert report["summary"]["source_snapshot_count"] == 1
+    assert [item["counterparty_ref"] for item in report["payload"]] == ["cp-site"]
+
+    app_engine.dispose()
+    onec_engine.dispose()
+
+
 def test_counterparty_folder_recommendations_api(monkeypatch, tmp_path) -> None:
     app_db_path = tmp_path / "app.db"
     app_engine = _make_sqlite_engine(str(app_db_path))

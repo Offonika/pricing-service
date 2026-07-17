@@ -68,6 +68,27 @@ def _money(value: Any) -> Decimal:
     return Decimal(str(value or "0")).quantize(Decimal("0.01"))
 
 
+def load_buyer_counterparty_refs(
+    session: Session,
+    *,
+    snapshot_date: date,
+) -> frozenset[str]:
+    refs = (
+        session.execute(
+            select(ReceivableCase.counterparty_ref)
+            .where(
+                ReceivableCase.snapshot_date == snapshot_date,
+                ReceivableCase.segment == CASE_BUYERS,
+                ReceivableCase.current_balance > Decimal("0"),
+            )
+            .distinct()
+        )
+        .scalars()
+        .all()
+    )
+    return frozenset(_ref_key(value) for value in refs if _ref_key(value))
+
+
 def latest_receivable_snapshot_date(
     session: Session,
     *,
@@ -207,6 +228,7 @@ def rebuild_open_debt_cache(
     onec_engine=None,
     include_onec_enrichment: bool = False,
 ) -> dict[str, Any]:
+    buyer_refs = load_buyer_counterparty_refs(session, snapshot_date=snapshot_date)
     snapshots = (
         session.execute(
             select(ReceivableBalanceSnapshot).where(
@@ -217,6 +239,9 @@ def rebuild_open_debt_cache(
         .scalars()
         .all()
     )
+    snapshots = [
+        snapshot for snapshot in snapshots if _ref_key(snapshot.counterparty_ref) in buyer_refs
+    ]
     freshness = evaluate_open_debt_source_freshness(
         session,
         snapshot_date=snapshot_date,
@@ -392,15 +417,21 @@ def load_cached_folder_recommendation_report(
     )
     if row is None:
         return None
+    buyer_refs = load_buyer_counterparty_refs(session, snapshot_date=snapshot_date)
+    payload = [
+        item
+        for item in list(row.payload or [])
+        if _ref_key(item.get("counterparty_ref")) in buyer_refs
+    ]
     payload = _filter_folder_payload_for_access(
-        list(row.payload or []),
+        payload,
         allowed_department_refs=allowed_department_refs,
     )
     if status:
         payload = [item for item in payload if item.get("status") == status]
     if limit is not None:
         payload = payload[:limit]
-    source_snapshot_count = int((row.summary or {}).get("source_snapshot_count") or len(payload))
+    source_snapshot_count = len(buyer_refs)
     return {
         "snapshot_date": row.snapshot_date,
         "report_revision": row.report_revision,

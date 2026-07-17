@@ -17,6 +17,7 @@ from app.services.counterparty_folder_recommendations import (
 )
 from app.services.receivable_workplace_cache import (
     cache_folder_recommendation_report,
+    load_buyer_counterparty_refs,
     rebuild_open_debt_cache,
 )
 
@@ -80,6 +81,10 @@ def main() -> int:
             if not args.skip_folders:
                 if onec_engine is None:
                     raise RuntimeError("ONEC_DATABASE_URL is required for folder cache rebuild")
+                buyer_refs = load_buyer_counterparty_refs(
+                    session,
+                    snapshot_date=snapshot_date,
+                )
                 report = build_counterparty_folder_recommendations(
                     session,
                     onec_engine=onec_engine,
@@ -88,6 +93,7 @@ def main() -> int:
                     status=None,
                     candidate_limit=None,
                     snapshot_department_refs=None,
+                    counterparty_refs=buyer_refs,
                 )
                 row = cache_folder_recommendation_report(session, report=report)
                 summary["folder_recommendations"] = {

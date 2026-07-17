@@ -1417,6 +1417,11 @@
   background: #fbfcfe;
 }
 
+.executive-profit-loss-line--source_error {
+  border-left-color: #d92d20;
+  background: #fff6f5;
+}
+
 .executive-inventory-loss {
   display: grid;
   gap: 14px;

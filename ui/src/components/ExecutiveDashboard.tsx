@@ -1831,6 +1831,28 @@ function formatInventoryLossResult(value: string | number | null | undefined) {
   return `Превышение оприходований: ${formatMoney(Math.abs(Number(value)))}`;
 }
 
+function formatInventoryLossStatementAmount(
+  data: ExecutiveProfitLossInventoryLoss | null | undefined
+) {
+  if (!data || ["source_missing", "source_error"].includes(data.source_status)) {
+    return data ? statusLabel(data.source_status) : "нет данных";
+  }
+  if (data.loss_amount === null || data.loss_amount === undefined) return "не подключено";
+  return formatMoney(-Number(data.loss_amount));
+}
+
+function inventoryLossStatementNote(
+  data: ExecutiveProfitLossInventoryLoss | null | undefined
+) {
+  if (!data || ["source_missing", "source_error"].includes(data.source_status)) {
+    return data?.note || "Месячный отчет по списаниям и оприходованиям не подключен.";
+  }
+  if (isReceiptSurplus(data.loss_amount)) {
+    return "Справочно: оприходования выше списаний; операционная прибыль не пересчитана.";
+  }
+  return "Справочно: списания минус оприходования; операционная прибыль не пересчитана.";
+}
+
 function inventoryStoreKey(store: { store_ref: string; store_name: string }) {
   return store.store_ref || `name:${store.store_name}`;
 }
@@ -2702,9 +2724,9 @@ function ProfitLossPeriodPanel({
             />
           </div>
 
-          <section className="executive-profit-loss-lines" aria-label="Структура ОПУ">
+          <section className="executive-profit-loss-lines" aria-label="Структура ОПиУ">
             <header>
-              <h3>Структура ОПУ</h3>
+              <h3>Структура ОПиУ</h3>
               <span>{statusLabel(data.source_status)}</span>
             </header>
             <div className="executive-profit-loss-lines__rows">
@@ -2724,6 +2746,20 @@ function ProfitLossPeriodPanel({
                   <small>{line.note || statusLabel(line.source_status)}</small>
                 </div>
               ))}
+              <div
+                className={[
+                  "executive-profit-loss-line",
+                  "executive-profit-loss-line--inventory-loss",
+                  `executive-profit-loss-line--${data.inventory_loss?.source_status || "source_missing"}`,
+                  isReceiptSurplus(data.inventory_loss?.loss_amount)
+                    ? "executive-profit-loss-line--receipt-surplus"
+                    : "executive-profit-loss-line--expense",
+                ].join(" ")}
+              >
+                <span>Товарные потери (справочно)</span>
+                <strong>{formatInventoryLossStatementAmount(data.inventory_loss)}</strong>
+                <small>{inventoryLossStatementNote(data.inventory_loss)}</small>
+              </div>
             </div>
           </section>
 

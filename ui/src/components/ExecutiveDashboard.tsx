@@ -1843,9 +1843,8 @@ function formatInventoryLossResult(value: string | number | null | undefined) {
 function formatInventoryLossStatementAmount(
   data: ExecutiveProfitLossInventoryLoss | null | undefined
 ) {
-  if (!data || ["source_missing", "source_error"].includes(data.source_status)) {
-    return data ? statusLabel(data.source_status) : "нет данных";
-  }
+  if (!data || data.source_status === "source_missing") return "не опубликовано";
+  if (data.source_status === "source_error") return statusLabel(data.source_status);
   if (data.loss_amount === null || data.loss_amount === undefined) return "не подключено";
   return formatMoney(-Number(data.loss_amount));
 }

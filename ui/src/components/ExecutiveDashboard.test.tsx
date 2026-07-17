@@ -830,6 +830,23 @@ describe("executive profit and loss period", () => {
     expect(inventoryRow).toHaveTextContent("Месячный отчет по товарным потерям не удалось прочитать.");
     expect(inventoryRow).toHaveClass("executive-profit-loss-line--source_error");
   });
+
+  it("shows an unpublished inventory report explicitly instead of zero", async () => {
+    const response = profitLossPeriodResponse();
+    response.inventory_loss = {
+      ...inventoryLoss(),
+      source_status: "source_missing",
+      loss_amount: null,
+      note: "Месячный отчет по товарным потерям не опубликован.",
+    };
+
+    await renderProfitLossTab(response);
+
+    const statement = screen.getByLabelText("Структура ОПиУ");
+    const inventoryRow = within(statement).getByText("Товарные потери (справочно)").closest("div");
+    expect(inventoryRow).toHaveTextContent("не опубликовано");
+    expect(inventoryRow).not.toHaveTextContent(/(^|\s)0\s*₽/);
+  });
 });
 
 function salesPeriodResponse(): ExecutiveSalesPeriodResponse {

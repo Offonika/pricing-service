@@ -13,6 +13,8 @@ import {
   type ReceivableCacheComponent,
   type ReceivableDepartmentOption,
   type ReceivableStatusOption,
+  type ReceivableWorkplaceSortBy,
+  type ReceivableWorkplaceSortDir,
   type ReceivableWorkplaceEditState,
   type ReceivableWorkplaceItem,
   type ReceivableWorkplaceSummary,
@@ -573,6 +575,8 @@ export function ReceivablesWorkplace({
   const [date, setDate] = useState(readInitialDate);
   const [departmentRef, setDepartmentRef] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [sortBy, setSortBy] = useState<ReceivableWorkplaceSortBy>("balance");
+  const [sortDir, setSortDir] = useState<ReceivableWorkplaceSortDir>("desc");
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("");
   const [items, setItems] = useState<ReceivableWorkplaceItem[]>([]);
   const [summary, setSummary] = useState<ReceivableWorkplaceSummary>(emptySummary);
@@ -664,6 +668,8 @@ export function ReceivablesWorkplace({
       const data = await fetchReceivableWorkplace({
         date,
         department_ref: departmentRef,
+        sort_by: sortBy,
+        sort_dir: sortDir,
         status: statusFilter,
       });
       const payload = data.payload || [];
@@ -683,7 +689,7 @@ export function ReceivablesWorkplace({
     } finally {
       setLoading(false);
     }
-  }, [date, departmentRef, hasToken, statusFilter]);
+  }, [date, departmentRef, hasToken, sortBy, sortDir, statusFilter]);
 
   const loadFolders = useCallback(async () => {
     if (!hasToken || !date) {
@@ -769,6 +775,22 @@ export function ReceivablesWorkplace({
               {option.label}
             </option>
           ))}
+        </select>
+        <select
+          className="app__select"
+          value={sortBy}
+          onChange={(event) => setSortBy(event.target.value as ReceivableWorkplaceSortBy)}
+        >
+          <option value="balance">По сумме</option>
+          <option value="overdue_days">По дням просрочки</option>
+        </select>
+        <select
+          className="app__select"
+          value={sortDir}
+          onChange={(event) => setSortDir(event.target.value as ReceivableWorkplaceSortDir)}
+        >
+          <option value="desc">По убыванию</option>
+          <option value="asc">По возрастанию</option>
         </select>
         {!bitrixMode && (
           <input

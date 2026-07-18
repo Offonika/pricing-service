@@ -264,6 +264,11 @@ def test_receivable_workplace_uses_default_credit_depth_without_onec_write(
     assert item.no_phone_marker is True
     assert item.staff_options[0].staff_ref == "staff-1"
     assert item.documents[0].document_number == "РБГУ0001"
+    status_options = {option.value: option.label for option in result.status_options}
+    assert (
+        status_options["not_ours_transfer"]
+        == "Не наш, прошу перенести ответственным (указать РТУ если возможно)"
+    )
 
 
 def test_receivable_workplace_action_survives_daily_workflow_sync(db_session: Session) -> None:
@@ -277,7 +282,7 @@ def test_receivable_workplace_action_survives_daily_workflow_sync(db_session: Se
         ]
     )
     payload = ReceivableWorkplaceActionRequest(
-        status="waiting_payment",
+        status="not_ours_transfer",
         contacted_staff_ref="staff-1",
         promised_payment_date=date(2026, 6, 25),
         next_action_date=date(2026, 6, 24),
@@ -294,7 +299,7 @@ def test_receivable_workplace_action_survives_daily_workflow_sync(db_session: Se
     db_session.commit()
 
     assert response is not None
-    assert response.item.status == "waiting_payment"
+    assert response.item.status == "not_ours_transfer"
     assert response.item.contacted_staff_name == "Менеджер 1"
     assert response.item.payment_postponed is False
     assert response.item.payment_postponed_count == 1
@@ -316,7 +321,7 @@ def test_receivable_workplace_action_survives_daily_workflow_sync(db_session: Se
 
     item = db_session.scalar(select(ReceivableWorkItem))
     assert item is not None
-    assert item.status == "waiting_payment"
+    assert item.status == "not_ours_transfer"
     assert item.last_contact_comment == "Клиент обещал оплатить завтра."
     assert item.payload is not None
     assert item.payload["contacted_staff_ref"] == "staff-1"

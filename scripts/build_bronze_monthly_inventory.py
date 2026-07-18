@@ -1,18 +1,20 @@
-"""Ежемесячная инвентаризация типа цен 2.Бронзовый.
+"""Ежемесячная инвентаризация типов цен по всем уровням лестницы.
 
-Реализует регламент
+Источник истины нормативов: config/price_types/ruleset.yaml (уровни, пороги
+удержания, исключения). Реализует регламент
 reports/retail_price_types/customer-price-type-automation/2026-07-10/
-monthly-price-type-inventory-rule-total10k-2026-07-10.md
-(ветки: корзины правила 10к/3.3к, спящие клиенты, реестр служебных карточек).
+monthly-price-type-inventory-rule-total10k-2026-07-10.md.
 
-Источники (только чтение):
-- 1С: договоры покупателей с типом цен `2.Бронзовый*` (справочники
-  `_Reference37`/`_Reference54`/`_Reference87`);
+Источники данных (только чтение):
+- 1С: живые договоры покупателей группы ПОКУПАТЕЛИ по каждому уровню;
 - локальная витрина `receivable_ledger_event`: чистые продажи по месяцам.
 
-Выход: CSV-списки и summary в
+Выход: CSV-списки по корзинам каждого уровня и summary в
 reports/retail_price_types/customer-price-type-automation/auto/<месяц>/.
 Типы цен нигде не изменяются: скрипт только считает и формирует списки.
+
+Имя файла историческое (первая версия покрывала только бронзу) и сохранено
+ради установленного cron; с ruleset 2026-07-18.1 скрипт считает все уровни.
 """
 
 from __future__ import annotations
@@ -33,6 +35,8 @@ from sqlalchemy.orm import Session
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
+import yaml  # noqa: E402
+
 from app.infrastructure.db import (  # noqa: E402
     build_onec_engine_from_settings,
     get_application_engine,
@@ -40,15 +44,15 @@ from app.infrastructure.db import (  # noqa: E402
 from app.models import ReceivableLedgerEvent  # noqa: E402
 
 REPORTS_DIR = REPO_ROOT / "reports/retail_price_types/customer-price-type-automation"
-RULE_TOTAL_3M = Decimal("10000")
-RULE_LAST_MONTH = Decimal("3300")
-BUYERS_CONTRACT_KIND_REF = "0x9363c6f0a10557bf4822a55db4862286"
+RULESET_PATH = REPO_ROOT / "config/price_types/ruleset.yaml"
+RULESET = yaml.safe_load(RULESET_PATH.read_text(encoding="utf-8"))
+LEVELS: dict[str, dict] = RULESET["levels"]
+BUYERS_ROOT_GROUP_REF: str = RULESET["population"]["buyers_root_group_ref"]
+BUYERS_CONTRACT_KIND_REF: str = RULESET["population"]["contract_kind_ref"]
+EXCLUDED_REGISTRY_CLASSES = set(RULESET["population"]["excluded_registry_classes"])
 SOURCE_LAYER = "regular_receivables"
 
-# Корневая группа контрагентов "ПОКУПАТЕЛИ": контур работает только по ней.
-BUYERS_ROOT_GROUP_REF = "0x859f00215d1c454811df26d4ab62d095"
-
-BRONZE_CONTRACTS_SQL = text(f"""
+CONTRACTS_SQL = text(f"""
     WITH buyers_groups AS (
         SELECT _IDRRef FROM _Reference54 WITH (NOLOCK)
         WHERE _IDRRef = CONVERT(varbinary(16), '{BUYERS_ROOT_GROUP_REF}', 1)
@@ -70,17 +74,36 @@ BRONZE_CONTRACTS_SQL = text(f"""
     WHERE c._Marked = 0x00
       AND cp._Marked = 0x00
       AND cp._ParentIDRRef IN (SELECT _IDRRef FROM buyers_groups)
-      AND pt._Description LIKE N'2.Бронзовый%'
+      AND pt._Description LIKE :prefix
       AND master.dbo.fn_varbintohexstr(c._Fld515RRef) = :kind_ref
     """)
 
 
 @dataclass
-class BronzeClient:
+class LevelClient:
     code: str
     name: str
     price_types: set[str] = field(default_factory=set)
     monthly_net: dict[str, Decimal] = field(default_factory=dict)
+
+
+def classify_client(
+    total_3m: Decimal,
+    last_month: Decimal,
+    *,
+    retention_norm: Decimal,
+    hold_threshold: Decimal,
+) -> str:
+    """Чистая функция правила уровня (тестируется на границах).
+
+    Возвращает корзину: норма / удержание_дожим / изолятор_1м.
+    Предполагает, что клиент активен в окне (иначе - ветка спящих).
+    """
+    if total_3m >= retention_norm:
+        return "норма"
+    if last_month >= hold_threshold:
+        return "удержание_дожим"
+    return "изолятор_1м"
 
 
 def _month_arg(value: str) -> date:
@@ -100,17 +123,21 @@ def _last_closed_month(today: date) -> date:
     return _add_months(today.replace(day=1), -1)
 
 
-def load_bronze_clients() -> dict[str, BronzeClient]:
+def load_level_clients(prefix: str) -> dict[str, LevelClient]:
     engine = build_onec_engine_from_settings()
-    clients: dict[str, BronzeClient] = {}
+    clients: dict[str, LevelClient] = {}
     with engine.connect() as conn:
-        for row in conn.execute(BRONZE_CONTRACTS_SQL, {"kind_ref": BUYERS_CONTRACT_KIND_REF}):
+        rows = conn.execute(
+            CONTRACTS_SQL,
+            {"prefix": f"{prefix}%", "kind_ref": BUYERS_CONTRACT_KIND_REF},
+        )
+        for row in rows:
             ref = (row.counterparty_ref or "").strip().lower()
             if not ref:
                 continue
             client = clients.setdefault(
                 ref,
-                BronzeClient(
+                LevelClient(
                     code=(row.counterparty_code or "").strip(),
                     name=" ".join((row.counterparty_name or "").split()),
                 ),
@@ -119,7 +146,9 @@ def load_bronze_clients() -> dict[str, BronzeClient]:
     return clients
 
 
-def load_monthly_net(clients: dict[str, BronzeClient], *, period_end_exclusive: date) -> None:
+def load_monthly_net(
+    refs: set[str], *, period_end_exclusive: date
+) -> dict[str, dict[str, Decimal]]:
     """Чистые продажи клиента за месяц: max(0, реализации - возвраты)."""
     engine = get_application_engine()
     month_expr = func.to_char(ReceivableLedgerEvent.external_document_date, "YYYY-MM")
@@ -147,24 +176,16 @@ def load_monthly_net(clients: dict[str, BronzeClient], *, period_end_exclusive: 
         )
     for row in rows:
         ref = (row.counterparty_ref or "").strip().lower()
-        if ref not in clients:
+        if ref not in refs:
             continue
         amount = Decimal(str(row.amount or 0))
         if row.event_type == "return":
             amount = -abs(amount)
         raw[(ref, row.month)] += amount
+    result: dict[str, dict[str, Decimal]] = defaultdict(dict)
     for (ref, month), amount in raw.items():
-        clients[ref].monthly_net[month] = max(Decimal("0"), amount)
-
-
-# Из расчета исключаются только эти классы реестра; безымянные точки участвуют
-# в расчете как обычные клиенты (решение 2026-07-17). Карточки сотрудников -
-# внутренние операции, не клиенты (решение 2026-07-18).
-EXCLUDED_REGISTRY_CLASSES = {
-    "служебный инструмент",
-    "фиктивная/техническая",
-    "карточка сотрудника",
-}
+        result[ref][month] = max(Decimal("0"), amount)
+    return result
 
 
 def load_service_codes() -> set[str]:
@@ -179,41 +200,48 @@ def load_service_codes() -> set[str]:
     return codes
 
 
-def build_inventory(rule_month: date, out_dir: Path) -> dict[str, int]:
-    clients = load_bronze_clients()
-    load_monthly_net(clients, period_end_exclusive=_add_months(rule_month, 1))
-    service_codes = load_service_codes()
+def build_level_inventory(
+    level_key: str,
+    rule_month: date,
+    out_dir: Path,
+    *,
+    service_codes: set[str],
+) -> dict[str, int]:
+    level = LEVELS[level_key]
+    retention_norm = Decimal(str(level["retention_norm_3m"]))
+    hold_threshold = Decimal(str(level["hold_last_month"]))
+    prefix = level["price_type_prefix"]
 
+    clients = load_level_clients(prefix)
+    monthly = load_monthly_net(set(clients), period_end_exclusive=_add_months(rule_month, 1))
     window = [_month_key(_add_months(rule_month, delta)) for delta in (-2, -1, 0)]
     rule_key = _month_key(rule_month)
 
     buckets: dict[str, list[list[str]]] = defaultdict(list)
-    for _ref, client in sorted(clients.items(), key=lambda item: item[1].code):
+    for ref, client in sorted(clients.items(), key=lambda item: item[1].code):
+        months = monthly.get(ref, {})
         if client.code in service_codes:
             buckets["служебная_карточка"].append(
                 [client.code, client.name, "", "", "реестр служебных: вне расчета"]
             )
             continue
-        total_3m = sum(
-            (client.monthly_net.get(month, Decimal("0")) for month in window),
-            Decimal("0"),
-        )
-        last_month = client.monthly_net.get(rule_key, Decimal("0"))
-        active_months = {month for month, net in client.monthly_net.items() if net > 0}
+        total_3m = sum((months.get(m, Decimal("0")) for m in window), Decimal("0"))
+        last_month = months.get(rule_key, Decimal("0"))
+        active_months = {m for m, net in months.items() if net > 0}
         row = [client.code, client.name, f"{total_3m:.2f}", f"{last_month:.2f}"]
         if last_month > 0 or total_3m > 0:
-            if total_3m >= RULE_TOTAL_3M:
-                buckets["норма"].append([*row, "оставить 2.Бронзовый"])
-            elif any(
-                client.monthly_net.get(month, Decimal("0")) >= RULE_TOTAL_3M for month in window
-            ):
-                buckets["контроль_противоречия"].append(
-                    [*row, "итог 3м < 10к, но был месяц 10к+: проверить данные"]
-                )
-            elif last_month >= RULE_LAST_MONTH:
-                buckets["удержание_дожим"].append([*row, "дожать до порога, тип цен не менять"])
-            else:
-                buckets["изолятор_1м"].append([*row, "лечебный месяц CRM, тип цен не менять"])
+            bucket = classify_client(
+                total_3m,
+                last_month,
+                retention_norm=retention_norm,
+                hold_threshold=hold_threshold,
+            )
+            notes = {
+                "норма": f"оставить {prefix}",
+                "удержание_дожим": (f"дожать до {retention_norm:.0f}, тип цен не менять"),
+                "изолятор_1м": "лечебный месяц CRM, тип цен не менять",
+            }
+            buckets[bucket].append([*row, notes[bucket]])
         elif active_months:
             last_active = max(active_months)
             months_ago = (
@@ -222,13 +250,13 @@ def build_inventory(rule_month: date, out_dir: Path) -> dict[str, int]:
                 - int(last_active[:4]) * 12
                 - int(last_active[5:7])
             )
-            wave = min(4, max(1, (months_ago - 2)))
+            wave = min(4, max(1, months_ago - 2))
             buckets["спящие_реанимация"].append(
                 [
                     client.code,
                     client.name,
                     last_active,
-                    f"{sum(client.monthly_net.values(), Decimal('0')):.2f}",
+                    f"{sum(months.values(), Decimal('0')):.2f}",
                     f"волна {wave}: CRM-реанимация, условия сохраняются",
                 ]
             )
@@ -247,27 +275,42 @@ def build_inventory(rule_month: date, out_dir: Path) -> dict[str, int]:
         "решение",
     ]
     for bucket, rows in buckets.items():
-        path = out_dir / f"bronze-{bucket}-{rule_key}.csv"
+        path = out_dir / f"{level_key}-{bucket}-{rule_key}.csv"
         with open(path, "w", encoding="utf-8-sig", newline="") as handle:
             writer = csv.writer(handle)
             writer.writerow(sleeping_header if bucket == "спящие_реанимация" else header)
             writer.writerows(rows)
+    return {bucket: len(rows) for bucket, rows in sorted(buckets.items())}
 
-    counts = {bucket: len(rows) for bucket, rows in sorted(buckets.items())}
-    summary = out_dir / f"bronze-monthly-summary-{rule_key}.md"
+
+def build_inventory(
+    rule_month: date, out_dir: Path, level_keys: list[str]
+) -> dict[str, dict[str, int]]:
+    service_codes = load_service_codes()
+    results: dict[str, dict[str, int]] = {}
+    for level_key in level_keys:
+        results[level_key] = build_level_inventory(
+            level_key, rule_month, out_dir, service_codes=service_codes
+        )
+
+    rule_key = _month_key(rule_month)
+    summary = out_dir / f"price-levels-monthly-summary-{rule_key}.md"
     with open(summary, "w", encoding="utf-8") as handle:
         handle.write(
-            f"# Автоинвентаризация 2.Бронзовый за {rule_key}\n\n"
-            f"Сформировано: {datetime.now():%Y-%m-%d %H:%M}. Типы цен не менялись.\n\n"
-            "| Корзина | Клиентов |\n| --- | ---: |\n"
+            f"# Автоинвентаризация типов цен за {rule_key}\n\n"
+            f"ruleset: {RULESET['ruleset_version']}. "
+            f"Сформировано: {datetime.now():%Y-%m-%d %H:%M}. "
+            "Типы цен не менялись.\n\n"
+            "| Уровень | Корзина | Клиентов |\n| --- | --- | ---: |\n"
         )
-        for bucket, count in counts.items():
-            handle.write(f"| {bucket} | {count} |\n")
+        for level_key, counts in results.items():
+            for bucket, count in counts.items():
+                handle.write(f"| {level_key} | {bucket} | {count} |\n")
         handle.write(
             "\nОграничение: спящие определяются в пределах покрытия витрины "
             "продаж; полная 12-месячная история появится по мере накопления.\n"
         )
-    return counts
+    return results
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -279,6 +322,12 @@ def main(argv: list[str] | None = None) -> int:
         help="расчетный (последний закрытый) месяц в формате YYYY-MM",
     )
     parser.add_argument(
+        "--level",
+        choices=[*LEVELS.keys(), "all"],
+        default="all",
+        help="уровень лестницы (по умолчанию все)",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=None,
@@ -287,10 +336,12 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     rule_month = args.month or _last_closed_month(date.today())
     out_dir = args.output_dir or REPORTS_DIR / "auto" / _month_key(rule_month)
-    counts = build_inventory(rule_month, out_dir)
-    print(f"месяц {_month_key(rule_month)} -> {out_dir}")
-    for bucket, count in counts.items():
-        print(f"  {bucket}: {count}")
+    level_keys = list(LEVELS.keys()) if args.level == "all" else [args.level]
+    results = build_inventory(rule_month, out_dir, level_keys)
+    print(f"месяц {_month_key(rule_month)} (ruleset {RULESET['ruleset_version']}) " f"-> {out_dir}")
+    for level_key, counts in results.items():
+        for bucket, count in counts.items():
+            print(f"  {level_key}/{bucket}: {count}")
     return 0
 
 

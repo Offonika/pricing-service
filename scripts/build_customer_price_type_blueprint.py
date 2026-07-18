@@ -19,9 +19,36 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import yaml  # noqa: E402
+
 import scripts.ensure_expertise_bitrix_process as bitrix_setup  # noqa: E402
 
 DEFAULT_ENV_FILE = REPO_ROOT / ".env"
+
+# Единый источник истины нормативов: config/price_types/ruleset.yaml.
+RULESET_PATH = REPO_ROOT / "config/price_types/ruleset.yaml"
+RULESET: dict[str, Any] = yaml.safe_load(RULESET_PATH.read_text(encoding="utf-8"))
+LEVELS: dict[str, Any] = RULESET["levels"]
+LEVEL_THRESHOLDS_NOTE = "; ".join(
+    f"{key} {val['retention_norm_3m']}/{val['hold_last_month']}" for key, val in LEVELS.items()
+)
+RULESET_TAG = f"ruleset {RULESET['ruleset_version']}"
+
+# Поля, без которых карточка смарт-процесса не имеет смысла.
+REQUIRED_FIELD_KEYS = {
+    "stable_key",
+    "counterparty_ref",
+    "counterparty_code",
+    "counterparty_name",
+    "current_price_type",
+    "snapshot_date",
+    "three_month_sales_total",
+    "last_full_month_sales",
+    "final_decision",
+    "automation_level",
+    "approval_status",
+    "onec_export_status",
+}
 DEFAULT_OUTPUT_PATH = REPO_ROOT / "build/bitrix/customer_price_type_blueprint.json"
 DEFAULT_CURRENT_ENTITY_TYPE_ID = 0
 DEFAULT_PROCESS_TITLE = "Типы Цен"
@@ -257,6 +284,13 @@ CUSTOM_FIELD_SPECS = [
         "logical_key": "stable_key",
         "title": "Тех. ключ карточки",
         "type": "string",
+        "edit_in_list": False,
+        "formula": RULESET["identity"]["stable_key_formula"],
+    },
+    {
+        "logical_key": "snapshot_date",
+        "title": "Дата среза расчета",
+        "type": "date",
         "edit_in_list": False,
     },
     {
@@ -722,6 +756,7 @@ DETAIL_SECTION_SPECS = [
         "elements": [
             "stage",
             "title",
+            "snapshot_date",
             "assigned_by",
             "final_decision",
             "automation_level",
@@ -947,12 +982,20 @@ TRANSITION_RULES = [
     {
         "from": "new_snapshot",
         "to": "retention_work",
-        "when": "three_month_sales_total < threshold_lower and last_full_month_sales >= 3300",
+        "when": (
+            "three_month_sales_total < retention_norm(level) and "
+            "last_full_month_sales >= hold_threshold(level); "
+            f"{RULESET_TAG}: {LEVEL_THRESHOLDS_NOTE}"
+        ),
     },
     {
         "from": "new_snapshot",
         "to": "isolate_1m",
-        "when": "three_month_sales_total < threshold_lower and last_full_month_sales < 3300",
+        "when": (
+            "three_month_sales_total < retention_norm(level) and "
+            "last_full_month_sales < hold_threshold(level); "
+            f"{RULESET_TAG}: {LEVEL_THRESHOLDS_NOTE}"
+        ),
     },
     {
         "from": "new_snapshot",
@@ -1002,7 +1045,9 @@ TRANSITION_RULES = [
     {
         "from": "retention_work",
         "to": "isolate_1m",
-        "when": "retention failed and last_full_month_sales < 3300",
+        "when": (
+            "retention failed and last_full_month_sales < hold_threshold(level); " f"{RULESET_TAG}"
+        ),
     },
     {
         "from": "isolate_1m",
@@ -1108,6 +1153,16 @@ STOP_FACTORS = [
             " and three_month_sales_total < threshold_lower"
         ),
     },
+    {
+        "key": "upgrade_freeze",
+        "blocks": "upgrade",
+        "when": (
+            "ГЛОБАЛЬНАЯ ЗАМОРОЗКА (ruleset upgrades.frozen=true, решение "
+            "2026-07-17/18): любые повышения уровня не выполняются; кандидаты "
+            "отображаются информационно, стадия manual_upgrade_approval "
+            "недостижима до отдельной команды о разморозке"
+        ),
+    },
     {"key": "credit_risk_high", "blocks": "upgrade", "when": "credit_discipline_grade in (D,E)"},
     {"key": "over_credit_limit", "blocks": "upgrade", "when": "over_limit_amount > 0"},
     {
@@ -1184,7 +1239,7 @@ def _field_blueprint(spec: dict[str, Any]) -> dict[str, Any]:
     row["xml_id"] = _field_xml_id(str(spec["logical_key"]))
     row.setdefault("searchable", False)
     row.setdefault("edit_in_list", True)
-    row.setdefault("required", False)
+    row.setdefault("required", spec["logical_key"] in REQUIRED_FIELD_KEYS)
     return row
 
 
@@ -1203,6 +1258,21 @@ def build_blueprint(*, live_snapshot: dict[str, Any] | None = None) -> dict[str,
     return {
         "mode": "dry-run",
         "generated_at": datetime.now(timezone.utc).isoformat(),
+        "rulebook": {
+            "ruleset_version": RULESET["ruleset_version"],
+            "effective_date": str(RULESET["effective_date"]),
+            "source": "config/price_types/ruleset.yaml",
+            "levels": {
+                key: {
+                    "price_type_prefix": val["price_type_prefix"],
+                    "retention_norm_3m": val["retention_norm_3m"],
+                    "hold_last_month": val["hold_last_month"],
+                    "downgrade_to": val["downgrade_to"],
+                }
+                for key, val in LEVELS.items()
+            },
+            "upgrades_frozen": RULESET["upgrades"]["frozen"],
+        },
         "safety": {
             "bitrix_writes": False,
             "allowed_bitrix_methods": sorted(READ_ONLY_BITRIX_METHODS),

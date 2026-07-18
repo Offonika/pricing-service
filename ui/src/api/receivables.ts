@@ -117,6 +117,9 @@ export interface ReceivableWorkplaceResponse {
   payload: ReceivableWorkplaceItem[];
 }
 
+export type ReceivableWorkplaceSortBy = "balance" | "overdue_days";
+export type ReceivableWorkplaceSortDir = "desc" | "asc";
+
 export interface ReceivableWorkplaceActionPayload {
   action_id?: string | null;
   status?: string | null;
@@ -269,6 +272,8 @@ export async function fetchReceivableWorkplace(params: {
   date: string;
   department_ref?: string;
   status?: string;
+  sort_by?: ReceivableWorkplaceSortBy;
+  sort_dir?: ReceivableWorkplaceSortDir;
 }) {
   const response = await withReceivablesAuthRetry(() =>
     api.get<ReceivableWorkplaceResponse>("/receivables/workplace", {
@@ -276,6 +281,8 @@ export async function fetchReceivableWorkplace(params: {
         date: params.date,
         department_ref: params.department_ref || undefined,
         limit: 100,
+        sort_by: params.sort_by || "balance",
+        sort_dir: params.sort_dir || "desc",
         status: params.status || undefined,
       },
     })

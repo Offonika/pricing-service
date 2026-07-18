@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Literal
 
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
@@ -61,6 +61,8 @@ from app.services.receivables import CASE_BUYERS
 logger = logging.getLogger(__name__)
 
 DEFAULT_CREDIT_DEPTH_DAYS = 7
+WorkplaceSortBy = Literal["balance", "overdue_days"]
+WorkplaceSortDir = Literal["asc", "desc"]
 WORKPLACE_EVENT_MANAGER_UPDATE = "manager_update"
 WORKPLACE_PAYLOAD_KEYS = {
     "contacted_staff_ref",
@@ -928,6 +930,8 @@ def build_receivable_workplace(
     department_ref: str | None = None,
     status: str | None = None,
     limit: int = 500,
+    sort_by: WorkplaceSortBy = "balance",
+    sort_dir: WorkplaceSortDir = "desc",
     allowed_department_refs: set[str] | frozenset[str] | None = None,
 ) -> ReceivableWorkplaceResponse:
     cases = _load_cases(session, snapshot_date=snapshot_date)
@@ -1023,14 +1027,21 @@ def build_receivable_workplace(
         for case in cases
     ]
     items = [item for item in items if (item.effective_overdue_days or 0) > 0]
-    items.sort(
-        key=lambda item: (
+
+    def sort_key(item: ReceivableWorkplaceItem) -> tuple[int | Decimal, Decimal | int, str]:
+        if sort_by == "overdue_days":
+            return (
+                item.effective_overdue_days or 0,
+                item.current_balance,
+                item.counterparty_name or "",
+            )
+        return (
             item.current_balance,
             item.effective_overdue_days or 0,
             item.counterparty_name or "",
-        ),
-        reverse=True,
-    )
+        )
+
+    items.sort(key=sort_key, reverse=sort_dir == "desc")
     visible_items = items[:limit]
     cache_status = workplace_cache_status(session, snapshot_date=snapshot_date)
     cache_status["open_debt"]["source_status"] = open_debt_source_status

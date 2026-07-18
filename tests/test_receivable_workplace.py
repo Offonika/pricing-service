@@ -578,6 +578,57 @@ def test_receivable_workplace_summary_uses_full_filtered_set_not_visible_limit(
     assert {item.department_ref for item in result.department_options} == {"dep-1", "dep-2"}
 
 
+def test_receivable_workplace_can_sort_by_overdue_days_before_limit(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 6, 23)
+    db_session.add_all(
+        [
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-big",
+                counterparty_name="Крупный долг",
+                balance=Decimal("9000"),
+                due_date=datetime(2026, 6, 20, 0, 0),
+            ),
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-old",
+                counterparty_name="Старый долг",
+                balance=Decimal("1000"),
+                due_date=datetime(2026, 5, 24, 0, 0),
+            ),
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-mid",
+                counterparty_name="Средний долг",
+                balance=Decimal("5000"),
+                due_date=datetime(2026, 6, 10, 0, 0),
+            ),
+        ]
+    )
+
+    by_balance = build_receivable_workplace(db_session, snapshot_date=as_of, limit=1)
+    by_days = build_receivable_workplace(
+        db_session,
+        snapshot_date=as_of,
+        limit=1,
+        sort_by="overdue_days",
+        sort_dir="desc",
+    )
+    by_days_asc = build_receivable_workplace(
+        db_session,
+        snapshot_date=as_of,
+        limit=1,
+        sort_by="overdue_days",
+        sort_dir="asc",
+    )
+
+    assert by_balance.payload[0].counterparty_ref == "cp-big"
+    assert by_days.payload[0].counterparty_ref == "cp-old"
+    assert by_days_asc.payload[0].counterparty_ref == "cp-big"
+
+
 def test_receivable_workplace_uses_open_debt_cache_for_effective_overdue(
     db_session: Session,
 ) -> None:
@@ -1509,6 +1560,55 @@ def test_receivable_workplace_api_requires_token_and_returns_payload(
         assert payload["summary"]["row_count"] == 1
         assert payload["payload"][0]["counterparty_ref"] == "cp-1"
         assert payload["payload"][0]["bitrix_detail_url"] == "/crm/type/187/details/555/"
+    finally:
+        app.dependency_overrides = {}
+        get_settings.cache_clear()
+
+
+def test_receivable_workplace_api_accepts_sort_params(
+    monkeypatch,
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 6, 23)
+    db_session.add_all(
+        [
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-big",
+                counterparty_name="Крупный долг",
+                balance=Decimal("9000"),
+                due_date=datetime(2026, 6, 20, 0, 0),
+            ),
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-old",
+                counterparty_name="Старый долг",
+                balance=Decimal("1000"),
+                due_date=datetime(2026, 5, 24, 0, 0),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    def override_db():
+        yield db_session
+
+    monkeypatch.setenv("MANAGEMENT_INTERNAL_API_TOKEN", "secret-token")
+    get_settings.cache_clear()
+    app.dependency_overrides = {get_db: override_db}
+    client = TestClient(app)
+    try:
+        response = client.get(
+            "/api/receivables/workplace",
+            params={
+                "date": as_of.isoformat(),
+                "sort_by": "overdue_days",
+                "sort_dir": "desc",
+            },
+            headers={"Authorization": "Bearer secret-token"},
+        )
+        assert response.status_code == 200
+        assert response.json()["payload"][0]["counterparty_ref"] == "cp-old"
     finally:
         app.dependency_overrides = {}
         get_settings.cache_clear()

@@ -85,6 +85,10 @@ MANUAL_STATUS_OPTIONS = [
     ReceivableWorkplaceStatusOption(value="waiting_payment", label="Ждем оплату"),
     ReceivableWorkplaceStatusOption(value="call_back", label="Перезвонить"),
     ReceivableWorkplaceStatusOption(value="intervention_required", label="Требуется вмешательство"),
+    ReceivableWorkplaceStatusOption(
+        value="not_ours_transfer",
+        label="Не наш, прошу перенести ответственным (указать РТУ если возможно)",
+    ),
     ReceivableWorkplaceStatusOption(value="remind", label="Напомнить"),
     ReceivableWorkplaceStatusOption(value="paid", label="Оплачено"),
     ReceivableWorkplaceStatusOption(value="transfer", label="Перемещение", scope="pyatigorsk"),

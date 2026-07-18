@@ -1099,8 +1099,8 @@ def test_profit_loss_block_reads_sales_kpi(
     assert metrics["gross_margin_pct"] == Decimal("0.4000")
     assert metrics["operating_expenses"] == Decimal("150.00")
     assert metrics["operating_profit"] == Decimal("450.00")
-    assert metrics["net_profit"] is None
-    assert metrics["net_profit_margin_pct"] is None
+    assert metrics["net_profit"] == Decimal("450.00")
+    assert metrics["net_profit_margin_pct"] == Decimal("0.3000")
     assert block.summary["expense_source_status"] == "partial"
     assert block.summary["expense_open_question_count"] == 1
     assert block.summary["missing_expense_line_count"] == 5
@@ -1274,9 +1274,11 @@ def test_profit_loss_period_response_aggregates_sales_kpi(
     assert line_by_key["operating_expenses"].amount == Decimal("-150.00")
     assert line_by_key["operating_profit"].amount == Decimal("350.00")
     assert line_by_key["operating_profit"].source_status == "partial"
-    assert line_by_key["other_income_expenses"].source_status == "source_missing"
-    assert line_by_key["profit_before_tax"].amount is None
-    assert line_by_key["net_profit"].source_status == "source_missing"
+    assert line_by_key["other_income_expenses"].source_status == "partial"
+    assert line_by_key["other_income_expenses"].amount == Decimal("0")
+    assert line_by_key["profit_before_tax"].amount == Decimal("350.00")
+    assert line_by_key["net_profit"].amount == Decimal("350.00")
+    assert line_by_key["net_profit"].source_status == "partial"
     assert result.expense_source_status == "partial"
     assert {row.key for row in result.expense_breakdown} == {"rent", "bank_fees"}
     assert result.expense_open_questions[0].amount == Decimal("400.00")
@@ -1357,11 +1359,19 @@ def test_profit_loss_includes_debt_adjustments_before_tax(
     assert line_by_key["taxes"].amount == Decimal("0.00")
     assert line_by_key["taxes"].source_status == "partial"
     assert line_by_key["net_profit"].amount == Decimal("340.00")
-    assert line_by_key["net_profit"].source_status == "partial"
+    assert line_by_key["net_profit"].source_status == "stale"
     assert "Предварительно" in str(line_by_key["net_profit"].note)
     assert "временно учтено 0 ₽" in str(line_by_key["net_profit"].note)
     ratio_by_key = {ratio.key: ratio for ratio in result.ratios}
     assert ratio_by_key["net_profit_margin_pct"].value == Decimal("0.3400")
+    assert len(result.monthly) == 1
+    assert result.monthly[0].month == "2026-06"
+    assert result.monthly[0].operating_expenses == Decimal("150.00")
+    assert result.monthly[0].operating_profit == Decimal("250.00")
+    assert result.monthly[0].net_profit == Decimal("340.00")
+    assert result.monthly[0].net_profit_margin_pct == Decimal("0.3400")
+    assert result.monthly[0].comparison_net_profit is None
+    assert result.monthly[0].is_preliminary is True
 
 
 def test_profit_loss_tax_accrual_sums_months_and_uses_partial_observed_amount(
@@ -1444,7 +1454,7 @@ def test_profit_loss_subtracts_ready_bp_tax_accrual_from_profit_before_tax(
     assert line_by_key["taxes"].amount == Decimal("-40.00")
     assert line_by_key["taxes"].source_status == "ready"
     assert line_by_key["net_profit"].amount == Decimal("300.00")
-    assert line_by_key["net_profit"].source_status == "ready"
+    assert line_by_key["net_profit"].source_status == "stale"
     ratio_by_key = {ratio.key: ratio for ratio in result.ratios}
     assert ratio_by_key["net_profit_margin_pct"].value == Decimal("0.3000")
     assert ratio_by_key["net_profit_margin_pct"].note == "Чистая прибыль / выручка."
@@ -1509,10 +1519,10 @@ def test_profit_loss_ignores_unclassified_receivable_adjustments(
 
     line_by_key = {line.key: line for line in result.lines}
     assert result.totals["debt_adjustment_event_count"] == 0
-    assert result.totals["other_income_expenses"] is None
-    assert result.totals["profit_before_tax"] is None
-    assert line_by_key["debt_adjustment_income"].amount is None
-    assert line_by_key["other_income_expenses"].source_status == "source_missing"
+    assert result.totals["other_income_expenses"] == Decimal("0")
+    assert result.totals["profit_before_tax"] == Decimal("200.00")
+    assert line_by_key["debt_adjustment_income"].amount == Decimal("0")
+    assert line_by_key["other_income_expenses"].source_status == "partial"
     assert "не опубликованы" in str(line_by_key["other_income_expenses"].note)
 
 
@@ -3074,7 +3084,7 @@ def test_profit_loss_period_api_returns_sales_for_finance_role(
     assert payload["expense_source_status"] == "partial"
     assert payload["expense_breakdown"][0]["key"] == "rent"
     assert payload["expense_open_questions"][0]["amount"] == "400.00"
-    assert payload["lines"][-1]["source_status"] == "source_missing"
+    assert payload["lines"][-1]["source_status"] == "partial"
 
 
 def test_sales_period_api_is_available_to_full_access_and_forbidden_to_finance(

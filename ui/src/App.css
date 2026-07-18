@@ -2003,6 +2003,125 @@
   opacity: 0.55;
 }
 
+.executive-profit-loss-trend {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #e4e9f0;
+  border-radius: 8px;
+  background: #fcfcfd;
+}
+
+.executive-profit-loss-trend > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.executive-profit-loss-trend h3 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 16px;
+}
+
+.executive-profit-loss-trend header span {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.executive-profit-loss-trend__switch {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid #d0d5dd;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.executive-profit-loss-trend__switch button {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #667085;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.executive-profit-loss-trend__switch button[aria-pressed="true"] {
+  background: #eff4ff;
+  color: #175cd3;
+}
+
+.executive-profit-loss-trend__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  color: #667085;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.executive-profit-loss-trend__legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.executive-profit-loss-trend__legend i {
+  width: 24px;
+  height: 4px;
+  border-radius: 999px;
+  background: #2e90fa;
+}
+
+.executive-profit-loss-trend__legend .operating { background: #12b76a; }
+.executive-profit-loss-trend__legend .net { background: #7a5af8; }
+.executive-profit-loss-trend__legend .net-margin { background: #c11574; }
+.executive-profit-loss-trend__legend .expense { height: 9px; background: #98a2b3; opacity: 0.45; }
+.executive-profit-loss-trend__legend .comparison {
+  height: 0;
+  border-top: 2px dashed #98a2b3;
+  border-radius: 0;
+  background: transparent;
+}
+
+.executive-profit-loss-trend__canvas {
+  position: relative;
+  overflow-x: auto;
+}
+
+.executive-profit-loss-trend__canvas svg {
+  min-width: 720px;
+  overflow: visible;
+}
+
+.executive-profit-loss-trend__grid { stroke: #e4e9f0; stroke-width: 1; }
+.executive-profit-loss-trend__axis { fill: #667085; font-size: 11px; font-weight: 650; }
+.executive-profit-loss-trend__axis--right { fill: #c11574; }
+.executive-profit-loss-trend__expense-bar { fill: #98a2b3; opacity: 0.22; }
+.executive-profit-loss-trend__line {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 4;
+}
+.executive-profit-loss-trend__line--gross { stroke: #2e90fa; }
+.executive-profit-loss-trend__line--operating { stroke: #12b76a; }
+.executive-profit-loss-trend__line--net { stroke: #7a5af8; }
+.executive-profit-loss-trend__line--net-margin { stroke: #c11574; stroke-width: 3; stroke-dasharray: 3 3; }
+.executive-profit-loss-trend__line--comparison { stroke: #98a2b3; stroke-width: 2; stroke-dasharray: 6 6; }
+.executive-profit-loss-trend__point { stroke: #fff; stroke-width: 2; }
+.executive-profit-loss-trend__point--gross { fill: #2e90fa; }
+.executive-profit-loss-trend__point--operating { fill: #12b76a; }
+.executive-profit-loss-trend__point--net { fill: #7a5af8; }
+.executive-profit-loss-trend__point--net-margin { fill: #c11574; }
+.executive-profit-loss-trend__point--preliminary { fill: #fff; stroke: #f79009; stroke-width: 3; }
+.executive-profit-loss-trend__tooltip { z-index: 3; }
+.executive-profit-loss-trend__tooltip small { max-width: 280px; color: #b54708; }
+
 .executive-sales-charts {
   position: relative;
   display: grid;

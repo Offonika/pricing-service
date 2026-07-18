@@ -45,6 +45,7 @@ from app.schemas.executive_dashboard import (
     ExecutiveProfitLossInventoryOwner,
     ExecutiveProfitLossInventoryStore,
     ExecutiveProfitLossLineItem,
+    ExecutiveProfitLossMonthlyRow,
     ExecutiveProfitLossOpenQuestion,
     ExecutiveProfitLossPeriodResponse,
     ExecutiveProfitLossRatio,
@@ -1424,6 +1425,13 @@ def _profit_loss_lines(
     tax_source_status: str,
     tax_note: str,
 ) -> list[ExecutiveProfitLossLineItem]:
+    def provisional_status(*statuses: str) -> str:
+        if all(status == "ready" for status in statuses):
+            return "ready"
+        if "stale" in statuses:
+            return "stale"
+        return "partial"
+
     gross_profit = _decimal(totals.get("gross_profit"))
     operating_expenses = totals.get("operating_expenses")
     operating_profit = totals.get("operating_profit")
@@ -1432,7 +1440,13 @@ def _profit_loss_lines(
     if expense_source_status == "partial" and expense_open_question_count:
         expense_note = f"Есть открытые вопросы по {expense_open_question_count} статьям ДДС."
     elif expense_source_status != "ready":
-        expense_note = "Расходы по ДДС пока не подключены для выбранного периода."
+        expense_note = "Предварительно: расходы по ДДС не опубликованы, временно учтено 0 ₽."
+    operating_profit_status = provisional_status(source_status, expense_source_status)
+    profit_before_tax_status = provisional_status(
+        operating_profit_status,
+        debt_adjustment_source_status,
+    )
+    net_profit_status = provisional_status(profit_before_tax_status, tax_source_status)
     return [
         ExecutiveProfitLossLineItem(
             key="revenue",
@@ -1461,12 +1475,7 @@ def _profit_loss_lines(
         ExecutiveProfitLossLineItem(
             key="operating_expenses",
             label="Операционные расходы по ДДС",
-            amount=(
-                -_decimal(operating_expenses)
-                if operating_expenses is not None
-                and expense_source_status not in {"source_missing", "source_error"}
-                else None
-            ),
+            amount=-_decimal(operating_expenses) if operating_expenses is not None else None,
             line_type="expense",
             tone="warning",
             source_status=expense_source_status,
@@ -1475,32 +1484,31 @@ def _profit_loss_lines(
         ExecutiveProfitLossLineItem(
             key="operating_profit",
             label="Операционная прибыль",
-            amount=(
-                _decimal(operating_profit)
-                if operating_profit is not None
-                and expense_source_status not in {"source_missing", "source_error"}
-                else None
-            ),
+            amount=_decimal(operating_profit) if operating_profit is not None else None,
             line_type="subtotal",
             tone=(
                 "info"
                 if operating_profit is not None and _decimal(operating_profit) >= 0
                 else "danger"
             ),
-            source_status=expense_source_status,
-            note="Валовая прибыль минус расходы по оплатам ДДС.",
+            source_status=operating_profit_status,
+            note=(
+                "Валовая прибыль минус расходы по оплатам ДДС."
+                if operating_profit_status == "ready"
+                else f"Предварительно. {expense_note}"
+            ),
         ),
         ExecutiveProfitLossLineItem(
             key="debt_adjustment_income",
             label="Доходы от корректировок задолженности",
-            amount=(
-                _decimal(totals.get("debt_adjustment_income"))
-                if debt_adjustment_source_status not in {"source_missing", "source_error"}
-                else None
-            ),
+            amount=_decimal(totals.get("debt_adjustment_income")),
             line_type="income",
             tone="info",
-            source_status=debt_adjustment_source_status,
+            source_status=(
+                debt_adjustment_source_status
+                if debt_adjustment_source_status not in {"source_missing", "source_error"}
+                else "partial"
+            ),
             note=(
                 debt_adjustment_note
                 if debt_adjustment_source_status in {"source_missing", "source_error"}
@@ -1510,14 +1518,14 @@ def _profit_loss_lines(
         ExecutiveProfitLossLineItem(
             key="debt_adjustment_expense",
             label="Списания и отрицательные корректировки задолженности",
-            amount=(
-                -_decimal(totals.get("debt_adjustment_expense"))
-                if debt_adjustment_source_status not in {"source_missing", "source_error"}
-                else None
-            ),
+            amount=-_decimal(totals.get("debt_adjustment_expense")),
             line_type="expense",
             tone="warning",
-            source_status=debt_adjustment_source_status,
+            source_status=(
+                debt_adjustment_source_status
+                if debt_adjustment_source_status not in {"source_missing", "source_error"}
+                else "partial"
+            ),
             note=(
                 debt_adjustment_note
                 if debt_adjustment_source_status in {"source_missing", "source_error"}
@@ -1527,15 +1535,19 @@ def _profit_loss_lines(
         ExecutiveProfitLossLineItem(
             key="other_income_expenses",
             label="Прочие доходы / расходы",
-            amount=(
-                _decimal(totals.get("other_income_expenses"))
-                if debt_adjustment_source_status not in {"source_missing", "source_error"}
-                else None
-            ),
+            amount=_decimal(totals.get("other_income_expenses")),
             line_type="subtotal",
             tone=("info" if _decimal(totals.get("other_income_expenses")) >= 0 else "danger"),
-            source_status=debt_adjustment_source_status,
-            note=debt_adjustment_note,
+            source_status=(
+                debt_adjustment_source_status
+                if debt_adjustment_source_status not in {"source_missing", "source_error"}
+                else "partial"
+            ),
+            note=(
+                debt_adjustment_note
+                if debt_adjustment_source_status not in {"source_missing", "source_error"}
+                else f"Предварительно: {debt_adjustment_note} Временно учтено 0 ₽."
+            ),
         ),
         ExecutiveProfitLossLineItem(
             key="profit_before_tax",
@@ -1551,12 +1563,12 @@ def _profit_loss_lines(
                 if totals.get("profit_before_tax") is None
                 else ("info" if _decimal(totals.get("profit_before_tax")) >= 0 else "danger")
             ),
-            source_status=(
-                debt_adjustment_source_status
-                if totals.get("profit_before_tax") is not None
-                else "source_missing"
+            source_status=profit_before_tax_status,
+            note=(
+                "Операционная прибыль плюс прочие доходы и расходы; до учета налогов."
+                if profit_before_tax_status == "ready"
+                else "Предварительно: отсутствующие расходы или корректировки учтены как 0 ₽."
             ),
-            note="Операционная прибыль плюс прочие доходы и расходы; до учета налогов.",
         ),
         ExecutiveProfitLossLineItem(
             key="taxes",
@@ -1583,20 +1595,12 @@ def _profit_loss_lines(
                 if totals.get("net_profit") is None
                 else ("info" if _decimal(totals.get("net_profit")) >= 0 else "danger")
             ),
-            source_status=(
-                tax_source_status
-                if totals.get("net_profit") is not None
-                else (
-                    "source_missing"
-                    if totals.get("profit_before_tax") is None
-                    else tax_source_status
-                )
-            ),
+            source_status=net_profit_status,
             note=(
                 (
                     "Прибыль до налогообложения минус начисленные налоги БП."
-                    if tax_source_status == "ready"
-                    else tax_note
+                    if net_profit_status == "ready"
+                    else "Предварительно: неполные источники временно учтены как 0 ₽. " + tax_note
                 )
                 if totals.get("net_profit") is not None
                 else (
@@ -2234,13 +2238,117 @@ def _profit_loss_inventory_loss(period_end: date) -> ExecutiveProfitLossInventor
     )
 
 
-def build_executive_profit_loss_period_response(
+def _profit_loss_ratio_value(
+    response: ExecutiveProfitLossPeriodResponse,
+    key: str,
+) -> Decimal | None:
+    ratio = next((item for item in response.ratios if item.key == key), None)
+    return ratio.value if ratio is not None else None
+
+
+def _profit_loss_line_status(
+    response: ExecutiveProfitLossPeriodResponse,
+    key: str,
+) -> tuple[str, str | None]:
+    line = next((item for item in response.lines if item.key == key), None)
+    return (
+        line.source_status if line is not None else "source_missing",
+        line.note if line is not None else None,
+    )
+
+
+def _profit_loss_shift_year(value: date, years: int) -> date:
+    try:
+        return value.replace(year=value.year + years)
+    except ValueError:
+        return value.replace(year=value.year + years, day=28)
+
+
+def _profit_loss_monthly(
     session: Session,
     *,
     date_from: date,
     date_to: date,
+) -> list[ExecutiveProfitLossMonthlyRow]:
+    monthly: list[ExecutiveProfitLossMonthlyRow] = []
+    cursor = date(date_from.year, date_from.month, 1)
+    last_month = date(date_to.year, date_to.month, 1)
+    while cursor <= last_month:
+        _, calendar_month_end = _month_bounds(cursor)
+        month_from = max(date_from, cursor)
+        month_to = min(date_to, calendar_month_end)
+        current = _build_executive_profit_loss_period_response(
+            session,
+            date_from=month_from,
+            date_to=month_to,
+            include_monthly=False,
+            include_inventory=False,
+        )
+        comparison = _build_executive_profit_loss_period_response(
+            session,
+            date_from=_profit_loss_shift_year(month_from, -1),
+            date_to=_profit_loss_shift_year(month_to, -1),
+            include_monthly=False,
+            include_inventory=False,
+        )
+        net_profit_status, net_profit_note = _profit_loss_line_status(current, "net_profit")
+        comparison_net_profit_status, _ = _profit_loss_line_status(comparison, "net_profit")
+        is_partial_calendar_month = month_from != cursor or month_to != calendar_month_end
+        monthly.append(
+            ExecutiveProfitLossMonthlyRow(
+                month=cursor.strftime("%Y-%m"),
+                revenue=_decimal(current.totals.get("revenue")),
+                gross_profit=(
+                    _decimal(current.totals.get("gross_profit"))
+                    if current.totals.get("gross_profit") is not None
+                    else None
+                ),
+                operating_expenses=(
+                    _decimal(current.totals.get("operating_expenses"))
+                    if current.totals.get("operating_expenses") is not None
+                    else None
+                ),
+                operating_profit=(
+                    _decimal(current.totals.get("operating_profit"))
+                    if current.totals.get("operating_profit") is not None
+                    else None
+                ),
+                net_profit=(
+                    _decimal(current.totals.get("net_profit"))
+                    if current.totals.get("net_profit") is not None
+                    else None
+                ),
+                gross_margin_pct=_profit_loss_ratio_value(current, "gross_margin_pct"),
+                operating_margin_pct=_profit_loss_ratio_value(current, "operating_margin_pct"),
+                net_profit_margin_pct=_profit_loss_ratio_value(current, "net_profit_margin_pct"),
+                comparison_net_profit=(
+                    _decimal(comparison.totals.get("net_profit"))
+                    if comparison.totals.get("net_profit") is not None
+                    and comparison_net_profit_status not in {"source_missing", "source_error"}
+                    else None
+                ),
+                source_status=net_profit_status,
+                is_preliminary=(is_partial_calendar_month or net_profit_status != "ready"),
+                note=(
+                    "Неполный календарный месяц. " + (net_profit_note or "")
+                    if is_partial_calendar_month
+                    else net_profit_note
+                ),
+            )
+        )
+        cursor = _profit_loss_next_month(cursor)
+    return monthly
+
+
+def _build_executive_profit_loss_period_response(
+    session: Session,
+    *,
+    date_from: date,
+    date_to: date,
+    include_monthly: bool,
+    include_inventory: bool,
 ) -> ExecutiveProfitLossPeriodResponse:
-    inventory_loss = _profit_loss_inventory_loss(date_to)
+    inventory_loss = _profit_loss_inventory_loss(date_to) if include_inventory else None
     tax_accrual = _profit_loss_tax_accrual(date_from=date_from, date_to=date_to)
     tax_source_status = str(tax_accrual["source_status"])
     debt_adjustments = _profit_loss_debt_adjustments(
@@ -2291,6 +2399,11 @@ def build_executive_profit_loss_period_response(
             ),
             expense_source_status="source_missing",
             inventory_loss=inventory_loss,
+            monthly=(
+                _profit_loss_monthly(session, date_from=date_from, date_to=date_to)
+                if include_monthly
+                else []
+            ),
             filters={"source_table": "onec_sales_daily_kpi"},
         )
 
@@ -2315,19 +2428,11 @@ def build_executive_profit_loss_period_response(
     gross_margin_pct = totals["gross_margin_pct"]
     expense_totals = expense_data["totals"]
     operating_expenses = _decimal(expense_totals.get("operating_expenses"))
-    operating_profit: Decimal | None = None
-    if expense_source_status not in {"source_missing", "source_error"}:
-        operating_profit = _decimal(totals.get("gross_profit")) - operating_expenses
-    other_income_expenses: Decimal | None = None
-    profit_before_tax: Decimal | None = None
-    if debt_adjustment_source_status not in {"source_missing", "source_error"}:
-        other_income_expenses = _decimal(debt_adjustments["net"])
-        if operating_profit is not None:
-            profit_before_tax = operating_profit + other_income_expenses
+    operating_profit = _decimal(totals.get("gross_profit")) - operating_expenses
+    other_income_expenses = _decimal(debt_adjustments["net"])
+    profit_before_tax = operating_profit + other_income_expenses
     tax_expense_accrued = _decimal(tax_accrual["amount"])
-    net_profit: Decimal | None = None
-    if profit_before_tax is not None:
-        net_profit = profit_before_tax - tax_expense_accrued
+    net_profit = profit_before_tax - tax_expense_accrued
     totals.update(
         {
             "operating_expenses": operating_expenses,
@@ -2442,6 +2547,11 @@ def build_executive_profit_loss_period_response(
             tax_note=str(tax_accrual["note"]),
         ),
         daily=_profit_loss_daily(rows),
+        monthly=(
+            _profit_loss_monthly(session, date_from=date_from, date_to=date_to)
+            if include_monthly
+            else []
+        ),
         by_store=_profit_loss_dimension(
             rows,
             key_attr="store_ref",
@@ -2467,6 +2577,21 @@ def build_executive_profit_loss_period_response(
             "available_date_from": min(row.sales_date for row in rows).isoformat(),
             "available_date_to": latest_sales_date.isoformat(),
         },
+    )
+
+
+def build_executive_profit_loss_period_response(
+    session: Session,
+    *,
+    date_from: date,
+    date_to: date,
+) -> ExecutiveProfitLossPeriodResponse:
+    return _build_executive_profit_loss_period_response(
+        session,
+        date_from=date_from,
+        date_to=date_to,
+        include_monthly=True,
+        include_inventory=True,
     )
 
 

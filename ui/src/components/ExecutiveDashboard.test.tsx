@@ -813,6 +813,29 @@ describe("executive profit and loss period", () => {
       .toHaveTextContent("Не считаем до подключения налогов.");
   });
 
+  it("explains an unclosed BP tax period instead of saying it is not connected", async () => {
+    const response = profitLossPeriodResponse();
+    response.lines = response.lines.map((line) =>
+      ["taxes", "net_profit"].includes(line.key)
+        ? {
+            ...line,
+            source_status: "partial",
+            note: "Период БП ещё не закрыт: начисления налогов неполны.",
+          }
+        : line,
+    );
+
+    await renderProfitLossTab(response);
+
+    const statement = screen.getByLabelText("Структура ОПиУ");
+    for (const label of ["Налоги", "Чистая прибыль"]) {
+      const row = within(statement).getByText(label).parentElement;
+      expect(row).toHaveTextContent("не рассчитано");
+      expect(row).toHaveTextContent("Период БП ещё не закрыт");
+      expect(row).not.toHaveTextContent("не подключено");
+    }
+  });
+
   it("shows the inventory source error in the profit and loss statement", async () => {
     const response = profitLossPeriodResponse();
     response.inventory_loss = {

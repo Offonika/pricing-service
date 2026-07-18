@@ -1825,6 +1825,17 @@ function formatProfitLossAmount(value: string | number | null | undefined) {
   return value === null || value === undefined ? "не подключено" : formatMoney(value);
 }
 
+function formatProfitLossLineAmount(line: {
+  amount?: string | number | null;
+  source_status: string;
+}) {
+  if (line.amount !== null && line.amount !== undefined) return formatMoney(line.amount);
+  if (line.source_status === "partial") return "не рассчитано";
+  if (line.source_status === "source_missing") return "не опубликовано";
+  if (line.source_status === "source_error") return "ошибка источника";
+  return "нет данных";
+}
+
 function isReceiptSurplus(value: string | number | null | undefined) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed < 0;
@@ -2776,7 +2787,7 @@ function ProfitLossPeriodPanel({
                       .join(" ")}
                   >
                     <span>{line.label}</span>
-                    <strong>{formatProfitLossAmount(line.amount)}</strong>
+                    <strong>{formatProfitLossLineAmount(line)}</strong>
                     <small>{line.note || statusLabel(line.source_status)}</small>
                   </div>
                 </Fragment>

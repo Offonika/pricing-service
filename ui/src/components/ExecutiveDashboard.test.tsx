@@ -842,27 +842,45 @@ describe("executive profit and loss period", () => {
     expect(within(cards).getByText("Рентабельность чистой прибыли").parentElement).toHaveTextContent(/20\s*%/);
   });
 
-  it("explains an unclosed BP tax period instead of saying it is not connected", async () => {
+  it("shows a preliminary net profit when the BP tax period is incomplete", async () => {
     const response = profitLossPeriodResponse();
-    response.lines = response.lines.map((line) =>
-      ["taxes", "net_profit"].includes(line.key)
-        ? {
-            ...line,
-            source_status: "partial",
-            note: "Период БП ещё не закрыт: начисления налогов неполны.",
-          }
-        : line,
-    );
+    response.totals.tax_expense_accrued = "0.00";
+    response.totals.net_profit = "215000.00";
+    response.ratios.push({
+      key: "net_profit_margin_pct",
+      label: "Рентабельность чистой прибыли",
+      value: "0.215",
+      unit: "percent",
+      tone: "info",
+      note: "Чистая прибыль / выручка.",
+    });
+    response.lines = response.lines.map((line) => {
+      if (line.key === "taxes") {
+        return {
+          ...line,
+          amount: "0.00",
+          source_status: "partial",
+          note: "Предварительный расчёт налогов: временно учтено 0 ₽.",
+        };
+      }
+      if (line.key === "net_profit") {
+        return {
+          ...line,
+          amount: "215000.00",
+          source_status: "partial",
+          note: "Предварительно: начисления налогов неполны.",
+        };
+      }
+      return line;
+    });
 
     await renderProfitLossTab(response);
 
     const statement = screen.getByLabelText("Структура ОПиУ");
-    for (const label of ["Налоги", "Чистая прибыль"]) {
-      const row = within(statement).getByText(label).parentElement;
-      expect(row).toHaveTextContent("не рассчитано");
-      expect(row).toHaveTextContent("Период БП ещё не закрыт");
-      expect(row).not.toHaveTextContent("не подключено");
-    }
+    expect(within(statement).getByText("Налоги").parentElement).toHaveTextContent(/0\s*₽/);
+    expect(within(statement).getByText("Чистая прибыль").parentElement).toHaveTextContent(/215\s*000\s*₽/);
+    expect(within(statement).getByText("Чистая прибыль").parentElement).toHaveTextContent("Предварительно");
+    expect(within(statement).queryByText("не рассчитано")).not.toBeInTheDocument();
   });
 
   it("shows the inventory source error in the profit and loss statement", async () => {

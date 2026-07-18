@@ -1563,7 +1563,7 @@ def _profit_loss_lines(
             label="Налоги",
             amount=(
                 -_decimal(totals.get("tax_expense_accrued"))
-                if tax_source_status == "ready"
+                if totals.get("tax_expense_accrued") is not None
                 else None
             ),
             line_type="expense",
@@ -1584,7 +1584,7 @@ def _profit_loss_lines(
                 else ("info" if _decimal(totals.get("net_profit")) >= 0 else "danger")
             ),
             source_status=(
-                "ready"
+                tax_source_status
                 if totals.get("net_profit") is not None
                 else (
                     "source_missing"
@@ -1593,7 +1593,11 @@ def _profit_loss_lines(
                 )
             ),
             note=(
-                "Прибыль до налогообложения минус начисленные налоги БП."
+                (
+                    "Прибыль до налогообложения минус начисленные налоги БП."
+                    if tax_source_status == "ready"
+                    else tax_note
+                )
                 if totals.get("net_profit") is not None
                 else (
                     "Чистая прибыль не считается без прибыли до налогообложения."
@@ -1605,53 +1609,63 @@ def _profit_loss_lines(
     ]
 
 
-def _profit_loss_tax_accrual(*, date_from: date, date_to: date) -> dict[str, Any]:
-    month_start, month_end = _month_bounds(date_from)
-    if date_from != month_start or date_to != month_end:
-        return {
-            "amount": None,
-            "source_status": "partial",
-            "posting_count": 0,
-            "note": "Начисленные налоги доступны только за полный календарный месяц.",
-        }
+def _profit_loss_tax_decimal(value: Any) -> Decimal | None:
+    if value in (None, "") or isinstance(value, bool):
+        return None
+    try:
+        amount = Decimal(str(value))
+    except (InvalidOperation, TypeError, ValueError):
+        return None
+    return amount if amount.is_finite() else None
 
+
+def _profit_loss_next_month(value: date) -> date:
+    if value.month == 12:
+        return date(value.year + 1, 1, 1)
+    return date(value.year, value.month + 1, 1)
+
+
+def _profit_loss_tax_accrual_month(*, root: Path, month_start: date) -> dict[str, Any]:
     month = month_start.strftime("%Y-%m")
-    root = Path(get_settings().executive_dashboard_bp_tax_accrual_root)
     path = root / month / f"bp-tax-accruals-{month}.json"
+    fallback = {
+        "amount": Decimal("0.00"),
+        "source_status": "partial",
+        "posting_count": 0,
+    }
     try:
         payload = read_json_contract(path)
     except FileNotFoundError:
         return {
-            "amount": None,
-            "source_status": "source_missing",
-            "posting_count": 0,
-            "note": "Начисления налогов БП за выбранный месяц не опубликованы.",
+            **fallback,
+            "note": f"{month}: начисления не опубликованы, временно учтено 0 ₽.",
         }
-    except (ContractIntegrityError, json.JSONDecodeError, OSError, ValueError) as exc:
+    except (ContractIntegrityError, json.JSONDecodeError, OSError, ValueError):
         return {
-            "amount": None,
-            "source_status": "source_error",
-            "posting_count": 0,
-            "note": f"Контракт начисленных налогов БП отклонён: {exc}",
+            **fallback,
+            "note": f"{month}: контракт отклонён, временно учтено 0 ₽.",
         }
 
     if payload.get("schema_version") != 1 or str(payload.get("month") or "") != month:
         return {
-            "amount": None,
-            "source_status": "source_error",
-            "posting_count": 0,
-            "note": "Версия или месяц контракта начисленных налогов БП не совпадает.",
+            **fallback,
+            "note": f"{month}: версия или месяц контракта не совпадает, временно учтено 0 ₽.",
         }
     line = (payload.get("lines") or {}).get("tax_expense_accrued")
     if not isinstance(line, dict):
         return {
-            "amount": None,
-            "source_status": "source_error",
-            "posting_count": 0,
-            "note": "В контракте БП отсутствует строка начисленных налогов.",
+            **fallback,
+            "note": f"{month}: строка начисленных налогов отсутствует, временно учтено 0 ₽.",
         }
     source_status = str(line.get("source_status") or payload.get("source_status") or "partial")
     posting_count = int((payload.get("control") or {}).get("tax_expense_posting_count") or 0)
+    amount = _profit_loss_tax_decimal(line.get("amount"))
+    used_observed_amount = False
+    if amount is None:
+        amount = _profit_loss_tax_decimal(line.get("observed_amount"))
+        used_observed_amount = amount is not None
+    if amount is None:
+        amount = Decimal("0.00")
     if source_status != "ready":
         blockers = [str(item) for item in (payload.get("control") or {}).get("blockers") or []]
         accounts = [item.rsplit(":", 1)[-1] for item in blockers if ":" in item]
@@ -1659,32 +1673,63 @@ def _profit_loss_tax_accrual(*, date_from: date, date_to: date) -> dict[str, Any
             f" Не опубликованы начисления по счетам: {', '.join(accounts)}." if accounts else ""
         )
         return {
-            "amount": None,
+            "amount": amount,
             "source_status": "partial",
             "posting_count": posting_count,
-            "note": f"Период БП ещё не закрыт: начисления налогов неполны.{suffix}",
+            "note": (
+                f"{month}: предварительно учтено {amount:.2f} ₽ по "
+                f"{'наблюдаемой сумме' if used_observed_amount else 'доступным начислениям'}."
+                f"{suffix}"
+            ),
         }
-    try:
-        amount = Decimal(str(line["amount"]))
-    except (KeyError, InvalidOperation, TypeError, ValueError):
+    if _profit_loss_tax_decimal(line.get("amount")) is None:
         return {
-            "amount": None,
-            "source_status": "source_error",
+            "amount": amount,
+            "source_status": "partial",
             "posting_count": posting_count,
-            "note": "Сумма начисленных налогов БП имеет неверный формат.",
-        }
-    if not amount.is_finite():
-        return {
-            "amount": None,
-            "source_status": "source_error",
-            "posting_count": posting_count,
-            "note": "Сумма начисленных налогов БП должна быть конечным числом.",
+            "note": f"{month}: итоговая сумма отсутствует, предварительно учтено {amount:.2f} ₽.",
         }
     return {
         "amount": amount,
         "source_status": "ready",
         "posting_count": posting_count,
         "note": str(line.get("note") or "Начисленные налоги по проводкам БП."),
+    }
+
+
+def _profit_loss_tax_accrual(*, date_from: date, date_to: date) -> dict[str, Any]:
+    root = Path(get_settings().executive_dashboard_bp_tax_accrual_root)
+    first_month = date(date_from.year, date_from.month, 1)
+    last_month = date(date_to.year, date_to.month, 1)
+    month_rows: list[dict[str, Any]] = []
+    cursor = first_month
+    while cursor <= last_month:
+        month_rows.append(_profit_loss_tax_accrual_month(root=root, month_start=cursor))
+        cursor = _profit_loss_next_month(cursor)
+
+    amount = sum((_decimal(row.get("amount")) for row in month_rows), Decimal("0.00"))
+    posting_count = sum(int(row.get("posting_count") or 0) for row in month_rows)
+    _, final_month_end = _month_bounds(date_to)
+    covers_full_months = date_from == first_month and date_to == final_month_end
+    source_status = (
+        "ready"
+        if covers_full_months and all(row.get("source_status") == "ready" for row in month_rows)
+        else "partial"
+    )
+    if source_status == "ready":
+        note = "Начисленные налоги по опубликованным месячным контрактам БП."
+    else:
+        reasons = [
+            str(row.get("note")) for row in month_rows if row.get("source_status") != "ready"
+        ]
+        if not covers_full_months:
+            reasons.append("Период включает неполный календарный месяц.")
+        note = "Предварительно: расчёт налогов по неполным данным. " + " ".join(reasons)
+    return {
+        "amount": amount,
+        "source_status": source_status,
+        "posting_count": posting_count,
+        "note": note,
     }
 
 
@@ -2222,9 +2267,7 @@ def build_executive_profit_loss_period_response(
                 else None
             ),
             "profit_before_tax": None,
-            "tax_expense_accrued": (
-                _decimal(tax_accrual["amount"]) if tax_source_status == "ready" else None
-            ),
+            "tax_expense_accrued": _decimal(tax_accrual["amount"]),
             "tax_accrual_posting_count": int(tax_accrual["posting_count"]),
             "net_profit": None,
             "missing_expense_line_count": 6,
@@ -2281,12 +2324,10 @@ def build_executive_profit_loss_period_response(
         other_income_expenses = _decimal(debt_adjustments["net"])
         if operating_profit is not None:
             profit_before_tax = operating_profit + other_income_expenses
-    tax_expense_accrued: Decimal | None = None
+    tax_expense_accrued = _decimal(tax_accrual["amount"])
     net_profit: Decimal | None = None
-    if tax_source_status == "ready":
-        tax_expense_accrued = _decimal(tax_accrual["amount"])
-        if profit_before_tax is not None:
-            net_profit = profit_before_tax - tax_expense_accrued
+    if profit_before_tax is not None:
+        net_profit = profit_before_tax - tax_expense_accrued
     totals.update(
         {
             "operating_expenses": operating_expenses,

@@ -309,6 +309,7 @@ def _write_bp_tax_accrual_snapshot(
     *,
     month: str = "2026-06",
     amount: str | None = "40.00",
+    observed_amount: str | None = None,
     source_status: str = "ready",
 ) -> None:
     path = root / month / f"bp-tax-accruals-{month}.json"
@@ -322,6 +323,7 @@ def _write_bp_tax_accrual_snapshot(
                 "lines": {
                     "tax_expense_accrued": {
                         "amount": amount,
+                        "observed_amount": observed_amount,
                         "source_status": source_status,
                         "note": "Начисленные налоги по проводкам БП.",
                     }
@@ -1350,11 +1352,53 @@ def test_profit_loss_includes_debt_adjustments_before_tax(
     assert line_by_key["other_income_expenses"].amount == Decimal("90.00")
     assert line_by_key["other_income_expenses"].source_status == "ready"
     assert line_by_key["profit_before_tax"].amount == Decimal("340.00")
-    assert line_by_key["taxes"].amount is None
-    assert line_by_key["net_profit"].amount is None
-    assert line_by_key["net_profit"].note == (
-        "Начисления налогов БП за выбранный месяц не опубликованы."
+    assert result.totals["tax_expense_accrued"] == Decimal("0.00")
+    assert result.totals["net_profit"] == Decimal("340.00")
+    assert line_by_key["taxes"].amount == Decimal("0.00")
+    assert line_by_key["taxes"].source_status == "partial"
+    assert line_by_key["net_profit"].amount == Decimal("340.00")
+    assert line_by_key["net_profit"].source_status == "partial"
+    assert "Предварительно" in str(line_by_key["net_profit"].note)
+    assert "временно учтено 0 ₽" in str(line_by_key["net_profit"].note)
+    ratio_by_key = {ratio.key: ratio for ratio in result.ratios}
+    assert ratio_by_key["net_profit_margin_pct"].value == Decimal("0.3400")
+
+
+def test_profit_loss_tax_accrual_sums_months_and_uses_partial_observed_amount(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_path = tmp_path / "missing.json"
+    tax_root = tmp_path / "bp-tax-accruals"
+    _write_bp_tax_accrual_snapshot(tax_root, month="2026-01", amount="10.00")
+    _write_bp_tax_accrual_snapshot(tax_root, month="2026-02", amount="20.00")
+    _override_settings(monkeypatch, _settings(snapshot_path))
+
+    ready_result = executive_dashboard._profit_loss_tax_accrual(
+        date_from=date(2026, 1, 1),
+        date_to=date(2026, 2, 28),
     )
+
+    assert ready_result["amount"] == Decimal("30.00")
+    assert ready_result["source_status"] == "ready"
+    assert ready_result["posting_count"] == 6
+
+    _write_bp_tax_accrual_snapshot(
+        tax_root,
+        month="2026-02",
+        amount=None,
+        observed_amount="7.50",
+        source_status="partial",
+    )
+
+    partial_result = executive_dashboard._profit_loss_tax_accrual(
+        date_from=date(2026, 1, 1),
+        date_to=date(2026, 2, 28),
+    )
+
+    assert partial_result["amount"] == Decimal("17.50")
+    assert partial_result["source_status"] == "partial"
+    assert "наблюдаемой сумме" in str(partial_result["note"])
 
 
 def test_profit_loss_subtracts_ready_bp_tax_accrual_from_profit_before_tax(

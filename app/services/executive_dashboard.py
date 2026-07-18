@@ -1584,6 +1584,13 @@ def _profit_loss_debt_adjustments(
 ) -> dict[str, Any]:
     period_start = datetime.combine(date_from, datetime.min.time())
     period_end = datetime.combine(date_to + timedelta(days=1), datetime.min.time())
+    publication = session.scalar(
+        select(ExecutiveSourceFreshness).where(
+            ExecutiveSourceFreshness.source_key == _PROFIT_LOSS_DEBT_ADJUSTMENT_SOURCE_KEY,
+            ExecutiveSourceFreshness.business_date == date_to,
+        )
+    )
+    publication_status = str(publication.source_status) if publication is not None else None
     rows = list(
         session.scalars(
             select(ReceivableLedgerEvent).where(
@@ -1595,13 +1602,6 @@ def _profit_loss_debt_adjustments(
         )
     )
     if not rows:
-        publication = session.scalar(
-            select(ExecutiveSourceFreshness).where(
-                ExecutiveSourceFreshness.source_key == _PROFIT_LOSS_DEBT_ADJUSTMENT_SOURCE_KEY,
-                ExecutiveSourceFreshness.business_date == date_to,
-            )
-        )
-        publication_status = str(publication.source_status) if publication is not None else None
         if publication_status in {"ready", "partial"}:
             return {
                 "source_status": publication_status,
@@ -1630,13 +1630,18 @@ def _profit_loss_debt_adjustments(
         (max(-_decimal(row.amount_delta), Decimal("0")) for row in rows),
         Decimal("0"),
     )
+    source_status = publication_status if publication_status in {"ready", "partial"} else "ready"
     return {
-        "source_status": "ready",
+        "source_status": source_status,
         "income": income,
         "expense": expense,
         "net": income - expense,
         "event_count": len(rows),
-        "note": "По опубликованным и классифицированным событиям задолженности.",
+        "note": (
+            "Источник опубликован частично; проверьте отклонённые строки."
+            if source_status == "partial"
+            else "По опубликованным и классифицированным событиям задолженности."
+        ),
     }
 
 

@@ -1323,6 +1323,37 @@ def test_profit_loss_includes_debt_adjustments_before_tax(
     assert line_by_key["net_profit"].note == "Не считаем до подключения налогов."
 
 
+def test_profit_loss_propagates_partial_debt_adjustment_publication(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_path = tmp_path / "missing.json"
+    _write_profit_loss_cashflow_cache(tmp_path / "cashflow_period_cache.json")
+    _override_settings(monkeypatch, _settings(snapshot_path))
+    db_session.add_all(
+        [
+            _sales_kpi(date(2026, 6, 27)),
+            _debt_adjustment_event(
+                business_key="debt-income-partial",
+                amount=Decimal("120.00"),
+            ),
+            _debt_adjustment_publication(source_status="partial"),
+        ]
+    )
+    db_session.commit()
+
+    result = build_executive_profit_loss_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 30),
+    )
+
+    line_by_key = {line.key: line for line in result.lines}
+    assert line_by_key["other_income_expenses"].source_status == "partial"
+    assert "опубликован частично" in str(line_by_key["other_income_expenses"].note)
+
+
 def test_profit_loss_ignores_unclassified_receivable_adjustments(
     db_session: Session,
     tmp_path: Path,

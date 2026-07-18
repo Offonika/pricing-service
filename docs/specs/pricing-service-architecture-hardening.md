@@ -31,7 +31,7 @@ depends_on:
   - docs/specs/README.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-17"
+updated_at: "2026-07-18"
 ---
 
 # Назначение
@@ -97,11 +97,11 @@ Spec фиксирует вывод устаревшего источника и�
   а не через прямую запись из `mm-compensation` в его БД.
 - [x] Executive snapshots публикуются атомарно по versioned JSON Schema и читаются
   из нейтрального runtime-каталога.
-- [ ] OpenAPI, manifests, specs, architecture checks и regression tests проходят.
+- [x] OpenAPI, manifests, specs, architecture checks и regression tests проходят.
 - [x] Release builder создаёт неизменяемый каталог со своим `.venv`, hash-locked
   dependencies и manifest hashes.
 - [x] Forced smoke failure атомарно возвращает прежние backend и UI через один symlink.
-- [ ] Production release переключён с проверенным rollback и без
+- [x] Production release переключён с проверенным rollback и без
   удаления активного/rollback targets.
 
 # Source of Truth
@@ -193,15 +193,15 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 - [x] После контрольного цикла применить safe retention.
 - [x] Добавить durable orchestration models/API, idempotency и expired-lease guard.
 - [x] Добавить release-specific venv, dependency hashes и единый UI/backend rollback.
-- [ ] Прогнать regression и переключить новый operational-core release.
+- [x] Прогнать regression и переключить новый operational-core release.
 
 # Review Notes / Risks
 
-- Dashboard/UI-контур консолидирован вместе с архитектурными изменениями; canonical
-  `main` зафиксирован merge commit `3915d47`, live release собран из полного clean
-  source tree без overlay-цепочки.
+- Dashboard/UI-контур консолидирован вместе с архитектурными изменениями; live release
+  собран из полного clean source tree `071e9d0` с release-fix commit `55b1a9d`, без
+  overlay-цепочки.
 - Live-сервис запускается через `/opt/MM/pricing-service-task43-current`, который
-  указывает на `pricing-main-canonical-20260714-143050`.
+  указывает на `pricing-full-hardening-20260718-080907`.
 - Финансовый `source_status=partial`, расхождение баланса и неполные источники
   остаются отдельной задачей качества данных и не меняют статус hardening-релиза.
 - Direct 1C SQL и application Postgres — разные engines и разные access policies.
@@ -245,3 +245,6 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 - 2026-07-16 — durable orchestration and atomic release hardening implemented in repository; production cutover remains gated.
 - 2026-07-17 — release builder rewrites temporary venv prefixes before atomic rename,
   so installed console entrypoints remain executable from the immutable release path.
+- 2026-07-18 — full immutable release switched to production; offline/live smoke,
+  release-specific Alembic CLI, UI asset hashes and strict contract schema hashes
+  verified, with the previous release retained as rollback target.

@@ -46,6 +46,7 @@ from app.schemas.executive_dashboard import (
     ExecutiveProfitLossInventoryOwner,
     ExecutiveProfitLossInventoryStore,
     ExecutiveProfitLossLineItem,
+    ExecutiveProfitLossMonthlyRow,
     ExecutiveProfitLossOpenQuestion,
     ExecutiveProfitLossPeriodResponse,
     ExecutiveProfitLossRatio,
@@ -2303,11 +2304,112 @@ def _profit_loss_inventory_adjustment(
     }
 
 
-def build_executive_profit_loss_period_response(
+def _profit_loss_ratio_value(
+    response: ExecutiveProfitLossPeriodResponse,
+    key: str,
+) -> Decimal | None:
+    ratio = next((item for item in response.ratios if item.key == key), None)
+    return ratio.value if ratio is not None else None
+
+
+def _profit_loss_line_status(
+    response: ExecutiveProfitLossPeriodResponse,
+    key: str,
+) -> tuple[str, str | None]:
+    line = next((item for item in response.lines if item.key == key), None)
+    return (
+        line.source_status if line is not None else "source_missing",
+        line.note if line is not None else None,
+    )
+
+
+def _profit_loss_shift_year(value: date, years: int) -> date:
+    try:
+        return value.replace(year=value.year + years)
+    except ValueError:
+        return value.replace(year=value.year + years, day=28)
+
+
+def _profit_loss_monthly(
     session: Session,
     *,
     date_from: date,
     date_to: date,
+) -> list[ExecutiveProfitLossMonthlyRow]:
+    monthly: list[ExecutiveProfitLossMonthlyRow] = []
+    cursor = date(date_from.year, date_from.month, 1)
+    last_month = date(date_to.year, date_to.month, 1)
+    while cursor <= last_month:
+        _, calendar_month_end = _month_bounds(cursor)
+        month_from = max(date_from, cursor)
+        month_to = min(date_to, calendar_month_end)
+        current = _build_executive_profit_loss_period_response(
+            session,
+            date_from=month_from,
+            date_to=month_to,
+            include_monthly=False,
+        )
+        comparison = _build_executive_profit_loss_period_response(
+            session,
+            date_from=_profit_loss_shift_year(month_from, -1),
+            date_to=_profit_loss_shift_year(month_to, -1),
+            include_monthly=False,
+        )
+        net_profit_status, net_profit_note = _profit_loss_line_status(current, "net_profit")
+        comparison_net_profit_status, _ = _profit_loss_line_status(comparison, "net_profit")
+        is_partial_calendar_month = month_from != cursor or month_to != calendar_month_end
+        monthly.append(
+            ExecutiveProfitLossMonthlyRow(
+                month=cursor.strftime("%Y-%m"),
+                revenue=_decimal(current.totals.get("revenue")),
+                gross_profit=(
+                    _decimal(current.totals.get("gross_profit"))
+                    if current.totals.get("gross_profit") is not None
+                    else None
+                ),
+                operating_expenses=(
+                    _decimal(current.totals.get("operating_expenses"))
+                    if current.totals.get("operating_expenses") is not None
+                    else None
+                ),
+                operating_profit=(
+                    _decimal(current.totals.get("operating_profit"))
+                    if current.totals.get("operating_profit") is not None
+                    else None
+                ),
+                net_profit=(
+                    _decimal(current.totals.get("net_profit"))
+                    if current.totals.get("net_profit") is not None
+                    else None
+                ),
+                gross_margin_pct=_profit_loss_ratio_value(current, "gross_margin_pct"),
+                operating_margin_pct=_profit_loss_ratio_value(current, "operating_margin_pct"),
+                net_profit_margin_pct=_profit_loss_ratio_value(current, "net_profit_margin_pct"),
+                comparison_net_profit=(
+                    _decimal(comparison.totals.get("net_profit"))
+                    if comparison.totals.get("net_profit") is not None
+                    and comparison_net_profit_status not in {"source_missing", "source_error"}
+                    else None
+                ),
+                source_status=net_profit_status,
+                is_preliminary=(is_partial_calendar_month or net_profit_status != "ready"),
+                note=(
+                    "Неполный календарный месяц. " + (net_profit_note or "")
+                    if is_partial_calendar_month
+                    else net_profit_note
+                ),
+            )
+        )
+        cursor = _profit_loss_next_month(cursor)
+    return monthly
+
+
+def _build_executive_profit_loss_period_response(
+    session: Session,
+    *,
+    date_from: date,
+    date_to: date,
+    include_monthly: bool,
 ) -> ExecutiveProfitLossPeriodResponse:
     inventory_loss = _profit_loss_inventory_loss(date_to)
     inventory_adjustment = _profit_loss_inventory_adjustment(
@@ -2365,6 +2467,11 @@ def build_executive_profit_loss_period_response(
             ),
             expense_source_status="source_missing",
             inventory_loss=inventory_loss,
+            monthly=(
+                _profit_loss_monthly(session, date_from=date_from, date_to=date_to)
+                if include_monthly
+                else []
+            ),
             filters={"source_table": "onec_sales_daily_kpi"},
         )
 
@@ -2519,6 +2626,11 @@ def build_executive_profit_loss_period_response(
             tax_note=str(tax_accrual["note"]),
         ),
         daily=_profit_loss_daily(rows),
+        monthly=(
+            _profit_loss_monthly(session, date_from=date_from, date_to=date_to)
+            if include_monthly
+            else []
+        ),
         by_store=_profit_loss_dimension(
             rows,
             key_attr="store_ref",
@@ -2545,6 +2657,20 @@ def build_executive_profit_loss_period_response(
             "available_date_from": min(row.sales_date for row in rows).isoformat(),
             "available_date_to": latest_sales_date.isoformat(),
         },
+    )
+
+
+def build_executive_profit_loss_period_response(
+    session: Session,
+    *,
+    date_from: date,
+    date_to: date,
+) -> ExecutiveProfitLossPeriodResponse:
+    return _build_executive_profit_loss_period_response(
+        session,
+        date_from=date_from,
+        date_to=date_to,
+        include_monthly=True,
     )
 
 

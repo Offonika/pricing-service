@@ -1298,6 +1298,11 @@ def test_profit_loss_subtracts_inventory_loss_and_ready_bp_taxes(
     assert lines["taxes"].amount == Decimal("-40.00")
     assert lines["net_profit"].amount == Decimal("160.00")
     assert {ratio.key for ratio in result.ratios} >= {"net_profit_margin_pct"}
+    assert len(result.monthly) == 1
+    assert result.monthly[0].month == "2026-06"
+    assert result.monthly[0].operating_profit == Decimal("200.00")
+    assert result.monthly[0].net_profit == Decimal("160.00")
+    assert result.monthly[0].net_profit_margin_pct == Decimal("0.1600")
 
 
 def test_profit_loss_sums_inventory_losses_for_all_full_months(

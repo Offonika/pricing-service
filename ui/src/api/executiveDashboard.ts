@@ -373,6 +373,7 @@ export interface ExecutiveProfitLossPeriodResponse {
   ratios: ExecutiveProfitLossRatio[];
   lines: ExecutiveProfitLossLineItem[];
   daily: ExecutiveProfitLossDailyRow[];
+  monthly: ExecutiveProfitLossMonthlyRow[];
   by_store: ExecutiveProfitLossBreakdownRow[];
   by_manager: ExecutiveProfitLossBreakdownRow[];
   expense_source_status: string;
@@ -380,6 +381,22 @@ export interface ExecutiveProfitLossPeriodResponse {
   expense_open_questions: ExecutiveProfitLossOpenQuestion[];
   inventory_loss?: ExecutiveProfitLossInventoryLoss | null;
   filters: Record<string, unknown>;
+}
+
+export interface ExecutiveProfitLossMonthlyRow {
+  month: string;
+  revenue: string | number;
+  gross_profit?: string | number | null;
+  operating_expenses?: string | number | null;
+  operating_profit?: string | number | null;
+  net_profit?: string | number | null;
+  gross_margin_pct?: string | number | null;
+  operating_margin_pct?: string | number | null;
+  net_profit_margin_pct?: string | number | null;
+  comparison_net_profit?: string | number | null;
+  source_status: string;
+  is_preliminary: boolean;
+  note?: string | null;
 }
 
 export interface ExecutiveSalesDailyRow {

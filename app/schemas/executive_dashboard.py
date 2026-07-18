@@ -265,6 +265,22 @@ class ExecutiveProfitLossDailyRow(ExecutiveProfitLossBreakdownRow):
     business_date: date
 
 
+class ExecutiveProfitLossMonthlyRow(BaseModel):
+    month: str
+    revenue: Decimal = Decimal("0")
+    gross_profit: Decimal | None = None
+    operating_expenses: Decimal | None = None
+    operating_profit: Decimal | None = None
+    net_profit: Decimal | None = None
+    gross_margin_pct: Decimal | None = None
+    operating_margin_pct: Decimal | None = None
+    net_profit_margin_pct: Decimal | None = None
+    comparison_net_profit: Decimal | None = None
+    source_status: str = "source_missing"
+    is_preliminary: bool = True
+    note: str | None = None
+
+
 class ExecutiveProfitLossExpenseBreakdownRow(BaseModel):
     key: str
     label: str
@@ -412,6 +428,7 @@ class ExecutiveProfitLossPeriodResponse(BaseModel):
     ratios: list[ExecutiveProfitLossRatio] = Field(default_factory=list)
     lines: list[ExecutiveProfitLossLineItem] = Field(default_factory=list)
     daily: list[ExecutiveProfitLossDailyRow] = Field(default_factory=list)
+    monthly: list[ExecutiveProfitLossMonthlyRow] = Field(default_factory=list)
     by_store: list[ExecutiveProfitLossBreakdownRow] = Field(default_factory=list)
     by_manager: list[ExecutiveProfitLossBreakdownRow] = Field(default_factory=list)
     expense_source_status: str = "source_missing"

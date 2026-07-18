@@ -1,0 +1,9 @@
+# BEGIN pricing bronze price type monthly inventory
+# Ежемесячная автоинвентаризация типа цен 2.Бронзовый (регламент 2026-07-10,
+# решение о автозапуске 2026-07-17): корзины правила 10к/3.3к, спящие, реестр
+# служебных карточек. Read-only: типы цен не меняются, только списки в
+# reports/retail_price_types/customer-price-type-automation/auto/<месяц>/.
+# Лог: /var/log/pricing/bronze_price_type_monthly_inventory.log
+CRON_TZ=Europe/Moscow
+45 6 1 * * /opt/MM/pricing-service/infra/cron/bronze_price_type_monthly_inventory.sh
+# END pricing bronze price type monthly inventory

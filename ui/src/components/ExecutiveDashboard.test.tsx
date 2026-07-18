@@ -813,6 +813,35 @@ describe("executive profit and loss period", () => {
       .toHaveTextContent("Не считаем до подключения налогов.");
   });
 
+  it("shows net profit and net profit margin cards when accrued taxes are ready", async () => {
+    const response = profitLossPeriodResponse();
+    response.totals.tax_expense_accrued = "15000.00";
+    response.totals.net_profit = "200000.00";
+    response.ratios.push({
+      key: "net_profit_margin_pct",
+      label: "Рентабельность чистой прибыли",
+      value: "0.2",
+      unit: "percent",
+      tone: "info",
+      note: "Чистая прибыль / выручка.",
+    });
+    response.lines = response.lines.map((line) => {
+      if (line.key === "taxes") {
+        return { ...line, amount: "-15000.00", source_status: "ready", note: "Начисленные налоги БП." };
+      }
+      if (line.key === "net_profit") {
+        return { ...line, amount: "200000.00", source_status: "ready", note: "Прибыль до налогообложения минус начисленные налоги." };
+      }
+      return line;
+    });
+
+    await renderProfitLossTab(response);
+
+    const cards = document.querySelector(".executive-panel__kpis") as HTMLElement;
+    expect(within(cards).getByText("Чистая прибыль").parentElement).toHaveTextContent(/200\s*000\s*₽/);
+    expect(within(cards).getByText("Рентабельность чистой прибыли").parentElement).toHaveTextContent(/20\s*%/);
+  });
+
   it("explains an unclosed BP tax period instead of saying it is not connected", async () => {
     const response = profitLossPeriodResponse();
     response.lines = response.lines.map((line) =>

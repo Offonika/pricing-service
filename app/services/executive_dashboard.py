@@ -2361,6 +2361,26 @@ def build_executive_profit_loss_period_response(
                 note="Операционная прибыль / выручка.",
             )
         )
+    net_profit_margin_pct = (
+        _profit_loss_margin(_decimal(totals.get("revenue")), net_profit)
+        if net_profit is not None
+        else None
+    )
+    if net_profit is not None:
+        ratios.append(
+            ExecutiveProfitLossRatio(
+                key="net_profit_margin_pct",
+                label="Рентабельность чистой прибыли",
+                value=net_profit_margin_pct,
+                unit="percent",
+                tone=(
+                    "danger"
+                    if net_profit_margin_pct is not None and net_profit_margin_pct < Decimal("0")
+                    else "info"
+                ),
+                note="Чистая прибыль / выручка.",
+            )
+        )
 
     return ExecutiveProfitLossPeriodResponse(
         date_from=date_from,
@@ -3357,6 +3377,22 @@ def _build_profit_loss_block(
         date_to=requested_date,
     )
     masked = _mask_finance("profit_loss", access_context)
+    net_profit = (
+        _decimal(period.totals.get("net_profit"))
+        if period.totals.get("net_profit") is not None
+        else None
+    )
+    net_profit_line = next(
+        (line for line in period.lines if line.key == "net_profit"),
+        None,
+    )
+    net_profit_source_status = (
+        net_profit_line.source_status if net_profit_line is not None else "source_missing"
+    )
+    net_profit_margin = next(
+        (ratio for ratio in period.ratios if ratio.key == "net_profit_margin_pct"),
+        None,
+    )
     metrics: list[ExecutiveDashboardMetric] = [
         _metric(
             "revenue",
@@ -3419,6 +3455,24 @@ def _build_profit_loss_block(
             masked=masked,
             tone=("info" if _decimal(period.totals.get("operating_profit")) >= 0 else "danger"),
             source_status=period.expense_source_status,
+        ),
+        _metric(
+            "net_profit",
+            "Чистая прибыль",
+            net_profit,
+            unit="RUB",
+            masked=masked,
+            tone=("danger" if net_profit is not None and net_profit < 0 else "info"),
+            source_status=net_profit_source_status,
+        ),
+        _metric(
+            "net_profit_margin_pct",
+            "Рентабельность чистой прибыли",
+            net_profit_margin.value if net_profit_margin is not None else None,
+            unit="percent",
+            masked=masked,
+            tone=(net_profit_margin.tone if net_profit_margin is not None else "neutral"),
+            source_status=net_profit_source_status,
         ),
     ]
     return ExecutiveDashboardBlock(

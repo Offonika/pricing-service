@@ -1097,6 +1097,8 @@ def test_profit_loss_block_reads_sales_kpi(
     assert metrics["gross_margin_pct"] == Decimal("0.4000")
     assert metrics["operating_expenses"] == Decimal("150.00")
     assert metrics["operating_profit"] == Decimal("450.00")
+    assert metrics["net_profit"] is None
+    assert metrics["net_profit_margin_pct"] is None
     assert block.summary["expense_source_status"] == "partial"
     assert block.summary["expense_open_question_count"] == 1
     assert block.summary["missing_expense_line_count"] == 5
@@ -1399,6 +1401,9 @@ def test_profit_loss_subtracts_ready_bp_tax_accrual_from_profit_before_tax(
     assert line_by_key["taxes"].source_status == "ready"
     assert line_by_key["net_profit"].amount == Decimal("300.00")
     assert line_by_key["net_profit"].source_status == "ready"
+    ratio_by_key = {ratio.key: ratio for ratio in result.ratios}
+    assert ratio_by_key["net_profit_margin_pct"].value == Decimal("0.3000")
+    assert ratio_by_key["net_profit_margin_pct"].note == "Чистая прибыль / выручка."
 
 
 def test_profit_loss_propagates_partial_debt_adjustment_publication(

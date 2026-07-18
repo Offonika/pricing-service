@@ -2686,6 +2686,8 @@ function ProfitLossPeriodPanel({
 
   const grossMargin = profitLossRatioByKey(data, "gross_margin_pct");
   const operatingMargin = profitLossRatioByKey(data, "operating_margin_pct");
+  const netProfitMargin = profitLossRatioByKey(data, "net_profit_margin_pct");
+  const netProfitLine = data?.lines.find((line) => line.key === "net_profit");
   const maxDailyValue = Math.max(
     ...((data?.daily || []).map((row) =>
       Math.max(Math.abs(Number(row.revenue) || 0), Math.abs(Number(row.gross_profit) || 0))
@@ -2755,6 +2757,34 @@ function ProfitLossPeriodPanel({
                 !expenseHasAmounts
                   ? statusLabel(data.expense_source_status)
                   : formatMoney(profitLossTotal(data, "operating_profit"))
+              }
+            />
+            <MetricCard
+              hint={netProfitLine?.note || statusLabel(netProfitLine?.source_status || "source_missing")}
+              label="Чистая прибыль"
+              tone={
+                profitLossTotal(data, "net_profit") == null
+                  ? "neutral"
+                  : Number(profitLossTotal(data, "net_profit")) < 0
+                    ? "danger"
+                    : "info"
+              }
+              tooltip="Прибыль до налогообложения за вычетом начисленных налогов БП."
+              value={
+                profitLossTotal(data, "net_profit") == null
+                  ? statusLabel(netProfitLine?.source_status || "source_missing")
+                  : formatMoney(profitLossTotal(data, "net_profit"))
+              }
+            />
+            <MetricCard
+              hint={netProfitMargin?.note || statusLabel(netProfitLine?.source_status || "source_missing")}
+              label={netProfitMargin?.label || "Рентабельность чистой прибыли"}
+              tone={(netProfitMargin?.tone as MetricTone) || "neutral"}
+              tooltip="Чистая прибыль к выручке за выбранный период, %."
+              value={
+                netProfitMargin
+                  ? formatMetricValue(netProfitMargin.value, netProfitMargin.unit)
+                  : statusLabel(netProfitLine?.source_status || "source_missing")
               }
             />
             <MetricCard

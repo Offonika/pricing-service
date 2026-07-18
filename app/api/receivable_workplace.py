@@ -34,6 +34,8 @@ from app.services.counterparty_folder_recommendations import (
     build_counterparty_folder_recommendations,
 )
 from app.services.receivable_workplace import (
+    WorkplaceSortBy,
+    WorkplaceSortDir,
     apply_receivable_workplace_action,
     build_receivable_workplace,
     build_receivable_workplace_meta,
@@ -222,6 +224,8 @@ def get_receivable_workplace(
     department_ref: str | None = Query(default=None),
     status: str | None = Query(default=None),
     limit: int = Query(default=500, ge=1, le=2000),
+    sort_by: WorkplaceSortBy = Query(default="balance"),
+    sort_dir: WorkplaceSortDir = Query(default="desc"),
     db: Session = Depends(get_db),
     access: ReceivableWorkplaceAuthContext = Depends(require_receivable_workplace_access),
 ) -> ReceivableWorkplaceResponse:
@@ -231,6 +235,8 @@ def get_receivable_workplace(
         department_ref=department_ref,
         status=status,
         limit=limit,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
         allowed_department_refs=access.allowed_department_refs,
     )
 

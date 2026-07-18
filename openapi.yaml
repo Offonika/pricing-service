@@ -4157,6 +4157,26 @@ paths:
           minimum: 1
           default: 500
           title: Limit
+      - name: sort_by
+        in: query
+        required: false
+        schema:
+          enum:
+          - balance
+          - overdue_days
+          type: string
+          default: balance
+          title: Sort By
+      - name: sort_dir
+        in: query
+        required: false
+        schema:
+          enum:
+          - asc
+          - desc
+          type: string
+          default: desc
+          title: Sort Dir
       responses:
         '200':
           description: Successful Response

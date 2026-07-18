@@ -175,3 +175,69 @@ def test_retail_director_monthly_contract_rejects_mismatched_month_path(
 
     with pytest.raises(ContractIntegrityError, match="not allowlisted"):
         read_json_contract(path, now=now)
+
+
+def _write_bp_tax_accrual_policy_contract(
+    root: Path,
+    *,
+    directory_month: str,
+    filename_month: str,
+    generated_at: datetime,
+) -> Path:
+    path = (
+        root / f"executive-dashboard/bp-tax-accruals/{directory_month}/"
+        f"bp-tax-accruals-{filename_month}.json"
+    )
+    path.parent.mkdir(parents=True)
+    content = b'{"schema_version":1,"source_status":"partial"}\n'
+    path.write_bytes(content)
+    path.with_suffix(".json.manifest.json").write_text(
+        json.dumps(
+            {
+                "contract_version": "executive-bp-tax-accrual-snapshot.v1",
+                "generated_at": generated_at.isoformat(),
+                "source_project": "mm-compensation",
+                "content_sha256": hashlib.sha256(content).hexdigest(),
+                "schema": "executive-bp-tax-accrual-snapshot.schema.json",
+                "schema_sha256": (
+                    "12e2bb409c7aa468da086b2bf3a884633425cafae54b162f7734a22efe3188bf"
+                ),
+                "artifact": path.name,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def test_bp_tax_accrual_monthly_contract_path_family_is_allowlisted(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 7, 18, 8, tzinfo=UTC)
+    path = _write_bp_tax_accrual_policy_contract(
+        tmp_path,
+        directory_month="2026-06",
+        filename_month="2026-06",
+        generated_at=now,
+    )
+    monkeypatch.setattr(contracts, "CONTRACT_ROOT", tmp_path)
+
+    assert read_json_contract(path, now=now)["schema_version"] == 1
+
+
+def test_bp_tax_accrual_monthly_contract_rejects_mismatched_month_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    now = datetime(2026, 7, 18, 8, tzinfo=UTC)
+    path = _write_bp_tax_accrual_policy_contract(
+        tmp_path,
+        directory_month="2026-06",
+        filename_month="2026-05",
+        generated_at=now,
+    )
+    monkeypatch.setattr(contracts, "CONTRACT_ROOT", tmp_path)
+
+    with pytest.raises(ContractIntegrityError, match="not allowlisted"):
+        read_json_contract(path, now=now)

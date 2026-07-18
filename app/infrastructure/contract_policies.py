@@ -34,6 +34,17 @@ class ContractPolicyRegistry(dict[str, ContractPolicy]):
         "7306d10df7a489b985216ea856f1bbd7518a421bfd5deaeadd552e637cd70154",
         timedelta(days=45),
     )
+    _bp_tax_accrual_monthly_pattern = re.compile(
+        r"executive-dashboard/bp-tax-accruals/(?P<month>\d{4}-(?:0[1-9]|1[0-2]))/"
+        r"bp-tax-accruals-(?P=month)\.json"
+    )
+    _bp_tax_accrual_monthly_policy = ContractPolicy(
+        "executive-bp-tax-accrual-snapshot.v1",
+        "mm-compensation",
+        "executive-bp-tax-accrual-snapshot.schema.json",
+        "12e2bb409c7aa468da086b2bf3a884633425cafae54b162f7734a22efe3188bf",
+        timedelta(days=45),
+    )
 
     def get(self, key: str, default: _T | None = None) -> ContractPolicy | _T | None:
         exact = super().get(key)
@@ -41,6 +52,8 @@ class ContractPolicyRegistry(dict[str, ContractPolicy]):
             return exact
         if self._retail_director_monthly_pattern.fullmatch(key):
             return self._retail_director_monthly_policy
+        if self._bp_tax_accrual_monthly_pattern.fullmatch(key):
+            return self._bp_tax_accrual_monthly_policy
         return default
 
 

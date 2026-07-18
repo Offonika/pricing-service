@@ -55,6 +55,7 @@ def _settings(snapshot_path: Path, *, access_rules_json: str | None = None) -> S
         executive_dashboard_sales_plan_snapshot_path=str(
             snapshot_path.parent / "sales_plan_monthly_snapshot.json"
         ),
+        executive_dashboard_bp_tax_accrual_root=str(snapshot_path.parent / "bp-tax-accruals"),
         executive_dashboard_bitrix_enabled=True,
         executive_dashboard_bitrix_allowed_domains=["crm.master-mobile.ru"],
         executive_dashboard_bitrix_allowed_member_ids=["member-1"],
@@ -298,6 +299,35 @@ def _write_sales_plan_snapshot(
                 ],
             },
             ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+
+def _write_bp_tax_accrual_snapshot(
+    root: Path,
+    *,
+    month: str = "2026-06",
+    amount: str | None = "40.00",
+    source_status: str = "ready",
+) -> None:
+    path = root / month / f"bp-tax-accruals-{month}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "month": month,
+                "source_status": source_status,
+                "lines": {
+                    "tax_expense_accrued": {
+                        "amount": amount,
+                        "source_status": source_status,
+                        "note": "Начисленные налоги по проводкам БП.",
+                    }
+                },
+                "control": {"tax_expense_posting_count": 3, "blockers": []},
+            }
         ),
         encoding="utf-8",
     )
@@ -1320,7 +1350,55 @@ def test_profit_loss_includes_debt_adjustments_before_tax(
     assert line_by_key["profit_before_tax"].amount == Decimal("340.00")
     assert line_by_key["taxes"].amount is None
     assert line_by_key["net_profit"].amount is None
-    assert line_by_key["net_profit"].note == "Не считаем до подключения налогов."
+    assert line_by_key["net_profit"].note == (
+        "Начисления налогов БП за выбранный месяц не опубликованы."
+    )
+
+
+def test_profit_loss_subtracts_ready_bp_tax_accrual_from_profit_before_tax(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_path = tmp_path / "missing.json"
+    _write_profit_loss_cashflow_cache(tmp_path / "cashflow_period_cache.json")
+    _write_bp_tax_accrual_snapshot(tmp_path / "bp-tax-accruals", amount="40.00")
+    _override_settings(monkeypatch, _settings(snapshot_path))
+    db_session.add_all(
+        [
+            _sales_kpi(
+                date(2026, 6, 27),
+                revenue=Decimal("1000.00"),
+                cost_of_sales=Decimal("600.00"),
+            ),
+            _debt_adjustment_event(
+                business_key="tax-ready-income",
+                amount=Decimal("120.00"),
+            ),
+            _debt_adjustment_event(
+                business_key="tax-ready-expense",
+                amount=Decimal("-30.00"),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    result = build_executive_profit_loss_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 30),
+    )
+
+    line_by_key = {line.key: line for line in result.lines}
+    assert result.totals["profit_before_tax"] == Decimal("340.00")
+    assert result.totals["tax_expense_accrued"] == Decimal("40.00")
+    assert result.totals["net_profit"] == Decimal("300.00")
+    assert result.totals["tax_accrual_posting_count"] == 3
+    assert result.totals["missing_expense_line_count"] == 0
+    assert line_by_key["taxes"].amount == Decimal("-40.00")
+    assert line_by_key["taxes"].source_status == "ready"
+    assert line_by_key["net_profit"].amount == Decimal("300.00")
+    assert line_by_key["net_profit"].source_status == "ready"
 
 
 def test_profit_loss_propagates_partial_debt_adjustment_publication(

@@ -896,6 +896,93 @@ export async function initializeBitrixProcurementOrderFormationSession() {
   return data.user;
 }
 
+const CUSTOMER_PRICE_TYPES_SESSION_STORAGE_KEY = "mm_customer_price_types_bitrix_session";
+
+export interface BitrixCustomerPriceTypesUser {
+  user_id: string;
+  name?: string | null;
+  role: string;
+  can_view_money: boolean;
+}
+
+export interface BitrixCustomerPriceTypesSessionResponse {
+  session_token: string;
+  token_type: string;
+  expires_at: string;
+  expires_in: number;
+  user: BitrixCustomerPriceTypesUser;
+}
+
+interface CachedCustomerPriceTypesSession extends BitrixCustomerPriceTypesSessionResponse {
+  cached_at: string;
+}
+
+export function isBitrixCustomerPriceTypesRoute() {
+  const path = window.location.pathname.replace(/\/+$/, "");
+  return (
+    path === "/bitrix/customer-price-types" ||
+    path.startsWith("/bitrix/customer-price-types/")
+  );
+}
+
+function readCachedCustomerPriceTypesSession(): CachedCustomerPriceTypesSession | null {
+  try {
+    const raw = window.sessionStorage.getItem(CUSTOMER_PRICE_TYPES_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const cached = JSON.parse(raw) as CachedCustomerPriceTypesSession;
+    if (Date.parse(cached.expires_at) - Date.now() <= REFRESH_SKEW_MS) {
+      window.sessionStorage.removeItem(CUSTOMER_PRICE_TYPES_SESSION_STORAGE_KEY);
+      return null;
+    }
+    return cached;
+  } catch {
+    return null;
+  }
+}
+
+function cacheCustomerPriceTypesSession(session: BitrixCustomerPriceTypesSessionResponse) {
+  const cached: CachedCustomerPriceTypesSession = {
+    ...session,
+    cached_at: new Date().toISOString(),
+  };
+  try {
+    window.sessionStorage.setItem(
+      CUSTOMER_PRICE_TYPES_SESSION_STORAGE_KEY,
+      JSON.stringify(cached)
+    );
+  } catch {
+    // Storage can be restricted in embedded contexts; in-memory axios auth still works.
+  }
+}
+
+// Read-only workplace: the Bitrix left-menu placement is registered as a separate
+// deliberate step, so no background placement.bind is triggered here.
+export async function initializeBitrixCustomerPriceTypesSession() {
+  const cached = readCachedCustomerPriceTypesSession();
+  if (cached) {
+    setApiAuthToken(cached.session_token);
+    return cached;
+  }
+
+  clearApiAuthToken();
+  let auth = getLaunchAuth();
+  if (!auth) {
+    await loadBitrixSdk();
+    auth = await initBitrix();
+  }
+  const { data } = await api.post<BitrixCustomerPriceTypesSessionResponse>(
+    "/customer-price-types/session",
+    {
+      access_token: auth.access_token,
+      domain: auth.domain,
+      member_id: auth.member_id,
+    }
+  );
+  setApiAuthToken(data.session_token);
+  cacheCustomerPriceTypesSession(data);
+  return data;
+}
+
 export function getProcurementLabelsItemId() {
   const launchId = window.__MM_BITRIX_LAUNCH__?.placement_options?.ID;
   if (typeof launchId === "number" || typeof launchId === "string") {

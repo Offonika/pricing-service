@@ -9,22 +9,26 @@ import { ProcurementOrderFormationWorkspace } from "./components/ProcurementOrde
 import { ProcurementLabelsApp } from "./components/ProcurementLabelsApp";
 import { PropertyMappingSettings } from "./components/PropertyMappingSettings";
 import { ReceivablesWorkplace } from "./components/ReceivablesWorkplace";
+import { CustomerPriceTypesWorkspace } from "./components/CustomerPriceTypesWorkspace";
 import {
   bindBitrixProcurementLabelsPlacement,
   getProcurementAssortmentItemId,
   getProcurementLabelsItemId,
+  initializeBitrixCustomerPriceTypesSession,
   initializeBitrixExecutiveDashboardSession,
   initializeBitrixMatchingSession,
   initializeBitrixProcurementAssortmentSession,
   initializeBitrixProcurementOrderFormationSession,
   initializeBitrixProcurementLabelsSession,
   initializeBitrixReceivablesSession,
+  isBitrixCustomerPriceTypesRoute,
   isBitrixExecutiveDashboardRoute,
   isBitrixMatchingRoute,
   isBitrixProcurementAssortmentRoute,
   isBitrixProcurementOrderFormationRoute,
   isBitrixProcurementLabelsRoute,
   isBitrixReceivablesRoute,
+  type BitrixCustomerPriceTypesSessionResponse,
   type BitrixReceivablesSessionResponse,
   type BitrixExecutiveDashboardSessionResponse,
 } from "./api/bitrix";
@@ -784,6 +788,61 @@ function ExecutiveDashboardApp() {
   );
 }
 
+function CustomerPriceTypesApp() {
+  const bitrixMode = isBitrixCustomerPriceTypesRoute();
+  const [authState, setAuthState] = useState<{
+    status: "ready" | "loading" | "error";
+    message?: string;
+    session?: BitrixCustomerPriceTypesSessionResponse;
+  }>(() => ({ status: bitrixMode ? "loading" : "ready" }));
+
+  useEffect(() => {
+    if (!bitrixMode) return;
+    let cancelled = false;
+    initializeBitrixCustomerPriceTypesSession()
+      .then((session) => {
+        if (!cancelled) {
+          setAuthState({ status: "ready", session });
+        }
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : "Не удалось открыть Bitrix24-сессию";
+        if (!cancelled) {
+          setAuthState({ status: "error", message });
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [bitrixMode]);
+
+  if (authState.status !== "ready") {
+    return (
+      <div className="app app--center">
+        <div className="app-state">
+          <h1>Управление типами цен</h1>
+          {authState.status === "loading" && <p>Подключение к Bitrix24...</p>}
+          {authState.status === "error" && (
+            <>
+              <p>Нет доступа к витрине типов цен.</p>
+              <small>{authState.message}</small>
+            </>
+          )}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <CustomerPriceTypesWorkspace
+      bitrixMode={bitrixMode}
+      bitrixUserName={authState.session?.user.name}
+      role={authState.session?.user.role}
+      canViewMoney={authState.session?.user.can_view_money}
+    />
+  );
+}
+
 function ProcurementLabelsBitrixApp() {
   const [authState, setAuthState] = useState<{
     status: "ready" | "loading" | "error";
@@ -1026,6 +1085,7 @@ function App() {
   if (isBitrixProcurementLabelsRoute()) return <ProcurementLabelsBitrixApp />;
   if (isBitrixExecutiveDashboardRoute() || isExecutiveDashboardRoute()) return <ExecutiveDashboardApp />;
   if (isBitrixReceivablesRoute() || isReceivablesWorkplaceRoute()) return <ReceivablesApp />;
+  if (isBitrixCustomerPriceTypesRoute()) return <CustomerPriceTypesApp />;
   return <MatchingApp />;
 }
 

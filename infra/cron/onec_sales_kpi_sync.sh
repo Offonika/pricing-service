@@ -10,9 +10,11 @@ LOG_DIR="${LOG_DIR:-/var/log/pricing}"
 LOG_FILE="${LOG_DIR}/onec_sales_kpi_sync.log"
 PYTHON_BIN="${REPO_DIR}/.venv/bin/python"
 
-# Re-sync a short trailing window every night so late 1C fixes/corrections land
-# without running a heavy backfill against the production source.
-LOOKBACK_DAYS="${ONEC_SALES_KPI_LOOKBACK_DAYS:-2}"
+# Re-sync a trailing window every night so late 1C fixes land: cost reversals for
+# customer returns are posted days/weeks after the sale date (2026-07: rows synced
+# once at D+2 kept stale costs and understated daily margin), so the window must
+# cover the 1C cost-recalculation lag.
+LOOKBACK_DAYS="${ONEC_SALES_KPI_LOOKBACK_DAYS:-35}"
 BATCH_DAYS="${ONEC_SALES_KPI_BATCH_DAYS:-1}"
 SLEEP_SECONDS="${ONEC_SALES_KPI_SLEEP_SECONDS:-0.5}"
 

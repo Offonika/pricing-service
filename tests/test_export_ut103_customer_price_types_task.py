@@ -62,7 +62,7 @@ def test_export_customer_price_type_task_writes_ready_xml(tmp_path: Path) -> Non
     assert output_path.exists()
     root = ET.fromstring(output_path.read_bytes())
     assert root.findtext("Header/Schema") == "customer_price_type_updates.v1"
-    assert root.findtext("Items/Item/CounterpartyGuid") == "2500da8f-1e90-ee48-11ed-222ea7d9b21e"
+    assert root.findtext("Items/Item/CounterpartyGuid") == "a7d9b21e-222e-11ed-8fda-0025901e48ee"
 
 
 def test_export_customer_price_type_task_validate_only_does_not_write(tmp_path: Path) -> None:

@@ -8,6 +8,11 @@ import pytest
 from scripts import build_executive_procurement_snapshot as snapshot
 
 
+@pytest.fixture(autouse=True)
+def no_history_query(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(snapshot, "fetch_supplier_prepare_history", lambda *_args, **_kwargs: [])
+
+
 def _order(onec_ref: str, contour: str = "cargo") -> dict[str, object]:
     return {
         "onec_ref": onec_ref,
@@ -43,6 +48,7 @@ def test_build_snapshot_reads_all_open_orders_without_document_date_filter(
     assert captured["filter_contours_in_sql"] is True
     assert captured["fail_on_query_limit"] is True
     assert payload["order_count"] == 2
+    assert payload["schema_version"] == 2
     assert [item["onec_ref"] for item in payload["orders"]] == ["0x01", "0x02"]
     assert json.loads(output.read_text(encoding="utf-8")) == payload
 
@@ -94,3 +100,18 @@ def test_empty_full_snapshot_is_valid() -> None:
     assert payload["source_status"] == "ready"
     assert payload["order_count"] == 0
     assert payload["orders"] == []
+
+
+def test_supplier_prepare_profiles_use_nearest_rank_p75() -> None:
+    observations = [
+        {"supplier_ref": "supplier-a", "procurement_contour_key": "cargo", "lead_days": value}
+        for value in [3, 5, 7, 9, 20]
+    ]
+
+    profiles = snapshot.build_supplier_prepare_profiles(observations)
+
+    supplier_profile = next(item for item in profiles if item["level"] == "supplier_contour")
+    contour_profile = next(item for item in profiles if item["level"] == "contour")
+    assert supplier_profile["sample_size"] == 5
+    assert supplier_profile["p75_days"] == 9
+    assert contour_profile["p75_days"] == 9

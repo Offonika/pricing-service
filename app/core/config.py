@@ -88,6 +88,7 @@ class Settings(BaseSettings):
     counterparty_duplicate_p2_enabled: bool = False
     counterparty_duplicate_fuzzy_threshold: float = 0.9
     management_internal_api_token: str | None = None
+    orchestration_internal_api_token: str | None = None
     logistics_internal_api_token: str | None = None
     expertise_internal_api_token: str | None = None
     expertise_onec_sql: str | None = None
@@ -282,6 +283,9 @@ class Settings(BaseSettings):
         "/var/lib/mm-data-contracts/executive-dashboard/employee_payroll_balance_snapshot.json"
     )
     executive_dashboard_source_max_lag_days: int = 1
+    yandex_metrika_token: str | None = None
+    yandex_metrika_counter_id: str = "49993429"
+    yandex_metrika_timeout_seconds: float = 20.0
     executive_management_balance_accounting_database_url: str | None = None
     executive_management_balance_tolerance_rub: float = 1.0
     executive_service_accrual_source_path: str = (

@@ -57,7 +57,7 @@ const MANUAL_STATUS_LABELS: Record<string, string> = {
 };
 
 const ORDER_STATUS_LABELS: Record<string, string> = {
-  draft: "Черновик",
+  draft: "На подтверждении",
   review: "На проверке",
   approved: "Проверен",
   transmitting: "Передача в 1С",
@@ -774,7 +774,7 @@ function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number) => voi
   return (
     <main className="order-workspace__content">
       <section className="registry-summary">
-        <div><span>Черновиков</span><strong>{data.summary.orders}</strong></div>
+        <div><span>Заказов на подтверждение</span><strong>{data.summary.orders}</strong></div>
         <div><span>Позиций</span><strong>{data.summary.lines}</strong></div>
         <div><span>Количество</span><strong>{number(data.summary.quantity)}</strong></div>
         <div><span>Сумма</span><strong>{money(data.summary.amount)}</strong></div>

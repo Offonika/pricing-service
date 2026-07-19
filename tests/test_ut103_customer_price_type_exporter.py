@@ -17,7 +17,7 @@ from app.services.exporters.ut103_customer_price_types import (
 )
 
 COUNTERPARTY_REF = "0X8FDA0025901E48EE11ED222EA7D9B21E"
-COUNTERPARTY_GUID = "2500da8f-1e90-ee48-11ed-222ea7d9b21e"
+COUNTERPARTY_GUID = "a7d9b21e-222e-11ed-8fda-0025901e48ee"
 
 
 def _row() -> CustomerPriceTypeUpdateRow:
@@ -32,7 +32,7 @@ def _row() -> CustomerPriceTypeUpdateRow:
     )
 
 
-def test_one_c_guid_from_sql_counterparty_ref_uses_little_endian_layout() -> None:
+def test_one_c_guid_from_sql_counterparty_ref_uses_verified_onec_layout() -> None:
     assert one_c_guid_from_counterparty_ref(COUNTERPARTY_REF) == COUNTERPARTY_GUID
 
 

@@ -5,6 +5,8 @@ from decimal import Decimal
 
 from app.services.online_demand_metrics import (
     OnlineDemandWeeklySummary,
+    _breakdown_rows_from_payload,
+    _daily_rows_from_payload,
     _landing_pages_from_payload,
     _period_metrics_from_payload,
     render_online_demand_block,
@@ -94,3 +96,35 @@ def test_landing_pages_from_payload_maps_goal_metrics() -> None:
     assert pages[0].purchases == 4
     assert pages[0].click_buy == 12
     assert pages[0].purchase_conversion_pct == Decimal("3.33")
+
+
+def test_online_store_payload_parsers_keep_daily_and_source_breakdowns() -> None:
+    payload = {
+        "data": [
+            {
+                "dimensions": [{"id": "organic", "name": "Переходы из поисковых систем"}],
+                "metrics": [120, 90, 4, 12, 5, 1, 8],
+            }
+        ]
+    }
+    daily_payload = {
+        "data": [
+            {
+                "dimensions": [{"name": "2026-07-01"}],
+                "metrics": [120, 90, 4, 12, 5, 1, 8],
+            },
+            {
+                "dimensions": [{"name": "not-a-date"}],
+                "metrics": [1, 1, 0, 0, 0, 0, 0],
+            },
+        ]
+    }
+
+    sources = _breakdown_rows_from_payload(payload)
+    daily = _daily_rows_from_payload(daily_payload)
+
+    assert sources[0].key == "organic"
+    assert sources[0].purchase_conversion_pct == Decimal("3.33")
+    assert len(daily) == 1
+    assert daily[0].business_date == date(2026, 7, 1)
+    assert daily[0].purchases == 4

@@ -28,6 +28,7 @@ EXECUTIVE_DASHBOARD_BLOCK_KEYS = (
     "money_today",
     "profit_loss",
     "sales",
+    "online_store",
     "debtors",
     "receivables_control",
     "creditors_payables",
@@ -37,7 +38,9 @@ EXECUTIVE_DASHBOARD_BLOCK_KEYS = (
     "tasks",
     "daily_focus",
 )
-EXECUTIVE_DASHBOARD_ACTION_DOMAINS = EXECUTIVE_DASHBOARD_BLOCK_KEYS
+EXECUTIVE_DASHBOARD_ACTION_DOMAINS = tuple(
+    key for key in EXECUTIVE_DASHBOARD_BLOCK_KEYS if key != "online_store"
+)
 EXECUTIVE_DASHBOARD_MONEY_BLOCK_KEYS = (
     "money_today",
     "profit_loss",

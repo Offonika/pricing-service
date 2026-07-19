@@ -5,6 +5,7 @@ import {
   fetchExecutiveDashboard,
   fetchExecutiveDashboardActions,
   fetchExecutiveManagementBalance,
+  fetchExecutiveOnlineStorePeriod,
   fetchExecutiveProfitLossPeriod,
   fetchExecutiveSalesPeriod,
   type ExecutiveAccessLevel,
@@ -17,12 +18,15 @@ import {
   type ExecutiveManagementBalanceLineItem,
   type ExecutiveManagementBalanceResponse,
   type ExecutiveManagementBalanceView,
+  type ExecutiveOnlineStorePeriodResponse,
   type ExecutiveProfitLossBreakdownRow,
   type ExecutiveProfitLossExpenseBreakdownRow,
+  type ExecutiveProfitLossInventoryLoss,
   type ExecutiveProfitLossOpenQuestion,
   type ExecutiveProfitLossPeriodResponse,
   type ExecutiveProfitLossRatio,
   type ExecutiveSalesBreakdownRow,
+  type ExecutiveSalesDailyRow,
   type ExecutiveSalesDiagnosticKpi,
   type ExecutiveSalesMonthlyRow,
   type ExecutiveSalesPeriodResponse,
@@ -90,6 +94,7 @@ type ManagementBalanceLine = {
 const MONEY_TAB_KEY = "money_today";
 const PROFIT_LOSS_TAB_KEY = "profit_loss";
 const SALES_TAB_KEY = "sales";
+const ONLINE_STORE_TAB_KEY = "online_store";
 const ODDS_CASHFLOW_TAB_KEY = "odds_cashflow";
 
 const TAB_DEFINITIONS = [
@@ -97,6 +102,7 @@ const TAB_DEFINITIONS = [
   { key: MONEY_TAB_KEY, label: "Деньги / ДДС" },
   { key: PROFIT_LOSS_TAB_KEY, label: "Прибыли / убытки" },
   { key: SALES_TAB_KEY, label: "Продажи" },
+  { key: ONLINE_STORE_TAB_KEY, label: "Интернет-магазин" },
   { key: ODDS_CASHFLOW_TAB_KEY, label: "ОДДС CashFlow" },
   { key: "debtors", label: "Дебиторка покупателей" },
   { key: "receivables_control", label: "Контроль" },
@@ -113,6 +119,7 @@ const DOMAIN_LABELS: Record<string, string> = {
   money_today: "Деньги / ДДС",
   profit_loss: "Прибыли / убытки",
   sales: "Продажи",
+  online_store: "Интернет-магазин",
   odds_cashflow: "ОДДС CashFlow",
   debtors: "Дебиторка покупателей",
   receivables_control: "Контроль дебиторки",
@@ -128,6 +135,7 @@ const SOURCE_FRESHNESS_KEY_BY_TAB: Record<string, string> = {
   money_today: "money_today",
   [PROFIT_LOSS_TAB_KEY]: "profit_loss",
   [SALES_TAB_KEY]: "sales",
+  [ONLINE_STORE_TAB_KEY]: "online_store",
   [ODDS_CASHFLOW_TAB_KEY]: "money_today",
   debtors: "debtors",
   receivables_control: "receivables_control",
@@ -251,7 +259,13 @@ function statusLabel(status: string) {
     source_error: "ошибка",
     insufficient_history: "недостаточно истории",
     not_applicable: "не рассчитывается",
-    complete: "месяц закрыт",
+    complete: "период закрыт",
+    approved: "утверждено",
+    draft: "черновик",
+    provided: "задан вручную",
+    fallback: "резервный источник",
+    missing: "нет источника",
+    unknown: "статус не указан",
   };
   return labels[status] || status;
 }
@@ -260,6 +274,7 @@ function severityLabel(value: string) {
   const labels: Record<string, string> = {
     critical: "критично",
     high: "важно",
+    warning: "предупреждение",
     medium: "средне",
     low: "низко",
   };
@@ -306,6 +321,11 @@ function formatPlainNumber(value: string | number | null | undefined) {
   }).format(numberValue);
 }
 
+function formatPercentPoints(value: string | number | null | undefined) {
+  if (value === null || value === undefined || value === "") return "нет данных";
+  return `${formatPlainNumber(value)}%`;
+}
+
 function formatDate(value?: string | null) {
   if (!value) return "";
   const parsed = new Date(value);
@@ -347,19 +367,21 @@ function moneyBlock(data: ExecutiveDashboardResponse | null) {
 function isTabAllowed(data: ExecutiveDashboardResponse, tab: string) {
   if (tab === "today") return true;
   if (tab === ODDS_CASHFLOW_TAB_KEY) return Boolean(moneyBlock(data));
+  if (tab === ONLINE_STORE_TAB_KEY) return data.allowed_blocks.includes(ONLINE_STORE_TAB_KEY);
   return data.blocks.some((block) => block.key === tab);
 }
 
 function actionDomainForTab(tab: string) {
   if (tab === "today") return undefined;
   if (tab === ODDS_CASHFLOW_TAB_KEY) return MONEY_TAB_KEY;
+  if (tab === ONLINE_STORE_TAB_KEY) return undefined;
   return tab;
 }
 
 function visibleBlocks(data: ExecutiveDashboardResponse | null, tab: string) {
   if (!data) return [];
   if (tab === "today") return data.blocks.filter((block) => block.key !== "daily_focus");
-  if ([ODDS_CASHFLOW_TAB_KEY, PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY].includes(tab)) return [];
+  if ([ODDS_CASHFLOW_TAB_KEY, PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, ONLINE_STORE_TAB_KEY].includes(tab)) return [];
   return data.blocks.filter((block) => block.key === tab);
 }
 
@@ -370,6 +392,7 @@ function tabsForData(data: ExecutiveDashboardResponse | null) {
     (item) =>
       item.key === "today" ||
       availableKeys.has(item.key) ||
+      (item.key === ONLINE_STORE_TAB_KEY && data.allowed_blocks.includes(ONLINE_STORE_TAB_KEY)) ||
       (item.key === ODDS_CASHFLOW_TAB_KEY && availableKeys.has(MONEY_TAB_KEY))
   );
 }
@@ -432,6 +455,13 @@ function summaryString(summary: Record<string, unknown>, key: string) {
 function summaryArray<T>(summary: Record<string, unknown>, key: string): T[] {
   const value = summary[key];
   return Array.isArray(value) ? (value as T[]) : [];
+}
+
+function summaryRecord(summary: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = summary[key];
+  return typeof value === "object" && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 function metricByKey(block: ExecutiveDashboardBlock, keys: string[]) {
@@ -536,6 +566,7 @@ function MoneyBlockCard({
     compactForMoneyTab
       ? [
           "cash_position_bank_balance_total",
+          "cash_position_savings_balance_total",
           "cash_position_cashbox_balance_total",
           "cash_position_card_balance_total",
           "cash_position_other_balance_total",
@@ -543,6 +574,7 @@ function MoneyBlockCard({
       : [
           "cash_position_total_balance",
           "cash_position_bank_balance_total",
+          "cash_position_savings_balance_total",
           "cash_position_cashbox_balance_total",
           "cash_position_card_balance_total",
           "cash_position_other_balance_total",
@@ -813,6 +845,234 @@ function TabKpiOverview({ block, data }: { block: ExecutiveDashboardBlock; data:
           ))
         )}
       </div>
+    </section>
+  );
+}
+
+function ProcurementImportPanel({
+  actions,
+  block,
+  dashboardSourceStatus,
+  generatedAt,
+  onOpenAction,
+}: {
+  actions: ExecutiveDashboardAction[];
+  block: ExecutiveDashboardBlock | null;
+  dashboardSourceStatus: string;
+  generatedAt: string;
+  onOpenAction: (action: ExecutiveDashboardAction) => void;
+}) {
+  const [severityFilter, setSeverityFilter] = useState("");
+  const [responsibleFilter, setResponsibleFilter] = useState("");
+  const [supplierFilter, setSupplierFilter] = useState("");
+  const [reasonFilter, setReasonFilter] = useState("");
+  const [showAllActions, setShowAllActions] = useState(false);
+  const note = block ? summaryString(block.summary, "note") : null;
+  const orders = block ? metricBySingleKey(block, "open_supplier_orders") : null;
+  const openAmount = block ? metricBySingleKey(block, "open_order_amount_rub") : null;
+  const riskCountMetric = block ? metricBySingleKey(block, "procurement_at_risk_count") : null;
+  const riskAmount = block ? metricBySingleKey(block, "procurement_at_risk_amount_rub") : null;
+  const criticalCount = block ? metricBySingleKey(block, "critical_overdue_count") : null;
+  const foreignAmount = block ? metricBySingleKey(block, "foreign_open_order_amount_rub") : null;
+  const riskSummary = block ? summaryRecord(block.summary, "risk_summary") : {};
+  const stages = block ? summaryArray<Record<string, unknown>>(block.summary, "stage_breakdown") : [];
+  const currencies = block ? summaryArray<Record<string, unknown>>(block.summary, "currency_breakdown") : [];
+  const dataQuality = block ? summaryRecord(block.summary, "data_quality") : {};
+  const sourceStatus = block?.source_status || "source_missing";
+  const effectiveSourceStatus = block?.freshness_status === "stale" ? "stale" : sourceStatus;
+  const usePlaceholder = !block || blockUsesPlaceholder(block);
+  const riskCount = metricNumberValue(riskCountMetric);
+  const riskShare = riskSummary.at_risk_share_pct;
+  const scoringV2 = block?.summary.risk_scoring_version === 2;
+  const openAmountValue = metricNumberValue(openAmount);
+  const foreignAmountValue = metricNumberValue(foreignAmount);
+  const foreignShare =
+    scoringV2 && !openAmount?.masked && !foreignAmount?.masked && openAmountValue && foreignAmountValue !== null
+      ? (foreignAmountValue / openAmountValue) * 100
+      : null;
+  const filterOptions = (key: string) => Array.from(
+    new Set(actions.flatMap((action) => {
+      const value = actionPayloadText(action, key);
+      return value ? [value] : [];
+    }))
+  ).sort();
+  const filteredActions = actions
+    .filter((action) =>
+      (!severityFilter || action.severity === severityFilter) &&
+      (!responsibleFilter || actionPayloadText(action, "responsible_name") === responsibleFilter) &&
+      (!supplierFilter || actionPayloadText(action, "supplier_title") === supplierFilter) &&
+      (!reasonFilter || actionPayloadText(action, "reason_code") === reasonFilter)
+    )
+    .sort((first, second) => {
+      const severityRank: Record<string, number> = { critical: 0, high: 1, warning: 2, medium: 3, low: 4 };
+      const severityDiff = (severityRank[first.severity] ?? 5) - (severityRank[second.severity] ?? 5);
+      if (severityDiff) return severityDiff;
+      const firstDeadline = Date.parse(actionPayloadText(first, "deadline_date") || "") || Number.POSITIVE_INFINITY;
+      const secondDeadline = Date.parse(actionPayloadText(second, "deadline_date") || "") || Number.POSITIVE_INFINITY;
+      if (firstDeadline !== secondDeadline) return firstDeadline - secondDeadline;
+      return Number(second.amount || 0) - Number(first.amount || 0);
+    });
+  const visibleActions = showAllActions ? filteredActions : filteredActions.slice(0, 5);
+  const totalOrders = metricNumberValue(orders) || stages.reduce((sum, row) => sum + Number(row.count || 0), 0);
+  const visibleCurrencies = currencies.filter((row) => String(row.currency || "").toUpperCase() !== "RUB");
+  const rubCurrency = currencies.find((row) => String(row.currency || "").toUpperCase() === "RUB");
+  const rowShare = (row: Record<string, unknown>) => {
+    if (!scoringV2) return null;
+    const amount = Number(row.amount_rub);
+    if (!openAmount?.masked && openAmountValue && Number.isFinite(amount)) return (amount / openAmountValue) * 100;
+    const count = Number(row.count);
+    return totalOrders && Number.isFinite(count) ? (count / totalOrders) * 100 : null;
+  };
+  const resetPreview = () => setShowAllActions(false);
+
+  return (
+    <section className="executive-cashflow-period executive-procurement-period" aria-label="Закупки">
+      <header className="executive-panel__header">
+        <div>
+          <h2>Закупки</h2>
+          <span>Открытые заказы, этапы поставки и приоритетная очередь действий</span>
+        </div>
+      </header>
+      {usePlaceholder ? (
+        <div className="executive-cashflow-period__empty">
+          {note || "Источник закупок пока не подключен к витрине."}
+        </div>
+      ) : (
+        <>
+          <div aria-label="Статус источника закупок" className={`executive-procurement-status executive-procurement-status--${effectiveSourceStatus}`}>
+            <div>
+              <StatusBadge tone={effectiveSourceStatus === "ready" ? "success" : effectiveSourceStatus === "source_error" ? "danger" : "warning"}>
+                {statusLabel(effectiveSourceStatus)}
+              </StatusBadge>
+              <strong>Данные актуальны на {block?.as_of ? formatDate(block.as_of) : "—"}</strong>
+              <span>Свежесть: {statusLabel(block?.freshness_status || sourceStatus)}</span>
+            </div>
+            <span><strong>{actions.length}</strong> решений в работе</span>
+          </div>
+          {dashboardSourceStatus === "partial" && sourceStatus === "ready" && (
+            <div className="executive-procurement-context-note" role="status">
+              Закупки готовы. Статус «частично» относится к другим разделам управленческой витрины.
+            </div>
+          )}
+          <div aria-label="Основные KPI закупок" className="executive-panel__kpis">
+            <MetricCard
+              className="executive-procurement-kpi"
+              hint={`Сумма: ${metricDisplay(openAmount)}`}
+              label="Открытые заказы"
+              tooltip="Количество открытых заказов поставщикам в контурах карго и ВЭД-импорта."
+              value={metricDisplay(orders)}
+            />
+            <MetricCard
+              className="executive-procurement-kpi executive-procurement-kpi--warning"
+              hint={`${metricDisplay(riskCountMetric)} заказов${riskShare !== undefined ? ` · ${riskShare}% открытых закупок` : ""}`}
+              label="Заказы под риском"
+              tone={riskCount && riskCount > 0 ? "warning" : "neutral"}
+              tooltip="Только просрочка ожидаемого поступления или превышение нормального срока подготовки поставщиком."
+              value={metricDisplay(riskAmount)}
+            />
+            <MetricCard
+              className="executive-procurement-kpi executive-procurement-kpi--danger"
+              hint={metricNumberValue(criticalCount) ? <StatusBadge tone="danger">Критично</StatusBadge> : "Критических заказов нет"}
+              label="Критически просрочено"
+              tone={metricNumberValue(criticalCount) ? "danger" : "neutral"}
+              tooltip="Ожидаемая дата поступления прошла либо критически превышен срок подготовки."
+              value={metricDisplay(criticalCount)}
+            />
+            <MetricCard
+              className="executive-procurement-kpi"
+              hint={foreignShare === null ? "Рублёвый эквивалент" : `${foreignShare.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}% суммы открытых заказов`}
+              label="Открытые закупки в валюте"
+              tooltip="Рублёвый эквивалент открытых валютных заказов. Это не расчёт курсового риска."
+              value={metricDisplay(foreignAmount)}
+            />
+          </div>
+          {!scoringV2 && (
+            <div className="executive-cashflow-period__note">
+              Источник v1: показаны прежние признаки незаполненных дат без нового риск-скоринга.
+            </div>
+          )}
+          <section className="executive-procurement-period__actions" aria-label="Решения по закупкам">
+            <header>
+              <div>
+                <h3>Заказы в зоне внимания</h3>
+                <span>Критические — первыми; откройте строку для формулы риска и действия в 1С.</span>
+              </div>
+            </header>
+            <div className="executive-procurement-filters" aria-label="Фильтры закупочной очереди">
+              <select aria-label="Важность" onChange={(event) => { setSeverityFilter(event.target.value); resetPreview(); }} value={severityFilter}>
+                <option value="">Вся важность</option>
+                <option value="critical">Критично</option><option value="warning">Предупреждение</option>
+              </select>
+              <select aria-label="Ответственный" onChange={(event) => { setResponsibleFilter(event.target.value); resetPreview(); }} value={responsibleFilter}>
+                <option value="">Все ответственные</option>{filterOptions("responsible_name").map((value) => <option key={value}>{value}</option>)}
+              </select>
+              <select aria-label="Поставщик" onChange={(event) => { setSupplierFilter(event.target.value); resetPreview(); }} value={supplierFilter}>
+                <option value="">Все поставщики</option>{filterOptions("supplier_title").map((value) => <option key={value}>{value}</option>)}
+              </select>
+              <select aria-label="Причина" onChange={(event) => { setReasonFilter(event.target.value); resetPreview(); }} value={reasonFilter}>
+                <option value="">Все причины</option>{filterOptions("reason_code").map((value) => <option key={value} value={value}>{actionPayloadText(actions.find((action) => actionPayloadText(action, "reason_code") === value)!, "reason") || value}</option>)}
+              </select>
+            </div>
+            {filteredActions.length === 0 ? <div className="executive-actions__empty">Заказов по выбранным фильтрам нет.</div> : (
+              <div className="executive-actions__table-wrap">
+                <table className="executive-actions__table executive-procurement-table">
+                  <thead><tr><th>Заказ</th><th>Этап</th><th>Сумма</th><th>Срок</th><th>Просрочка</th><th>Ответственный</th><th>Причина</th></tr></thead>
+                  <tbody>{visibleActions.map((action) => <tr aria-label={`Открыть заказ ${actionPayloadText(action, "onec_source_number") || action.source_ref}`} key={action.stable_key} onClick={() => onOpenAction(action)} onKeyDown={(event) => { if (event.key === "Enter" || event.key === " ") { event.preventDefault(); onOpenAction(action); } }} tabIndex={0}>
+                    <td data-label="Заказ"><strong>{actionPayloadText(action, "onec_source_number") || action.source_ref}</strong><small>{actionPayloadText(action, "supplier_title")}</small></td>
+                    <td data-label="Этап">{actionPayloadText(action, "management_stage_label") || "—"}</td>
+                    <td data-label="Сумма">{action.amount ? formatMoney(action.amount, action.currency) : "скрыто"}</td>
+                    <td data-label="Срок">{formatDate(actionPayloadText(action, "deadline_date")) || "—"}</td>
+                    <td data-label="Просрочка">{actionPayloadText(action, "days_overdue") ? `${actionPayloadText(action, "days_overdue")} дн.` : "—"}</td>
+                    <td data-label="Ответственный">{actionPayloadText(action, "responsible_name") || "Не указан"}</td>
+                    <td data-label="Причина"><StatusBadge tone={action.severity === "critical" ? "danger" : "warning"}>{severityLabel(action.severity)}</StatusBadge><span>{actionPayloadText(action, "reason")}</span></td>
+                  </tr>)}</tbody>
+                </table>
+              </div>
+            )}
+            {!showAllActions && filteredActions.length > 5 && (
+              <Button onClick={() => setShowAllActions(true)} variant="secondary">Показать все {filteredActions.length}</Button>
+            )}
+          </section>
+          {(stages.length > 0 || currencies.length > 0) && (
+            <div className="executive-procurement-breakdowns">
+              <section aria-label="Этапы закупок">
+                <h3>Этапы открытых заказов</h3>
+                {scoringV2 && <div aria-hidden="true" className="executive-procurement-distribution">{stages.map((row) => <i key={String(row.key)} style={{ flexGrow: Math.max(0, Number(row.count || 0)) }} />)}</div>}
+                {stages.map((row) => {
+                  const share = rowShare(row);
+                  return <div className="executive-procurement-breakdown-row" key={String(row.key)}>
+                    <span>{String(row.label || row.key)}{share === null ? "" : ` · ${share.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`}</span>
+                    <strong>{String(row.count || 0)} · {row.amount_rub == null ? "скрыто" : formatMoney(row.amount_rub as string | number)}</strong>
+                  </div>;
+                })}
+              </section>
+              <section aria-label="Валютная структура закупок">
+                <h3>Открытые закупки в иностранной валюте</h3>
+                {scoringV2 && visibleCurrencies.length > 0 && <div aria-hidden="true" className="executive-procurement-distribution executive-procurement-distribution--currency">{visibleCurrencies.map((row) => <i key={String(row.currency)} style={{ flexGrow: Math.max(0, Number(row.count || 0)) }} />)}</div>}
+                {visibleCurrencies.map((row) => {
+                  const share = rowShare(row);
+                  return <div className="executive-procurement-breakdown-row" key={String(row.currency)}>
+                    <span>{String(row.currency || "—")}{share === null ? "" : ` · ${share.toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`}</span>
+                    <strong>{String(row.count || 0)} · {row.amount_rub == null ? "скрыто" : formatMoney(row.amount_rub as string | number)}</strong>
+                  </div>;
+                })}
+                {rubCurrency && <div className="executive-procurement-rub-row"><span>Рублёвые заказы</span><strong>{String(rubCurrency.count || 0)} · {rubCurrency.amount_rub == null ? "скрыто" : formatMoney(rubCurrency.amount_rub as string | number)}</strong></div>}
+              </section>
+            </div>
+          )}
+          {Object.keys(dataQuality).length > 0 && (
+            <details className="executive-procurement-quality">
+              <summary>Проблемы в данных</summary>
+              <p>Полнота ответственных: {String(dataQuality.responsible_coverage_pct ?? "—")}% · без ответственного: {String(dataQuality.missing_responsible_count ?? 0)} · без ожидаемой даты после карго: {String(dataQuality.missing_expected_receipt_after_cargo_count ?? 0)}</p>
+            </details>
+          )}
+          <details className="executive-procurement-source">
+            <summary>Об источнике</summary>
+            <p>Текущие открытые заказы карго и ВЭД из 1С. Витрина работает только на чтение и не является платёжным календарём.</p>
+            <span>Источник сформирован {formatDateTime(generatedAt)}.</span>
+          </details>
+        </>
+      )}
     </section>
   );
 }
@@ -1567,6 +1827,25 @@ function formatProfitLossAmount(value: string | number | null | undefined) {
   return value === null || value === undefined ? "не подключено" : formatMoney(value);
 }
 
+function isReceiptSurplus(value: string | number | null | undefined) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed < 0;
+}
+
+function formatInventoryLossMagnitude(value: string | number | null | undefined) {
+  if (!isReceiptSurplus(value)) return formatProfitLossAmount(value);
+  return formatMoney(Math.abs(Number(value)));
+}
+
+function formatInventoryLossResult(value: string | number | null | undefined) {
+  if (!isReceiptSurplus(value)) return formatProfitLossAmount(value);
+  return `Превышение оприходований: ${formatMoney(Math.abs(Number(value)))}`;
+}
+
+function inventoryStoreKey(store: { store_ref: string; store_name: string }) {
+  return store.store_ref || `name:${store.store_name}`;
+}
+
 function profitLossRowDetail(row: ExecutiveProfitLossBreakdownRow) {
   const margin = row.gross_margin_pct === null || row.gross_margin_pct === undefined
     ? "маржа: нет данных"
@@ -1951,21 +2230,334 @@ function CashflowPeriodPanel({ asOf }: { asOf: string }) {
   );
 }
 
-function ProfitLossPeriodPanel({ asOf }: { asOf: string }) {
-  const [dateFrom, setDateFrom] = useState(monthStartIso(asOf));
-  const [dateTo, setDateTo] = useState(asOf);
+export function InventoryLossPanel({ data }: { data?: ExecutiveProfitLossInventoryLoss | null }) {
+  const [storeMode, setStoreMode] = useState<"all" | "above_norm">("all");
+  const [storeRef, setStoreRef] = useState("");
+  const [operationMode, setOperationMode] = useState<"all" | "writeoff" | "receipt">("all");
+
+  if (!data || ["source_missing", "source_error"].includes(data.source_status)) {
+    return (
+      <section className="executive-profit-loss-lines" aria-label="Товарные потери за месяц">
+        <header>
+          <h3>Товарные потери за месяц</h3>
+          <span>{data ? statusLabel(data.source_status) : "нет данных"}</span>
+        </header>
+        <div className="executive-cashflow-period__empty">
+          {data?.note || "Месячный отчет по списаниям и оприходованиям не подключен."}
+        </div>
+      </section>
+    );
+  }
+
+  const visibleStores = data.stores.filter((store) => storeMode === "all" || store.above_norm);
+  const visibleDocuments = data.top_documents.filter((document) => {
+    if (storeRef && inventoryStoreKey(document) !== storeRef) return false;
+    if (operationMode === "receipt") return document.operation_kind === "inventory_receipt";
+    if (operationMode === "writeoff") return document.operation_kind !== "inventory_receipt";
+    return true;
+  });
+  const maxHistoryLoss = Math.max(
+    ...data.history.map((item) => Math.abs(Number(item.loss_amount) || 0)),
+    1
+  );
+  const detailReady = !["source_missing", "source_error"].includes(data.detail_source_status);
+  const receiptSurplus = isReceiptSurplus(data.loss_amount);
+  const normSourceStatus = data.data_quality.norm_source_status || "unknown";
+  const storeScopeStatus = data.data_quality.store_scope_status || "unknown";
+  const normHint = {
+    approved: "утвержденный KPI",
+    provided: "явно заданный норматив",
+    fallback: "резервный норматив",
+    missing: "норматив не найден",
+    unknown: "источник не указан",
+  }[normSourceStatus] || statusLabel(normSourceStatus);
+  const storeScopeCountLabel = storeScopeStatus === "approved"
+    ? "Утверждено магазинов"
+    : storeScopeStatus === "draft"
+      ? "Магазинов в черновике"
+      : "Магазинов в контуре";
+
+  return (
+    <section className="executive-inventory-loss" aria-label="Товарные потери за месяц">
+      <header className="executive-inventory-loss__header">
+        <div>
+          <h3>Товарные потери за месяц</h3>
+          <span>{data.note || "Справочный блок вне расчета операционной прибыли."}</span>
+        </div>
+        <strong>{`${data.month} · ${statusLabel(data.source_status)}`}</strong>
+      </header>
+
+      <div className="executive-profit-loss-lines__rows">
+        <div className="executive-profit-loss-line executive-profit-loss-line--metric">
+          <span>Списания товаров</span>
+          <strong>{formatProfitLossAmount(data.writeoff_amount)}</strong>
+          <small>Инвентаризационные и дополнительные списания.</small>
+        </div>
+        <div className="executive-profit-loss-line executive-profit-loss-line--metric">
+          <span>Оприходования товаров</span>
+          <strong>{formatProfitLossAmount(data.receipt_amount)}</strong>
+          <small>Оприходования по результатам инвентаризаций.</small>
+        </div>
+        <div className={`executive-profit-loss-line executive-profit-loss-line--total${receiptSurplus ? " executive-profit-loss-line--receipt-surplus" : ""}`}>
+          <span>{receiptSurplus ? "Превышение оприходований" : "Чистые товарные потери"}</span>
+          <strong>{formatInventoryLossMagnitude(data.loss_amount)}</strong>
+          <small>
+            {receiptSurplus ? "Оприходования минус списания" : "Списания минус оприходования"}
+            {data.loss_pct !== null && data.loss_pct !== undefined
+              ? ` · ${formatPercentPoints(receiptSurplus ? Math.abs(Number(data.loss_pct)) : data.loss_pct)} от продаж`
+              : ""}
+          </small>
+        </div>
+      </div>
+
+      <div className="executive-panel__kpis executive-inventory-loss__kpis">
+        <MetricCard
+          hint={normHint}
+          label="Норматив"
+          tooltip={`Норматив shrinkage_rate для руководителя сети. Статус источника: ${statusLabel(normSourceStatus)}.`}
+          value={formatPercentPoints(data.norm_pct)}
+        />
+        <MetricCard
+          hint="факт минус норматив"
+          label="Отклонение"
+          tone={
+            data.variance_to_norm_pct === null || data.variance_to_norm_pct === undefined
+              ? "neutral"
+              : Number(data.variance_to_norm_pct) > 0
+                ? "warning"
+                : "success"
+          }
+          tooltip="Положительное значение означает превышение норматива."
+          value={formatPercentPoints(data.variance_to_norm_pct)}
+        />
+        <MetricCard
+          hint={data.previous_month?.month || "нет опубликованного месяца"}
+          label="Прошлый месяц"
+          tooltip="Чистые товарные потери за непосредственно предыдущий календарный месяц."
+          value={formatInventoryLossResult(data.previous_month?.loss_amount)}
+        />
+        <MetricCard
+          hint={statusLabel(data.history_source_status)}
+          label="Среднее за 3 месяца"
+          tooltip="Среднее по трем предыдущим опубликованным месяцам в пределах года."
+          value={formatInventoryLossResult(data.average_loss_amount_3m)}
+        />
+      </div>
+
+      {data.history.length > 0 && (
+        <section className="executive-inventory-loss__history" aria-label="Динамика товарных потерь">
+          <h4>Динамика</h4>
+          {data.history.map((item) => (
+            <div className="executive-cashflow-day" key={item.month}>
+              <span>{item.month}</span>
+              <div>
+                <b
+                  className={isReceiptSurplus(item.loss_amount) ? "is-receipt-surplus" : undefined}
+                  style={{
+                    width: `${Math.max(3, Math.round((Math.abs(Number(item.loss_amount) || 0) / maxHistoryLoss) * 100))}%`,
+                  }}
+                />
+              </div>
+              <strong>{formatInventoryLossResult(item.loss_amount)}</strong>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {!detailReady ? (
+        <div className="executive-cashflow-period__empty">
+          {data.schema_version < 2
+            ? "Источник v1 содержит только сетевые итоги. Детализация по магазинам и документам недоступна."
+            : "Источник v2 опубликован без доступной детализации по магазинам и документам."}
+        </div>
+      ) : (
+        <>
+          <section className="executive-inventory-loss__section" aria-label="Потери по магазинам">
+            <header>
+              <div>
+                <h4>По магазинам</h4>
+                <span>Сначала показаны точки с наибольшими чистыми потерями.</span>
+              </div>
+              <div className="executive-panel__filters">
+                <button
+                  aria-pressed={storeMode === "all"}
+                  onClick={() => setStoreMode("all")}
+                  type="button"
+                >
+                  Все
+                </button>
+                <button
+                  aria-pressed={storeMode === "above_norm"}
+                  onClick={() => setStoreMode("above_norm")}
+                  type="button"
+                >
+                  Выше норматива
+                </button>
+              </div>
+            </header>
+            <div className="executive-inventory-loss__table-wrap">
+              <table className="executive-inventory-loss__table">
+                <thead>
+                  <tr>
+                    <th>Магазин</th>
+                    <th>Списания</th>
+                    <th>Оприходования</th>
+                    <th>Результат</th>
+                    <th>Доля / норматив</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleStores.map((store) => (
+                    <tr
+                      className={store.above_norm ? "is-warning" : isReceiptSurplus(store.loss_amount) ? "is-receipt-surplus" : ""}
+                      key={inventoryStoreKey(store)}
+                    >
+                      <td>{store.store_name}</td>
+                      <td>{formatProfitLossAmount(store.writeoff_amount)}</td>
+                      <td>{formatProfitLossAmount(store.receipt_amount)}</td>
+                      <td>{formatInventoryLossResult(store.loss_amount)}</td>
+                      <td>
+                        {formatPercentPoints(store.loss_pct)} / {formatPercentPoints(store.norm_pct)}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {visibleStores.length === 0 && (
+                <div className="executive-cashflow-period__empty">Нет магазинов по выбранному фильтру.</div>
+              )}
+            </div>
+          </section>
+
+          <section className="executive-inventory-loss__section" aria-label="Крупнейшие товарные операции">
+            <header>
+              <div>
+                <h4>Крупнейшие операции</h4>
+                <span>До 20 документов из опубликованного месячного снимка.</span>
+              </div>
+              <div className="executive-panel__filters">
+                <label>
+                  Магазин
+                  <select aria-label="Магазин документов" onChange={(event) => setStoreRef(event.target.value)} value={storeRef}>
+                    <option value="">Все</option>
+                    {data.stores.map((store) => (
+                      <option key={inventoryStoreKey(store)} value={inventoryStoreKey(store)}>{store.store_name}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  Операция
+                  <select
+                    aria-label="Тип товарной операции"
+                    onChange={(event) => setOperationMode(event.target.value as "all" | "writeoff" | "receipt")}
+                    value={operationMode}
+                  >
+                    <option value="all">Все</option>
+                    <option value="writeoff">Списания</option>
+                    <option value="receipt">Оприходования</option>
+                  </select>
+                </label>
+              </div>
+            </header>
+            <div className="executive-inventory-loss__table-wrap">
+              <table className="executive-inventory-loss__table">
+                <thead>
+                  <tr>
+                    <th>Документ</th>
+                    <th>Дата</th>
+                    <th>Операция</th>
+                    <th>Магазин</th>
+                    <th>Сумма</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {visibleDocuments.map((document) => (
+                    <tr key={document.stable_key}>
+                      <td>{document.document_number || "Без номера"}</td>
+                      <td>{formatDate(document.document_date)}</td>
+                      <td>{document.operation_label}</td>
+                      <td>{document.store_name}</td>
+                      <td>{formatProfitLossAmount(document.amount)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {visibleDocuments.length === 0 && (
+                <div className="executive-cashflow-period__empty">Нет документов по выбранному фильтру.</div>
+              )}
+            </div>
+          </section>
+
+          <section className="executive-inventory-loss__section" aria-label="Требует действий">
+            <header>
+              <div>
+                <h4>Требует действий</h4>
+                <span>Read-only очередь: задачи в Bitrix24 не создаются.</span>
+              </div>
+              <strong>{data.actions.length}</strong>
+            </header>
+            {data.actions.length === 0 ? (
+              <div className="executive-cashflow-period__empty">Сигналов по нормативу и качеству данных нет.</div>
+            ) : (
+              <div className="executive-inventory-loss__actions">
+                {data.actions.map((action) => (
+                  <article key={action.stable_key}>
+                    <div>
+                      <strong>{action.title}</strong>
+                      <span>{action.description}</span>
+                    </div>
+                    <small>
+                      Ответственный: {action.responsible_name || "Руководитель сети"}. {action.recommended_action}
+                    </small>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+        </>
+      )}
+
+      <details className="executive-inventory-loss__quality">
+        <summary>Контроль качества данных · {statusLabel(data.data_quality.source_status)}</summary>
+        <dl>
+          <div><dt>{storeScopeCountLabel}</dt><dd>{data.data_quality.approved_store_count}</dd></div>
+          <div><dt>Статус контура</dt><dd>{statusLabel(storeScopeStatus)}{data.data_quality.store_scope_month ? ` · ${data.data_quality.store_scope_month}` : ""}</dd></div>
+          <div><dt>Источник норматива</dt><dd>{statusLabel(normSourceStatus)}</dd></div>
+          <div><dt>Сопоставлено магазинов</dt><dd>{data.data_quality.matched_store_count}</dd></div>
+          <div><dt>Несопоставлено документов</dt><dd>{data.data_quality.unmatched_document_count}</dd></div>
+          <div><dt>Исключено тех. документов</dt><dd>{data.data_quality.excluded_document_count || 0}</dd></div>
+          <div><dt>Исключённые тех. списания</dt><dd>{formatMoney(data.data_quality.excluded_writeoff_amount)}</dd></div>
+          <div><dt>Исключённые тех. оприходования</dt><dd>{formatMoney(data.data_quality.excluded_receipt_amount)}</dd></div>
+          <div><dt>Несопоставленные списания</dt><dd>{formatMoney(data.data_quality.unmatched_writeoff_amount)}</dd></div>
+          <div><dt>Несопоставленные оприходования</dt><dd>{formatMoney(data.data_quality.unmatched_receipt_amount)}</dd></div>
+        </dl>
+      </details>
+
+      {data.warnings.map((warning) => (
+        <div className="executive-cashflow-period__note" key={warning}>{warning}</div>
+      ))}
+    </section>
+  );
+}
+
+function ProfitLossPeriodPanel({
+  dateFrom,
+  dateTo,
+  refreshNonce,
+}: {
+  dateFrom: string;
+  dateTo: string;
+  refreshNonce: number;
+}) {
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [message, setMessage] = useState("");
   const [data, setData] = useState<ExecutiveProfitLossPeriodResponse | null>(null);
 
   useEffect(() => {
-    setDateFrom(monthStartIso(asOf));
-    setDateTo(asOf);
-  }, [asOf]);
-
-  useEffect(() => {
     let cancelled = false;
-    setStatus("loading");
+    Promise.resolve().then(() => {
+      if (!cancelled) setStatus("loading");
+    });
     fetchExecutiveProfitLossPeriod({
       date_from: dateFrom,
       date_to: dateTo,
@@ -1984,7 +2576,7 @@ function ProfitLossPeriodPanel({ asOf }: { asOf: string }) {
     return () => {
       cancelled = true;
     };
-  }, [dateFrom, dateTo]);
+  }, [dateFrom, dateTo, refreshNonce]);
 
   const grossMargin = profitLossRatioByKey(data, "gross_margin_pct");
   const operatingMargin = profitLossRatioByKey(data, "operating_margin_pct");
@@ -1998,30 +2590,12 @@ function ProfitLossPeriodPanel({ asOf }: { asOf: string }) {
     data && !["source_missing", "source_error"].includes(data.expense_source_status)
   );
 
-  const setQuickRange = (days: number) => {
-    setDateTo(asOf);
-    setDateFrom(addDaysIso(asOf, -(days - 1)));
-  };
-
   return (
     <section className="executive-cashflow-period executive-profit-loss-period" aria-label="Отчет о прибылях и убытках за период">
       <header className="executive-panel__header">
         <div>
           <h2>Отчет о прибылях и убытках</h2>
           <span>Выручка, себестоимость, валовая прибыль и расходы по оплатам ДДС</span>
-        </div>
-        <div className="executive-panel__filters">
-          <button type="button" onClick={() => setQuickRange(7)}>
-            7 дней
-          </button>
-          <button type="button" onClick={() => setQuickRange(30)}>
-            30 дней
-          </button>
-          <button type="button" onClick={() => setDateFrom(monthStartIso(asOf))}>
-            Месяц
-          </button>
-          <input type="date" value={dateFrom} onChange={(event) => setDateFrom(event.target.value)} />
-          <input type="date" value={dateTo} onChange={(event) => setDateTo(event.target.value)} />
         </div>
       </header>
 
@@ -2110,6 +2684,11 @@ function ProfitLossPeriodPanel({ asOf }: { asOf: string }) {
               ))}
             </div>
           </section>
+
+          <InventoryLossPanel
+            data={data.inventory_loss}
+            key={data.inventory_loss?.month || "inventory-loss-missing"}
+          />
 
           <div className="executive-cashflow-period__chart" aria-label="Динамика ОПУ по дням">
             {data.daily.slice(-31).map((row) => {
@@ -2203,6 +2782,217 @@ function ProfitLossPeriodPanel({ asOf }: { asOf: string }) {
   );
 }
 
+function onlineStoreValue(
+  data: ExecutiveOnlineStorePeriodResponse | null,
+  key: string,
+  scope: "totals" | "comparison" = "totals"
+) {
+  const value = data?.[scope]?.[key];
+  return value === null || value === undefined ? null : value;
+}
+
+function onlineStoreDelta(
+  current: string | number | null,
+  previous: string | number | null
+): MetricDelta {
+  const currentValue = numericValue(current);
+  const previousValue = numericValue(previous);
+  if (currentValue === null || previousValue === null || previousValue === 0) {
+    return { text: "нет сопоставимой базы", direction: "flat", isFavorable: null };
+  }
+  const delta = ((currentValue - previousValue) / Math.abs(previousValue)) * 100;
+  const direction: MetricDelta["direction"] = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
+  return {
+    text: `${delta > 0 ? "+" : ""}${delta.toFixed(1)}% к прошлому периоду`,
+    direction,
+    isFavorable: direction === "flat" ? null : direction === "up",
+  };
+}
+
+function onlineStoreConversionDelta(
+  current: string | number | null,
+  previous: string | number | null
+): MetricDelta {
+  const currentValue = numericValue(current);
+  const previousValue = numericValue(previous);
+  if (currentValue === null || previousValue === null) {
+    return { text: "нет сопоставимой базы", direction: "flat", isFavorable: null };
+  }
+  const delta = currentValue - previousValue;
+  const direction: MetricDelta["direction"] = delta > 0 ? "up" : delta < 0 ? "down" : "flat";
+  return {
+    text: `${delta > 0 ? "+" : ""}${delta.toFixed(2)} п.п. к прошлому периоду`,
+    direction,
+    isFavorable: direction === "flat" ? null : direction === "up",
+  };
+}
+
+function landingPageLabel(value: string) {
+  try {
+    const url = new URL(value);
+    return `${url.pathname}${url.search}` || "/";
+  } catch {
+    return value;
+  }
+}
+
+function landingPageHref(value: string) {
+  try {
+    const url = new URL(value);
+    return ["http:", "https:"].includes(url.protocol) ? url.toString() : null;
+  } catch {
+    return null;
+  }
+}
+
+export function OnlineStorePanel({
+  data,
+  message,
+  status,
+}: {
+  data: ExecutiveOnlineStorePeriodResponse | null;
+  message: string;
+  status: "loading" | "ready" | "error";
+}) {
+  const daily = data?.daily.slice(-31) || [];
+  const maxDailyVisits = Math.max(1, ...daily.map((row) => row.visits));
+  const funnel = data
+    ? [
+        { key: "click_buy", label: "Кликнули «Купить»", value: numericValue(onlineStoreValue(data, "click_buy")) || 0 },
+        { key: "begin_checkout", label: "Начали оформление", value: numericValue(onlineStoreValue(data, "begin_checkout")) || 0 },
+        { key: "purchases", label: "Покупки", value: numericValue(onlineStoreValue(data, "purchases")) || 0 },
+      ]
+    : [];
+  const maxFunnelValue = Math.max(1, ...funnel.map((row) => row.value));
+
+  return (
+    <section className="executive-cashflow-period executive-online-store" aria-label="Интернет-магазин">
+      <header className="executive-panel__header">
+        <div>
+          <h2>Интернет-магазин</h2>
+          <span>Спрос, поведение и покупки на master-mobile.ru по данным Яндекс Метрики</span>
+        </div>
+      </header>
+
+      {status === "error" && <div className="executive-cashflow-period__empty">{message}</div>}
+      {status === "loading" && !data && <div className="executive-cashflow-period__empty">Загрузка Яндекс Метрики...</div>}
+      {data && (
+        <>
+          <div aria-label="Статус источника интернет-магазина" className="executive__topline">
+            <div><span>Источник</span><strong>Яндекс Метрика</strong></div>
+            <div><span>Статус</span><strong>{statusLabel(data.source_status)}</strong></div>
+            <div><span>Период</span><strong>{formatDate(data.date_from)} — {formatDate(data.date_to)}</strong></div>
+            <div><span>Обновлено</span><strong>{formatDateTime(data.generated_at)}</strong></div>
+          </div>
+
+          {data.note && <div className="executive-cashflow-period__note">{data.note}</div>}
+
+          <div aria-label="Основные KPI интернет-магазина" className="executive-panel__kpis">
+            <MetricCard
+              delta={onlineStoreDelta(onlineStoreValue(data, "visits"), onlineStoreValue(data, "visits", "comparison"))}
+              label="Визиты"
+              tooltip="Сессии на сайте за выбранный период."
+              value={formatMetricValue(onlineStoreValue(data, "visits"))}
+            />
+            <MetricCard
+              delta={onlineStoreDelta(onlineStoreValue(data, "visitors"), onlineStoreValue(data, "visitors", "comparison"))}
+              label="Посетители"
+              tooltip="Уникальные посетители сайта по модели Яндекс Метрики."
+              value={formatMetricValue(onlineStoreValue(data, "visitors"))}
+            />
+            <MetricCard
+              delta={onlineStoreDelta(onlineStoreValue(data, "purchases"), onlineStoreValue(data, "purchases", "comparison"))}
+              label="Покупки на сайте"
+              tooltip="Достижения e-commerce цели «Покупка»; это не финансовая выручка 1С."
+              value={formatMetricValue(onlineStoreValue(data, "purchases"))}
+            />
+            <MetricCard
+              delta={onlineStoreConversionDelta(
+                onlineStoreValue(data, "purchase_conversion_pct"),
+                onlineStoreValue(data, "purchase_conversion_pct", "comparison")
+              )}
+              label="Конверсия в покупку"
+              tooltip="Покупки, делённые на визиты выбранного периода."
+              value={formatPercentPoints(onlineStoreValue(data, "purchase_conversion_pct"))}
+            />
+            <MetricCard
+              hint={`${formatMetricValue(onlineStoreValue(data, "primary_source_purchases"))} покупок · ${formatPercentPoints(onlineStoreValue(data, "primary_source_purchase_share_pct"))}`}
+              label="Главный канал покупок"
+              tooltip="Канал, выбранный текущим управленческим правилом Метрики."
+              value={String(onlineStoreValue(data, "primary_source_name") || "Не определено")}
+            />
+          </div>
+
+          <div aria-label="Сигналы намерения посетителей" className="executive-panel__kpis">
+            <MetricCard label="Клики «Купить»" value={formatMetricValue(onlineStoreValue(data, "click_buy"))} />
+            <MetricCard label="Начали оформление" value={formatMetricValue(onlineStoreValue(data, "begin_checkout"))} />
+            <MetricCard label="Клики по телефону" value={formatMetricValue(onlineStoreValue(data, "phone_clicks"))} />
+            <MetricCard label="Поиск по сайту" value={formatMetricValue(onlineStoreValue(data, "site_searches"))} />
+          </div>
+
+          <div className="executive-online-store__analysis">
+            <section aria-label="Динамика трафика интернет-магазина" className="executive-sales-daily">
+              <h3>Визиты и покупки по дням</h3>
+              {daily.length === 0 ? (
+                <div className="executive-cashflow-period__empty">За период нет дневных данных.</div>
+              ) : (
+                daily.map((row) => (
+                  <div className="executive-sales-day" key={row.business_date}>
+                    <span>{formatDate(row.business_date)}</span>
+                    <div><i style={{ width: `${Math.max(2, Math.round((row.visits / maxDailyVisits) * 100))}%` }} /></div>
+                    <strong>{formatMetricValue(row.visits)} визитов · {formatMetricValue(row.purchases)} покупок</strong>
+                  </div>
+                ))
+              )}
+            </section>
+
+            <section aria-label="Воронка интернет-магазина" className="executive-sales-daily executive-online-store__funnel">
+              <h3>Воронка намерения</h3>
+              {funnel.map((row) => (
+                <div className="executive-sales-day" key={row.key}>
+                  <span>{row.label}</span>
+                  <div><i style={{ width: `${Math.max(2, Math.round((row.value / maxFunnelValue) * 100))}%` }} /></div>
+                  <strong>{formatMetricValue(row.value)}</strong>
+                </div>
+              ))}
+            </section>
+          </div>
+
+          <div className="executive-cashflow-period__tables executive-online-store__tables">
+            <section aria-label="Каналы трафика интернет-магазина">
+              <h3>Каналы трафика</h3>
+              {data.traffic_sources.slice(0, 8).map((row) => (
+                <div className="executive-cashflow-row" key={row.key}>
+                  <span>{row.label}</span>
+                  <strong>{formatMetricValue(row.purchases)} покупок</strong>
+                  <small>{formatMetricValue(row.visits)} визитов · конверсия {formatPercentPoints(row.purchase_conversion_pct)}</small>
+                </div>
+              ))}
+              {data.traffic_sources.length === 0 && <div className="executive-cashflow-period__empty">Нет данных по каналам.</div>}
+            </section>
+            <section aria-label="Посадочные страницы интернет-магазина">
+              <h3>Посадочные страницы</h3>
+              {data.landing_pages.slice(0, 10).map((row) => {
+                const href = landingPageHref(row.url);
+                return (
+                  <div className="executive-cashflow-row" key={row.url}>
+                    <span>
+                      {href ? <a href={href} rel="noreferrer" target="_blank">{landingPageLabel(row.url)}</a> : landingPageLabel(row.url)}
+                    </span>
+                    <strong>{formatMetricValue(row.purchases)} покупок</strong>
+                    <small>{formatMetricValue(row.visits)} визитов · {formatMetricValue(row.click_buy)} кликов «Купить» · конверсия {formatPercentPoints(row.purchase_conversion_pct)}</small>
+                  </div>
+                );
+              })}
+              {data.landing_pages.length === 0 && <div className="executive-cashflow-period__empty">Нет данных по посадочным страницам.</div>}
+            </section>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 function salesValue(
   data: ExecutiveSalesPeriodResponse | null,
   key: string,
@@ -2235,14 +3025,12 @@ function salesDelta(
 
 export function SalesBreakdown({
   emptyMessage = "Нет продаж в выбранном периоде.",
-  note,
   onReset,
   title,
   rows,
   onSelect,
 }: {
   emptyMessage?: string;
-  note?: string;
   onReset?: () => void;
   title: string;
   rows: ExecutiveSalesBreakdownRow[];
@@ -2260,7 +3048,6 @@ export function SalesBreakdown({
           </button>
         )}
       </header>
-      {note && <div className="executive-sales-breakdown-section__note" role="status">{note}</div>}
       {visibleRows.length === 0 ? (
         <div className="executive-cashflow-period__empty">{emptyMessage}</div>
       ) : (
@@ -2508,6 +3295,41 @@ function SalesLineChart({
   );
 }
 
+function SalesDailyChart({ daily }: { daily: ExecutiveSalesDailyRow[] }) {
+  const visibleDays = daily.slice(-31);
+  const values = visibleDays.map(
+    (row) => numericValue(row.actual_revenue) ?? numericValue(row.forecast_revenue) ?? 0
+  );
+  if (!values.some((value) => value !== 0)) return null;
+  const maxValue = Math.max(1, ...values.map((value) => Math.abs(value)));
+  return (
+    <div aria-label="Выручка по дням выбранного периода" className="executive-sales-daily">
+      <h3>По дням выбранного периода</h3>
+      {visibleDays.map((row, index) => {
+        const actual = numericValue(row.actual_revenue);
+        const isForecast = actual === null && numericValue(row.forecast_revenue) !== null;
+        const value = values[index];
+        const width = `${Math.max(2, Math.round((Math.abs(value) / maxValue) * 100))}%`;
+        return (
+          <div className="executive-sales-day" key={row.business_date}>
+            <span>{formatDate(row.business_date)}</span>
+            <div>
+              <i
+                className={isForecast ? "executive-sales-day__bar--forecast" : undefined}
+                style={{ width }}
+              />
+            </div>
+            <strong>
+              {formatMoney(value)}
+              {isForecast && <small>прогноз</small>}
+            </strong>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function SalesMonthTooltip({
   monthly,
   hoveredIndex,
@@ -2677,37 +3499,33 @@ function diagnosticCountLabel(value: number, one: string, few: string, many: str
   return `${value} ${word}`;
 }
 
-function salesBreakdownPlanStatus(row: ExecutiveSalesBreakdownRow) {
-  const status = row.meta?.plan_status;
-  return typeof status === "string" ? status : null;
-}
-
-function salesStoreNeedsAttention(row: ExecutiveSalesBreakdownRow) {
-  const status = salesBreakdownPlanStatus(row);
-  const attainment = numericValue(
-    row.meta?.plan_attainment_pct as string | number | null | undefined
-  );
-  const approvedRevenueMissing =
-    Object.prototype.hasOwnProperty.call(row.meta, "approved_revenue") &&
-    numericValue(row.meta?.approved_revenue as string | number | null | undefined) === null;
-  return (
-    Boolean(status && !["ready", "complete"].includes(status)) ||
-    approvedRevenueMissing ||
-    (attainment !== null && attainment < 1)
-  );
-}
-
-function salesManagerNeedsAttention(row: ExecutiveSalesBreakdownRow) {
-  const status = salesBreakdownPlanStatus(row);
-  const marginGap = numericValue(row.meta?.margin_gap_pp as string | number | null | undefined);
-  const approvedMarginMissing =
-    Object.prototype.hasOwnProperty.call(row.meta, "approved_margin_pct") &&
-    numericValue(row.meta?.approved_margin_pct as string | number | null | undefined) === null;
-  return (
-    Boolean(status && !["ready", "complete"].includes(status)) ||
-    approvedMarginMissing ||
-    (marginGap !== null && marginGap < 0)
-  );
+function salesProblemRows(
+  metric: ExecutiveSalesDiagnosticKpi | undefined,
+  rows: ExecutiveSalesBreakdownRow[]
+): ExecutiveSalesBreakdownRow[] {
+  const raw = metric?.meta?.problem;
+  if (!Array.isArray(raw)) return [];
+  const rowByKey = new Map(rows.map((row) => [row.key, row]));
+  return raw.flatMap((item) => {
+    if (!item || typeof item !== "object") return [];
+    const entry = item as Record<string, unknown>;
+    const key = typeof entry.key === "string" ? entry.key : "";
+    if (!key) return [];
+    const existing = rowByKey.get(key);
+    if (existing) return [existing];
+    const label = (typeof entry.label === "string" && entry.label) || key;
+    return [
+      {
+        key,
+        label,
+        revenue: "0",
+        gross_profit: "0",
+        sales_count: "0",
+        gross_margin_pct: null,
+        meta: {},
+      },
+    ];
+  });
 }
 
 export function SalesPeriodPanel({
@@ -2738,11 +3556,21 @@ export function SalesPeriodPanel({
   const diagnosticMetrics = data?.diagnostic_kpis || [];
   const diagnosticMetricsByKey = new Map(diagnosticMetrics.map((metric) => [metric.key, metric]));
   const problemStores = useMemo(
-    () => (data?.by_store || []).filter(salesStoreNeedsAttention),
+    () =>
+      salesProblemRows(
+        (data?.diagnostic_kpis || []).find((metric) => metric.key === "stores_below_plan_count"),
+        data?.by_store || []
+      ),
     [data]
   );
   const problemManagers = useMemo(
-    () => (data?.by_manager || []).filter(salesManagerNeedsAttention),
+    () =>
+      salesProblemRows(
+        (data?.diagnostic_kpis || []).find(
+          (metric) => metric.key === "managers_below_target_margin_count"
+        ),
+        data?.by_manager || []
+      ),
     [data]
   );
   const attentionCount = diagnosticMetrics.filter((metric) =>
@@ -2768,16 +3596,6 @@ export function SalesPeriodPanel({
     : planDiagnosticStatuses.includes("partial")
       ? "partial"
       : data?.plan_status;
-  const storeDiagnostic = diagnosticMetricsByKey.get("stores_below_plan_count");
-  const managerDiagnostic = diagnosticMetricsByKey.get("managers_below_target_margin_count");
-  const storeDiagnosticValue = numericValue(storeDiagnostic?.value);
-  const managerDiagnosticValue = numericValue(managerDiagnostic?.value);
-  const storeListIsPartial =
-    storeDiagnostic?.source_status === "partial" ||
-    (storeDiagnosticValue !== null && storeDiagnosticValue !== problemStores.length);
-  const managerListIsPartial =
-    managerDiagnostic?.source_status === "partial" ||
-    (managerDiagnosticValue !== null && managerDiagnosticValue !== problemManagers.length);
 
   const showProblems = (focus: Exclude<SalesProblemFocus, null>) => {
     setProblemFocus(focus);
@@ -2844,7 +3662,7 @@ export function SalesPeriodPanel({
                 <MetricCard
                   hint={data.forecast_status === "ready" ? "на конец периода" : statusLabel(data.forecast_status)}
                   label="Прогноз выручки"
-                  tone={data.forecast_status === "ready" ? "neutral" : "warning"}
+                  tone={["ready", "complete"].includes(data.forecast_status) ? "neutral" : "warning"}
                   tooltip="Медиана выручки по тому же дню недели за 4 предыдущие недели; для периода, уже полностью в прошлом, не строится."
                   value={forecastRevenueNum === null ? "нет данных" : formatMoney(forecastRevenueNum)}
                 />
@@ -2882,10 +3700,13 @@ export function SalesPeriodPanel({
               </div>
             )}
             mainChart={data.monthly.length > 0 && (
-              <div className="executive-sales-charts">
-                <SalesLineChart hoveredIndex={hoveredIndex} monthly={data.monthly} onHover={setHoveredIndex} />
-                <SalesMonthTooltip hoveredIndex={hoveredIndex} monthly={data.monthly} />
-              </div>
+              <>
+                <div className="executive-sales-charts">
+                  <SalesLineChart hoveredIndex={hoveredIndex} monthly={data.monthly} onHover={setHoveredIndex} />
+                  <SalesMonthTooltip hoveredIndex={hoveredIndex} monthly={data.monthly} />
+                </div>
+                <SalesDailyChart daily={data.daily} />
+              </>
             )}
             diagnosticKpis={(
               <section aria-label="Диагностические KPI продаж" className="executive-sales-diagnostics">
@@ -2965,7 +3786,6 @@ export function SalesPeriodPanel({
               <div className="executive-cashflow-period__tables executive-sales-period__tables" ref={breakdownsRef}>
                 <SalesBreakdown
                   emptyMessage="Проблемных магазинов не найдено."
-                  note={problemFocus === "stores" && storeListIsPartial ? "Данные сопоставлены частично" : undefined}
                   onReset={problemFocus === "stores" ? () => setProblemFocus(null) : undefined}
                   onSelect={onSelectStore}
                   rows={problemFocus === "stores" ? problemStores : data.by_store}
@@ -2973,7 +3793,6 @@ export function SalesPeriodPanel({
                 />
                 <SalesBreakdown
                   emptyMessage="Проблемных менеджеров не найдено."
-                  note={problemFocus === "managers" && managerListIsPartial ? "Данные сопоставлены частично" : undefined}
                   onReset={problemFocus === "managers" ? () => setProblemFocus(null) : undefined}
                   onSelect={onSelectManager}
                   rows={problemFocus === "managers" ? problemManagers : data.by_manager}
@@ -3090,6 +3909,11 @@ export function ActionDetail({
   const correctionSystem = actionPayloadText(action, "correction_system") || action.source_system;
   const correctionDocument = actionPayloadText(action, "correction_document");
   const correctionField = actionPayloadText(action, "correction_field");
+  const managementStage = actionPayloadText(action, "management_stage_label");
+  const deadlineDate = actionPayloadText(action, "deadline_date");
+  const daysOverdue = actionPayloadText(action, "days_overdue");
+  const responsibleName = actionPayloadText(action, "responsible_name");
+  const riskFormula = actionPayloadText(action, "risk_formula");
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -3127,8 +3951,14 @@ export function ActionDetail({
           <dt>Система факта</dt><dd>{correctionSystem}</dd>
           {correctionDocument && <><dt>Документ</dt><dd>{correctionDocument}</dd></>}
           {correctionField && <><dt>Поле</dt><dd>{correctionField}</dd></>}
+          {managementStage && <><dt>Этап</dt><dd>{managementStage}</dd></>}
+          {deadlineDate && <><dt>Расчётный срок</dt><dd>{formatDate(deadlineDate)}</dd></>}
+          {daysOverdue && <><dt>Просрочка</dt><dd>{daysOverdue} дн.</dd></>}
+          {responsibleName && <><dt>Ответственный</dt><dd>{responsibleName}</dd></>}
           {action.amount && <><dt>Сумма</dt><dd>{formatMoney(action.amount, action.currency)}</dd></>}
         </dl>
+
+        {riskFormula && <div className="executive-action-detail__formula"><strong>Почему это риск</strong><p>{riskFormula}</p></div>}
 
         <div className="executive-action-detail__instruction">
           <strong>Что сделать</strong>
@@ -3167,6 +3997,15 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
   const [selectedAction, setSelectedAction] = useState<ExecutiveDashboardAction | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
 
+  const [profitLossDateFrom, setProfitLossDateFrom] = useState(() => monthStartIso(date));
+  const [profitLossDateTo, setProfitLossDateTo] = useState(date);
+  const [profitLossFiltersForDate, setProfitLossFiltersForDate] = useState(date);
+  if (date !== profitLossFiltersForDate) {
+    setProfitLossFiltersForDate(date);
+    setProfitLossDateFrom(monthStartIso(date));
+    setProfitLossDateTo(date);
+  }
+
   const [salesDateFrom, setSalesDateFrom] = useState(() => monthStartIso(date));
   const [salesDateTo, setSalesDateTo] = useState(() => monthEndIso(date));
   const [salesStoreRef, setSalesStoreRef] = useState("");
@@ -3183,6 +4022,18 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
     setSalesManagerRef("");
   }
 
+  const [onlineStoreDateFrom, setOnlineStoreDateFrom] = useState(() => monthStartIso(date));
+  const [onlineStoreDateTo, setOnlineStoreDateTo] = useState(date);
+  const [onlineStoreStatus, setOnlineStoreStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [onlineStoreMessage, setOnlineStoreMessage] = useState("");
+  const [onlineStoreData, setOnlineStoreData] = useState<ExecutiveOnlineStorePeriodResponse | null>(null);
+  const [onlineStoreFiltersForDate, setOnlineStoreFiltersForDate] = useState(date);
+  if (date !== onlineStoreFiltersForDate) {
+    setOnlineStoreFiltersForDate(date);
+    setOnlineStoreDateFrom(monthStartIso(date));
+    setOnlineStoreDateTo(date);
+  }
+
   const setSalesQuickRange = (days: number) => {
     setSalesDateTo(date);
     setSalesDateFrom(addDaysIso(date, -(days - 1)));
@@ -3194,6 +4045,22 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
     setSalesDateTo(monthEndIso(date));
     setSalesStoreRef("");
     setSalesManagerRef("");
+  };
+  const setOnlineStoreQuickRange = (days: number) => {
+    setOnlineStoreDateTo(date);
+    setOnlineStoreDateFrom(addDaysIso(date, -(days - 1)));
+  };
+  const setOnlineStoreCurrentMonth = () => {
+    setOnlineStoreDateFrom(monthStartIso(date));
+    setOnlineStoreDateTo(date);
+  };
+  const setProfitLossQuickRange = (days: number) => {
+    setProfitLossDateTo(date);
+    setProfitLossDateFrom(addDaysIso(date, -(days - 1)));
+  };
+  const setProfitLossCurrentMonth = () => {
+    setProfitLossDateFrom(monthStartIso(date));
+    setProfitLossDateTo(date);
   };
 
   useEffect(() => {
@@ -3223,6 +4090,32 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
       cancelled = true;
     };
   }, [tab, salesDateFrom, salesDateTo, salesStoreRef, salesManagerRef, refreshNonce]);
+
+  useEffect(() => {
+    if (tab !== ONLINE_STORE_TAB_KEY) return;
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (!cancelled) setOnlineStoreStatus("loading");
+    });
+    fetchExecutiveOnlineStorePeriod({
+      date_from: onlineStoreDateFrom,
+      date_to: onlineStoreDateTo,
+    })
+      .then((payload) => {
+        if (cancelled) return;
+        setOnlineStoreData(payload);
+        setOnlineStoreStatus("ready");
+        setOnlineStoreMessage("");
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setOnlineStoreStatus("error");
+        setOnlineStoreMessage(errorMessage(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, onlineStoreDateFrom, onlineStoreDateTo, refreshNonce]);
 
   const navigateDashboard = useCallback(
     (next: { date?: string; tab?: string }, mode: "push" | "replace" = "push") => {
@@ -3267,6 +4160,18 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
         const tabAllowed = isTabAllowed(dashboard, tab);
         const effectiveTab = tabAllowed ? tab : "today";
         if (!tabAllowed && !cancelled) navigateDashboard({ tab: "today" }, "replace");
+        if (effectiveTab === ONLINE_STORE_TAB_KEY) {
+          return [
+            dashboard,
+            {
+              as_of: date,
+              freshness_status: "fresh",
+              source_status: "ready",
+              total_count: 0,
+              payload: [] as ExecutiveDashboardAction[],
+            },
+          ] as const;
+        }
         return fetchExecutiveDashboardActions({
           date,
           status: "open",
@@ -3307,7 +4212,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
   const tabOverviewBlock = useMemo(() => {
     if (!data || tab === "today") return null;
     if (tab === ODDS_CASHFLOW_TAB_KEY) return moneyBlock(data);
-    if ([PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, "creditors_payables"].includes(tab)) return null;
+    if ([PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, ONLINE_STORE_TAB_KEY, "creditors_payables"].includes(tab)) return null;
     return blocks[0] || null;
   }, [blocks, data, tab]);
   const currentAccess = accessLevel || data?.access_level;
@@ -3325,7 +4230,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
           </span>
         </div>
         <div className="executive__controls">
-          {tab !== SALES_TAB_KEY && (
+          {![PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, ONLINE_STORE_TAB_KEY].includes(tab) && (
             <label className="executive__date-field">
               <span>Дата</span>
               <input
@@ -3336,6 +4241,40 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
                 value={date}
               />
             </label>
+          )}
+          {tab === PROFIT_LOSS_TAB_KEY && (
+            <div className="executive__controls-group">
+              <span className="executive__controls-divider" aria-hidden="true" />
+              <Button onClick={() => setProfitLossQuickRange(7)} variant="secondary">
+                7 дней
+              </Button>
+              <Button onClick={() => setProfitLossQuickRange(30)} variant="secondary">
+                30 дней
+              </Button>
+              <Button onClick={setProfitLossCurrentMonth} variant="secondary">
+                Месяц
+              </Button>
+              <label className="executive__date-field">
+                <span>С</span>
+                <input
+                  aria-label="Начало периода прибыли и убытков"
+                  className="app__select executive__date"
+                  onChange={(event) => setProfitLossDateFrom(event.target.value)}
+                  type="date"
+                  value={profitLossDateFrom}
+                />
+              </label>
+              <label className="executive__date-field">
+                <span>По</span>
+                <input
+                  aria-label="Конец периода прибыли и убытков"
+                  className="app__select executive__date"
+                  onChange={(event) => setProfitLossDateTo(event.target.value)}
+                  type="date"
+                  value={profitLossDateTo}
+                />
+              </label>
+            </div>
           )}
           {tab === SALES_TAB_KEY && (
             <div className="executive__controls-group">
@@ -3407,6 +4346,40 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
               </label>
             </div>
           )}
+          {tab === ONLINE_STORE_TAB_KEY && (
+            <div className="executive__controls-group">
+              <span className="executive__controls-divider" aria-hidden="true" />
+              <Button disabled={onlineStoreStatus === "loading"} onClick={() => setOnlineStoreQuickRange(7)} variant="secondary">
+                7 дней
+              </Button>
+              <Button disabled={onlineStoreStatus === "loading"} onClick={() => setOnlineStoreQuickRange(30)} variant="secondary">
+                30 дней
+              </Button>
+              <Button disabled={onlineStoreStatus === "loading"} onClick={setOnlineStoreCurrentMonth} variant="secondary">
+                Месяц
+              </Button>
+              <label className="executive__date-field">
+                <span>С</span>
+                <input
+                  aria-label="Начало периода интернет-магазина"
+                  className="app__select executive__date"
+                  onChange={(event) => setOnlineStoreDateFrom(event.target.value)}
+                  type="date"
+                  value={onlineStoreDateFrom}
+                />
+              </label>
+              <label className="executive__date-field">
+                <span>По</span>
+                <input
+                  aria-label="Конец периода интернет-магазина"
+                  className="app__select executive__date"
+                  onChange={(event) => setOnlineStoreDateTo(event.target.value)}
+                  type="date"
+                  value={onlineStoreDateTo}
+                />
+              </label>
+            </div>
+          )}
           <Button
             disabled={status === "loading"}
             onClick={() => navigateDashboard({ date: todayIso() })}
@@ -3456,7 +4429,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
 
       {data && (
         <>
-          <section aria-label="Состояние витрины" aria-live="polite" className="executive__topline">
+          {!["procurement_import", ONLINE_STORE_TAB_KEY].includes(tab) && <section aria-label="Состояние витрины" aria-live="polite" className="executive__topline">
             <div>
               <span>Данные</span>
               <strong>{statusLabel(data.source_status)}</strong>
@@ -3473,7 +4446,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
               <span>Решений в фокусе</span>
               <strong>{data.top_actions.length}</strong>
             </div>
-          </section>
+          </section>}
 
           {tab === "today" ? (
             <FlowMap
@@ -3482,10 +4455,18 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
               onSelect={(nextTab) => navigateDashboard({ tab: nextTab })}
             />
           ) : (
-            tabOverviewBlock && <TabKpiOverview block={tabOverviewBlock} data={data} />
+            tabOverviewBlock &&
+            ![SALES_TAB_KEY, "procurement_import"].includes(tab) &&
+            <TabKpiOverview block={tabOverviewBlock} data={data} />
           )}
 
-          {tab === PROFIT_LOSS_TAB_KEY && <ProfitLossPeriodPanel asOf={date} />}
+          {tab === PROFIT_LOSS_TAB_KEY && (
+            <ProfitLossPeriodPanel
+              dateFrom={profitLossDateFrom}
+              dateTo={profitLossDateTo}
+              refreshNonce={refreshNonce}
+            />
+          )}
 
           {tab === SALES_TAB_KEY && (
             <SalesPeriodPanel
@@ -3508,9 +4489,27 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
             />
           )}
 
+          {tab === ONLINE_STORE_TAB_KEY && (
+            <OnlineStorePanel
+              data={onlineStoreData}
+              message={onlineStoreMessage}
+              status={onlineStoreStatus}
+            />
+          )}
+
+          {tab === "procurement_import" && (
+            <ProcurementImportPanel
+              actions={actions}
+              block={data.blocks.find((block) => block.key === "procurement_import") || null}
+              dashboardSourceStatus={data.source_status}
+              generatedAt={data.generated_at}
+              onOpenAction={setSelectedAction}
+            />
+          )}
+
           {tab === ODDS_CASHFLOW_TAB_KEY && <CashflowPeriodPanel asOf={date} />}
 
-          {metricBlocks.length > 0 && (
+          {metricBlocks.length > 0 && tab !== "procurement_import" && (
             <div className="executive-grid">
               {metricBlocks.map((block) => (
                 <BlockCard
@@ -3534,7 +4533,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
             </div>
           )}
 
-          {tab !== SALES_TAB_KEY && (
+          {![SALES_TAB_KEY, ONLINE_STORE_TAB_KEY, "procurement_import"].includes(tab) && (
             <section className="executive-actions">
               <header className="executive-actions__header">
                 <div>

@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 from datetime import UTC, date, datetime, timedelta
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Literal
 
@@ -36,6 +37,13 @@ from app.schemas.executive_dashboard import (
     ExecutiveProfitLossBreakdownRow,
     ExecutiveProfitLossDailyRow,
     ExecutiveProfitLossExpenseBreakdownRow,
+    ExecutiveProfitLossInventoryAction,
+    ExecutiveProfitLossInventoryDataQuality,
+    ExecutiveProfitLossInventoryDocument,
+    ExecutiveProfitLossInventoryHistoryItem,
+    ExecutiveProfitLossInventoryLoss,
+    ExecutiveProfitLossInventoryOwner,
+    ExecutiveProfitLossInventoryStore,
     ExecutiveProfitLossLineItem,
     ExecutiveProfitLossOpenQuestion,
     ExecutiveProfitLossPeriodResponse,
@@ -65,6 +73,10 @@ from app.services.onec_inventory_cost import (
     fetch_onec_inventory_cost,
 )
 from app.services.receivables import CASE_BUYERS
+from app.services.retail_director_monthly_kpi import (
+    load_retail_director_monthly_kpi,
+    load_retail_director_monthly_kpi_history,
+)
 
 AccessLevel = Literal["full", "domain"]
 
@@ -73,8 +85,9 @@ _RECEIVABLE_CLOSED_STATUSES = {"closed", "paid"}
 _SEVERITY_RANK = {
     "critical": 0,
     "high": 1,
-    "medium": 2,
-    "low": 3,
+    "warning": 2,
+    "medium": 3,
+    "low": 4,
 }
 
 
@@ -88,6 +101,45 @@ def _optional_decimal(value: Any) -> Decimal | None:
     if value in (None, ""):
         return None
     return Decimal(str(value))
+
+
+def _validate_inventory_quantum(parsed: Decimal, quantum: str | None) -> None:
+    if quantum is None:
+        return
+    try:
+        parsed.quantize(Decimal(quantum))
+    except InvalidOperation as exc:
+        raise ValueError("inventory amount cannot be quantized") from exc
+
+
+def _inventory_decimal(value: Any, *, quantum: str | None = None) -> Decimal:
+    parsed = _decimal(value)
+    if not parsed.is_finite():
+        raise ValueError("inventory amount must be finite")
+    _validate_inventory_quantum(parsed, quantum)
+    return parsed
+
+
+def _inventory_optional_decimal(
+    value: Any,
+    *,
+    quantum: str | None = None,
+) -> Decimal | None:
+    parsed = _optional_decimal(value)
+    if parsed is not None and not parsed.is_finite():
+        raise ValueError("inventory amount must be finite")
+    if parsed is not None:
+        _validate_inventory_quantum(parsed, quantum)
+    return parsed
+
+
+def _inventory_average(values: list[Decimal], *, quantum: str) -> Decimal | None:
+    if not values:
+        return None
+    try:
+        return (sum(values, Decimal("0")) / Decimal(len(values))).quantize(Decimal(quantum))
+    except InvalidOperation:
+        return None
 
 
 def _as_date(value: Any) -> date | None:
@@ -1073,6 +1125,18 @@ def _build_money_today_block(
                 ),
             ]
         )
+        savings_balance = _decimal(cash_position.get("savings_balance_total"))
+        if savings_balance:
+            metrics.append(
+                _metric(
+                    "cash_position_savings_balance_total",
+                    "Сберсчета / личные счета",
+                    savings_balance,
+                    unit="RUB",
+                    masked=masked,
+                    source_status=cash_position_status,
+                )
+            )
         card_balance = _decimal(cash_position.get("card_balance_total"))
         if card_balance:
             metrics.append(
@@ -1247,13 +1311,36 @@ def _build_money_today_block(
     )
 
 
+# Технические склады 1С (внутренние перемещения, браки, транзит, фото-съёмка и т.п.)
+# не считаются продажами розницы: их нет в frozen-плане и они не должны попадать
+# в факт продаж дашборда. «Сайт» — исключение: заказы с сайта передаются на продажу
+# через склад «Сайт» и планируются наравне с розничными точками. Список паттернов
+# зеркалит TECHNICAL_STORE_NAME_PATTERNS в mm-compensation/scripts/sales_plan_monthly.py.
+TECHNICAL_STORE_NAME_PATTERNS = (
+    re.compile(r"\bunknown\b", re.IGNORECASE),
+    re.compile(r"\bбрак\w*\b", re.IGNORECASE),
+    re.compile(r"\bсклад\w*\b", re.IGNORECASE),
+    re.compile(r"\bтранзит\w*\b", re.IGNORECASE),
+    re.compile(r"\bсдэк\b", re.IGNORECASE),
+)
+
+
+def _is_retail_sales_row(row: OneCSalesDailyKpi) -> bool:
+    if not str(row.store_ref or "").strip():
+        return False
+    normalized_name = " ".join(str(row.store_name or "").split()).strip().lower()
+    if not normalized_name:
+        return False
+    return not any(pattern.search(normalized_name) for pattern in TECHNICAL_STORE_NAME_PATTERNS)
+
+
 def _load_profit_loss_rows(
     session: Session,
     *,
     date_from: date,
     date_to: date,
 ) -> list[OneCSalesDailyKpi]:
-    return (
+    rows = (
         session.execute(
             select(OneCSalesDailyKpi)
             .where(
@@ -1265,6 +1352,7 @@ def _load_profit_loss_rows(
         .scalars()
         .all()
     )
+    return [row for row in rows if _is_retail_sales_row(row)]
 
 
 def _load_sales_rows(
@@ -1283,7 +1371,8 @@ def _load_sales_rows(
         query = query.where(OneCSalesDailyKpi.store_ref == store_ref)
     if manager_ref:
         query = query.where(OneCSalesDailyKpi.manager_ref == manager_ref)
-    return session.execute(query.order_by(OneCSalesDailyKpi.sales_date.asc())).scalars().all()
+    rows = session.execute(query.order_by(OneCSalesDailyKpi.sales_date.asc())).scalars().all()
+    return [row for row in rows if _is_retail_sales_row(row)]
 
 
 def _profit_loss_margin(revenue: Decimal, gross_profit: Decimal) -> Decimal | None:
@@ -1468,12 +1557,445 @@ def _profit_loss_lines(
     ]
 
 
+def _inventory_history_item(payload: dict[str, Any]) -> ExecutiveProfitLossInventoryHistoryItem:
+    writeoff_amount = _inventory_optional_decimal(payload.get("writeoff_amount"), quantum="0.01")
+    receipt_amount = _inventory_optional_decimal(payload.get("receipt_amount"), quantum="0.01")
+    loss_amount = _inventory_optional_decimal(payload.get("shrinkage_amount"), quantum="0.01")
+    if loss_amount is None and writeoff_amount is not None and receipt_amount is not None:
+        loss_amount = writeoff_amount - receipt_amount
+    return ExecutiveProfitLossInventoryHistoryItem(
+        month=str(payload.get("month") or ""),
+        source_status=("ready" if loss_amount is not None else "partial"),
+        writeoff_amount=writeoff_amount,
+        receipt_amount=receipt_amount,
+        loss_amount=loss_amount,
+        loss_pct=_inventory_optional_decimal(payload.get("shrinkage_pct"), quantum="0.0001"),
+    )
+
+
+def _inventory_store(
+    payload: dict[str, Any],
+    *,
+    default_norm_pct: Decimal | None,
+) -> ExecutiveProfitLossInventoryStore:
+    loss_pct = _inventory_optional_decimal(payload.get("shrinkage_pct"), quantum="0.0001")
+    norm_pct = _inventory_optional_decimal(payload.get("norm_pct"), quantum="0.0001")
+    if norm_pct is None:
+        norm_pct = default_norm_pct
+    variance_pct = _inventory_optional_decimal(
+        payload.get("variance_to_norm_pct"), quantum="0.0001"
+    )
+    if variance_pct is None and loss_pct is not None and norm_pct is not None:
+        variance_pct = loss_pct - norm_pct
+    loss_amount = _inventory_optional_decimal(payload.get("shrinkage_amount"), quantum="0.01")
+    above_norm = bool(
+        loss_amount is not None
+        and loss_amount > Decimal("0")
+        and variance_pct is not None
+        and variance_pct > Decimal("0")
+    )
+    return ExecutiveProfitLossInventoryStore(
+        store_ref=str(payload.get("store_ref") or ""),
+        store_name=str(payload.get("store_name") or "Без магазина"),
+        sales_amount=_inventory_optional_decimal(payload.get("sales_amount"), quantum="0.01"),
+        writeoff_amount=_inventory_optional_decimal(payload.get("writeoff_amount"), quantum="0.01"),
+        receipt_amount=_inventory_optional_decimal(payload.get("receipt_amount"), quantum="0.01"),
+        loss_amount=loss_amount,
+        loss_pct=loss_pct,
+        norm_pct=norm_pct,
+        variance_to_norm_pct=variance_pct,
+        above_norm=above_norm,
+        source_status=str(payload.get("source_status") or "ready"),
+        has_operations=bool(payload.get("has_operations")),
+    )
+
+
+def _inventory_non_negative_int(value: Any, *, default: int = 0) -> int:
+    if value in (None, ""):
+        return default
+    if isinstance(value, bool):
+        raise ValueError("boolean is not an inventory counter")
+    parsed = Decimal(str(value))
+    if not parsed.is_finite() or parsed != parsed.to_integral_value() or parsed < 0:
+        raise ValueError("inventory counter must be a non-negative integer")
+    return int(parsed)
+
+
+def _inventory_data_quality(payload: dict[str, Any]) -> ExecutiveProfitLossInventoryDataQuality:
+    return ExecutiveProfitLossInventoryDataQuality(
+        source_status=str(payload.get("source_status") or "source_missing"),
+        approved_store_count=_inventory_non_negative_int(payload.get("approved_store_count")),
+        source_store_count=_inventory_non_negative_int(payload.get("source_store_count")),
+        matched_store_count=_inventory_non_negative_int(payload.get("matched_store_count")),
+        unmatched_store_count=_inventory_non_negative_int(payload.get("unmatched_store_count")),
+        source_document_count=_inventory_non_negative_int(payload.get("source_document_count")),
+        matched_document_count=_inventory_non_negative_int(payload.get("matched_document_count")),
+        unmatched_document_count=_inventory_non_negative_int(
+            payload.get("unmatched_document_count")
+        ),
+        unmatched_writeoff_amount=_inventory_decimal(
+            payload.get("unmatched_writeoff_amount"), quantum="0.01"
+        ),
+        unmatched_receipt_amount=_inventory_decimal(
+            payload.get("unmatched_receipt_amount"), quantum="0.01"
+        ),
+        excluded_store_count=_inventory_non_negative_int(payload.get("excluded_store_count")),
+        excluded_document_count=_inventory_non_negative_int(payload.get("excluded_document_count")),
+        excluded_writeoff_amount=_inventory_decimal(
+            payload.get("excluded_writeoff_amount"), quantum="0.01"
+        ),
+        excluded_receipt_amount=_inventory_decimal(
+            payload.get("excluded_receipt_amount"), quantum="0.01"
+        ),
+        store_scope_status=str(payload.get("store_scope_status") or "unknown"),
+        store_scope_source=(
+            str(payload["store_scope_source"])
+            if payload.get("store_scope_source") not in (None, "")
+            else None
+        ),
+        store_scope_month=(
+            str(payload["store_scope_month"])
+            if payload.get("store_scope_month") not in (None, "")
+            else None
+        ),
+        norm_source_status=str(payload.get("norm_source_status") or "unknown"),
+        norm_source=(
+            str(payload["norm_source"]) if payload.get("norm_source") not in (None, "") else None
+        ),
+    )
+
+
+def _inventory_actions(
+    stores: list[ExecutiveProfitLossInventoryStore],
+    *,
+    data_quality: ExecutiveProfitLossInventoryDataQuality,
+    owner: ExecutiveProfitLossInventoryOwner | None,
+) -> list[ExecutiveProfitLossInventoryAction]:
+    responsible_name = owner.employee_name if owner else None
+    norm_is_actionable = data_quality.norm_source_status in {"approved", "provided"}
+    store_scope_is_actionable = data_quality.store_scope_status == "approved"
+    problem_stores = [
+        item
+        for item in stores
+        if item.above_norm and norm_is_actionable and store_scope_is_actionable
+    ]
+    problem_stores.sort(
+        key=lambda item: (
+            -(item.variance_to_norm_pct or Decimal("0")),
+            -(item.loss_amount or Decimal("0")),
+            item.store_name,
+        )
+    )
+    actions = [
+        ExecutiveProfitLossInventoryAction(
+            stable_key=f"inventory-loss:above-norm:{item.store_ref or item.store_name}",
+            action_type="store_above_norm",
+            severity="warning",
+            title=f"Потери выше норматива: {item.store_name}",
+            description=(
+                f"Факт {item.loss_pct}% при нормативе {item.norm_pct}%; "
+                f"чистые потери {item.loss_amount} руб."
+            ),
+            amount=item.loss_amount,
+            store_ref=item.store_ref,
+            store_name=item.store_name,
+            responsible_name=responsible_name,
+            recommended_action="Проверить крупнейшие документы списаний и причины потерь.",
+        )
+        for item in problem_stores
+    ]
+    zero_sales_stores = [item for item in stores if item.sales_amount in (None, Decimal("0"))]
+    for item in sorted(
+        zero_sales_stores,
+        key=lambda row: (-(row.loss_amount or Decimal("0")), row.store_name),
+    ):
+        if item.has_operations:
+            title = f"Не рассчитан уровень потерь: {item.store_name}"
+            description = (
+                "Есть движения по товарам, но отсутствует выручка для расчета доли потерь."
+            )
+        elif store_scope_is_actionable:
+            title = f"Нет выручки по утверждённому магазину: {item.store_name}"
+            description = "Магазин входит в утверждённый контур, но выручка за месяц отсутствует."
+        else:
+            title = f"Нет выручки по магазину в контуре данных: {item.store_name}"
+            if data_quality.store_scope_status == "draft":
+                description = "Магазин входит в черновой контур, но выручка за месяц отсутствует."
+            else:
+                description = (
+                    "Магазин присутствует в контуре данных, но его утверждение и выручка "
+                    "за месяц не подтверждены."
+                )
+        actions.append(
+            ExecutiveProfitLossInventoryAction(
+                stable_key=f"inventory-loss:missing-sales:{item.store_ref or item.store_name}",
+                action_type="store_missing_sales",
+                severity="warning",
+                title=title,
+                description=description,
+                amount=item.loss_amount,
+                store_ref=item.store_ref,
+                store_name=item.store_name,
+                responsible_name=responsible_name,
+                recommended_action="Проверить факт продаж и сопоставление магазина за месяц.",
+            )
+        )
+    if data_quality.unmatched_document_count:
+        actions.append(
+            ExecutiveProfitLossInventoryAction(
+                stable_key="inventory-loss:unmatched-documents",
+                action_type="unmatched_documents",
+                severity="warning",
+                title="Есть несопоставленные товарные операции",
+                description=(
+                    f"Не сопоставлено документов: {data_quality.unmatched_document_count}; "
+                    f"списания {data_quality.unmatched_writeoff_amount} руб.; "
+                    f"оприходования {data_quality.unmatched_receipt_amount} руб."
+                ),
+                responsible_name=responsible_name,
+                recommended_action="Уточнить магазин в документах 1С или в утвержденном плане точек.",
+            )
+        )
+    return actions
+
+
+def _profit_loss_inventory_loss(period_end: date) -> ExecutiveProfitLossInventoryLoss:
+    month = period_end.strftime("%Y-%m")
+    try:
+        payload = load_retail_director_monthly_kpi(month)
+    except (ContractIntegrityError, OSError, TypeError, ValueError):
+        return ExecutiveProfitLossInventoryLoss(
+            month=month,
+            source_status="source_error",
+            note="Месячный отчет по товарным потерям не удалось прочитать.",
+        )
+    if payload is None:
+        return ExecutiveProfitLossInventoryLoss(
+            month=month,
+            source_status="source_missing",
+            note="Месячный отчет по списаниям и оприходованиям еще не опубликован.",
+        )
+
+    if not isinstance(payload, dict):
+        return ExecutiveProfitLossInventoryLoss(
+            month=month,
+            source_status="source_error",
+            note="Месячный отчет по товарным потерям имеет неверный формат.",
+        )
+
+    history_error = False
+    try:
+        history_payload = load_retail_director_monthly_kpi_history(month)
+    except (ContractIntegrityError, OSError, TypeError, ValueError):
+        history_error = True
+        history_payload = {
+            "previous_month": None,
+            "history": [],
+            "source_status": "source_error",
+        }
+    if not isinstance(history_payload, dict):
+        history_error = True
+        history_payload = {
+            "previous_month": None,
+            "history": [],
+            "source_status": "source_error",
+        }
+    try:
+        history_error = history_error or (
+            _inventory_non_negative_int(history_payload.get("read_error_count")) > 0
+        )
+    except (ArithmeticError, TypeError, ValueError):
+        history_error = True
+    try:
+        schema_version = _inventory_non_negative_int(payload.get("schema_version"), default=1)
+        writeoff_amount = _inventory_optional_decimal(
+            payload.get("writeoff_amount"), quantum="0.01"
+        )
+        receipt_amount = _inventory_optional_decimal(payload.get("receipt_amount"), quantum="0.01")
+        loss_amount = _inventory_optional_decimal(payload.get("shrinkage_amount"), quantum="0.01")
+        norm_pct = _inventory_optional_decimal(payload.get("norm_pct"), quantum="0.0001")
+        loss_pct = _inventory_optional_decimal(payload.get("shrinkage_pct"), quantum="0.0001")
+    except (ArithmeticError, TypeError, ValueError):
+        return ExecutiveProfitLossInventoryLoss(
+            month=str(payload.get("month") or month),
+            source_status="source_error",
+            detail_source_status="source_error",
+            warnings=["Сетевые итоги товарных потерь не удалось прочитать."],
+            note="Месячный отчет по товарным потерям имеет неверные сетевые итоги.",
+        )
+    if loss_amount is None and writeoff_amount is not None and receipt_amount is not None:
+        loss_amount = writeoff_amount - receipt_amount
+    source_status = (
+        "ready"
+        if writeoff_amount is not None and receipt_amount is not None and loss_amount is not None
+        else "partial"
+    )
+    variance_to_norm_pct = (
+        loss_pct - norm_pct if loss_pct is not None and norm_pct is not None else None
+    )
+    detail_parse_error = False
+    matched_store_count: int | None = None
+    if payload.get("matched_store_count") not in (None, ""):
+        try:
+            matched_store_count = _inventory_non_negative_int(payload["matched_store_count"])
+        except (ArithmeticError, TypeError, ValueError):
+            detail_parse_error = True
+    owner_payload = payload.get("owner") if isinstance(payload.get("owner"), dict) else {}
+    if payload.get("owner") not in (None, {}) and not isinstance(payload.get("owner"), dict):
+        detail_parse_error = True
+    try:
+        owner = (
+            ExecutiveProfitLossInventoryOwner.model_validate(owner_payload)
+            if owner_payload
+            else None
+        )
+    except (ArithmeticError, TypeError, ValueError):
+        owner = None
+        detail_parse_error = True
+    stores: list[ExecutiveProfitLossInventoryStore] = []
+    raw_stores = payload.get("stores") or []
+    if not isinstance(raw_stores, list):
+        raw_stores = []
+        detail_parse_error = True
+    for item in raw_stores:
+        if not isinstance(item, dict):
+            detail_parse_error = True
+            continue
+        try:
+            stores.append(_inventory_store(item, default_norm_pct=norm_pct))
+        except (ArithmeticError, TypeError, ValueError):
+            detail_parse_error = True
+    documents: list[ExecutiveProfitLossInventoryDocument] = []
+    raw_documents = payload.get("top_documents") or []
+    if not isinstance(raw_documents, list):
+        raw_documents = []
+        detail_parse_error = True
+    for item in raw_documents[:20]:
+        if not isinstance(item, dict):
+            detail_parse_error = True
+            continue
+        try:
+            documents.append(ExecutiveProfitLossInventoryDocument.model_validate(item))
+        except (ArithmeticError, TypeError, ValueError):
+            detail_parse_error = True
+    quality_payload = (
+        payload.get("data_quality") if isinstance(payload.get("data_quality"), dict) else {}
+    )
+    if payload.get("data_quality") not in (None, {}) and not isinstance(
+        payload.get("data_quality"), dict
+    ):
+        detail_parse_error = True
+    try:
+        data_quality = _inventory_data_quality(quality_payload)
+    except (ArithmeticError, TypeError, ValueError):
+        data_quality = ExecutiveProfitLossInventoryDataQuality(source_status="source_error")
+        detail_parse_error = True
+    previous_payload = history_payload.get("previous_month")
+    previous_month = None
+    if isinstance(previous_payload, dict):
+        try:
+            candidate_previous_month = _inventory_history_item(previous_payload)
+        except (ArithmeticError, TypeError, ValueError):
+            history_error = True
+        else:
+            if candidate_previous_month.loss_amount is not None:
+                previous_month = candidate_previous_month
+    elif previous_payload is not None:
+        history_error = True
+    previous_history: list[ExecutiveProfitLossInventoryHistoryItem] = []
+    raw_history = history_payload.get("history") or []
+    if not isinstance(raw_history, list):
+        raw_history = []
+        history_error = True
+    for item in raw_history:
+        if not isinstance(item, dict):
+            history_error = True
+            continue
+        try:
+            history_item = _inventory_history_item(item)
+        except (ArithmeticError, TypeError, ValueError):
+            history_error = True
+            continue
+        if history_item.loss_amount is None:
+            history_error = True
+            continue
+        previous_history.append(history_item)
+    loss_history = [item.loss_amount for item in previous_history if item.loss_amount is not None]
+    pct_history = [item.loss_pct for item in previous_history if item.loss_pct is not None]
+    average_loss_amount = _inventory_average(loss_history, quantum="0.01")
+    average_loss_pct = _inventory_average(pct_history, quantum="0.0001")
+    if loss_history and average_loss_amount is None:
+        history_error = True
+    if pct_history and average_loss_pct is None:
+        history_error = True
+    current_history_item = ExecutiveProfitLossInventoryHistoryItem(
+        month=str(payload.get("month") or month),
+        source_status=source_status,
+        writeoff_amount=writeoff_amount,
+        receipt_amount=receipt_amount,
+        loss_amount=loss_amount,
+        loss_pct=loss_pct,
+    )
+    history = list(reversed(previous_history))
+    if current_history_item.loss_amount is not None:
+        history.append(current_history_item)
+    if schema_version < 2:
+        detail_source_status = "source_missing"
+    elif detail_parse_error:
+        detail_source_status = "partial" if stores or documents else "source_error"
+    else:
+        detail_source_status = str(data_quality.source_status or "partial")
+    raw_warnings = payload.get("warnings") or []
+    if not isinstance(raw_warnings, list):
+        raw_warnings = []
+        detail_parse_error = True
+    warnings = [str(item) for item in raw_warnings if str(item).strip()]
+    if detail_parse_error:
+        warnings.append("Часть детализации товарных потерь не удалось прочитать.")
+    if history_error:
+        warnings.append("Историю товарных потерь не удалось прочитать.")
+    history_source_status = str(history_payload.get("source_status") or "source_missing")
+    if history_error:
+        history_source_status = (
+            "partial" if previous_history or previous_month is not None else "source_error"
+        )
+    note = "Товарные потери показаны справочно и не уменьшают операционную прибыль."
+    if schema_version < 2:
+        note += " Источник v1 не содержит магазины и документы."
+    return ExecutiveProfitLossInventoryLoss(
+        schema_version=schema_version,
+        month=str(payload.get("month") or month),
+        source_status=source_status,
+        detail_source_status=detail_source_status,
+        writeoff_amount=writeoff_amount,
+        receipt_amount=receipt_amount,
+        loss_amount=loss_amount,
+        loss_pct=loss_pct,
+        norm_pct=norm_pct,
+        variance_to_norm_pct=variance_to_norm_pct,
+        matched_store_count=matched_store_count,
+        previous_month=previous_month,
+        average_loss_amount_3m=average_loss_amount,
+        average_loss_pct_3m=average_loss_pct,
+        history_source_status=history_source_status,
+        history=history,
+        stores=stores,
+        top_documents=documents,
+        actions=_inventory_actions(stores, data_quality=data_quality, owner=owner),
+        data_quality=data_quality,
+        owner=owner,
+        warnings=warnings,
+        note=note,
+    )
+
+
 def build_executive_profit_loss_period_response(
     session: Session,
     *,
     date_from: date,
     date_to: date,
 ) -> ExecutiveProfitLossPeriodResponse:
+    inventory_loss = _profit_loss_inventory_loss(date_to)
     rows = _load_profit_loss_rows(session, date_from=date_from, date_to=date_to)
     if not rows:
         return ExecutiveProfitLossPeriodResponse(
@@ -1497,6 +2019,7 @@ def build_executive_profit_loss_period_response(
                 expense_source_status="source_missing",
             ),
             expense_source_status="source_missing",
+            inventory_loss=inventory_loss,
             filters={"source_table": "onec_sales_daily_kpi"},
         )
 
@@ -1615,6 +2138,7 @@ def build_executive_profit_loss_period_response(
         expense_source_status=expense_source_status,
         expense_breakdown=expense_data["breakdown"],
         expense_open_questions=expense_data["open_questions"],
+        inventory_loss=inventory_loss,
         filters={
             "source_table": "onec_sales_daily_kpi",
             "expense_source_table": "cashflow_period_cache.profit_loss_expenses",
@@ -1873,6 +2397,7 @@ def _empty_sales_diagnostics(status: str, note: str | None) -> list[ExecutiveSal
             unit="COUNT",
             source_status=status,
             note=note,
+            meta={"problem": []},
         ),
         _sales_diagnostic(
             "managers_below_target_margin_count",
@@ -1880,6 +2405,7 @@ def _empty_sales_diagnostics(status: str, note: str | None) -> list[ExecutiveSal
             unit="COUNT",
             source_status=status,
             note=note,
+            meta={"problem": []},
         ),
     ]
 
@@ -1928,7 +2454,7 @@ def _sales_forecast_from_history_rows(
     as_of: date,
 ) -> tuple[dict[date, Decimal] | None, str, str | None]:
     if as_of >= date_to:
-        return {}, "complete", "Месяц закрыт фактическими данными."
+        return {}, "complete", "Период полностью закрыт фактическими данными."
     if not history_rows:
         return None, "insufficient_history", "Для прогноза нужна история продаж за четыре недели."
     history_dates = {row.sales_date for row in history_rows}
@@ -2311,6 +2837,7 @@ def build_executive_sales_period_response(
     store_metric_note = plan_note
     stores_below_plan: int | None = None
     stores_evaluated = 0
+    store_problems: list[dict[str, str]] = []
     if manager_ref:
         store_metric_status = "not_applicable"
         store_metric_note = "План выручки не распределён по менеджерам."
@@ -2339,12 +2866,17 @@ def build_executive_sales_period_response(
                 )
             else:
                 stores_evaluated = len(selected_store_keys)
-                stores_below_plan = sum(
-                    1
+                store_problems = [
+                    {
+                        "key": key,
+                        "label": str((store_plans.get(key) or {}).get("scope_name") or "").strip()
+                        or key,
+                    }
                     for key in selected_store_keys
                     if store_projections[key]
                     < (_sales_plan_revenue(store_plans.get(key)) or Decimal("0"))
-                )
+                ]
+                stores_below_plan = len(store_problems)
 
     managers_by_key: dict[str, list[OneCSalesDailyKpi]] = defaultdict(list)
     for row in rows:
@@ -2353,13 +2885,13 @@ def build_executive_sales_period_response(
     manager_metric_status = plan_status
     manager_metric_note = plan_note
     managers_below_target: int | None = None
+    manager_problems: list[dict[str, str]] = []
     if plan_status in {"ready", "partial"} and store_plans:
         if not managers_by_key or "" in managers_by_key:
             manager_metric_status = "partial"
             manager_metric_note = "Не у всех продаж заполнен менеджер."
         else:
             manager_failures: list[str] = []
-            below_count = 0
             for key, manager_rows in managers_by_key.items():
                 manager_target, _, manager_status, manager_note = _sales_target_for_rows(
                     manager_rows,
@@ -2376,14 +2908,20 @@ def build_executive_sales_period_response(
                     (manager_actual - manager_target) * Decimal("100"),
                 )
                 if manager_actual < manager_target:
-                    below_count += 1
+                    manager_problems.append(
+                        {
+                            "key": key,
+                            "label": str(manager_rows[0].manager_name or "").strip() or key,
+                        }
+                    )
             if manager_failures:
                 manager_metric_status = "partial"
                 manager_metric_note = "Не все менеджеры сопоставлены с целевой маржой."
+                manager_problems = []
             else:
                 manager_metric_status = "ready"
                 manager_metric_note = None
-                managers_below_target = below_count
+                managers_below_target = len(manager_problems)
 
     for item in by_store:
         plan_row = store_plans.get(item.key)
@@ -2455,6 +2993,7 @@ def build_executive_sales_period_response(
             meta={
                 "evaluated_count": stores_evaluated,
                 "comparison_basis": comparison_basis,
+                "problem": store_problems,
             },
         ),
         _sales_diagnostic(
@@ -2463,7 +3002,7 @@ def build_executive_sales_period_response(
             unit="COUNT",
             source_status=manager_metric_status,
             note=manager_metric_note,
-            meta={"evaluated_count": len(manager_targets)},
+            meta={"evaluated_count": len(manager_targets), "problem": manager_problems},
         ),
     ]
     base_response["plan_status"] = plan_status
@@ -3208,6 +3747,17 @@ def _build_procurement_block(
     section = _finance_section(finance_payload, "procurement_import")
     source_status = str(section.get("source_status") or "source_missing")
     masked = _mask_finance("procurement_import", access_context)
+    risk_summary = dict(section.get("risk_summary") or {})
+    stage_breakdown = [
+        dict(item) for item in section.get("stage_breakdown") or [] if isinstance(item, dict)
+    ]
+    currency_breakdown = [
+        dict(item) for item in section.get("currency_breakdown") or [] if isinstance(item, dict)
+    ]
+    if masked:
+        risk_summary["at_risk_amount_rub"] = None
+        for item in [*stage_breakdown, *currency_breakdown]:
+            item["amount_rub"] = None
     return ExecutiveDashboardBlock(
         key="procurement_import",
         title="Закупки / импорт",
@@ -3217,6 +3767,11 @@ def _build_procurement_block(
         summary={
             "note": section.get("note") or "Нужен compact snapshot из procurement decision contour",
             "risk_items": section.get("risk_items") or [],
+            "risk_scoring_version": section.get("risk_scoring_version"),
+            "risk_summary": risk_summary,
+            "stage_breakdown": stage_breakdown,
+            "currency_breakdown": currency_breakdown,
+            "data_quality": section.get("data_quality") or {},
         },
         metrics=[
             _metric(
@@ -3225,6 +3780,47 @@ def _build_procurement_block(
                 int(section.get("open_supplier_orders") or 0),
                 source_status=source_status,
             ),
+            _metric(
+                "open_order_amount_rub",
+                "Сумма открытых заказов",
+                _decimal(section.get("open_order_amount_rub")),
+                unit="RUB",
+                masked=masked,
+                source_status=source_status,
+            ),
+            _metric(
+                "procurement_at_risk_count",
+                "Заказы под риском",
+                int(risk_summary.get("at_risk_count") or section.get("cargo_risk_count") or 0),
+                tone="warning",
+                source_status=source_status,
+            ),
+            _metric(
+                "procurement_at_risk_amount_rub",
+                "Сумма под риском",
+                _decimal(risk_summary.get("at_risk_amount_rub")),
+                unit="RUB",
+                masked=masked,
+                source_status=source_status,
+            ),
+            _metric(
+                "critical_overdue_count",
+                "Критические просрочки",
+                int(risk_summary.get("critical_count") or 0),
+                tone="danger",
+                source_status=source_status,
+            ),
+            _metric(
+                "foreign_open_order_amount_rub",
+                "Открытые закупки в валюте",
+                _decimal(
+                    section.get("foreign_open_order_amount_rub") or section.get("currency_exposure")
+                ),
+                unit="RUB",
+                masked=masked,
+                source_status=source_status,
+            ),
+            # Legacy metrics stay in the API until all consumers switch to v2.
             _metric(
                 "payment_ready_amount",
                 "Готовность к оплате",
@@ -4005,13 +4601,20 @@ def _procurement_attention_actions(
         if not access_context.can_view_money_block("procurement_import"):
             amount = None
         description = " · ".join(part for part in (supplier_title, reason) if part)
+        severity = str(raw_item.get("severity") or "high").strip()
+        deadline = _as_date(raw_item.get("deadline_date"))
+        correction_field = (
+            "Ожидаемая дата поступления"
+            if reason_code in {"overdue_expected_receipt", "missing_expected_receipt_date"}
+            else "Сдача в карго"
+        )
         actions.append(
             ExecutiveDashboardAction(
                 stable_key=stable_key,
                 business_date=source_date,
                 domain="procurement_import",
-                severity="high",
-                title=f"Заказ {source_number}: заполнить «Сдача в карго»",
+                severity=severity,
+                title=f"Заказ {source_number}: {reason}",
                 description=description,
                 amount=amount,
                 currency="RUB",
@@ -4019,11 +4622,16 @@ def _procurement_attention_actions(
                 source_system=str(raw_item.get("source_system") or "1C"),
                 source_ref=onec_ref,
                 dedupe_key=stable_key,
+                deadline_at=(
+                    datetime.combine(deadline, datetime.min.time(), tzinfo=UTC)
+                    if deadline
+                    else None
+                ),
                 payload={
                     **raw_item,
                     "correction_system": "1C",
                     "correction_document": "Заказ поставщику",
-                    "correction_field": "Сдача в карго",
+                    "correction_field": correction_field,
                     "recommendation": recommendation,
                 },
             )
@@ -4031,7 +4639,7 @@ def _procurement_attention_actions(
     return actions
 
 
-def _action_sort_key(action: ExecutiveDashboardAction) -> tuple[int, float, str]:
+def _action_sort_key(action: ExecutiveDashboardAction) -> tuple[int, float, Decimal, str]:
     deadline = action.deadline_at
     if deadline is None:
         deadline_value = float("inf")
@@ -4039,7 +4647,15 @@ def _action_sort_key(action: ExecutiveDashboardAction) -> tuple[int, float, str]
         if deadline.tzinfo is None:
             deadline = deadline.replace(tzinfo=UTC)
         deadline_value = deadline.timestamp()
-    return (_SEVERITY_RANK.get(action.severity, 9), deadline_value, action.stable_key)
+    amount_priority = (
+        -(action.amount or Decimal("0")) if action.domain == "procurement_import" else Decimal("0")
+    )
+    return (
+        _SEVERITY_RANK.get(action.severity, 9),
+        deadline_value,
+        amount_priority,
+        action.stable_key,
+    )
 
 
 def _merge_executive_actions(
@@ -4147,9 +4763,13 @@ def _source_freshness(
 
 
 def _tasks_block(actions: list[ExecutiveDashboardAction]) -> ExecutiveDashboardBlock:
-    overdue_count = sum(
-        1 for item in actions if item.deadline_at and item.deadline_at < datetime.now()
-    )
+    def is_overdue(value: datetime | None) -> bool:
+        if value is None:
+            return False
+        now = datetime.now(UTC) if value.tzinfo is not None else datetime.now()
+        return value < now
+
+    overdue_count = sum(1 for item in actions if is_overdue(item.deadline_at))
     critical_count = sum(1 for item in actions if item.severity == "critical")
     return ExecutiveDashboardBlock(
         key="tasks",

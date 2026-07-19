@@ -109,6 +109,42 @@ Cron отвечает только за расписание, lock и техни
 application services. Redis используется только в контурах, где очередь реализована
 явно, и не считается общей очередью всех jobs.
 
+#### Durable orchestration management jobs
+
+- Корневой `/opt/MM` хранит runtime registry, генерирует systemd units и запускает
+  только thin wrappers; бизнес-команды остаются в owning project.
+- `pricing-service` хранит в PostgreSQL журнал запусков, delivery intents и attempts.
+- Root runner работает с состоянием только через authenticated internal API
+  `/api/management/internal/orchestration`, без прямого доступа к БД.
+- Повторный `Idempotency-Key` не разрешает повторный запуск или отправку. Если lease
+  внешней отправки истёк без подтверждённого результата, она получает статус
+  `unknown` и требует ручной сверки вместо автоматического retry.
+- Cron и timer одной job не включаются одновременно; переход выполняется волнами с
+  проверкой state и минимум двумя успешными циклами.
+
+#### Управление типами цен — read-only core
+
+- Канонические правила находятся в `config/price_types/ruleset.yaml`; чистый
+  движок и DTO живут в `app/domains/customer_price_types/` и не зависят от
+  FastAPI/SQLAlchemy.
+- `app/infrastructure/customer_price_type_sources.py` одним bulk-запросом читает
+  все активные договоры покупателей 1С без фильтра по prefix, собирает до 12
+  доказанных полных месяцев продаж, bulk-метрики экономики/платежей и сверяет
+  прямой агрегат 1С с локальной ledger-витриной. Отсутствующие обязательные
+  источники всегда блокируют обычную рекомендацию.
+- PostgreSQL хранит immutable runs/snapshots и один business case на
+  `counterparty_ref + snapshot_month`; изменения snapshot hash снимают прежнее
+  согласование и добавляют идемпотентное событие аудита.
+- `GET /api/customer-price-types/*` читает только persisted state. Management
+  internal token получает полный network scope; ограничения ролей и денежная
+  redaction применяются server-side. Summary, worklists и cases одного ответа
+  привязаны к одному run; Bitrix OAuth/session подключается в Phase 2.
+- Deprecated management endpoint и monthly inventory являются compatibility
+  projections того же движка. Повышения всегда информационные, persistence CLI
+  включается только явным `--persist`.
+- Phase 1 не содержит UI, write routes, Bitrix smart-process, 1С apply/readback,
+  Telegram delivery или изменения расписаний/deployment.
+
 ### 2.4. Внешние интеграции
 
 #### 1С
@@ -485,6 +521,14 @@ Dev-окружение:
   - выгрузок.
 - Объяснимость:
   - для каждой рекомендованной цены хранить входные параметры и причины.
+- Воспроизводимый release:
+  - clean Git commit, hash-locked dependencies, release-specific `.venv`, UI и
+    backend в одном immutable каталоге;
+  - active symlink является единой точкой переключения и rollback backend/UI.
+- Надёжность operational jobs:
+  - durable idempotency для запуска и доставки;
+  - явные timeout, memory limit, SLA/freshness и rollback в runtime registry;
+  - неизвестный результат внешнего side effect не ретраится автоматически.
 
 ---
 

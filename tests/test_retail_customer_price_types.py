@@ -15,11 +15,9 @@ from app.core.config import get_settings
 from app.main import app
 from app.models import Base, ReceivableLedgerEvent
 from app.services.retail_customer_price_types import (
-    ACTION_DOWNGRADE_TO_BRONZE,
-    ACTION_DOWNGRADE_TO_SILVER,
+    ACTION_DATA_CHECK,
     ACTION_KEEP,
-    ACTION_SET_GOLD,
-    ACTION_SET_SILVER,
+    ACTION_MANAGER_RETENTION,
     BUYERS_CONTRACT_KIND_NAME,
     REGULAR_RECEIVABLES_LAYER,
     build_retail_customer_price_type_recommendations,
@@ -155,6 +153,26 @@ def _seed(session: Session) -> None:
             at=datetime(2026, 2, 10, 12, 0, 0),
         ),
     ]
+    history_contracts = {
+        "cp-bronze-to-silver": "2.Бронзовый",
+        "cp-silver-to-gold": "3.Серебряный",
+        "cp-gold-to-silver": "4.Золотой",
+        "cp-gold-to-bronze": "4.Золотой",
+        "cp-silver-keep": "3.Серебряный",
+        "cp-prior-gold-zero": "4.Золотой",
+        "cp-bronze-return": "2.Бронзовый",
+    }
+    rows.extend(
+        _event(
+            idx=100 + index,
+            counterparty_ref=ref,
+            counterparty_name=f"История {ref}",
+            contract_name=contract_name,
+            amount="1.00",
+            at=datetime(2025, 1, 10, 12, 0, 0),
+        )
+        for index, (ref, contract_name) in enumerate(history_contracts.items())
+    )
     session.add_all(rows)
     session.commit()
 
@@ -171,25 +189,20 @@ def test_build_retail_customer_price_type_recommendations() -> None:
             )
 
         by_ref = {item["counterparty_ref"]: item for item in report["payload"]}
-        assert by_ref["cp-bronze-to-silver"]["action"] == ACTION_SET_SILVER
-        assert by_ref["cp-bronze-to-silver"]["purchase_amount"] == Decimal("500000.00")
-        assert by_ref["cp-bronze-to-silver"]["previous_purchase_amount"] == Decimal("200000.00")
-        assert by_ref["cp-bronze-to-silver"]["purchase_delta_amount"] == Decimal("300000.00")
-        assert by_ref["cp-bronze-to-silver"]["purchase_delta_pct"] == Decimal("1.5000")
-        assert by_ref["cp-silver-to-gold"]["action"] == ACTION_SET_GOLD
-        assert by_ref["cp-silver-to-gold"]["previous_purchase_amount"] == Decimal("1000000.00")
-        assert by_ref["cp-silver-to-gold"]["purchase_delta_amount"] == Decimal("300000.00")
-        assert by_ref["cp-silver-to-gold"]["purchase_delta_pct"] == Decimal("0.3000")
-        assert by_ref["cp-gold-to-silver"]["action"] == ACTION_DOWNGRADE_TO_SILVER
-        assert by_ref["cp-gold-to-bronze"]["action"] == ACTION_DOWNGRADE_TO_BRONZE
-        assert by_ref["cp-prior-gold-zero"]["action"] == ACTION_DOWNGRADE_TO_BRONZE
+        assert "cp-bronze-to-silver" not in by_ref
+        assert "cp-silver-to-gold" not in by_ref
+        assert by_ref["cp-gold-to-silver"]["action"] == ACTION_MANAGER_RETENTION
+        assert by_ref["cp-gold-to-silver"]["purchase_amount"] == Decimal("550000.00")
+        assert by_ref["cp-gold-to-bronze"]["action"] == ACTION_DATA_CHECK
+        assert by_ref["cp-prior-gold-zero"]["action"] == ACTION_DATA_CHECK
         assert "cp-silver-keep" not in by_ref
         assert "cp-bronze-return" not in by_ref
-        assert report["summary"]["set_silver_count"] == 1
-        assert report["summary"]["set_gold_count"] == 1
-        assert report["summary"]["downgrade_to_silver_count"] == 1
-        assert report["summary"]["downgrade_to_bronze_count"] == 2
+        assert report["summary"]["set_silver_count"] == 0
+        assert report["summary"]["set_gold_count"] == 0
+        assert report["summary"]["manager_work_count"] == 1
+        assert report["summary"]["data_check_count"] == 2
         assert report["summary"]["keep_count"] == 2
+        assert report["summary"]["review_current_type_count"] == 2
         assert report["previous_month"] == "2026-02"
 
         code_mapping = {
@@ -207,7 +220,7 @@ def test_build_retail_customer_price_type_recommendations() -> None:
                 counterparty_codes_by_ref=code_mapping,
             )
         grouped_by_ref = {item["counterparty_ref"]: item for item in grouped_report["payload"]}
-        assert grouped_by_ref["cp-bronze-to-silver"]["counterparty_code"] == "РБ000001"
+        assert grouped_by_ref["cp-gold-to-silver"]["counterparty_code"] == "РБ000003"
         assert "cp-prior-gold-zero" not in grouped_by_ref
         assert grouped_report["summary"]["buyer_group_counterparty_count"] == 4
 
@@ -238,6 +251,16 @@ def test_build_retail_customer_price_type_recommendations_uses_contract_price_ty
                     amount="100000.00",
                 )
             )
+            session.add(
+                _event(
+                    idx=21,
+                    counterparty_ref="cp-contract-requisite",
+                    counterparty_name="Клиент с типом цен в договоре",
+                    contract_name="Основной договор",
+                    amount="1.00",
+                    at=datetime(2025, 1, 10, 12, 0, 0),
+                )
+            )
             session.commit()
 
             report = build_retail_customer_price_type_recommendations(
@@ -252,7 +275,7 @@ def test_build_retail_customer_price_type_recommendations_uses_contract_price_ty
         by_ref = {item["counterparty_ref"]: item for item in report["payload"]}
         item = by_ref["cp-contract-requisite"]
         assert item["current_price_type"] == "4.Золотой"
-        assert item["action"] == ACTION_DOWNGRADE_TO_BRONZE
+        assert item["action"] == ACTION_DATA_CHECK
     finally:
         engine.dispose()
         Path(path).unlink(missing_ok=True)
@@ -277,8 +300,13 @@ def test_management_endpoint_returns_price_type_recommendations(monkeypatch) -> 
         assert response.status_code == 200
         payload = response.json()
         assert payload["source_status"] == "ready"
-        assert payload["summary"]["actionable_count"] == 5
-        assert payload["payload"][0]["recommended_level"] == "gold"
+        assert payload["summary"]["actionable_count"] == 3
+        assert payload["summary"]["set_silver_count"] == 0
+        assert payload["summary"]["set_gold_count"] == 0
+        assert {item["action"] for item in payload["payload"]} == {
+            ACTION_DATA_CHECK,
+            ACTION_MANAGER_RETENTION,
+        }
     finally:
         app.dependency_overrides = {}
         get_settings.cache_clear()

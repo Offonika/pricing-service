@@ -78,16 +78,18 @@ class CustomerPriceTypeExchangeResult:
 def one_c_guid_from_counterparty_ref(counterparty_ref: str) -> str:
     """Convert the SQL `_IDRRef` textual form to the GUID accepted by UT 10.3.
 
-    The recommendation report stores links as ``0X`` + 16 little-endian bytes
-    from SQL Server. ``uuid.UUID(bytes_le=...)`` mirrors the 1C GUID layout,
-    allowing the 1C loader to use ``ПолучитьСсылку(Новый
-    УникальныйИдентификатор(...))`` without looking up a customer by name.
+    The recommendation report stores links as ``0X`` + 16 bytes from SQL
+    Server. 1C's textual GUID layout is not the standard UUID little-endian
+    representation: it moves the final three groups to the front and keeps the
+    first 8 bytes as the last two groups. This is the same conversion used by
+    the verified CommerceML/procurement contour.
     """
 
     matched = _COUNTERPARTY_REF_RE.fullmatch(counterparty_ref.strip())
     if matched is None:
         raise ValueError("counterparty_ref must be 0X followed by 32 hexadecimal characters")
-    return str(uuid.UUID(bytes_le=bytes.fromhex(matched.group(1))))
+    value = matched.group(1).lower()
+    return "-".join((value[24:32], value[20:24], value[16:20], value[0:4], value[4:16]))
 
 
 def build_customer_price_type_updates_xml(message: CustomerPriceTypeUpdateMessage) -> bytes:

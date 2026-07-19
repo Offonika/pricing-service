@@ -36,9 +36,9 @@
 .tooltipWrap { position: relative; display: inline-flex; }
 .tooltipTrigger {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 16px; height: 16px; border: 1px solid var(--color-border); border-radius: 50%;
+  width: 28px; height: 28px; margin: -6px; border: 1px solid var(--color-border); border-radius: 50%;
   background: var(--color-surface-muted); color: var(--color-text-muted);
-  font-size: 10px; font-weight: 800; line-height: 1; cursor: help;
+  font-size: 12px; font-weight: 800; line-height: 1; cursor: help;
 }
 .tooltipTrigger:focus-visible { outline: 3px solid color-mix(in srgb, var(--color-primary) 28%, transparent); outline-offset: 2px; }
 .tooltipBubble {

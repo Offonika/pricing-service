@@ -1,4 +1,4 @@
-"""Ежемесячная инвентаризация типов цен по всем уровням лестницы.
+"""Ежемесячная read-only инвентаризация типов цен по всем уровням лестницы.
 
 Источник истины нормативов: config/price_types/ruleset.yaml (уровни, пороги
 удержания, исключения). Реализует регламент
@@ -6,42 +6,53 @@ reports/retail_price_types/customer-price-type-automation/2026-07-10/
 monthly-price-type-inventory-rule-total10k-2026-07-10.md.
 
 Источники данных (только чтение):
-- 1С: живые договоры покупателей группы ПОКУПАТЕЛИ по каждому уровню;
+- 1С: один bulk-срез всех живых договоров покупателей группы ПОКУПАТЕЛИ;
 - локальная витрина `receivable_ledger_event`: чистые продажи по месяцам.
 
 Выход: CSV-списки по корзинам каждого уровня и summary в
 reports/retail_price_types/customer-price-type-automation/auto/<месяц>/.
 Типы цен нигде не изменяются: скрипт только считает и формирует списки.
+Application DB также не изменяется без отдельного явного ``--persist``.
 
 Имя файла историческое (первая версия покрывала только бронзу) и сохранено
-ради установленного cron; с ruleset 2026-07-18.1 скрипт считает все уровни.
+ради установленного cron; решения принимает единый domain rules engine.
 """
 
 from __future__ import annotations
 
 import argparse
 import csv
-import glob
 import sys
 from collections import defaultdict
-from dataclasses import dataclass, field
+from dataclasses import asdict
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-
-from sqlalchemy import func, text
-from sqlalchemy.orm import Session
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
 import yaml  # noqa: E402
 
+from app.domains.customer_price_types import (  # noqa: E402
+    CustomerPriceTypeFacts,
+    CustomerPriceTypeRulesEngine,
+    load_price_type_ruleset,
+)
+from app.infrastructure.customer_price_type_sources import (  # noqa: E402
+    CustomerPriceTypeBulkSource,
+    CustomerPriceTypeSourceEnrichments,
+)
 from app.infrastructure.db import (  # noqa: E402
     build_onec_engine_from_settings,
-    get_application_engine,
+    get_application_session_factory,
 )
-from app.models import ReceivableLedgerEvent  # noqa: E402
+from app.services.customer_price_types import CustomerPriceTypeRunService  # noqa: E402
+from app.services.receivable_decision_onec_metrics import (  # noqa: E402
+    fetch_counterparty_payment_form_metrics_from_onec,
+    fetch_counterparty_profitability_metrics_from_onec,
+)
 
 REPORTS_DIR = REPO_ROOT / "reports/retail_price_types/customer-price-type-automation"
 RULESET_PATH = REPO_ROOT / "config/price_types/ruleset.yaml"
@@ -49,42 +60,8 @@ RULESET = yaml.safe_load(RULESET_PATH.read_text(encoding="utf-8"))
 LEVELS: dict[str, dict] = RULESET["levels"]
 BUYERS_ROOT_GROUP_REF: str = RULESET["population"]["buyers_root_group_ref"]
 BUYERS_CONTRACT_KIND_REF: str = RULESET["population"]["contract_kind_ref"]
-EXCLUDED_REGISTRY_CLASSES = set(RULESET["population"]["excluded_registry_classes"])
-SOURCE_LAYER = "regular_receivables"
-
-CONTRACTS_SQL = text(f"""
-    WITH buyers_groups AS (
-        SELECT _IDRRef FROM _Reference54 WITH (NOLOCK)
-        WHERE _IDRRef = CONVERT(varbinary(16), '{BUYERS_ROOT_GROUP_REF}', 1)
-        UNION ALL
-        SELECT child._IDRRef FROM _Reference54 AS child WITH (NOLOCK)
-        JOIN buyers_groups AS parent ON child._ParentIDRRef = parent._IDRRef
-        WHERE child._Folder = 0x00
-    )
-    SELECT
-        master.dbo.fn_varbintohexstr(cp._IDRRef) AS counterparty_ref,
-        cp._Code AS counterparty_code,
-        cp._Description AS counterparty_name,
-        pt._Description AS price_type_name
-    FROM _Reference37 AS c WITH (NOLOCK)
-    JOIN _Reference87 AS pt WITH (NOLOCK)
-        ON pt._IDRRef = c._Fld513_RRRef
-    JOIN _Reference54 AS cp WITH (NOLOCK)
-        ON cp._IDRRef = c._OwnerIDRRef
-    WHERE c._Marked = 0x00
-      AND cp._Marked = 0x00
-      AND cp._ParentIDRRef IN (SELECT _IDRRef FROM buyers_groups)
-      AND pt._Description LIKE :prefix
-      AND master.dbo.fn_varbintohexstr(c._Fld515RRef) = :kind_ref
-    """)
-
-
-@dataclass
-class LevelClient:
-    code: str
-    name: str
-    price_types: set[str] = field(default_factory=set)
-    monthly_net: dict[str, Decimal] = field(default_factory=dict)
+DOMAIN_RULESET = load_price_type_ruleset(RULESET_PATH)
+DOMAIN_ENGINE = CustomerPriceTypeRulesEngine(DOMAIN_RULESET)
 
 
 def classify_client(
@@ -123,177 +100,166 @@ def _last_closed_month(today: date) -> date:
     return _add_months(today.replace(day=1), -1)
 
 
-def load_level_clients(prefix: str) -> dict[str, LevelClient]:
-    engine = build_onec_engine_from_settings()
-    clients: dict[str, LevelClient] = {}
-    with engine.connect() as conn:
-        rows = conn.execute(
-            CONTRACTS_SQL,
-            {"prefix": f"{prefix}%", "kind_ref": BUYERS_CONTRACT_KIND_REF},
+def _json_ready(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return format(value.quantize(Decimal("0.01")), "f")
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {str(key): _json_ready(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_ready(item) for item in value]
+    return value
+
+
+def _build_enrichment_loader(onec_engine):
+    def load(
+        snapshot_month: date,
+        counterparty_refs: list[str] | tuple[str, ...],
+    ) -> CustomerPriceTypeSourceEnrichments:
+        snapshot_date = _add_months(snapshot_month, 1) - date.resolution
+        profitability = fetch_counterparty_profitability_metrics_from_onec(
+            onec_engine,
+            snapshot_date=snapshot_date,
+            counterparty_refs=counterparty_refs,
         )
-        for row in rows:
-            ref = (row.counterparty_ref or "").strip().lower()
-            if not ref:
-                continue
-            client = clients.setdefault(
-                ref,
-                LevelClient(
-                    code=(row.counterparty_code or "").strip(),
-                    name=" ".join((row.counterparty_name or "").split()),
+        payment_forms = fetch_counterparty_payment_form_metrics_from_onec(
+            onec_engine,
+            snapshot_date=snapshot_date,
+            counterparty_refs=counterparty_refs,
+        )
+        economics: dict[str, dict[str, Any]] = {}
+        returns: dict[str, dict[str, Any]] = {}
+        for raw_ref, metrics in profitability.items():
+            ref = str(raw_ref).strip().lower()
+            payload = _json_ready(asdict(metrics))
+            payload["status"] = metrics.source_status
+            economics[ref] = payload
+            defect_returns = metrics.defect_return_amount_90 or Decimal("0")
+            revenue = metrics.revenue_90 or Decimal("0")
+            returns[ref] = {
+                "source_status": metrics.source_status,
+                "defect_return_amount_90": _json_ready(defect_returns),
+                "return_rate_pct": (
+                    _json_ready(defect_returns / revenue * Decimal("100")) if revenue > 0 else None
                 ),
-            )
-            client.price_types.add((row.price_type_name or "").strip())
-    return clients
-
-
-def load_monthly_net(
-    refs: set[str], *, period_end_exclusive: date
-) -> dict[str, dict[str, Decimal]]:
-    """Чистые продажи клиента за месяц: max(0, реализации - возвраты)."""
-    engine = get_application_engine()
-    month_expr = func.to_char(ReceivableLedgerEvent.external_document_date, "YYYY-MM")
-    raw: dict[tuple[str, str], Decimal] = defaultdict(Decimal)
-    with Session(engine) as session:
-        rows = (
-            session.query(
-                ReceivableLedgerEvent.counterparty_ref,
-                month_expr.label("month"),
-                ReceivableLedgerEvent.event_type,
-                func.sum(ReceivableLedgerEvent.amount_delta).label("amount"),
-            )
-            .filter(
-                ReceivableLedgerEvent.external_document_date
-                < datetime.combine(period_end_exclusive, datetime.min.time()),
-                ReceivableLedgerEvent.event_type.in_(("sale", "return")),
-                ReceivableLedgerEvent.source_layer == SOURCE_LAYER,
-            )
-            .group_by(
-                ReceivableLedgerEvent.counterparty_ref,
-                month_expr,
-                ReceivableLedgerEvent.event_type,
-            )
-            .all()
-        )
-    for row in rows:
-        ref = (row.counterparty_ref or "").strip().lower()
-        if ref not in refs:
-            continue
-        amount = Decimal(str(row.amount or 0))
-        if row.event_type == "return":
-            amount = -abs(amount)
-        raw[(ref, row.month)] += amount
-    result: dict[str, dict[str, Decimal]] = defaultdict(dict)
-    for (ref, month), amount in raw.items():
-        result[ref][month] = max(Decimal("0"), amount)
-    return result
-
-
-def load_service_codes() -> set[str]:
-    codes: set[str] = set()
-    for path in glob.glob(str(REPORTS_DIR / "*" / "service-cards-registry-*.csv")):
-        with open(path, encoding="utf-8-sig") as handle:
-            for row in csv.DictReader(handle):
-                code = (row.get("код_1с") or "").strip()
-                cls = (row.get("класс") or "").strip()
-                if code and cls in EXCLUDED_REGISTRY_CLASSES:
-                    codes.add(code)
-    return codes
-
-
-def build_level_inventory(
-    level_key: str,
-    rule_month: date,
-    out_dir: Path,
-    *,
-    service_codes: set[str],
-) -> dict[str, int]:
-    level = LEVELS[level_key]
-    retention_norm = Decimal(str(level["retention_norm_3m"]))
-    hold_threshold = Decimal(str(level["hold_last_month"]))
-    prefix = level["price_type_prefix"]
-
-    clients = load_level_clients(prefix)
-    monthly = load_monthly_net(set(clients), period_end_exclusive=_add_months(rule_month, 1))
-    window = [_month_key(_add_months(rule_month, delta)) for delta in (-2, -1, 0)]
-    rule_key = _month_key(rule_month)
-
-    buckets: dict[str, list[list[str]]] = defaultdict(list)
-    for ref, client in sorted(clients.items(), key=lambda item: item[1].code):
-        months = monthly.get(ref, {})
-        if client.code in service_codes:
-            buckets["служебная_карточка"].append(
-                [client.code, client.name, "", "", "реестр служебных: вне расчета"]
-            )
-            continue
-        total_3m = sum((months.get(m, Decimal("0")) for m in window), Decimal("0"))
-        last_month = months.get(rule_key, Decimal("0"))
-        active_months = {m for m, net in months.items() if net > 0}
-        row = [client.code, client.name, f"{total_3m:.2f}", f"{last_month:.2f}"]
-        if last_month > 0 or total_3m > 0:
-            bucket = classify_client(
-                total_3m,
-                last_month,
-                retention_norm=retention_norm,
-                hold_threshold=hold_threshold,
-            )
-            notes = {
-                "норма": f"оставить {prefix}",
-                "удержание_дожим": (f"дожать до {retention_norm:.0f}, тип цен не менять"),
-                "изолятор_1м": "лечебный месяц CRM, тип цен не менять",
+                "review_type": ("data_check" if defect_returns > 0 and revenue <= 0 else None),
+                "source_note": metrics.source_note,
             }
-            buckets[bucket].append([*row, notes[bucket]])
-        elif active_months:
-            last_active = max(active_months)
-            months_ago = (
-                rule_month.year * 12
-                + rule_month.month
-                - int(last_active[:4]) * 12
-                - int(last_active[5:7])
-            )
-            wave = min(4, max(1, months_ago - 2))
-            buckets["спящие_реанимация"].append(
-                [
-                    client.code,
-                    client.name,
-                    last_active,
-                    f"{sum(months.values(), Decimal('0')):.2f}",
-                    f"волна {wave}: CRM-реанимация, условия сохраняются",
-                ]
-            )
-        else:
-            buckets["без_продаж_в_витрине"].append(
-                [client.code, client.name, "", "", "нет продаж в покрытии витрины"]
-            )
+        payments = {
+            str(raw_ref).strip().lower(): _json_ready(asdict(metrics))
+            for raw_ref, metrics in payment_forms.items()
+        }
+        return CustomerPriceTypeSourceEnrichments(
+            economics=economics,
+            payments=payments,
+            return_signals=returns,
+        )
 
-    out_dir.mkdir(parents=True, exist_ok=True)
-    header = ["код_1с", "контрагент", "итог_3м", "последний_месяц", "решение"]
-    sleeping_header = [
-        "код_1с",
-        "контрагент",
-        "последняя_покупка",
-        "продажи_в_покрытии",
-        "решение",
-    ]
-    for bucket, rows in buckets.items():
-        path = out_dir / f"{level_key}-{bucket}-{rule_key}.csv"
-        with open(path, "w", encoding="utf-8-sig", newline="") as handle:
-            writer = csv.writer(handle)
-            writer.writerow(sleeping_header if bucket == "спящие_реанимация" else header)
-            writer.writerows(rows)
-    return {bucket: len(rows) for bucket, rows in sorted(buckets.items())}
+    return load
+
+
+def _level_for_fact(fact: CustomerPriceTypeFacts) -> str | None:
+    raw_types = [str(contract.price_type_name or "").casefold() for contract in fact.contracts]
+    matches = {
+        level.key
+        for level in DOMAIN_RULESET.levels
+        if any(raw.startswith(level.price_type_prefix.casefold()) for raw in raw_types)
+    }
+    if any(
+        raw.startswith(prefix.casefold())
+        for raw in raw_types
+        for prefix in DOMAIN_RULESET.retail_prefixes
+    ):
+        matches.add("retail")
+    return next(iter(matches)) if len(matches) == 1 else None
+
+
+def _bucket(recommendation: str, *, excluded: bool) -> str:
+    if excluded:
+        return "служебная_карточка"
+    return {
+        "keep_current": "норма",
+        "informational_upgrade_candidate": "информационный_кандидат",
+        "manager_retention": "удержание_дожим",
+        "isolate": "изолятор_1м",
+        "recovery": "спящие_реанимация",
+        "downgrade_to_retail": "спящие_реанимация",
+        "data_check": "сверка_данных",
+        "special_review": "ручная_проверка",
+    }.get(recommendation.split(":", 1)[0], "ручная_проверка")
+
+
+def _collect_facts(rule_month: date) -> list[CustomerPriceTypeFacts]:
+    onec_engine = build_onec_engine_from_settings()
+    factory = get_application_session_factory()
+    try:
+        with factory() as session:
+            return CustomerPriceTypeBulkSource(
+                onec_engine=onec_engine,
+                application_session=session,
+                buyers_root_group_ref=BUYERS_ROOT_GROUP_REF,
+                contract_kind_ref=BUYERS_CONTRACT_KIND_REF,
+                key_account_price_type_prefixes=DOMAIN_RULESET.key_account_prefixes,
+                enrichment_loader=_build_enrichment_loader(onec_engine),
+            ).collect(snapshot_month=rule_month)
+    finally:
+        onec_engine.dispose()
 
 
 def build_inventory(
-    rule_month: date, out_dir: Path, level_keys: list[str]
+    rule_month: date,
+    out_dir: Path,
+    level_keys: list[str],
+    *,
+    persist: bool = False,
+    run_key: str | None = None,
 ) -> dict[str, dict[str, int]]:
-    service_codes = load_service_codes()
-    results: dict[str, dict[str, int]] = {}
-    for level_key in level_keys:
-        results[level_key] = build_level_inventory(
-            level_key, rule_month, out_dir, service_codes=service_codes
+    facts = _collect_facts(rule_month)
+    rows_by_level: dict[str, dict[str, list[list[str]]]] = defaultdict(lambda: defaultdict(list))
+    for fact in facts:
+        decision = DOMAIN_ENGINE.evaluate(fact)
+        level_key = decision.current_level or _level_for_fact(fact) or "unknown"
+        if level_key not in level_keys:
+            continue
+        bucket = _bucket(decision.recommendation, excluded=decision.excluded)
+        rows_by_level[level_key][bucket].append(
+            [
+                fact.counterparty_code or "",
+                fact.counterparty_name or "",
+                f"{decision.total_3m:.2f}",
+                f"{decision.last_month:.2f}",
+                decision.recommendation_reason,
+            ]
         )
 
+    out_dir.mkdir(parents=True, exist_ok=True)
+    header = ["код_1с", "контрагент", "итог_3м", "последний_месяц", "решение"]
     rule_key = _month_key(rule_month)
+    results: dict[str, dict[str, int]] = {}
+    for level_key in level_keys:
+        results[level_key] = {}
+        for bucket, rows in sorted(rows_by_level[level_key].items()):
+            path = out_dir / f"{level_key}-{bucket}-{rule_key}.csv"
+            with path.open("w", encoding="utf-8-sig", newline="") as handle:
+                writer = csv.writer(handle)
+                writer.writerow(header)
+                writer.writerows(sorted(rows, key=lambda row: (row[0], row[1])))
+            results[level_key][bucket] = len(rows)
+
+    if persist:
+        run = CustomerPriceTypeRunService(get_application_session_factory()).execute(
+            facts,
+            source_statuses={
+                "contracts": "ready",
+                "sales_history": "ready",
+                "ledger_reconciliation": "ready",
+                "master_data": "ready",
+            },
+            run_key=run_key,
+        )
+        print(f"persisted run_id={run.run_id} status={run.status} created={run.created}")
+
     summary = out_dir / f"price-levels-monthly-summary-{rule_key}.md"
     with open(summary, "w", encoding="utf-8") as handle:
         handle.write(
@@ -307,8 +273,8 @@ def build_inventory(
             for bucket, count in counts.items():
                 handle.write(f"| {level_key} | {bucket} | {count} |\n")
         handle.write(
-            "\nОграничение: спящие определяются в пределах покрытия витрины "
-            "продаж; полная 12-месячная история появится по мере накопления.\n"
+            "\nРасчет выполнен единым rules engine по 12 полным месяцам прямого "
+            "read-only среза 1С со сверкой локальной ledger-витрины.\n"
         )
     return results
 
@@ -333,11 +299,29 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="каталог результата (по умолчанию reports/.../auto/<месяц>)",
     )
+    parser.add_argument(
+        "--persist",
+        action="store_true",
+        help="явно сохранить run/snapshots/cases в application DB",
+    )
+    parser.add_argument(
+        "--run-key",
+        default=None,
+        help="alternate technical run key; действует только вместе с --persist",
+    )
     args = parser.parse_args(argv)
+    if args.run_key and not args.persist:
+        parser.error("--run-key requires --persist")
     rule_month = args.month or _last_closed_month(date.today())
     out_dir = args.output_dir or REPORTS_DIR / "auto" / _month_key(rule_month)
     level_keys = list(LEVELS.keys()) if args.level == "all" else [args.level]
-    results = build_inventory(rule_month, out_dir, level_keys)
+    results = build_inventory(
+        rule_month,
+        out_dir,
+        level_keys,
+        persist=args.persist,
+        run_key=args.run_key,
+    )
     print(f"месяц {_month_key(rule_month)} (ruleset {RULESET['ruleset_version']}) " f"-> {out_dir}")
     for level_key, counts in results.items():
         for bucket, count in counts.items():

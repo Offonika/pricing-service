@@ -179,21 +179,25 @@ def render_telegram_message(report: dict[str, Any]) -> str:
     lines = [
         f"Ежемесячный отчет по типам цен клиентов за {month}.",
         (
-            "К изменению: "
-            f"{actionable}; поставить серебро {_summary_value(report, 'set_silver_count')}; "
-            f"поставить золото {_summary_value(report, 'set_gold_count')}; "
-            f"понизить до серебра {_summary_value(report, 'downgrade_to_silver_count')}; "
-            f"перевести на бронзу {_summary_value(report, 'downgrade_to_bronze_count')}."
+            "К ручной работе: "
+            f"{actionable}; удержание {_summary_value(report, 'manager_work_count')}; "
+            f"изолятор {_summary_value(report, 'isolate_count')}; "
+            f"реанимация {_summary_value(report, 'recovery_count')}; "
+            f"сверка данных {_summary_value(report, 'data_check_count')}; "
+            f"спецпроверка {_summary_value(report, 'special_review_count')}."
         ),
-        "Правило: новый тип цен ставится с 1 числа по чистым продажам прошлого месяца.",
+        (
+            "Рекомендации не меняют тип цены автоматически: итоговое решение и "
+            "применение выполняются человеком после проверки."
+        ),
         "Excel во вложении.",
     ]
     rules = summary.get("rules") if isinstance(summary, dict) else None
     if isinstance(rules, dict):
         lines.append(
             "Пороги: "
-            f"серебро {rules.get('silver', '300 000..1 200 000 ₽')}; "
-            f"золото {rules.get('gold', 'от 1 200 000 ₽')}."
+            f"серебро {rules.get('silver', '3м >= 330 000 ₽')}; "
+            f"золото {rules.get('gold', '3м >= 900 000 ₽')}."
         )
     return "\n".join(lines)
 
@@ -205,13 +209,19 @@ def export_recommendations_xlsx(report: dict[str, Any], output_path: Path) -> Pa
     ws.title = "Типы цен"
 
     summary = report.get("summary") if isinstance(report.get("summary"), dict) else {}
-    ws.append(["Отчет", "Рекомендации по типам цен клиентов"])
+    ws.append(["Отчет", "Рекомендации и ручные проверки типов цен клиентов"])
     ws.append(["Месяц", report.get("month")])
-    ws.append(["К изменению", summary.get("actionable_count", 0)])
-    ws.append(["Поставить серебро", summary.get("set_silver_count", 0)])
-    ws.append(["Поставить золото", summary.get("set_gold_count", 0)])
-    ws.append(["Понизить до серебра", summary.get("downgrade_to_silver_count", 0)])
-    ws.append(["Перевести на бронзу", summary.get("downgrade_to_bronze_count", 0)])
+    ws.append(["К ручной работе", summary.get("actionable_count", 0)])
+    ws.append(["Удержание", summary.get("manager_work_count", 0)])
+    ws.append(["Изолятор", summary.get("isolate_count", 0)])
+    ws.append(["Реанимация", summary.get("recovery_count", 0)])
+    ws.append(["Сверка данных", summary.get("data_check_count", 0)])
+    ws.append(["Специальная проверка", summary.get("special_review_count", 0)])
+    ws.append(["Повышения (заморожены)", 0])
+    ws.append(["Рекомендация: до золота", summary.get("downgrade_to_gold_count", 0)])
+    ws.append(["Рекомендация: до серебра", summary.get("downgrade_to_silver_count", 0)])
+    ws.append(["Рекомендация: до бронзы", summary.get("downgrade_to_bronze_count", 0)])
+    ws.append(["Рекомендация: в розницу", summary.get("downgrade_to_retail_count", 0)])
     ws.append([])
 
     headers = [
@@ -285,7 +295,7 @@ def export_recommendations_xlsx(report: dict[str, Any], output_path: Path) -> Pa
         last_data_row = ws.max_row
         positive_fill = PatternFill(fill_type="solid", fgColor="E2F0D9")
         negative_fill = PatternFill(fill_type="solid", fgColor="F4CCCC")
-        promotion_fill = PatternFill(fill_type="solid", fgColor="D9EAD3")
+        review_fill = PatternFill(fill_type="solid", fgColor="D9EAD3")
         downgrade_fill = PatternFill(fill_type="solid", fgColor="FCE5CD")
         for column in ("G", "H"):
             value_range = f"{column}{first_data_row}:{column}{last_data_row}"
@@ -301,16 +311,22 @@ def export_recommendations_xlsx(report: dict[str, Any], output_path: Path) -> Pa
         ws.conditional_formatting.add(
             table_range,
             FormulaRule(
-                formula=[f'ISNUMBER(SEARCH("Поставить",$A{first_data_row}))'],
-                fill=promotion_fill,
+                formula=[
+                    f'OR(ISNUMBER(SEARCH("Удержание",$A{first_data_row})),'
+                    f'ISNUMBER(SEARCH("Изолятор",$A{first_data_row})),'
+                    f'ISNUMBER(SEARCH("Реанимация",$A{first_data_row})),'
+                    f'ISNUMBER(SEARCH("Сверка",$A{first_data_row})),'
+                    f'ISNUMBER(SEARCH("проверка",$A{first_data_row})))'
+                ],
+                fill=review_fill,
             ),
         )
         ws.conditional_formatting.add(
             table_range,
             FormulaRule(
                 formula=[
-                    f'OR(ISNUMBER(SEARCH("Понизить",$A{first_data_row})),'
-                    f'ISNUMBER(SEARCH("Перевести",$A{first_data_row})))'
+                    f'OR(ISNUMBER(SEARCH("понижен",$A{first_data_row})),'
+                    f'ISNUMBER(SEARCH("розниц",$A{first_data_row})))'
                 ],
                 fill=downgrade_fill,
             ),
@@ -471,7 +487,7 @@ def render_summary(summary: dict[str, Any]) -> str:
         f"retail_price_type_recommendations_from_a: {summary.get('status', 'unknown')}",
         f"Месяц: {summary.get('month', '-')}",
         f"Действие: {summary.get('action', '-')}",
-        ("delivered: {delivered}; noop: {noop}; failed: {failed}; к изменению: {count}").format(
+        ("delivered: {delivered}; noop: {noop}; failed: {failed}; к ручной работе: {count}").format(
             delivered=summary.get("delivered", 0),
             noop=summary.get("noop", 0),
             failed=summary.get("failed", 0),

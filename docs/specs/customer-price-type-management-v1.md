@@ -1,0 +1,620 @@
+---
+spec_id: "customer-price-type-management-v1"
+title: "Customer Price Type Management V1"
+doc_type: spec
+domain: customer-price-types
+status: accepted
+owner: product
+source_of_truth: true
+related_code:
+  - config/price_types/ruleset.yaml
+  - app/domains/customer_price_types/
+  - app/infrastructure/customer_price_type_sources.py
+  - app/infrastructure/customer_price_types.py
+  - app/services/customer_price_types.py
+  - app/models/customer_price_type.py
+  - app/api/customer_price_types.py
+  - scripts/build_bronze_monthly_inventory.py
+  - scripts/build_customer_returns_portrait.py
+  - scripts/build_customer_price_type_blueprint.py
+  - app/services/exporters/ut103_customer_price_types.py
+  - tasks/export_ut103_customer_price_types.py
+related_tests:
+  - tests/test_customer_price_type_core.py
+  - tests/test_customer_price_type_sources.py
+  - tests/test_customer_price_type_migration.py
+  - tests/test_customer_price_type_api.py
+  - tests/test_price_type_ruleset.py
+  - tests/test_customer_price_type_blueprint.py
+  - tests/test_ut103_customer_price_type_exporter.py
+  - tests/test_export_ut103_customer_price_types_task.py
+contracts:
+  - config/price_types/ruleset.yaml
+depends_on:
+  - docs/specs/receivables-smart-process-workflow.md
+supersedes:
+  - reports/retail_price_types/customer-price-type-automation/2026-07-16/customer-price-type-smart-process-blueprint-draft-2026-07-16.md
+rollout_required: true
+updated_at: "2026-07-19"
+---
+
+# Назначение
+
+Создать управляемый контур пересмотра типов цен покупателей, в котором:
+
+- `1С УТ 10.3` остается источником фактического типа цены договора и торгового
+  факта;
+- `pricing-service` рассчитывает рекомендации, хранит снимки, рабочие кейсы,
+  события и исполняет правила переходов;
+- embedded-приложение `Bitrix24` является основным рабочим местом для всего
+  портфеля клиентов;
+- smart-process `Bitrix24` используется только для кейсов, где требуются
+  ответственный, срок, действие, согласование или аудит;
+- изменение в `1С` выполняется только утвержденным файловым обменом через
+  `dry_run`, отдельный `apply` и readback результата.
+
+Спецификация фиксирует утвержденные владельцем решения `1-30` от `2026-07-18`.
+Статус `accepted` означает, что архитектурные и бизнес-развилки закрыты; он не
+означает, что backend, приложение, smart-process или production rollout уже
+реализованы.
+
+# Scope / Out of Scope
+
+Входит:
+
+- покупатели из дерева `ПОКУПАТЕЛИ` в `1С` с договором вида `С покупателем`;
+- уровни `Розница`, `2.Бронзовый`, `3.Серебряный`, `4.Золотой`,
+  `5.Платиновый` и ручная зона `Key Account`;
+- расчет по трем полным закрытым месяцам;
+- постоянный профиль контрагента и отдельный рабочий кейс на расчетный цикл;
+- единый rules engine всех уровней;
+- read-only портфель, очереди и карточка клиента в embedded-приложении;
+- actionable-кейсы, SLA и согласования в smart-process;
+- экспертная оценка качества отбора по каждой группе;
+- 1С-контракт v1 только для `2.Бронзовый -> Розница`;
+- поэтапный rollout от shadow mode до ограниченного `apply`.
+
+Не входит в v1:
+
+- автоматическое повышение типа цены;
+- автоматическое понижение без решения человека;
+- расчет бизнес-правил роботами `Bitrix24`;
+- создание карточки smart-process на каждого клиента или на результат
+  `оставить текущий`;
+- запись напрямую в SQL-таблицы `1С`;
+- выбор одного из нескольких договоров по эвристике;
+- массовое применение переходов верхних уровней до контракта 1С v2;
+- автоматические санкции по возвратным характерам;
+- автоматические сообщения клиентам в первой волне.
+
+# Change Summary / Spec Delta
+
+- Было: расчеты, CSV, черновой blueprint на 78+ полей и частично псевдокодовые
+  переходы; модель карточки была открытым вопросом.
+- Станет: один backend-контур `run -> snapshot -> actionable case -> event`,
+  embedded-приложение для массовой работы и тонкий smart-process для управления
+  человеческими действиями.
+- Было: `counterparty_ref` и `counterparty_ref + snapshot_month` одновременно
+  рассматривались как ключ карточки.
+- Станет: профиль контрагента имеет ключ `counterparty_ref`, рабочий кейс цикла —
+  `counterparty_ref + snapshot_month`.
+- Было: рекомендация системы и окончательное решение смешивались в обязательном
+  поле `final_decision`.
+- Станет: `system_recommendation` заполняется расчетом, а
+  `human_final_decision` остается пустым до решения человека.
+- Не меняется: пороги и глобальные запреты определяются версионированным
+  `config/price_types/ruleset.yaml`.
+
+# Acceptance Criteria
+
+## Спецификация и правила
+
+- [ ] Все runtime-правила читаются из одной версии ruleset и сохраняют
+  `ruleset_version` в каждом run, snapshot и case.
+- [ ] Один и тот же закрытый срез повторно рассчитывается детерминированно.
+- [ ] Профиль контрагента дедуплицируется по нормализованному
+  `counterparty_ref`.
+- [ ] В одном месяце существует не более одного рабочего кейса контрагента.
+- [ ] Изменение исходных фактов после согласования снимает согласование и
+  требует повторной проверки.
+
+## Бизнес-поведение
+
+- [ ] Границы бронзы, серебра, золота и платины соответствуют таблице этой
+  спецификации и ruleset.
+- [ ] Повышения не создают actionable-кейс, не открывают стадию согласования и
+  не попадают в 1С-экспорт.
+- [ ] Обычное понижение допускается не более чем на одну ступень за цикл и
+  только после изолятора/реанимации и утверждения.
+- [ ] Исключение `мертвая душа 12+ месяцев` рекомендует сразу `Розница`, но
+  фактический экспорт блокируется, если переход не поддержан текущей версией
+  1С-контракта.
+- [ ] Возвратные характеры не меняют тип цены автоматически.
+- [ ] Key Account, новый клиент, multi-contract, дубли и конфликт источников
+  обрабатываются по инвариантам этой спецификации.
+
+## Интерфейсы и workflow
+
+- [ ] Embedded-приложение показывает весь доступный портфель, сводку, очереди,
+  карточку клиента, историю и модуль контроля качества.
+- [ ] Smart-process создается только для actionable-кейсов.
+- [ ] Пользовательские действия и переходы повторно проверяются backend, а не
+  только интерфейсом или роботами Bitrix.
+- [ ] Права ограничивают портфель по подразделению и скрывают полную экономику
+  от обычного менеджера.
+- [ ] Без полного журнала работы менеджера понижение нельзя отправить на
+  согласование.
+
+## 1С и rollout
+
+- [ ] 1С v1 принимает только `2.Бронзовый -> Розница`.
+- [ ] Ни одна строка не получает `ready_for_1c`, если переход отсутствует в
+  whitelist текущего контракта.
+- [ ] `apply` невозможен без успешного `dry_run`, утверждающего, актуального
+  snapshot hash и ручного запуска.
+- [ ] Закрытие `со сменой` возможно только после readback фактического значения
+  из `1С`.
+- [ ] Перед production pilot выполнен один полный shadow-цикл и достигнуты
+  go/no-go критерии качества.
+
+# Source of Truth
+
+- `1С УТ 10.3` — фактический тип цены договора, договоры, продажи и учетные
+  документы.
+- `config/price_types/ruleset.yaml` — действующие числовые нормативы,
+  исключения и feature flags бизнес-правил.
+- `pricing-service` DB — runs, snapshots, profiles, cases, events,
+  согласования, technical sync state и история.
+- Эта спецификация — источник истины по архитектуре, жизненному циклу,
+  ответственности систем, ролям и rollout.
+- Embedded-приложение и smart-process `Bitrix24` — пользовательские поверхности,
+  но не аналитическая БД и не второй rules engine.
+
+# Data Flow
+
+```text
+1С read-only facts
+  -> pricing-service run + source fingerprint
+  -> customer profile + monthly snapshot + system recommendation
+  -> embedded Bitrix app: весь портфель, очереди, карточка, QA
+  -> actionable case only
+  -> Bitrix smart-process: owner, SLA, действие, согласование, история
+  -> backend export gate + 1С whitelist
+  -> 1С dry_run -> проверка -> отдельный apply
+  -> result/readback
+  -> backend/app/SP final state
+```
+
+Предсигнал за семь дней до конца месяца остается очередью приложения и
+уведомлением. Карточка smart-process появляется только после назначения
+конкретного действия человеку.
+
+# Domain Model
+
+## `customer_price_type_profile`
+
+Постоянный профиль контрагента:
+
+- `counterparty_ref` — primary business key, lower-case hex `_IDRRef`;
+- код и наименование контрагента;
+- подразделение и ответственный;
+- признак служебной карточки;
+- master-data flags;
+- ссылки на последний snapshot и открытый case;
+- timestamps.
+
+## `customer_price_type_run`
+
+Один расчетный запуск:
+
+- `id`, `run_key` и `snapshot_month`;
+- `ruleset_version`;
+- `as_of` и три полных месяца окна;
+- source statuses и `source_fingerprint`;
+- количество входных, исключенных, рассчитанных и конфликтных карточек;
+- состояние `started / completed / partial / failed`;
+- timestamps.
+
+Повторный запуск с теми же входами может создать новый technical run, но не
+должен создавать второй бизнес-кейс того же клиента и месяца.
+
+## `customer_price_type_snapshot`
+
+Неизменяемый снимок фактов и результата расчета:
+
+- `run_id`, `counterparty_ref`, `snapshot_month`, `ruleset_version`;
+- текущий тип цены и варианты договора;
+- продажи трех полных месяцев и последнего месяца;
+- экономика, платежи, возвратные сигналы и история;
+- source statuses, conflicts и stop factors;
+- `system_recommendation`, `recommendation_reason`, `action_required`;
+- `snapshot_hash`.
+
+Snapshot существует и для клиентов без рабочего кейса.
+
+## `customer_price_type_case`
+
+Рабочий кейс создается только при `action_required=true`:
+
+- `case_key = normalized_counterparty_ref + ':' + YYYY-MM`;
+- ссылка на профиль и актуальный snapshot;
+- `case_type`, `review_type`, stage;
+- owner, due_at и подразделение;
+- `system_recommendation`;
+- nullable `human_final_decision`;
+- approval status, approver и approved_at;
+- manager action completeness;
+- Bitrix entity id и sync version;
+- 1С export/readback status;
+- optimistic version и timestamps.
+
+В одном цикле у контрагента один кейс и одна активная стадия. Одновременные
+причины проверки хранятся в `review_type`/reasons, а не создают несколько
+конкурирующих карточек.
+
+## `customer_price_type_case_event`
+
+Append-only audit trail:
+
+- `case_id`, `event_type`, `event_at`;
+- actor и source (`calculation`, `app`, `bitrix`, `onec`, `system`);
+- before/after status;
+- comment, metadata и `idempotency_key`.
+
+# Business Rules
+
+## Уровни и удержание
+
+| Уровень | Норма за 3 полных месяца | Порог последнего месяца | Обычное понижение |
+| --- | ---: | ---: | --- |
+| `2.Бронзовый` | 10 000 | 3 300 | `Розница` |
+| `3.Серебряный` | 330 000 | 110 000 | `2.Бронзовый` |
+| `4.Золотой` | 900 000 | 300 000 | `3.Серебряный` |
+| `5.Платиновый` | 2 900 000 | 967 000 | `4.Золотой` |
+
+- Норма выполнена: кейс не создается, результат виден в приложении.
+- Итог ниже нормы, последний месяц не ниже порога: удержание/дожим.
+- Итог и последний месяц ниже порога: один полный месяц изолятора.
+- Обычное понижение — одна ступень после изолятора и утверждения.
+- Три месяца нуля при наличии истории — CRM-реанимация.
+- Двенадцать и более месяцев нуля — рекомендация сразу `Розница` после
+  проверки master data; применение зависит от 1С whitelist.
+
+## Глобальная заморозка повышений
+
+- `upgrades_enabled=false` в v1.
+- Кандидаты показываются только информационно в embedded-приложении.
+- Они не создают case/SP, не имеют кнопки согласования и не экспортируются.
+- Включение требует новой принятой версии ruleset и отдельного rollout.
+
+## Защитные сценарии
+
+- Новый клиент без полного календарного месяца: `insufficient_history`, без
+  изменения типа цены.
+- Key Account: только личное решение руководителя, автоматика не меняет тип.
+- Дубль: блок всех автоматических решений до master-data cleanup.
+- Несколько активных договоров или типов: `data_check`, договор не выбирается
+  эвристикой.
+- Расхождение источников: `source_status=conflict`, сохраняются обе версии и
+  величина расхождения.
+- Исторический B2B, comeback и выгодная экономика: защитная проверка до
+  понижения.
+
+## Возвраты и качество
+
+В v1 возвраты являются информационным сигналом:
+
+| Возвратный результат | Нормализованное действие |
+| --- | --- |
+| Нет возвратов / рыночная норма | Только информация |
+| Повышенный уровень | Информационная лампочка |
+| Сверхнормативные возвраты | `special_review`, тип `quality` |
+| Подбор запчасти | Помощь клиенту, без санкции |
+| Возврат без продаж в окне | `data_check`, сверка периодов |
+| Служебная карточка | Вне клиентского контура |
+| Индивидуальная черная метка | Ручное исключение руководителя |
+
+`return_quality_grade` и `return_quality_score` не являются самостоятельным
+основанием изменения типа цены. Нужный adapter должен выдавать нормализованный
+`review_type`, информационные сигналы и причину, но не скрытую санкцию.
+
+# Workflow
+
+## Стадии smart-process v1
+
+1. `NEW` — Новый кейс.
+2. `MANAGER_WORK` — Работа менеджера.
+3. `ISOLATE` — Изолятор.
+4. `DATA_CHECK` — Сверка данных.
+5. `SPECIAL_REVIEW` — Специальная проверка (`quality`, `credit`, `economics`,
+   `history`).
+6. `DOWNGRADE_APPROVAL` — Согласование понижения.
+7. `READY_FOR_1C` — Готово к разрешенному 1С-обмену.
+8. `CLOSED_KEEP` — Закрыто без изменения.
+9. `CLOSED_CHANGED` — Закрыто с подтвержденным изменением.
+10. `ONEC_ERROR` — Ошибка/неоднозначный результат 1С.
+
+Стадии повышения в v1 не создаются. Переходы вычисляет backend state machine;
+Bitrix передает намерение пользователя, но не является доверенным исполнителем
+правила.
+
+## Полнота работы менеджера
+
+До `DOWNGRADE_APPROVAL` обязательны:
+
+- дата и результат контакта;
+- причина отсутствия закупок;
+- обещанная дата и сумма закупки, если клиент их сообщил;
+- следующее действие;
+- комментарий;
+- итог изолятора.
+
+## Начальные SLA пилота
+
+| Действие | SLA |
+| --- | --- |
+| Первое действие менеджера | 2 рабочих дня |
+| Сверка данных | 3 рабочих дня |
+| Проверка качества или кредита | 3 рабочих дня |
+| Согласование понижения | 2 рабочих дня |
+| Проверка результата 1С | 1 рабочий день |
+| Изолятор | 1 полный календарный месяц |
+
+# Roles And Access
+
+| Роль | Доступ и ответственность |
+| --- | --- |
+| Менеджер | Свои клиенты; удержание, изолятор, журнал действий |
+| Руководитель подразделения | Все клиенты подразделения; контроль SLA |
+| Руководитель сети | Весь портфель; понижения, Key Account, исключения |
+| Master-data / 1С | Конфликты, договоры, дубли и source cleanup |
+| Качество | Только связанные quality-review |
+| Финансы | Кредитные показатели и credit-review |
+| Интеграционный оператор | Dry-run/apply/readback и технические ошибки |
+
+- Полная экономика скрыта от обычного менеджера.
+- Менеджер фиксирует работу и предлагает результат, но не утверждает понижение.
+- Самоутверждение исключения инициатором запрещено.
+- Конкретные Bitrix user/department IDs являются deployment-конфигурацией, а
+  не бизнес-правилом spec.
+
+# Embedded Bitrix Application
+
+Основной маршрут: `/bitrix/customer-price-types`.
+
+Разделы v1:
+
+1. Сводка по уровням, группам, стадиям и source status.
+2. Рабочие очереди и фильтры.
+3. Карточка клиента: факты, рекомендация, причины, стоп-факторы и история.
+4. Контроль качества: экспертная разметка и метрики групп.
+5. История runs, decisions и ruleset versions.
+6. 1С-выгрузка: только разрешенные и утвержденные строки.
+
+Приложение использует Bitrix OAuth/session и server-side role scopes по образцу
+существующих embedded-приложений. Чувствительные поля фильтруются backend, а не
+только скрываются CSS/UI.
+
+# Smart Process Payload
+
+Smart-process не копирует 78+ полей аналитической витрины. Минимальный summary:
+
+- `case_key`, `counterparty_ref`, код и имя;
+- `snapshot_month`, `ruleset_version`, `snapshot_hash`;
+- текущий тип, системная рекомендация и разрешенная цель;
+- case type, review type, короткая причина и stop factors;
+- source status;
+- owner, due_at и manager action completeness;
+- nullable human decision;
+- approval status, approver и timestamps;
+- 1С export/readback status;
+- ссылка на полную карточку приложения.
+
+# API / Data Contracts
+
+Планируемые read-only endpoints первой волны:
+
+- `GET /api/customer-price-types/summary`;
+- `GET /api/customer-price-types/worklists`;
+- `GET /api/customer-price-types/cases`;
+- `GET /api/customer-price-types/cases/{case_id}`;
+- `GET /api/customer-price-types/profiles/{counterparty_ref}`;
+- `GET /api/customer-price-types/runs/{run_id}`.
+
+После shadow-приемки добавляются команды:
+
+- `POST /api/customer-price-types/cases/{case_id}/actions`;
+- `POST /api/customer-price-types/cases/{case_id}/transitions`;
+- `POST /api/customer-price-types/cases/{case_id}/approve`;
+- `POST /api/customer-price-types/exports/dry-run`.
+
+Любая изменяющая команда принимает ожидаемую версию case и snapshot hash.
+Stale update возвращает `409` и не выполняет переход.
+
+Публичный API после реализации экспортируется в `openapi.yaml`. До появления
+кода перечисленные endpoints являются планом, а не действующим контрактом.
+
+## 1С contract v1
+
+Whitelist v1 содержит только:
+
+```text
+ExpectedCurrentPriceType=2.Бронзовый
+TargetPriceType=Розница
+Decision=approved_for_manual_1c_update
+```
+
+Переходы верхних уровней могут быть рассчитаны и согласованы, но остаются
+`unsupported_by_onec_contract` и не получают `READY_FOR_1C` до версии v2.
+
+# Invariants
+
+- Нет внешних side effects во время расчета, просмотра и shadow mode.
+- Нет изменения типа цены без решения человека.
+- Нет повышения при `upgrades_enabled=false`.
+- Нет больше одного обычного шага понижения за цикл.
+- Нет 1С-экспорта при partial/conflict/duplicate/multi-contract/stale snapshot.
+- Нет договора, выбранного по имени или «первого найденного».
+- Нет закрытия `CLOSED_CHANGED` без readback из 1С.
+- Нет второго rules engine в Bitrix, UI, SQL-скрипте или cron.
+- Нет скрытых санкций по возвратам.
+- Нет массового создания smart-process карточек без действия человека.
+- Ruleset-изменения имеют новую версию и дату действия; история старых расчетов
+  не переписывается.
+
+# Errors / Edge Cases
+
+- Несколько активных договоров: `DATA_CHECK`, экспорт запрещен.
+- Текущий тип не совпал с ожидаемым: stale/conflict, согласование снимается.
+- Источник partial или недоступен: run/snapshot сохраняет статус, решения и
+  экспорт блокируются.
+- Изменился snapshot hash: команда возвращает `409`, нужен повторный review.
+- Bitrix недоступен: backend case остается источником состояния, sync
+  повторяется идемпотентно.
+- 1С dry-run вернул `needs_review`: case не переходит в apply.
+- 1С apply вернул partial: успешные и ошибочные строки фиксируются отдельно,
+  case остается под контролем до readback.
+- Повторный sync/export использует idempotency key и не создает дубль.
+- Новая версия ruleset не пересчитывает и не переписывает закрытый historical
+  case без отдельного correction run.
+
+# Quality Measurement And Go/No-Go
+
+Качество измеряется отдельно по каждой actionable-группе:
+
+- coverage экспертной разметкой;
+- precision;
+- recall;
+- false positive и false negative;
+- матрица `предложенная группа -> эталонная группа`;
+- доля ручных переопределений;
+- стабильность повторного расчета того же среза;
+- соблюдение stop factors;
+- Bitrix dedupe и 1С readback results.
+
+Go/no-go первой волны:
+
+- размечены все подготовленные контрольные выборки;
+- precision каждой actionable-группы не ниже `95%`;
+- критических ложных понижений — `0`;
+- дублей case/SP — `0`;
+- нарушений stop factors — `0`;
+- выгрузок без утверждения — `0`;
+- переходов вне whitelist 1С — `0`;
+- все примененные изменения подтверждены readback.
+
+# Implementation Checklist
+
+## Phase 0 — accepted specification
+
+- [x] Утверждены решения 1-30.
+- [x] Зафиксирована модель profile + monthly case.
+- [x] Зафиксирована гибридная архитектура app + thin smart-process.
+- [x] Зафиксирована граница 1С v1.
+- [ ] Пересобран актуальный ревизионный архив после синхронизации spec/ruleset.
+
+## Phase 1 — backend read-only core
+
+- [x] Вынести бизнес-логику из scripts в доменный сервис.
+- [x] Добавить Alembic-модели profile, run, snapshot, case и event.
+- [x] Реализовать единый расчет всех уровней и idempotent persistence.
+- [x] Реализовать read-only API и обновить OpenAPI.
+- [x] Покрыть границы, stop factors, stale hash и dedupe тестами.
+
+Phase 1 реализована как backend-only read-only core. Persisted snapshots и cases
+не выполняют внешних записей; legacy inventory пишет в application DB только с
+явным `--persist`. Bitrix OAuth/session, smart-process, UI, write-команды и
+1С-экспорт остаются в Phase 2–4.
+
+## Phase 2 — embedded app shadow mode
+
+- [ ] Реализовать OAuth/session и server-side role scopes.
+- [ ] Реализовать сводку, очереди, detail, history и QA.
+- [ ] Провести один полный цикл без Bitrix/1С writes.
+- [ ] Завершить экспертную разметку и рассчитать метрики.
+
+## Phase 3 — thin smart-process
+
+- [ ] Создать минимальные поля и десять стадий v1.
+- [ ] Реализовать idempotent upsert и readback.
+- [ ] Подключить действия, SLA и согласование одного пилотного подразделения.
+
+## Phase 4 — 1С v1
+
+- [ ] Выполнить малый dry-run `2.Бронзовый -> Розница`.
+- [ ] Проверить result и repeated-run idempotency.
+- [ ] Выполнить ограниченный apply после go/no-go.
+- [ ] Подтвердить каждое изменение readback.
+
+## Phase 5 — expansion
+
+- [ ] Подготовить и отдельно принять 1С contract v2.
+- [ ] Подключать верхние уровни только по whitelist.
+- [ ] Ввести мониторинг качества и operational SLA.
+
+# Review Notes / Risks
+
+- Основной риск — преждевременно перенести черновой blueprint в Bitrix и
+  получить второй rules engine.
+- Текущий передаваемый архив предшествует части исправлений 2026-07-18 и должен
+  быть пересобран до внешней ревизии.
+- Верхние уровни еще не имеют равномерного месячного production-расчета.
+- Экспертная разметка и один полный цикл еще не завершены.
+- 1С v1 остается draft-контуром с незакрытыми live acceptance criteria.
+- Любое расширение Bitrix/1С side effects требует отдельного rollout-решения.
+
+# Tests
+
+Минимальные существующие проверки до реализации backend:
+
+- `./.venv/bin/python scripts/validate_price_type_ruleset.py`;
+- `./.venv/bin/python -m pytest -q tests/test_price_type_ruleset.py`;
+- `./.venv/bin/python -m pytest -q tests/test_customer_price_type_blueprint.py`;
+- `./.venv/bin/python -m pytest -q tests/test_ut103_customer_price_type_exporter.py tests/test_export_ut103_customer_price_types_task.py`.
+
+Проверки Phase 1:
+
+- boundary tests всех уровней;
+- actionability и case creation matrix;
+- unique case per counterparty/month;
+- repeated run idempotency;
+- source partial/conflict/multi-contract blocks;
+- upgrade freeze;
+- stale snapshot сбрасывает approval/human decision и дедуплицирует event;
+- role scopes;
+- fail-closed отсутствующих обязательных источников;
+- доказанное покрытие истории без ложных `12+` месяцев;
+- согласованность summary/worklists/cases по одному run;
+- исключение служебного профиля из очередей без автоматического закрытия case;
+- возобновление `started` run и сохранение ошибок расчета как `failed`.
+
+HTTP `409` появляется вместе с write-командами после shadow-приемки. Bitrix
+sync dedupe и 1С whitelist/dry-run/apply/readback проверяются в Phase 3–4 и не
+являются частью read-only API Phase 1.
+
+# Rollout
+
+1. Синхронизировать ruleset, текущий blueprint и ревизионный пакет с этой
+   accepted spec.
+2. Реализовать backend и read-only API без внешних side effects.
+3. Включить embedded-приложение в shadow mode для одного подразделения.
+4. Прожить один полный закрытый месячный цикл и подписать метрики.
+5. Создать thin smart-process для actionable-кейсов пилота.
+6. Выполнить малый 1С dry-run и только затем отдельный ограниченный apply.
+7. При критической ошибке выключить feature flag writes; backend snapshots и
+   audit trail сохраняются, типы цен в 1С не изменяются без нового пакета.
+8. Расширять уровни только версионированным ruleset и 1С contract v2.
+
+# Changelog
+
+- 2026-07-19 — выполнена корректирующая проверка Phase 1.1: обязательные
+  источники переведены в fail-closed, история считается только по доказанным
+  полным месяцам, подключены bulk-enrichments экономики/платежей, исправлены
+  lifecycle run, исключения служебных профилей, run-consistent API, scopes и
+  legacy summary; внешние writes не включались.
+- 2026-07-18 — реализована Phase 1: ruleset `2026-07-18.2`, единый domain
+  engine и bulk-source, модели/migration `b9e5d7f3a012`, idempotent persistence,
+  scoped read-only API, legacy projection, OpenAPI и тесты; внешние writes/UI не
+  включались, общий статус спецификации оставлен `accepted`.
+- 2026-07-18 — решения 1-30 утверждены владельцем; спецификация v1 принята со
+  статусом `accepted`.

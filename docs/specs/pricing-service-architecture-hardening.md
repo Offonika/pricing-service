@@ -8,7 +8,10 @@ owner: "engineering"
 source_of_truth: true
 related_code:
   - app/api/dependencies.py
+  - app/api/orchestration.py
   - app/core/config.py
+  - app/domains/management/orchestration/
+  - app/infrastructure/orchestration.py
   - app/main.py
   - infra/cron/competitor_matching_nightly.sh
   - tasks/import_topcontrol_products_db.py
@@ -17,7 +20,9 @@ related_code:
   - scripts/switch_pricing_service_release.sh
 related_tests:
   - tests/test_import_onec_products.py
+  - tests/test_orchestration_api.py
   - tests/test_product_compatibility.py
+  - tests/test_release_scripts.py
   - tests/test_weekly_kpi_reports_api.py
 contracts:
   - openapi.yaml
@@ -26,7 +31,7 @@ depends_on:
   - docs/specs/README.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-12"
+updated_at: "2026-07-16"
 ---
 
 # Назначение
@@ -49,6 +54,8 @@ Spec фиксирует вывод TopControl из активного конту
   receivables, management, expertise, logistics и telephony;
 - API-ingest недельных KPI и версионированные shared snapshot contracts;
 - architecture, OpenAPI, docs, migration и runtime quality gates;
+- durable run/delivery state и authenticated orchestration API для root control plane;
+- release-specific virtualenv, hash-locked dependencies и единый rollback backend/UI;
 - release retention: активный релиз плюс три последних проверенных.
 
 Не входит:
@@ -91,17 +98,20 @@ Spec фиксирует вывод TopControl из активного конту
 - [x] Executive snapshots публикуются атомарно по versioned JSON Schema и читаются
   из нейтрального runtime-каталога.
 - [ ] OpenAPI, manifests, specs, architecture checks и regression tests проходят.
-- [ ] Release выкладывается неизменяемым каталогом с проверенным rollback и без
+- [x] Release builder создаёт неизменяемый каталог со своим `.venv`, hash-locked
+  dependencies и manifest hashes.
+- [x] Forced smoke failure атомарно возвращает прежние backend и UI через один symlink.
+- [ ] Production release переключён с проверенным rollback и без
   удаления активного/rollback targets.
 
 # Source of Truth
 
 - `1С УТ 10.3 / Ekama` — торговый факт, каталог, документы, остатки и продажи.
 - PostgreSQL `pricing-service` — derived state pricing/matching/procurement,
-  receivables и management read models.
+  receivables, management read models и durable orchestration runs/delivery intents.
 - `mm-compensation` — KPI/HR/payroll/finance calculations до публикации контракта.
-- Корневой `/opt/MM` — schedules, locks, delivery registry и runtime orchestration,
-  но не бизнес-расчеты.
+- Корневой `/opt/MM` — runtime registry, systemd schedules и thin runners; durable
+  orchestration state читается и меняется только через internal API.
 - `Bitrix24` и `Telegram` — рабочие поверхности и каналы доставки, не аналитическая БД.
 
 # Data Flow
@@ -112,6 +122,8 @@ external HTTP -> API -> application service -> Unit of Work -> domain/repositori
 mm-compensation KPI -> internal authenticated API -> pricing publication tables
 mm-compensation snapshots -> atomic shared contract -> pricing management reader
 pricing read models -> root delivery adapter -> Bitrix24/Telegram
+root systemd timer -> registered runner -> orchestration API -> project command
+project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt result
 ```
 
 # API / Data Contracts
@@ -122,9 +134,13 @@ pricing read models -> root delivery adapter -> Bitrix24/Telegram
 - Endpoint использует bearer service token, обязательный `Idempotency-Key` и batch
   существующего weekly KPI contract; ответ содержит счетчики
   `inserted/updated/noop/quarantined`.
+- Durable orchestration API доступен по
+  `/api/management/internal/orchestration`; mutating requests требуют отдельный bearer
+  token и `Idempotency-Key`. Повторный claim не разрешает повторное исполнение/отправку,
+  а истёкшая отправка переходит в `unknown` для ручной сверки.
 - Shared executive artifacts публикуются в `/var/lib/mm-data-contracts/` и имеют
   JSON Schema плюс manifest: `contract_version`, `generated_at`, `source_project`,
-  `content_sha256`.
+  `schema`, `schema_sha256`, `content_sha256` и `artifact`.
 - OpenAPI `pricing-service` продолжает генерироваться из FastAPI и проверяться через
   `scripts/export_openapi.py --check`.
 
@@ -136,6 +152,9 @@ pricing read models -> root delivery adapter -> Bitrix24/Telegram
 - Side effects остаются dry-run, если они не были production-enabled до refactor.
 - Первая волна миграций additive; удаление данных и колонок запрещено.
 - Активный release symlink и rollback target не участвуют в cleanup.
+- Scheduler не включает timer для job, пока runtime registry не переведён из
+  `cron_active_timer_disabled` в разрешённое переходное/целевое состояние.
+- Delivery со статусом `unknown` не повторяется автоматически.
 
 # Errors / Edge Cases
 
@@ -162,6 +181,8 @@ pricing read models -> root delivery adapter -> Bitrix24/Telegram
 - [x] Устранить дубли receivables/counterparty recommendations.
 - [x] Добавить доменный skeleton и dependency rules без big-bang переносов.
 - [x] Усилить management-job/retention validators и MasterMobile OpenAPI parity.
+- [x] Добавить durable orchestration models/API, idempotency и expired-lease guard.
+- [x] Добавить release-specific venv, dependency hashes и единый UI/backend rollback.
 - [ ] Прогнать regression, собрать immutable release, smoke и rollback.
 - [ ] После контрольного цикла применить safe retention и удалить deprecated alias
   в следующем релизе.
@@ -205,3 +226,4 @@ pricing read models -> root delivery adapter -> Bitrix24/Telegram
 # Changelog
 
 - 2026-07-12 — accepted architecture-hardening plan created from live baseline.
+- 2026-07-16 — durable orchestration and atomic release hardening implemented in repository; production cutover remains gated.

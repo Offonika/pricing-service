@@ -25,6 +25,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+build = [
+    "pip-tools==7.5.3",
+]
 dev = [
     "pytest>=8.2.0",
     "httpx>=0.27.0",

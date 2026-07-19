@@ -1,16 +1,21 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ExecutiveDashboardAction,
   ExecutiveDashboardBlock,
   ExecutiveDashboardResponse,
+  ExecutiveOnlineStorePeriodResponse,
+  ExecutiveProfitLossInventoryLoss,
+  ExecutiveProfitLossPeriodResponse,
   ExecutiveSalesPeriodResponse,
 } from "../api/executiveDashboard";
 import {
   fetchExecutiveDashboard,
   fetchExecutiveDashboardActions,
   fetchExecutiveManagementBalance,
+  fetchExecutiveOnlineStorePeriod,
+  fetchExecutiveProfitLossPeriod,
   fetchExecutiveSalesPeriod,
 } from "../api/executiveDashboard";
 
@@ -20,6 +25,7 @@ vi.mock("../api/executiveDashboard", () => ({
   fetchExecutiveDashboard: vi.fn(),
   fetchExecutiveDashboardActions: vi.fn(),
   fetchExecutiveManagementBalance: vi.fn(),
+  fetchExecutiveOnlineStorePeriod: vi.fn(),
   fetchExecutiveProfitLossPeriod: vi.fn(),
   fetchExecutiveSalesPeriod: vi.fn(),
 }));
@@ -28,17 +34,259 @@ import {
   ActionDetail,
   ActionTable,
   ExecutiveDashboard,
+  InventoryLossPanel,
   ManagementBalanceBlockCard,
   MonthlyManagementBalance,
+  OnlineStorePanel,
 } from "./ExecutiveDashboard";
 import { splitManagementBalanceBlock } from "./executiveDashboardLayout";
+
+function inventoryLoss(): ExecutiveProfitLossInventoryLoss {
+  return {
+    schema_version: 2,
+    month: "2026-06",
+    source_status: "ready",
+    detail_source_status: "partial",
+    writeoff_amount: "1229121.82",
+    receipt_amount: "526672.97",
+    loss_amount: "702448.85",
+    loss_pct: "0.8499",
+    norm_pct: "0.3000",
+    variance_to_norm_pct: "0.5499",
+    matched_store_count: 2,
+    previous_month: {
+      month: "2026-05",
+      source_status: "ready",
+      loss_amount: "600000.00",
+      loss_pct: "0.7000",
+    },
+    average_loss_amount_3m: "500000.00",
+    average_loss_pct_3m: "0.6000",
+    history_source_status: "ready",
+    history: [
+      { month: "2026-04", source_status: "ready", loss_amount: "400000.00", loss_pct: "0.5" },
+      { month: "2026-05", source_status: "ready", loss_amount: "600000.00", loss_pct: "0.7" },
+      { month: "2026-06", source_status: "ready", loss_amount: "702448.85", loss_pct: "0.8499" },
+    ],
+    stores: [
+      {
+        store_ref: "store-1",
+        store_name: "Горбушкин Двор с очень длинным названием магазина",
+        sales_amount: "1000000",
+        writeoff_amount: "8000",
+        receipt_amount: "1000",
+        loss_amount: "7000",
+        loss_pct: "0.7000",
+        norm_pct: "0.3000",
+        variance_to_norm_pct: "0.4000",
+        above_norm: true,
+        source_status: "ready",
+        has_operations: true,
+      },
+      {
+        store_ref: "store-2",
+        store_name: "Склад Сайт",
+        sales_amount: "250000",
+        writeoff_amount: "100",
+        receipt_amount: "200",
+        loss_amount: "-100",
+        loss_pct: "-0.0400",
+        norm_pct: "0.3000",
+        variance_to_norm_pct: "-0.3400",
+        above_norm: false,
+        source_status: "ready",
+        has_operations: true,
+      },
+    ],
+    top_documents: [
+      {
+        stable_key: "writeoff-1",
+        operation_kind: "inventory_writeoff",
+        operation_label: "Инвентаризационное списание",
+        document_type: "_Document210",
+        document_ref: "doc-1",
+        document_number: "СП-1",
+        document_date: "2026-06-20",
+        store_ref: "store-1",
+        store_name: "Горбушкин Двор с очень длинным названием магазина",
+        amount: "8000",
+        effect_amount: "8000",
+      },
+      {
+        stable_key: "receipt-1",
+        operation_kind: "inventory_receipt",
+        operation_label: "Оприходование по инвентаризации",
+        document_type: "_Document170",
+        document_ref: "doc-2",
+        document_number: "ОП-1",
+        document_date: "2026-06-21",
+        store_ref: "store-2",
+        store_name: "Склад Сайт",
+        amount: "200",
+        effect_amount: "-200",
+      },
+    ],
+    actions: [
+      {
+        stable_key: "action-1",
+        action_type: "store_above_norm",
+        severity: "warning",
+        title: "Потери выше норматива: Горбушкин Двор",
+        description: "Факт 0.7% при нормативе 0.3%.",
+        amount: "7000",
+        store_ref: "store-1",
+        store_name: "Горбушкин Двор",
+        responsible_name: "Руководитель сети",
+        recommended_action: "Проверить крупнейшие документы.",
+      },
+    ],
+    data_quality: {
+      source_status: "partial",
+      approved_store_count: 3,
+      source_store_count: 3,
+      matched_store_count: 2,
+      unmatched_store_count: 1,
+      source_document_count: 3,
+      matched_document_count: 2,
+      unmatched_document_count: 1,
+      unmatched_writeoff_amount: "500",
+      unmatched_receipt_amount: "0",
+      excluded_store_count: 1,
+      excluded_document_count: 2,
+      excluded_writeoff_amount: "100",
+      excluded_receipt_amount: "20",
+      store_scope_status: "approved",
+      store_scope_source: "approved_freeze",
+      store_scope_month: "2026-06",
+      norm_source_status: "approved",
+      norm_source: "bitrix_kpi_v2_export",
+    },
+    owner: { employee_name: "Руководитель сети", role_code: "retail_director" },
+    warnings: ["Одна операция требует сопоставления."],
+    note: "Товарные потери показаны справочно.",
+  };
+}
+
+describe("executive inventory loss", () => {
+  afterEach(cleanup);
+
+  it("renders comparisons, filters stores and filters both operation types", () => {
+    render(<InventoryLossPanel data={inventoryLoss()} />);
+
+    expect(screen.getByText("Норматив").parentElement).toHaveTextContent("0,30%");
+    expect(screen.getByText("Прошлый месяц").parentElement).toHaveTextContent(/600\s*000/);
+    expect(screen.getByLabelText("Динамика товарных потерь")).toHaveTextContent("2026-04");
+
+    const stores = screen.getByLabelText("Потери по магазинам");
+    expect(within(stores).getByText("Склад Сайт")).toBeVisible();
+    fireEvent.click(within(stores).getByRole("button", { name: "Выше норматива" }));
+    expect(within(stores).queryByText("Склад Сайт")).not.toBeInTheDocument();
+
+    const documents = screen.getByLabelText("Крупнейшие товарные операции");
+    fireEvent.change(within(documents).getByLabelText("Тип товарной операции"), {
+      target: { value: "receipt" },
+    });
+    expect(within(documents).getByText("ОП-1")).toBeVisible();
+    expect(within(documents).queryByText("СП-1")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("Требует действий")).toHaveTextContent("Read-only очередь");
+  });
+
+  it("keeps v1 totals visible and explains missing detail", () => {
+    const data = inventoryLoss();
+    data.schema_version = 1;
+    data.detail_source_status = "source_missing";
+    data.stores = [];
+    data.top_documents = [];
+    data.actions = [];
+
+    render(<InventoryLossPanel data={data} />);
+
+    expect(screen.getByText("Чистые товарные потери").parentElement).toHaveTextContent(/702\s*449/);
+    expect(screen.getByText(/Источник v1 содержит только сетевые итоги/)).toBeVisible();
+  });
+
+  it("labels receipt surplus without presenting it as a loss", () => {
+    const data = inventoryLoss();
+    data.loss_amount = "-250.00";
+    data.loss_pct = "-0.0500";
+    data.previous_month = {
+      month: "2026-05",
+      source_status: "ready",
+      loss_amount: "-100.00",
+      loss_pct: "-0.0200",
+    };
+    data.history = [
+      { month: "2026-05", source_status: "ready", loss_amount: "-100.00", loss_pct: "-0.0200" },
+    ];
+
+    render(<InventoryLossPanel data={data} />);
+
+    expect(screen.getByText("Превышение оприходований").parentElement).toHaveTextContent(/250/);
+    expect(screen.getByText("Прошлый месяц").parentElement).toHaveTextContent(/Превышение оприходований/);
+    expect(screen.getByLabelText("Динамика товарных потерь")).toHaveTextContent(/Превышение оприходований/);
+    expect(screen.getByLabelText("Динамика товарных потерь").querySelector("b")).toHaveClass("is-receipt-surplus");
+  });
+
+  it("filters documents for a store without store_ref by its name", () => {
+    const data = inventoryLoss();
+    data.stores[0].store_ref = "";
+    data.top_documents[0].store_ref = "";
+
+    render(<InventoryLossPanel data={data} />);
+
+    const documents = screen.getByLabelText("Крупнейшие товарные операции");
+    fireEvent.change(within(documents).getByLabelText("Магазин документов"), {
+      target: { value: `name:${data.stores[0].store_name}` },
+    });
+
+    expect(within(documents).getByText("СП-1")).toBeVisible();
+    expect(within(documents).queryByText("ОП-1")).not.toBeInTheDocument();
+  });
+
+  it("distinguishes a v2 detail error from the v1 fallback", () => {
+    const data = inventoryLoss();
+    data.detail_source_status = "source_error";
+    data.stores = [];
+    data.top_documents = [];
+
+    render(<InventoryLossPanel data={data} />);
+
+    expect(screen.getByText(/Источник v2 опубликован без доступной детализации/)).toBeVisible();
+    expect(screen.queryByText(/Источник v1 содержит только сетевые итоги/)).not.toBeInTheDocument();
+  });
+
+  it("shows draft store scope and fallback norm honestly", () => {
+    const data = inventoryLoss();
+    data.data_quality.store_scope_status = "draft";
+    data.data_quality.norm_source_status = "fallback";
+
+    render(<InventoryLossPanel data={data} />);
+
+    expect(screen.getByText("Норматив").parentElement).toHaveTextContent("резервный норматив");
+    fireEvent.click(screen.getByText(/Контроль качества данных/));
+    expect(screen.getByText("Магазинов в черновике")).toBeVisible();
+    expect(screen.getByText("Статус контура").parentElement).toHaveTextContent("черновик");
+  });
+
+  it("uses a neutral tone when variance to norm is unavailable", () => {
+    const data = inventoryLoss();
+    data.variance_to_norm_pct = null;
+
+    render(<InventoryLossPanel data={data} />);
+
+    const card = screen.getByText("Отклонение").parentElement;
+    expect(card).toHaveTextContent("нет данных");
+    expect(card?.className).toContain("metric_neutral");
+    expect(card?.className).not.toContain("metric_success");
+  });
+});
 
 function action(index: number): ExecutiveDashboardAction {
   return {
     stable_key: `procurement:${index}`,
     business_date: "2026-07-11",
     domain: "procurement_import",
-    severity: "high",
+    severity: index === 1 ? "critical" : "warning",
     title: `Заказ РБГУ${String(index).padStart(4, "0")}: заполнить «Сдача в карго»`,
     amount: "1000.00",
     currency: "RUB",
@@ -52,6 +300,14 @@ function action(index: number): ExecutiveDashboardAction {
       correction_document: "Заказ поставщику",
       correction_field: "Сдача в карго",
       recommendation: "Заполнить поле в документе 1С.",
+      supplier_title: "Shenzhen Parts",
+      responsible_name: "Ирина Закупкина",
+      management_stage_label: "Обработка поставщиком",
+      deadline_date: "2026-07-09",
+      days_overdue: 2,
+      reason_code: "supplier_preparation_critical",
+      reason: "Срок подготовки поставщиком превышен.",
+      risk_formula: "p75=18; critical=max(p75×1,6; p75+7)=29",
     },
   };
 }
@@ -77,6 +333,187 @@ describe("executive procurement actions", () => {
     expect(screen.getByRole("dialog")).toHaveTextContent("Заказ поставщику");
     expect(screen.getByRole("dialog")).toHaveTextContent("Сдача в карго");
     expect(screen.getByText(/исчезнет после следующего обновления/)).toBeVisible();
+  });
+});
+
+function procurementDashboardResponse(): ExecutiveDashboardResponse {
+  return {
+    as_of: "2026-07-11",
+    generated_at: "2026-07-11T10:00:00Z",
+    freshness_status: "fresh",
+    source_status: "ready",
+    access_level: "full",
+    roles: [],
+    allowed_blocks: ["procurement_import"],
+    allowed_action_domains: ["procurement_import"],
+    blocks: [
+      {
+        key: "procurement_import",
+        title: "Закупки / импорт",
+        source_status: "ready",
+        freshness_status: "fresh",
+        as_of: "2026-07-11",
+        summary: {
+          note: "Открытые заказы из 1С.",
+          risk_scoring_version: 2,
+          risk_summary: { at_risk_count: 2, at_risk_amount_rub: "350000", at_risk_share_pct: "28.0", critical_count: 1 },
+          stage_breakdown: [
+            { key: "supplier_processing", label: "Обработка поставщиком", count: 3, amount_rub: "900000" },
+            { key: "in_transit", label: "В пути", count: 1, amount_rub: "350000" },
+          ],
+          currency_breakdown: [
+            { currency: "RMB", count: 3, amount_rub: "900000" },
+            { currency: "RUB", count: 1, amount_rub: "350000" },
+          ],
+          data_quality: { responsible_coverage_pct: "75.0", missing_responsible_count: 1, missing_expected_receipt_after_cargo_count: 0 },
+        },
+        metrics: [
+          { key: "open_supplier_orders", label: "Заказы поставщику", value: 4, unit: "COUNT", tone: "neutral", source_status: "ready", masked: false },
+          { key: "open_order_amount_rub", label: "Сумма открытых заказов", value: "1250000", unit: "RUB", tone: "neutral", source_status: "ready", masked: false },
+          { key: "procurement_at_risk_count", label: "Заказы под риском", value: 2, unit: "COUNT", tone: "warning", source_status: "ready", masked: false },
+          { key: "procurement_at_risk_amount_rub", label: "Сумма под риском", value: "350000", unit: "RUB", tone: "warning", source_status: "ready", masked: false },
+          { key: "critical_overdue_count", label: "Критические просрочки", value: 1, unit: "COUNT", tone: "danger", source_status: "ready", masked: false },
+          { key: "foreign_open_order_amount_rub", label: "Открытые закупки в валюте", value: "120000", unit: "RUB", tone: "neutral", source_status: "ready", masked: false },
+        ],
+      },
+    ],
+    source_freshness: [],
+    top_actions: [],
+    summary: {},
+  };
+}
+
+describe("executive procurement tab", () => {
+  beforeEach(() => {
+    vi.mocked(fetchExecutiveDashboard).mockReset();
+    vi.mocked(fetchExecutiveDashboardActions).mockReset();
+  });
+
+  afterEach(() => {
+    cleanup();
+  });
+
+  it("shows procurement KPIs and decisions in one operational panel", async () => {
+    window.history.pushState({}, "", "?tab=procurement_import&date=2026-07-11");
+    vi.mocked(fetchExecutiveDashboard).mockResolvedValue(procurementDashboardResponse());
+    vi.mocked(fetchExecutiveDashboardActions).mockResolvedValue({
+      as_of: "2026-07-11",
+      freshness_status: "fresh",
+      source_status: "ready",
+      total_count: 1,
+      payload: [action(1)],
+    });
+
+    render(<ExecutiveDashboard />);
+
+    const panel = await screen.findByLabelText("Закупки");
+    expect(within(panel).getByLabelText("Основные KPI закупок")).toHaveTextContent("Открытые заказы");
+    expect(within(panel).getByLabelText("Основные KPI закупок")).toHaveTextContent("Сумма: 1 250 000 ₽");
+    expect(within(panel).getByLabelText("Основные KPI закупок")).toHaveTextContent("2 заказов · 28.0% открытых закупок");
+    expect(within(panel).getByLabelText("Основные KPI закупок")).toHaveTextContent("Критично");
+    expect(within(panel).getByLabelText("Основные KPI закупок")).toHaveTextContent("Открытые закупки в валюте");
+    expect(within(panel).getByLabelText("Этапы закупок")).toHaveTextContent("Обработка поставщиком · 72%");
+    expect(within(panel).getByLabelText("Валютная структура закупок")).toHaveTextContent("Рублёвые заказы");
+    expect(within(panel).getByLabelText("Фильтры закупочной очереди")).toBeVisible();
+    expect(within(panel).getByLabelText("Решения по закупкам")).toHaveTextContent("РБГУ0001");
+    expect(within(panel).getByText("Заказы в зоне внимания").compareDocumentPosition(within(panel).getByText("Этапы открытых заказов")) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.queryByLabelText("Состояние витрины")).not.toBeInTheDocument();
+    expect(screen.queryByText("Решения: Закупки")).not.toBeInTheDocument();
+  });
+
+  it("shows five priority orders first and filters the complete queue", async () => {
+    window.history.pushState({}, "", "?tab=procurement_import&date=2026-07-11");
+    vi.mocked(fetchExecutiveDashboard).mockResolvedValue(procurementDashboardResponse());
+    vi.mocked(fetchExecutiveDashboardActions).mockResolvedValue({
+      as_of: "2026-07-11",
+      freshness_status: "fresh",
+      source_status: "ready",
+      total_count: 7,
+      payload: Array.from({ length: 7 }, (_, index) => ({
+        ...action(index + 1),
+        payload: {
+          ...action(index + 1).payload,
+          responsible_name: index === 6 ? "Пётр ВЭД" : "Ирина Закупкина",
+        },
+      })),
+    });
+
+    render(<ExecutiveDashboard />);
+
+    const queue = await screen.findByLabelText("Решения по закупкам");
+    expect(within(queue).getAllByRole("row")).toHaveLength(6);
+    expect(within(queue).queryByText("РБГУ0007")).not.toBeInTheDocument();
+    fireEvent.change(within(queue).getByLabelText("Ответственный"), { target: { value: "Пётр ВЭД" } });
+    expect(within(queue).getByText("РБГУ0007")).toBeVisible();
+    expect(within(queue).queryByRole("button", { name: "Показать все 1" })).not.toBeInTheDocument();
+    fireEvent.change(within(queue).getByLabelText("Ответственный"), { target: { value: "" } });
+    fireEvent.click(within(queue).getByRole("button", { name: "Показать все 7" }));
+    expect(within(queue).getAllByRole("row")).toHaveLength(8);
+  });
+
+  it("keeps the v1 and stale states explicit without calculated shares", async () => {
+    const response = procurementDashboardResponse();
+    response.blocks[0].freshness_status = "stale";
+    response.blocks[0].summary = {
+      note: "Старый снимок",
+      stage_breakdown: response.blocks[0].summary.stage_breakdown,
+      currency_breakdown: response.blocks[0].summary.currency_breakdown,
+    };
+    window.history.pushState({}, "", "?tab=procurement_import&date=2026-07-11");
+    vi.mocked(fetchExecutiveDashboard).mockResolvedValue(response);
+    vi.mocked(fetchExecutiveDashboardActions).mockResolvedValue({
+      as_of: "2026-07-11",
+      freshness_status: "stale",
+      source_status: "ready",
+      total_count: 0,
+      payload: [],
+    });
+
+    render(<ExecutiveDashboard />);
+
+    const panel = await screen.findByLabelText("Закупки");
+    expect(within(panel).getByLabelText("Статус источника закупок")).toHaveTextContent("устарело");
+    expect(within(panel).getByText(/Источник v1/)).toBeVisible();
+    expect(within(panel).getByLabelText("Этапы закупок")).not.toHaveTextContent("72%");
+    expect(within(panel).getByText("Заказов по выбранным фильтрам нет.")).toBeVisible();
+  });
+
+  it("preserves amount masking and the source error fallback", async () => {
+    const masked = procurementDashboardResponse();
+    masked.blocks[0].metrics = masked.blocks[0].metrics.map((metric) =>
+      metric.unit === "RUB" ? { ...metric, masked: true, value: null } : metric
+    );
+    window.history.pushState({}, "", "?tab=procurement_import&date=2026-07-11");
+    vi.mocked(fetchExecutiveDashboard).mockResolvedValue(masked);
+    vi.mocked(fetchExecutiveDashboardActions).mockResolvedValue({
+      as_of: "2026-07-11",
+      freshness_status: "fresh",
+      source_status: "ready",
+      total_count: 1,
+      payload: [{ ...action(1), amount: null }],
+    });
+
+    const { unmount } = render(<ExecutiveDashboard />);
+    const panel = await screen.findByLabelText("Закупки");
+    expect(within(panel).getByLabelText("Основные KPI закупок")).toHaveTextContent("скрыто");
+    expect(within(panel).getByLabelText("Решения по закупкам")).toHaveTextContent("скрыто");
+    expect(within(panel).getByLabelText("Основные KPI закупок")).not.toHaveTextContent("% суммы открытых заказов");
+
+    unmount();
+    const sourceError = procurementDashboardResponse();
+    sourceError.blocks[0].source_status = "source_error";
+    sourceError.blocks[0].summary.note = "Источник временно недоступен.";
+    vi.mocked(fetchExecutiveDashboard).mockResolvedValue(sourceError);
+    vi.mocked(fetchExecutiveDashboardActions).mockResolvedValue({
+      as_of: "2026-07-11",
+      freshness_status: "source_error",
+      source_status: "source_error",
+      total_count: 0,
+      payload: [],
+    });
+
+    render(<ExecutiveDashboard />);
+    expect(await screen.findByText("Источник временно недоступен.")).toBeVisible();
   });
 });
 
@@ -173,6 +610,138 @@ describe("executive management balance", () => {
   });
 });
 
+function profitLossPeriodResponse(): ExecutiveProfitLossPeriodResponse {
+  return {
+    date_from: "2026-06-01",
+    date_to: "2026-06-30",
+    generated_at: "2026-06-30T10:00:00Z",
+    source_status: "partial",
+    freshness_status: "fresh",
+    note: "Операционная прибыль не включает товарные потери.",
+    totals: {
+      revenue: "1000000.00",
+      cost_of_sales: "700000.00",
+      gross_profit: "300000.00",
+      operating_expenses: "100000.00",
+      operating_profit: "200000.00",
+      expense_open_question_count: "0",
+    },
+    ratios: [
+      { key: "gross_margin_pct", label: "Валовая маржа", value: "0.3", unit: "PCT", tone: "neutral" },
+      { key: "operating_margin_pct", label: "Операционная маржа", value: "0.2", unit: "PCT", tone: "neutral" },
+    ],
+    lines: [],
+    daily: [],
+    by_store: [],
+    by_manager: [],
+    expense_source_status: "ready",
+    expense_breakdown: [],
+    expense_open_questions: [],
+    inventory_loss: inventoryLoss(),
+    filters: {},
+  };
+}
+
+function profitLossDashboardResponse(): ExecutiveDashboardResponse {
+  return {
+    as_of: "2026-06-30",
+    generated_at: "2026-06-30T10:00:00Z",
+    freshness_status: "fresh",
+    source_status: "partial",
+    access_level: "full",
+    roles: [],
+    allowed_blocks: ["profit_loss"],
+    allowed_action_domains: ["profit_loss"],
+    blocks: [
+      {
+        key: "profit_loss",
+        title: "Прибыли / убытки",
+        source_status: "partial",
+        freshness_status: "fresh",
+        as_of: "2026-06-30",
+        summary: {},
+        metrics: [],
+      },
+    ],
+    source_freshness: [],
+    top_actions: [],
+    summary: {},
+  };
+}
+
+async function renderProfitLossTab() {
+  window.history.pushState({}, "", "?tab=profit_loss&date=2026-06-30");
+  vi.mocked(fetchExecutiveDashboard).mockResolvedValue(profitLossDashboardResponse());
+  vi.mocked(fetchExecutiveDashboardActions).mockResolvedValue({
+    as_of: "2026-06-30",
+    freshness_status: "fresh",
+    source_status: "ready",
+    total_count: 0,
+    payload: [],
+  });
+  vi.mocked(fetchExecutiveProfitLossPeriod).mockResolvedValue(profitLossPeriodResponse());
+
+  const result = render(<ExecutiveDashboard />);
+  await screen.findByRole("heading", { name: "Товарные потери за месяц" });
+  return result;
+}
+
+describe("executive profit and loss period", () => {
+  beforeEach(() => {
+    vi.mocked(fetchExecutiveDashboard).mockReset();
+    vi.mocked(fetchExecutiveDashboardActions).mockReset();
+    vi.mocked(fetchExecutiveProfitLossPeriod).mockReset();
+  });
+
+  afterEach(cleanup);
+
+  it("moves the period controls into the page header and keeps them connected to the report", async () => {
+    const { container } = await renderProfitLossTab();
+    const pageHeader = container.querySelector(".executive__header");
+    expect(pageHeader).not.toBeNull();
+
+    expect(within(pageHeader as HTMLElement).getByRole("button", { name: "7 дней" })).toBeVisible();
+    expect(within(pageHeader as HTMLElement).getByRole("button", { name: "30 дней" })).toBeVisible();
+    expect(within(pageHeader as HTMLElement).getByRole("button", { name: "Месяц" })).toBeVisible();
+    expect(screen.getByLabelText("Начало периода прибыли и убытков")).toHaveValue("2026-06-01");
+    expect(screen.getByLabelText("Конец периода прибыли и убытков")).toHaveValue("2026-06-30");
+    expect(screen.queryByLabelText("Дата управленческой витрины")).not.toBeInTheDocument();
+
+    const report = screen.getByLabelText("Отчет о прибылях и убытках за период");
+    expect(within(report).queryByRole("button", { name: "7 дней" })).not.toBeInTheDocument();
+    expect(within(report).queryByRole("button", { name: "Месяц" })).not.toBeInTheDocument();
+
+    fireEvent.click(within(pageHeader as HTMLElement).getByRole("button", { name: "7 дней" }));
+    await waitFor(() => {
+      expect(fetchExecutiveProfitLossPeriod).toHaveBeenLastCalledWith({
+        date_from: "2026-06-24",
+        date_to: "2026-06-30",
+      });
+    });
+
+    fireEvent.change(screen.getByLabelText("Начало периода прибыли и убытков"), {
+      target: { value: "2026-06-01" },
+    });
+    fireEvent.change(screen.getByLabelText("Конец периода прибыли и убытков"), {
+      target: { value: "2026-06-15" },
+    });
+    await waitFor(() => {
+      expect(fetchExecutiveProfitLossPeriod).toHaveBeenLastCalledWith({
+        date_from: "2026-06-01",
+        date_to: "2026-06-15",
+      });
+    });
+
+    fireEvent.click(within(pageHeader as HTMLElement).getByRole("button", { name: "Месяц" }));
+    await waitFor(() => {
+      expect(fetchExecutiveProfitLossPeriod).toHaveBeenLastCalledWith({
+        date_from: "2026-06-01",
+        date_to: "2026-06-30",
+      });
+    });
+  });
+});
+
 function salesPeriodResponse(): ExecutiveSalesPeriodResponse {
   return {
     month: "2026-06",
@@ -207,8 +776,8 @@ function salesPeriodResponse(): ExecutiveSalesPeriodResponse {
       { key: "gross_profit_per_unit", value: "80.00", unit: "RUB_PER_UNIT", source_status: "ready", note: null, meta: {} },
       { key: "cost_per_unit", value: "120.00", unit: "RUB_PER_UNIT", source_status: "ready", note: null, meta: {} },
       { key: "margin_gap_pp", value: "5.00", unit: "PERCENTAGE_POINT", source_status: "ready", note: null, meta: {} },
-      { key: "stores_below_plan_count", value: 0, unit: "COUNT", source_status: "ready", note: null, meta: { evaluated_count: 1 } },
-      { key: "managers_below_target_margin_count", value: 0, unit: "COUNT", source_status: "ready", note: null, meta: { evaluated_count: 1 } },
+      { key: "stores_below_plan_count", value: 0, unit: "COUNT", source_status: "ready", note: null, meta: { evaluated_count: 1, problem: [] } },
+      { key: "managers_below_target_margin_count", value: 0, unit: "COUNT", source_status: "ready", note: null, meta: { evaluated_count: 1, problem: [] } },
     ],
     totals: {
       revenue: "1000.00",
@@ -324,6 +893,19 @@ describe("executive sales period", () => {
     expect(container.querySelector("[title]")).toBeNull();
   });
 
+  it("renders the daily dynamics of the selected period with dashed forecast days", async () => {
+    const { container } = await renderSalesTab();
+
+    const dailyChart = screen.getByLabelText("Выручка по дням выбранного периода");
+    expect(within(dailyChart).getByText("По дням выбранного периода")).toBeVisible();
+    const days = dailyChart.querySelectorAll(".executive-sales-day");
+    expect(days).toHaveLength(2);
+    expect(days[0].querySelector(".executive-sales-day__bar--forecast")).toBeNull();
+    expect(days[1].querySelector(".executive-sales-day__bar--forecast")).not.toBeNull();
+    expect(days[1]).toHaveTextContent("прогноз");
+    expect(container.querySelectorAll(".executive-sales-daily")).toHaveLength(1);
+  });
+
   it("shows the shared tooltip and crosshair on hover", async () => {
     const { container } = await renderSalesTab();
 
@@ -423,24 +1005,39 @@ describe("executive sales period", () => {
     );
   });
 
-  it("opens filtered problem lists and restores the full breakdown", async () => {
+  it("opens backend-provided problem lists and restores the full breakdown", async () => {
     const response = salesPeriodResponse();
     await renderSalesTab({
       ...response,
-      plan_status: "partial",
       diagnostic_kpis: (response.diagnostic_kpis || []).map((metric) => {
         if (metric.key === "stores_below_plan_count") {
-          return { ...metric, source_status: "partial", value: 1 };
+          return {
+            ...metric,
+            value: 2,
+            meta: {
+              evaluated_count: 3,
+              problem: [
+                { key: "store-low", label: "Магазин ниже плана" },
+                { key: "store-silent", label: "Магазин без продаж" },
+              ],
+            },
+          };
         }
         if (metric.key === "managers_below_target_margin_count") {
-          return { ...metric, value: 1 };
+          return {
+            ...metric,
+            value: 1,
+            meta: {
+              evaluated_count: 2,
+              problem: [{ key: "manager-low", label: "Менеджер ниже маржи" }],
+            },
+          };
         }
         return metric;
       }),
       by_store: [
         { key: "store-low", label: "Магазин ниже плана", revenue: "800", gross_profit: "200", sales_count: "4", gross_margin_pct: "0.25", meta: { plan_status: "ready", plan_attainment_pct: "0.8" } },
         { key: "store-ok", label: "Магазин в плане", revenue: "1200", gross_profit: "500", sales_count: "5", gross_margin_pct: "0.42", meta: { plan_status: "ready", plan_attainment_pct: "1.1" } },
-        { key: "store-missing", label: "Магазин без плана", revenue: "400", gross_profit: "100", sales_count: "2", gross_margin_pct: "0.25", meta: { plan_status: "ready", approved_revenue: null, plan_attainment_pct: null } },
       ],
       by_manager: [
         { key: "manager-low", label: "Менеджер ниже маржи", revenue: "900", gross_profit: "180", sales_count: "4", gross_margin_pct: "0.2", meta: { plan_status: "ready", margin_gap_pp: "-3" } },
@@ -451,12 +1048,13 @@ describe("executive sales period", () => {
     fireEvent.click(screen.getByRole("button", { name: "Показать проблемные магазины" }));
     const problemStores = screen.getByRole("region", { name: "Проблемные магазины" });
     expect(within(problemStores).getByRole("button", { name: /Магазин ниже плана/ })).toBeVisible();
-    expect(within(problemStores).getByRole("button", { name: /Магазин без плана/ })).toBeVisible();
+    expect(within(problemStores).getByRole("button", { name: /Магазин без продаж/ })).toBeVisible();
     expect(within(problemStores).queryByRole("button", { name: /Магазин в плане/ })).not.toBeInTheDocument();
-    expect(within(problemStores).getByText("Данные сопоставлены частично")).toBeVisible();
 
     fireEvent.click(within(problemStores).getByRole("button", { name: "Показать всех" }));
-    expect(within(screen.getByRole("region", { name: "По магазинам" })).getByRole("button", { name: /Магазин в плане/ })).toBeVisible();
+    const allStores = screen.getByRole("region", { name: "По магазинам" });
+    expect(within(allStores).getByRole("button", { name: /Магазин в плане/ })).toBeVisible();
+    expect(within(allStores).queryByRole("button", { name: /Магазин без продаж/ })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "Показать менеджеров ниже маржи" }));
     const problemManagers = screen.getByRole("region", { name: "Проблемные менеджеры" });
@@ -589,5 +1187,124 @@ describe("executive dashboard tab overview de-duplication", () => {
     expect(await screen.findByText("Выручка факт")).toBeVisible();
     expect(screen.queryByText("Выручка с начала месяца")).toBeNull();
     expect(container.querySelector(".executive-grid")).toBeNull();
+  });
+});
+
+function onlineStorePeriodResponse(): ExecutiveOnlineStorePeriodResponse {
+  return {
+    date_from: "2026-07-01",
+    date_to: "2026-07-07",
+    compare_date_from: "2026-06-24",
+    compare_date_to: "2026-06-30",
+    generated_at: "2026-07-07T12:00:00Z",
+    source_status: "ready",
+    freshness_status: "fresh",
+    counter_id: "49993429",
+    site: "master-mobile.ru",
+    note: "Яндекс Метрика показывает онлайн-спрос; это не финансовая выручка 1С.",
+    totals: {
+      visits: 1000,
+      visitors: 700,
+      purchases: 25,
+      purchase_conversion_pct: "2.50",
+      click_buy: 80,
+      begin_checkout: 40,
+      phone_clicks: 7,
+      site_searches: 120,
+      primary_source_name: "Переходы из поисковых систем",
+      primary_source_purchases: 20,
+      primary_source_purchase_share_pct: "80.00",
+    },
+    comparison: {
+      visits: 800,
+      visitors: 600,
+      purchases: 16,
+      purchase_conversion_pct: "2.00",
+    },
+    daily: [
+      {
+        business_date: "2026-07-01",
+        visits: 120,
+        visitors: 90,
+        purchases: 4,
+        click_buy: 12,
+        begin_checkout: 5,
+        phone_clicks: 1,
+        site_searches: 8,
+        purchase_conversion_pct: "3.33",
+      },
+    ],
+    traffic_sources: [
+      {
+        key: "organic",
+        label: "Переходы из поисковых систем",
+        visits: 600,
+        visitors: 350,
+        purchases: 20,
+        purchase_conversion_pct: "3.33",
+      },
+    ],
+    landing_pages: [
+      {
+        url: "https://master-mobile.ru/catalog/item/",
+        visits: 120,
+        visitors: 90,
+        purchases: 4,
+        click_buy: 12,
+        begin_checkout: 5,
+        purchase_conversion_pct: "3.33",
+      },
+    ],
+  };
+}
+
+describe("executive online store tab", () => {
+  beforeEach(() => {
+    vi.mocked(fetchExecutiveDashboard).mockReset();
+    vi.mocked(fetchExecutiveDashboardActions).mockReset();
+    vi.mocked(fetchExecutiveOnlineStorePeriod).mockReset();
+  });
+
+  afterEach(cleanup);
+
+  it("renders traffic, conversion, funnel, sources and landing pages", () => {
+    render(<OnlineStorePanel data={onlineStorePeriodResponse()} message="" status="ready" />);
+
+    expect(screen.getByLabelText("Основные KPI интернет-магазина")).toHaveTextContent("1 000");
+    expect(screen.getByLabelText("Основные KPI интернет-магазина")).toHaveTextContent("2,50%");
+    expect(screen.getByLabelText("Воронка интернет-магазина")).toHaveTextContent("Начали оформление");
+    expect(screen.getByLabelText("Каналы трафика интернет-магазина")).toHaveTextContent("20 покупок");
+    expect(screen.getByLabelText("Посадочные страницы интернет-магазина")).toHaveTextContent("/catalog/item/");
+    expect(screen.getByText(/не финансовая выручка 1С/)).toBeVisible();
+  });
+
+  it("loads the tab from the allowed-block policy without requesting action items", async () => {
+    window.history.pushState({}, "", "?tab=online_store&date=2026-07-07");
+    vi.mocked(fetchExecutiveDashboard).mockResolvedValue({
+      as_of: "2026-07-07",
+      generated_at: "2026-07-07T10:00:00Z",
+      freshness_status: "fresh",
+      source_status: "ready",
+      access_level: "full",
+      roles: ["full"],
+      allowed_blocks: ["online_store"],
+      allowed_action_domains: [],
+      blocks: [],
+      source_freshness: [],
+      top_actions: [],
+      summary: {},
+    });
+    vi.mocked(fetchExecutiveOnlineStorePeriod).mockResolvedValue(onlineStorePeriodResponse());
+
+    render(<ExecutiveDashboard />);
+
+    expect(await screen.findByLabelText("Интернет-магазин")).toBeVisible();
+    expect(fetchExecutiveOnlineStorePeriod).toHaveBeenCalledWith({
+      date_from: "2026-07-01",
+      date_to: "2026-07-07",
+    });
+    expect(fetchExecutiveDashboardActions).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("Начало периода интернет-магазина")).toBeVisible();
+    expect(screen.queryByLabelText("Дата управленческой витрины")).not.toBeInTheDocument();
   });
 });

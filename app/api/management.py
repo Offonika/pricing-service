@@ -25,6 +25,7 @@ from app.domains.management.contracts import (
     WeeklyKpiSnapshotBatchIngest,
     WeeklyKpiSnapshotIngestResponse,
 )
+from app.infrastructure.contracts import ContractIntegrityError
 from app.infrastructure.db.engines import DatabaseNotConfiguredError, get_onec_engine
 from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
 from app.schemas.bi import BIDailySalesKPI
@@ -34,6 +35,7 @@ from app.schemas.executive_dashboard import (
     ExecutiveDashboardResponse,
     ExecutiveManagementBalanceCloseRequest,
     ExecutiveManagementBalanceResponse,
+    ExecutiveOnlineStorePeriodResponse,
     ExecutiveProfitLossPeriodResponse,
     ExecutiveSalesPeriodResponse,
     ExecutiveServiceAccrualItem,
@@ -104,6 +106,9 @@ from app.services.executive_management_balance import (
     close_management_balance,
     get_management_balance,
     month_end,
+)
+from app.services.executive_online_store import (
+    build_executive_online_store_period_response,
 )
 from app.services.executive_service_accruals import (
     service_accrual_entries,
@@ -405,6 +410,39 @@ def get_executive_dashboard_sales_period(
     )
 
 
+@router.get(
+    "/executive-dashboard/online-store-period",
+    response_model=ExecutiveOnlineStorePeriodResponse,
+)
+def get_executive_dashboard_online_store_period(
+    date_from: date | None = Query(default=None),
+    date_to: date | None = Query(default=None),
+    access: ExecutiveDashboardAuthContext = Depends(require_executive_dashboard_access),
+) -> ExecutiveOnlineStorePeriodResponse:
+    requested_to = date_to or date.today()
+    requested_from = date_from or requested_to.replace(day=1)
+    if requested_from > requested_to:
+        raise HTTPException(status_code=422, detail="date_from must be before date_to")
+    if (requested_to - requested_from).days > 365:
+        raise HTTPException(status_code=422, detail="online store period must not exceed 366 days")
+    if not access.allows_block("online_store"):
+        raise HTTPException(status_code=403, detail="Нет доступа к аналитике интернет-магазина")
+
+    settings = get_settings()
+    if not settings.yandex_metrika_token:
+        raise HTTPException(status_code=503, detail="Яндекс Метрика не настроена")
+    try:
+        return build_executive_online_store_period_response(
+            token=settings.yandex_metrika_token,
+            counter_id=settings.yandex_metrika_counter_id,
+            date_from=requested_from,
+            date_to=requested_to,
+            timeout=settings.yandex_metrika_timeout_seconds,
+        )
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail="Яндекс Метрика временно недоступна") from exc
+
+
 def _filter_real_rb_counterparty_codes(mapping: dict[str, str]) -> dict[str, str]:
     return {
         counterparty_ref: counterparty_code
@@ -434,21 +472,32 @@ def get_retail_director_monthly_kpi(
     month: str = Query(pattern=r"^\d{4}-\d{2}$"),
     _: str = Depends(require_management_internal_token),
 ):
-    payload = load_retail_director_monthly_kpi(month)
+    try:
+        payload = load_retail_director_monthly_kpi(month)
+        validated_payload = (
+            RetailDirectorMonthlyKpiPayload.model_validate(payload) if payload is not None else None
+        )
+    except (ContractIntegrityError, OSError, TypeError, ValueError):
+        return RetailDirectorMonthlyKpiResponse(
+            as_of=month,
+            month=month,
+            freshness_status="error",
+            source_status="source_error",
+            payload=None,
+        )
     return RetailDirectorMonthlyKpiResponse(
         as_of=month,
         month=month,
         freshness_status="fresh" if payload else "missing",
         source_status="ready" if payload else "empty",
-        payload=(
-            RetailDirectorMonthlyKpiPayload.model_validate(payload) if payload is not None else None
-        ),
+        payload=validated_payload,
     )
 
 
 @router.get(
     "/retail-customer-price-type-recommendations",
     response_model=RetailCustomerPriceTypeRecommendationResponse,
+    deprecated=True,
 )
 def get_retail_customer_price_type_recommendations(
     month: str = Query(pattern=r"^\d{4}-\d{2}$"),

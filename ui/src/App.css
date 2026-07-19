@@ -860,6 +860,219 @@
   margin-top: 2px;
 }
 
+.executive-procurement-period__actions {
+  display: grid;
+  gap: 10px;
+  padding-top: 2px;
+}
+
+.executive-procurement-period__actions > header h3,
+.executive-procurement-breakdowns h3 {
+  margin: 0;
+  color: #18202a;
+  font-size: 15px;
+  line-height: 1.3;
+}
+
+.executive-procurement-period__actions > header span {
+  display: block;
+  margin-top: 3px;
+  color: #475467;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1.35;
+}
+
+.executive-procurement-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid #a6f4c5;
+  border-radius: 8px;
+  background: #f6fef9;
+  color: #344054;
+}
+
+.executive-procurement-status--stale,
+.executive-procurement-status--partial {
+  border-color: #fedf89;
+  background: #fffaeb;
+}
+
+.executive-procurement-status--source_error {
+  border-color: #fecdca;
+  background: #fef3f2;
+}
+
+.executive-procurement-status > div {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+}
+
+.executive-procurement-status > div > strong {
+  font-size: 13px;
+}
+
+.executive-procurement-status > div > span:last-child,
+.executive-procurement-status > span {
+  color: #475467;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.executive-procurement-status > span {
+  flex: 0 0 auto;
+}
+
+.executive-procurement-status > span strong {
+  color: #18202a;
+  font-size: 15px;
+}
+
+.executive-procurement-context-note {
+  padding: 7px 10px;
+  border-left: 3px solid #2e90fa;
+  background: #eff8ff;
+  color: #175cd3;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.executive-procurement-source,
+.executive-procurement-quality {
+  padding: 8px 10px;
+  border: 1px solid #e4e7ec;
+  border-radius: 8px;
+  background: #f8fafc;
+  color: #475467;
+  font-size: 12px;
+}
+
+.executive-procurement-source summary,
+.executive-procurement-quality summary {
+  min-height: 28px;
+  color: #344054;
+  cursor: pointer;
+  font-weight: 800;
+  line-height: 28px;
+}
+
+.executive-procurement-source summary:focus-visible,
+.executive-procurement-quality summary:focus-visible,
+.executive-procurement-table tr:focus-visible,
+.executive-procurement-filters select:focus-visible {
+  border-radius: 4px;
+  outline: 3px solid color-mix(in srgb, var(--color-primary) 28%, transparent);
+  outline-offset: 2px;
+}
+
+.executive-procurement-source p,
+.executive-procurement-quality p {
+  margin: 6px 0 0;
+  line-height: 1.45;
+}
+
+.executive-procurement-source > span {
+  display: block;
+  margin-top: 5px;
+  color: #667085;
+}
+
+.executive-procurement-kpi {
+  min-height: 118px;
+}
+
+.executive-procurement-kpi--warning {
+  border-color: #fedf89 !important;
+  background: #fffcf5 !important;
+}
+
+.executive-procurement-kpi--danger {
+  border-color: #fecdca !important;
+  background: #fff8f7 !important;
+}
+
+.executive-procurement-kpi > small {
+  min-height: 26px;
+  color: #475467 !important;
+  font-weight: 700;
+}
+
+.executive-procurement-breakdowns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.executive-procurement-breakdowns section {
+  padding: 12px;
+  border: 1px solid #e4e7ec;
+  border-radius: 10px;
+  background: #fff;
+}
+
+.executive-procurement-breakdowns h3 { margin-bottom: 10px; font-size: 14px; }
+.executive-procurement-distribution {
+  display: flex;
+  gap: 2px;
+  height: 8px;
+  margin-bottom: 8px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: #eef2f6;
+}
+.executive-procurement-distribution i { min-width: 3px; background: #2e90fa; }
+.executive-procurement-distribution i:nth-child(2) { background: #7a5af8; }
+.executive-procurement-distribution i:nth-child(3) { background: #f79009; }
+.executive-procurement-distribution i:nth-child(4) { background: #12b76a; }
+.executive-procurement-distribution--currency i { background: #7a5af8; }
+.executive-procurement-distribution--currency i:nth-child(2) { background: #2e90fa; }
+.executive-procurement-distribution--currency i:nth-child(3) { background: #12b76a; }
+.executive-procurement-breakdown-row,
+.executive-procurement-rub-row { display: flex; justify-content: space-between; gap: 12px; padding: 7px 0; border-top: 1px solid #f0f2f5; }
+.executive-procurement-breakdown-row span,
+.executive-procurement-rub-row span { color: #475467; }
+.executive-procurement-rub-row { margin-top: 4px; border-top-style: dashed; }
+.executive-procurement-filters { display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 8px; }
+.executive-procurement-filters select { min-height: 44px; padding: 7px 9px; border: 1px solid #98a2b3; border-radius: 8px; background: #fff; color: #344054; }
+.executive-procurement-table tr[tabindex] { cursor: pointer; }
+.executive-procurement-table tr[tabindex]:hover td { background: #f8fbff; }
+.executive-procurement-table td small { display: block; margin-top: 3px; color: #667085; }
+.executive-procurement-table td:last-child { min-width: 260px; }
+.executive-procurement-table td:last-child span + span { display: block; margin-top: 5px; }
+
+.executive-procurement-period__actions > .btn,
+.executive-procurement-period__actions > button {
+  justify-self: start;
+}
+
+@media (max-width: 800px) {
+  .executive-procurement-breakdowns { grid-template-columns: 1fr; }
+  .executive-procurement-filters { grid-template-columns: 1fr 1fr; }
+  .executive-actions__table.executive-procurement-table { min-width: 0; }
+  .executive-procurement-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .executive-procurement-table tbody { display: grid; gap: 10px; }
+  .executive-procurement-table tr { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); border: 1px solid #d9e0e8; border-radius: 8px; overflow: hidden; }
+  .executive-procurement-table td { display: grid; grid-template-columns: minmax(84px, .8fr) minmax(0, 1.2fr); gap: 8px; padding: 8px 10px; border-bottom: 1px solid #eef2f6; }
+  .executive-procurement-table td::before { content: attr(data-label); color: #667085; font-size: 11px; font-weight: 800; }
+  .executive-procurement-table td:first-child,
+  .executive-procurement-table td:last-child { grid-column: 1 / -1; }
+  .executive-procurement-table td:last-child { min-width: 0; }
+}
+
+@media (max-width: 520px) {
+  .executive-procurement-status { align-items: flex-start; flex-direction: column; }
+  .executive-procurement-filters { grid-template-columns: 1fr; }
+  .executive-procurement-table tr { grid-template-columns: 1fr; }
+  .executive-procurement-table td { grid-column: 1 !important; }
+}
+
 .executive-sales-diagnostics {
   display: grid;
   gap: 8px;
@@ -1194,9 +1407,188 @@
   background: #f6fef9;
 }
 
+.executive-profit-loss-line--receipt-surplus {
+  border-left-color: #2e90fa;
+  background: #eff8ff;
+}
+
 .executive-profit-loss-line--source_missing {
   border-left-color: #98a2b3;
   background: #fbfcfe;
+}
+
+.executive-inventory-loss {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #d9e0e8;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.executive-inventory-loss__header,
+.executive-inventory-loss__section > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.executive-inventory-loss__header h3,
+.executive-inventory-loss__section h4,
+.executive-inventory-loss__history h4 {
+  margin: 0;
+  color: #18202a;
+  font-size: 14px;
+}
+
+.executive-inventory-loss__header span,
+.executive-inventory-loss__section header span {
+  display: block;
+  margin-top: 3px;
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.executive-inventory-loss__header > strong,
+.executive-inventory-loss__section > header > strong {
+  color: #475467;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.executive-inventory-loss__kpis {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.executive-inventory-loss__history,
+.executive-inventory-loss__section {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #e4e9f0;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.executive-inventory-loss__table-wrap {
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.executive-inventory-loss__table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.executive-inventory-loss__table th,
+.executive-inventory-loss__table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #eef2f6;
+  text-align: left;
+  vertical-align: top;
+}
+
+.executive-inventory-loss__table th {
+  background: #f8fafc;
+  color: #475467;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.executive-inventory-loss__table td {
+  color: #344054;
+  overflow-wrap: anywhere;
+}
+
+.executive-inventory-loss__table tr.is-warning td {
+  background: #fffbeb;
+}
+
+.executive-inventory-loss__table tr.is-receipt-surplus td {
+  background: #eff8ff;
+  color: #175cd3;
+}
+
+.executive-inventory-loss__actions {
+  display: grid;
+  gap: 8px;
+}
+
+.executive-inventory-loss__actions article {
+  display: grid;
+  gap: 5px;
+  padding: 9px 10px;
+  border: 1px solid #fedf89;
+  border-left: 4px solid #f79009;
+  border-radius: 7px;
+  background: #fffcf5;
+}
+
+.executive-inventory-loss__actions strong,
+.executive-inventory-loss__actions span,
+.executive-inventory-loss__actions small {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.executive-inventory-loss__actions strong {
+  color: #7a2e0e;
+  font-size: 12px;
+}
+
+.executive-inventory-loss__actions span,
+.executive-inventory-loss__actions small {
+  margin-top: 2px;
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.executive-inventory-loss__quality {
+  padding: 9px 10px;
+  border: 1px dashed #98a2b3;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.executive-inventory-loss__quality summary {
+  color: #475467;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.executive-inventory-loss__quality dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0 0;
+}
+
+.executive-inventory-loss__quality dl div {
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.executive-inventory-loss__quality dt {
+  color: #667085;
+  font-size: 10px;
+}
+
+.executive-inventory-loss__quality dd {
+  margin: 3px 0 0;
+  color: #18202a;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .executive-cashflow-period__chart {
@@ -1252,6 +1644,10 @@
 
 .executive-cashflow-day b {
   background: #f79009;
+}
+
+.executive-inventory-loss__history .executive-cashflow-day b.is-receipt-surplus {
+  background: #2e90fa;
 }
 
 .executive-cashflow-period__tables {
@@ -1436,6 +1832,92 @@
   gap: 12px;
 }
 
+.executive-sales-daily {
+  display: grid;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #e4e9f0;
+  border-radius: 6px;
+  background: #fcfcfd;
+}
+
+.executive-sales-daily h3 {
+  margin: 0 0 4px;
+  color: #18202a;
+  font-size: 13px;
+}
+
+.executive-online-store__analysis {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+  gap: 10px;
+}
+
+.executive-online-store__analysis .executive-sales-daily {
+  margin-top: 0;
+}
+
+.executive-online-store__funnel .executive-sales-day {
+  grid-template-columns: minmax(130px, 0.8fr) minmax(90px, 1fr) minmax(52px, auto);
+}
+
+.executive-online-store__tables {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.executive-online-store__tables a {
+  color: #1769e0;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.executive-sales-day {
+  display: grid;
+  grid-template-columns: 86px minmax(90px, 1fr) minmax(96px, auto);
+  gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.executive-sales-day span,
+.executive-sales-day strong {
+  min-width: 0;
+  font-size: 11px;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+}
+
+.executive-sales-day span {
+  color: #667085;
+  font-weight: 750;
+}
+
+.executive-sales-day strong {
+  color: #18202a;
+  text-align: right;
+}
+
+.executive-sales-day strong small {
+  margin-left: 4px;
+  color: #b54708;
+  font-size: 10px;
+  font-weight: 750;
+}
+
+.executive-sales-day i {
+  display: block;
+  height: 6px;
+  border-radius: 999px;
+  background: #2e90fa;
+}
+
+.executive-sales-day i.executive-sales-day__bar--forecast {
+  border: 1px dashed #f79009;
+  background: #fffaeb;
+}
+
 .executive-sales-month-tooltip {
   position: absolute;
   top: 0;
@@ -1484,15 +1966,6 @@
 .executive-sales-breakdown-section__reset {
   margin-top: 0;
   white-space: nowrap;
-}
-
-.executive-sales-breakdown-section__note {
-  padding: 6px 8px;
-  border-radius: 6px;
-  background: #fffaeb;
-  color: #b54708;
-  font-size: 11px;
-  font-weight: 750;
 }
 
 .executive-sales-breakdown {
@@ -2541,6 +3014,9 @@
   color: #7a2e0e;
 }
 
+.executive-action-detail__formula { padding: 12px; border-radius: 8px; background: #fff8e7; color: #5f4300; }
+.executive-action-detail__formula p { margin: 6px 0 0; }
+
 .executive-action-detail > footer {
   display: flex;
   flex-wrap: wrap;
@@ -2763,6 +3239,15 @@
     grid-template-columns: 1fr;
   }
 
+  .executive-online-store__analysis {
+    grid-template-columns: 1fr;
+  }
+
+  .executive-inventory-loss__kpis,
+  .executive-inventory-loss__quality dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .executive-sales-period__tables {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2776,6 +3261,16 @@
 @media (max-width: 720px) {
   .executive {
     padding: 12px;
+  }
+
+  .executive-inventory-loss__header,
+  .executive-inventory-loss__section > header {
+    display: grid;
+  }
+
+  .executive-inventory-loss__kpis,
+  .executive-inventory-loss__quality dl {
+    grid-template-columns: 1fr;
   }
 
   .executive-sales-diagnostics__header {

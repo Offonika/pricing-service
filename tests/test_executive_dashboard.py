@@ -20,6 +20,10 @@ from app.models import (
     ReceivableFolderRecommendationCache,
     ReceivableWorkItem,
 )
+from app.schemas.executive_dashboard import (
+    ExecutiveProfitLossInventoryDataQuality,
+    ExecutiveProfitLossInventoryStore,
+)
 from app.services import bitrix_executive_dashboard_auth, executive_dashboard
 from app.services.executive_dashboard import (
     _resolve_shared_path,
@@ -199,7 +203,7 @@ def _write_sales_plan_snapshot(
         },
         {
             "scope_key": "store-2",
-            "scope_name": "Склад Сайт",
+            "scope_name": "Сайт",
             "approved_revenue": "6000.00",
             "approved_margin_pct": "50.00",
             "approved_gross_profit": "3000.00",
@@ -533,7 +537,7 @@ def _write_warehouse_snapshot(path: Path) -> None:
                     "picker_error_count": 1,
                     "top_warehouses": [
                         {
-                            "warehouse_name": "Склад Сайт",
+                            "warehouse_name": "Сайт",
                             "pick_hours": "42.00",
                             "pieces_picked": "700.00",
                             "picker_count": 4,
@@ -1031,6 +1035,125 @@ def test_profit_loss_period_response_aggregates_sales_kpi(
 ) -> None:
     _write_profit_loss_cashflow_cache(tmp_path / "cashflow_period_cache.json")
     _override_settings(monkeypatch, _settings(tmp_path / "finance_snapshot.json"))
+    monkeypatch.setattr(
+        executive_dashboard,
+        "load_retail_director_monthly_kpi",
+        lambda month: {
+            "schema_version": 2,
+            "month": month,
+            "writeoff_amount": "1229121.82",
+            "receipt_amount": "526672.97",
+            "shrinkage_amount": "702448.85",
+            "shrinkage_pct": "0.8499",
+            "norm_pct": "0.3000",
+            "matched_store_count": 12,
+            "stores": [
+                {
+                    "store_ref": "store-1",
+                    "store_name": "Горбушкин Двор",
+                    "sales_amount": "1000000.00",
+                    "writeoff_amount": "8000.00",
+                    "receipt_amount": "1000.00",
+                    "shrinkage_amount": "7000.00",
+                    "shrinkage_pct": "0.7000",
+                    "norm_pct": "0.3000",
+                    "variance_to_norm_pct": "0.4000",
+                    "above_norm": True,
+                    "source_status": "ready",
+                    "has_operations": True,
+                },
+                {
+                    "store_ref": "store-2",
+                    "store_name": "Сайт",
+                    "sales_amount": "250000.00",
+                    "writeoff_amount": "100.00",
+                    "receipt_amount": "200.00",
+                    "shrinkage_amount": "-100.00",
+                    "shrinkage_pct": "-0.0400",
+                    "norm_pct": "0.3000",
+                    "variance_to_norm_pct": "-0.3400",
+                    "above_norm": False,
+                    "source_status": "ready",
+                    "has_operations": True,
+                },
+            ],
+            "top_documents": [
+                {
+                    "stable_key": "_Document210:doc-1:inventory_writeoff",
+                    "operation_kind": "inventory_writeoff",
+                    "operation_label": "Инвентаризационное списание",
+                    "document_type": "_Document210",
+                    "document_ref": "doc-1",
+                    "document_number": "СП-1",
+                    "document_date": "2026-06-20",
+                    "store_ref": "store-1",
+                    "store_name": "Горбушкин Двор",
+                    "amount": "8000.00",
+                    "effect_amount": "8000.00",
+                },
+                {
+                    "stable_key": "_Document170:doc-2:inventory_receipt",
+                    "operation_kind": "inventory_receipt",
+                    "operation_label": "Оприходование по инвентаризации",
+                    "document_type": "_Document170",
+                    "document_ref": "doc-2",
+                    "document_number": "ОП-1",
+                    "document_date": "2026-06-21",
+                    "store_ref": "store-1",
+                    "store_name": "Горбушкин Двор",
+                    "amount": "1000.00",
+                    "effect_amount": "-1000.00",
+                },
+            ],
+            "data_quality": {
+                "source_status": "partial",
+                "approved_store_count": 13,
+                "source_store_count": 13,
+                "matched_store_count": 12,
+                "unmatched_store_count": 1,
+                "source_document_count": 22,
+                "matched_document_count": 21,
+                "unmatched_document_count": 1,
+                "unmatched_writeoff_amount": "500.00",
+                "unmatched_receipt_amount": "0.00",
+                "excluded_store_count": 2,
+                "excluded_document_count": 3,
+                "excluded_writeoff_amount": "100.00",
+                "excluded_receipt_amount": "25.00",
+                "store_scope_status": "approved",
+                "store_scope_source": "approved_freeze",
+                "store_scope_month": "2026-06",
+                "norm_source_status": "approved",
+                "norm_source": "bitrix_kpi_v2_export",
+            },
+            "owner": {
+                "employee_key": "emp-1",
+                "employee_bitrix_id": "42",
+                "employee_name": "Руководитель сети",
+                "role_code": "retail_director",
+            },
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        executive_dashboard,
+        "load_retail_director_monthly_kpi_history",
+        lambda _: {
+            "previous_month": {
+                "month": "2026-05",
+                "writeoff_amount": "1000.00",
+                "receipt_amount": "200.00",
+                "shrinkage_amount": "800.00",
+                "shrinkage_pct": "0.4000",
+            },
+            "history": [
+                {"month": "2026-05", "shrinkage_amount": "800.00", "shrinkage_pct": "0.4000"},
+                {"month": "2026-03", "shrinkage_amount": "600.00", "shrinkage_pct": "0.3000"},
+                {"month": "2026-02", "shrinkage_amount": "400.00", "shrinkage_pct": "0.2000"},
+            ],
+            "source_status": "ready",
+        },
+    )
     db_session.add_all(
         [
             _sales_kpi(
@@ -1047,7 +1170,7 @@ def test_profit_loss_period_response_aggregates_sales_kpi(
                 cost_of_sales=Decimal("50.00"),
                 sales_count=Decimal("1.000"),
                 store_ref="store-2",
-                store_name="Склад Сайт",
+                store_name="Сайт",
             ),
         ]
     )
@@ -1076,8 +1199,406 @@ def test_profit_loss_period_response_aggregates_sales_kpi(
     assert result.expense_source_status == "partial"
     assert {row.key for row in result.expense_breakdown} == {"rent", "bank_fees"}
     assert result.expense_open_questions[0].amount == Decimal("400.00")
+    assert result.inventory_loss is not None
+    assert result.inventory_loss.source_status == "ready"
+    assert result.inventory_loss.writeoff_amount == Decimal("1229121.82")
+    assert result.inventory_loss.receipt_amount == Decimal("526672.97")
+    assert result.inventory_loss.loss_amount == Decimal("702448.85")
+    assert result.inventory_loss.norm_pct == Decimal("0.3000")
+    assert result.inventory_loss.variance_to_norm_pct == Decimal("0.5499")
+    assert result.inventory_loss.previous_month is not None
+    assert result.inventory_loss.previous_month.loss_amount == Decimal("800.00")
+    assert result.inventory_loss.average_loss_amount_3m == Decimal("600.00")
+    assert result.inventory_loss.average_loss_pct_3m == Decimal("0.3000")
+    assert len(result.inventory_loss.history) == 4
+    assert len(result.inventory_loss.stores) == 2
+    assert len(result.inventory_loss.top_documents) == 2
+    assert [action.action_type for action in result.inventory_loss.actions] == [
+        "store_above_norm",
+        "unmatched_documents",
+    ]
+    assert result.inventory_loss.actions[0].responsible_name == "Руководитель сети"
+    assert result.inventory_loss.data_quality.excluded_document_count == 3
+    assert result.inventory_loss.data_quality.store_scope_status == "approved"
+    assert result.inventory_loss.data_quality.norm_source_status == "approved"
     assert result.daily[-1].business_date == date(2026, 6, 27)
-    assert {row.label for row in result.by_store} == {"Горбушкин Двор", "Склад Сайт"}
+    assert {row.label for row in result.by_store} == {"Горбушкин Двор", "Сайт"}
+
+
+def test_profit_loss_period_marks_missing_inventory_loss_report(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_profit_loss_cashflow_cache(tmp_path / "cashflow_period_cache.json")
+    _override_settings(monkeypatch, _settings(tmp_path / "finance_snapshot.json"))
+    monkeypatch.setattr(executive_dashboard, "load_retail_director_monthly_kpi", lambda _: None)
+    db_session.add(_sales_kpi(date(2026, 6, 27)))
+    db_session.commit()
+
+    result = build_executive_profit_loss_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 27),
+    )
+
+    assert result.inventory_loss is not None
+    assert result.inventory_loss.month == "2026-06"
+    assert result.inventory_loss.source_status == "source_missing"
+    assert result.inventory_loss.loss_amount is None
+
+
+def test_profit_loss_period_keeps_v1_inventory_totals_without_false_detail(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_profit_loss_cashflow_cache(tmp_path / "cashflow_period_cache.json")
+    _override_settings(monkeypatch, _settings(tmp_path / "finance_snapshot.json"))
+    monkeypatch.setattr(
+        executive_dashboard,
+        "load_retail_director_monthly_kpi",
+        lambda month: {
+            "schema_version": 1,
+            "month": month,
+            "writeoff_amount": "1000.00",
+            "receipt_amount": "250.00",
+            "shrinkage_amount": "750.00",
+            "shrinkage_pct": "0.5000",
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        executive_dashboard,
+        "load_retail_director_monthly_kpi_history",
+        lambda _: {"previous_month": None, "history": [], "source_status": "source_missing"},
+    )
+    db_session.add(_sales_kpi(date(2026, 6, 27)))
+    db_session.commit()
+
+    result = build_executive_profit_loss_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 27),
+    )
+
+    assert result.inventory_loss is not None
+    assert result.inventory_loss.source_status == "ready"
+    assert result.inventory_loss.detail_source_status == "source_missing"
+    assert result.inventory_loss.loss_amount == Decimal("750.00")
+    assert result.inventory_loss.stores == []
+    assert result.inventory_loss.top_documents == []
+    assert "Источник v1" in str(result.inventory_loss.note)
+
+
+def test_inventory_loss_keeps_totals_when_detail_and_part_of_history_are_malformed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        executive_dashboard,
+        "load_retail_director_monthly_kpi",
+        lambda month: {
+            "schema_version": 2,
+            "month": month,
+            "writeoff_amount": "1000.00",
+            "receipt_amount": "250.00",
+            "shrinkage_amount": "750.00",
+            "shrinkage_pct": "0.5000",
+            "norm_pct": "0.3000",
+            "stores": [],
+            "top_documents": [],
+            "data_quality": {"approved_store_count": "bad"},
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        executive_dashboard,
+        "load_retail_director_monthly_kpi_history",
+        lambda _: {
+            "previous_month": {
+                "month": "2026-05",
+                "shrinkage_amount": "not-a-number",
+            },
+            "history": [
+                {"month": "2026-04", "shrinkage_amount": "600.00"},
+                {"month": "2026-03", "shrinkage_amount": "not-a-number"},
+            ],
+            "source_status": "ready",
+        },
+    )
+
+    result = executive_dashboard._profit_loss_inventory_loss(date(2026, 6, 30))
+
+    assert result.source_status == "ready"
+    assert result.loss_amount == Decimal("750.00")
+    assert result.detail_source_status == "source_error"
+    assert result.data_quality.source_status == "source_error"
+    assert result.previous_month is None
+    assert result.average_loss_amount_3m == Decimal("600.00")
+    assert result.history_source_status == "partial"
+    assert [item.month for item in result.history] == ["2026-04", "2026-06"]
+    assert "Историю товарных потерь не удалось прочитать." in result.warnings
+
+
+def test_inventory_loss_returns_source_error_for_malformed_network_totals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        executive_dashboard,
+        "load_retail_director_monthly_kpi",
+        lambda month: {
+            "schema_version": 2,
+            "month": month,
+            "writeoff_amount": "not-a-number",
+            "receipt_amount": "250.00",
+            "shrinkage_amount": "750.00",
+        },
+    )
+    monkeypatch.setattr(
+        executive_dashboard,
+        "load_retail_director_monthly_kpi_history",
+        lambda _: {"previous_month": None, "history": [], "source_status": "source_missing"},
+    )
+
+    result = executive_dashboard._profit_loss_inventory_loss(date(2026, 6, 30))
+
+    assert result.source_status == "source_error"
+    assert result.detail_source_status == "source_error"
+    assert result.loss_amount is None
+
+
+@pytest.mark.parametrize(
+    "invalid_amount",
+    [float("nan"), float("inf"), float("-inf"), "1e999999"],
+)
+def test_inventory_loss_returns_source_error_for_non_finite_network_totals(
+    monkeypatch: pytest.MonkeyPatch,
+    invalid_amount: object,
+) -> None:
+    monkeypatch.setattr(
+        executive_dashboard,
+        "load_retail_director_monthly_kpi",
+        lambda month: {
+            "schema_version": 2,
+            "month": month,
+            "writeoff_amount": invalid_amount,
+            "receipt_amount": "0.00",
+            "shrinkage_amount": invalid_amount,
+        },
+    )
+    monkeypatch.setattr(
+        executive_dashboard,
+        "load_retail_director_monthly_kpi_history",
+        lambda _: {"previous_month": None, "history": [], "source_status": "source_missing"},
+    )
+
+    result = executive_dashboard._profit_loss_inventory_loss(date(2026, 6, 30))
+
+    assert result.source_status == "source_error"
+    assert result.detail_source_status == "source_error"
+    assert result.loss_amount is None
+
+
+def test_inventory_loss_skips_unquantizable_history_without_crashing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        executive_dashboard,
+        "load_retail_director_monthly_kpi",
+        lambda month: {
+            "schema_version": 2,
+            "month": month,
+            "writeoff_amount": "100.00",
+            "receipt_amount": "0.00",
+            "shrinkage_amount": "100.00",
+            "stores": [],
+            "top_documents": [],
+            "data_quality": {},
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        executive_dashboard,
+        "load_retail_director_monthly_kpi_history",
+        lambda _: {
+            "previous_month": {
+                "month": "2026-05",
+                "shrinkage_amount": "1e999999",
+            },
+            "history": [{"month": "2026-05", "shrinkage_amount": "1e999999"}],
+            "source_status": "ready",
+        },
+    )
+
+    result = executive_dashboard._profit_loss_inventory_loss(date(2026, 6, 30))
+
+    assert result.source_status == "ready"
+    assert result.previous_month is None
+    assert result.average_loss_amount_3m is None
+    assert result.history_source_status == "source_error"
+    assert [item.month for item in result.history] == ["2026-06"]
+    assert "Историю товарных потерь не удалось прочитать." in result.warnings
+
+
+def test_inventory_loss_does_not_raise_above_norm_action_for_draft_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        executive_dashboard,
+        "load_retail_director_monthly_kpi",
+        lambda month: {
+            "schema_version": 2,
+            "month": month,
+            "writeoff_amount": "1000.00",
+            "receipt_amount": "0.00",
+            "shrinkage_amount": "1000.00",
+            "shrinkage_pct": "1.0000",
+            "norm_pct": "0.3000",
+            "stores": [
+                {
+                    "store_ref": "store-1",
+                    "store_name": "Точка 1",
+                    "sales_amount": "100000.00",
+                    "writeoff_amount": "1000.00",
+                    "receipt_amount": "0.00",
+                    "shrinkage_amount": "1000.00",
+                    "shrinkage_pct": "1.0000",
+                    "norm_pct": "0.3000",
+                    "has_operations": True,
+                }
+            ],
+            "top_documents": [],
+            "data_quality": {
+                "source_status": "ready",
+                "store_scope_status": "draft",
+                "norm_source_status": "fallback",
+            },
+            "warnings": [],
+        },
+    )
+    monkeypatch.setattr(
+        executive_dashboard,
+        "load_retail_director_monthly_kpi_history",
+        lambda _: {"previous_month": None, "history": [], "source_status": "source_missing"},
+    )
+
+    result = executive_dashboard._profit_loss_inventory_loss(date(2026, 6, 30))
+
+    assert result.stores[0].above_norm is True
+    assert result.actions == []
+    assert result.data_quality.store_scope_status == "draft"
+    assert result.data_quality.norm_source_status == "fallback"
+
+
+def test_inventory_actions_require_confirmed_provenance() -> None:
+    store = ExecutiveProfitLossInventoryStore(
+        store_ref="store-1",
+        store_name="Точка 1",
+        sales_amount=Decimal("100000.00"),
+        writeoff_amount=Decimal("1000.00"),
+        receipt_amount=Decimal("0.00"),
+        loss_amount=Decimal("1000.00"),
+        loss_pct=Decimal("1.0000"),
+        norm_pct=Decimal("0.3000"),
+        variance_to_norm_pct=Decimal("0.7000"),
+        above_norm=True,
+        has_operations=True,
+    )
+
+    actions = executive_dashboard._inventory_actions(
+        [store],
+        data_quality=ExecutiveProfitLossInventoryDataQuality(
+            source_status="ready",
+            store_scope_status="unknown",
+            norm_source_status="unknown",
+        ),
+        owner=None,
+    )
+
+    assert actions == []
+
+
+def test_inventory_actions_signal_zero_sales_without_operations() -> None:
+    store = ExecutiveProfitLossInventoryStore(
+        store_ref="store-1",
+        store_name="Точка 1",
+        sales_amount=Decimal("0.00"),
+        writeoff_amount=Decimal("0.00"),
+        receipt_amount=Decimal("0.00"),
+        loss_amount=Decimal("0.00"),
+        norm_pct=Decimal("0.3000"),
+        has_operations=False,
+    )
+
+    actions = executive_dashboard._inventory_actions(
+        [store],
+        data_quality=ExecutiveProfitLossInventoryDataQuality(
+            source_status="ready",
+            store_scope_status="approved",
+            norm_source_status="approved",
+        ),
+        owner=None,
+    )
+
+    assert [item.action_type for item in actions] == ["store_missing_sales"]
+    assert "утверждённый контур" in actions[0].description
+
+
+def test_inventory_actions_order_missing_sales_by_loss_and_label_draft_scope() -> None:
+    stores = [
+        ExecutiveProfitLossInventoryStore(
+            store_ref="store-low",
+            store_name="А",
+            sales_amount=Decimal("0.00"),
+            loss_amount=Decimal("10.00"),
+            has_operations=False,
+        ),
+        ExecutiveProfitLossInventoryStore(
+            store_ref="store-high",
+            store_name="Б",
+            sales_amount=Decimal("0.00"),
+            loss_amount=Decimal("100.00"),
+            has_operations=False,
+        ),
+    ]
+
+    actions = executive_dashboard._inventory_actions(
+        stores,
+        data_quality=ExecutiveProfitLossInventoryDataQuality(
+            source_status="ready",
+            store_scope_status="draft",
+            norm_source_status="fallback",
+        ),
+        owner=None,
+    )
+
+    assert [item.store_ref for item in actions] == ["store-high", "store-low"]
+    assert all("утверждён" not in item.title.lower() for item in actions)
+    assert all("черновой контур" in item.description for item in actions)
+
+
+def test_inventory_actions_use_neutral_wording_for_unknown_scope() -> None:
+    store = ExecutiveProfitLossInventoryStore(
+        store_ref="store-1",
+        store_name="Точка 1",
+        sales_amount=None,
+        loss_amount=Decimal("0.00"),
+        has_operations=False,
+    )
+
+    actions = executive_dashboard._inventory_actions(
+        [store],
+        data_quality=ExecutiveProfitLossInventoryDataQuality(
+            source_status="partial",
+            store_scope_status="unknown",
+            norm_source_status="unknown",
+        ),
+        owner=None,
+    )
+
+    assert len(actions) == 1
+    assert "утверждён" not in actions[0].title.lower()
+    assert "утверждение" in actions[0].description
 
 
 def test_sales_period_response_calculates_forecast_comparison_and_filters(
@@ -1108,7 +1629,7 @@ def test_sales_period_response_calculates_forecast_comparison_and_filters(
                 manager_ref="mgr-2",
                 manager_name="Менеджер 2",
                 store_ref="store-2",
-                store_name="Склад Сайт",
+                store_name="Сайт",
             )
         )
         cursor += timedelta(days=1)
@@ -1138,7 +1659,7 @@ def test_sales_period_response_calculates_forecast_comparison_and_filters(
     assert result.monthly[-1].gross_margin_pct is not None
     assert result.monthly[-1].gross_margin_pct == result.totals["gross_margin_pct"]
     assert result.monthly[-1].comparison_sales_count == Decimal("0")
-    assert {item.label for item in result.stores} == {"Горбушкин Двор", "Склад Сайт"}
+    assert {item.label for item in result.stores} == {"Горбушкин Двор", "Сайт"}
     assert {item.label for item in result.managers} == {"Менеджер 1", "Менеджер 2"}
     assert result.plan_status == "ready"
     assert result.plan is not None
@@ -1154,7 +1675,9 @@ def test_sales_period_response_calculates_forecast_comparison_and_filters(
     assert diagnostics["cost_per_unit"].value == Decimal("40.00")
     assert diagnostics["margin_gap_pp"].value == Decimal("1.6700")
     assert diagnostics["stores_below_plan_count"].value == 0
+    assert diagnostics["stores_below_plan_count"].meta["problem"] == []
     assert diagnostics["managers_below_target_margin_count"].value == 0
+    assert diagnostics["managers_below_target_margin_count"].meta["problem"] == []
     store_meta = {item.key: item.meta for item in result.by_store}
     assert store_meta["store-1"]["approved_revenue"] == Decimal("3000.00")
     assert store_meta["store-2"]["plan_attainment_pct"] == Decimal("1")
@@ -1169,7 +1692,7 @@ def test_sales_period_response_calculates_forecast_comparison_and_filters(
     assert filtered.totals["revenue"] == Decimal("1000.00")
     assert filtered.totals["forecast_revenue_period_end"] == Decimal("6000.00")
     assert filtered.monthly[-1].sales_count == Decimal("10.000")
-    assert [row.label for row in filtered.by_store] == ["Склад Сайт"]
+    assert [row.label for row in filtered.by_store] == ["Сайт"]
     assert filtered.plan is not None
     assert filtered.plan.scope_type == "store"
     assert filtered.plan.approved_revenue == Decimal("6000.00")
@@ -1265,8 +1788,110 @@ def test_sales_period_requires_complete_store_plan_coverage(
     assert diagnostics["margin_gap_pp"].value is None
     assert diagnostics["stores_below_plan_count"].source_status == "partial"
     assert diagnostics["stores_below_plan_count"].value is None
+    assert diagnostics["stores_below_plan_count"].meta["problem"] == []
     assert diagnostics["managers_below_target_margin_count"].source_status == "partial"
     assert diagnostics["managers_below_target_margin_count"].value is None
+    assert diagnostics["managers_below_target_margin_count"].meta["problem"] == []
+
+
+def test_sales_period_lists_problem_stores_and_managers_in_diagnostic_meta(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path / "missing.json")
+    _write_sales_plan_snapshot(Path(settings.executive_dashboard_sales_plan_snapshot_path))
+    _override_settings(monkeypatch, settings)
+    rows = []
+    cursor = date(2026, 6, 1)
+    while cursor <= date(2026, 6, 20):
+        rows.append(
+            _sales_kpi(
+                cursor,
+                revenue=Decimal("100.00"),
+                cost_of_sales=Decimal("80.00"),
+                store_ref="store-1",
+                store_name="Горбушкин Двор",
+            )
+        )
+        cursor += timedelta(days=1)
+    db_session.add_all(rows)
+    db_session.commit()
+
+    result = build_executive_sales_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 30),
+        today=date(2026, 7, 5),
+    )
+
+    diagnostics = {item.key: item for item in result.diagnostic_kpis}
+    stores_metric = diagnostics["stores_below_plan_count"]
+    assert stores_metric.source_status == "ready"
+    assert stores_metric.value == 2
+    assert stores_metric.meta["problem"] == [
+        {"key": "store-1", "label": "Горбушкин Двор"},
+        {"key": "store-2", "label": "Сайт"},
+    ]
+    managers_metric = diagnostics["managers_below_target_margin_count"]
+    assert managers_metric.source_status == "ready"
+    assert managers_metric.value == 1
+    assert managers_metric.meta["problem"] == [{"key": "mgr-1", "label": "Менеджер 1"}]
+
+
+def test_sales_period_marks_duplicated_frozen_plan_revision_as_source_error(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path / "missing.json")
+    snapshot_path = Path(settings.executive_dashboard_sales_plan_snapshot_path)
+    _write_sales_plan_snapshot(snapshot_path)
+    payload = json.loads(snapshot_path.read_text(encoding="utf-8"))
+    payload["months"].append(dict(payload["months"][0], revision_no=4))
+    snapshot_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    _override_settings(monkeypatch, settings)
+    db_session.add(_sales_kpi(date(2026, 6, 30)))
+    db_session.commit()
+
+    result = build_executive_sales_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 30),
+        today=date(2026, 7, 1),
+    )
+
+    assert result.source_status == "ready"
+    assert result.plan_status == "source_error"
+    assert "несколько frozen-планов" in str(result.plan_note)
+    assert result.plan is None
+    diagnostics = {item.key: item for item in result.diagnostic_kpis}
+    assert diagnostics["margin_gap_pp"].source_status == "source_error"
+    assert diagnostics["stores_below_plan_count"].source_status == "source_error"
+    assert diagnostics["stores_below_plan_count"].meta["problem"] == []
+
+
+def test_sales_period_completed_range_notes_period_not_month(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _override_settings(monkeypatch, _settings(tmp_path / "missing.json"))
+    cursor = date(2026, 5, 10)
+    while cursor <= date(2026, 6, 20):
+        db_session.add(_sales_kpi(cursor))
+        cursor += timedelta(days=1)
+    db_session.commit()
+
+    result = build_executive_sales_period_response(
+        db_session,
+        date_from=date(2026, 6, 14),
+        date_to=date(2026, 6, 20),
+        today=date(2026, 6, 20),
+    )
+
+    assert result.forecast_status == "complete"
+    assert result.forecast_note == "Период полностью закрыт фактическими данными."
 
 
 def test_sales_period_plan_is_not_applicable_for_partial_month(
@@ -1474,7 +2099,7 @@ def test_warehouse_block_reads_piecework_snapshot(
     assert metric_by_key["pieces_picked"].value == Decimal("1250.00")
     assert metric_by_key["avg_need_fact"].value == Decimal("5.20")
     assert metric_by_key["quality_issue_count"].value == 3
-    assert warehouse.summary["top_warehouses"][0]["warehouse_name"] == "Склад Сайт"
+    assert warehouse.summary["top_warehouses"][0]["warehouse_name"] == "Сайт"
     assert "warehouse.piecework" in {source.source_key for source in result.source_freshness}
 
 
@@ -1597,6 +2222,7 @@ def test_money_today_uses_cash_position_and_cashflow_today(
                         "total_balance_rub": "57930000",
                         "bank_balance_total": "3399434",
                         "bank_balance_total_rub": "3399434",
+                        "savings_balance_total": "15222069",
                         "cashbox_balance_total": "54530566",
                         "cashbox_balance_total_rub": "54530566",
                         "foreign_balance_total": "11670000",
@@ -1655,6 +2281,10 @@ def test_money_today_uses_cash_position_and_cashflow_today(
     metric_by_key = {metric.key: metric for metric in money.metrics}
     assert money.title == "Деньги / ДДС"
     assert metric_by_key["cash_position_total_balance"].value == Decimal("57930000")
+    assert metric_by_key["cash_position_bank_balance_total"].value == Decimal("3399434")
+    savings_metric = metric_by_key["cash_position_savings_balance_total"]
+    assert savings_metric.value == Decimal("15222069")
+    assert savings_metric.label == "Сберсчета / личные счета"
     assert metric_by_key["cash_position_foreign_balance_total"].value == Decimal("11670000")
     assert metric_by_key["cash_position_negative_balance_total"].value == Decimal("-345416")
     assert money.summary["cash_position_breakdown_by_currency"][0]["cash_currency_name"] == "USD"
@@ -1754,8 +2384,21 @@ def test_procurement_role_receives_only_procurement_block_and_actions(
                 "procurement_import": {
                     "source_status": "ready",
                     "open_supplier_orders": 4,
+                    "open_order_amount_rub": "1250000",
                     "payment_ready_amount": "1250000",
                     "currency_exposure": "1250000",
+                    "risk_summary": {
+                        "at_risk_count": 2,
+                        "at_risk_amount_rub": "500000",
+                        "critical_count": 1,
+                    },
+                    "stage_breakdown": [
+                        {"key": "in_transit", "label": "В пути", "count": 2, "amount_rub": "800000"}
+                    ],
+                    "currency_breakdown": [
+                        {"currency": "RMB", "count": 3, "amount_rub": "1200000"}
+                    ],
+                    "data_quality": {"responsible_coverage_pct": "75.0"},
                 },
                 "creditors_payables": {
                     "source_status": "ready",
@@ -1808,6 +2451,8 @@ def test_procurement_role_receives_only_procurement_block_and_actions(
     metric_by_key = {metric.key: metric for metric in procurement.metrics}
     assert metric_by_key["payment_ready_amount"].masked is False
     assert metric_by_key["payment_ready_amount"].value == Decimal("1250000")
+    assert metric_by_key["procurement_at_risk_count"].value == 2
+    assert procurement.summary["stage_breakdown"][0]["amount_rub"] == "800000"
     assert [item.stable_key for item in result.top_actions] == ["procurement-visible"]
     assert result.source_freshness[0].source_key == "procurement_import"
 
@@ -1839,6 +2484,53 @@ def test_actions_filter_for_domain_user_and_status(
     assert {item.stable_key for item in result.payload} == {"a-visible", "a-public"}
 
 
+def test_procurement_nested_amounts_are_masked_without_money_permission(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    snapshot_path = tmp_path / "finance_snapshot.json"
+    snapshot_path.write_text(
+        json.dumps(
+            {
+                "as_of": "2026-07-11",
+                "source_status": "ready",
+                "procurement_import": {
+                    "as_of": "2026-07-11",
+                    "source_status": "ready",
+                    "open_supplier_orders": 1,
+                    "open_order_amount_rub": "1000",
+                    "risk_summary": {"at_risk_count": 1, "at_risk_amount_rub": "1000"},
+                    "stage_breakdown": [{"key": "in_transit", "count": 1, "amount_rub": "1000"}],
+                    "currency_breakdown": [{"currency": "RMB", "count": 1, "amount_rub": "1000"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    _override_settings(monkeypatch, _settings(snapshot_path))
+    context = bitrix_executive_dashboard_auth.ExecutiveDashboardAuthContext(
+        actor="test",
+        source="internal",
+        access_level="domain",
+        allowed_blocks=("procurement_import",),
+        allowed_action_domains=("procurement_import",),
+        money_blocks=(),
+    )
+
+    result = build_executive_dashboard(
+        db_session,
+        requested_date=date(2026, 7, 11),
+        access_context=context,
+    )
+
+    block = result.blocks[0]
+    assert block.summary["risk_summary"]["at_risk_amount_rub"] is None
+    assert block.summary["stage_breakdown"][0]["amount_rub"] is None
+    assert block.summary["currency_breakdown"][0]["amount_rub"] is None
+    assert next(metric for metric in block.metrics if metric.key == "open_order_amount_rub").masked
+
+
 def test_procurement_snapshot_attention_becomes_clickable_action_and_disappears_after_fix(
     db_session: Session,
     tmp_path: Path,
@@ -1860,6 +2552,8 @@ def test_procurement_snapshot_attention_becomes_clickable_action_and_disappears_
                     "currency": "RMB",
                     "reason_code": "missing_cargo_handoff_date",
                     "reason": "Не заполнена дата «Сдача в карго».",
+                    "severity": "warning",
+                    "deadline_date": "2026-07-10",
                     "recommendation": "Заполнить поле в документе 1С.",
                     "source_system": "1C",
                 }
@@ -1879,11 +2573,20 @@ def test_procurement_snapshot_attention_becomes_clickable_action_and_disappears_
 
     assert result.total_count == 1
     action = result.payload[0]
-    assert action.title == "Заказ РБГУ0001: заполнить «Сдача в карго»"
+    assert action.title == "Заказ РБГУ0001: Не заполнена дата «Сдача в карго»."
+    assert action.severity == "warning"
+    assert action.deadline_at.date() == date(2026, 7, 10)
     assert action.amount == Decimal("1000.00")
     assert action.source_ref == "0x01"
     assert action.payload["correction_system"] == "1C"
     assert action.payload["correction_field"] == "Сдача в карго"
+
+    dashboard = build_executive_dashboard(
+        db_session,
+        requested_date=date(2026, 7, 11),
+        access_level="full",
+    )
+    assert next(block for block in dashboard.blocks if block.key == "tasks")
 
     snapshot["procurement_import"]["attention_items"] = []
     snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")

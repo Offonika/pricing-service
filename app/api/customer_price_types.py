@@ -2,15 +2,22 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Security
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Security
+from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, require_management_internal_token, security
+from app.api.procurement_labels import (
+    _bitrix_launch_payload,
+    _inject_launch_payload,
+    _read_index,
+)
+from app.core.config import get_settings
 from app.domains.customer_price_types import CustomerPriceTypeAccessScope
 from app.infrastructure.customer_price_types import SqlAlchemyCustomerPriceTypeRepository
 from app.schemas.customer_price_types import (
@@ -20,9 +27,19 @@ from app.schemas.customer_price_types import (
     CustomerPriceTypeCaseListResponse,
     CustomerPriceTypeProfileResponse,
     CustomerPriceTypeRunResponse,
+    CustomerPriceTypeSessionRequest,
+    CustomerPriceTypeSessionResponse,
+    CustomerPriceTypeSessionUser,
     CustomerPriceTypeSnapshotResponse,
     CustomerPriceTypeSummaryResponse,
     CustomerPriceTypeWorklistsResponse,
+)
+from app.services.bitrix_customer_price_types_auth import (
+    create_customer_price_type_session_token,
+    ensure_bitrix_launch_allowed,
+    load_bitrix_current_user,
+    resolve_customer_price_type_access,
+    verify_customer_price_type_session,
 )
 from app.services.customer_price_types import (
     CustomerPriceTypeReadService,
@@ -30,16 +47,78 @@ from app.services.customer_price_types import (
 )
 
 router = APIRouter(prefix="/api/customer-price-types", tags=["customer-price-types"])
+page_router = APIRouter()
+
+
+@page_router.api_route(
+    "/bitrix/customer-price-types",
+    methods=["GET", "POST"],
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+@page_router.api_route(
+    "/bitrix/customer-price-types/",
+    methods=["GET", "POST"],
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+@page_router.api_route(
+    "/bitrix/customer-price-types/{path:path}",
+    methods=["GET", "POST"],
+    response_class=HTMLResponse,
+    include_in_schema=False,
+)
+async def bitrix_customer_price_types_page(request: Request) -> HTMLResponse:
+    payload = await _bitrix_launch_payload(request)
+    return HTMLResponse(_inject_launch_payload(_read_index(), payload))
 
 
 def require_customer_price_type_access(
     credentials: HTTPAuthorizationCredentials = Security(security),
 ) -> CustomerPriceTypeAccessScope:
-    require_management_internal_token(credentials)
+    # Management internal token keeps full internal scope; otherwise fall back to a
+    # Bitrix embedded-app session token mapped to a read-only role scope.
+    try:
+        require_management_internal_token(credentials)
+    except HTTPException:
+        return verify_customer_price_type_session(credentials)
     return internal_customer_price_type_scope(actor="internal")
 
 
 Access = Annotated[CustomerPriceTypeAccessScope, Depends(require_customer_price_type_access)]
+
+
+@router.post("/session", response_model=CustomerPriceTypeSessionResponse)
+def create_customer_price_type_session(
+    payload: CustomerPriceTypeSessionRequest,
+) -> CustomerPriceTypeSessionResponse:
+    settings = get_settings()
+    domain, member_id = ensure_bitrix_launch_allowed(
+        domain=payload.domain, member_id=payload.member_id, settings=settings
+    )
+    user = load_bitrix_current_user(
+        domain=domain, access_token=payload.access_token, settings=settings
+    )
+    access = resolve_customer_price_type_access(bitrix_user_id=user.user_id, settings=settings)
+    token, expires_at_ts = create_customer_price_type_session_token(
+        domain=domain,
+        member_id=member_id,
+        user_id=user.user_id,
+        user_name=user.name,
+        access=access,
+        settings=settings,
+    )
+    return CustomerPriceTypeSessionResponse(
+        session_token=token,
+        expires_at=datetime.fromtimestamp(expires_at_ts, UTC),
+        expires_in=settings.customer_price_type_bitrix_session_ttl_seconds,
+        user=CustomerPriceTypeSessionUser(
+            user_id=user.user_id,
+            name=user.name,
+            role=access.role,
+            can_view_money=access.can_view_money,
+        ),
+    )
 
 
 def _month(value: str | None) -> date | None:

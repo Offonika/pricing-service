@@ -1,0 +1,154 @@
+from __future__ import annotations
+
+import pytest
+from fastapi import HTTPException
+from fastapi.testclient import TestClient
+
+import app.api.customer_price_types as cpt_api
+from app.core.config import get_settings
+from app.domains.customer_price_types import CustomerPriceTypeAccessScope
+from app.main import app
+from app.services import bitrix_customer_price_types_auth as auth
+
+
+def _settings(**over):
+    base = {
+        "customer_price_type_bitrix_enabled": True,
+        "customer_price_type_bitrix_allowed_domains": ["portal.bitrix24.ru"],
+        "customer_price_type_bitrix_allowed_member_ids": ["member-1"],
+        "customer_price_type_bitrix_full_access_user_ids": [],
+        "customer_price_type_access_rules_json": None,
+        "customer_price_type_bitrix_session_secret": "test-secret",
+        "customer_price_type_bitrix_session_ttl_seconds": 3600,
+        "customer_price_type_bitrix_rest_timeout_seconds": 6.0,
+    }
+    base.update(over)
+    return get_settings().model_copy(update=base)
+
+
+def test_session_token_roundtrip_preserves_scope():
+    settings = _settings()
+    access = CustomerPriceTypeAccessScope(
+        actor="bitrix:7", role="manager", owner_ref="0xABC", can_view_money=False
+    )
+    token, _ = auth.create_customer_price_type_session_token(
+        domain="portal.bitrix24.ru",
+        member_id="member-1",
+        user_id="7",
+        user_name="Иван",
+        access=access,
+        settings=settings,
+        now=1000,
+    )
+    scope = auth.verify_customer_price_type_session_token(token, settings=settings, now=1100)
+    assert scope.role == "manager"
+    assert scope.owner_ref == "0xabc"
+    assert scope.can_view_money is False
+    assert scope.is_full is False
+
+
+def test_expired_session_rejected():
+    settings = _settings()
+    access = CustomerPriceTypeAccessScope(actor="x", role="network_head", can_view_money=True)
+    token, _ = auth.create_customer_price_type_session_token(
+        domain="portal.bitrix24.ru",
+        member_id="member-1",
+        user_id="7",
+        user_name=None,
+        access=access,
+        settings=settings,
+        now=1000,
+    )
+    with pytest.raises(HTTPException) as info:
+        auth.verify_customer_price_type_session_token(token, settings=settings, now=1000 + 3601)
+    assert info.value.status_code == 401
+
+
+def test_tampered_signature_rejected():
+    settings = _settings()
+    access = CustomerPriceTypeAccessScope(actor="x", role="network_head", can_view_money=True)
+    token, _ = auth.create_customer_price_type_session_token(
+        domain="portal.bitrix24.ru",
+        member_id="member-1",
+        user_id="7",
+        user_name=None,
+        access=access,
+        settings=settings,
+        now=1000,
+    )
+    tampered = token[:-2] + ("zz" if not token.endswith("zz") else "aa")
+    with pytest.raises(HTTPException) as info:
+        auth.verify_customer_price_type_session_token(tampered, settings=settings, now=1100)
+    assert info.value.status_code == 401
+
+
+def test_disabled_app_blocks_launch():
+    settings = _settings(customer_price_type_bitrix_enabled=False)
+    with pytest.raises(HTTPException) as info:
+        auth.ensure_bitrix_launch_allowed(
+            domain="portal.bitrix24.ru", member_id="member-1", settings=settings
+        )
+    assert info.value.status_code == 403
+
+
+def test_launch_domain_not_allowed():
+    settings = _settings()
+    with pytest.raises(HTTPException) as info:
+        auth.ensure_bitrix_launch_allowed(
+            domain="evil.bitrix24.ru", member_id="member-1", settings=settings
+        )
+    assert info.value.status_code == 403
+
+
+def test_resolve_full_access_user():
+    settings = _settings(customer_price_type_bitrix_full_access_user_ids=["7"])
+    scope = auth.resolve_customer_price_type_access(bitrix_user_id="7", settings=settings)
+    assert scope.role == "network_head"
+    assert scope.is_full is True
+    assert scope.can_view_money is True
+
+
+def test_resolve_rule_manager_scope():
+    rules = '{"roles":[{"bitrix_user_ids":["42"],"role":"manager","owner_ref":"0xDEAD"}]}'
+    settings = _settings(customer_price_type_access_rules_json=rules)
+    scope = auth.resolve_customer_price_type_access(bitrix_user_id="42", settings=settings)
+    assert scope.role == "manager"
+    assert scope.owner_ref == "0xdead"
+    assert scope.can_view_money is False
+
+
+def test_resolve_finance_sees_money_by_default():
+    rules = '{"roles":[{"bitrix_user_ids":["9"],"role":"finance"}]}'
+    settings = _settings(customer_price_type_access_rules_json=rules)
+    scope = auth.resolve_customer_price_type_access(bitrix_user_id="9", settings=settings)
+    assert scope.role == "finance"
+    assert scope.can_view_money is True
+
+
+def test_resolve_unknown_user_denied():
+    settings = _settings()
+    with pytest.raises(HTTPException) as info:
+        auth.resolve_customer_price_type_access(bitrix_user_id="999", settings=settings)
+    assert info.value.status_code == 403
+
+
+def test_session_endpoint_issues_valid_token(monkeypatch):
+    settings = _settings(customer_price_type_bitrix_full_access_user_ids=["7"])
+    monkeypatch.setattr(cpt_api, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        cpt_api,
+        "load_bitrix_current_user",
+        lambda **_: auth.BitrixUser(user_id="7", name="Иван Пример"),
+    )
+    client = TestClient(app)
+    response = client.post(
+        "/api/customer-price-types/session",
+        json={"access_token": "abc", "domain": "portal.bitrix24.ru", "member_id": "member-1"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["user"]["role"] == "network_head"
+    assert body["user"]["can_view_money"] is True
+    assert body["token_type"] == "Bearer"
+    scope = auth.verify_customer_price_type_session_token(body["session_token"], settings=settings)
+    assert scope.role == "network_head"

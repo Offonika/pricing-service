@@ -22,6 +22,9 @@ from app.api.bitrix_receivables import page_router as bitrix_receivables_page_ro
 from app.api.bitrix_receivables import router as bitrix_receivables_router
 from app.api.card_balance_reconciliation import router as card_balance_reconciliation_router
 from app.api.counterparty_duplicates import router as counterparty_duplicates_router
+from app.api.customer_price_types import (
+    page_router as customer_price_types_page_router,
+)
 from app.api.customer_price_types import router as customer_price_types_router
 from app.api.expertise import router as expertise_router
 from app.api.health import router as health_router
@@ -137,6 +140,7 @@ app.include_router(receivable_workplace_page_router)
 app.include_router(procurement_labels_page_router)
 app.include_router(procurement_assortment_page_router)
 app.include_router(procurement_order_formation_page_router)
+app.include_router(customer_price_types_page_router)
 app.include_router(recommendations_router, prefix="/api")
 app.include_router(reports_router, prefix="/api/reports")
 app.include_router(bi_router, prefix="/api/bi")

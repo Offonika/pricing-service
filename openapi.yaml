@@ -4392,6 +4392,31 @@ paths:
                 $ref: '#/components/schemas/CounterpartyDuplicateHealthResponse'
       security:
       - HTTPBearer: []
+  /api/customer-price-types/session:
+    post:
+      tags:
+      - customer-price-types
+      summary: Create Customer Price Type Session
+      operationId: create_customer_price_type_session_api_customer_price_types_session_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerPriceTypeSessionRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeSessionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/customer-price-types/summary:
     get:
       tags:
@@ -12159,6 +12184,73 @@ components:
       - status
       - started_at
       title: CustomerPriceTypeRunResponse
+    CustomerPriceTypeSessionRequest:
+      properties:
+        access_token:
+          type: string
+          minLength: 1
+          title: Access Token
+        domain:
+          type: string
+          minLength: 1
+          title: Domain
+        member_id:
+          type: string
+          minLength: 1
+          title: Member Id
+      type: object
+      required:
+      - access_token
+      - domain
+      - member_id
+      title: CustomerPriceTypeSessionRequest
+    CustomerPriceTypeSessionResponse:
+      properties:
+        session_token:
+          type: string
+          title: Session Token
+        token_type:
+          type: string
+          title: Token Type
+          default: Bearer
+        expires_at:
+          type: string
+          format: date-time
+          title: Expires At
+        expires_in:
+          type: integer
+          title: Expires In
+        user:
+          $ref: '#/components/schemas/CustomerPriceTypeSessionUser'
+      type: object
+      required:
+      - session_token
+      - expires_at
+      - expires_in
+      - user
+      title: CustomerPriceTypeSessionResponse
+    CustomerPriceTypeSessionUser:
+      properties:
+        user_id:
+          type: string
+          title: User Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        role:
+          type: string
+          title: Role
+        can_view_money:
+          type: boolean
+          title: Can View Money
+      type: object
+      required:
+      - user_id
+      - role
+      - can_view_money
+      title: CustomerPriceTypeSessionUser
     CustomerPriceTypeSnapshotResponse:
       properties:
         id:

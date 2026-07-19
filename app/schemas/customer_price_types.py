@@ -134,6 +134,27 @@ class CustomerPriceTypeProfileResponse(CustomerPriceTypeEnvelope):
     history: list[CustomerPriceTypeSnapshotResponse] = Field(default_factory=list)
 
 
+class CustomerPriceTypeSessionRequest(BaseModel):
+    access_token: str = Field(min_length=1)
+    domain: str = Field(min_length=1)
+    member_id: str = Field(min_length=1)
+
+
+class CustomerPriceTypeSessionUser(BaseModel):
+    user_id: str
+    name: str | None = None
+    role: str
+    can_view_money: bool
+
+
+class CustomerPriceTypeSessionResponse(BaseModel):
+    session_token: str
+    token_type: str = "Bearer"
+    expires_at: datetime
+    expires_in: int
+    user: CustomerPriceTypeSessionUser
+
+
 class CustomerPriceTypeRunResponse(CustomerPriceTypeEnvelope):
     id: int
     run_key: str

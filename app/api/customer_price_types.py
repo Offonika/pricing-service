@@ -485,7 +485,7 @@ def get_customer_price_type_run(
     access: Access,
     db: Session = Depends(get_db),
 ) -> CustomerPriceTypeRunResponse:
-    if access.role not in {"internal", "network_head", "integration_operator"}:
+    if access.role not in {"internal", "executive", "network_head", "integration_operator"}:
         raise HTTPException(status_code=403, detail="customer price-type run access denied")
     try:
         row = SqlAlchemyCustomerPriceTypeRepository(db).get_run(run_id)

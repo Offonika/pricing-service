@@ -129,4 +129,4 @@ class CustomerPriceTypeAccessScope:
 
     @property
     def is_full(self) -> bool:
-        return self.role in {"network_head", "internal"}
+        return self.role in {"executive", "network_head", "internal"}

@@ -123,6 +123,47 @@ def test_resolve_network_head_by_department():
     assert scope.can_view_money is True
 
 
+def test_resolve_network_head_by_bitrix_headship():
+    rules = '{"roles":[{"role":"network_head","headed_department_ids":["3269"]}]}'
+    settings = _settings(customer_price_type_access_rules_json=rules)
+    scope = auth.resolve_customer_price_type_access(
+        bitrix_user_id="130751",
+        department_ids=("3227", "3269"),
+        headed_department_ids=("3269",),
+        settings=settings,
+    )
+    assert scope.role == "network_head"
+    assert scope.is_full is True
+    assert scope.can_view_money is True
+
+
+def test_network_head_rule_does_not_grant_access_to_regular_department_member():
+    rules = '{"roles":[{"role":"network_head","headed_department_ids":["3269"]}]}'
+    settings = _settings(customer_price_type_access_rules_json=rules)
+    with pytest.raises(HTTPException) as info:
+        auth.resolve_customer_price_type_access(
+            bitrix_user_id="42",
+            department_ids=("3269",),
+            headed_department_ids=(),
+            settings=settings,
+        )
+    assert info.value.status_code == 403
+
+
+def test_resolve_executive_by_bitrix_headship():
+    rules = '{"roles":[{"role":"executive","headed_department_ids":["3227"]}]}'
+    settings = _settings(customer_price_type_access_rules_json=rules)
+    scope = auth.resolve_customer_price_type_access(
+        bitrix_user_id="4241",
+        department_ids=("3227",),
+        headed_department_ids=("3227",),
+        settings=settings,
+    )
+    assert scope.role == "executive"
+    assert scope.is_full is True
+    assert scope.can_view_money is True
+
+
 def test_resolve_finance_by_department():
     rules = '{"roles":[{"role":"finance","department_ids":["12"]}]}'
     settings = _settings(customer_price_type_access_rules_json=rules)

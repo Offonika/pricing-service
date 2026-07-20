@@ -107,5 +107,9 @@ if [[ "$ready" != 1 ]]; then
   false
 fi
 
+verification_marker="$RELEASE_DIR/.release-verified"
+printf '%s\n' "verified_at=$(date -Is)" >"$verification_marker"
+chmod 0444 "$verification_marker"
+
 trap - ERR
 echo "active pricing-service release: $RELEASE_DIR"

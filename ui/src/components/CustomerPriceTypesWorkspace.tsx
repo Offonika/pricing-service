@@ -140,7 +140,8 @@ export function CustomerPriceTypesWorkspace({
   const worklists = worklistsQuery.data?.worklists ?? {};
   const month = summaryQuery.data?.snapshot_month ?? worklistsQuery.data?.snapshot_month ?? null;
   const detail = caseDetailQuery.data;
-  const canViewQuality = role === "internal" || role === "network_head" || role === "quality";
+  const canViewQuality =
+    role === "internal" || role === "executive" || role === "network_head" || role === "quality";
 
   if (section === "quality" && canViewQuality) {
     return (
@@ -395,7 +396,7 @@ function QualityModule({ role }: { role?: string }) {
   const [groups, setGroups] = useState<Record<number, CptQualityGroup>>({});
   const [comments, setComments] = useState<Record<number, string>>({});
   const [expandedSampleId, setExpandedSampleId] = useState<number | null>(null);
-  const canPrepare = role === "internal" || role === "network_head";
+  const canPrepare = role === "internal" || role === "executive" || role === "network_head";
 
   const metricsQuery = useQuery({
     queryKey: ["cpt", "quality", "metrics"],

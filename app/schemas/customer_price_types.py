@@ -234,16 +234,39 @@ class CustomerPriceTypeQualitySampleListResponse(CustomerPriceTypeEnvelope):
     payload: list[CustomerPriceTypeQualitySampleResponse] = Field(default_factory=list)
 
 
+class CustomerPriceTypeQualityProfileResponse(BaseModel):
+    id: int
+    counterparty_ref: str
+    counterparty_code: str | None = None
+    counterparty_name: str | None = None
+    department_ref: str | None = None
+    department_name: str | None = None
+    owner_ref: str | None = None
+    owner_name: str | None = None
+    master_data_flags: list[str] = Field(default_factory=list)
+
+
+class CustomerPriceTypeQualitySampleDetailResponse(CustomerPriceTypeEnvelope):
+    sample: CustomerPriceTypeQualitySampleResponse
+    profile: CustomerPriceTypeQualityProfileResponse
+    snapshot: CustomerPriceTypeSnapshotResponse
+
+
 class CustomerPriceTypeQualityGroupMetrics(BaseModel):
+    population_count: int
+    selected_count: int
     reviewed_count: int
     true_positive: int
     false_positive: int
     false_negative: int
-    precision: float
-    recall: float
+    precision: float | None = None
+    recall: float | None = None
 
 
 class CustomerPriceTypeQualityMetricsResponse(CustomerPriceTypeEnvelope):
+    metrics_scope: Literal["portfolio", "special_review_only"]
+    metrics_ready: bool
+    population_count: int
     selected_count: int
     reviewed_count: int
     coverage: float

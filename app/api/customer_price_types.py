@@ -30,7 +30,9 @@ from app.schemas.customer_price_types import (
     CustomerPriceTypeQualityMetricsResponse,
     CustomerPriceTypeQualityPrepareRequest,
     CustomerPriceTypeQualityPrepareResponse,
+    CustomerPriceTypeQualityProfileResponse,
     CustomerPriceTypeQualityReviewRequest,
+    CustomerPriceTypeQualitySampleDetailResponse,
     CustomerPriceTypeQualitySampleListResponse,
     CustomerPriceTypeQualitySampleResponse,
     CustomerPriceTypeRunResponse,
@@ -573,6 +575,50 @@ def list_customer_price_type_quality_samples(
             CustomerPriceTypeQualitySampleResponse.model_validate(_quality_sample_payload(*row))
             for row in rows
         ],
+    )
+
+
+@router.get(
+    "/quality/samples/{sample_id}",
+    response_model=CustomerPriceTypeQualitySampleDetailResponse,
+)
+def get_customer_price_type_quality_sample(
+    sample_id: int,
+    access: Access,
+    db: Session = Depends(get_db),
+) -> CustomerPriceTypeQualitySampleDetailResponse:
+    _ensure_quality_read_access(access)
+    repository = SqlAlchemyCustomerPriceTypeRepository(db)
+    try:
+        row = repository.get_quality_sample(sample_id, access)
+        if row is None:
+            raise HTTPException(
+                status_code=404, detail="customer price-type quality sample not found"
+            )
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503, detail="customer price-type storage unavailable"
+        ) from exc
+    sample, profile, snapshot = row
+    return CustomerPriceTypeQualitySampleDetailResponse(
+        **CustomerPriceTypeReadService._run_envelope(repository.get_run(sample.run_id)),
+        sample=CustomerPriceTypeQualitySampleResponse.model_validate(
+            _quality_sample_payload(sample, profile, snapshot)
+        ),
+        profile=CustomerPriceTypeQualityProfileResponse(
+            id=profile.id,
+            counterparty_ref=profile.counterparty_ref,
+            counterparty_code=profile.counterparty_code,
+            counterparty_name=profile.counterparty_name,
+            department_ref=profile.department_ref,
+            department_name=profile.department_name,
+            owner_ref=profile.owner_ref,
+            owner_name=profile.owner_name,
+            master_data_flags=profile.master_data_flags,
+        ),
+        snapshot=CustomerPriceTypeSnapshotResponse.model_validate(
+            _snapshot_payload(snapshot, access)
+        ),
     )
 
 

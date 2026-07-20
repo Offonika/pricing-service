@@ -4770,6 +4770,33 @@ paths:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
   /api/customer-price-types/quality/samples/{sample_id}:
+    get:
+      tags:
+      - customer-price-types
+      summary: Get Customer Price Type Quality Sample
+      operationId: get_customer_price_type_quality_sample_api_customer_price_types_quality_samples__sample_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: sample_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Sample Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeQualitySampleDetailResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
     put:
       tags:
       - customer-price-types
@@ -12257,6 +12284,12 @@ components:
       title: CustomerPriceTypeProfileResponse
     CustomerPriceTypeQualityGroupMetrics:
       properties:
+        population_count:
+          type: integer
+          title: Population Count
+        selected_count:
+          type: integer
+          title: Selected Count
         reviewed_count:
           type: integer
           title: Reviewed Count
@@ -12270,19 +12303,23 @@ components:
           type: integer
           title: False Negative
         precision:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Precision
         recall:
-          type: number
+          anyOf:
+          - type: number
+          - type: 'null'
           title: Recall
       type: object
       required:
+      - population_count
+      - selected_count
       - reviewed_count
       - true_positive
       - false_positive
       - false_negative
-      - precision
-      - recall
       title: CustomerPriceTypeQualityGroupMetrics
     CustomerPriceTypeQualityMetricsResponse:
       properties:
@@ -12305,6 +12342,18 @@ components:
         source_status:
           type: string
           title: Source Status
+        metrics_scope:
+          type: string
+          enum:
+          - portfolio
+          - special_review_only
+          title: Metrics Scope
+        metrics_ready:
+          type: boolean
+          title: Metrics Ready
+        population_count:
+          type: integer
+          title: Population Count
         selected_count:
           type: integer
           title: Selected Count
@@ -12338,6 +12387,9 @@ components:
       - snapshot_month
       - ruleset_version
       - source_status
+      - metrics_scope
+      - metrics_ready
+      - population_count
       - selected_count
       - reviewed_count
       - coverage
@@ -12400,6 +12452,54 @@ components:
       - total
       - per_group
       title: CustomerPriceTypeQualityPrepareResponse
+    CustomerPriceTypeQualityProfileResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        counterparty_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Code
+        counterparty_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Name
+        department_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Ref
+        department_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Name
+        owner_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Ref
+        owner_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Name
+        master_data_flags:
+          items:
+            type: string
+          type: array
+          title: Master Data Flags
+      type: object
+      required:
+      - id
+      - counterparty_ref
+      title: CustomerPriceTypeQualityProfileResponse
     CustomerPriceTypeQualityReviewRequest:
       properties:
         correct_group:
@@ -12428,6 +12528,43 @@ components:
       - correct_group
       - expected_version
       title: CustomerPriceTypeQualityReviewRequest
+    CustomerPriceTypeQualitySampleDetailResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        sample:
+          $ref: '#/components/schemas/CustomerPriceTypeQualitySampleResponse'
+        profile:
+          $ref: '#/components/schemas/CustomerPriceTypeQualityProfileResponse'
+        snapshot:
+          $ref: '#/components/schemas/CustomerPriceTypeSnapshotResponse'
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - sample
+      - profile
+      - snapshot
+      title: CustomerPriceTypeQualitySampleDetailResponse
     CustomerPriceTypeQualitySampleListResponse:
       properties:
         run_id:

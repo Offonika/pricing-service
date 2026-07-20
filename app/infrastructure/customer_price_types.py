@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import exists, false, func, or_, select
+from sqlalchemy import case, exists, false, func, or_, select, update
 from sqlalchemy.orm import Session
 
 from app.domains.customer_price_types import (
@@ -853,6 +853,68 @@ class SqlAlchemyCustomerPriceTypeRepository:
             )
         row = self.session.execute(statement).first()
         return (row[0], row[1], row[2]) if row else None
+
+    def update_quality_sample_review(
+        self,
+        *,
+        sample_id: int,
+        correct_group: str,
+        comment: str | None,
+        reviewed_by: str,
+        reviewed_at: datetime,
+        expected_version: int,
+        access: CustomerPriceTypeAccessScope,
+    ) -> bool:
+        filters: list[Any] = [
+            CustomerPriceTypeQualitySample.id == sample_id,
+            CustomerPriceTypeQualitySample.version == expected_version,
+        ]
+        if access.role == "quality":
+            filters.append(CustomerPriceTypeQualitySample.system_group == "special_review")
+        result = self.session.execute(
+            update(CustomerPriceTypeQualitySample)
+            .where(*filters)
+            .values(
+                correct_group=correct_group,
+                status="reviewed",
+                reviewed_by=reviewed_by,
+                reviewed_at=reviewed_at,
+                comment=comment,
+                version=CustomerPriceTypeQualitySample.version + 1,
+                updated_at=reviewed_at,
+            )
+        )
+        return bool(result.rowcount)
+
+    def quality_population_counts(
+        self,
+        *,
+        run_id: int,
+        access: CustomerPriceTypeAccessScope,
+    ) -> dict[str, int]:
+        system_group = case(
+            (CustomerPriceTypeSnapshot.action_required.is_(False), "no_action"),
+            else_=CustomerPriceTypeSnapshot.case_type,
+        )
+        statement = (
+            select(system_group.label("system_group"), func.count())
+            .join(
+                CustomerPriceTypeProfile,
+                CustomerPriceTypeProfile.id == CustomerPriceTypeSnapshot.profile_id,
+            )
+            .where(
+                CustomerPriceTypeSnapshot.run_id == run_id,
+                CustomerPriceTypeProfile.is_service_card.is_(False),
+            )
+            .group_by(system_group)
+        )
+        if access.role == "quality":
+            statement = statement.where(system_group == "special_review")
+        return {
+            str(group): int(count)
+            for group, count in self.session.execute(statement)
+            if group in QUALITY_GROUPS
+        }
 
     def quality_samples_for_metrics(
         self,

@@ -5,6 +5,7 @@ import {
   fetchCptCaseDetail,
   fetchCptCases,
   fetchCptQualityMetrics,
+  fetchCptQualitySampleDetail,
   fetchCptQualitySamples,
   fetchCptSummary,
   fetchCptWorklists,
@@ -382,7 +383,8 @@ const primaryActionButton: CSSProperties = {
   boxShadow: "0 4px 12px rgba(37, 99, 235, 0.3)",
 };
 
-function percent(value: number): string {
+function percent(value: number | null | undefined): string {
+  if (value == null) return "—";
   return `${(value * 100).toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`;
 }
 
@@ -392,6 +394,7 @@ function QualityModule({ role }: { role?: string }) {
   const [statusFilter, setStatusFilter] = useState<"pending" | "reviewed" | null>("pending");
   const [groups, setGroups] = useState<Record<number, CptQualityGroup>>({});
   const [comments, setComments] = useState<Record<number, string>>({});
+  const [expandedSampleId, setExpandedSampleId] = useState<number | null>(null);
   const canPrepare = role === "internal" || role === "network_head";
 
   const metricsQuery = useQuery({
@@ -401,6 +404,11 @@ function QualityModule({ role }: { role?: string }) {
   const samplesQuery = useQuery({
     queryKey: ["cpt", "quality", "samples", statusFilter],
     queryFn: () => fetchCptQualitySamples({ status: statusFilter }),
+  });
+  const sampleDetailQuery = useQuery({
+    queryKey: ["cpt", "quality", "sample", expandedSampleId],
+    queryFn: () => fetchCptQualitySampleDetail(expandedSampleId as number),
+    enabled: expandedSampleId != null,
   });
   const refreshQuality = async () => {
     await Promise.all([
@@ -429,6 +437,7 @@ function QualityModule({ role }: { role?: string }) {
   return (
     <>
       <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12 }}>
+        <Tile label="Клиентов в срезе" value={metrics?.population_count} loading={metricsQuery.isLoading} />
         <Tile label="Подготовлено" value={metrics?.selected_count} loading={metricsQuery.isLoading} />
         <Tile label="Проверено" value={metrics?.reviewed_count} loading={metricsQuery.isLoading} />
         <div style={card}>
@@ -444,6 +453,12 @@ function QualityModule({ role }: { role?: string }) {
           <div style={{ fontSize: 13, opacity: 0.85 }}>Ошибочных понижений</div>
         </div>
       </section>
+
+      {metrics && !metrics.metrics_ready && metrics.selected_count > 0 && (
+        <p style={{ ...card, margin: 0, borderColor: "var(--color-warning, #f79009)", color: "var(--color-text-muted, #667085)", fontSize: 13 }}>
+          Метрики предварительные: итоговая оценка появится после проверки всей контрольной выборки.
+        </p>
+      )}
 
       {canPrepare && (
         <section style={{ ...card, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
@@ -498,10 +513,56 @@ function QualityModule({ role }: { role?: string }) {
               </div>
               <div style={{ fontSize: 13 }}>
                 <strong>{recommendationLabel(sample.system_recommendation)}</strong>
+                <div style={{ marginTop: 3 }}>
+                  Текущий тип: <strong>{sample.current_price_type ?? "—"}</strong> · Рекомендуемый: <strong>{sample.recommended_price_type ?? "—"}</strong>
+                </div>
                 <div style={{ marginTop: 3, color: "var(--color-text-muted, #667085)" }}>{reasonLabel(sample.recommendation_reason)}</div>
                 {sample.stop_factors.length > 0 && <div style={{ marginTop: 3, color: "var(--color-text-muted, #667085)" }}>Ограничения: {sample.stop_factors.map(factorLabel).join("; ")}</div>}
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 1fr) minmax(260px, 2fr) auto", gap: 10, alignItems: "end" }}>
+              <div>
+                <button type="button" onClick={() => setExpandedSampleId((current) => current === sample.id ? null : sample.id)} style={secondaryButton}>
+                  {expandedSampleId === sample.id ? "Скрыть исходные данные" : "Показать исходные данные"}
+                </button>
+              </div>
+              {expandedSampleId === sample.id && (
+                <div style={{ ...card, padding: 12, background: "var(--color-surface-muted, #f8fafc)", display: "grid", gap: 10 }}>
+                  {sampleDetailQuery.isLoading && <span>Загрузка исходных данных…</span>}
+                  {sampleDetailQuery.isError && <span style={{ color: "var(--color-danger, #d92d20)" }}>Не удалось загрузить исходные данные.</span>}
+                  {sampleDetailQuery.data && (
+                    <>
+                      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 8 }}>
+                        <Row k="Подразделение" v={sampleDetailQuery.data.profile.department_name ?? "—"} />
+                        <Row k="Ответственный" v={sampleDetailQuery.data.profile.owner_name ?? "—"} />
+                        <Row k="Статус источника" v={statusLabel(sampleDetailQuery.data.snapshot.source_status)} />
+                        <Row k="Тип проверки" v={sampleDetailQuery.data.snapshot.review_type ? reasonLabel(sampleDetailQuery.data.snapshot.review_type) : "—"} />
+                        {sampleDetailQuery.data.snapshot.money_visible ? (
+                          <>
+                            <Row k="Оборот за 3 месяца" v={money(sampleDetailQuery.data.snapshot.total_3m)} />
+                            <Row k="Последний месяц" v={money(sampleDetailQuery.data.snapshot.last_month)} />
+                          </>
+                        ) : (
+                          <Row k="Денежные показатели" v="скрыты по роли" />
+                        )}
+                      </div>
+                      {sampleDetailQuery.data.snapshot.money_visible && sampleDetailQuery.data.snapshot.monthly_sales && (
+                        <div>
+                          <strong style={{ fontSize: 13 }}>Продажи по месяцам</strong>
+                          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginTop: 4, fontSize: 13 }}>
+                            {Object.entries(sampleDetailQuery.data.snapshot.monthly_sales).map(([month, value]) => <span key={month}>{month}: <strong>{money(value)}</strong></span>)}
+                          </div>
+                        </div>
+                      )}
+                      {sampleDetailQuery.data.snapshot.conflicts.length > 0 && <div style={{ fontSize: 13 }}>Конфликты данных: {sampleDetailQuery.data.snapshot.conflicts.map(reasonLabel).join("; ")}</div>}
+                      {sampleDetailQuery.data.profile.master_data_flags.length > 0 && <div style={{ fontSize: 13 }}>Признаки справочника: {sampleDetailQuery.data.profile.master_data_flags.map(reasonLabel).join("; ")}</div>}
+                      <EvidenceBlock title="История" value={sampleDetailQuery.data.snapshot.history} />
+                      <EvidenceBlock title="Возвраты" value={sampleDetailQuery.data.snapshot.returns} />
+                      {sampleDetailQuery.data.snapshot.money_visible && <EvidenceBlock title="Экономика" value={sampleDetailQuery.data.snapshot.economics} />}
+                      {sampleDetailQuery.data.snapshot.money_visible && <EvidenceBlock title="Оплаты" value={sampleDetailQuery.data.snapshot.payments} />}
+                    </>
+                  )}
+                </div>
+              )}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10, alignItems: "end" }}>
                 <label style={{ display: "grid", gap: 4, fontSize: 13 }}>
                   Правильная очередь
                   <select value={selectedGroup} onChange={(event) => setGroups((current) => ({ ...current, [sample.id]: event.target.value as CptQualityGroup }))} style={{ minHeight: 38, padding: "0 10px", border: "1px solid var(--color-border, #d0d5dd)", borderRadius: 8, background: "var(--color-surface, #fff)" }}>
@@ -527,12 +588,12 @@ function QualityModule({ role }: { role?: string }) {
           <strong>Качество по очередям</strong>
           <div style={{ overflowX: "auto" }}>
             <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 680 }}>
-              <thead><tr><th style={th}>Очередь</th><th style={th}>Проверено</th><th style={th}>Точность</th><th style={th}>Полнота</th><th style={th}>Ложные</th><th style={th}>Пропущенные</th></tr></thead>
+              <thead><tr><th style={th}>Очередь</th><th style={th}>Срез / выборка / проверено</th><th style={th}>Точность</th><th style={th}>Полнота</th><th style={th}>Ложные</th><th style={th}>Пропущенные</th></tr></thead>
               <tbody>
                 {QUALITY_GROUPS.map((group) => {
                   const item = metrics.groups[group];
-                  if (!item?.reviewed_count && !item?.false_negative) return null;
-                  return <tr key={group}><td style={td}>{QUALITY_GROUP_LABELS[group]}</td><td style={td}>{item.reviewed_count}</td><td style={td}>{percent(item.precision)}</td><td style={td}>{percent(item.recall)}</td><td style={td}>{item.false_positive}</td><td style={td}>{item.false_negative}</td></tr>;
+                  if (!item || (item.population_count === 0 && item.selected_count === 0)) return null;
+                  return <tr key={group}><td style={td}>{QUALITY_GROUP_LABELS[group]}</td><td style={td}>{item.population_count} / {item.selected_count} / {item.reviewed_count}</td><td style={td}>{percent(item.precision)}</td><td style={td}>{percent(item.recall)}</td><td style={td}>{item.false_positive}</td><td style={td}>{item.false_negative}</td></tr>;
                 })}
               </tbody>
             </table>
@@ -540,6 +601,18 @@ function QualityModule({ role }: { role?: string }) {
         </section>
       )}
     </>
+  );
+}
+
+function EvidenceBlock({ title, value }: { title: string; value: Record<string, unknown> | null }) {
+  if (!value || Object.keys(value).length === 0) return null;
+  return (
+    <details style={{ fontSize: 13 }}>
+      <summary style={{ cursor: "pointer", fontWeight: 700 }}>{title}</summary>
+      <pre style={{ margin: "8px 0 0", padding: 10, overflowX: "auto", borderRadius: 8, background: "var(--color-surface, #fff)", whiteSpace: "pre-wrap" }}>
+        {JSON.stringify(value, null, 2)}
+      </pre>
+    </details>
   );
 }
 

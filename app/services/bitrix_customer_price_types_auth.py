@@ -53,6 +53,7 @@ _MONEY_ROLES = frozenset({"network_head", "finance"})
 class BitrixUser:
     user_id: str
     name: str | None
+    department_ids: tuple[str, ...] = ()
 
 
 def _b64_encode(raw: bytes) -> str:
@@ -157,7 +158,52 @@ def load_bitrix_current_user(
         )
         or None
     )
-    return BitrixUser(user_id=str(result["ID"]).strip(), name=name)
+    department_ids = tuple(item for item in _as_string_list(result.get("UF_DEPARTMENT")) if item)
+    return BitrixUser(user_id=str(result["ID"]).strip(), name=name, department_ids=department_ids)
+
+
+def load_bitrix_headed_department_ids(
+    *,
+    domain: str,
+    access_token: str,
+    user_id: str,
+    settings: Settings | None = None,
+) -> tuple[str, ...]:
+    """Return Bitrix department IDs headed by ``user_id`` (``department.get`` UF_HEAD).
+
+    Lets the department_head role resolve by position instead of by a static user
+    list. Failures degrade to an empty set so membership-based roles still resolve;
+    requires the embedded app to hold the ``department`` REST scope.
+    """
+    settings = settings or get_settings()
+    normalized_domain = normalize_bitrix_domain(domain)
+    payload = json.dumps(
+        {"auth": access_token, "FILTER": {"UF_HEAD": str(user_id).strip()}}
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"https://{normalized_domain}/rest/department.get.json",
+        data=payload,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(
+            request,
+            timeout=settings.customer_price_type_bitrix_rest_timeout_seconds,
+        ) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return ()
+    if body.get("error"):
+        return ()
+    result = body.get("result")
+    if not isinstance(result, list):
+        return ()
+    return tuple(
+        str(item.get("ID")).strip()
+        for item in result
+        if isinstance(item, dict) and item.get("ID") not in (None, "")
+    )
 
 
 def _load_access_rules(settings: Settings) -> list[dict[str, Any]]:
@@ -178,35 +224,80 @@ def _load_access_rules(settings: Settings) -> list[dict[str, Any]]:
     return [item for item in items if isinstance(item, dict)]
 
 
-def _scope_from_rule(rule: dict[str, Any], *, actor: str) -> CustomerPriceTypeAccessScope:
-    role = str(rule.get("role") or "").strip()
-    if role not in _KNOWN_ROLES:
-        raise HTTPException(status_code=500, detail=f"unknown customer price-type role: {role}")
-    can_view_money = bool(rule.get("can_view_money", role in _MONEY_ROLES))
-    return CustomerPriceTypeAccessScope(
-        actor=actor,
-        role=role,
-        owner_ref=(str(rule["owner_ref"]).strip().lower() if rule.get("owner_ref") else None),
-        department_refs=tuple(
-            str(item).strip().lower() for item in _as_string_list(rule.get("department_refs"))
-        ),
-        can_view_money=can_view_money,
-    )
+def _rule_department_ids(rule: dict[str, Any]) -> set[str]:
+    return _normal_set(_as_string_list(rule.get("department_ids")))
 
 
 def resolve_customer_price_type_access(
     *,
     bitrix_user_id: str,
+    department_ids: tuple[str, ...] | list[str] = (),
+    headed_department_ids: tuple[str, ...] | list[str] = (),
     settings: Settings | None = None,
 ) -> CustomerPriceTypeAccessScope:
+    """Map a Bitrix user to a read-only scope by ORG POSITION, not by a user list.
+
+    v1 grants access only to management roles: network head (member of a top
+    management department), department head (heads a mapped Bitrix department),
+    finance / master_data / quality (member of the matching department). A small
+    break-glass full-access user list is still honoured for rollout / IT admins.
+    Regular members without a management position get 403. Access follows Bitrix
+    staffing automatically, so no per-person list needs maintaining.
+    """
     settings = settings or get_settings()
     user_id = str(bitrix_user_id).strip()
     actor = f"bitrix:{user_id}"
+
+    # Break-glass admin override (rollout / IT); the primary mechanism is position.
     if user_id.lower() in _normal_set(settings.customer_price_type_bitrix_full_access_user_ids):
         return CustomerPriceTypeAccessScope(actor=actor, role="network_head", can_view_money=True)
-    for rule in _load_access_rules(settings):
-        if user_id.lower() in _normal_set(_as_string_list(rule.get("bitrix_user_ids"))):
-            return _scope_from_rule(rule, actor=actor)
+
+    member_depts = _normal_set(list(department_ids))
+    headed_depts = _normal_set(list(headed_department_ids))
+    rules = _load_access_rules(settings)
+
+    # 1) Network head department -> full portfolio + money.
+    for rule in rules:
+        if str(
+            rule.get("role") or ""
+        ).strip() == "network_head" and member_depts & _rule_department_ids(rule):
+            return CustomerPriceTypeAccessScope(
+                actor=actor, role="network_head", can_view_money=True
+            )
+
+    # 2) Department head -> only their department(s); UF_HEAD mapped to 1C refs.
+    for rule in rules:
+        if str(rule.get("role") or "").strip() != "department_head":
+            continue
+        head_map = rule.get("head_department_refs")
+        if not isinstance(head_map, dict):
+            continue
+        refs: set[str] = set()
+        for bitrix_dept_id, onec_refs in head_map.items():
+            if str(bitrix_dept_id).strip().lower() in headed_depts:
+                refs.update(
+                    item.strip().lower() for item in _as_string_list(onec_refs) if item.strip()
+                )
+        if refs:
+            return CustomerPriceTypeAccessScope(
+                actor=actor,
+                role="department_head",
+                department_refs=tuple(sorted(refs)),
+                can_view_money=bool(rule.get("can_view_money", False)),
+            )
+
+    # 3) Functional management roles by department membership.
+    for rule in rules:
+        role = str(rule.get("role") or "").strip()
+        if role in {"finance", "master_data", "quality"} and member_depts & _rule_department_ids(
+            rule
+        ):
+            return CustomerPriceTypeAccessScope(
+                actor=actor,
+                role=role,
+                can_view_money=bool(rule.get("can_view_money", role in _MONEY_ROLES)),
+            )
+
     raise HTTPException(status_code=403, detail="Нет доступа к витрине типов цен")
 
 

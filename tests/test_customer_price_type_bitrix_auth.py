@@ -108,24 +108,54 @@ def test_resolve_full_access_user():
     assert scope.can_view_money is True
 
 
-def test_resolve_rule_manager_scope():
-    rules = '{"roles":[{"bitrix_user_ids":["42"],"role":"manager","owner_ref":"0xDEAD"}]}'
+def test_resolve_network_head_by_department():
+    rules = '{"roles":[{"role":"network_head","department_ids":["1"]}]}'
     settings = _settings(customer_price_type_access_rules_json=rules)
-    scope = auth.resolve_customer_price_type_access(bitrix_user_id="42", settings=settings)
-    assert scope.role == "manager"
-    assert scope.owner_ref == "0xdead"
-    assert scope.can_view_money is False
+    scope = auth.resolve_customer_price_type_access(
+        bitrix_user_id="42", department_ids=("1",), settings=settings
+    )
+    assert scope.role == "network_head"
+    assert scope.is_full is True
+    assert scope.can_view_money is True
 
 
-def test_resolve_finance_sees_money_by_default():
-    rules = '{"roles":[{"bitrix_user_ids":["9"],"role":"finance"}]}'
+def test_resolve_finance_by_department():
+    rules = '{"roles":[{"role":"finance","department_ids":["12"]}]}'
     settings = _settings(customer_price_type_access_rules_json=rules)
-    scope = auth.resolve_customer_price_type_access(bitrix_user_id="9", settings=settings)
+    scope = auth.resolve_customer_price_type_access(
+        bitrix_user_id="9", department_ids=("12",), settings=settings
+    )
     assert scope.role == "finance"
     assert scope.can_view_money is True
 
 
-def test_resolve_unknown_user_denied():
+def test_resolve_department_head_by_headship():
+    rules = '{"roles":[{"role":"department_head","head_department_refs":{"7":["0xDEAD"]}}]}'
+    settings = _settings(customer_price_type_access_rules_json=rules)
+    scope = auth.resolve_customer_price_type_access(
+        bitrix_user_id="5",
+        department_ids=("7",),
+        headed_department_ids=("7",),
+        settings=settings,
+    )
+    assert scope.role == "department_head"
+    assert scope.department_refs == ("0xdead",)
+    assert scope.can_view_money is False
+    assert scope.is_full is False
+
+
+def test_resolve_regular_member_denied():
+    # member of an unmapped department, heads nothing -> no management position -> 403
+    rules = '{"roles":[{"role":"finance","department_ids":["12"]}]}'
+    settings = _settings(customer_price_type_access_rules_json=rules)
+    with pytest.raises(HTTPException) as info:
+        auth.resolve_customer_price_type_access(
+            bitrix_user_id="77", department_ids=("99",), settings=settings
+        )
+    assert info.value.status_code == 403
+
+
+def test_resolve_no_position_denied():
     settings = _settings()
     with pytest.raises(HTTPException) as info:
         auth.resolve_customer_price_type_access(bitrix_user_id="999", settings=settings)
@@ -138,8 +168,9 @@ def test_session_endpoint_issues_valid_token(monkeypatch):
     monkeypatch.setattr(
         cpt_api,
         "load_bitrix_current_user",
-        lambda **_: auth.BitrixUser(user_id="7", name="Иван Пример"),
+        lambda **_: auth.BitrixUser(user_id="7", name="Иван Пример", department_ids=("1",)),
     )
+    monkeypatch.setattr(cpt_api, "load_bitrix_headed_department_ids", lambda **_: ())
     client = TestClient(app)
     response = client.post(
         "/api/customer-price-types/session",

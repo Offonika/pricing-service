@@ -38,6 +38,7 @@ from app.services.bitrix_customer_price_types_auth import (
     create_customer_price_type_session_token,
     ensure_bitrix_launch_allowed,
     load_bitrix_current_user,
+    load_bitrix_headed_department_ids,
     resolve_customer_price_type_access,
     verify_customer_price_type_session,
 )
@@ -99,7 +100,15 @@ def create_customer_price_type_session(
     user = load_bitrix_current_user(
         domain=domain, access_token=payload.access_token, settings=settings
     )
-    access = resolve_customer_price_type_access(bitrix_user_id=user.user_id, settings=settings)
+    headed = load_bitrix_headed_department_ids(
+        domain=domain, access_token=payload.access_token, user_id=user.user_id, settings=settings
+    )
+    access = resolve_customer_price_type_access(
+        bitrix_user_id=user.user_id,
+        department_ids=user.department_ids,
+        headed_department_ids=headed,
+        settings=settings,
+    )
     token, expires_at_ts = create_customer_price_type_session_token(
         domain=domain,
         member_id=member_id,

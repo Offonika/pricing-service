@@ -268,8 +268,11 @@ Append-only audit trail:
 - один элемент на snapshot, без дублей при повторной подготовке выборки;
 - системная группа и nullable эталонная группа эксперта;
 - состояния `pending / reviewed`, эксперт, комментарий и optimistic version;
+- экспертная оценка сохраняется атомарным compare-and-set по optimistic version;
 - выборка формируется детерминированно по каждой actionable-группе и группе
   `no_action`, чтобы измерять не только precision, но и recall;
+- при расчете recall элементы стратифицированной выборки взвешиваются по отношению
+  размера исходной группы к размеру выборки из этой группы;
 - разметка хранится только в `pricing-service` и не меняет case, Bitrix или 1С.
 
 # Business Rules
@@ -443,6 +446,7 @@ Smart-process не копирует 78+ полей аналитической в
 
 - `POST /api/customer-price-types/quality/samples/prepare`;
 - `GET /api/customer-price-types/quality/samples`;
+- `GET /api/customer-price-types/quality/samples/{sample_id}`;
 - `PUT /api/customer-price-types/quality/samples/{sample_id}`;
 - `GET /api/customer-price-types/quality/metrics`.
 
@@ -513,6 +517,11 @@ Decision=approved_for_manual_1c_update
 - стабильность повторного расчета того же среза;
 - соблюдение stop factors;
 - Bitrix dedupe и 1С readback results.
+
+До завершения всей подготовленной выборки метрики помечаются как предварительные.
+Precision считается внутри системной группы, recall — с весами исходных групп.
+Для ограниченной роли качества доступен precision группы `special_review`, но recall
+не рассчитывается, потому что эта роль не видит false negative из других групп.
 
 Go/no-go первой волны:
 

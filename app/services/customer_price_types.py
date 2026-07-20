@@ -312,18 +312,21 @@ class CustomerPriceTypeQualityService:
         access: CustomerPriceTypeAccessScope,
     ) -> Any:
         self._require_read(access)
-        row = self.repository.get_quality_sample(sample_id, access)
-        if row is None:
-            raise LookupError("quality sample not found")
-        sample, _, _ = row
-        if sample.version != expected_version:
+        reviewed_at = datetime.now(UTC).replace(tzinfo=None)
+        updated = self.repository.update_quality_sample_review(
+            sample_id=sample_id,
+            correct_group=correct_group,
+            comment=comment.strip() if comment and comment.strip() else None,
+            reviewed_by=access.actor,
+            reviewed_at=reviewed_at,
+            expected_version=expected_version,
+            access=access,
+        )
+        if not updated:
+            row = self.repository.get_quality_sample(sample_id, access)
+            if row is None:
+                raise LookupError("quality sample not found")
             raise CustomerPriceTypeQualityConflict("quality sample version is stale")
-        sample.correct_group = correct_group
-        sample.status = "reviewed"
-        sample.reviewed_by = access.actor
-        sample.reviewed_at = datetime.now(UTC).replace(tzinfo=None)
-        sample.comment = comment.strip() if comment and comment.strip() else None
-        sample.version += 1
         self.session.commit()
         return self.repository.get_quality_sample(sample_id, access)
 
@@ -334,6 +337,7 @@ class CustomerPriceTypeQualityService:
         access: CustomerPriceTypeAccessScope,
     ) -> dict[str, Any]:
         self._require_read(access)
+        metrics_scope = "special_review_only" if access.role == "quality" else "portfolio"
         run = self.resolve_run(snapshot_month)
         if run is None:
             return {
@@ -341,6 +345,9 @@ class CustomerPriceTypeQualityService:
                 "snapshot_month": snapshot_month,
                 "ruleset_version": None,
                 "source_status": "missing",
+                "metrics_scope": metrics_scope,
+                "metrics_ready": False,
+                "population_count": 0,
                 "selected_count": 0,
                 "reviewed_count": 0,
                 "coverage": 0.0,
@@ -350,9 +357,26 @@ class CustomerPriceTypeQualityService:
                 "matrix": {},
             }
         rows = self.repository.quality_samples_for_metrics(run_id=run.id, access=access)
+        population_counts = self.repository.quality_population_counts(run_id=run.id, access=access)
         selected_count = len(rows)
         reviewed = [(sample, snapshot) for sample, snapshot in rows if sample.status == "reviewed"]
         reviewed_count = len(reviewed)
+        selected_by_group = {
+            group: sum(sample.system_group == group for sample, _ in rows) for group in self.GROUPS
+        }
+        metrics_ready = (
+            selected_count > 0
+            and reviewed_count == selected_count
+            and all(
+                population_counts.get(group, 0) == 0 or selected_by_group[group] > 0
+                for group in self.GROUPS
+            )
+        )
+
+        def sample_weight(system_group: str) -> float:
+            sampled = selected_by_group.get(system_group, 0)
+            return population_counts.get(system_group, 0) / sampled if sampled else 0.0
+
         matrix: dict[str, dict[str, int]] = {}
         for sample, _ in reviewed:
             truth = str(sample.correct_group)
@@ -375,24 +399,44 @@ class CustomerPriceTypeQualityService:
                 for sample, _ in reviewed
             )
             predicted_count = true_positive + false_positive
-            actual_count = true_positive + false_negative
+            weighted_true_positive = sum(
+                sample_weight(sample.system_group)
+                for sample, _ in reviewed
+                if sample.system_group == group and sample.correct_group == group
+            )
+            weighted_false_negative = sum(
+                sample_weight(sample.system_group)
+                for sample, _ in reviewed
+                if sample.system_group != group and sample.correct_group == group
+            )
+            weighted_actual_count = weighted_true_positive + weighted_false_negative
             groups[group] = {
+                "population_count": population_counts.get(group, 0),
+                "selected_count": selected_by_group[group],
                 "reviewed_count": sum(sample.system_group == group for sample, _ in reviewed),
                 "true_positive": true_positive,
                 "false_positive": false_positive,
                 "false_negative": false_negative,
-                "precision": round(true_positive / predicted_count, 4) if predicted_count else 0.0,
-                "recall": round(true_positive / actual_count, 4) if actual_count else 0.0,
+                "precision": round(true_positive / predicted_count, 4) if predicted_count else None,
+                "recall": (
+                    round(weighted_true_positive / weighted_actual_count, 4)
+                    if metrics_scope == "portfolio" and weighted_actual_count
+                    else None
+                ),
             }
         critical_false_downgrades = sum(
-            snapshot.recommended_price_type
+            1
+            for sample, snapshot in reviewed
+            if snapshot.recommended_price_type is not None
             and snapshot.recommended_price_type != snapshot.current_price_type
             and sample.correct_group == "no_action"
-            for sample, snapshot in reviewed
         )
         overrides = sum(sample.correct_group != sample.system_group for sample, _ in reviewed)
         return {
             **CustomerPriceTypeReadService._run_envelope(run),
+            "metrics_scope": metrics_scope,
+            "metrics_ready": metrics_ready,
+            "population_count": sum(population_counts.values()),
             "selected_count": selected_count,
             "reviewed_count": reviewed_count,
             "coverage": round(reviewed_count / selected_count, 4) if selected_count else 0.0,

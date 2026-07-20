@@ -60,8 +60,11 @@ export interface CptSnapshot {
   run_id: number;
   counterparty_ref: string;
   snapshot_month: string;
+  ruleset_version: string;
   current_price_type: string | null;
   current_level: string | null;
+  price_type_variant: string | null;
+  contract_candidates: Record<string, unknown>[];
   monthly_sales: Record<string, string> | null;
   total_3m: string | null;
   last_month: string | null;
@@ -70,12 +73,17 @@ export interface CptSnapshot {
   returns: Record<string, unknown>;
   history: Record<string, unknown>;
   source_status: string;
+  source_statuses: Record<string, string>;
+  conflicts: string[];
   stop_factors: string[];
   system_recommendation: string;
   recommended_price_type: string | null;
   recommendation_reason: string;
   reasons: string[];
   action_required: boolean;
+  case_type: string | null;
+  review_type: string | null;
+  snapshot_hash: string;
   money_visible: boolean;
 }
 
@@ -135,16 +143,39 @@ export interface CptQualitySampleListResponse extends CptEnvelope {
   payload: CptQualitySample[];
 }
 
+export interface CptQualityProfile {
+  id: number;
+  counterparty_ref: string;
+  counterparty_code: string | null;
+  counterparty_name: string | null;
+  department_ref: string | null;
+  department_name: string | null;
+  owner_ref: string | null;
+  owner_name: string | null;
+  master_data_flags: string[];
+}
+
+export interface CptQualitySampleDetailResponse extends CptEnvelope {
+  sample: CptQualitySample;
+  profile: CptQualityProfile;
+  snapshot: CptSnapshot;
+}
+
 export interface CptQualityGroupMetrics {
+  population_count: number;
+  selected_count: number;
   reviewed_count: number;
   true_positive: number;
   false_positive: number;
   false_negative: number;
-  precision: number;
-  recall: number;
+  precision: number | null;
+  recall: number | null;
 }
 
 export interface CptQualityMetricsResponse extends CptEnvelope {
+  metrics_scope: "portfolio" | "special_review_only";
+  metrics_ready: boolean;
+  population_count: number;
   selected_count: number;
   reviewed_count: number;
   coverage: number;
@@ -221,6 +252,15 @@ export async function fetchCptQualitySamples(options: {
 export async function fetchCptQualityMetrics(): Promise<CptQualityMetricsResponse> {
   const { data } = await api.get<CptQualityMetricsResponse>(
     "/customer-price-types/quality/metrics",
+  );
+  return data;
+}
+
+export async function fetchCptQualitySampleDetail(
+  sampleId: number,
+): Promise<CptQualitySampleDetailResponse> {
+  const { data } = await api.get<CptQualitySampleDetailResponse>(
+    `/customer-price-types/quality/samples/${sampleId}`,
   );
   return data;
 }

@@ -40,7 +40,10 @@ if [[ "$NGINX_PREFLIGHT" == 1 ]]; then
     echo "nginx does not serve UI from the active release link" >&2
     exit 2
   fi
-  nginx_config="$("$NGINX_BIN" -T 2>&1 || true)"
+  if ! nginx_config="$("$NGINX_BIN" -T 2>&1)"; then
+    echo "nginx configuration test failed" >&2
+    exit 2
+  fi
   if [[ "$nginx_config" != *"$ACTIVE_LINK/ui/dist"* ]]; then
     echo "nginx does not serve UI from the active release link" >&2
     exit 2

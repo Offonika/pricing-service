@@ -139,3 +139,52 @@ def test_switch_refuses_candidate_without_a_valid_rollback_target(tmp_path: Path
 
     assert result.returncode == 2
     assert "no valid rollback target" in result.stderr
+
+
+def test_switch_stops_when_nginx_dump_fails_even_if_output_contains_active_path(
+    tmp_path: Path,
+) -> None:
+    previous = tmp_path / "previous"
+    candidate = tmp_path / "candidate"
+    previous.mkdir()
+    (candidate / ".venv/bin").mkdir(parents=True)
+    (candidate / "ui/dist").mkdir(parents=True)
+    fake_python = candidate / ".venv/bin/python"
+    fake_python.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_python.chmod(0o755)
+    (candidate / "ui/dist/index.html").write_text("candidate", encoding="utf-8")
+    (candidate / "release-manifest.json").write_text("{}", encoding="utf-8")
+    (candidate / "requirements.lock").write_text("", encoding="utf-8")
+    active_link = tmp_path / "active"
+    active_link.symlink_to(previous)
+
+    systemctl_log = tmp_path / "systemctl.log"
+    fake_systemctl = tmp_path / "systemctl"
+    fake_systemctl.write_text(
+        '#!/usr/bin/env bash\nprintf \'%s\\n\' "$*" >> "$SYSTEMCTL_LOG"\n',
+        encoding="utf-8",
+    )
+    fake_systemctl.chmod(0o755)
+    fake_nginx = tmp_path / "nginx"
+    fake_nginx.write_text(
+        f"#!/usr/bin/env bash\nprintf 'root {active_link}/ui/dist;\\n'\nexit 1\n",
+        encoding="utf-8",
+    )
+    fake_nginx.chmod(0o755)
+
+    result = _run(
+        [str(SWITCH_SCRIPT), str(candidate)],
+        env={
+            **os.environ,
+            "PRICING_SERVICE_ACTIVE_LINK": str(active_link),
+            "PRICING_SERVICE_SYSTEMCTL_BIN": str(fake_systemctl),
+            "PRICING_SERVICE_SYSTEMD_PREFLIGHT": "0",
+            "PRICING_SERVICE_NGINX_BIN": str(fake_nginx),
+            "SYSTEMCTL_LOG": str(systemctl_log),
+        },
+    )
+
+    assert result.returncode == 2
+    assert "nginx configuration test failed" in result.stderr
+    assert active_link.resolve() == previous
+    assert not systemctl_log.exists()

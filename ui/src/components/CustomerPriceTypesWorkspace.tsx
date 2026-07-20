@@ -176,8 +176,8 @@ export function CustomerPriceTypesWorkspace({
           {bitrixUserName && <div>{bitrixUserName}</div>}
           {role && <div>Роль: {roleLabel(role)}{canViewMoney ? " · суммы доступны" : ""}</div>}
           {canViewQuality && (
-            <button type="button" onClick={() => setSection("quality")} style={{ ...secondaryButton, marginTop: 8 }}>
-              Экспертная оценка
+            <button type="button" onClick={() => setSection("quality")} style={{ ...primaryActionButton, marginTop: 10 }}>
+              Экспертная оценка →
             </button>
           )}
         </div>
@@ -367,6 +367,19 @@ const secondaryButton: CSSProperties = {
   color: "inherit",
   cursor: "pointer",
   font: "inherit",
+};
+
+const primaryActionButton: CSSProperties = {
+  minHeight: 42,
+  padding: "0 16px",
+  borderRadius: 9,
+  border: "1px solid var(--color-primary, #2563eb)",
+  background: "var(--color-primary, #2563eb)",
+  color: "#fff",
+  cursor: "pointer",
+  font: "inherit",
+  fontWeight: 800,
+  boxShadow: "0 4px 12px rgba(37, 99, 235, 0.3)",
 };
 
 function percent(value: number): string {

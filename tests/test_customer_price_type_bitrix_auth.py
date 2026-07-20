@@ -3,11 +3,15 @@ from __future__ import annotations
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
 import app.api.customer_price_types as cpt_api
 from app.core.config import get_settings
 from app.domains.customer_price_types import CustomerPriceTypeAccessScope
 from app.main import app
+from app.models import Base
+from app.models.staff_member import StaffMember
 from app.services import bitrix_customer_price_types_auth as auth
 
 
@@ -144,6 +148,72 @@ def test_resolve_department_head_by_headship():
     assert scope.is_full is False
 
 
+def test_resolve_department_head_reuses_dynamic_department_refs():
+    settings = _settings()
+    scope = auth.resolve_customer_price_type_access(
+        bitrix_user_id="5",
+        headed_department_ids=("3278",),
+        headed_department_refs=("0xABC", "0xDEF"),
+        settings=settings,
+    )
+    assert scope.role == "department_head"
+    assert scope.department_refs == ("0xabc", "0xdef")
+    assert scope.can_view_money is False
+
+
+def test_existing_staff_mapping_resolves_price_type_department_refs():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine) as session:
+            session.add(
+                StaffMember(
+                    source="test",
+                    external_ref="employee-1",
+                    full_name="Иван Пример",
+                    department_ref="0xABC",
+                    department_name="Радиорынок «Электромир»",
+                    employment_status="active",
+                )
+            )
+            session.commit()
+            refs = auth.resolve_customer_price_type_department_refs(
+                session,
+                department_names={"Радиорынок «Электромир»"},
+            )
+        assert "0xabc" in refs
+    finally:
+        engine.dispose()
+
+
+def test_headed_departments_fall_back_to_read_only_webhook(monkeypatch):
+    settings = _settings(bitrix_box_webhook_base="https://hook.example/rest/1/token")
+    calls = []
+
+    def fake_load(*, url, payload, timeout):
+        calls.append((url, payload, timeout))
+        if len(calls) == 1:
+            return []
+        return [{"ID": "3278", "NAME": "Радиорынок «Электромир»"}]
+
+    monkeypatch.setattr(auth, "_load_headed_department_rows", fake_load)
+    departments = auth.load_bitrix_headed_departments(
+        domain="portal.bitrix24.ru",
+        access_token="launch-token",
+        user_id="7",
+        settings=settings,
+    )
+    assert departments == (
+        auth.BitrixDepartment(
+            department_id="3278",
+            name="Радиорынок «Электромир»",
+        ),
+    )
+    assert calls[0][0] == "https://portal.bitrix24.ru/rest/department.get.json"
+    assert calls[1][0] == "https://hook.example/rest/1/token/department.get.json"
+    assert calls[1][1] == {"FILTER": {"UF_HEAD": "7"}}
+
+
 def test_resolve_regular_member_denied():
     # member of an unmapped department, heads nothing -> no management position -> 403
     rules = '{"roles":[{"role":"finance","department_ids":["12"]}]}'
@@ -170,7 +240,12 @@ def test_session_endpoint_issues_valid_token(monkeypatch):
         "load_bitrix_current_user",
         lambda **_: auth.BitrixUser(user_id="7", name="Иван Пример", department_ids=("1",)),
     )
-    monkeypatch.setattr(cpt_api, "load_bitrix_headed_department_ids", lambda **_: ())
+    monkeypatch.setattr(cpt_api, "load_bitrix_headed_departments", lambda **_: ())
+    monkeypatch.setattr(
+        cpt_api,
+        "resolve_customer_price_type_department_refs",
+        lambda *_args, **_kwargs: (),
+    )
     client = TestClient(app)
     response = client.post(
         "/api/customer-price-types/session",

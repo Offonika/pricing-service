@@ -24,10 +24,13 @@ from typing import Any
 
 from fastapi import HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials
+from sqlalchemy.orm import Session
 
 from app.api.dependencies import security
 from app.core.config import Settings, get_settings
 from app.domains.customer_price_types import CustomerPriceTypeAccessScope
+from app.services.bitrix_receivables_auth import resolve_receivable_department_refs_by_names
+from app.services.receivable_department_aliases import expand_receivable_department_refs
 
 _TOKEN_ALG = "HS256"
 _TOKEN_TYP = "MM-CUSTOMER-PRICE-TYPES"
@@ -54,6 +57,12 @@ class BitrixUser:
     user_id: str
     name: str | None
     department_ids: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class BitrixDepartment:
+    department_id: str
+    name: str
 
 
 def _b64_encode(raw: bytes) -> str:
@@ -162,6 +171,72 @@ def load_bitrix_current_user(
     return BitrixUser(user_id=str(result["ID"]).strip(), name=name, department_ids=department_ids)
 
 
+def _department_rows(body: dict[str, Any]) -> list[dict[str, Any]]:
+    if body.get("error"):
+        return []
+    result = body.get("result")
+    if not isinstance(result, list):
+        return []
+    return [item for item in result if isinstance(item, dict)]
+
+
+def _load_headed_department_rows(
+    *,
+    url: str,
+    payload: dict[str, Any],
+    timeout: float,
+) -> list[dict[str, Any]]:
+    request = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return []
+    return _department_rows(body) if isinstance(body, dict) else []
+
+
+def load_bitrix_headed_departments(
+    *,
+    domain: str,
+    access_token: str,
+    user_id: str,
+    settings: Settings | None = None,
+) -> tuple[BitrixDepartment, ...]:
+    """Return departments headed by ``user_id`` using launch auth or webhook fallback.
+
+    Existing local-app installations may not hold the ``department`` scope. In
+    that case use the already configured read-only Box webhook, as the receivables
+    workplace does.
+    """
+    settings = settings or get_settings()
+    normalized_domain = normalize_bitrix_domain(domain)
+    department_filter = {"FILTER": {"UF_HEAD": str(user_id).strip()}}
+    rows = _load_headed_department_rows(
+        url=f"https://{normalized_domain}/rest/department.get.json",
+        payload={"auth": access_token, **department_filter},
+        timeout=settings.customer_price_type_bitrix_rest_timeout_seconds,
+    )
+    if not rows and settings.bitrix_box_webhook_base:
+        rows = _load_headed_department_rows(
+            url=(f"{str(settings.bitrix_box_webhook_base).rstrip('/')}" "/department.get.json"),
+            payload=department_filter,
+            timeout=settings.customer_price_type_bitrix_rest_timeout_seconds,
+        )
+    return tuple(
+        BitrixDepartment(
+            department_id=str(item["ID"]).strip(),
+            name=str(item.get("NAME") or "").strip(),
+        )
+        for item in rows
+        if item.get("ID") not in (None, "") and str(item.get("NAME") or "").strip()
+    )
+
+
 def load_bitrix_headed_department_ids(
     *,
     domain: str,
@@ -169,40 +244,34 @@ def load_bitrix_headed_department_ids(
     user_id: str,
     settings: Settings | None = None,
 ) -> tuple[str, ...]:
-    """Return Bitrix department IDs headed by ``user_id`` (``department.get`` UF_HEAD).
-
-    Lets the department_head role resolve by position instead of by a static user
-    list. Failures degrade to an empty set so membership-based roles still resolve;
-    requires the embedded app to hold the ``department`` REST scope.
-    """
-    settings = settings or get_settings()
-    normalized_domain = normalize_bitrix_domain(domain)
-    payload = json.dumps(
-        {"auth": access_token, "FILTER": {"UF_HEAD": str(user_id).strip()}}
-    ).encode("utf-8")
-    request = urllib.request.Request(
-        f"https://{normalized_domain}/rest/department.get.json",
-        data=payload,
-        headers={"Accept": "application/json", "Content-Type": "application/json"},
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(
-            request,
-            timeout=settings.customer_price_type_bitrix_rest_timeout_seconds,
-        ) as response:
-            body = json.loads(response.read().decode("utf-8"))
-    except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, json.JSONDecodeError):
-        return ()
-    if body.get("error"):
-        return ()
-    result = body.get("result")
-    if not isinstance(result, list):
-        return ()
+    """Compatibility projection for callers that only need Bitrix IDs."""
     return tuple(
-        str(item.get("ID")).strip()
-        for item in result
-        if isinstance(item, dict) and item.get("ID") not in (None, "")
+        item.department_id
+        for item in load_bitrix_headed_departments(
+            domain=domain,
+            access_token=access_token,
+            user_id=user_id,
+            settings=settings,
+        )
+    )
+
+
+def resolve_customer_price_type_department_refs(
+    session: Session,
+    *,
+    department_names: set[str],
+) -> tuple[str, ...]:
+    """Reuse the production receivables/staff mapping from Bitrix names to 1C refs."""
+    normalized_names = {str(name).strip() for name in department_names if str(name).strip()}
+    if not normalized_names:
+        return ()
+    refs = resolve_receivable_department_refs_by_names(session, names=normalized_names)
+    return tuple(
+        sorted(
+            str(ref).strip().lower()
+            for ref in expand_receivable_department_refs(refs, names=normalized_names)
+            if str(ref).strip()
+        )
     )
 
 
@@ -233,6 +302,7 @@ def resolve_customer_price_type_access(
     bitrix_user_id: str,
     department_ids: tuple[str, ...] | list[str] = (),
     headed_department_ids: tuple[str, ...] | list[str] = (),
+    headed_department_refs: tuple[str, ...] | list[str] = (),
     settings: Settings | None = None,
 ) -> CustomerPriceTypeAccessScope:
     """Map a Bitrix user to a read-only scope by ORG POSITION, not by a user list.
@@ -254,6 +324,7 @@ def resolve_customer_price_type_access(
 
     member_depts = _normal_set(list(department_ids))
     headed_depts = _normal_set(list(headed_department_ids))
+    resolved_head_refs = _normal_set(list(headed_department_refs))
     rules = _load_access_rules(settings)
 
     # 1) Network head department -> full portfolio + money.
@@ -265,7 +336,16 @@ def resolve_customer_price_type_access(
                 actor=actor, role="network_head", can_view_money=True
             )
 
-    # 2) Department head -> only their department(s); UF_HEAD mapped to 1C refs.
+    # 2) Department head -> only their department(s). Prefer the existing dynamic
+    # Bitrix/1C mapping; keep the JSON map as a backwards-compatible fallback.
+    if resolved_head_refs:
+        return CustomerPriceTypeAccessScope(
+            actor=actor,
+            role="department_head",
+            department_refs=tuple(sorted(resolved_head_refs)),
+            can_view_money=False,
+        )
+
     for rule in rules:
         if str(rule.get("role") or "").strip() != "department_head":
             continue

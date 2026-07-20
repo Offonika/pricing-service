@@ -456,3 +456,116 @@ def test_specialized_profile_scope_filters_snapshot_history(tmp_path: Path) -> N
     finally:
         app.dependency_overrides = {}
         engine.dispose()
+
+
+def test_quality_sample_review_metrics_idempotency_and_permissions(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'quality-api.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    keep = replace(
+        _facts(302, owner="manager-2", department="department-1"),
+        monthly_sales={
+            **_facts(302, owner="manager-2", department="department-1").monthly_sales,
+            "2026-04": Decimal("1000000"),
+            "2026-05": Decimal("1000000"),
+            "2026-06": Decimal("1000000"),
+        },
+        direct_onec_total_3m=Decimal("3000000"),
+        ledger_total_3m=Decimal("3000000"),
+    )
+    quality_case = replace(
+        _facts(303, owner="manager-3", department="department-1"),
+        return_review_type="quality",
+    )
+    CustomerPriceTypeRunService(factory).execute(
+        [
+            _facts(301, owner="manager-1", department="department-1"),
+            keep,
+            quality_case,
+        ],
+        source_statuses={"contracts": "ready"},
+        run_key="quality-review-run",
+    )
+    network = CustomerPriceTypeAccessScope(
+        actor="network-expert", role="network_head", can_view_money=True
+    )
+    app.dependency_overrides = {
+        get_db: _override_db(factory),
+        require_customer_price_type_access: lambda: network,
+    }
+    try:
+        client = TestClient(app)
+        prepared = client.post(
+            "/api/customer-price-types/quality/samples/prepare",
+            json={"per_group": 2},
+        )
+        assert prepared.status_code == 200, prepared.text
+        assert prepared.json()["created"] == 3
+        assert prepared.json()["total"] == 3
+        repeated = client.post(
+            "/api/customer-price-types/quality/samples/prepare",
+            json={"per_group": 2},
+        )
+        assert repeated.json()["created"] == 0
+        assert repeated.json()["total"] == 3
+
+        samples = client.get("/api/customer-price-types/quality/samples").json()
+        assert samples["total"] == 3
+        isolate = next(item for item in samples["payload"] if item["system_group"] == "isolate")
+        no_action = next(item for item in samples["payload"] if item["system_group"] == "no_action")
+
+        reviewed = client.put(
+            f"/api/customer-price-types/quality/samples/{isolate['id']}",
+            json={
+                "correct_group": "no_action",
+                "comment": "Понижение не требуется",
+                "expected_version": isolate["version"],
+            },
+        )
+        assert reviewed.status_code == 200, reviewed.text
+        assert reviewed.json()["status"] == "reviewed"
+        stale = client.put(
+            f"/api/customer-price-types/quality/samples/{isolate['id']}",
+            json={
+                "correct_group": "isolate",
+                "expected_version": isolate["version"],
+            },
+        )
+        assert stale.status_code == 409
+        assert (
+            client.put(
+                f"/api/customer-price-types/quality/samples/{no_action['id']}",
+                json={
+                    "correct_group": "no_action",
+                    "expected_version": no_action["version"],
+                },
+            ).status_code
+            == 200
+        )
+
+        metrics = client.get("/api/customer-price-types/quality/metrics")
+        assert metrics.status_code == 200
+        body = metrics.json()
+        assert body["selected_count"] == 3
+        assert body["reviewed_count"] == 2
+        assert body["coverage"] == 0.6667
+        assert body["override_rate"] == 0.5
+        assert body["critical_false_downgrade_count"] == 1
+        assert body["groups"]["isolate"]["false_positive"] == 1
+        assert body["groups"]["no_action"]["recall"] == 0.5
+
+        manager = CustomerPriceTypeAccessScope(
+            actor="manager-1", role="manager", owner_ref="manager-1"
+        )
+        app.dependency_overrides[require_customer_price_type_access] = lambda: manager
+        assert client.get("/api/customer-price-types/quality/metrics").status_code == 403
+        assert client.get("/api/customer-price-types/quality/samples").status_code == 403
+        assert (
+            client.post(
+                "/api/customer-price-types/quality/samples/prepare", json={"per_group": 2}
+            ).status_code
+            == 403
+        )
+    finally:
+        app.dependency_overrides = {}
+        engine.dispose()

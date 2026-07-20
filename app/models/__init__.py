@@ -31,6 +31,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         CustomerPriceTypeCase,
         CustomerPriceTypeCaseEvent,
         CustomerPriceTypeProfile,
+        CustomerPriceTypeQualitySample,
         CustomerPriceTypeRun,
         CustomerPriceTypeSnapshot,
     )
@@ -162,6 +163,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "CustomerPriceTypeSnapshot",
         "CustomerPriceTypeCase",
         "CustomerPriceTypeCaseEvent",
+        "CustomerPriceTypeQualitySample",
         "CompetitorFtpFile",
         "CompetitorFtpRawRow",
         "CompetitorFtpRecord",

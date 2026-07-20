@@ -103,6 +103,57 @@ export type CptWorklist =
   | "special_review"
   | "downgrade_approval";
 
+export type CptQualityGroup = CptWorklist | "no_action";
+
+export interface CptQualitySample {
+  id: number;
+  run_id: number;
+  snapshot_id: number;
+  counterparty_ref: string;
+  counterparty_code: string | null;
+  counterparty_name: string | null;
+  current_price_type: string | null;
+  recommended_price_type: string | null;
+  system_recommendation: string;
+  recommendation_reason: string;
+  stop_factors: string[];
+  system_group: CptQualityGroup;
+  correct_group: CptQualityGroup | null;
+  status: "pending" | "reviewed";
+  selected_by: string;
+  selected_at: string;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  comment: string | null;
+  version: number;
+}
+
+export interface CptQualitySampleListResponse extends CptEnvelope {
+  total: number;
+  limit: number;
+  offset: number;
+  payload: CptQualitySample[];
+}
+
+export interface CptQualityGroupMetrics {
+  reviewed_count: number;
+  true_positive: number;
+  false_positive: number;
+  false_negative: number;
+  precision: number;
+  recall: number;
+}
+
+export interface CptQualityMetricsResponse extends CptEnvelope {
+  selected_count: number;
+  reviewed_count: number;
+  coverage: number;
+  override_rate: number;
+  critical_false_downgrade_count: number;
+  groups: Record<string, CptQualityGroupMetrics>;
+  matrix: Record<string, Record<string, number>>;
+}
+
 function monthParams(month?: string | null) {
   return month ? { snapshot_month: month } : {};
 }
@@ -142,5 +193,51 @@ export async function fetchCptCases(options: {
 
 export async function fetchCptCaseDetail(caseId: number): Promise<CptCaseDetailResponse> {
   const { data } = await api.get<CptCaseDetailResponse>(`/customer-price-types/cases/${caseId}`);
+  return data;
+}
+
+export async function prepareCptQualitySamples(perGroup: number) {
+  const { data } = await api.post("/customer-price-types/quality/samples/prepare", {
+    per_group: perGroup,
+  });
+  return data;
+}
+
+export async function fetchCptQualitySamples(options: {
+  status?: "pending" | "reviewed" | null;
+} = {}): Promise<CptQualitySampleListResponse> {
+  const { data } = await api.get<CptQualitySampleListResponse>(
+    "/customer-price-types/quality/samples",
+    {
+      params: {
+        ...(options.status ? { status: options.status } : {}),
+        limit: 500,
+      },
+    },
+  );
+  return data;
+}
+
+export async function fetchCptQualityMetrics(): Promise<CptQualityMetricsResponse> {
+  const { data } = await api.get<CptQualityMetricsResponse>(
+    "/customer-price-types/quality/metrics",
+  );
+  return data;
+}
+
+export async function reviewCptQualitySample(options: {
+  sampleId: number;
+  correctGroup: CptQualityGroup;
+  comment?: string | null;
+  expectedVersion: number;
+}): Promise<CptQualitySample> {
+  const { data } = await api.put<CptQualitySample>(
+    `/customer-price-types/quality/samples/${options.sampleId}`,
+    {
+      correct_group: options.correctGroup,
+      comment: options.comment || null,
+      expected_version: options.expectedVersion,
+    },
+  );
   return data;
 }

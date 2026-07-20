@@ -51,7 +51,6 @@ def test_release_builder_creates_locked_release_specific_runtime(tmp_path: Path)
         "PRICING_SERVICE_SOURCE_ROOT": str(source),
         "PRICING_SERVICE_RELEASE_ROOT": str(release_root),
         "PRICING_SERVICE_BUILD_UI": "0",
-        "PRICING_SERVICE_INSTALL_VENV": "0",
     }
     result = _run([str(BUILD_SCRIPT), "test-release"], env=env)
     assert result.returncode == 0, result.stderr
@@ -65,6 +64,9 @@ def test_release_builder_creates_locked_release_specific_runtime(tmp_path: Path)
     assert len(manifest["pip_freeze_sha256"]) == 64
     assert len(manifest["ui_asset_sha256"]) == 64
     assert (release / ".venv/bin/python").exists()
+    assert (release / ".venv/bin/pip").read_text(encoding="utf-8").splitlines()[0] == (
+        f"#!{release}/.venv/bin/python"
+    )
     assert (release / ".env").resolve() == source / ".env"
     assert (release / "ui/dist/index.html").stat().st_mode & 0o222 == 0
 

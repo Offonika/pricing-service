@@ -278,3 +278,63 @@ class CustomerPriceTypeCaseEvent(Base):
         "metadata", JSON, nullable=False, default=dict
     )
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+
+
+class CustomerPriceTypeQualitySample(Base):
+    __tablename__ = "customer_price_type_quality_sample"
+    __table_args__ = (
+        UniqueConstraint("snapshot_id", name="uq_customer_price_type_quality_sample_snapshot"),
+        CheckConstraint(
+            "system_group IN ('manager_work','isolate','recovery','data_check',"
+            "'special_review','downgrade_approval','no_action')",
+            name="ck_customer_price_type_quality_sample_system_group",
+        ),
+        CheckConstraint(
+            "correct_group IS NULL OR correct_group IN "
+            "('manager_work','isolate','recovery','data_check','special_review',"
+            "'downgrade_approval','no_action')",
+            name="ck_customer_price_type_quality_sample_correct_group",
+        ),
+        CheckConstraint(
+            "status IN ('pending','reviewed')",
+            name="ck_customer_price_type_quality_sample_status",
+        ),
+        CheckConstraint("version > 0", name="ck_customer_price_type_quality_sample_version"),
+        Index(
+            "ix_customer_price_type_quality_sample_run_status",
+            "run_id",
+            "status",
+        ),
+        Index(
+            "ix_customer_price_type_quality_sample_run_group",
+            "run_id",
+            "system_group",
+        ),
+    )
+
+    run_id: Mapped[int] = mapped_column(
+        ForeignKey("customer_price_type_run.id", ondelete="CASCADE"), nullable=False
+    )
+    snapshot_id: Mapped[int] = mapped_column(
+        ForeignKey("customer_price_type_snapshot.id", ondelete="CASCADE"), nullable=False
+    )
+    profile_id: Mapped[int] = mapped_column(
+        ForeignKey("customer_price_type_profile.id", ondelete="CASCADE"), nullable=False
+    )
+    system_group: Mapped[str] = mapped_column(String(64), nullable=False)
+    correct_group: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    selected_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    selected_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    reviewed_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )

@@ -261,6 +261,17 @@ Append-only audit trail:
 - before/after status;
 - comment, metadata и `idempotency_key`.
 
+## `customer_price_type_quality_sample`
+
+Контрольная выборка для shadow-приёмки:
+
+- один элемент на snapshot, без дублей при повторной подготовке выборки;
+- системная группа и nullable эталонная группа эксперта;
+- состояния `pending / reviewed`, эксперт, комментарий и optimistic version;
+- выборка формируется детерминированно по каждой actionable-группе и группе
+  `no_action`, чтобы измерять не только precision, но и recall;
+- разметка хранится только в `pricing-service` и не меняет case, Bitrix или 1С.
+
 # Business Rules
 
 ## Уровни и удержание
@@ -428,6 +439,17 @@ Smart-process не копирует 78+ полей аналитической в
 - `POST /api/customer-price-types/cases/{case_id}/approve`;
 - `POST /api/customer-price-types/exports/dry-run`.
 
+Во время shadow-приёмки доступны отдельные QA endpoints без внешних side effects:
+
+- `POST /api/customer-price-types/quality/samples/prepare`;
+- `GET /api/customer-price-types/quality/samples`;
+- `PUT /api/customer-price-types/quality/samples/{sample_id}`;
+- `GET /api/customer-price-types/quality/metrics`.
+
+Подготовка выборки доступна руководителю сети, разметка всего портфеля —
+руководителю сети, а роль качества ограничена группой специальной проверки.
+Менеджеры не имеют доступа к QA-модулю.
+
 Любая изменяющая команда принимает ожидаемую версию case и snapshot hash.
 Stale update возвращает `409` и не выполняет переход.
 
@@ -528,8 +550,8 @@ Phase 1 реализована как backend-only read-only core. Persisted sna
 
 ## Phase 2 — embedded app shadow mode
 
-- [ ] Реализовать OAuth/session и server-side role scopes.
-- [ ] Реализовать сводку, очереди, detail, history и QA.
+- [x] Реализовать OAuth/session и server-side role scopes.
+- [x] Реализовать сводку, очереди, detail, history и QA.
 - [ ] Провести один полный цикл без Bitrix/1С writes.
 - [ ] Завершить экспертную разметку и рассчитать метрики.
 

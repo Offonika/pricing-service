@@ -29,13 +29,19 @@ if [[ ! -f "$RELEASE_DIR/ui/dist/index.html" ]]; then
 fi
 
 if [[ "$SYSTEMD_PREFLIGHT" == 1 ]]; then
-  if ! "$SYSTEMCTL_BIN" cat "$SERVICE_NAME" | grep -Fq "$ACTIVE_LINK/.venv/bin/python"; then
+  systemd_unit="$("$SYSTEMCTL_BIN" cat "$SERVICE_NAME")"
+  if [[ "$systemd_unit" != *"$ACTIVE_LINK/.venv/bin/python"* ]]; then
     echo "systemd service does not use the release-specific Python" >&2
     exit 2
   fi
 fi
 if [[ "$NGINX_PREFLIGHT" == 1 ]]; then
-  if [[ -z "$NGINX_BIN" ]] || ! "$NGINX_BIN" -T 2>&1 | grep -Fq "$ACTIVE_LINK/ui/dist"; then
+  if [[ -z "$NGINX_BIN" ]]; then
+    echo "nginx does not serve UI from the active release link" >&2
+    exit 2
+  fi
+  nginx_config="$("$NGINX_BIN" -T 2>&1 || true)"
+  if [[ "$nginx_config" != *"$ACTIVE_LINK/ui/dist"* ]]; then
     echo "nginx does not serve UI from the active release link" >&2
     exit 2
   fi

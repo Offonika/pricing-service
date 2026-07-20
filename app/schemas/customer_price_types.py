@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -174,3 +174,80 @@ class CustomerPriceTypeRunResponse(CustomerPriceTypeEnvelope):
     error_summary: str | None = None
     started_at: datetime
     completed_at: datetime | None = None
+
+
+CustomerPriceTypeQualityGroup = Literal[
+    "manager_work",
+    "isolate",
+    "recovery",
+    "data_check",
+    "special_review",
+    "downgrade_approval",
+    "no_action",
+]
+
+
+class CustomerPriceTypeQualityPrepareRequest(BaseModel):
+    snapshot_month: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}$")
+    per_group: int = Field(default=30, ge=1, le=200)
+
+
+class CustomerPriceTypeQualityPrepareResponse(CustomerPriceTypeEnvelope):
+    created: int
+    total: int
+    per_group: int
+
+
+class CustomerPriceTypeQualityReviewRequest(BaseModel):
+    correct_group: CustomerPriceTypeQualityGroup
+    comment: str | None = Field(default=None, max_length=2000)
+    expected_version: int = Field(ge=1)
+
+
+class CustomerPriceTypeQualitySampleResponse(BaseModel):
+    id: int
+    run_id: int
+    snapshot_id: int
+    counterparty_ref: str
+    counterparty_code: str | None = None
+    counterparty_name: str | None = None
+    current_price_type: str | None = None
+    recommended_price_type: str | None = None
+    system_recommendation: str
+    recommendation_reason: str
+    stop_factors: list[str] = Field(default_factory=list)
+    system_group: CustomerPriceTypeQualityGroup
+    correct_group: CustomerPriceTypeQualityGroup | None = None
+    status: Literal["pending", "reviewed"]
+    selected_by: str
+    selected_at: datetime
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
+    comment: str | None = None
+    version: int
+
+
+class CustomerPriceTypeQualitySampleListResponse(CustomerPriceTypeEnvelope):
+    total: int
+    limit: int
+    offset: int
+    payload: list[CustomerPriceTypeQualitySampleResponse] = Field(default_factory=list)
+
+
+class CustomerPriceTypeQualityGroupMetrics(BaseModel):
+    reviewed_count: int
+    true_positive: int
+    false_positive: int
+    false_negative: int
+    precision: float
+    recall: float
+
+
+class CustomerPriceTypeQualityMetricsResponse(CustomerPriceTypeEnvelope):
+    selected_count: int
+    reviewed_count: int
+    coverage: float
+    override_rate: float
+    critical_false_downgrade_count: int
+    groups: dict[str, CustomerPriceTypeQualityGroupMetrics] = Field(default_factory=dict)
+    matrix: dict[str, dict[str, int]] = Field(default_factory=dict)

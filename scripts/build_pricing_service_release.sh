@@ -128,6 +128,16 @@ done
 rm -f "$TEMP_DIR/.env"
 ln -s "$RUNTIME_ENV_FILE" "$TEMP_DIR/.env"
 
+# Console scripts created inside the temporary venv embed its absolute path in
+# their shebang. Rewrite it before the atomic move so tools such as `alembic`
+# remain executable from the final immutable release directory.
+while IFS= read -r -d '' console_script; do
+  if head -n 1 "$console_script" | grep -Fq "#!$TEMP_DIR/.venv/bin/python"; then
+    sed -i "1s|^#!$TEMP_DIR/.venv/bin/python.*$|#!$FINAL_DIR/.venv/bin/python|" \
+      "$console_script"
+  fi
+done < <(find "$TEMP_DIR/.venv/bin" -maxdepth 1 -type f -print0)
+
 python_version="$("$TEMP_DIR/.venv/bin/python" -c 'import platform; print(platform.python_version())')"
 requirements_lock_sha256="$(sha256sum "$TEMP_DIR/requirements.lock" | awk '{print $1}')"
 pip_freeze_sha256="$("$TEMP_DIR/.venv/bin/python" -m pip freeze --all | sha256sum | awk '{print $1}')"
@@ -147,16 +157,24 @@ for path in root.glob("*.py"):
     tree = ast.parse(path.read_text(encoding="utf-8"))
     values = {}
     for node in tree.body:
+        target = None
+        value = None
         if (
             isinstance(node, ast.Assign)
             and len(node.targets) == 1
             and isinstance(node.targets[0], ast.Name)
-            and node.targets[0].id in {"revision", "down_revision"}
         ):
-            try:
-                values[node.targets[0].id] = ast.literal_eval(node.value)
-            except (TypeError, ValueError):
-                pass
+            target = node.targets[0]
+            value = node.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            target = node.target
+            value = node.value
+        if target is None or value is None or target.id not in {"revision", "down_revision"}:
+            continue
+        try:
+            values[target.id] = ast.literal_eval(value)
+        except (TypeError, ValueError):
+            pass
     revision = values.get("revision")
     down_revision = values.get("down_revision")
     if isinstance(revision, str):

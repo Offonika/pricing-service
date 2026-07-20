@@ -4667,6 +4667,173 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/quality/samples/prepare:
+    post:
+      tags:
+      - customer-price-types
+      summary: Prepare Customer Price Type Quality Samples
+      operationId: prepare_customer_price_type_quality_samples_api_customer_price_types_quality_samples_prepare_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerPriceTypeQualityPrepareRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeQualityPrepareResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/customer-price-types/quality/samples:
+    get:
+      tags:
+      - customer-price-types
+      summary: List Customer Price Type Quality Samples
+      operationId: list_customer_price_type_quality_samples_api_customer_price_types_quality_samples_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: snapshot_month
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Snapshot Month
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - pending
+            - reviewed
+            type: string
+          - type: 'null'
+          title: Status
+      - name: group
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - manager_work
+            - isolate
+            - recovery
+            - data_check
+            - special_review
+            - downgrade_approval
+            - no_action
+            type: string
+          - type: 'null'
+          title: Group
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeQualitySampleListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/quality/samples/{sample_id}:
+    put:
+      tags:
+      - customer-price-types
+      summary: Review Customer Price Type Quality Sample
+      operationId: review_customer_price_type_quality_sample_api_customer_price_types_quality_samples__sample_id__put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: sample_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Sample Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerPriceTypeQualityReviewRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeQualitySampleResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/quality/metrics:
+    get:
+      tags:
+      - customer-price-types
+      summary: Get Customer Price Type Quality Metrics
+      operationId: get_customer_price_type_quality_metrics_api_customer_price_types_quality_metrics_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: snapshot_month
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Snapshot Month
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeQualityMetricsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/expertise/sync/cases:
     post:
       summary: Sync Cases
@@ -12088,6 +12255,339 @@ components:
       - is_service_card
       - is_hygiene
       title: CustomerPriceTypeProfileResponse
+    CustomerPriceTypeQualityGroupMetrics:
+      properties:
+        reviewed_count:
+          type: integer
+          title: Reviewed Count
+        true_positive:
+          type: integer
+          title: True Positive
+        false_positive:
+          type: integer
+          title: False Positive
+        false_negative:
+          type: integer
+          title: False Negative
+        precision:
+          type: number
+          title: Precision
+        recall:
+          type: number
+          title: Recall
+      type: object
+      required:
+      - reviewed_count
+      - true_positive
+      - false_positive
+      - false_negative
+      - precision
+      - recall
+      title: CustomerPriceTypeQualityGroupMetrics
+    CustomerPriceTypeQualityMetricsResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        selected_count:
+          type: integer
+          title: Selected Count
+        reviewed_count:
+          type: integer
+          title: Reviewed Count
+        coverage:
+          type: number
+          title: Coverage
+        override_rate:
+          type: number
+          title: Override Rate
+        critical_false_downgrade_count:
+          type: integer
+          title: Critical False Downgrade Count
+        groups:
+          additionalProperties:
+            $ref: '#/components/schemas/CustomerPriceTypeQualityGroupMetrics'
+          type: object
+          title: Groups
+        matrix:
+          additionalProperties:
+            additionalProperties:
+              type: integer
+            type: object
+          type: object
+          title: Matrix
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - selected_count
+      - reviewed_count
+      - coverage
+      - override_rate
+      - critical_false_downgrade_count
+      title: CustomerPriceTypeQualityMetricsResponse
+    CustomerPriceTypeQualityPrepareRequest:
+      properties:
+        snapshot_month:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Snapshot Month
+        per_group:
+          type: integer
+          maximum: 200.0
+          minimum: 1.0
+          title: Per Group
+          default: 30
+      type: object
+      title: CustomerPriceTypeQualityPrepareRequest
+    CustomerPriceTypeQualityPrepareResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        created:
+          type: integer
+          title: Created
+        total:
+          type: integer
+          title: Total
+        per_group:
+          type: integer
+          title: Per Group
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - created
+      - total
+      - per_group
+      title: CustomerPriceTypeQualityPrepareResponse
+    CustomerPriceTypeQualityReviewRequest:
+      properties:
+        correct_group:
+          type: string
+          enum:
+          - manager_work
+          - isolate
+          - recovery
+          - data_check
+          - special_review
+          - downgrade_approval
+          - no_action
+          title: Correct Group
+        comment:
+          anyOf:
+          - type: string
+            maxLength: 2000
+          - type: 'null'
+          title: Comment
+        expected_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Version
+      type: object
+      required:
+      - correct_group
+      - expected_version
+      title: CustomerPriceTypeQualityReviewRequest
+    CustomerPriceTypeQualitySampleListResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        total:
+          type: integer
+          title: Total
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+        payload:
+          items:
+            $ref: '#/components/schemas/CustomerPriceTypeQualitySampleResponse'
+          type: array
+          title: Payload
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - total
+      - limit
+      - offset
+      title: CustomerPriceTypeQualitySampleListResponse
+    CustomerPriceTypeQualitySampleResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        run_id:
+          type: integer
+          title: Run Id
+        snapshot_id:
+          type: integer
+          title: Snapshot Id
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        counterparty_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Code
+        counterparty_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Name
+        current_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Price Type
+        recommended_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Price Type
+        system_recommendation:
+          type: string
+          title: System Recommendation
+        recommendation_reason:
+          type: string
+          title: Recommendation Reason
+        stop_factors:
+          items:
+            type: string
+          type: array
+          title: Stop Factors
+        system_group:
+          type: string
+          enum:
+          - manager_work
+          - isolate
+          - recovery
+          - data_check
+          - special_review
+          - downgrade_approval
+          - no_action
+          title: System Group
+        correct_group:
+          anyOf:
+          - type: string
+            enum:
+            - manager_work
+            - isolate
+            - recovery
+            - data_check
+            - special_review
+            - downgrade_approval
+            - no_action
+          - type: 'null'
+          title: Correct Group
+        status:
+          type: string
+          enum:
+          - pending
+          - reviewed
+          title: Status
+        selected_by:
+          type: string
+          title: Selected By
+        selected_at:
+          type: string
+          format: date-time
+          title: Selected At
+        reviewed_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reviewed By
+        reviewed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Reviewed At
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+        version:
+          type: integer
+          title: Version
+      type: object
+      required:
+      - id
+      - run_id
+      - snapshot_id
+      - counterparty_ref
+      - system_recommendation
+      - recommendation_reason
+      - system_group
+      - status
+      - selected_by
+      - selected_at
+      - version
+      title: CustomerPriceTypeQualitySampleResponse
     CustomerPriceTypeRunResponse:
       properties:
         run_id:

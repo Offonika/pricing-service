@@ -26,6 +26,13 @@ from app.schemas.customer_price_types import (
     CustomerPriceTypeCaseItem,
     CustomerPriceTypeCaseListResponse,
     CustomerPriceTypeProfileResponse,
+    CustomerPriceTypeQualityGroup,
+    CustomerPriceTypeQualityMetricsResponse,
+    CustomerPriceTypeQualityPrepareRequest,
+    CustomerPriceTypeQualityPrepareResponse,
+    CustomerPriceTypeQualityReviewRequest,
+    CustomerPriceTypeQualitySampleListResponse,
+    CustomerPriceTypeQualitySampleResponse,
     CustomerPriceTypeRunResponse,
     CustomerPriceTypeSessionRequest,
     CustomerPriceTypeSessionResponse,
@@ -38,11 +45,14 @@ from app.services.bitrix_customer_price_types_auth import (
     create_customer_price_type_session_token,
     ensure_bitrix_launch_allowed,
     load_bitrix_current_user,
-    load_bitrix_headed_department_ids,
+    load_bitrix_headed_departments,
     resolve_customer_price_type_access,
+    resolve_customer_price_type_department_refs,
     verify_customer_price_type_session,
 )
 from app.services.customer_price_types import (
+    CustomerPriceTypeQualityConflict,
+    CustomerPriceTypeQualityService,
     CustomerPriceTypeReadService,
     internal_customer_price_type_scope,
 )
@@ -92,6 +102,7 @@ Access = Annotated[CustomerPriceTypeAccessScope, Depends(require_customer_price_
 @router.post("/session", response_model=CustomerPriceTypeSessionResponse)
 def create_customer_price_type_session(
     payload: CustomerPriceTypeSessionRequest,
+    db: Session = Depends(get_db),
 ) -> CustomerPriceTypeSessionResponse:
     settings = get_settings()
     domain, member_id = ensure_bitrix_launch_allowed(
@@ -100,13 +111,18 @@ def create_customer_price_type_session(
     user = load_bitrix_current_user(
         domain=domain, access_token=payload.access_token, settings=settings
     )
-    headed = load_bitrix_headed_department_ids(
+    headed_departments = load_bitrix_headed_departments(
         domain=domain, access_token=payload.access_token, user_id=user.user_id, settings=settings
+    )
+    headed_refs = resolve_customer_price_type_department_refs(
+        db,
+        department_names={item.name for item in headed_departments},
     )
     access = resolve_customer_price_type_access(
         bitrix_user_id=user.user_id,
         department_ids=user.department_ids,
-        headed_department_ids=headed,
+        headed_department_ids=tuple(item.department_id for item in headed_departments),
+        headed_department_refs=headed_refs,
         settings=settings,
     )
     token, expires_at_ts = create_customer_price_type_session_token(
@@ -225,6 +241,36 @@ def _case_payload(case, profile, snapshot) -> dict:
         "snapshot_hash": snapshot.snapshot_hash,
         "version": case.version,
     }
+
+
+def _quality_sample_payload(sample, profile, snapshot) -> dict:
+    return {
+        "id": sample.id,
+        "run_id": sample.run_id,
+        "snapshot_id": sample.snapshot_id,
+        "counterparty_ref": profile.counterparty_ref,
+        "counterparty_code": profile.counterparty_code,
+        "counterparty_name": profile.counterparty_name,
+        "current_price_type": snapshot.current_price_type,
+        "recommended_price_type": snapshot.recommended_price_type,
+        "system_recommendation": snapshot.system_recommendation,
+        "recommendation_reason": snapshot.recommendation_reason,
+        "stop_factors": snapshot.stop_factors,
+        "system_group": sample.system_group,
+        "correct_group": sample.correct_group,
+        "status": sample.status,
+        "selected_by": sample.selected_by,
+        "selected_at": sample.selected_at,
+        "reviewed_by": sample.reviewed_by,
+        "reviewed_at": sample.reviewed_at,
+        "comment": sample.comment,
+        "version": sample.version,
+    }
+
+
+def _ensure_quality_read_access(access: CustomerPriceTypeAccessScope) -> None:
+    if access.role not in CustomerPriceTypeQualityService.READ_ROLES:
+        raise HTTPException(status_code=403, detail="customer price-type quality access denied")
 
 
 @router.get("/summary", response_model=CustomerPriceTypeSummaryResponse)
@@ -454,3 +500,135 @@ def get_customer_price_type_run(
             "source_status": row.status,
         }
     )
+
+
+@router.post(
+    "/quality/samples/prepare",
+    response_model=CustomerPriceTypeQualityPrepareResponse,
+)
+def prepare_customer_price_type_quality_samples(
+    payload: CustomerPriceTypeQualityPrepareRequest,
+    access: Access,
+    db: Session = Depends(get_db),
+) -> CustomerPriceTypeQualityPrepareResponse:
+    try:
+        result = CustomerPriceTypeQualityService(db).prepare(
+            snapshot_month=_month(payload.snapshot_month),
+            per_group=payload.per_group,
+            access=access,
+        )
+        return CustomerPriceTypeQualityPrepareResponse.model_validate(result)
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=503, detail="customer price-type storage unavailable"
+        ) from exc
+
+
+@router.get(
+    "/quality/samples",
+    response_model=CustomerPriceTypeQualitySampleListResponse,
+)
+def list_customer_price_type_quality_samples(
+    access: Access,
+    snapshot_month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    status: Literal["pending", "reviewed"] | None = None,
+    group: CustomerPriceTypeQualityGroup | None = None,
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> CustomerPriceTypeQualitySampleListResponse:
+    _ensure_quality_read_access(access)
+    repository = SqlAlchemyCustomerPriceTypeRepository(db)
+    try:
+        run = repository.latest_run(_month(snapshot_month))
+        if run is None:
+            rows, total = [], 0
+        else:
+            rows, total = repository.list_quality_samples(
+                run_id=run.id,
+                access=access,
+                status=status,
+                group=group,
+                limit=limit,
+                offset=offset,
+            )
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503, detail="customer price-type storage unavailable"
+        ) from exc
+    return CustomerPriceTypeQualitySampleListResponse(
+        run_id=run.id if run else None,
+        snapshot_month=run.snapshot_month if run else _month(snapshot_month),
+        ruleset_version=run.ruleset_version if run else None,
+        source_status=run.status if run else "missing",
+        total=total,
+        limit=limit,
+        offset=offset,
+        payload=[
+            CustomerPriceTypeQualitySampleResponse.model_validate(_quality_sample_payload(*row))
+            for row in rows
+        ],
+    )
+
+
+@router.put(
+    "/quality/samples/{sample_id}",
+    response_model=CustomerPriceTypeQualitySampleResponse,
+)
+def review_customer_price_type_quality_sample(
+    sample_id: int,
+    payload: CustomerPriceTypeQualityReviewRequest,
+    access: Access,
+    db: Session = Depends(get_db),
+) -> CustomerPriceTypeQualitySampleResponse:
+    try:
+        row = CustomerPriceTypeQualityService(db).review(
+            sample_id=sample_id,
+            correct_group=payload.correct_group,
+            comment=payload.comment,
+            expected_version=payload.expected_version,
+            access=access,
+        )
+        if row is None:
+            raise LookupError("quality sample not found")
+        return CustomerPriceTypeQualitySampleResponse.model_validate(_quality_sample_payload(*row))
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CustomerPriceTypeQualityConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=503, detail="customer price-type storage unavailable"
+        ) from exc
+
+
+@router.get(
+    "/quality/metrics",
+    response_model=CustomerPriceTypeQualityMetricsResponse,
+)
+def get_customer_price_type_quality_metrics(
+    access: Access,
+    snapshot_month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    db: Session = Depends(get_db),
+) -> CustomerPriceTypeQualityMetricsResponse:
+    try:
+        return CustomerPriceTypeQualityMetricsResponse.model_validate(
+            CustomerPriceTypeQualityService(db).metrics(
+                snapshot_month=_month(snapshot_month), access=access
+            )
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503, detail="customer price-type storage unavailable"
+        ) from exc

@@ -825,7 +825,7 @@ function CustomerPriceTypesApp() {
           {authState.status === "error" && (
             <>
               <p>Нет доступа к витрине типов цен.</p>
-              <small>{authState.message}</small>
+              <small>Обновите страницу в Bitrix24. Если ошибка повторится, обратитесь к администратору.</small>
             </>
           )}
         </div>

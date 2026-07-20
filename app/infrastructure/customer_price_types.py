@@ -8,7 +8,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import false, func, or_, select
+from sqlalchemy import exists, false, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.domains.customer_price_types import (
@@ -21,11 +21,21 @@ from app.models.customer_price_type import (
     CustomerPriceTypeCase,
     CustomerPriceTypeCaseEvent,
     CustomerPriceTypeProfile,
+    CustomerPriceTypeQualitySample,
     CustomerPriceTypeRun,
     CustomerPriceTypeSnapshot,
 )
 
 _BATCH_SIZE = 750
+QUALITY_GROUPS = (
+    "manager_work",
+    "isolate",
+    "recovery",
+    "data_check",
+    "special_review",
+    "downgrade_approval",
+    "no_action",
+)
 
 
 class CustomerPriceTypePersistenceConflict(RuntimeError):
@@ -674,3 +684,192 @@ class SqlAlchemyCustomerPriceTypeRepository:
                 .limit(limit)
             )
         )
+
+    def prepare_quality_samples(
+        self,
+        *,
+        run: CustomerPriceTypeRun,
+        actor: str,
+        per_group: int,
+    ) -> tuple[int, int]:
+        created = 0
+        for group in QUALITY_GROUPS:
+            existing_count = int(
+                self.session.scalar(
+                    select(func.count(CustomerPriceTypeQualitySample.id)).where(
+                        CustomerPriceTypeQualitySample.run_id == run.id,
+                        CustomerPriceTypeQualitySample.system_group == group,
+                    )
+                )
+                or 0
+            )
+            remaining = max(per_group - existing_count, 0)
+            if remaining == 0:
+                continue
+
+            already_selected = exists(
+                select(CustomerPriceTypeQualitySample.id).where(
+                    CustomerPriceTypeQualitySample.snapshot_id == CustomerPriceTypeSnapshot.id
+                )
+            )
+            statement = (
+                select(CustomerPriceTypeSnapshot)
+                .join(
+                    CustomerPriceTypeProfile,
+                    CustomerPriceTypeProfile.id == CustomerPriceTypeSnapshot.profile_id,
+                )
+                .where(
+                    CustomerPriceTypeSnapshot.run_id == run.id,
+                    CustomerPriceTypeProfile.is_service_card.is_(False),
+                    ~already_selected,
+                )
+            )
+            if group == "no_action":
+                statement = statement.where(CustomerPriceTypeSnapshot.action_required.is_(False))
+            else:
+                statement = statement.where(
+                    CustomerPriceTypeSnapshot.action_required.is_(True),
+                    CustomerPriceTypeSnapshot.case_type == group,
+                )
+            snapshots = self.session.scalars(
+                statement.order_by(
+                    CustomerPriceTypeSnapshot.snapshot_hash.asc(),
+                    CustomerPriceTypeSnapshot.id.asc(),
+                ).limit(remaining)
+            ).all()
+            for snapshot in snapshots:
+                self.session.add(
+                    CustomerPriceTypeQualitySample(
+                        run_id=run.id,
+                        snapshot_id=snapshot.id,
+                        profile_id=snapshot.profile_id,
+                        system_group=group,
+                        status="pending",
+                        selected_by=actor,
+                        version=1,
+                    )
+                )
+                created += 1
+        self.session.flush()
+        total = int(
+            self.session.scalar(
+                select(func.count(CustomerPriceTypeQualitySample.id)).where(
+                    CustomerPriceTypeQualitySample.run_id == run.id
+                )
+            )
+            or 0
+        )
+        return created, total
+
+    def list_quality_samples(
+        self,
+        *,
+        run_id: int,
+        access: CustomerPriceTypeAccessScope,
+        status: str | None,
+        group: str | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[
+        list[
+            tuple[
+                CustomerPriceTypeQualitySample,
+                CustomerPriceTypeProfile,
+                CustomerPriceTypeSnapshot,
+            ]
+        ],
+        int,
+    ]:
+        filters: list[Any] = [CustomerPriceTypeQualitySample.run_id == run_id]
+        if status:
+            filters.append(CustomerPriceTypeQualitySample.status == status)
+        if group:
+            filters.append(CustomerPriceTypeQualitySample.system_group == group)
+        if access.role == "quality":
+            filters.append(CustomerPriceTypeQualitySample.system_group == "special_review")
+        base = (
+            select(
+                CustomerPriceTypeQualitySample,
+                CustomerPriceTypeProfile,
+                CustomerPriceTypeSnapshot,
+            )
+            .join(
+                CustomerPriceTypeProfile,
+                CustomerPriceTypeProfile.id == CustomerPriceTypeQualitySample.profile_id,
+            )
+            .join(
+                CustomerPriceTypeSnapshot,
+                CustomerPriceTypeSnapshot.id == CustomerPriceTypeQualitySample.snapshot_id,
+            )
+            .where(*filters)
+        )
+        total = int(
+            self.session.scalar(select(func.count()).select_from(base.order_by(None).subquery()))
+            or 0
+        )
+        rows = self.session.execute(
+            base.order_by(
+                CustomerPriceTypeQualitySample.status.asc(),
+                CustomerPriceTypeQualitySample.system_group.asc(),
+                CustomerPriceTypeProfile.counterparty_name.asc(),
+                CustomerPriceTypeQualitySample.id.asc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        ).all()
+        return [(row[0], row[1], row[2]) for row in rows], total
+
+    def get_quality_sample(
+        self,
+        sample_id: int,
+        access: CustomerPriceTypeAccessScope,
+    ) -> (
+        tuple[
+            CustomerPriceTypeQualitySample,
+            CustomerPriceTypeProfile,
+            CustomerPriceTypeSnapshot,
+        ]
+        | None
+    ):
+        statement = (
+            select(
+                CustomerPriceTypeQualitySample,
+                CustomerPriceTypeProfile,
+                CustomerPriceTypeSnapshot,
+            )
+            .join(
+                CustomerPriceTypeProfile,
+                CustomerPriceTypeProfile.id == CustomerPriceTypeQualitySample.profile_id,
+            )
+            .join(
+                CustomerPriceTypeSnapshot,
+                CustomerPriceTypeSnapshot.id == CustomerPriceTypeQualitySample.snapshot_id,
+            )
+            .where(CustomerPriceTypeQualitySample.id == sample_id)
+        )
+        if access.role == "quality":
+            statement = statement.where(
+                CustomerPriceTypeQualitySample.system_group == "special_review"
+            )
+        row = self.session.execute(statement).first()
+        return (row[0], row[1], row[2]) if row else None
+
+    def quality_samples_for_metrics(
+        self,
+        *,
+        run_id: int,
+        access: CustomerPriceTypeAccessScope,
+    ) -> list[tuple[CustomerPriceTypeQualitySample, CustomerPriceTypeSnapshot]]:
+        statement = (
+            select(CustomerPriceTypeQualitySample, CustomerPriceTypeSnapshot)
+            .join(
+                CustomerPriceTypeSnapshot,
+                CustomerPriceTypeSnapshot.id == CustomerPriceTypeQualitySample.snapshot_id,
+            )
+            .where(CustomerPriceTypeQualitySample.run_id == run_id)
+        )
+        if access.role == "quality":
+            statement = statement.where(
+                CustomerPriceTypeQualitySample.system_group == "special_review"
+            )
+        return [(row[0], row[1]) for row in self.session.execute(statement).all()]

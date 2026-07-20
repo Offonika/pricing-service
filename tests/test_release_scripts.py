@@ -9,6 +9,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILD_SCRIPT = REPO_ROOT / "scripts/build_pricing_service_release.sh"
 SWITCH_SCRIPT = REPO_ROOT / "scripts/switch_pricing_service_release.sh"
+CONTENT_HASH_SCHEME = "sha256-files-v2-no-python-cache"
 
 
 def _run(command: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -19,6 +20,29 @@ def _run(command: list[str], *, env: dict[str, str] | None = None) -> subprocess
         text=True,
         env=env,
     )
+
+
+def _release_content_sha256(release: Path) -> str:
+    result = _run(
+        [
+            "bash",
+            "-c",
+            """
+set -euo pipefail
+cd "$1"
+find . -type f \
+  ! -path './release-manifest.json' \
+  ! -path '*/__pycache__/*' \
+  ! -name '*.pyc' \
+  ! -name '*.pyo' \
+  -print0 | sort -z | xargs -0 sha256sum | sha256sum | awk '{print $1}'
+""",
+            "bash",
+            str(release),
+        ]
+    )
+    assert result.returncode == 0, result.stderr
+    return result.stdout.strip()
 
 
 def test_release_builder_creates_locked_release_specific_runtime(tmp_path: Path) -> None:
@@ -63,6 +87,12 @@ def test_release_builder_creates_locked_release_specific_runtime(tmp_path: Path)
     assert manifest["requirements_lock_sha256"] == hashlib.sha256(b"").hexdigest()
     assert len(manifest["pip_freeze_sha256"]) == 64
     assert len(manifest["ui_asset_sha256"]) == 64
+    assert manifest["content_hash_scheme"] == CONTENT_HASH_SCHEME
+    assert _release_content_sha256(release) == manifest["content_sha256"]
+    runtime_cache = release / "app/__pycache__/runtime.pyc"
+    runtime_cache.parent.mkdir(parents=True)
+    runtime_cache.write_bytes(b"runtime cache")
+    assert _release_content_sha256(release) == manifest["content_sha256"]
     assert (release / ".venv/bin/python").exists()
     assert (release / ".venv/bin/pip").read_text(encoding="utf-8").splitlines()[0] == (
         f"#!{release}/.venv/bin/python"
@@ -188,3 +218,43 @@ def test_switch_stops_when_nginx_dump_fails_even_if_output_contains_active_path(
     assert "nginx configuration test failed" in result.stderr
     assert active_link.resolve() == previous
     assert not systemctl_log.exists()
+
+
+def test_switch_refuses_release_with_content_hash_mismatch(tmp_path: Path) -> None:
+    previous = tmp_path / "previous"
+    candidate = tmp_path / "candidate"
+    previous.mkdir()
+    (candidate / ".venv/bin").mkdir(parents=True)
+    (candidate / "ui/dist").mkdir(parents=True)
+    (candidate / ".venv/bin/python").write_text(
+        "#!/usr/bin/env bash\nexit 0\n",
+        encoding="utf-8",
+    )
+    (candidate / ".venv/bin/python").chmod(0o755)
+    (candidate / "ui/dist/index.html").write_text("candidate", encoding="utf-8")
+    (candidate / "release-manifest.json").write_text(
+        json.dumps(
+            {
+                "content_hash_scheme": CONTENT_HASH_SCHEME,
+                "content_sha256": "0" * 64,
+            }
+        ),
+        encoding="utf-8",
+    )
+    (candidate / "requirements.lock").write_text("", encoding="utf-8")
+    active_link = tmp_path / "active"
+    active_link.symlink_to(previous)
+
+    result = _run(
+        [str(SWITCH_SCRIPT), str(candidate)],
+        env={
+            **os.environ,
+            "PRICING_SERVICE_ACTIVE_LINK": str(active_link),
+            "PRICING_SERVICE_SYSTEMD_PREFLIGHT": "0",
+            "PRICING_SERVICE_NGINX_PREFLIGHT": "0",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "release content hash mismatch" in result.stderr
+    assert active_link.resolve() == previous

@@ -15,6 +15,19 @@ RELEASE_NAME="${1:-architecture-hardening-$(date +%Y%m%d-%H%M%S)}"
 FINAL_DIR="${RELEASE_ROOT}/${RELEASE_NAME}"
 TEMP_DIR="${RELEASE_ROOT}/.${RELEASE_NAME}.tmp.$$"
 
+hash_release_content() {
+  local release_dir="$1"
+  {
+    cd "$release_dir"
+    find . -type f \
+      ! -path './release-manifest.json' \
+      ! -path '*/__pycache__/*' \
+      ! -name '*.pyc' \
+      ! -name '*.pyo' \
+      -print0 | sort -z | xargs -0 sha256sum
+  } | sha256sum | awk '{print $1}'
+}
+
 if [[ ! "$RELEASE_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
   echo "release name contains unsupported characters: $RELEASE_NAME" >&2
   exit 2
@@ -71,6 +84,9 @@ rsync_excludes=(
   --exclude '/reports/'
   --exclude '/ui/node_modules/'
   --exclude '/ui/.vite/'
+  --exclude '__pycache__/'
+  --exclude '*.pyc'
+  --exclude '*.pyo'
   --exclude '/dev.db'
   --exclude '*.sqlite'
   --exclude '*.sqlite-*'
@@ -138,14 +154,14 @@ while IFS= read -r -d '' console_script; do
   fi
 done < <(find "$TEMP_DIR/.venv/bin" -maxdepth 1 -type f -print0)
 
-python_version="$("$TEMP_DIR/.venv/bin/python" -c 'import platform; print(platform.python_version())')"
+python_version="$(PYTHONDONTWRITEBYTECODE=1 "$TEMP_DIR/.venv/bin/python" -c 'import platform; print(platform.python_version())')"
 requirements_lock_sha256="$(sha256sum "$TEMP_DIR/requirements.lock" | awk '{print $1}')"
-pip_freeze_sha256="$("$TEMP_DIR/.venv/bin/python" -m pip freeze --all | sha256sum | awk '{print $1}')"
+pip_freeze_sha256="$(PYTHONDONTWRITEBYTECODE=1 "$TEMP_DIR/.venv/bin/python" -m pip freeze --all | sha256sum | awk '{print $1}')"
 ui_asset_sha256="$({
   cd "$TEMP_DIR/ui/dist"
   find . -type f -print0 | sort -z | xargs -0 sha256sum
 } | sha256sum | awk '{print $1}')"
-alembic_revision="$("$TEMP_DIR/.venv/bin/python" - "$TEMP_DIR/alembic/versions" <<'PY'
+alembic_revision="$(PYTHONDONTWRITEBYTECODE=1 "$TEMP_DIR/.venv/bin/python" - "$TEMP_DIR/alembic/versions" <<'PY'
 import ast
 import pathlib
 import sys
@@ -189,10 +205,7 @@ if len(heads) != 1:
 print(heads[0])
 PY
 )"
-content_sha256="$({
-  cd "$TEMP_DIR"
-  find . -type f -print0 | sort -z | xargs -0 sha256sum
-} | sha256sum | awk '{print $1}')"
+content_sha256="$(hash_release_content "$TEMP_DIR")"
 
 cat >"$TEMP_DIR/release-manifest.json" <<EOF
 {
@@ -208,6 +221,7 @@ cat >"$TEMP_DIR/release-manifest.json" <<EOF
   "pip_freeze_sha256": "$pip_freeze_sha256",
   "ui_asset_sha256": "$ui_asset_sha256",
   "alembic_revision": "$alembic_revision",
+  "content_hash_scheme": "sha256-files-v2-no-python-cache",
   "content_sha256": "$content_sha256"
 }
 EOF

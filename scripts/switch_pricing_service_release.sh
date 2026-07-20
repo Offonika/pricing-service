@@ -9,6 +9,20 @@ NGINX_BIN="${PRICING_SERVICE_NGINX_BIN:-$(command -v nginx || true)}"
 SYSTEMD_PREFLIGHT="${PRICING_SERVICE_SYSTEMD_PREFLIGHT:-1}"
 NGINX_PREFLIGHT="${PRICING_SERVICE_NGINX_PREFLIGHT:-1}"
 FORCE_SMOKE_FAILURE="${PRICING_SERVICE_FORCE_SMOKE_FAILURE:-0}"
+PYTHON_BOOTSTRAP="${PRICING_SERVICE_PYTHON_BOOTSTRAP:-python3}"
+
+hash_release_content() {
+  local release_dir="$1"
+  {
+    cd "$release_dir"
+    find . -type f \
+      ! -path './release-manifest.json' \
+      ! -path '*/__pycache__/*' \
+      ! -name '*.pyc' \
+      ! -name '*.pyo' \
+      -print0 | sort -z | xargs -0 sha256sum
+  } | sha256sum | awk '{print $1}'
+}
 
 if [[ "$RELEASE_DIR" != /* ]] || [[ ! -d "$RELEASE_DIR" ]]; then
   echo "release directory must be an existing absolute path: $RELEASE_DIR" >&2
@@ -25,6 +39,36 @@ if [[ ! -f "$RELEASE_DIR/release-manifest.json" ]] || [[ ! -f "$RELEASE_DIR/requ
 fi
 if [[ ! -f "$RELEASE_DIR/ui/dist/index.html" ]]; then
   echo "release UI is missing: $RELEASE_DIR/ui/dist/index.html" >&2
+  exit 2
+fi
+
+manifest_integrity="$("$PYTHON_BOOTSTRAP" - "$RELEASE_DIR/release-manifest.json" <<'PY'
+import json
+import pathlib
+import sys
+
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+print(
+    f"{manifest.get('content_hash_scheme') or ''}\t"
+    f"{manifest.get('content_sha256') or ''}"
+)
+PY
+)"
+IFS=$'\t' read -r content_hash_scheme expected_content_sha256 <<<"$manifest_integrity"
+if [[ "$content_hash_scheme" == "sha256-files-v2-no-python-cache" ]]; then
+  if [[ ! "$expected_content_sha256" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "release manifest has an invalid content_sha256" >&2
+    exit 2
+  fi
+  actual_content_sha256="$(hash_release_content "$RELEASE_DIR")"
+  if [[ "$actual_content_sha256" != "$expected_content_sha256" ]]; then
+    echo "release content hash mismatch" >&2
+    exit 2
+  fi
+elif [[ -z "$content_hash_scheme" ]]; then
+  echo "warning: legacy release content hash is not runtime-stable; verification skipped" >&2
+else
+  echo "unsupported release content hash scheme: $content_hash_scheme" >&2
   exit 2
 fi
 

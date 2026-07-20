@@ -31,7 +31,7 @@ depends_on:
   - docs/specs/README.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-16"
+updated_at: "2026-07-20"
 ---
 
 # Назначение
@@ -99,7 +99,11 @@ Spec фиксирует вывод TopControl из активного конту
   из нейтрального runtime-каталога.
 - [ ] OpenAPI, manifests, specs, architecture checks и regression tests проходят.
 - [x] Release builder создаёт неизменяемый каталог со своим `.venv`, hash-locked
-  dependencies и manifest hashes.
+  dependencies и manifest hashes; `content_sha256` использует версионированную
+  схему `sha256-files-v2-no-python-cache`, не зависящую от runtime `.pyc`.
+- [x] Release switch проверяет `content_sha256` до изменения active symlink; неизвестная
+  схема или несовпадение digest блокируют переключение, legacy manifest допускается
+  только с явным предупреждением.
 - [x] Forced smoke failure атомарно возвращает прежние backend и UI через один symlink.
 - [ ] Production release переключён с проверенным rollback и без
   удаления активного/rollback targets.
@@ -183,6 +187,7 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 - [x] Усилить management-job/retention validators и MasterMobile OpenAPI parity.
 - [x] Добавить durable orchestration models/API, idempotency и expired-lease guard.
 - [x] Добавить release-specific venv, dependency hashes и единый UI/backend rollback.
+- [x] Исключить Python cache из release digest и проверять v2 digest перед switch.
 - [ ] Прогнать regression, собрать immutable release, smoke и rollback.
 - [ ] После контрольного цикла применить safe retention и удалить deprecated alias
   в следующем релизе.
@@ -208,6 +213,8 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 - Architecture: forbidden imports, direct engines, sibling env/DB/build paths,
   TopControl outside legacy.
 - Regression: full pytest, UI tests, OpenAPI check, Alembic check, docs quality.
+- Release integrity: стабильность `content_sha256` после появления runtime `.pyc` и
+  отказ switch при изменении содержимого кандидата.
 - Smoke: `/health`, matching, receivables, executive dashboard, procurement,
   1C catalog dry-run/sync and weekly KPI dry-run without external delivery.
 
@@ -227,3 +234,4 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 
 - 2026-07-12 — accepted architecture-hardening plan created from live baseline.
 - 2026-07-16 — durable orchestration and atomic release hardening implemented in repository; production cutover remains gated.
+- 2026-07-20 — release digest made stable against Python caches and enforced before atomic switch.

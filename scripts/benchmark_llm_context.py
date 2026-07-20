@@ -384,9 +384,7 @@ def main() -> int:
     summary_path = output_dir / f"summary-{args.mode}.json"
     raw_dir = output_dir / "raw" / args.mode
     if summary_path.exists() or raw_dir.exists():
-        raise ValueError(
-            f"run output already exists for label={args.run_label}, mode={args.mode}"
-        )
+        raise ValueError(f"run output already exists for label={args.run_label}, mode={args.mode}")
     output_dir.mkdir(parents=True, exist_ok=True)
 
     results = []

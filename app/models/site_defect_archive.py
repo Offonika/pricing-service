@@ -47,7 +47,9 @@ class SiteDefectArchiveCase(Base):
     search_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
     extracted_numbers: Mapped[list[str] | None] = mapped_column(JSON, nullable=True)
     extracted_numbers_text: Mapped[str | None] = mapped_column(String(1000), nullable=True)
-    comment_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    comment_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
     file_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     bitrix_entity_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
     bitrix_detail_url: Mapped[str | None] = mapped_column(String(1000), nullable=True)

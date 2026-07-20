@@ -550,8 +550,7 @@ def run_counterparty_duplicate_detection(
     anchor = run_at or datetime.now()
     window_start = anchor - timedelta(hours=settings.counterparty_duplicate_detection_window_hours)
     extractor = CounterpartyDuplicateExtractor(
-        onec_engine
-        or build_application_engine(settings.onec_database_url or "sqlite:///:memory:"),
+        onec_engine or build_application_engine(settings.onec_database_url or "sqlite:///:memory:"),
         sql_text=sql_text or _load_counterparty_duplicate_sql(),
     )
     records = extractor.fetch_rows(window_start=window_start, window_end=anchor)

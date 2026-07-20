@@ -182,9 +182,7 @@ def run_case(
                 "post_test": post_test,
                 "git_status": status.stdout,
                 "clean_against_base": clean,
-                "passed": completed.returncode == 0
-                and post_test["exit_code"] == 0
-                and clean,
+                "passed": completed.returncode == 0 and post_test["exit_code"] == 0 and clean,
             }
         )
     except Exception as exc:

@@ -27,7 +27,9 @@ def parse_args() -> argparse.Namespace:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="Parse and print counters only")
     mode.add_argument("--apply", action="store_true", help="Write/update local DB index")
-    parser.add_argument("--apply-bitrix", action="store_true", help="Also sync Disk folders and CRM items")
+    parser.add_argument(
+        "--apply-bitrix", action="store_true", help="Also sync Disk folders and CRM items"
+    )
     parser.add_argument("--limit", type=int, default=None, help="Limit number of source posts")
     return parser.parse_args()
 

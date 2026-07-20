@@ -36,11 +36,7 @@ class B2BSkuDemandProfile:
     @property
     def active_customer_count(self) -> int:
         return len(
-            {
-                component.counterparty_ref
-                for component in self.components
-                if component.active
-            }
+            {component.counterparty_ref for component in self.components if component.active}
         )
 
     @property
@@ -115,9 +111,7 @@ def load_b2b_customer_demand_profiles(
             B2BCustomerDemandComponent(
                 counterparty_ref=_clean(row.get("counterparty_ref")),
                 activity_status=_clean(row.get("activity_status")),
-                expected_purchase_date=_date_value(
-                    row.get("expected_customer_purchase_date")
-                ),
+                expected_purchase_date=_date_value(row.get("expected_customer_purchase_date")),
                 daily_rate=max(
                     Decimal("0"),
                     _decimal(row.get("recency_weighted_daily_rate")),
@@ -131,8 +125,7 @@ def load_b2b_customer_demand_profiles(
             profile_as_of_exclusive=profile_as_of_exclusive,
             managed_sales_qty_180=sum(
                 (
-                    _decimal(row.get("units_recent_90"))
-                    + _decimal(row.get("units_previous_90"))
+                    _decimal(row.get("units_recent_90")) + _decimal(row.get("units_previous_90"))
                     for row in rows
                     if _clean(row.get("activity_status")) in {"Активный", "Пассивный"}
                 ),
@@ -146,9 +139,7 @@ def load_b2b_customer_demand_profiles(
                 ),
                 Decimal("0"),
             ),
-            dependency_class=_first_nonempty(
-                row.get("dependency_reading") for row in rows
-            ),
+            dependency_class=_first_nonempty(row.get("dependency_reading") for row in rows),
             active_high_tier_share_pct=max(
                 (_decimal(row.get("active_high_tier_share_pct")) for row in rows),
                 default=Decimal("0"),

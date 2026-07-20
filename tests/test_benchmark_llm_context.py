@@ -107,9 +107,7 @@ def test_parse_events_tracks_tool_output_and_warnings() -> None:
                     "type": "item.completed",
                     "item": {
                         "type": "agent_message",
-                        "text": (
-                            "docs/sku_policy.md app/services/sku.py tests/test_sku.py"
-                        ),
+                        "text": ("docs/sku_policy.md app/services/sku.py tests/test_sku.py"),
                     },
                 }
             ),
@@ -144,9 +142,7 @@ def test_baseline_comparison_applies_fixed_gate(tmp_path: Path) -> None:
     benchmark.add_baseline_comparison(summary, baseline, baseline_path)
 
     assert summary["comparison"]["passed"] is True
-    assert summary["comparison"]["limits"]["median_input_tokens"] == pytest.approx(
-        133_159.95
-    )
+    assert summary["comparison"]["limits"]["median_input_tokens"] == pytest.approx(133_159.95)
     assert summary["comparison"]["limits"]["median_tool_calls"] == pytest.approx(11.55)
 
 

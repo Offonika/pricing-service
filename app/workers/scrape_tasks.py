@@ -35,11 +35,7 @@ def run_scrape(
     competitors: {"CompName": ["url1", "url2", ...]}
     limit: max offers total (for quick debugging)
     """
-    engine = (
-        build_application_engine(database_url)
-        if database_url
-        else get_application_engine()
-    )
+    engine = build_application_engine(database_url) if database_url else get_application_engine()
     stats = {"competitors": 0, "offers_saved": 0, "errors": 0}
     with Session(engine) as session:
         # ensure schema exists for in-memory/testing

@@ -674,11 +674,7 @@ def _render_exchange_counterparty_lines(payload: dict[str, Any]) -> list[str]:
         rate_status = str(rate_control.get("status") or "unknown").lower()
         if rate_status != "ok" and mismatch_count > 0:
             total = rate_control.get("total_abs_diff_rub") or rate_control.get("total_diff_rub")
-            items = [
-                item
-                for item in rate_control.get("items") or []
-                if isinstance(item, dict)
-            ][:5]
+            items = [item for item in rate_control.get("items") or [] if isinstance(item, dict)][:5]
             details = []
             for item in items:
                 currency = str(item.get("currency_name") or "вал.").strip()
@@ -700,11 +696,7 @@ def _render_exchange_counterparty_lines(payload: dict[str, Any]) -> list[str]:
                 line = f"{line}; {'; '.join(details)}"
             lines.append(f"{line}.")
 
-    summary = [
-        item
-        for item in payload.get("summary_by_currency") or []
-        if isinstance(item, dict)
-    ]
+    summary = [item for item in payload.get("summary_by_currency") or [] if isinstance(item, dict)]
     if summary:
         summary.sort(
             key=lambda item: (
@@ -719,7 +711,9 @@ def _render_exchange_counterparty_lines(payload: dict[str, Any]) -> list[str]:
             if _is_rub_currency_item(item, prefix="contract_"):
                 parts.append(native)
             else:
-                parts.append(f"{native} (экв. {_format_rub_precise(item.get('current_balance_rub'))})")
+                parts.append(
+                    f"{native} (экв. {_format_rub_precise(item.get('current_balance_rub'))})"
+                )
         lines.append("Обменник остатки по валютам договора: " + "; ".join(parts) + ".")
     return lines
 
@@ -732,9 +726,7 @@ def _render_cash_position_lines(payload: dict[str, Any]) -> list[str]:
         return [f"Остатки денег: {note}."]
 
     summary = [
-        item
-        for item in payload.get("summary_by_category_currency") or []
-        if isinstance(item, dict)
+        item for item in payload.get("summary_by_category_currency") or [] if isinstance(item, dict)
     ]
     if not summary:
         return ["Остатки денег: активных остатков в 1С не найдено."]
@@ -1447,9 +1439,7 @@ def render_management_digest(digest: dict[str, Any]) -> str:
 
     if role_code in FINANCE_CONTROL_ROLE_CODES:
         lines.extend(
-            _render_exchange_counterparty_lines(
-                digest["sections"].get("exchange_counterparty", {})
-            )
+            _render_exchange_counterparty_lines(digest["sections"].get("exchange_counterparty", {}))
         )
         lines.extend(_render_cash_position_lines(digest["sections"].get("cash_position", {})))
 

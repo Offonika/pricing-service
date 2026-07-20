@@ -123,9 +123,7 @@ def test_grouped_dry_run_carries_b2b_advisory_without_changing_order_quantity(
     orders = build_grouped_orders(
         [source],
         [_lead("A", "S1", "0xs1")],
-        nomenclature_by_code={
-            "A": {"nomenclature_ref": "0x00010025901E48EF11E1967C11111111"}
-        },
+        nomenclature_by_code={"A": {"nomenclature_ref": "0x00010025901E48EF11E1967C11111111"}},
         catalog_resolver=lambda guid: BitrixCatalogProduct(
             product_id="10",
             name="Каталожный товар",

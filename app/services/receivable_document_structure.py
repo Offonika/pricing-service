@@ -302,8 +302,7 @@ def _fetch_payment_rows(
                             "basis_ref": _clean_string(row.get("basis_ref")),
                             "basis_kind": (
                                 "order"
-                                if _normalize_ref(row.get("basis_tref")).lower()
-                                == "0x00000084"
+                                if _normalize_ref(row.get("basis_tref")).lower() == "0x00000084"
                                 else "sale"
                             ),
                         }
@@ -367,8 +366,7 @@ def _fetch_settlement_rows(
                             "basis_ref": _clean_string(row.get("basis_ref")),
                             "basis_kind": (
                                 "order"
-                                if _normalize_ref(row.get("basis_tref")).lower()
-                                == "0x00000084"
+                                if _normalize_ref(row.get("basis_tref")).lower() == "0x00000084"
                                 else "sale"
                             ),
                         }

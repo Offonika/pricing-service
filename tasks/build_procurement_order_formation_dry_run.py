@@ -304,9 +304,7 @@ def build_grouped_orders(
                     else None
                 ),
                 "payload": (
-                    {"b2b_customer_demand": b2b_customer_demand}
-                    if b2b_customer_demand
-                    else {}
+                    {"b2b_customer_demand": b2b_customer_demand} if b2b_customer_demand else {}
                 ),
             }
         )
@@ -695,12 +693,8 @@ def _b2b_customer_demand_payload(row: Mapping[str, Any]) -> dict[str, Any]:
         "managed_sales_qty_window": _clean(row.get("b2b_managed_sales_qty_window")),
         "active_daily_rate": _clean(row.get("b2b_active_daily_rate")),
         "client_forecast_qty": _clean(row.get("b2b_client_forecast_qty")),
-        "ordinary_net_sales_qty_window": _clean(
-            row.get("b2b_ordinary_net_sales_qty_window")
-        ),
-        "replacement_target_stock_qty": _clean(
-            row.get("b2b_replacement_target_stock_qty")
-        ),
+        "ordinary_net_sales_qty_window": _clean(row.get("b2b_ordinary_net_sales_qty_window")),
+        "replacement_target_stock_qty": _clean(row.get("b2b_replacement_target_stock_qty")),
         "replacement_decision": _clean(row.get("b2b_replacement_decision")),
         "replacement_recommended_order_qty": _clean(
             row.get("b2b_replacement_recommended_order_qty")

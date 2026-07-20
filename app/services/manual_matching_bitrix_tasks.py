@@ -114,7 +114,9 @@ def render_manual_matching_bitrix_task_description(
     queue_other = max(queue_total - queue_display, 0)
     normalized_focus = (task_focus or "general").strip().lower()
     if normalized_focus == "display":
-        plan_line = f"{manager_name}, план на {report_date.isoformat()}: {plan} ручных решений по дисплеям."
+        plan_line = (
+            f"{manager_name}, план на {report_date.isoformat()}: {plan} ручных решений по дисплеям."
+        )
         work_steps = [
             "1. Открыть интерфейс ручного сопоставления.",
             "2. Поставить фильтр на дисплеи / item_type=display.",

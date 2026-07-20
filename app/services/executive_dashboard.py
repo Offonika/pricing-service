@@ -2244,30 +2244,60 @@ def _profit_loss_inventory_adjustment(
     date_from: date,
     date_to: date,
 ) -> dict[str, Any]:
-    month_start, month_end = _month_bounds(date_to)
-    if date_from != month_start or date_to != month_end:
+    first_month_start = date_from.replace(day=1)
+    _, last_month_end = _month_bounds(date_to)
+    if date_from != first_month_start or date_to != last_month_end:
         return {
             "amount": Decimal("0.00"),
             "source_status": "partial",
-            "note": "Товарные потери включаются только за полный календарный месяц; временно учтено 0 ₽.",
+            "note": (
+                "Товарные потери включаются только за полные календарные месяцы; "
+                "временно учтено 0 ₽."
+            ),
         }
-    if inventory_loss.loss_amount is None:
-        return {
-            "amount": Decimal("0.00"),
-            "source_status": "partial",
-            "note": "Отчёт товарных потерь не содержит итоговой суммы; временно учтено 0 ₽.",
-        }
-    status = (
-        inventory_loss.source_status
-        if inventory_loss.source_status in {"ready", "partial", "stale"}
-        else "partial"
+
+    monthly_losses: list[ExecutiveProfitLossInventoryLoss] = []
+    month_start = first_month_start
+    while month_start <= date_to:
+        month = month_start.strftime("%Y-%m")
+        monthly_losses.append(
+            inventory_loss
+            if inventory_loss.month == month
+            else _profit_loss_inventory_loss(_month_bounds(month_start)[1])
+        )
+        month_start = _profit_loss_next_month(month_start)
+
+    available_losses = [item for item in monthly_losses if item.loss_amount is not None]
+    missing_months = [item.month for item in monthly_losses if item.loss_amount is None]
+    amount = sum(
+        (_decimal(item.loss_amount) for item in available_losses),
+        start=Decimal("0.00"),
     )
+    source_statuses = {item.source_status for item in monthly_losses}
+    if missing_months or source_statuses - {"ready", "stale"}:
+        status = "partial"
+    elif "stale" in source_statuses:
+        status = "stale"
+    else:
+        status = "ready"
+
     prefix = "" if status == "ready" else "Предварительно. "
+    coverage_note = (
+        f"Сумма за {len(available_losses)} из {len(monthly_losses)} полных месяцев. "
+        if missing_months
+        else f"Сумма за {len(monthly_losses)} полных месяцев. "
+    )
+    missing_note = (
+        f"Нет итоговой суммы за: {', '.join(missing_months)}; эти месяцы временно учтены как 0 ₽. "
+        if missing_months
+        else ""
+    )
     return {
-        "amount": _decimal(inventory_loss.loss_amount),
+        "amount": amount,
         "source_status": status,
         "note": (
-            f"{prefix}Списания минус оприходования розничного контура; "
+            f"{prefix}{coverage_note}{missing_note}"
+            "Списания минус оприходования розничного контура; "
             "источник отделён от себестоимости реализованных товаров."
         ),
     }

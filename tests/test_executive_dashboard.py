@@ -22,6 +22,7 @@ from app.models import (
 )
 from app.schemas.executive_dashboard import (
     ExecutiveProfitLossInventoryDataQuality,
+    ExecutiveProfitLossInventoryLoss,
     ExecutiveProfitLossInventoryStore,
 )
 from app.services import bitrix_executive_dashboard_auth, executive_dashboard
@@ -1297,6 +1298,71 @@ def test_profit_loss_subtracts_inventory_loss_and_ready_bp_taxes(
     assert lines["taxes"].amount == Decimal("-40.00")
     assert lines["net_profit"].amount == Decimal("160.00")
     assert {ratio.key for ratio in result.ratios} >= {"net_profit_margin_pct"}
+
+
+def test_profit_loss_sums_inventory_losses_for_all_full_months(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    losses = {
+        "2026-01": Decimal("10.00"),
+        "2026-02": Decimal("20.00"),
+        "2026-03": Decimal("30.00"),
+        "2026-04": Decimal("40.00"),
+        "2026-05": Decimal("50.00"),
+        "2026-06": Decimal("60.00"),
+    }
+
+    monkeypatch.setattr(
+        executive_dashboard,
+        "_profit_loss_inventory_loss",
+        lambda period_end: ExecutiveProfitLossInventoryLoss(
+            month=period_end.strftime("%Y-%m"),
+            source_status="ready",
+            loss_amount=losses[period_end.strftime("%Y-%m")],
+        ),
+    )
+
+    result = executive_dashboard._profit_loss_inventory_adjustment(
+        ExecutiveProfitLossInventoryLoss(
+            month="2026-06",
+            source_status="ready",
+            loss_amount=losses["2026-06"],
+        ),
+        date_from=date(2026, 1, 1),
+        date_to=date(2026, 6, 30),
+    )
+
+    assert result["amount"] == Decimal("210.00")
+    assert result["source_status"] == "ready"
+    assert "6 полных месяцев" in result["note"]
+
+
+def test_profit_loss_keeps_available_inventory_losses_when_month_is_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def load_loss(period_end: date) -> ExecutiveProfitLossInventoryLoss:
+        month = period_end.strftime("%Y-%m")
+        return ExecutiveProfitLossInventoryLoss(
+            month=month,
+            source_status="source_missing" if month == "2026-02" else "ready",
+            loss_amount=None if month == "2026-02" else Decimal("10.00"),
+        )
+
+    monkeypatch.setattr(executive_dashboard, "_profit_loss_inventory_loss", load_loss)
+
+    result = executive_dashboard._profit_loss_inventory_adjustment(
+        ExecutiveProfitLossInventoryLoss(
+            month="2026-03",
+            source_status="ready",
+            loss_amount=Decimal("10.00"),
+        ),
+        date_from=date(2026, 1, 1),
+        date_to=date(2026, 3, 31),
+    )
+
+    assert result["amount"] == Decimal("20.00")
+    assert result["source_status"] == "partial"
+    assert "2026-02" in result["note"]
 
 
 def test_profit_loss_period_marks_missing_inventory_loss_report(

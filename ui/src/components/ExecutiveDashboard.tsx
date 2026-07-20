@@ -2282,7 +2282,7 @@ export function InventoryLossPanel({ data }: { data?: ExecutiveProfitLossInvento
       <header className="executive-inventory-loss__header">
         <div>
           <h3>Товарные потери за месяц</h3>
-          <span>{data.note || "Справочный блок вне расчета операционной прибыли."}</span>
+          <span>{data.note || "Чистые товарные потери включены в расчет операционной прибыли."}</span>
         </div>
         <strong>{`${data.month} · ${statusLabel(data.source_status)}`}</strong>
       </header>
@@ -2580,6 +2580,8 @@ function ProfitLossPeriodPanel({
 
   const grossMargin = profitLossRatioByKey(data, "gross_margin_pct");
   const operatingMargin = profitLossRatioByKey(data, "operating_margin_pct");
+  const netProfitMargin = profitLossRatioByKey(data, "net_profit_margin_pct");
+  const netProfitLine = data?.lines.find((line) => line.key === "net_profit");
   const maxDailyValue = Math.max(
     ...((data?.daily || []).map((row) =>
       Math.max(Math.abs(Number(row.revenue) || 0), Math.abs(Number(row.gross_profit) || 0))
@@ -2649,6 +2651,28 @@ function ProfitLossPeriodPanel({
                 !expenseHasAmounts
                   ? statusLabel(data.expense_source_status)
                   : formatMoney(profitLossTotal(data, "operating_profit"))
+              }
+            />
+            <MetricCard
+              hint={netProfitLine?.note || statusLabel(netProfitLine?.source_status || "source_missing")}
+              label="Чистая прибыль"
+              tone={
+                Number(profitLossTotal(data, "net_profit")) < 0
+                  ? "danger"
+                  : "info"
+              }
+              tooltip="Операционная прибыль с учетом товарных потерь, прочих доходов и расходов и начисленных налогов БП."
+              value={formatMoney(profitLossTotal(data, "net_profit"))}
+            />
+            <MetricCard
+              hint={netProfitMargin?.note || statusLabel(netProfitLine?.source_status || "source_missing")}
+              label={netProfitMargin?.label || "Рентабельность чистой прибыли"}
+              tone={(netProfitMargin?.tone as MetricTone) || "neutral"}
+              tooltip="Чистая прибыль к выручке за выбранный период, %."
+              value={
+                netProfitMargin
+                  ? formatMetricValue(netProfitMargin.value, netProfitMargin.unit)
+                  : statusLabel(netProfitLine?.source_status || "source_missing")
               }
             />
             <MetricCard

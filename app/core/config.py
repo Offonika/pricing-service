@@ -279,6 +279,9 @@ class Settings(BaseSettings):
     executive_management_balance_bp_tax_snapshot_path: str = (
         "/var/lib/mm-data-contracts/executive-dashboard/bp_tax_snapshot.json"
     )
+    executive_dashboard_bp_tax_accrual_root: str = (
+        "/var/lib/mm-data-contracts/executive-dashboard/bp-tax-accruals"
+    )
     executive_management_balance_payroll_snapshot_path: str = (
         "/var/lib/mm-data-contracts/executive-dashboard/employee_payroll_balance_snapshot.json"
     )

@@ -687,6 +687,29 @@ def _is_battery_connector_family(value: str) -> bool:
     )
 
 
+def _is_battery_programmer_flex_family(value: str) -> bool:
+    return bool(
+        re.search(r"\b(?:шлейф|flex)\w*\b", value)
+        and re.search(r"\b(?:программатор|programmer|jcid\s+v1se)\w*\b", value)
+        and re.search(r"\b(?:акб|battery)\b|аккумулятор", value)
+    )
+
+
+def _is_battery_cell_family(value: str) -> bool:
+    return bool(
+        re.search(r"\b(?:ячейк\w*|банк[аиу]?)\b", value)
+        and re.search(r"\b(?:акб|battery)\b|аккумулятор", value)
+    )
+
+
+def _is_phone_battery_family(value: str) -> bool:
+    if not re.search(r"\b(?:акб|battery)\b|аккумулятор", value):
+        return False
+    return device_group(value) in {"phone", "tablet"} or any(
+        token in value for token in PHONE_OR_TABLET_HINT_TOKENS
+    )
+
+
 def catalog_family(text: str | None) -> str | None:
     value = _text(text)
     if not value:
@@ -698,6 +721,10 @@ def catalog_family(text: str | None) -> str | None:
         return "battery_adhesive"
     if _is_battery_connector_family(value):
         return "battery_connector"
+    if _is_battery_programmer_flex_family(value):
+        return "battery_programmer_flex"
+    if _is_battery_cell_family(value):
+        return "battery_cell"
     if re.search(r"\b(usb[-\s]*флеш|флешк|flash\s*drive|usb\s*flash)\b", value):
         return "usb_storage"
     if any(token in value for token in ("внешний аккумулятор", "power bank", "powerbank")):
@@ -889,6 +916,8 @@ def catalog_family(text: str | None) -> str | None:
         return "power_supply"
     if any(token in value for token in ("дата-кабель", "кабель", "type-c", "typec", "lightning")):
         return "cable"
+    if _is_phone_battery_family(value):
+        return "phone_battery"
 
     group = device_group(value)
     if group == "notebook" and any(
@@ -941,6 +970,8 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "battery_activation_board",
         "battery_adhesive",
         "battery_connector",
+        "battery_programmer_flex",
+        "battery_cell",
         "tape",
         "cutting_wire",
         "solder",
@@ -1009,6 +1040,8 @@ def catalog_family_conflict(left: str | None, right: str | None) -> bool:
         "battery_activation_board",
         "battery_adhesive",
         "battery_connector",
+        "battery_programmer_flex",
+        "battery_cell",
         "tape",
         "cutting_wire",
         "solder",

@@ -46,6 +46,25 @@ from app.services.display_quality_raw_mapping import (
 from app.services.embedding_utils import compose_competitor_text
 from app.services.embeddings import EmbeddingClient
 from app.services.llm_fallback import FallbackChatClient
+from app.services.matching_battery import (
+    battery_capacity_conflict as _capacity_conflict,
+)
+from app.services.matching_battery import (
+    battery_part_code_conflict as _battery_part_code_conflict,
+)
+from app.services.matching_battery import (
+    battery_premium_tier_conflict,
+    battery_subject_conflict_reason,
+)
+from app.services.matching_battery import (
+    competitor_battery_part_codes as _competitor_battery_part_codes,
+)
+from app.services.matching_battery import (
+    extract_battery_capacity as _extract_capacity,
+)
+from app.services.matching_battery import (
+    product_battery_part_codes as _product_battery_part_codes,
+)
 from app.services.matching_guardrails import (
     basic_candidate_guardrails,
     catalog_family,
@@ -619,18 +638,6 @@ def _device_conflict(source: str, candidate: str) -> bool:
     return device_group_conflict(source, candidate)
 
 
-def _extract_capacity(text: str | None) -> int | None:
-    if not text:
-        return None
-    match = re.search(r"(\d{3,5})\s*(mah|мач)", text.lower())
-    if not match:
-        return None
-    try:
-        return int(match.group(1))
-    except ValueError:
-        return None
-
-
 OLED_DISPLAY_TYPES = {"OLED", "AMOLED", "Super AMOLED", "Dynamic AMOLED", "LTPO AMOLED"}
 LCD_PIXEL_CONSTRUCTIONS = {"In-Cell", "On-Cell"}
 DISPLAY_MATRIX_VENDOR_TAG_PATTERNS: dict[str, re.Pattern[str]] = {
@@ -769,24 +776,6 @@ def _extract_port_type(text: str | None) -> str | None:
     return None
 
 
-def _capacity_conflict(item_text: str, product_text: str, attrs: dict[str, Any] | None) -> bool:
-    attr_capacity = None
-    if attrs:
-        raw = attrs.get("capacity")
-        if raw:
-            match = re.search(r"(\d{3,5})", str(raw))
-            if match:
-                try:
-                    attr_capacity = int(match.group(1))
-                except ValueError:
-                    attr_capacity = None
-    item_capacity = attr_capacity or _extract_capacity(item_text)
-    product_capacity = _extract_capacity(product_text)
-    if item_capacity and product_capacity:
-        return abs(item_capacity - product_capacity) >= 200
-    return False
-
-
 def _battery_verification_signal(text: str | None) -> bool:
     normalized = (text or "").lower().replace("ё", "е")
     return bool(
@@ -873,71 +862,13 @@ def _safe_iphone_battery_capacity_auto_accept(
     return _product_iphone_enhanced_battery_signal(product.name)
 
 
-def _battery_part_codes_from_text(text: str | None) -> set[str]:
-    normalized = (text or "").lower()
-    codes: set[str] = set()
-    patterns = (
-        r"\bli[0-9][a-z0-9]{8,}\b",
-        r"\bbl-?[0-9]{2}[a-z]{1,4}\b",
-        r"\bblp[0-9]{3,5}\b",
-        r"\bhb[0-9][a-z0-9]{7,}\b",
-        r"\bbm[0-9a-z]{2,5}\b",
-        r"\bbn[0-9a-z]{2,5}\b",
-        r"\bbp[0-9a-z]{2,5}\b",
-    )
-    for pattern in patterns:
-        codes.update(match.group(0).lower() for match in re.finditer(pattern, normalized))
-    return codes
-
-
-def _competitor_battery_part_codes(item: CompetitorItem) -> set[str]:
-    return set().union(
-        *(
-            _battery_part_codes_from_text(value)
-            for value in (item.name, item.normalized_title, item.external_id)
-            if value
-        )
-    )
-
-
-def _product_battery_part_codes(product: Product) -> set[str]:
-    return _battery_part_codes_from_text(product.name)
-
-
-def _battery_part_code_conflict(product: Product, competitor_codes: set[str]) -> bool:
-    product_codes = _product_battery_part_codes(product)
-    return bool(competitor_codes and product_codes and competitor_codes.isdisjoint(product_codes))
-
-
-def _text_has_battery_part_signal(text: str | None) -> bool:
-    normalized = (text or "").lower().replace("ё", "е")
-    return bool(re.search(r"\b(?:акб|battery)\b|аккумулятор", normalized))
-
-
-def _product_has_battery_part_signal(product: Product) -> bool:
-    return _text_has_battery_part_signal(
-        " ".join(
-            str(value)
-            for value in (
-                product.name,
-                product.subject,
-                product.subject_1c,
-                product.subject_generated,
-                product.category,
-            )
-            if value
-        )
-    )
-
-
 def _battery_subject_conflict_reason(item: CompetitorItem, product: Product) -> str | None:
-    if _effective_item_type(item) != "battery":
-        return None
-    if not _text_has_battery_part_signal(_combined_item_text(item)):
-        return None
-    if _product_has_battery_part_signal(product):
-        return None
-    return "battery_vs_non_battery_product"
+    return battery_subject_conflict_reason(
+        item,
+        product,
+        effective_item_type=_effective_item_type(item),
+        item_text=_combined_item_text(item),
+    )
 
 
 def _safe_battery_part_code_model_suggest(
@@ -1026,6 +957,8 @@ def _safe_battery_part_code_auto_accept(
     if _battery_original_100_signal(item_text) or _battery_original_100_signal(product_text):
         return False
     if re.search(r"\bfilling\s+capacity\b", item_text.lower()):
+        return False
+    if battery_premium_tier_conflict(item, product):
         return False
     return _safe_battery_part_code_model_suggest(
         item,
@@ -2517,8 +2450,7 @@ def _is_lower_board_charge_part(text: str | None) -> bool:
     has_board = bool(re.search(r"нижн\w*\s+плат\w*|плат\w*\s+нижн\w*", normalized))
     has_charge_context = bool(
         re.search(
-            r"системн\w*\s+разъ[еe]м\w*|разъ[еe]м\w*\s+зарядк\w*|"
-            r"зарядк\w*|микрофон\w*",
+            r"системн\w*\s+разъ[еe]м\w*|разъ[еe]м\w*\s+зарядк\w*|" r"зарядк\w*|микрофон\w*",
             normalized,
         )
     )

@@ -15076,6 +15076,81 @@ components:
       - key
       - label
       title: ExecutiveProfitLossLineItem
+    ExecutiveProfitLossMonthlyRow:
+      properties:
+        month:
+          type: string
+          title: Month
+        revenue:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Revenue
+          default: '0'
+        gross_profit:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Gross Profit
+        operating_expenses:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Operating Expenses
+        operating_profit:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Operating Profit
+        net_profit:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Net Profit
+        gross_margin_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Gross Margin Pct
+        operating_margin_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Operating Margin Pct
+        net_profit_margin_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Net Profit Margin Pct
+        comparison_net_profit:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Comparison Net Profit
+        source_status:
+          type: string
+          title: Source Status
+          default: source_missing
+        is_preliminary:
+          type: boolean
+          title: Is Preliminary
+          default: true
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+      type: object
+      required:
+      - month
+      title: ExecutiveProfitLossMonthlyRow
     ExecutiveProfitLossOpenQuestion:
       properties:
         key:
@@ -15174,6 +15249,11 @@ components:
             $ref: '#/components/schemas/ExecutiveProfitLossDailyRow'
           type: array
           title: Daily
+        monthly:
+          items:
+            $ref: '#/components/schemas/ExecutiveProfitLossMonthlyRow'
+          type: array
+          title: Monthly
         by_store:
           items:
             $ref: '#/components/schemas/ExecutiveProfitLossBreakdownRow'

@@ -279,6 +279,17 @@ def suspicious_accept_reasons(
     product: Product,
     item: CompetitorItem,
 ) -> list[str]:
+    reasons = pair_conflict_reasons(product=product, item=item)
+
+    if _has_later_negative_decision(db, decision):
+        reasons.append("later_rejected_or_revoked")
+
+    return reasons
+
+
+def pair_conflict_reasons(*, product: Product, item: CompetitorItem) -> list[str]:
+    """Return explainable current-rule conflicts for one product/item pair."""
+
     reasons: list[str] = []
     expected_type = _infer_product_item_type(product)
     item_type = (item.item_type or "").strip().lower()
@@ -292,9 +303,6 @@ def suspicious_accept_reasons(
     is_display_pair = expected_type == "display" or item_type == "display"
     if is_display_pair:
         reasons.extend(_display_conflict_reasons(product, item))
-
-    if _has_later_negative_decision(db, decision):
-        reasons.append("later_rejected_or_revoked")
 
     return reasons
 

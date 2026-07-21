@@ -13,6 +13,7 @@ import {
 describe("русские подписи рабочего места типов цен", () => {
   it("переводит роли, статусы, рекомендации и события", () => {
     expect(roleLabel("network_head")).toBe("Руководитель сети");
+    expect(roleLabel("executive")).toBe("Генеральный директор");
     expect(statusLabel("partial")).toBe("Данные загружены частично");
     expect(statusLabel("not_requested")).toBe("Не запрашивалось");
     expect(recommendationLabel("manager_retention")).toBe("Передать менеджеру на удержание");

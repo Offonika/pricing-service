@@ -223,7 +223,8 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 1. Собрать immutable release из проверенного source tree.
 2. Запустить offline validations и локальный smoke на отдельном порту.
 3. Атомарно переключить `pricing-service-task43-current` и перезапустить service.
-4. Проверить health/OpenAPI/UI/API без Bitrix/Telegram side effects.
+4. Проверить health/OpenAPI/UI/API без Bitrix/Telegram side effects и только
+   после успешного smoke создать immutable marker `.release-verified`.
 5. Наблюдать один ночной catalog sync и один management daily cycle.
 6. При ошибке вернуть symlink на предыдущий verified release; additive migrations
    допускают запуск старого кода.
@@ -232,6 +233,9 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 
 # Changelog
 
+- 2026-07-20 — successful release switch создает `.release-verified`, чтобы
+  ежедневный safe retention мог сохранять active + 3 rollback и удалять только
+  ранее проверенные лишние релизы.
 - 2026-07-12 — accepted architecture-hardening plan created from live baseline.
 - 2026-07-16 — durable orchestration and atomic release hardening implemented in repository; production cutover remains gated.
 - 2026-07-20 — release digest made stable against Python caches and enforced before atomic switch.

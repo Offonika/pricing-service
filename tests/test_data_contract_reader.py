@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from app.infrastructure import contracts
-from app.infrastructure.contract_policies import ContractPolicy
+from app.infrastructure.contract_policies import CONTRACT_POLICIES, ContractPolicy
 from app.infrastructure.contracts import (
     ContractIntegrityError,
     ContractStaleError,
@@ -114,3 +114,33 @@ def test_schema_hash_has_one_release_compatibility_window(
     assert "compatibility window" in caplog.text
     with pytest.raises(ContractIntegrityError, match="schema_sha256 is missing"):
         read_json_contract(path, now=now, require_schema_sha256=True)
+
+
+def test_monthly_bp_tax_contract_path_is_allowlisted() -> None:
+    policy = CONTRACT_POLICIES.get(
+        "executive-dashboard/bp-tax-accruals/2026-06/bp-tax-accruals-2026-06.json"
+    )
+
+    assert policy is not None
+    assert policy.contract_version == "executive-bp-tax-accrual-snapshot.v1"
+    assert (
+        CONTRACT_POLICIES.get(
+            "executive-dashboard/bp-tax-accruals/2026-13/bp-tax-accruals-2026-13.json"
+        )
+        is None
+    )
+
+
+def test_monthly_retail_director_contract_path_is_allowlisted() -> None:
+    policy = CONTRACT_POLICIES.get(
+        "retail-director-monthly/2026-06/retail-director-summary-2026-06.json"
+    )
+
+    assert policy is not None
+    assert policy.contract_version == "retail-director-monthly-snapshot.v2"
+    assert (
+        CONTRACT_POLICIES.get(
+            "retail-director-monthly/2026-06/retail-director-summary-2026-05.json"
+        )
+        is None
+    )

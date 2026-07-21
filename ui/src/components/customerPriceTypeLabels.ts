@@ -1,5 +1,6 @@
 const ROLE_LABELS: Record<string, string> = {
   internal: "Внутренний администратор",
+  executive: "Генеральный директор",
   manager: "Менеджер",
   network_head: "Руководитель сети",
   department_head: "Руководитель подразделения",

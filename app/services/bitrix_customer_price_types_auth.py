@@ -41,6 +41,7 @@ _BEARER_SECURITY = Security(security)
 # Roles understood by the read API scope predicates. Money visibility defaults to
 # full-access and finance only; everyone else sees no monetary fields.
 _KNOWN_ROLES = (
+    "executive",
     "network_head",
     "manager",
     "department_head",
@@ -49,7 +50,7 @@ _KNOWN_ROLES = (
     "finance",
     "integration_operator",
 )
-_MONEY_ROLES = frozenset({"network_head", "finance"})
+_MONEY_ROLES = frozenset({"executive", "network_head", "finance"})
 
 
 @dataclass(frozen=True)
@@ -297,6 +298,10 @@ def _rule_department_ids(rule: dict[str, Any]) -> set[str]:
     return _normal_set(_as_string_list(rule.get("department_ids")))
 
 
+def _rule_headed_department_ids(rule: dict[str, Any]) -> set[str]:
+    return _normal_set(_as_string_list(rule.get("headed_department_ids")))
+
+
 def resolve_customer_price_type_access(
     *,
     bitrix_user_id: str,
@@ -307,12 +312,14 @@ def resolve_customer_price_type_access(
 ) -> CustomerPriceTypeAccessScope:
     """Map a Bitrix user to a read-only scope by ORG POSITION, not by a user list.
 
-    v1 grants access only to management roles: network head (member of a top
-    management department), department head (heads a mapped Bitrix department),
-    finance / master_data / quality (member of the matching department). A small
-    break-glass full-access user list is still honoured for rollout / IT admins.
-    Regular members without a management position get 403. Access follows Bitrix
-    staffing automatically, so no per-person list needs maintaining.
+    v1 grants access only to management roles: executive / network head (heads a
+    configured Bitrix department), department head (heads a mapped Bitrix
+    department), finance / master_data / quality (member of the matching
+    department). The legacy network-head membership rule remains supported for
+    backwards compatibility. A small break-glass full-access user list is still
+    honoured for rollout / IT admins. Regular members without a management
+    position get 403. Access follows Bitrix staffing automatically, so no
+    per-person list needs maintaining.
     """
     settings = settings or get_settings()
     user_id = str(bitrix_user_id).strip()
@@ -327,13 +334,22 @@ def resolve_customer_price_type_access(
     resolved_head_refs = _normal_set(list(headed_department_refs))
     rules = _load_access_rules(settings)
 
-    # 1) Network head department -> full portfolio + money.
+    # 1) Executive / network head position -> full portfolio + money. Prefer
+    # Bitrix UF_HEAD because access then follows a staffing change automatically.
+    # Keep department_ids for compatibility with already deployed rules.
     for rule in rules:
-        if str(
-            rule.get("role") or ""
-        ).strip() == "network_head" and member_depts & _rule_department_ids(rule):
+        role = str(rule.get("role") or "").strip()
+        if role not in {"executive", "network_head"}:
+            continue
+        is_configured_head = bool(headed_depts & _rule_headed_department_ids(rule))
+        is_legacy_network_member = bool(
+            role == "network_head" and member_depts & _rule_department_ids(rule)
+        )
+        if is_configured_head or is_legacy_network_member:
             return CustomerPriceTypeAccessScope(
-                actor=actor, role="network_head", can_view_money=True
+                actor=actor,
+                role=role,
+                can_view_money=bool(rule.get("can_view_money", True)),
             )
 
     # 2) Department head -> only their department(s). Prefer the existing dynamic

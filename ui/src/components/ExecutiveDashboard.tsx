@@ -22,6 +22,7 @@ import {
   type ExecutiveProfitLossBreakdownRow,
   type ExecutiveProfitLossExpenseBreakdownRow,
   type ExecutiveProfitLossInventoryLoss,
+  type ExecutiveProfitLossMonthlyRow,
   type ExecutiveProfitLossOpenQuestion,
   type ExecutiveProfitLossPeriodResponse,
   type ExecutiveProfitLossRatio,
@@ -2282,7 +2283,7 @@ export function InventoryLossPanel({ data }: { data?: ExecutiveProfitLossInvento
       <header className="executive-inventory-loss__header">
         <div>
           <h3>Товарные потери за месяц</h3>
-          <span>{data.note || "Справочный блок вне расчета операционной прибыли."}</span>
+          <span>{data.note || "Чистые товарные потери включены в расчет операционной прибыли."}</span>
         </div>
         <strong>{`${data.month} · ${statusLabel(data.source_status)}`}</strong>
       </header>
@@ -2540,6 +2541,211 @@ export function InventoryLossPanel({ data }: { data?: ExecutiveProfitLossInvento
   );
 }
 
+type ProfitLossChartMode = "profit" | "margin";
+
+function profitLossMonthTooltipLabel(row: ExecutiveProfitLossMonthlyRow) {
+  const quality = row.is_preliminary ? "предварительные данные" : "данные готовы";
+  return [
+    formatMonth(row.month),
+    `валовая прибыль ${formatMoney(row.gross_profit)}`,
+    `операционные расходы ${formatMoney(row.operating_expenses)}`,
+    `операционная прибыль ${formatMoney(row.operating_profit)}`,
+    `чистая прибыль ${formatMoney(row.net_profit)}`,
+    `рентабельность чистой прибыли ${formatPercent(row.net_profit_margin_pct)}`,
+    quality,
+  ].join(", ");
+}
+
+function ProfitLossMonthlyChart({ monthly }: { monthly: ExecutiveProfitLossMonthlyRow[] }) {
+  const [mode, setMode] = useState<ProfitLossChartMode>("profit");
+  const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
+  const width = 1000;
+  const height = 300;
+  const padding = { top: 24, right: 76, bottom: 42, left: 86 };
+  const chartWidth = width - padding.left - padding.right;
+  const chartHeight = height - padding.top - padding.bottom;
+  const bandWidth = monthly.length > 0 ? chartWidth / monthly.length : 0;
+
+  const profitValues = monthly.flatMap((row) => [
+    row.gross_profit,
+    row.operating_profit,
+    row.net_profit,
+    row.comparison_net_profit,
+    numericValue(row.operating_expenses) === null
+      ? null
+      : -Math.abs(numericValue(row.operating_expenses) || 0),
+  ]).map(numericValue).filter((value): value is number => value !== null);
+  const marginValues = monthly.flatMap((row) => [
+    row.gross_margin_pct,
+    row.operating_margin_pct,
+    row.net_profit_margin_pct,
+  ]).map(numericValue).filter((value): value is number => value !== null);
+  const values = mode === "profit" ? profitValues : marginValues;
+  const minValue = Math.min(0, ...values);
+  const maxValue = Math.max(mode === "profit" ? 1 : 0.01, ...values);
+  const pointFor = buildPointScale(
+    monthly.length,
+    padding,
+    chartWidth,
+    chartHeight,
+    minValue,
+    maxValue,
+    mode === "profit" ? 1 : 0.01
+  );
+  const netMarginValues = monthly
+    .map((row) => numericValue(row.net_profit_margin_pct))
+    .filter((value): value is number => value !== null);
+  const netMarginMin = Math.min(0, ...netMarginValues);
+  const netMarginMax = Math.max(0.01, ...netMarginValues);
+  const pointForNetMargin = buildPointScale(
+    monthly.length,
+    padding,
+    chartWidth,
+    chartHeight,
+    netMarginMin,
+    netMarginMax,
+    0.01
+  );
+  const zeroY = pointFor(0, 0).y;
+  const pointsFor = (key: keyof ExecutiveProfitLossMonthlyRow) => monthly.flatMap((row, index) => {
+    const value = numericValue(row[key] as string | number | null | undefined);
+    return value === null ? [] : [{ ...pointFor(index, value), row, value }];
+  });
+  const grossProfitPoints = pointsFor(mode === "profit" ? "gross_profit" : "gross_margin_pct");
+  const operatingProfitPoints = pointsFor(mode === "profit" ? "operating_profit" : "operating_margin_pct");
+  const netProfitPoints = pointsFor(mode === "profit" ? "net_profit" : "net_profit_margin_pct");
+  const comparisonPoints = mode === "profit" ? pointsFor("comparison_net_profit") : [];
+  const netMarginProfitPoints = mode === "profit" ? monthly.flatMap((row, index) => {
+    const value = numericValue(row.net_profit_margin_pct);
+    return value === null ? [] : [{ ...pointForNetMargin(index, value), row, value }];
+  }) : [];
+  const yTicks = [maxValue, (maxValue + minValue) / 2, minValue];
+  const hoveredRow = hoveredIndex === null ? null : monthly[hoveredIndex];
+  const hoveredLeft = monthly.length > 1 && hoveredIndex !== null
+    ? (hoveredIndex / (monthly.length - 1)) * 100
+    : 50;
+
+  if (monthly.length === 0) return null;
+
+  return (
+    <section className="executive-profit-loss-trend" aria-label="Помесячная динамика ОПиУ">
+      <header>
+        <div>
+          <h3>Динамика ОПиУ по месяцам</h3>
+          <span>Оранжевая точка — месяц с неполными или предварительными данными.</span>
+        </div>
+        <div className="executive-profit-loss-trend__switch" aria-label="Режим графика">
+          <button aria-pressed={mode === "profit"} onClick={() => setMode("profit")} type="button">Прибыль</button>
+          <button aria-pressed={mode === "margin"} onClick={() => setMode("margin")} type="button">Рентабельность</button>
+        </div>
+      </header>
+      <div className="executive-profit-loss-trend__legend">
+        {mode === "profit" ? (
+          <>
+            <span><i className="gross" />Валовая прибыль</span>
+            <span><i className="operating" />Операционная прибыль</span>
+            <span><i className="net" />Чистая прибыль</span>
+            <span><i className="net-margin" />Рентабельность чистой прибыли</span>
+            <span><i className="expense" />Операционные расходы</span>
+            <span><i className="comparison" />Чистая прибыль год назад</span>
+          </>
+        ) : (
+          <>
+            <span><i className="gross" />Валовая маржа</span>
+            <span><i className="operating" />Операционная маржа</span>
+            <span><i className="net" />Рентабельность чистой прибыли</span>
+          </>
+        )}
+      </div>
+      <div className="executive-profit-loss-trend__canvas">
+        <svg role="img" viewBox={`0 0 ${width} ${height}`}>
+          {mode === "profit" && monthly.map((row, index) => {
+            const expense = Math.abs(numericValue(row.operating_expenses) || 0);
+            const expenseY = pointFor(index, -expense).y;
+            return (
+              <rect
+                className="executive-profit-loss-trend__expense-bar"
+                height={Math.abs(expenseY - zeroY)}
+                key={`expense-${row.month}`}
+                rx="3"
+                width={Math.max(12, bandWidth * 0.46)}
+                x={pointFor(index, 0).x - Math.max(12, bandWidth * 0.46) / 2}
+                y={Math.min(expenseY, zeroY)}
+              />
+            );
+          })}
+          {yTicks.map((value) => (
+            <g key={value}>
+              <line className="executive-profit-loss-trend__grid" x1={padding.left} x2={width - padding.right} y1={pointFor(0, value).y} y2={pointFor(0, value).y} />
+              <text className="executive-profit-loss-trend__axis" x={padding.left - 10} y={pointFor(0, value).y + 4} textAnchor="end">
+                {mode === "profit" ? formatMoney(value) : formatPercent(value)}
+              </text>
+            </g>
+          ))}
+          {mode === "profit" && [netMarginMax, (netMarginMax + netMarginMin) / 2, netMarginMin].map((value) => (
+            <text className="executive-profit-loss-trend__axis executive-profit-loss-trend__axis--right" key={`margin-${value}`} x={width - padding.right + 10} y={pointForNetMargin(0, value).y + 4} textAnchor="start">
+              {formatPercent(value)}
+            </text>
+          ))}
+          {monthly.map((row, index) => (
+            <text className="executive-profit-loss-trend__axis" key={row.month} x={pointFor(index, minValue).x} y={height - 12} textAnchor="middle">
+              {formatMonth(row.month)}
+            </text>
+          ))}
+          {grossProfitPoints.length > 1 && <path className="executive-profit-loss-trend__line executive-profit-loss-trend__line--gross" d={pathFor(grossProfitPoints)} />}
+          {operatingProfitPoints.length > 1 && <path className="executive-profit-loss-trend__line executive-profit-loss-trend__line--operating" d={pathFor(operatingProfitPoints)} />}
+          {netProfitPoints.length > 1 && <path className="executive-profit-loss-trend__line executive-profit-loss-trend__line--net" d={pathFor(netProfitPoints)} />}
+          {comparisonPoints.length > 1 && <path className="executive-profit-loss-trend__line executive-profit-loss-trend__line--comparison" d={pathFor(comparisonPoints)} />}
+          {netMarginProfitPoints.length > 1 && <path className="executive-profit-loss-trend__line executive-profit-loss-trend__line--net-margin" d={pathFor(netMarginProfitPoints)} />}
+          {[grossProfitPoints, operatingProfitPoints, netProfitPoints].flatMap((series, seriesIndex) => series.map((point) => (
+            <circle
+              className={`executive-profit-loss-trend__point executive-profit-loss-trend__point--${["gross", "operating", "net"][seriesIndex]}${point.row.is_preliminary ? " executive-profit-loss-trend__point--preliminary" : ""}`}
+              cx={point.x}
+              cy={point.y}
+              key={`${seriesIndex}-${point.row.month}`}
+              r={point.row.is_preliminary ? 5 : 3.5}
+            />
+          )))}
+          {netMarginProfitPoints.map((point) => (
+            <circle className={`executive-profit-loss-trend__point executive-profit-loss-trend__point--net-margin${point.row.is_preliminary ? " executive-profit-loss-trend__point--preliminary" : ""}`} cx={point.x} cy={point.y} key={`net-margin-${point.row.month}`} r={point.row.is_preliminary ? 5 : 3.5} />
+          ))}
+          {hoveredIndex !== null && <line className="executive-sales-chart-crosshair" x1={pointFor(hoveredIndex, 0).x} x2={pointFor(hoveredIndex, 0).x} y1={padding.top} y2={height - padding.bottom} />}
+          {monthly.map((row, index) => (
+            <rect
+              aria-label={profitLossMonthTooltipLabel(row)}
+              className="executive-sales-chart-hit"
+              height={chartHeight}
+              key={`hit-${row.month}`}
+              onBlur={() => setHoveredIndex(null)}
+              onFocus={() => setHoveredIndex(index)}
+              onMouseEnter={() => setHoveredIndex(index)}
+              onMouseLeave={() => setHoveredIndex(null)}
+              role="button"
+              tabIndex={0}
+              width={bandWidth}
+              x={padding.left + index * bandWidth}
+              y={padding.top}
+            />
+          ))}
+        </svg>
+        {hoveredRow && (
+          <div className="executive-sales-month-tooltip executive-profit-loss-trend__tooltip" role="status" style={{ left: `${hoveredLeft}%` }}>
+            <strong>{formatMonth(hoveredRow.month)}{hoveredRow.is_preliminary ? " · предварительно" : ""}</strong>
+            <span>Выручка: {formatMoney(hoveredRow.revenue)}</span>
+            <span>Валовая прибыль: {formatMoney(hoveredRow.gross_profit)}</span>
+            <span>Операционные расходы: {formatMoney(hoveredRow.operating_expenses)}</span>
+            <span>Операционная прибыль: {formatMoney(hoveredRow.operating_profit)}</span>
+            <span>Чистая прибыль: {formatMoney(hoveredRow.net_profit)}</span>
+            <span>Рентабельность чистой прибыли: {formatPercent(hoveredRow.net_profit_margin_pct)}</span>
+            {numericValue(hoveredRow.comparison_net_profit) !== null && <span>Чистая прибыль год назад: {formatMoney(hoveredRow.comparison_net_profit)}</span>}
+            {hoveredRow.note && <small>{hoveredRow.note}</small>}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
 function ProfitLossPeriodPanel({
   dateFrom,
   dateTo,
@@ -2580,16 +2786,14 @@ function ProfitLossPeriodPanel({
 
   const grossMargin = profitLossRatioByKey(data, "gross_margin_pct");
   const operatingMargin = profitLossRatioByKey(data, "operating_margin_pct");
+  const netProfitMargin = profitLossRatioByKey(data, "net_profit_margin_pct");
+  const netProfitLine = data?.lines.find((line) => line.key === "net_profit");
   const maxDailyValue = Math.max(
     ...((data?.daily || []).map((row) =>
       Math.max(Math.abs(Number(row.revenue) || 0), Math.abs(Number(row.gross_profit) || 0))
     )),
     1
   );
-  const expenseHasAmounts = Boolean(
-    data && !["source_missing", "source_error"].includes(data.expense_source_status)
-  );
-
   return (
     <section className="executive-cashflow-period executive-profit-loss-period" aria-label="Отчет о прибылях и убытках за период">
       <header className="executive-panel__header">
@@ -2634,21 +2838,35 @@ function ProfitLossPeriodPanel({
               hint={statusLabel(data.expense_source_status)}
               label="Расходы по ДДС"
               tooltip="Операционные расходы по данным ДДС за период."
-              value={
-                !expenseHasAmounts
-                  ? statusLabel(data.expense_source_status)
-                  : formatMoney(profitLossTotal(data, "operating_expenses"))
-              }
+              value={formatMoney(profitLossTotal(data, "operating_expenses"))}
             />
             <MetricCard
               hint={formatMetricValue(operatingMargin?.value, operatingMargin?.unit)}
               label="Операционная прибыль"
               tone={(operatingMargin?.tone as MetricTone) || "neutral"}
               tooltip={operatingMargin?.note || "Валовая прибыль за вычетом операционных расходов."}
+              value={formatMoney(profitLossTotal(data, "operating_profit"))}
+            />
+            <MetricCard
+              hint={netProfitLine?.note || statusLabel(netProfitLine?.source_status || "source_missing")}
+              label="Чистая прибыль"
+              tone={
+                Number(profitLossTotal(data, "net_profit")) < 0
+                  ? "danger"
+                  : "info"
+              }
+              tooltip="Операционная прибыль с учетом товарных потерь, прочих доходов и расходов и начисленных налогов БП."
+              value={formatMoney(profitLossTotal(data, "net_profit"))}
+            />
+            <MetricCard
+              hint={netProfitMargin?.note || statusLabel(netProfitLine?.source_status || "source_missing")}
+              label={netProfitMargin?.label || "Рентабельность чистой прибыли"}
+              tone={(netProfitMargin?.tone as MetricTone) || "neutral"}
+              tooltip="Чистая прибыль к выручке за выбранный период, %."
               value={
-                !expenseHasAmounts
-                  ? statusLabel(data.expense_source_status)
-                  : formatMoney(profitLossTotal(data, "operating_profit"))
+                netProfitMargin
+                  ? formatMetricValue(netProfitMargin.value, netProfitMargin.unit)
+                  : statusLabel(netProfitLine?.source_status || "source_missing")
               }
             />
             <MetricCard
@@ -2659,6 +2877,8 @@ function ProfitLossPeriodPanel({
               value={formatPlainNumber(profitLossTotal(data, "expense_open_question_count"))}
             />
           </div>
+
+          <ProfitLossMonthlyChart monthly={data.monthly || []} />
 
           <section className="executive-profit-loss-lines" aria-label="Структура ОПУ">
             <header>

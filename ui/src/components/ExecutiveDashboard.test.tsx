@@ -163,7 +163,7 @@ function inventoryLoss(): ExecutiveProfitLossInventoryLoss {
     },
     owner: { employee_name: "Руководитель сети", role_code: "retail_director" },
     warnings: ["Одна операция требует сопоставления."],
-    note: "Товарные потери показаны справочно.",
+    note: "Товарные потери включены в ОПУ.",
   };
 }
 
@@ -617,21 +617,58 @@ function profitLossPeriodResponse(): ExecutiveProfitLossPeriodResponse {
     generated_at: "2026-06-30T10:00:00Z",
     source_status: "partial",
     freshness_status: "fresh",
-    note: "Операционная прибыль не включает товарные потери.",
+    note: "Операционная прибыль включает товарные потери.",
     totals: {
       revenue: "1000000.00",
       cost_of_sales: "700000.00",
       gross_profit: "300000.00",
       operating_expenses: "100000.00",
+      inventory_loss_expense: "50000.00",
       operating_profit: "200000.00",
+      tax_expense_accrued: "20000.00",
+      net_profit: "180000.00",
       expense_open_question_count: "0",
     },
     ratios: [
       { key: "gross_margin_pct", label: "Валовая маржа", value: "0.3", unit: "PCT", tone: "neutral" },
       { key: "operating_margin_pct", label: "Операционная маржа", value: "0.2", unit: "PCT", tone: "neutral" },
+      { key: "net_profit_margin_pct", label: "Рентабельность чистой прибыли", value: "0.18", unit: "PCT", tone: "info" },
     ],
-    lines: [],
+    lines: [
+      { key: "net_profit", label: "Чистая прибыль", amount: "180000.00", line_type: "total", tone: "info", source_status: "partial", note: "Предварительно." },
+    ],
     daily: [],
+    monthly: [
+      {
+        month: "2026-05",
+        revenue: "900000.00",
+        gross_profit: "270000.00",
+        operating_expenses: "95000.00",
+        operating_profit: "175000.00",
+        net_profit: "160000.00",
+        gross_margin_pct: "0.3",
+        operating_margin_pct: "0.1944",
+        net_profit_margin_pct: "0.1778",
+        comparison_net_profit: "140000.00",
+        source_status: "ready",
+        is_preliminary: false,
+      },
+      {
+        month: "2026-06",
+        revenue: "1000000.00",
+        gross_profit: "300000.00",
+        operating_expenses: "100000.00",
+        operating_profit: "200000.00",
+        net_profit: "215000.00",
+        gross_margin_pct: "0.3",
+        operating_margin_pct: "0.2",
+        net_profit_margin_pct: "0.215",
+        comparison_net_profit: null,
+        source_status: "partial",
+        is_preliminary: true,
+        note: "Предварительно: начисления налогов неполны.",
+      },
+    ],
     by_store: [],
     by_manager: [],
     expense_source_status: "ready",
@@ -739,6 +776,21 @@ describe("executive profit and loss period", () => {
         date_to: "2026-06-30",
       });
     });
+  });
+
+  it("shows the monthly profit trend and profitability mode", async () => {
+    const { container } = await renderProfitLossTab();
+    const chart = screen.getByLabelText("Помесячная динамика ОПиУ");
+
+    expect(within(chart).getByText("Валовая прибыль")).toBeVisible();
+    expect(within(chart).getByText("Операционные расходы")).toBeVisible();
+    expect(within(chart).getByText("Чистая прибыль год назад")).toBeVisible();
+    expect(container.querySelectorAll(".executive-profit-loss-trend__expense-bar")).toHaveLength(2);
+
+    fireEvent.click(within(chart).getByRole("button", { name: "Рентабельность" }));
+    expect(within(chart).getByText("Валовая маржа")).toBeVisible();
+    expect(within(chart).getByText("Операционная маржа")).toBeVisible();
+    expect(within(chart).getByText("Рентабельность чистой прибыли")).toBeVisible();
   });
 });
 

@@ -22,6 +22,7 @@ import {
   type ExecutiveProfitLossBreakdownRow,
   type ExecutiveProfitLossExpenseBreakdownRow,
   type ExecutiveProfitLossInventoryLoss,
+  type ExecutiveProfitLossLineItem,
   type ExecutiveProfitLossMonthlyRow,
   type ExecutiveProfitLossOpenQuestion,
   type ExecutiveProfitLossPeriodResponse,
@@ -97,8 +98,6 @@ const PROFIT_LOSS_TAB_KEY = "profit_loss";
 const SALES_TAB_KEY = "sales";
 const ONLINE_STORE_TAB_KEY = "online_store";
 const ODDS_CASHFLOW_TAB_KEY = "odds_cashflow";
-const PROFIT_LOSS_EXPENSES_EXPANDED_KEY = "mm:executive:profit-loss:expenses-expanded";
-
 const TAB_DEFINITIONS = [
   { key: "today", label: "Сегодня" },
   { key: MONEY_TAB_KEY, label: "Деньги / ДДС" },
@@ -1779,76 +1778,159 @@ function profitLossRatioByKey(
   return data?.ratios.find((ratio) => ratio.key === key) || null;
 }
 
-function readProfitLossExpensesExpanded() {
-  if (typeof window === "undefined") return true;
-  try {
-    return window.localStorage.getItem(PROFIT_LOSS_EXPENSES_EXPANDED_KEY) !== "0";
-  } catch {
-    return true;
-  }
-}
-
-function writeProfitLossExpensesExpanded(expanded: boolean) {
-  try {
-    window.localStorage.setItem(PROFIT_LOSS_EXPENSES_EXPANDED_KEY, expanded ? "1" : "0");
-  } catch {
-    // localStorage может быть недоступен; сворачивание продолжит работать без памяти.
-  }
-}
-
 function ProfitLossExpenseBreakdown({ data }: { data: ExecutiveProfitLossPeriodResponse }) {
-  const [expanded, setExpanded] = useState(readProfitLossExpensesExpanded);
-  const detailsId = "executive-profit-loss-expense-details";
   const visibleRows = data.expense_breakdown.slice(0, 8);
-  const toggleExpanded = () => {
-    setExpanded((current) => {
-      const next = !current;
-      writeProfitLossExpensesExpanded(next);
-      return next;
-    });
-  };
-
+  if (visibleRows.length === 0) {
+    return (
+      <div className="executive-cashflow-period__empty">
+        Нет подтвержденных операционных расходов по ДДС.
+      </div>
+    );
+  }
   return (
-    <section className="executive-profit-loss-lines executive-profit-loss-expenses" aria-label="Операционные расходы по ДДС">
-      <header>
-        <div>
-          <h3>Операционные расходы по ДДС</h3>
-          <span>
-            {visibleRows.length === 0
-              ? "Нет подтвержденных расходов"
-              : `Статей: ${data.expense_breakdown.length} · ${statusLabel(data.expense_source_status)}`}
-          </span>
+    <div className="executive-profit-loss-drilldown__grid">
+      {visibleRows.map((row) => (
+        <div className="executive-cashflow-row" key={row.key}>
+          <span>{row.label}</span>
+          <strong>{formatMoney(row.amount)}</strong>
+          <small>{profitLossExpenseDetail(row)}</small>
         </div>
-        <div className="executive-profit-loss-expenses__summary">
-          <strong>{formatMoney(profitLossTotal(data, "operating_expenses"))}</strong>
-          <button
-            aria-controls={detailsId}
-            aria-expanded={expanded}
-            onClick={toggleExpanded}
-            type="button"
-          >
-            {expanded ? "Свернуть" : "Показать расшифровку"}
-          </button>
+      ))}
+    </div>
+  );
+}
+
+const PROFIT_LOSS_FORMULA_LINES: Record<string, string[]> = {
+  revenue: ["gross_revenue", "customer_refunds"],
+  gross_profit: ["revenue", "cost_of_sales"],
+  operating_profit: ["gross_profit", "operating_expenses", "operating_taxes", "inventory_loss"],
+  other_income_expenses: ["debt_adjustment_income", "debt_adjustment_expense"],
+  profit_before_tax: ["operating_profit", "other_income_expenses"],
+  net_profit: ["profit_before_tax", "taxes"],
+};
+
+function ProfitLossFormulaBreakdown({
+  data,
+  keys,
+}: {
+  data: ExecutiveProfitLossPeriodResponse;
+  keys: string[];
+}) {
+  const lines = keys
+    .map((key) => data.lines.find((line) => line.key === key))
+    .filter((line): line is ExecutiveProfitLossLineItem => Boolean(line));
+  return (
+    <div className="executive-profit-loss-drilldown__grid">
+      {lines.map((line) => (
+        <div className="executive-cashflow-row" key={line.key}>
+          <span>{line.label}</span>
+          <strong>{formatProfitLossAmount(line.amount)}</strong>
+          <small>{line.note || statusLabel(line.source_status)}</small>
         </div>
-      </header>
-      {expanded && (
-        <div className="executive-profit-loss-lines__rows" id={detailsId}>
-          {visibleRows.length === 0 ? (
-            <div className="executive-cashflow-period__empty">
-              Нет подтвержденных операционных расходов по ДДС.
-            </div>
-          ) : (
-            visibleRows.map((row) => (
-              <div className="executive-cashflow-row" key={row.key}>
-                <span>{row.label}</span>
-                <strong>{formatMoney(row.amount)}</strong>
-                <small>{profitLossExpenseDetail(row)}</small>
-              </div>
-            ))
-          )}
-        </div>
-      )}
-    </section>
+      ))}
+    </div>
+  );
+}
+
+function ProfitLossSalesBreakdown({
+  data,
+  metric,
+}: {
+  data: ExecutiveProfitLossPeriodResponse;
+  metric: "revenue" | "cost_of_sales" | "gross_profit";
+}) {
+  const renderRows = (rows: ExecutiveProfitLossBreakdownRow[]) =>
+    rows.slice(0, 6).map((row) => (
+      <div className="executive-cashflow-row" key={row.key}>
+        <span>{row.label}</span>
+        <strong>{formatMoney(row[metric])}</strong>
+        <small>{profitLossRowDetail(row)}</small>
+      </div>
+    ));
+  return (
+    <div className="executive-profit-loss-drilldown__columns">
+      <section>
+        <h4>По магазинам</h4>
+        {data.by_store.length > 0 ? renderRows(data.by_store) : <div className="executive-cashflow-period__empty">Нет данных.</div>}
+      </section>
+      <section>
+        <h4>По менеджерам</h4>
+        {data.by_manager.length > 0 ? renderRows(data.by_manager) : <div className="executive-cashflow-period__empty">Нет данных.</div>}
+      </section>
+    </div>
+  );
+}
+
+function ProfitLossLineDrilldown({
+  data,
+  line,
+}: {
+  data: ExecutiveProfitLossPeriodResponse;
+  line: ExecutiveProfitLossLineItem;
+}) {
+  if (line.key === "gross_revenue") {
+    return <ProfitLossSalesBreakdown data={data} metric="revenue" />;
+  }
+  if (line.key === "cost_of_sales") {
+    return <ProfitLossSalesBreakdown data={data} metric="cost_of_sales" />;
+  }
+  if (line.key === "operating_expenses") {
+    return <ProfitLossExpenseBreakdown data={data} />;
+  }
+  if (line.key === "inventory_loss") {
+    return <InventoryLossPanel data={data.inventory_loss} embedded />;
+  }
+  const formulaKeys = PROFIT_LOSS_FORMULA_LINES[line.key];
+  return formulaKeys ? <ProfitLossFormulaBreakdown data={data} keys={formulaKeys} /> : null;
+}
+
+function profitLossLineHasDrilldown(data: ExecutiveProfitLossPeriodResponse, lineKey: string) {
+  if (["gross_revenue", "cost_of_sales"].includes(lineKey)) {
+    return data.by_store.length > 0 || data.by_manager.length > 0;
+  }
+  if (lineKey === "operating_expenses") return true;
+  if (lineKey === "inventory_loss") return Boolean(data.inventory_loss);
+  return Boolean(PROFIT_LOSS_FORMULA_LINES[lineKey]);
+}
+
+function ProfitLossStatementRow({
+  data,
+  line,
+}: {
+  data: ExecutiveProfitLossPeriodResponse;
+  line: ExecutiveProfitLossLineItem;
+}) {
+  const className = [
+    "executive-profit-loss-line",
+    `executive-profit-loss-line--${line.source_status}`,
+    `executive-profit-loss-line--${line.line_type}`,
+  ]
+    .filter(Boolean)
+    .join(" ");
+  if (!profitLossLineHasDrilldown(data, line.key)) {
+    return (
+      <div className={className}>
+        <span>{line.label}</span>
+        <strong>{formatProfitLossAmount(line.amount)}</strong>
+        <small>{line.note || statusLabel(line.source_status)}</small>
+      </div>
+    );
+  }
+  return (
+    <details className={`${className} executive-profit-loss-line--expandable`}>
+      <summary>
+        <span>{line.label}</span>
+        <strong>{formatProfitLossAmount(line.amount)}</strong>
+        <small>{line.note || statusLabel(line.source_status)}</small>
+        <span className="executive-profit-loss-line__toggle">
+          <span className="is-closed">Расшифровать</span>
+          <span className="is-open">Свернуть</span>
+        </span>
+      </summary>
+      <div className="executive-profit-loss-line__drilldown">
+        <ProfitLossLineDrilldown data={data} line={line} />
+      </div>
+    </details>
   );
 }
 
@@ -2305,18 +2387,29 @@ function CashflowPeriodPanel({ asOf }: { asOf: string }) {
   );
 }
 
-export function InventoryLossPanel({ data }: { data?: ExecutiveProfitLossInventoryLoss | null }) {
+export function InventoryLossPanel({
+  data,
+  embedded = false,
+}: {
+  data?: ExecutiveProfitLossInventoryLoss | null;
+  embedded?: boolean;
+}) {
   const [storeMode, setStoreMode] = useState<"all" | "above_norm">("all");
   const [storeRef, setStoreRef] = useState("");
   const [operationMode, setOperationMode] = useState<"all" | "writeoff" | "receipt">("all");
 
   if (!data || ["source_missing", "source_error"].includes(data.source_status)) {
     return (
-      <section className="executive-profit-loss-lines" aria-label="Товарные потери за месяц">
-        <header>
-          <h3>Товарные потери за месяц</h3>
-          <span>{data ? statusLabel(data.source_status) : "нет данных"}</span>
-        </header>
+      <section
+        className={embedded ? "executive-inventory-loss executive-inventory-loss--embedded" : "executive-profit-loss-lines"}
+        aria-label={embedded ? "Расшифровка товарных потерь" : "Товарные потери за месяц"}
+      >
+        {!embedded && (
+          <header>
+            <h3>Товарные потери за месяц</h3>
+            <span>{data ? statusLabel(data.source_status) : "нет данных"}</span>
+          </header>
+        )}
         <div className="executive-cashflow-period__empty">
           {data?.note || "Месячный отчет по списаниям и оприходованиям не подключен."}
         </div>
@@ -2353,14 +2446,19 @@ export function InventoryLossPanel({ data }: { data?: ExecutiveProfitLossInvento
       : "Магазинов в контуре";
 
   return (
-    <section className="executive-inventory-loss" aria-label="Товарные потери за месяц">
-      <header className="executive-inventory-loss__header">
-        <div>
-          <h3>Товарные потери за месяц</h3>
-          <span>{data.note || "Чистые товарные потери включены в расчет операционной прибыли."}</span>
-        </div>
-        <strong>{`${data.month} · ${statusLabel(data.source_status)}`}</strong>
-      </header>
+    <section
+      className={`executive-inventory-loss${embedded ? " executive-inventory-loss--embedded" : ""}`}
+      aria-label={embedded ? "Расшифровка товарных потерь" : "Товарные потери за месяц"}
+    >
+      {!embedded && (
+        <header className="executive-inventory-loss__header">
+          <div>
+            <h3>Товарные потери за месяц</h3>
+            <span>{data.note || "Чистые товарные потери включены в расчет операционной прибыли."}</span>
+          </div>
+          <strong>{`${data.month} · ${statusLabel(data.source_status)}`}</strong>
+        </header>
+      )}
 
       <div className="executive-profit-loss-lines__rows">
         <div className="executive-profit-loss-line executive-profit-loss-line--metric">
@@ -2955,84 +3053,25 @@ function ProfitLossPeriodPanel({
             </header>
             <div className="executive-profit-loss-lines__rows">
               {data.lines.map((line) => (
-                <div
-                  className={[
-                    "executive-profit-loss-line",
-                    `executive-profit-loss-line--${line.source_status}`,
-                    `executive-profit-loss-line--${line.line_type}`,
-                  ]
-                    .filter(Boolean)
-                    .join(" ")}
-                  key={line.key}
-                >
-                  <span>{line.label}</span>
-                  <strong>{formatProfitLossAmount(line.amount)}</strong>
-                  <small>{line.note || statusLabel(line.source_status)}</small>
-                </div>
+                <ProfitLossStatementRow data={data} key={line.key} line={line} />
               ))}
             </div>
           </section>
 
-          <ProfitLossExpenseBreakdown data={data} />
-
-          <InventoryLossPanel
-            data={data.inventory_loss}
-            key={data.inventory_loss?.month || "inventory-loss-missing"}
-          />
-
-          <div className="executive-cashflow-period__tables">
-            <div>
-              <h3>По магазинам</h3>
-              {data.by_store.length === 0 ? (
-                <div className="executive-cashflow-period__empty">Нет продаж в выбранном периоде.</div>
-              ) : (
-                data.by_store.slice(0, 6).map((row) => (
-                  <div className="executive-cashflow-row" key={row.key}>
-                    <span>{row.label}</span>
-                    <strong>{formatMoney(row.gross_profit)}</strong>
-                    <small>{profitLossRowDetail(row)}</small>
-                  </div>
-                ))
-              )}
-            </div>
-            <div>
-              <h3>По менеджерам</h3>
-              {data.by_manager.length === 0 ? (
-                <div className="executive-cashflow-period__empty">Нет продаж в выбранном периоде.</div>
-              ) : (
-                data.by_manager.slice(0, 6).map((row) => (
-                  <div className="executive-cashflow-row" key={row.key}>
-                    <span>{row.label}</span>
-                    <strong>{formatMoney(row.gross_profit)}</strong>
-                    <small>{profitLossRowDetail(row)}</small>
-                  </div>
-                ))
-              )}
-            </div>
+          {data.expense_open_questions.length > 0 && (
+            <div className="executive-cashflow-period__tables executive-profit-loss-open-questions">
             <div>
               <h3>Открытые вопросы</h3>
-              {data.expense_open_questions.length === 0 ? (
-                data.lines
-                  .filter((line) => line.source_status !== "ready")
-                  .slice(0, 5)
-                  .map((line) => (
-                    <div className="executive-cashflow-row" key={line.key}>
-                      <span>{line.label}</span>
-                      <strong>{statusLabel(line.source_status)}</strong>
-                      <small>{line.note || "Требуется источник"}</small>
-                    </div>
-                  ))
-              ) : (
-                data.expense_open_questions.slice(0, 6).map((row) => (
-                  <div className="executive-cashflow-row" key={row.key}>
-                    <span>{row.label}</span>
-                    <strong>{formatMoney(row.amount)}</strong>
-                    <small>{profitLossQuestionDetail(row)}</small>
-                  </div>
-                ))
-              )}
+              {data.expense_open_questions.slice(0, 6).map((row) => (
+                <div className="executive-cashflow-row" key={row.key}>
+                  <span>{row.label}</span>
+                  <strong>{formatMoney(row.amount)}</strong>
+                  <small>{profitLossQuestionDetail(row)}</small>
+                </div>
+              ))}
             </div>
-          </div>
+            </div>
+          )}
         </>
       )}
     </section>

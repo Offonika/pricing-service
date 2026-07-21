@@ -4,6 +4,7 @@ import fcntl
 import hashlib
 import json
 import os
+import stat
 import subprocess
 from pathlib import Path
 
@@ -226,10 +227,18 @@ def test_release_builder_creates_locked_release_specific_runtime(tmp_path: Path)
     assert len(manifest["ui_asset_sha256"]) == 64
     assert manifest["content_hash_scheme"] == CONTENT_HASH_SCHEME
     assert _release_content_sha256(release) == manifest["content_sha256"]
-    runtime_cache = release / "app/__pycache__/runtime.pyc"
-    runtime_cache.parent.mkdir(parents=True)
-    runtime_cache.write_bytes(b"runtime cache")
-    assert _release_content_sha256(release) == manifest["content_sha256"]
+    runtime_cache = release / "ui/__pycache__/runtime.pyc"
+    app_dir = runtime_cache.parents[1]
+    app_mode = stat.S_IMODE(app_dir.stat().st_mode)
+    app_dir.chmod(app_mode | stat.S_IWUSR)
+    try:
+        runtime_cache.parent.mkdir(parents=True)
+        runtime_cache.write_bytes(b"runtime cache")
+        assert _release_content_sha256(release) == manifest["content_sha256"]
+        runtime_cache.unlink()
+        runtime_cache.parent.rmdir()
+    finally:
+        app_dir.chmod(app_mode)
     assert (release / ".venv/bin/python").exists()
     assert (release / ".venv/bin/pip").read_text(encoding="utf-8").splitlines()[0] == (
         f"#!{release}/.venv/bin/python"

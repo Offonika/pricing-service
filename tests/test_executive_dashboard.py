@@ -979,6 +979,59 @@ def test_shared_snapshot_path_is_resolved_from_workspace_root(
     assert resolved == snapshot_path
 
 
+def test_profit_loss_open_question_uses_explicit_inflow_amount(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cache_path = tmp_path / "cashflow_period_cache.json"
+    cache_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "generated_at": "2026-02-28T12:00:00+00:00",
+                "source_status": "ready",
+                "freshness_status": "fresh",
+                "period": {
+                    "date_from": "2026-02-01",
+                    "date_to": "2026-02-28",
+                    "days": 28,
+                },
+                "rows": [
+                    {
+                        "business_date": "2026-02-26",
+                        "article_key": "supplier_services",
+                        "article_name": "Оплата поставщику (за услуги)",
+                        "dds_group": "operating",
+                        "dds_subgroup": "suppliers",
+                        "direction": "inflow",
+                        "inflow_amount": "108005.63",
+                        "outflow_amount": "0",
+                        "movement_count": 1,
+                        "review_count": 0,
+                        "profit_loss_class": "open_question",
+                        "profit_loss_question_key": "inflow_on_supplier_service_expense_article",
+                        "profit_loss_question_reason": "Поступление по расходной статье.",
+                        "profit_loss_question_amount": "108005.63",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    _override_settings(monkeypatch, _settings(tmp_path / "finance_snapshot.json"))
+
+    result = executive_dashboard._profit_loss_expenses_from_cashflow_cache(
+        session=db_session,
+        date_from=date(2026, 2, 1),
+        date_to=date(2026, 2, 28),
+    )
+
+    assert result["totals"]["expense_open_question_amount"] == Decimal("108005.63")
+    assert result["open_questions"][0].amount == Decimal("108005.63")
+
+
 def test_profit_loss_block_reads_sales_kpi(
     db_session: Session,
     tmp_path: Path,

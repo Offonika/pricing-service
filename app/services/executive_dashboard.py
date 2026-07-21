@@ -522,7 +522,9 @@ def _profit_loss_expenses_from_cashflow_cache(
                     },
                 }
             item = question_buckets[key]
-            item["amount"] += _decimal(row.get("outflow_amount"))
+            item["amount"] += _decimal(
+                row.get("profit_loss_question_amount") or row.get("outflow_amount")
+            )
             item["movement_count"] += int(row.get("movement_count") or 0)
             item["review_count"] += int(row.get("review_count") or 0)
 

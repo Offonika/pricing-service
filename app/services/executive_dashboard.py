@@ -405,6 +405,7 @@ def _profit_loss_expenses_from_cashflow_cache(
             "note": note,
             "totals": {
                 "operating_expenses": Decimal("0"),
+                "customer_refunds": Decimal("0"),
                 "expense_open_question_count": 0,
                 "expense_open_question_amount": Decimal("0"),
                 "operating_expense_movement_count": 0,
@@ -434,6 +435,7 @@ def _profit_loss_expenses_from_cashflow_cache(
             "note": "Кэш ДДС еще не содержит классификацию расходов для ОПУ.",
             "totals": {
                 "operating_expenses": Decimal("0"),
+                "customer_refunds": Decimal("0"),
                 "expense_open_question_count": 0,
                 "expense_open_question_amount": Decimal("0"),
                 "operating_expense_movement_count": 0,
@@ -452,6 +454,7 @@ def _profit_loss_expenses_from_cashflow_cache(
             "note": "В кэше ДДС нет строк за выбранный период.",
             "totals": {
                 "operating_expenses": Decimal("0"),
+                "customer_refunds": Decimal("0"),
                 "expense_open_question_count": 0,
                 "expense_open_question_amount": Decimal("0"),
                 "operating_expense_movement_count": 0,
@@ -463,6 +466,7 @@ def _profit_loss_expenses_from_cashflow_cache(
 
     expense_buckets: dict[str, dict[str, Any]] = {}
     question_buckets: dict[str, dict[str, Any]] = {}
+    customer_refunds = Decimal("0")
     for row in classified_rows:
         row_class = str(row.get("profit_loss_class") or "")
         if row_class == "operating_expense":
@@ -487,6 +491,31 @@ def _profit_loss_expenses_from_cashflow_cache(
                 }
             item = expense_buckets[key]
             item["amount"] += _decimal(row.get("outflow_amount"))
+            item["movement_count"] += int(row.get("movement_count") or 0)
+            item["review_count"] += int(row.get("review_count") or 0)
+            item["meta"]["dds_subgroups"].add(str(row.get("dds_subgroup") or ""))
+            item["meta"]["article_keys"].add(str(row.get("article_key") or ""))
+        elif row_class == "contra_revenue":
+            customer_refunds += _decimal(row.get("outflow_amount"))
+        elif row_class == "operating_expense_refund":
+            key = str(row.get("profit_loss_line_key") or row.get("dds_subgroup") or "other")
+            if key not in expense_buckets:
+                expense_buckets[key] = {
+                    "key": key,
+                    "label": str(
+                        row.get("profit_loss_line_label") or row.get("article_name") or key
+                    ),
+                    "amount": Decimal("0"),
+                    "movement_count": 0,
+                    "review_count": 0,
+                    "source_status": "ready",
+                    "recognition_method": str(
+                        row.get("profit_loss_recognition_method") or "cashflow_fallback"
+                    ),
+                    "meta": {"dds_subgroups": set(), "article_keys": set()},
+                }
+            item = expense_buckets[key]
+            item["amount"] -= _decimal(row.get("inflow_amount"))
             item["movement_count"] += int(row.get("movement_count") or 0)
             item["review_count"] += int(row.get("review_count") or 0)
             item["meta"]["dds_subgroups"].add(str(row.get("dds_subgroup") or ""))
@@ -632,6 +661,7 @@ def _profit_loss_expenses_from_cashflow_cache(
         ),
         "totals": {
             "operating_expenses": operating_expenses,
+            "customer_refunds": customer_refunds,
             "expense_open_question_count": len(open_questions),
             "expense_open_question_amount": open_question_amount,
             "operating_expense_movement_count": sum((item.movement_count for item in breakdown), 0),
@@ -1512,10 +1542,27 @@ def _profit_loss_lines(
     net_profit_status = provisional_status(profit_before_tax_status, tax_source_status)
     return [
         ExecutiveProfitLossLineItem(
-            key="revenue",
-            label="Выручка",
-            amount=_decimal(totals.get("revenue")),
+            key="gross_revenue",
+            label="Выручка до возвратов",
+            amount=_decimal(totals.get("gross_revenue")),
             line_type="income",
+            tone="info",
+            source_status=source_status,
+        ),
+        ExecutiveProfitLossLineItem(
+            key="customer_refunds",
+            label="Возвраты покупателям",
+            amount=-_decimal(totals.get("customer_refunds")),
+            line_type="expense",
+            tone="warning",
+            source_status=expense_source_status,
+            note="Справочно: возвраты уменьшают выручку и не входят в операционные расходы.",
+        ),
+        ExecutiveProfitLossLineItem(
+            key="revenue",
+            label="Чистая выручка",
+            amount=_decimal(totals.get("revenue")),
+            line_type="subtotal",
             tone="info",
             source_status=source_status,
         ),
@@ -1545,6 +1592,15 @@ def _profit_loss_lines(
             note=expense_note,
         ),
         ExecutiveProfitLossLineItem(
+            key="operating_taxes",
+            label="Операционные налоги и взносы",
+            amount=-_decimal(totals.get("operating_tax_expense_accrued")),
+            line_type="expense",
+            tone="warning",
+            source_status=tax_source_status,
+            note="Начисленные страховые взносы и торговый сбор из БП.",
+        ),
+        ExecutiveProfitLossLineItem(
             key="inventory_loss",
             label="Чистые товарные потери",
             amount=-_decimal(totals.get("inventory_loss_expense")),
@@ -1565,7 +1621,7 @@ def _profit_loss_lines(
             ),
             source_status=operating_profit_status,
             note=(
-                "Валовая прибыль минус расходы по ДДС и чистые товарные потери."
+                "Валовая прибыль минус расходы по ДДС, операционные налоги и чистые товарные потери."
                 if operating_profit_status == "ready"
                 else "Предварительно: неполные расходы или товарные потери временно учтены по доступным данным."
             ),
@@ -1624,7 +1680,7 @@ def _profit_loss_lines(
         ),
         ExecutiveProfitLossLineItem(
             key="taxes",
-            label="Начисленные налоги БП",
+            label="Налоги ниже операционной прибыли",
             amount=-_decimal(totals.get("tax_expense_accrued")),
             line_type="expense",
             tone="warning",
@@ -1667,7 +1723,13 @@ def _profit_loss_next_month(value: date) -> date:
 def _profit_loss_tax_accrual_month(*, root: Path, month_start: date) -> dict[str, Any]:
     month = month_start.strftime("%Y-%m")
     path = root / month / f"bp-tax-accruals-{month}.json"
-    fallback = {"amount": Decimal("0.00"), "source_status": "partial", "posting_count": 0}
+    fallback = {
+        "amount": Decimal("0.00"),
+        "operating_amount": Decimal("0.00"),
+        "below_operating_amount": Decimal("0.00"),
+        "source_status": "partial",
+        "posting_count": 0,
+    }
     try:
         payload = read_json_contract(path)
     except FileNotFoundError:
@@ -1695,9 +1757,33 @@ def _profit_loss_tax_accrual_month(*, root: Path, month_start: date) -> dict[str
         observed = amount is not None
     if amount is None:
         amount = Decimal("0.00")
+    breakdown = payload.get("breakdown") if isinstance(payload.get("breakdown"), list) else []
+    valid_breakdown = [row for row in breakdown if isinstance(row, dict)]
+    if valid_breakdown:
+        operating_amount = sum(
+            (
+                _decimal(row.get("amount"))
+                for row in valid_breakdown
+                if str(row.get("category") or "") in {"insurance_contributions", "trade_levy"}
+            ),
+            Decimal("0.00"),
+        )
+        below_operating_amount = sum(
+            (
+                _decimal(row.get("amount"))
+                for row in valid_breakdown
+                if str(row.get("category") or "") not in {"insurance_contributions", "trade_levy"}
+            ),
+            Decimal("0.00"),
+        )
+    else:
+        operating_amount = Decimal("0.00")
+        below_operating_amount = amount
     if source_status != "ready":
         return {
             "amount": amount,
+            "operating_amount": operating_amount,
+            "below_operating_amount": below_operating_amount,
             "source_status": "partial",
             "posting_count": posting_count,
             "note": f"{month}: предварительно учтено {amount:.2f} ₽ по {'наблюдаемой сумме' if observed else 'доступным начислениям'}.",
@@ -1705,12 +1791,16 @@ def _profit_loss_tax_accrual_month(*, root: Path, month_start: date) -> dict[str
     if _profit_loss_tax_decimal(line.get("amount")) is None:
         return {
             "amount": amount,
+            "operating_amount": operating_amount,
+            "below_operating_amount": below_operating_amount,
             "source_status": "partial",
             "posting_count": posting_count,
             "note": f"{month}: итоговая сумма отсутствует, предварительно учтено {amount:.2f} ₽.",
         }
     return {
         "amount": amount,
+        "operating_amount": operating_amount,
+        "below_operating_amount": below_operating_amount,
         "source_status": "ready",
         "posting_count": posting_count,
         "note": str(line.get("note") or "Начисленные налоги по проводкам БП."),
@@ -1727,6 +1817,14 @@ def _profit_loss_tax_accrual(*, date_from: date, date_to: date) -> dict[str, Any
         month_rows.append(_profit_loss_tax_accrual_month(root=root, month_start=cursor))
         cursor = _profit_loss_next_month(cursor)
     amount = sum((_decimal(row.get("amount")) for row in month_rows), Decimal("0.00"))
+    operating_amount = sum(
+        (_decimal(row.get("operating_amount")) for row in month_rows),
+        Decimal("0.00"),
+    )
+    below_operating_amount = sum(
+        (_decimal(row.get("below_operating_amount")) for row in month_rows),
+        Decimal("0.00"),
+    )
     posting_count = sum(int(row.get("posting_count") or 0) for row in month_rows)
     _, final_month_end = _month_bounds(date_to)
     covers_full_months = date_from == first_month and date_to == final_month_end
@@ -1740,6 +1838,8 @@ def _profit_loss_tax_accrual(*, date_from: date, date_to: date) -> dict[str, Any
         notes.append("Период включает неполный календарный месяц.")
     return {
         "amount": amount,
+        "operating_amount": operating_amount,
+        "below_operating_amount": below_operating_amount,
         "source_status": source_status,
         "posting_count": posting_count,
         "note": (
@@ -2431,6 +2531,8 @@ def _build_executive_profit_loss_period_response(
     rows = _load_profit_loss_rows(session, date_from=date_from, date_to=date_to)
     if not rows:
         missing_totals: dict[str, Decimal | int | None] = {
+            "gross_revenue": Decimal("0"),
+            "customer_refunds": Decimal("0"),
             "revenue": Decimal("0"),
             "cost_of_sales": Decimal("0"),
             "gross_profit": Decimal("0"),
@@ -2438,13 +2540,16 @@ def _build_executive_profit_loss_period_response(
             "row_count": 0,
             "gross_margin_pct": None,
             "operating_expenses": Decimal("0"),
+            "operating_tax_expense_accrued": _decimal(tax_accrual["operating_amount"]),
+            "operating_expenses_total": _decimal(tax_accrual["operating_amount"]),
             "inventory_loss_expense": _decimal(inventory_adjustment["amount"]),
             "operating_profit": None,
             "debt_adjustment_income": _decimal(debt_adjustments["income"]),
             "debt_adjustment_expense": _decimal(debt_adjustments["expense"]),
             "other_income_expenses": _decimal(debt_adjustments["net"]),
             "profit_before_tax": None,
-            "tax_expense_accrued": _decimal(tax_accrual["amount"]),
+            "tax_expense_accrued": _decimal(tax_accrual["below_operating_amount"]),
+            "total_tax_expense_accrued": _decimal(tax_accrual["amount"]),
             "net_profit": None,
             "missing_expense_line_count": 6,
         }
@@ -2501,20 +2606,32 @@ def _build_executive_profit_loss_period_response(
         source_status = "partial"
     freshness_status = _freshness_from_status(source_status)
     totals = _profit_loss_totals(rows)
-    gross_margin_pct = totals["gross_margin_pct"]
     expense_totals = expense_data["totals"]
-    operating_expenses = _decimal(expense_totals.get("operating_expenses"))
+    gross_revenue = _decimal(totals.get("revenue"))
+    customer_refunds = _decimal(expense_totals.get("customer_refunds"))
+    net_revenue = gross_revenue - customer_refunds
+    cost_of_sales = _decimal(totals.get("cost_of_sales"))
+    gross_profit = net_revenue - cost_of_sales
+    gross_margin_pct = _profit_loss_margin(net_revenue, gross_profit)
+    cash_operating_expenses = _decimal(expense_totals.get("operating_expenses"))
+    operating_tax_expense_accrued = _decimal(tax_accrual["operating_amount"])
+    operating_expenses_total = cash_operating_expenses + operating_tax_expense_accrued
     inventory_loss_expense = _decimal(inventory_adjustment["amount"])
-    operating_profit = (
-        _decimal(totals.get("gross_profit")) - operating_expenses - inventory_loss_expense
-    )
+    operating_profit = gross_profit - operating_expenses_total - inventory_loss_expense
     other_income_expenses = _decimal(debt_adjustments["net"])
     profit_before_tax = operating_profit + other_income_expenses
-    tax_expense_accrued = _decimal(tax_accrual["amount"])
+    tax_expense_accrued = _decimal(tax_accrual["below_operating_amount"])
     net_profit = profit_before_tax - tax_expense_accrued
     totals.update(
         {
-            "operating_expenses": operating_expenses,
+            "gross_revenue": gross_revenue,
+            "customer_refunds": customer_refunds,
+            "revenue": net_revenue,
+            "gross_profit": gross_profit,
+            "gross_margin_pct": gross_margin_pct,
+            "operating_expenses": cash_operating_expenses,
+            "operating_tax_expense_accrued": operating_tax_expense_accrued,
+            "operating_expenses_total": operating_expenses_total,
             "inventory_loss_expense": inventory_loss_expense,
             "operating_profit": operating_profit,
             "debt_adjustment_income": _decimal(debt_adjustments["income"]),
@@ -2523,6 +2640,7 @@ def _build_executive_profit_loss_period_response(
             "other_income_expenses": other_income_expenses,
             "profit_before_tax": profit_before_tax,
             "tax_expense_accrued": tax_expense_accrued,
+            "total_tax_expense_accrued": _decimal(tax_accrual["amount"]),
             "tax_accrual_posting_count": int(tax_accrual["posting_count"]),
             "net_profit": net_profit,
             "expense_open_question_count": int(

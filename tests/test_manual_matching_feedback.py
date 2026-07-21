@@ -185,3 +185,29 @@ def test_feedback_cli_no_files_does_not_create_output_directory(
 
     assert report["artifacts"] == {}
     assert not output_dir.exists()
+
+
+def test_feedback_report_explains_battery_premium_tier_reject(
+    db_session: Session,
+) -> None:
+    product = Product(
+        article="BTT-PREMIUM",
+        name="Аккумулятор для Xiaomi 17 Pro (BM6H) (Premium)",
+        subject="аккумулятор",
+    )
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="BTT-BM6H",
+        name="Аккумулятор для Xiaomi 17 Pro (BM6H)",
+        item_type="battery",
+    )
+    db_session.add_all([product, item])
+    db_session.flush()
+    db_session.add(_decision(product, item, action="reject", hour=14))
+    db_session.commit()
+
+    report, rows = build_manual_matching_feedback_report(db_session, as_of=REPORT_DATE)
+
+    assert rows[0]["diagnostic_reasons"] == "battery_premium_tier_conflict"
+    assert report["guardrail_replay"]["negative_with_rule_conflict"] == 1
+    assert report["guardrail_replay"]["negative_without_rule_conflict"] == 0

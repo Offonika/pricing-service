@@ -2799,7 +2799,7 @@ function ProfitLossPeriodPanel({
       <header className="executive-panel__header">
         <div>
           <h2>Отчет о прибылях и убытках</h2>
-          <span>Выручка, себестоимость, валовая прибыль и расходы по оплатам ДДС</span>
+          <span>Чистая выручка, себестоимость, валовая прибыль и операционные расходы</span>
         </div>
       </header>
 
@@ -2811,8 +2811,8 @@ function ProfitLossPeriodPanel({
           <div className="executive-panel__kpis">
             <MetricCard
               hint={`${formatDate(data.date_from)} - ${formatDate(data.date_to)}`}
-              label="Выручка"
-              tooltip="Выручка по продажам 1С за выбранный период."
+              label="Чистая выручка"
+              tooltip="Выручка по продажам 1С за вычетом возвратов покупателям."
               value={formatMoney(profitLossTotal(data, "revenue"))}
             />
             <MetricCard
@@ -2836,9 +2836,9 @@ function ProfitLossPeriodPanel({
             />
             <MetricCard
               hint={statusLabel(data.expense_source_status)}
-              label="Расходы по ДДС"
-              tooltip="Операционные расходы по данным ДДС за период."
-              value={formatMoney(profitLossTotal(data, "operating_expenses"))}
+              label="Операционные расходы"
+              tooltip="Расходы по данным ДДС плюс начисленные операционные налоги и взносы."
+              value={formatMoney(profitLossTotal(data, "operating_expenses_total"))}
             />
             <MetricCard
               hint={formatMetricValue(operatingMargin?.value, operatingMargin?.unit)}
@@ -2957,7 +2957,7 @@ function ProfitLossPeriodPanel({
               )}
             </div>
             <div>
-              <h3>Расходы по ДДС</h3>
+              <h3>Операционные расходы по ДДС</h3>
               {data.expense_breakdown.length === 0 ? (
                 <div className="executive-cashflow-period__empty">
                   Нет подтвержденных операционных расходов по ДДС.

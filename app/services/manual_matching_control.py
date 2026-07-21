@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session, joinedload
 
 from app.models import CompetitorItem, CompetitorItemMatch, Product, ProductCompetitorItemDecision
 from app.models.competitor_item_match import CompetitorItemMatchStatus
+from app.services.matching_battery import battery_pair_diagnostic_reasons
 from app.services.matching_guardrails import basic_candidate_guardrails
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
@@ -303,6 +304,7 @@ def pair_conflict_reasons(*, product: Product, item: CompetitorItem) -> list[str
     is_display_pair = expected_type == "display" or item_type == "display"
     if is_display_pair:
         reasons.extend(_display_conflict_reasons(product, item))
+    reasons.extend(battery_pair_diagnostic_reasons(item, product))
 
     return reasons
 

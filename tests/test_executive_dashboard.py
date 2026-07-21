@@ -38,7 +38,7 @@ from app.services.onec_inventory_cost import OneCInventoryCostSnapshot
 
 
 def _settings(snapshot_path: Path, *, access_rules_json: str | None = None) -> Settings:
-    return Settings(
+    settings = Settings(
         onec_database_url=None,
         management_internal_api_token="secret-token",
         executive_dashboard_finance_snapshot_path=str(snapshot_path),
@@ -62,6 +62,8 @@ def _settings(snapshot_path: Path, *, access_rules_json: str | None = None) -> S
         executive_dashboard_access_rules_json=access_rules_json,
         executive_dashboard_bitrix_session_secret="test-executive-dashboard-session-secret",
     )
+    settings.executive_dashboard_bp_tax_accrual_root = str(snapshot_path.parent / "bp-tax-accruals")
+    return settings
 
 
 def _override_settings(monkeypatch: pytest.MonkeyPatch, settings: Settings) -> None:
@@ -1288,7 +1290,68 @@ def test_profit_loss_subtracts_inventory_loss_and_ready_bp_taxes(
     settings = _settings(tmp_path / "finance_snapshot.json")
     settings.executive_dashboard_bp_tax_accrual_root = str(tmp_path / "bp-tax-accruals")
     _override_settings(monkeypatch, settings)
-    _write_profit_loss_cashflow_cache(tmp_path / "cashflow_period_cache.json")
+    cashflow_path = tmp_path / "cashflow_period_cache.json"
+    _write_profit_loss_cashflow_cache(cashflow_path)
+    cashflow_payload = json.loads(cashflow_path.read_text(encoding="utf-8"))
+    cashflow_payload["rows"].append(
+        {
+            "business_date": "2026-06-27",
+            "article_key": "customer_refunds",
+            "article_name": "Возврат денежных средств покупателю",
+            "dds_group": "operating",
+            "dds_subgroup": "customer_refunds",
+            "direction": "outflow",
+            "is_internal_transfer": False,
+            "inflow_amount": "0",
+            "outflow_amount": "100.00",
+            "net_amount": "-100.00",
+            "movement_count": 1,
+            "review_count": 0,
+            "profit_loss_class": "contra_revenue",
+            "profit_loss_recognition_method": "cashflow_fallback",
+            "profit_loss_source_status": "ready",
+        }
+    )
+    cashflow_payload["rows"].extend(
+        [
+            {
+                "business_date": "2026-06-27",
+                "article_key": "supplier_services",
+                "article_name": "Оплата поставщику (за услуги)",
+                "dds_group": "operating",
+                "dds_subgroup": "suppliers",
+                "direction": "outflow",
+                "is_internal_transfer": False,
+                "inflow_amount": "0",
+                "outflow_amount": "109.00",
+                "movement_count": 1,
+                "review_count": 0,
+                "profit_loss_class": "operating_expense",
+                "profit_loss_line_key": "supplier_services",
+                "profit_loss_line_label": "Услуги поставщиков",
+            },
+            {
+                "business_date": "2026-06-27",
+                "article_key": "supplier_services",
+                "article_name": "Оплата поставщику (за услуги)",
+                "dds_group": "operating",
+                "dds_subgroup": "suppliers",
+                "direction": "inflow",
+                "is_internal_transfer": False,
+                "inflow_amount": "108.00",
+                "outflow_amount": "0",
+                "movement_count": 1,
+                "review_count": 0,
+                "profit_loss_class": "operating_expense_refund",
+                "profit_loss_line_key": "supplier_services",
+                "profit_loss_line_label": "Услуги поставщиков",
+            },
+        ]
+    )
+    cashflow_path.write_text(
+        json.dumps(cashflow_payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
     tax_path = tmp_path / "bp-tax-accruals" / "2026-06" / "bp-tax-accruals-2026-06.json"
     tax_path.parent.mkdir(parents=True, exist_ok=True)
     tax_path.write_text(
@@ -1303,6 +1366,26 @@ def test_profit_loss_subtracts_inventory_loss_and_ready_bp_taxes(
                         "source_status": "ready",
                     }
                 },
+                "breakdown": [
+                    {
+                        "category": "insurance_contributions",
+                        "debit_account": "44.01",
+                        "debit_account_label": "Издержки",
+                        "credit_account": "69.09",
+                        "credit_account_label": "Взносы",
+                        "posting_count": 1,
+                        "amount": "15.00",
+                    },
+                    {
+                        "category": "simplified_tax",
+                        "debit_account": "99.01.1",
+                        "debit_account_label": "Финрезультат",
+                        "credit_account": "68.12",
+                        "credit_account_label": "УСН",
+                        "posting_count": 2,
+                        "amount": "25.00",
+                    },
+                ],
                 "control": {"tax_expense_posting_count": 3},
             },
             ensure_ascii=False,
@@ -1344,18 +1427,30 @@ def test_profit_loss_subtracts_inventory_loss_and_ready_bp_taxes(
 
     lines = {line.key: line for line in result.lines}
     assert result.totals["inventory_loss_expense"] == Decimal("50.00")
-    assert result.totals["operating_profit"] == Decimal("200.00")
-    assert result.totals["tax_expense_accrued"] == Decimal("40.00")
-    assert result.totals["net_profit"] == Decimal("160.00")
+    assert result.totals["operating_tax_expense_accrued"] == Decimal("15.00")
+    assert result.totals["operating_expenses"] == Decimal("151.00")
+    assert result.totals["operating_expenses_total"] == Decimal("166.00")
+    assert result.totals["gross_revenue"] == Decimal("1000.00")
+    assert result.totals["customer_refunds"] == Decimal("100.00")
+    assert result.totals["revenue"] == Decimal("900.00")
+    assert result.totals["gross_profit"] == Decimal("300.00")
+    assert result.totals["operating_profit"] == Decimal("84.00")
+    assert result.totals["tax_expense_accrued"] == Decimal("25.00")
+    assert result.totals["total_tax_expense_accrued"] == Decimal("40.00")
+    assert result.totals["net_profit"] == Decimal("59.00")
+    assert lines["gross_revenue"].amount == Decimal("1000.00")
+    assert lines["customer_refunds"].amount == Decimal("-100.00")
+    assert lines["revenue"].amount == Decimal("900.00")
     assert lines["inventory_loss"].amount == Decimal("-50.00")
-    assert lines["taxes"].amount == Decimal("-40.00")
-    assert lines["net_profit"].amount == Decimal("160.00")
+    assert lines["operating_taxes"].amount == Decimal("-15.00")
+    assert lines["taxes"].amount == Decimal("-25.00")
+    assert lines["net_profit"].amount == Decimal("59.00")
     assert {ratio.key for ratio in result.ratios} >= {"net_profit_margin_pct"}
     assert len(result.monthly) == 1
     assert result.monthly[0].month == "2026-06"
-    assert result.monthly[0].operating_profit == Decimal("200.00")
-    assert result.monthly[0].net_profit == Decimal("160.00")
-    assert result.monthly[0].net_profit_margin_pct == Decimal("0.1600")
+    assert result.monthly[0].operating_profit == Decimal("84.00")
+    assert result.monthly[0].net_profit == Decimal("59.00")
+    assert result.monthly[0].net_profit_margin_pct == Decimal("0.0656")
 
 
 def test_profit_loss_sums_inventory_losses_for_all_full_months(

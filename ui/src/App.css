@@ -1326,6 +1326,8 @@
 }
 
 .executive-profit-loss-lines {
+  --pnl-action-column: 154px;
+  --pnl-amount-column: clamp(172px, 15vw, 220px);
   display: grid;
   gap: 8px;
   min-width: 0;
@@ -1363,8 +1365,9 @@
 
 .executive-profit-loss-line {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(116px, auto);
+  grid-template-columns: minmax(0, 1fr) var(--pnl-amount-column) var(--pnl-action-column);
   gap: 3px 8px;
+  align-items: center;
   min-width: 0;
   padding: 8px 9px;
   border: 1px solid #e4e9f0;
@@ -1384,17 +1387,25 @@
 }
 
 .executive-profit-loss-line strong {
+  grid-column: 2;
   min-width: 0;
   color: #18202a;
   font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
   line-height: 1.2;
   text-align: right;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 .executive-profit-loss-line small {
-  grid-column: 1 / -1;
+  grid-column: 1 / 3;
   font-weight: 650;
+}
+
+.executive-profit-loss-line__action-placeholder {
+  grid-column: 3;
+  grid-row: 1;
 }
 
 .executive-profit-loss-line--expandable {
@@ -1404,7 +1415,7 @@
 
 .executive-profit-loss-line--expandable > summary {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(116px, auto) auto;
+  grid-template-columns: minmax(0, 1fr) var(--pnl-amount-column) var(--pnl-action-column);
   gap: 3px 8px;
   align-items: center;
   padding: 8px 9px;
@@ -1427,11 +1438,14 @@
 
 .executive-profit-loss-line__toggle {
   grid-column: 3;
-  grid-row: 1 / 3;
+  grid-row: 1;
   align-self: center;
+  justify-self: end;
+  width: 100%;
   color: #175cd3 !important;
   font-size: 10px !important;
   font-weight: 800 !important;
+  text-align: right;
   white-space: nowrap;
 }
 
@@ -3580,11 +3594,20 @@
   }
 
   .executive-profit-loss-line {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
   .executive-profit-loss-line strong {
-    text-align: left;
+    grid-column: 2;
+    text-align: right;
+  }
+
+  .executive-profit-loss-line small {
+    grid-column: 1 / -1;
+  }
+
+  .executive-profit-loss-line__action-placeholder {
+    display: none;
   }
 
   .executive-profit-loss-line--expandable > summary {
@@ -3602,6 +3625,9 @@
   .executive-profit-loss-line__toggle {
     grid-column: 1 / -1;
     grid-row: auto;
+    justify-self: start;
+    width: auto;
+    text-align: left;
   }
 
   .executive-profit-loss-drilldown__columns {

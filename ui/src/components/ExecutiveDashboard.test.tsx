@@ -635,6 +635,16 @@ function profitLossPeriodResponse(): ExecutiveProfitLossPeriodResponse {
       { key: "net_profit_margin_pct", label: "Рентабельность чистой прибыли", value: "0.18", unit: "PCT", tone: "info" },
     ],
     lines: [
+      { key: "gross_revenue", label: "Выручка до возвратов", amount: "1000000.00", line_type: "income", tone: "info", source_status: "ready" },
+      { key: "customer_refunds", label: "Возвраты покупателям", amount: "-10000.00", line_type: "expense", tone: "warning", source_status: "ready" },
+      { key: "revenue", label: "Чистая выручка", amount: "990000.00", line_type: "subtotal", tone: "info", source_status: "ready" },
+      { key: "cost_of_sales", label: "Себестоимость продаж", amount: "-690000.00", line_type: "expense", tone: "warning", source_status: "ready" },
+      { key: "gross_profit", label: "Валовая прибыль", amount: "300000.00", line_type: "subtotal", tone: "info", source_status: "ready" },
+      { key: "operating_expenses", label: "Операционные расходы по ДДС", amount: "-100000.00", line_type: "expense", tone: "warning", source_status: "ready" },
+      { key: "inventory_loss", label: "Чистые товарные потери", amount: "-10000.00", line_type: "expense", tone: "warning", source_status: "ready" },
+      { key: "operating_profit", label: "Операционная прибыль", amount: "190000.00", line_type: "subtotal", tone: "info", source_status: "ready" },
+      { key: "profit_before_tax", label: "Прибыль до налогообложения", amount: "185000.00", line_type: "total", tone: "info", source_status: "ready" },
+      { key: "taxes", label: "Налоги ниже операционной прибыли", amount: "-5000.00", line_type: "expense", tone: "warning", source_status: "ready" },
       { key: "net_profit", label: "Чистая прибыль", amount: "180000.00", line_type: "total", tone: "info", source_status: "partial", note: "Предварительно." },
     ],
     daily: [],
@@ -731,13 +741,12 @@ async function renderProfitLossTab() {
   vi.mocked(fetchExecutiveProfitLossPeriod).mockResolvedValue(profitLossPeriodResponse());
 
   const result = render(<ExecutiveDashboard />);
-  await screen.findByRole("heading", { name: "Товарные потери за месяц" });
+  await screen.findByRole("heading", { name: "Структура ОПУ" });
   return result;
 }
 
 describe("executive profit and loss period", () => {
   beforeEach(() => {
-    window.localStorage.removeItem("mm:executive:profit-loss:expenses-expanded");
     vi.mocked(fetchExecutiveDashboard).mockReset();
     vi.mocked(fetchExecutiveDashboardActions).mockReset();
     vi.mocked(fetchExecutiveProfitLossPeriod).mockReset();
@@ -806,25 +815,29 @@ describe("executive profit and loss period", () => {
     expect(within(chart).getByText("Рентабельность чистой прибыли")).toBeVisible();
   });
 
-  it("removes the daily bars and places collapsible DDS expenses after the P&L structure", async () => {
+  it("puts line drilldowns inside the P&L structure and removes duplicate detail blocks", async () => {
     await renderProfitLossTab();
 
     expect(screen.queryByLabelText("Динамика ОПУ по дням")).not.toBeInTheDocument();
     const structure = screen.getByLabelText("Структура ОПУ");
-    const expenses = screen.getByLabelText("Операционные расходы по ДДС");
-    expect(structure.nextElementSibling).toBe(expenses);
+    expect(screen.queryByLabelText("Операционные расходы по ДДС")).not.toBeInTheDocument();
+    expect(screen.queryByRole("heading", { name: "Товарные потери за месяц" })).not.toBeInTheDocument();
 
-    const toggle = within(expenses).getByRole("button", { name: "Свернуть" });
-    expect(toggle).toHaveAttribute("aria-expanded", "true");
-    expect(within(expenses).getByText("Аренда")).toBeVisible();
+    const expenseRow = within(structure)
+      .getByText("Операционные расходы по ДДС", { selector: "summary > span:first-child" })
+      .closest("details");
+    expect(expenseRow).not.toBeNull();
+    expect(within(expenseRow as HTMLElement).getByText("Аренда")).not.toBeVisible();
+    fireEvent.click(within(expenseRow as HTMLElement).getByText("Расшифровать"));
+    expect(within(expenseRow as HTMLElement).getByText("Аренда")).toBeVisible();
 
-    fireEvent.click(toggle);
-    expect(within(expenses).queryByText("Аренда")).not.toBeInTheDocument();
-    expect(within(expenses).getByRole("button", { name: "Показать расшифровку" })).toHaveAttribute(
-      "aria-expanded",
-      "false"
-    );
-    expect(window.localStorage.getItem("mm:executive:profit-loss:expenses-expanded")).toBe("0");
+    const netProfitRow = within(structure)
+      .getByText("Чистая прибыль", { selector: "summary > span:first-child" })
+      .closest("details");
+    expect(netProfitRow).not.toBeNull();
+    fireEvent.click(within(netProfitRow as HTMLElement).getByText("Расшифровать"));
+    expect(within(netProfitRow as HTMLElement).getByText("Прибыль до налогообложения")).toBeVisible();
+    expect(within(netProfitRow as HTMLElement).getByText("Налоги ниже операционной прибыли")).toBeVisible();
   });
 });
 

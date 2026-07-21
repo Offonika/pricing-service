@@ -1907,12 +1907,14 @@ function ProfitLossStatementRow({
   ]
     .filter(Boolean)
     .join(" ");
+  const supportingText = line.note || (line.source_status === "ready" ? "" : statusLabel(line.source_status));
   if (!profitLossLineHasDrilldown(data, line.key)) {
     return (
       <div className={className}>
         <span>{line.label}</span>
         <strong>{formatProfitLossAmount(line.amount)}</strong>
-        <small>{line.note || statusLabel(line.source_status)}</small>
+        <span aria-hidden="true" className="executive-profit-loss-line__action-placeholder" />
+        {supportingText && <small>{supportingText}</small>}
       </div>
     );
   }
@@ -1921,7 +1923,7 @@ function ProfitLossStatementRow({
       <summary>
         <span>{line.label}</span>
         <strong>{formatProfitLossAmount(line.amount)}</strong>
-        <small>{line.note || statusLabel(line.source_status)}</small>
+        {supportingText && <small>{supportingText}</small>}
         <span className="executive-profit-loss-line__toggle">
           <span className="is-closed">Расшифровать</span>
           <span className="is-open">Свернуть</span>

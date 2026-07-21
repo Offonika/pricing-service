@@ -823,6 +823,14 @@ describe("executive profit and loss period", () => {
     expect(screen.queryByLabelText("Операционные расходы по ДДС")).not.toBeInTheDocument();
     expect(screen.queryByRole("heading", { name: "Товарные потери за месяц" })).not.toBeInTheDocument();
 
+    const refundsLabel = within(structure)
+      .getAllByText("Возвраты покупателям")
+      .find((node) => node.parentElement?.classList.contains("executive-profit-loss-line"));
+    const refundsRow = refundsLabel?.parentElement || null;
+    expect(refundsRow).not.toBeNull();
+    expect(refundsRow?.querySelector(".executive-profit-loss-line__action-placeholder")).not.toBeNull();
+    expect(within(refundsRow as HTMLElement).queryByText("готово")).not.toBeInTheDocument();
+
     const expenseRow = within(structure)
       .getByText("Операционные расходы по ДДС", { selector: "summary > span:first-child" })
       .closest("details");

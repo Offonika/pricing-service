@@ -32,6 +32,7 @@ set -euo pipefail
 cd "$1"
 find . -type f \
   ! -path './release-manifest.json' \
+  ! -path './.release-verified' \
   ! -path '*/__pycache__/*' \
   ! -name '*.pyc' \
   ! -name '*.pyo' \
@@ -160,8 +161,17 @@ def test_successful_switch_marks_release_verified_after_smoke(tmp_path: Path) ->
     fake_python.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     fake_python.chmod(0o755)
     (candidate / "ui/dist/index.html").write_text("candidate", encoding="utf-8")
-    (candidate / "release-manifest.json").write_text("{}", encoding="utf-8")
     (candidate / "requirements.lock").write_text("", encoding="utf-8")
+    content_sha256 = _release_content_sha256(candidate)
+    (candidate / "release-manifest.json").write_text(
+        json.dumps(
+            {
+                "content_hash_scheme": CONTENT_HASH_SCHEME,
+                "content_sha256": content_sha256,
+            }
+        ),
+        encoding="utf-8",
+    )
     active_link = tmp_path / "active"
     active_link.symlink_to(previous)
 
@@ -184,6 +194,23 @@ def test_successful_switch_marks_release_verified_after_smoke(tmp_path: Path) ->
     marker = candidate / ".release-verified"
     assert marker.read_text(encoding="utf-8").startswith("verified_at=")
     assert marker.stat().st_mode & 0o222 == 0
+    assert _release_content_sha256(candidate) == content_sha256
+
+    repeated_result = _run(
+        [str(SWITCH_SCRIPT), str(candidate)],
+        env={
+            **os.environ,
+            "PRICING_SERVICE_ACTIVE_LINK": str(active_link),
+            "PRICING_SERVICE_EXPECTED_ACTIVE_RELEASE": str(candidate),
+            "PRICING_SERVICE_SWITCH_LOCK_FILE": str(tmp_path / "switch.lock"),
+            "PRICING_SERVICE_SYSTEMCTL_BIN": str(fake_systemctl),
+            "PRICING_SERVICE_SYSTEMD_PREFLIGHT": "0",
+            "PRICING_SERVICE_NGINX_PREFLIGHT": "0",
+        },
+    )
+
+    assert repeated_result.returncode == 0, repeated_result.stderr
+    assert active_link.resolve() == candidate
 
 
 def test_switch_refuses_candidate_without_a_valid_rollback_target(tmp_path: Path) -> None:

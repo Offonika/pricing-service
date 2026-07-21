@@ -19,6 +19,7 @@ hash_release_content() {
     cd "$release_dir"
     find . -type f \
       ! -path './release-manifest.json' \
+      ! -path './.release-verified' \
       ! -path '*/__pycache__/*' \
       ! -name '*.pyc' \
       ! -name '*.pyo' \

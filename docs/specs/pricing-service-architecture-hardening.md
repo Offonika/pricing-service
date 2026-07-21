@@ -108,7 +108,7 @@ Spec фиксирует вывод TopControl из активного конту
   а не через прямую запись из `mm-compensation` в его БД.
 - [x] Executive snapshots публикуются атомарно по versioned JSON Schema и читаются
   из нейтрального runtime-каталога.
-- [ ] OpenAPI, manifests, specs, architecture checks и regression tests проходят.
+- [x] OpenAPI, manifests, specs, architecture checks и regression tests проходят.
 - [x] Release builder создаёт неизменяемый каталог со своим `.venv`, hash-locked
   dependencies и manifest hashes; `content_sha256` использует версионированную
   схему `sha256-files-v2-no-python-cache`, не зависящую от runtime `.pyc`.
@@ -126,7 +126,7 @@ Spec фиксирует вывод TopControl из активного конту
 - [x] Обратный диапазон `period_start > as_of` отклоняется в service layer и
   management API с HTTP 422 до открытия соединения с 1С.
 - [x] Forced smoke failure атомарно возвращает прежние backend и UI через один symlink.
-- [ ] Production release переключён с проверенным rollback и без
+- [x] Production release переключён с проверенным rollback и без
   удаления активного/rollback targets.
 
 # Source of Truth
@@ -260,47 +260,48 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 
 # Rollout
 
-1. Считать `active_release` и его `source_commit`, создать от него отдельный чистый
-   worktree, внести и закоммитить изменения. Нельзя использовать грязный параллельный
-   checkout как source или mutable-root.
-2. Собрать immutable release, явно передав production-базу и постоянный state-root:
+1. Создать отдельный clean worktree, внести и закоммитить изменения. Нельзя
+   использовать грязный параллельный checkout как source или mutable-root.
+2. Выполнить штатную полную сборку и cutover только через workspace control-plane:
 
    ```bash
-   active_release="$(readlink -f /opt/MM/pricing-service-task43-current)"
-   active_source_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_commit"])' \
-     "$active_release/release-manifest.json")"
-   PRICING_SERVICE_SOURCE_ROOT=/opt/MM/.worktrees/<clean-worktree> \
-   PRICING_SERVICE_RELEASE_ROOT=/opt/MM/releases/pricing-service \
-   PRICING_SERVICE_RELEASE_REQUIRED_BASE_REF="$active_source_commit" \
-   PRICING_SERVICE_MUTABLE_ROOT=/opt/MM/pricing-service \
-   PRICING_SERVICE_RUNTIME_ENV_FILE=/opt/MM/pricing-service/.env \
-     scripts/build_pricing_service_release.sh <release-name>
+   sudo /usr/local/sbin/mm-pricing-service-release deploy \
+     --source-root /opt/MM/.worktrees/<clean-worktree> \
+     --release-name <release-name>
    ```
 
-3. Запустить offline validations и локальный smoke на отдельном порту.
-4. Непосредственно перед cutover повторно считать active release и переключить под
-   lock только с точным expected-active:
+   Контроллер сам читает production-базу из фактически активного manifest и
+   передаёт builder обязательные `PRICING_SERVICE_RELEASE_REQUIRED_BASE_REF` и
+   `PRICING_SERVICE_MUTABLE_ROOT`.
+3. Для уже собранного immutable-кандидата сначала выполнить provenance preflight:
 
    ```bash
-   PRICING_SERVICE_EXPECTED_ACTIVE_RELEASE="$active_release" \
-   PRICING_SERVICE_MUTABLE_ROOT=/opt/MM/pricing-service \
-     scripts/switch_pricing_service_release.sh \
+   sudo /usr/local/sbin/mm-pricing-service-release check \
+     /opt/MM/releases/pricing-service/<release-name>
+   sudo /usr/local/sbin/mm-pricing-service-release switch \
      /opt/MM/releases/pricing-service/<release-name>
    ```
 
-5. Проверить health/OpenAPI/UI/API без Bitrix/Telegram side effects; marker
+   В production нельзя напрямую вызывать low-level builder/switch из checkout,
+   worktree или release. Controller закрепляет canonical paths, повторно сверяет
+   active и передаёт switch обязательный `PRICING_SERVICE_EXPECTED_ACTIVE_RELEASE`.
+4. Проверить health/OpenAPI/UI/API без Bitrix/Telegram side effects; marker
    `.release-verified` создаётся switch-скриптом только после успешного smoke.
-6. Наблюдать один ночной catalog sync и один management daily cycle. Известный
+5. Наблюдать один ночной catalog sync и один management daily cycle. Известный
    dashboard status `owner cash transfer control has a high unresolved issue`
    сравнивать с дорелизным baseline и не считать новой технической регрессией.
-7. При ошибке вернуть symlink на предыдущий verified release; additive migrations
+6. При ошибке guarded rollback возвращает symlink на предыдущий verified release;
+   additive migrations
    допускают запуск старого кода.
-8. Retention не выполнять до следующего критического планового цикла; после него
+7. Retention не выполнять до следующего критического планового цикла; после него
    оставить active + 3 verified releases и удалять остальные только через safe
    retention report.
 
 # Changelog
 
+- 2026-07-21 — production release переведён на workspace control-plane с
+  pinned strict-switch; direct low-level cutover объявлен только test/break-glass
+  интерфейсом.
 - 2026-07-21 — strict release provenance, mandatory persistent mutable-root and
   expected-active, route compatibility, JSONL switch audit, safe marker refresh и
   HTTP 422 для обратного retail balance period.

@@ -24,6 +24,7 @@ import {
   snapshotMonthLabel,
   statusLabel,
 } from "./customerPriceTypeLabels";
+import { CustomerPriceTypeEvidence } from "./CustomerPriceTypeEvidence";
 
 interface CustomerPriceTypesWorkspaceProps {
   bitrixMode?: boolean;
@@ -555,10 +556,10 @@ function QualityModule({ role }: { role?: string }) {
                       )}
                       {sampleDetailQuery.data.snapshot.conflicts.length > 0 && <div style={{ fontSize: 13 }}>Конфликты данных: {sampleDetailQuery.data.snapshot.conflicts.map(reasonLabel).join("; ")}</div>}
                       {sampleDetailQuery.data.profile.master_data_flags.length > 0 && <div style={{ fontSize: 13 }}>Признаки справочника: {sampleDetailQuery.data.profile.master_data_flags.map(reasonLabel).join("; ")}</div>}
-                      <EvidenceBlock title="История" value={sampleDetailQuery.data.snapshot.history} />
-                      <EvidenceBlock title="Возвраты" value={sampleDetailQuery.data.snapshot.returns} />
-                      {sampleDetailQuery.data.snapshot.money_visible && <EvidenceBlock title="Экономика" value={sampleDetailQuery.data.snapshot.economics} />}
-                      {sampleDetailQuery.data.snapshot.money_visible && <EvidenceBlock title="Оплаты" value={sampleDetailQuery.data.snapshot.payments} />}
+                      <CustomerPriceTypeEvidence kind="history" title="История" value={sampleDetailQuery.data.snapshot.history} />
+                      <CustomerPriceTypeEvidence kind="returns" title="Возвраты" value={sampleDetailQuery.data.snapshot.returns} />
+                      {sampleDetailQuery.data.snapshot.money_visible && <CustomerPriceTypeEvidence kind="economics" title="Экономика" value={sampleDetailQuery.data.snapshot.economics} />}
+                      {sampleDetailQuery.data.snapshot.money_visible && <CustomerPriceTypeEvidence kind="payments" title="Оплаты" value={sampleDetailQuery.data.snapshot.payments} />}
                     </>
                   )}
                 </div>
@@ -602,18 +603,6 @@ function QualityModule({ role }: { role?: string }) {
         </section>
       )}
     </>
-  );
-}
-
-function EvidenceBlock({ title, value }: { title: string; value: Record<string, unknown> | null }) {
-  if (!value || Object.keys(value).length === 0) return null;
-  return (
-    <details style={{ fontSize: 13 }}>
-      <summary style={{ cursor: "pointer", fontWeight: 700 }}>{title}</summary>
-      <pre style={{ margin: "8px 0 0", padding: 10, overflowX: "auto", borderRadius: 8, background: "var(--color-surface, #fff)", whiteSpace: "pre-wrap" }}>
-        {JSON.stringify(value, null, 2)}
-      </pre>
-    </details>
   );
 }
 

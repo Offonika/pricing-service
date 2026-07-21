@@ -176,7 +176,8 @@ def test_orchestration_run_and_delivery_are_durable_and_idempotent(tmp_path) -> 
         engine.dispose()
 
 
-def test_orchestration_uses_a_dedicated_token(monkeypatch) -> None:
+def test_orchestration_uses_a_dedicated_token(monkeypatch, tmp_path) -> None:
+    monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("MANAGEMENT_INTERNAL_API_TOKEN", "legacy-management-token")
     monkeypatch.delenv("ORCHESTRATION_INTERNAL_API_TOKEN", raising=False)
 

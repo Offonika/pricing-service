@@ -156,6 +156,16 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 - Side effects остаются dry-run, если они не были production-enabled до refactor.
 - Первая волна миграций additive; удаление данных и колонок запрещено.
 - Активный release symlink и rollback target не участвуют в cleanup.
+- Release builder принимает только source commit, содержащий обязательную production-базу
+  `PRICING_SERVICE_RELEASE_REQUIRED_BASE_REF` (`origin/main` по умолчанию), и фиксирует
+  проверенный ref/commit в manifest.
+- Release switch отклоняет manifest без проверенного provenance и кандидат, который
+  удаляет API-операции активного релиза или обязательные маршруты из
+  `config/production_required_routes.json`.
+- Post-switch smoke проверяет контроль задачи 997 целиком: endpoint должен ответить
+  `ready`, вернуть и проверить все 11 контрагентов. Ошибка возвращает предыдущий релиз.
+- Попытки, успешные переключения и rollback записываются в append-only JSONL-журнал
+  `PRICING_SERVICE_SWITCH_AUDIT_LOG`.
 - Scheduler не включает timer для job, пока runtime registry не переведён из
   `cron_active_timer_disabled` в разрешённое переходное/целевое состояние.
 - Delivery со статусом `unknown` не повторяется автоматически.
@@ -233,6 +243,8 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 
 # Changelog
 
+- 2026-07-21 — добавлены production-base provenance gate, защита от удаления API,
+  обязательный smoke задачи 997 и журнал переключений после регрессии 20.07.
 - 2026-07-20 — successful release switch создает `.release-verified`, чтобы
   ежедневный safe retention мог сохранять active + 3 rollback и удалять только
   ранее проверенные лишние релизы.

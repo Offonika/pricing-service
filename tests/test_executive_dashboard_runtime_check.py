@@ -116,6 +116,16 @@ def _runtime_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=payloads["service_accruals"])
     if path.endswith("/management-balance"):
         return httpx.Response(200, json=payloads["management_balance"])
+    if path.endswith("/retail-counterparty-zero-balances"):
+        return httpx.Response(
+            200,
+            json={
+                "status": "ready",
+                "requested_count": 11,
+                "checked_count": 11,
+                "items": [{"status": "ok"}] * 11,
+            },
+        )
     if path == "/api/management/executive-dashboard":
         return httpx.Response(200, json=payloads["dashboard"])
     return httpx.Response(404)
@@ -133,7 +143,7 @@ def test_collect_runtime_checks_accepts_empty_actions_and_session_probe_422() ->
         )
 
     assert not errors
-    assert len(checks) == 9
+    assert len(checks) == 10
     assert payloads["actions"]["payload"] == []
 
 
@@ -160,6 +170,35 @@ def test_collect_runtime_checks_rejects_http_and_schema_failures() -> None:
     assert "cashflow endpoint returned HTTP 500" in errors
     assert "dashboard response does not contain blocks" in errors
     assert "actions response does not contain a payload list" in errors
+
+
+def test_collect_runtime_checks_rejects_incomplete_retail_balance_control() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        response = _runtime_handler(request)
+        if request.url.path.endswith("/retail-counterparty-zero-balances"):
+            return httpx.Response(
+                200,
+                json={
+                    "status": "unavailable",
+                    "requested_count": 11,
+                    "checked_count": 0,
+                    "items": [],
+                },
+            )
+        return response
+
+    with httpx.Client(
+        base_url="http://dashboard.test",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        _, _, errors = collect_runtime_checks(
+            client,
+            requested_date=date(2026, 7, 11),
+            headers={"Authorization": "Bearer test"},
+        )
+
+    assert "retail counterparty balance source is not ready" in errors
+    assert "retail counterparty balances were not checked completely" in errors
 
 
 def test_monitor_fails_for_stale_cashflow() -> None:

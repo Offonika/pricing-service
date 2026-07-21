@@ -7,6 +7,7 @@ BASE_RELEASE="${PRICING_SERVICE_BASE_RELEASE:-}"
 OVERLAY_PATHS="${PRICING_SERVICE_RELEASE_OVERLAY_PATHS:-}"
 ALLOW_DIRTY="${PRICING_SERVICE_ALLOW_DIRTY:-0}"
 ALLOW_OVERLAY="${PRICING_SERVICE_ALLOW_OVERLAY:-0}"
+REQUIRED_BASE_REF="${PRICING_SERVICE_RELEASE_REQUIRED_BASE_REF:-origin/main}"
 BUILD_UI="${PRICING_SERVICE_BUILD_UI:-1}"
 INSTALL_VENV="${PRICING_SERVICE_INSTALL_VENV:-1}"
 PYTHON_BOOTSTRAP="${PRICING_SERVICE_PYTHON_BOOTSTRAP:-python3}"
@@ -51,6 +52,15 @@ if [[ "$MUTABLE_ROOT" != /* ]]; then
 fi
 
 source_commit="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
+if ! required_base_commit="$(git -C "$SOURCE_ROOT" rev-parse --verify "${REQUIRED_BASE_REF}^{commit}" 2>/dev/null)"; then
+  echo "required production base ref is unavailable: $REQUIRED_BASE_REF" >&2
+  exit 2
+fi
+if ! git -C "$SOURCE_ROOT" merge-base --is-ancestor "$required_base_commit" "$source_commit"; then
+  echo "source commit does not contain required production base $REQUIRED_BASE_REF ($required_base_commit)" >&2
+  echo "merge the current production base into the release branch before building" >&2
+  exit 2
+fi
 source_dirty=false
 if [[ -n "$(git -C "$SOURCE_ROOT" status --porcelain)" ]]; then
   source_dirty=true
@@ -219,6 +229,9 @@ cat >"$TEMP_DIR/release-manifest.json" <<EOF
   "base_release": "${BASE_RELEASE:-source-tree}",
   "overlay_paths": "${OVERLAY_PATHS:-all}",
   "source_commit": "$source_commit",
+  "source_verified": true,
+  "required_base_ref": "$REQUIRED_BASE_REF",
+  "required_base_commit": "$required_base_commit",
   "source_dirty": $source_dirty,
   "runtime_env_file": "$RUNTIME_ENV_FILE",
   "python_version": "$python_version",

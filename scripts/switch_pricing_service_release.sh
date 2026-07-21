@@ -12,6 +12,7 @@ FORCE_SMOKE_FAILURE="${PRICING_SERVICE_FORCE_SMOKE_FAILURE:-0}"
 PYTHON_BOOTSTRAP="${PRICING_SERVICE_PYTHON_BOOTSTRAP:-python3}"
 EXPECTED_ACTIVE_RELEASE="${PRICING_SERVICE_EXPECTED_ACTIVE_RELEASE:-}"
 SWITCH_LOCK_FILE="${PRICING_SERVICE_SWITCH_LOCK_FILE:-/var/lock/pricing-service-release-switch.lock}"
+SWITCH_AUDIT_LOG="${PRICING_SERVICE_SWITCH_AUDIT_LOG:-/var/log/pricing/pricing-release-switch.jsonl}"
 
 hash_release_content() {
   local release_dir="$1"
@@ -51,19 +52,34 @@ if [[ ! -f "$RELEASE_DIR/ui/dist/index.html" ]]; then
   exit 2
 fi
 
-manifest_integrity="$("$PYTHON_BOOTSTRAP" - "$RELEASE_DIR/release-manifest.json" <<'PY'
+mapfile -t manifest_fields < <("$PYTHON_BOOTSTRAP" - "$RELEASE_DIR/release-manifest.json" <<'PY'
 import json
 import pathlib
 import sys
 
 manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
-print(
-    f"{manifest.get('content_hash_scheme') or ''}\t"
-    f"{manifest.get('content_sha256') or ''}"
-)
+print(manifest.get("content_hash_scheme") or "")
+print(manifest.get("content_sha256") or "")
+print(str(manifest.get("source_verified") is True).lower())
+print(manifest.get("source_commit") or "")
+print(manifest.get("required_base_ref") or "")
+print(manifest.get("required_base_commit") or "")
 PY
-)"
-IFS=$'\t' read -r content_hash_scheme expected_content_sha256 <<<"$manifest_integrity"
+)
+content_hash_scheme="${manifest_fields[0]:-}"
+expected_content_sha256="${manifest_fields[1]:-}"
+source_verified="${manifest_fields[2]:-false}"
+source_commit="${manifest_fields[3]:-}"
+required_base_ref="${manifest_fields[4]:-}"
+required_base_commit="${manifest_fields[5]:-}"
+if [[ "$source_verified" != true ]] || [[ ! "$source_commit" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "release manifest does not contain verified source provenance" >&2
+  exit 2
+fi
+if [[ -z "$required_base_ref" ]] || [[ ! "$required_base_commit" =~ ^[0-9a-f]{40}$ ]]; then
+  echo "release manifest does not contain a verified production base" >&2
+  exit 2
+fi
 if [[ "$content_hash_scheme" == "sha256-files-v2-no-python-cache" ]]; then
   if [[ ! "$expected_content_sha256" =~ ^[0-9a-f]{64}$ ]]; then
     echo "release manifest has an invalid content_sha256" >&2
@@ -108,6 +124,47 @@ if [[ -z "$previous_target" ]] || [[ ! -d "$previous_target" ]]; then
   echo "active release link has no valid rollback target: $ACTIVE_LINK" >&2
   exit 2
 fi
+
+append_switch_audit() {
+  local status="$1"
+  local detail="${2:-}"
+  "$PYTHON_BOOTSTRAP" - \
+    "$SWITCH_AUDIT_LOG" "$status" "$detail" "$ACTIVE_LINK" \
+    "$previous_target" "$RELEASE_DIR" "$source_commit" \
+    "$required_base_ref" "$required_base_commit" <<'PY'
+import datetime
+import json
+import pathlib
+import sys
+
+(
+    log_path,
+    status,
+    detail,
+    active_link,
+    previous_release,
+    candidate_release,
+    source_commit,
+    required_base_ref,
+    required_base_commit,
+) = sys.argv[1:]
+path = pathlib.Path(log_path)
+path.parent.mkdir(parents=True, exist_ok=True)
+event = {
+    "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    "status": status,
+    "detail": detail,
+    "active_link": active_link,
+    "previous_release": previous_release,
+    "candidate_release": candidate_release,
+    "source_commit": source_commit,
+    "required_base_ref": required_base_ref,
+    "required_base_commit": required_base_commit,
+}
+with path.open("a", encoding="utf-8") as handle:
+    handle.write(json.dumps(event, ensure_ascii=False, sort_keys=True) + "\n")
+PY
+}
 if [[ -n "$EXPECTED_ACTIVE_RELEASE" ]]; then
   expected_target="$(readlink -f "$EXPECTED_ACTIVE_RELEASE" 2>/dev/null || true)"
   if [[ -z "$expected_target" ]] || [[ "$previous_target" != "$expected_target" ]]; then
@@ -116,14 +173,20 @@ if [[ -n "$EXPECTED_ACTIVE_RELEASE" ]]; then
   fi
 fi
 
-(
+if ! (
   cd "$RELEASE_DIR"
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$RELEASE_DIR" \
+    "$PYTHON_BIN" scripts/validate_release_api_compatibility.py \
+    --baseline-dir "$previous_target"
   PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$RELEASE_DIR" \
     "$PYTHON_BIN" scripts/validate_executive_dashboard_release.py
   PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$RELEASE_DIR" \
     "$PYTHON_BIN" scripts/validate_receivables_release.py \
     --release-dir "$RELEASE_DIR"
-)
+); then
+  append_switch_audit "rejected" "pre_switch_validation_failed"
+  exit 2
+fi
 
 chmod -R a+rX "$RELEASE_DIR/ui/dist"
 
@@ -132,6 +195,8 @@ if [[ "$current_target" != "$previous_target" ]]; then
   echo "active release changed during preflight: expected $previous_target, found $current_target" >&2
   exit 3
 fi
+
+append_switch_audit "attempt" "pre_switch_validations_passed"
 
 next_link="${ACTIVE_LINK}.next.$$"
 ln -s "$RELEASE_DIR" "$next_link"
@@ -145,6 +210,7 @@ rollback() {
     ln -s "$previous_target" "$rollback_link"
     mv -Tf "$rollback_link" "$ACTIVE_LINK"
     "$SYSTEMCTL_BIN" restart "$SERVICE_NAME"
+    append_switch_audit "rolled_back" "post_switch_smoke_failed" || true
   fi
 }
 trap rollback ERR
@@ -177,6 +243,7 @@ fi
 verification_marker="$RELEASE_DIR/.release-verified"
 printf '%s\n' "verified_at=$(date -Is)" >"$verification_marker"
 chmod 0444 "$verification_marker"
+append_switch_audit "verified" "post_switch_smoke_passed"
 
 trap - ERR
 echo "active pricing-service release: $RELEASE_DIR"

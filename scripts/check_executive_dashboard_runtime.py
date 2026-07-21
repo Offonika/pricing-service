@@ -5,6 +5,7 @@ import argparse
 import json
 from datetime import date, datetime, time
 from typing import Any
+from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -15,6 +16,19 @@ MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 KNOWN_INCOMPLETE_BLOCKS = {"tasks", "daily_focus"}
 UNHEALTHY_SOURCE_STATUSES = {"stale", "missing", "source_missing", "source_error", "error"}
 UNHEALTHY_FRESHNESS_STATUSES = {"stale", "missing"}
+RETAIL_COUNTERPARTY_CODES = (
+    "РБ0000989",
+    "РБ017072",
+    "РБ002643",
+    "РБ006811",
+    "РБ026734",
+    "РБ042678",
+    "РБ037818",
+    "РБ022031",
+    "РБ005545",
+    "РБ031225",
+    "РБ000746",
+)
 
 
 def _request(
@@ -97,6 +111,18 @@ def _validate_payload_shape(name: str, payload: Any) -> list[str]:
             source_summary.get("salary_reconciliation"), dict
         ):
             errors.append("management_balance response does not contain salary_reconciliation")
+    elif name == "retail_counterparty_balances":
+        requested_count = payload.get("requested_count")
+        checked_count = payload.get("checked_count")
+        items = payload.get("items")
+        if payload.get("status") != "ready":
+            errors.append("retail counterparty balance source is not ready")
+        if requested_count != len(RETAIL_COUNTERPARTY_CODES):
+            errors.append("retail counterparty balance response has invalid requested_count")
+        if checked_count != requested_count:
+            errors.append("retail counterparty balances were not checked completely")
+        if not isinstance(items, list) or len(items) != len(RETAIL_COUNTERPARTY_CODES):
+            errors.append("retail counterparty balance response has invalid items")
     return errors
 
 
@@ -147,6 +173,13 @@ def collect_runtime_checks(
         "management_balance": ("/api/management/executive-dashboard/management-balance"),
         "service_accruals": (
             "/api/management/executive-dashboard/service-accruals" f"?month={month_start[:7]}"
+        ),
+        "retail_counterparty_balances": (
+            "/api/management/retail-counterparty-zero-balances?"
+            + urlencode(
+                {"counterparty_code": RETAIL_COUNTERPARTY_CODES},
+                doseq=True,
+            )
         ),
     }
     for name, path in endpoints.items():

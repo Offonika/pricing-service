@@ -10,6 +10,19 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 BUILD_SCRIPT = REPO_ROOT / "scripts/build_pricing_service_release.sh"
 SWITCH_SCRIPT = REPO_ROOT / "scripts/switch_pricing_service_release.sh"
 CONTENT_HASH_SCHEME = "sha256-files-v2-no-python-cache"
+VERIFIED_SOURCE_COMMIT = "a" * 40
+VERIFIED_BASE_COMMIT = "b" * 40
+
+
+def _write_verified_manifest(path: Path, **extra: object) -> None:
+    payload: dict[str, object] = {
+        "source_verified": True,
+        "source_commit": VERIFIED_SOURCE_COMMIT,
+        "required_base_ref": "origin/main",
+        "required_base_commit": VERIFIED_BASE_COMMIT,
+    }
+    payload.update(extra)
+    path.write_text(json.dumps(payload), encoding="utf-8")
 
 
 def _run(command: list[str], *, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -77,6 +90,7 @@ def test_release_builder_creates_locked_release_specific_runtime(tmp_path: Path)
         "PRICING_SERVICE_RELEASE_ROOT": str(release_root),
         "PRICING_SERVICE_MUTABLE_ROOT": str(mutable_root),
         "PRICING_SERVICE_BUILD_UI": "0",
+        "PRICING_SERVICE_RELEASE_REQUIRED_BASE_REF": "HEAD",
     }
     result = _run([str(BUILD_SCRIPT), "test-release"], env=env)
     assert result.returncode == 0, result.stderr
@@ -84,6 +98,9 @@ def test_release_builder_creates_locked_release_specific_runtime(tmp_path: Path)
     release = Path(result.stdout.strip())
     manifest = json.loads((release / "release-manifest.json").read_text(encoding="utf-8"))
     assert manifest["source_dirty"] is False
+    assert manifest["source_verified"] is True
+    assert manifest["required_base_ref"] == "HEAD"
+    assert manifest["required_base_commit"] == manifest["source_commit"]
     assert manifest["runtime_env_file"] == str(source / ".env")
     assert manifest["alembic_revision"] == "r1"
     assert manifest["requirements_lock_sha256"] == hashlib.sha256(b"").hexdigest()
@@ -105,6 +122,45 @@ def test_release_builder_creates_locked_release_specific_runtime(tmp_path: Path)
     assert (release / "ui/dist/index.html").stat().st_mode & 0o222 == 0
 
 
+def test_release_builder_rejects_branch_behind_required_production_base(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "ui/dist").mkdir(parents=True)
+    (source / "ui/dist/index.html").write_text("release", encoding="utf-8")
+    (source / "requirements.lock").write_text("", encoding="utf-8")
+    (source / ".env").write_text("APP_NAME=test\n", encoding="utf-8")
+    subprocess.run(["git", "init", "-q", "-b", "main", str(source)], check=True)
+    subprocess.run(
+        ["git", "-C", str(source), "config", "user.email", "test@example.com"],
+        check=True,
+    )
+    subprocess.run(["git", "-C", str(source), "config", "user.name", "Test"], check=True)
+    subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-qm", "base"], check=True)
+    subprocess.run(["git", "-C", str(source), "switch", "-qc", "stale-feature"], check=True)
+    subprocess.run(["git", "-C", str(source), "switch", "-q", "main"], check=True)
+    (source / "production-marker.txt").write_text("required\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(source), "add", "."], check=True)
+    subprocess.run(["git", "-C", str(source), "commit", "-qm", "production update"], check=True)
+    subprocess.run(["git", "-C", str(source), "switch", "-q", "stale-feature"], check=True)
+
+    result = _run(
+        [str(BUILD_SCRIPT), "stale-release"],
+        env={
+            **os.environ,
+            "PRICING_SERVICE_SOURCE_ROOT": str(source),
+            "PRICING_SERVICE_RELEASE_ROOT": str(tmp_path / "releases"),
+            "PRICING_SERVICE_MUTABLE_ROOT": str(tmp_path / "runtime"),
+            "PRICING_SERVICE_BUILD_UI": "0",
+            "PRICING_SERVICE_INSTALL_VENV": "0",
+            "PRICING_SERVICE_RELEASE_REQUIRED_BASE_REF": "main",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "does not contain required production base" in result.stderr
+
+
 def test_failed_smoke_restores_one_backend_and_ui_release_link(tmp_path: Path) -> None:
     previous = tmp_path / "previous"
     candidate = tmp_path / "candidate"
@@ -116,7 +172,7 @@ def test_failed_smoke_restores_one_backend_and_ui_release_link(tmp_path: Path) -
     fake_python.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     fake_python.chmod(0o755)
     (candidate / "ui/dist/index.html").write_text("candidate", encoding="utf-8")
-    (candidate / "release-manifest.json").write_text("{}", encoding="utf-8")
+    _write_verified_manifest(candidate / "release-manifest.json")
     (candidate / "requirements.lock").write_text("", encoding="utf-8")
     active_link = tmp_path / "active"
     active_link.symlink_to(previous)
@@ -136,6 +192,7 @@ def test_failed_smoke_restores_one_backend_and_ui_release_link(tmp_path: Path) -
         "PRICING_SERVICE_SYSTEMD_PREFLIGHT": "0",
         "PRICING_SERVICE_NGINX_PREFLIGHT": "0",
         "PRICING_SERVICE_FORCE_SMOKE_FAILURE": "1",
+        "PRICING_SERVICE_SWITCH_AUDIT_LOG": str(tmp_path / "switch-audit.jsonl"),
         "SYSTEMCTL_LOG": str(systemctl_log),
     }
     result = _run([str(SWITCH_SCRIPT), str(candidate)], env=env)
@@ -147,6 +204,11 @@ def test_failed_smoke_restores_one_backend_and_ui_release_link(tmp_path: Path) -
         "restart pricing-service.service",
     ]
     assert not (candidate / ".release-verified").exists()
+    audit_events = [
+        json.loads(line)
+        for line in (tmp_path / "switch-audit.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [event["status"] for event in audit_events] == ["attempt", "rolled_back"]
 
 
 def test_successful_switch_marks_release_verified_after_smoke(tmp_path: Path) -> None:
@@ -160,7 +222,7 @@ def test_successful_switch_marks_release_verified_after_smoke(tmp_path: Path) ->
     fake_python.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     fake_python.chmod(0o755)
     (candidate / "ui/dist/index.html").write_text("candidate", encoding="utf-8")
-    (candidate / "release-manifest.json").write_text("{}", encoding="utf-8")
+    _write_verified_manifest(candidate / "release-manifest.json")
     (candidate / "requirements.lock").write_text("", encoding="utf-8")
     active_link = tmp_path / "active"
     active_link.symlink_to(previous)
@@ -176,6 +238,7 @@ def test_successful_switch_marks_release_verified_after_smoke(tmp_path: Path) ->
             "PRICING_SERVICE_SYSTEMCTL_BIN": str(fake_systemctl),
             "PRICING_SERVICE_SYSTEMD_PREFLIGHT": "0",
             "PRICING_SERVICE_NGINX_PREFLIGHT": "0",
+            "PRICING_SERVICE_SWITCH_AUDIT_LOG": str(tmp_path / "switch-audit.jsonl"),
         },
     )
 
@@ -184,6 +247,11 @@ def test_successful_switch_marks_release_verified_after_smoke(tmp_path: Path) ->
     marker = candidate / ".release-verified"
     assert marker.read_text(encoding="utf-8").startswith("verified_at=")
     assert marker.stat().st_mode & 0o222 == 0
+    audit_events = [
+        json.loads(line)
+        for line in (tmp_path / "switch-audit.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [event["status"] for event in audit_events] == ["attempt", "verified"]
 
 
 def test_switch_refuses_candidate_without_a_valid_rollback_target(tmp_path: Path) -> None:
@@ -196,7 +264,7 @@ def test_switch_refuses_candidate_without_a_valid_rollback_target(tmp_path: Path
     )
     (candidate / ".venv/bin/python").chmod(0o755)
     (candidate / "ui/dist/index.html").write_text("candidate", encoding="utf-8")
-    (candidate / "release-manifest.json").write_text("{}", encoding="utf-8")
+    _write_verified_manifest(candidate / "release-manifest.json")
     (candidate / "requirements.lock").write_text("", encoding="utf-8")
 
     result = _run(
@@ -206,11 +274,39 @@ def test_switch_refuses_candidate_without_a_valid_rollback_target(tmp_path: Path
             "PRICING_SERVICE_ACTIVE_LINK": str(tmp_path / "missing-active"),
             "PRICING_SERVICE_SYSTEMD_PREFLIGHT": "0",
             "PRICING_SERVICE_NGINX_PREFLIGHT": "0",
+            "PRICING_SERVICE_SWITCH_AUDIT_LOG": str(tmp_path / "switch-audit.jsonl"),
         },
     )
 
     assert result.returncode == 2
     assert "no valid rollback target" in result.stderr
+
+
+def test_switch_refuses_candidate_without_verified_source_provenance(tmp_path: Path) -> None:
+    candidate = tmp_path / "candidate"
+    (candidate / ".venv/bin").mkdir(parents=True)
+    (candidate / "ui/dist").mkdir(parents=True)
+    fake_python = candidate / ".venv/bin/python"
+    fake_python.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_python.chmod(0o755)
+    (candidate / "ui/dist/index.html").write_text("candidate", encoding="utf-8")
+    (candidate / "release-manifest.json").write_text("{}", encoding="utf-8")
+    (candidate / "requirements.lock").write_text("", encoding="utf-8")
+
+    result = _run(
+        [str(SWITCH_SCRIPT), str(candidate)],
+        env={
+            **os.environ,
+            "PRICING_SERVICE_ACTIVE_LINK": str(tmp_path / "active"),
+            "PRICING_SERVICE_SWITCH_LOCK_FILE": str(tmp_path / "switch.lock"),
+            "PRICING_SERVICE_SWITCH_AUDIT_LOG": str(tmp_path / "switch-audit.jsonl"),
+            "PRICING_SERVICE_SYSTEMD_PREFLIGHT": "0",
+            "PRICING_SERVICE_NGINX_PREFLIGHT": "0",
+        },
+    )
+
+    assert result.returncode == 2
+    assert "verified source provenance" in result.stderr
 
 
 def test_switch_refuses_when_active_release_changed_since_preflight(tmp_path: Path) -> None:
@@ -225,7 +321,7 @@ def test_switch_refuses_when_active_release_changed_since_preflight(tmp_path: Pa
     fake_python.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     fake_python.chmod(0o755)
     (candidate / "ui/dist/index.html").write_text("candidate", encoding="utf-8")
-    (candidate / "release-manifest.json").write_text("{}", encoding="utf-8")
+    _write_verified_manifest(candidate / "release-manifest.json")
     (candidate / "requirements.lock").write_text("", encoding="utf-8")
     active_link = tmp_path / "active"
     active_link.symlink_to(previous)
@@ -239,6 +335,7 @@ def test_switch_refuses_when_active_release_changed_since_preflight(tmp_path: Pa
             "PRICING_SERVICE_SWITCH_LOCK_FILE": str(tmp_path / "switch.lock"),
             "PRICING_SERVICE_SYSTEMD_PREFLIGHT": "0",
             "PRICING_SERVICE_NGINX_PREFLIGHT": "0",
+            "PRICING_SERVICE_SWITCH_AUDIT_LOG": str(tmp_path / "switch-audit.jsonl"),
         },
     )
 
@@ -259,7 +356,7 @@ def test_switch_stops_when_nginx_dump_fails_even_if_output_contains_active_path(
     fake_python.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
     fake_python.chmod(0o755)
     (candidate / "ui/dist/index.html").write_text("candidate", encoding="utf-8")
-    (candidate / "release-manifest.json").write_text("{}", encoding="utf-8")
+    _write_verified_manifest(candidate / "release-manifest.json")
     (candidate / "requirements.lock").write_text("", encoding="utf-8")
     active_link = tmp_path / "active"
     active_link.symlink_to(previous)
@@ -287,6 +384,7 @@ def test_switch_stops_when_nginx_dump_fails_even_if_output_contains_active_path(
             "PRICING_SERVICE_SYSTEMD_PREFLIGHT": "0",
             "PRICING_SERVICE_NGINX_BIN": str(fake_nginx),
             "SYSTEMCTL_LOG": str(systemctl_log),
+            "PRICING_SERVICE_SWITCH_AUDIT_LOG": str(tmp_path / "switch-audit.jsonl"),
         },
     )
 
@@ -311,6 +409,10 @@ def test_switch_refuses_release_with_content_hash_mismatch(tmp_path: Path) -> No
     (candidate / "release-manifest.json").write_text(
         json.dumps(
             {
+                "source_verified": True,
+                "source_commit": VERIFIED_SOURCE_COMMIT,
+                "required_base_ref": "origin/main",
+                "required_base_commit": VERIFIED_BASE_COMMIT,
                 "content_hash_scheme": CONTENT_HASH_SCHEME,
                 "content_sha256": "0" * 64,
             }
@@ -328,6 +430,7 @@ def test_switch_refuses_release_with_content_hash_mismatch(tmp_path: Path) -> No
             "PRICING_SERVICE_ACTIVE_LINK": str(active_link),
             "PRICING_SERVICE_SYSTEMD_PREFLIGHT": "0",
             "PRICING_SERVICE_NGINX_PREFLIGHT": "0",
+            "PRICING_SERVICE_SWITCH_AUDIT_LOG": str(tmp_path / "switch-audit.jsonl"),
         },
     )
 

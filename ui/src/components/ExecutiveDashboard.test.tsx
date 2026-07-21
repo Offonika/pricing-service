@@ -672,7 +672,19 @@ function profitLossPeriodResponse(): ExecutiveProfitLossPeriodResponse {
     by_store: [],
     by_manager: [],
     expense_source_status: "ready",
-    expense_breakdown: [],
+    expense_breakdown: [
+      {
+        key: "rent",
+        label: "Аренда",
+        amount: "100000.00",
+        movement_count: 2,
+        review_count: 0,
+        source_status: "ready",
+        recognition_method: "cashflow_fallback",
+        estimated_count: 0,
+        meta: {},
+      },
+    ],
     expense_open_questions: [],
     inventory_loss: inventoryLoss(),
     filters: {},
@@ -725,6 +737,7 @@ async function renderProfitLossTab() {
 
 describe("executive profit and loss period", () => {
   beforeEach(() => {
+    window.localStorage.removeItem("mm:executive:profit-loss:expenses-expanded");
     vi.mocked(fetchExecutiveDashboard).mockReset();
     vi.mocked(fetchExecutiveDashboardActions).mockReset();
     vi.mocked(fetchExecutiveProfitLossPeriod).mockReset();
@@ -791,6 +804,27 @@ describe("executive profit and loss period", () => {
     expect(within(chart).getByText("Валовая маржа")).toBeVisible();
     expect(within(chart).getByText("Операционная маржа")).toBeVisible();
     expect(within(chart).getByText("Рентабельность чистой прибыли")).toBeVisible();
+  });
+
+  it("removes the daily bars and places collapsible DDS expenses after the P&L structure", async () => {
+    await renderProfitLossTab();
+
+    expect(screen.queryByLabelText("Динамика ОПУ по дням")).not.toBeInTheDocument();
+    const structure = screen.getByLabelText("Структура ОПУ");
+    const expenses = screen.getByLabelText("Операционные расходы по ДДС");
+    expect(structure.nextElementSibling).toBe(expenses);
+
+    const toggle = within(expenses).getByRole("button", { name: "Свернуть" });
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(within(expenses).getByText("Аренда")).toBeVisible();
+
+    fireEvent.click(toggle);
+    expect(within(expenses).queryByText("Аренда")).not.toBeInTheDocument();
+    expect(within(expenses).getByRole("button", { name: "Показать расшифровку" })).toHaveAttribute(
+      "aria-expanded",
+      "false"
+    );
+    expect(window.localStorage.getItem("mm:executive:profit-loss:expenses-expanded")).toBe("0");
   });
 });
 

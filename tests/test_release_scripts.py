@@ -256,6 +256,8 @@ def test_switch_stops_when_nginx_dump_fails_even_if_output_contains_active_path(
     assert "nginx configuration test failed" in result.stderr
     assert active_link.resolve() == previous
     assert not systemctl_log.exists()
+
+
 def test_switch_refuses_release_with_content_hash_mismatch(tmp_path: Path) -> None:
     previous = tmp_path / "previous"
     candidate = tmp_path / "candidate"

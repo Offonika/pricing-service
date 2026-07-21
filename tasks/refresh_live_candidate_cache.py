@@ -10,7 +10,7 @@ from pathlib import Path
 from time import monotonic
 from typing import Any
 
-from sqlalchemy import create_engine, delete, exists, or_, select
+from sqlalchemy import delete, exists, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.api.matching import (
@@ -20,6 +20,7 @@ from app.api.matching import (
     _rejected_item_ids_for_product,
 )
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import (
     CompetitorItem,
     CompetitorItemCompatibility,
@@ -250,7 +251,7 @@ def main() -> None:
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    engine = create_engine(get_settings().database_url)
+    engine = build_engine(get_settings().database_url)
     with Session(engine) as session:
         report = refresh_live_candidate_cache(
             session,

@@ -16,6 +16,10 @@
 8. `specs/README.md` — lifecycle новых крупных спецификаций проекта.
 9. `specs/pricing-service-architecture-hardening.md` — принятый план архитектурного
    оздоровления, вывода устаревшего источника и усиления границ между проектами.
+9. `registry/cli-jobs.json` — обязательные owner/dry-run/idempotency/side-effect
+   metadata для постоянных CLI и одноразовых backfill-команд.
+10. `specs/pricing-service-db-cli-cron-hardening.md` — Release B: завершение
+    централизации DB scopes/Unit of Work и очистка постоянных CLI/cron.
 
 ## Основные домены
 
@@ -30,7 +34,7 @@
 | Expertise/order flow | `Onepage.ExpertiseCaseMVP.md`, `TechDesign.ExpertiseCaseMVP.md`, `IntegrationContract.Expertise1C.md`, `Runbook.ExpertiseWave1.md`, `order_flow/README.md`, `specs/site-order-fulfillment-control-contour.md`, `specs/site-defect-archive-search.md` |
 | SKU/1C | `sku_policy.md`, `sku_dev_mapping.md`, `sku_dictionary_for_buyers.md`, `1c_sql_mapping.md`, `bank-payment-classifier-one-pager.md` |
 | Specs | `specs/README.md`, новые specs в `docs/specs/` |
-| Architecture hardening | `specs/pricing-service-architecture-hardening.md`, `architecture.md`, `../openapi.yaml` |
+| Architecture hardening | `specs/pricing-service-architecture-hardening.md`, `specs/pricing-service-db-cli-cron-hardening.md`, `architecture.md`, `../openapi.yaml` |
 
 ## Правила расширения
 

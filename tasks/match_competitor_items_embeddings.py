@@ -13,10 +13,11 @@ from pathlib import Path
 from typing import Any, Iterable
 
 import numpy as np
-from sqlalchemy import create_engine, exists, func, select
+from sqlalchemy import exists, func, select
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import CompetitorItem, Product
 from app.models.competitor_item_compatibility import CompetitorItemCompatibility
 from app.models.competitor_item_match import (
@@ -8942,7 +8943,7 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = get_settings()
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
     embeddings_dir = Path(args.embeddings_dir or settings.embeddings_dir)
     first_seen_after = (
         datetime.strptime(args.first_seen_after, "%Y-%m-%d").date()

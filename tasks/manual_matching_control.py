@@ -5,10 +5,10 @@ import json
 from datetime import date
 from pathlib import Path
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.services.manual_matching_control import (
     build_manual_matching_control_report,
     render_manual_matching_markdown,
@@ -44,7 +44,7 @@ def main(argv: list[str] | None = None) -> dict:
     args = parse_args(argv)
     target_date = date.fromisoformat(args.report_date) if args.report_date else report_date_today()
     database_url = args.database_url or get_settings().database_url
-    engine = create_engine(database_url, pool_pre_ping=True)
+    engine = build_engine(database_url, pool_pre_ping=True)
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 

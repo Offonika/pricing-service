@@ -1207,6 +1207,18 @@ describe("executive sales period", () => {
     ).toHaveLength(4);
   });
 
+  it("shows a fully collected forecast period as complete", async () => {
+    const response = salesPeriodResponse();
+    await renderSalesTab({
+      ...response,
+      forecast_status: "complete",
+      forecast_note: "Период полностью закрыт фактическими данными.",
+    });
+
+    expect(screen.getByText("период закрыт")).toBeVisible();
+    expect(screen.queryByText("месяц закрыт")).not.toBeInTheDocument();
+  });
+
   it("renders an info tooltip on the sales KPI cards", async () => {
     await renderSalesTab();
 

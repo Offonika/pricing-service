@@ -13,7 +13,6 @@ from collections import Counter
 from datetime import datetime
 from pathlib import Path
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +20,7 @@ if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
 from app.core.config import get_settings  # noqa: E402
+from app.infrastructure.db.engines import build_engine  # noqa: E402
 from app.services import site_order_fulfillment as fulfillment  # noqa: E402
 
 DEFAULT_OUTPUT_DIR = Path(".local/order-fulfillment-pilot")
@@ -83,12 +83,12 @@ def main() -> int:
     bitrix_webhook_url = resolve_bitrix_webhook_url(env_values)
     bitrix_client = fulfillment.BitrixChatClient(bitrix_webhook_url) if bitrix_webhook_url else None
     onec_engine = (
-        create_engine(settings.onec_database_url, pool_pre_ping=True)
+        build_engine(settings.onec_database_url, pool_pre_ping=True)
         if settings.onec_database_url
         else None
     )
     available_stage_ids = bitrix_client.list_deal_stage_ids() if bitrix_client else None
-    engine = create_engine(settings.database_url, pool_pre_ping=True)
+    engine = build_engine(settings.database_url, pool_pre_ping=True)
     with Session(engine) as session:
         review_rows = fulfillment.build_review_rows(
             session,

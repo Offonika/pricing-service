@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export PYTHONDONTWRITEBYTECODE=1
+
 RELEASE_DIR="${1:-}"
 ACTIVE_LINK="${PRICING_SERVICE_ACTIVE_LINK:-/opt/MM/pricing-service-task43-current}"
 SERVICE_NAME="${PRICING_SERVICE_SERVICE_NAME:-pricing-service.service}"

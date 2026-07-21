@@ -5,10 +5,11 @@ from __future__ import annotations
 import argparse
 import logging
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import Product
 from app.services.nomenclature_kind import nomenclature_kind
 from app.services.product_classification import recompute_product_classification
@@ -113,7 +114,7 @@ def main() -> None:
         ]
 
     settings = get_settings()
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
     with Session(engine) as session:
         stats = normalize_kinds(
             session,

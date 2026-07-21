@@ -13,9 +13,10 @@ from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from sqlalchemy import bindparam, create_engine, func, select, text
+from sqlalchemy import bindparam, func, select, text
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
 )
@@ -414,7 +415,7 @@ def main() -> int:
         or settings.onec_database_url
         or ""
     )
-    app_engine = create_engine(database_url, pool_pre_ping=True)
+    app_engine = build_engine(database_url, pool_pre_ping=True)
     try:
         items, run_id = load_auto_order_items(
             app_engine,
@@ -448,7 +449,7 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001 - optional advisory must not block base dry-run.
             b2b_customer_demand_error = f"{type(exc).__name__}: {exc}"
     if onec_database_url:
-        onec_engine = create_engine(onec_database_url, pool_pre_ping=True)
+        onec_engine = build_engine(onec_database_url, pool_pre_ping=True)
         try:
             scoped_candidate_tokens = auto_order_policy.onec_catalog_analog_candidate_model_tokens
             include_catalog_analog_candidates = args.include_onec_catalog_analog_candidates or bool(

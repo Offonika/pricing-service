@@ -3,7 +3,7 @@ spec_id: "pricing-service-architecture-hardening"
 title: "Pricing Service Architecture Hardening"
 doc_type: spec
 domain: "architecture"
-status: "accepted"
+status: "implemented"
 owner: "engineering"
 source_of_truth: true
 related_code:
@@ -14,7 +14,7 @@ related_code:
   - app/infrastructure/orchestration.py
   - app/main.py
   - infra/cron/competitor_matching_nightly.sh
-  - tasks/import_topcontrol_products_db.py
+  - tasks/sync_onec_product_catalog.py
   - scripts/export_openapi.py
   - scripts/build_pricing_service_release.sh
   - scripts/switch_pricing_service_release.sh
@@ -42,7 +42,7 @@ updated_at: "2026-07-21"
 
 Сделать `pricing-service` управляемым модульным монолитом без изменения
 бизнес-формул, внешних HTTP-маршрутов и действующих Bitrix24/Telegram-процессов.
-Spec фиксирует вывод TopControl из активного контура, единый слой подключений к БД,
+Spec фиксирует вывод устаревшего источника из активного контура, единый слой подключений к БД,
 границы между API/application/domain/infrastructure, тонкие cron/CLI entrypoints и
 контрактный обмен с соседними проектами.
 
@@ -51,7 +51,7 @@ Spec фиксирует вывод TopControl из активного конту
 Входит:
 
 - прямой read-only импорт каталога и свойств из `1С УТ 10.3 / Ekama`;
-- compatibility alias старой команды TopControl на один релиз;
+- удаление compatibility alias старой команды после успешного scheduled-run;
 - центральные фабрики Postgres и MSSQL/1С, session factory и Unit of Work;
 - постепенное устранение бизнес-логики из `infra/cron` и одноразовых `tasks`;
 - доменные границы catalog, matching, pricing, assortment, procurement,
@@ -74,7 +74,7 @@ Spec фиксирует вывод TopControl из активного конту
 
 # Change Summary / Spec Delta
 
-- Было: TopControl оставался в активных именах и документации, хотя importer уже
+- Было: устаревший источник оставался в активных именах и документации, хотя importer уже
   читает `1С` через `ONEC_DATABASE_URL`.
 - Станет: единственный активный источник каталога называется `1С`, старая CLI-команда
   один релиз делегирует новой и затем удаляется.
@@ -95,15 +95,15 @@ Spec фиксирует вывод TopControl из активного конту
 
 # Acceptance Criteria
 
-- [x] Активный код, env, cron и каноничная документация не используют TopControl;
+- [x] Активный код, env, cron и каноничная документация не используют устаревший источник;
   исторические упоминания изолированы как legacy.
-- [x] `tasks.import_topcontrol_products_db` один релиз вызывает
-  `tasks.sync_onec_product_catalog`, после успешного scheduled-run alias удаляется.
-- [ ] Каталог из 1С обновляется без ухудшения row count и freshness.
-- [ ] Postgres и 1С engines создаются только разрешенными factories; CI запрещает
+- [x] Compatibility alias удалён после успешного scheduled-run
+  `tasks.sync_onec_product_catalog`.
+- [x] Каталог из 1С обновляется без ухудшения row count и freshness.
+- [x] Postgres и 1С engines создаются только разрешенными factories; CI запрещает
   прямой `create_engine` вне allowlist.
 - [x] Write-use-cases подтверждают commit/rollback/idempotency тестами.
-- [ ] `infra/cron` не содержит SQL и бизнес-правил для мигрированных jobs.
+- [x] `infra/cron` не содержит SQL и бизнес-правил для мигрированных jobs.
 - [x] Weekly KPI загружается в `pricing-service` через authenticated idempotent API,
   а не через прямую запись из `mm-compensation` в его БД.
 - [x] Executive snapshots публикуются атомарно по versioned JSON Schema и читаются
@@ -184,6 +184,11 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 - Mutable state указывает на постоянный абсолютный root вне source worktree и release root.
 - Forward switch не принимает legacy manifest и не удаляет production API operations
   без отдельного изменения policy-файла, прошедшего review.
+- Release-builder принимает только clean Git tree, фиксирует commit, Alembic head и
+  content hash, исключает Python/test caches и делает весь release read-only;
+  writable state остаётся только во внешних symlink-каталогах.
+- Индексы `embeddings` относятся к persistent mutable state: builder не копирует их
+  в release, а подключает через canonical mutable-root так же, как `build` и `data`.
 - Scheduler не включает timer для job, пока runtime registry не переведён из
   `cron_active_timer_disabled` в разрешённое переходное/целевое состояние.
 - Delivery со статусом `unknown` не повторяется автоматически.
@@ -197,8 +202,7 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 - Snapshot отсутствует/устарел/не проходит schema/hash: dashboard возвращает
   `source_missing`, `stale` или `source_error`, а не подменяет данные нулями.
 - Ошибка после первой DB-операции: Unit of Work выполняет rollback.
-- Старый cron вызывает deprecated module: wrapper делегирует новой команде и пишет
-  warning, не меняя exit code.
+- Cron вызывает только актуальную команду каталога 1С.
 - Cleanup обнаружил runtime/reference path: каталог пропускается и попадает в отчет.
 - Production source commit не является предком кандидата, active release сменился,
   manifest не подтверждён или mutable-root временный: build/switch завершается ошибкой.
@@ -209,8 +213,9 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 
 - [x] Зафиксировать live baseline, active/rollback release и smoke URLs.
 - [x] Исправить текущие docs quality ошибки и зарегистрировать этот spec.
-- [x] Переименовать 1С catalog CLI, обновить cron/imports/tests и добавить alias.
-- [x] Удалить активные TopControl settings и обновить каноничную документацию.
+- [x] Переименовать 1С catalog CLI, обновить cron/imports/tests и удалить alias
+  после успешного scheduled-run.
+- [x] Удалить настройки устаревшего источника и обновить каноничную документацию.
 - [x] Добавить DB factories, Unit of Work и architecture tests.
 - [x] Перевести weekly KPI publication с прямого DB URL на internal API.
 - [x] Добавить shared snapshot schemas/manifest и нейтральные runtime paths.
@@ -224,30 +229,30 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
   expected-active guard, OpenAPI route compatibility и switch audit.
 - [x] Пересоздавать read-only `.release-verified` безопасно и отклонять обратный
   диапазон дат retail zero-balance endpoint.
-- [ ] Прогнать regression, собрать immutable release, smoke и rollback.
-- [ ] После контрольного цикла применить safe retention и удалить deprecated alias
-  в следующем релизе.
+- [x] Прогнать regression, собрать immutable release, smoke и rollback.
+- [x] Удалить deprecated catalog alias после успешного контрольного scheduled-run.
+- [ ] После следующего критического цикла strict-релиза применить safe retention.
 
 # Review Notes / Risks
 
-- В рабочем tree есть незакоммиченный dashboard-контур; refactor обязан сохранять его
-  изменения и избегать механического переписывания соответствующих файлов.
-- Live-сервис запускается через `/opt/MM/pricing-service-task43-current`; source
-  checkout не равен runtime truth до явного release switch.
-- Во время hardening-работ 2026-07-12 другой процесс переключил production на
-  `sales-dashboard-volume-bars-20260712-173002`; архитектурный rollout поэтому
-  не должен менять symlink, пока параллельный dashboard-релиз не зафиксирован.
+- Dashboard/UI-контур консолидирован вместе с архитектурными изменениями; canonical
+  `main` зафиксирован merge commit `3915d47`, live release собран из полного clean
+  source tree без overlay-цепочки.
+- Live-сервис запускается через `/opt/MM/pricing-service-task43-current`, который
+  указывает на `pricing-main-canonical-20260714-143050`.
+- Финансовый `source_status=partial`, расхождение баланса и неполные источники
+  остаются отдельной задачей качества данных и не меняют статус hardening-релиза.
 - Direct 1C SQL и application Postgres — разные engines и разные access policies.
 - Автоматический commit на каждый HTTP-запрос запрещен: транзакция соответствует
   application command, а не transport request вообще.
 
 # Tests
 
-- Unit: TopControl alias, DB factories, Unit of Work, domain errors, idempotency.
+- Unit: catalog importer, DB factories, Unit of Work, domain errors, idempotency.
 - Integration: Postgres transaction rollback, read-only 1C adapter, weekly KPI ingest,
   shared artifact schema/hash/freshness.
 - Architecture: forbidden imports, direct engines, sibling env/DB/build paths,
-  TopControl outside legacy.
+  устаревшее имя источника вне legacy/changelog.
 - Regression: full pytest, UI tests, OpenAPI check, Alembic check, docs quality.
 - Release integrity: стабильность `content_sha256` после появления runtime `.pyc` и
   marker, отказ при stale/dirty/unverified candidate, неверной базе, mutable-root,
@@ -311,3 +316,11 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 - 2026-07-12 — accepted architecture-hardening plan created from live baseline.
 - 2026-07-16 — durable orchestration and atomic release hardening implemented in repository; production cutover remains gated.
 - 2026-07-20 — release digest made stable against Python caches and enforced before atomic switch.
+- 2026-07-13 — новый catalog CLI прошёл scheduled-run, compatibility alias удалён.
+- 2026-07-14 — каталог `28 717 / 28 717`, missing `0`, outside `0`; management
+  snapshot `version=17` создан с уникальным content hash и одним audit `generated`.
+- 2026-07-14 — clean release `pricing-clean-ui-consolidation-20260714-132116`
+  переключён в production; сохранены три проверенных rollback, остальные release
+  catalogs удалены после dry-run retention.
+- 2026-07-14 — canonical clean release `pricing-main-canonical-20260714-143050`
+  собран из merged `main` (`3915d47`) и переключён после API/UI smoke.

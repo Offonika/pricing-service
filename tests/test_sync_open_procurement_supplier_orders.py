@@ -52,27 +52,42 @@ def test_open_supplier_order_row_includes_ved_import() -> None:
     assert order is not None
     assert order["КонтурЗакупки"] == "ВЭДИмпорт"
     assert order["procurement_contour_key"] == "ved_import"
-    assert order["procurement_stage_key"] == "supplier_order"
+    assert order["procurement_stage_key"] == "docs_collection"
     assert order["title"] == "ВЭД импорт · РБГУ000377 · 243 200 RMB · 2312 Huarigor battery"
     assert order["cargo_dropoff_date"] == ""
     assert order["expected_receipt_date"] == ""
 
 
-def test_open_supplier_order_row_routes_ved_with_expected_receipt_to_receiving() -> None:
+def test_ved_import_with_confirmed_receipt_routes_to_receiving() -> None:
     row = {
         **_row(2),
-        "expected_receipt_date": datetime(2026, 7, 1),
+        "expected_receipt_date": datetime(2026, 8, 1),
     }
 
     order = sync.order_from_open_supplier_order_row(
         row,
-        allowed_contours={"cargo", "ved_import"},
+        allowed_contours={"ved_import"},
     )
 
     assert order is not None
     assert order["procurement_contour_key"] == "ved_import"
-    assert order["expected_receipt_date"] == "2026-07-01T00:00:00"
+    assert order["expected_receipt_date"] == "2026-08-01T00:00:00"
     assert order["procurement_stage_key"] == "receiving"
+
+
+def test_ved_import_respects_explicit_stage() -> None:
+    row = {
+        **_row(2),
+        "procurement_stage_key": "payment_work",
+    }
+
+    order = sync.order_from_open_supplier_order_row(
+        row,
+        allowed_contours={"ved_import"},
+    )
+
+    assert order is not None
+    assert order["procurement_stage_key"] == "payment_work"
 
 
 def test_open_supplier_order_row_can_skip_ved_when_filter_is_cargo_only() -> None:

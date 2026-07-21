@@ -6,6 +6,8 @@ import re
 import sys
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
@@ -29,14 +31,13 @@ def main() -> None:
     from alembic.config import Config
     from alembic.runtime.migration import MigrationContext
     from alembic.script import ScriptDirectory
-    from sqlalchemy import create_engine
 
     from app.core.config import get_settings
     from app.infrastructure.contracts import ContractIntegrityError, read_json_contract
+    from app.infrastructure.db.engines import get_application_engine
     from app.main import app
     from app.services.executive_dashboard import (
         _resolve_cashflow_period_cache_path,
-        _resolve_owner_cash_control_snapshot_path,
         _resolve_sales_plan_snapshot_path,
         _resolve_snapshot_path,
         _resolve_warehouse_snapshot_path,
@@ -77,7 +78,6 @@ def main() -> None:
         ("finance snapshot", _resolve_snapshot_path()),
         ("cashflow cache", _resolve_cashflow_period_cache_path()),
         ("warehouse snapshot", _resolve_warehouse_snapshot_path()),
-        ("owner cash control snapshot", _resolve_owner_cash_control_snapshot_path()),
         ("frozen sales plan snapshot", _resolve_sales_plan_snapshot_path()),
         (
             "employee payroll balance snapshot",
@@ -114,10 +114,9 @@ def main() -> None:
     code_head = script.get_current_head()
     database_head = None
     try:
-        engine = create_engine(settings.database_url)
+        engine = get_application_engine()
         with engine.connect() as connection:
             database_head = MigrationContext.configure(connection).get_current_revision()
-        engine.dispose()
     except Exception as exc:  # pragma: no cover - operational diagnostic
         errors.append(f"database migration check failed: {type(exc).__name__}: {exc}")
     if database_head is not None and database_head != code_head:

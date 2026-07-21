@@ -20,7 +20,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -28,6 +28,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from app.core.config import get_settings  # noqa: E402
+from app.infrastructure.db.engines import build_engine  # noqa: E402
 from app.services import site_order_fulfillment as fulfillment  # noqa: E402
 
 DEFAULT_ENV_FILES = (REPO_ROOT / ".env", Path("/etc/mm-management-orchestrator.env"))
@@ -671,7 +672,7 @@ def fetch_onec_order_settlements(order_numbers: list[str]) -> dict[str, OneCOrde
         """)
 
     try:
-        engine = create_engine(settings.onec_database_url, pool_pre_ping=True)
+        engine = build_engine(settings.onec_database_url, pool_pre_ping=True)
         with engine.connect() as connection:
             rows = connection.execute(statement, params).fetchall()
     except Exception:
@@ -980,9 +981,9 @@ def run_chat_sync(
     review_limit: int,
 ) -> dict[str, Any]:
     settings = get_settings()
-    engine = create_engine(settings.database_url, pool_pre_ping=True)
+    engine = build_engine(settings.database_url, pool_pre_ping=True)
     onec_engine = (
-        create_engine(settings.onec_database_url, pool_pre_ping=True)
+        build_engine(settings.onec_database_url, pool_pre_ping=True)
         if settings.onec_database_url
         else None
     )
@@ -1274,7 +1275,7 @@ def query_rtu_signal_by_orders(order_numbers: list[str]) -> dict[str, dict[str, 
         FROM ranked
         GROUP BY site_order_number
         """)
-    engine = create_engine(settings.onec_database_url, pool_pre_ping=True)
+    engine = build_engine(settings.onec_database_url, pool_pre_ping=True)
     with engine.connect() as connection:
         rows = connection.execute(statement, params).fetchall()
     result: dict[str, dict[str, Any]] = {}

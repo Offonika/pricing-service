@@ -32,8 +32,7 @@ contracts:
   - config/price_types/ruleset.yaml
 depends_on:
   - docs/specs/receivables-smart-process-workflow.md
-supersedes:
-  - reports/retail_price_types/customer-price-type-automation/2026-07-16/customer-price-type-smart-process-blueprint-draft-2026-07-16.md
+supersedes: []
 rollout_required: true
 updated_at: "2026-07-19"
 ---

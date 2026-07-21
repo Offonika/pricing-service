@@ -206,7 +206,7 @@ def _write_sales_plan_snapshot(
         },
         {
             "scope_key": "store-2",
-            "scope_name": "Сайт",
+            "scope_name": "Склад Сайт",
             "approved_revenue": "6000.00",
             "approved_margin_pct": "50.00",
             "approved_gross_profit": "3000.00",
@@ -540,7 +540,7 @@ def _write_warehouse_snapshot(path: Path) -> None:
                     "picker_error_count": 1,
                     "top_warehouses": [
                         {
-                            "warehouse_name": "Сайт",
+                            "warehouse_name": "Склад Сайт",
                             "pick_hours": "42.00",
                             "pieces_picked": "700.00",
                             "picker_count": 4,
@@ -810,18 +810,16 @@ def test_management_balance_places_assets_and_liabilities_on_their_sides(
     metrics = {metric.key: metric.value for metric in block.metrics}
     assert block.title == "Управленческий баланс"
     assert metrics == {
-        "balance_assets_total": Decimal("1680.00"),
-        "balance_liabilities_total": Decimal("230.00"),
+        "balance_assets_total": Decimal("1650.00"),
+        "balance_liabilities_total": Decimal("200.00"),
     }
     assert [row["amount"] for row in block.summary["balance_assets"]] == [
         "500.00",
         "1000.00",
-        "100.00",
+        "80.00",
         "50.00",
-        "30.00",
-        "0.00",
-        None,
-        None,
+        "20.00",
+        "0",
     ]
     assert block.summary["balance_assets"][1]["source_status"] == "ready"
     assert (
@@ -829,18 +827,17 @@ def test_management_balance_places_assets_and_liabilities_on_their_sides(
         == "1С УТ 10.3: ПартииТоваровНаСкладах.СтоимостьОстаток"
     )
     assert [row["amount"] for row in block.summary["balance_liabilities"]] == [
-        "20.00",
-        "0.00",
-        "10.00",
+        "0",
+        "0",
+        "0",
         "200.00",
-        None,
     ]
     assert block.summary["balance_assets"][2]["label"] == "Дебиторка поставщиков"
     assert block.summary["balance_assets"][4]["label"] == "Прочие дебиторы"
     assert block.summary["balance_liabilities"][3]["label"] == "Задолженность собственникам"
 
 
-def test_management_balance_includes_owner_transit_and_dividends(
+def test_management_balance_does_not_activate_unreleased_owner_cash_formula(
     db_session: Session,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -899,12 +896,10 @@ def test_management_balance_includes_owner_transit_and_dividends(
     assets = {row["key"]: row for row in block.summary["balance_assets"]}
     liabilities = {row["key"]: row for row in block.summary["balance_liabilities"]}
     equity = {row["key"]: row for row in block.summary["balance_equity"]}
-    assert assets["owner_cash_in_transit"]["amount"] == "200000.00"
-    assert assets["owner_related_party_unresolved"]["amount"] == "87880.00"
-    assert liabilities["owner_funds_unclassified"]["amount"] == "0.00"
-    assert equity["dividends_paid_ytd"]["amount"] == "-13415228.19"
-    assert equity["dividends_paid_ytd"]["adjustment_amount"] == "-100000.00"
-    assert "Зарплата" in equity["dividends_paid_ytd"]["note"]
+    assert "owner_cash_in_transit" not in assets
+    assert "owner_related_party_unresolved" not in assets
+    assert "owner_funds_unclassified" not in liabilities
+    assert "dividends_paid_ytd" not in equity
 
 
 def test_dashboard_accepts_yesterday_within_configured_lag(
@@ -1120,7 +1115,7 @@ def test_profit_loss_period_response_aggregates_sales_kpi(
                 },
                 {
                     "store_ref": "store-2",
-                    "store_name": "Сайт",
+                    "store_name": "Склад Сайт",
                     "sales_amount": "250000.00",
                     "writeoff_amount": "100.00",
                     "receipt_amount": "200.00",
@@ -1226,7 +1221,7 @@ def test_profit_loss_period_response_aggregates_sales_kpi(
                 cost_of_sales=Decimal("50.00"),
                 sales_count=Decimal("1.000"),
                 store_ref="store-2",
-                store_name="Сайт",
+                store_name="Склад Сайт",
             ),
         ]
     )
@@ -1279,7 +1274,7 @@ def test_profit_loss_period_response_aggregates_sales_kpi(
     assert result.inventory_loss.data_quality.store_scope_status == "approved"
     assert result.inventory_loss.data_quality.norm_source_status == "approved"
     assert result.daily[-1].business_date == date(2026, 6, 27)
-    assert {row.label for row in result.by_store} == {"Горбушкин Двор", "Сайт"}
+    assert {row.label for row in result.by_store} == {"Горбушкин Двор", "Склад Сайт"}
 
 
 def test_profit_loss_subtracts_inventory_loss_and_ready_bp_taxes(
@@ -1922,7 +1917,7 @@ def test_sales_period_response_calculates_forecast_comparison_and_filters(
                 manager_ref="mgr-2",
                 manager_name="Менеджер 2",
                 store_ref="store-2",
-                store_name="Сайт",
+                store_name="Склад Сайт",
             )
         )
         cursor += timedelta(days=1)
@@ -1952,7 +1947,7 @@ def test_sales_period_response_calculates_forecast_comparison_and_filters(
     assert result.monthly[-1].gross_margin_pct is not None
     assert result.monthly[-1].gross_margin_pct == result.totals["gross_margin_pct"]
     assert result.monthly[-1].comparison_sales_count == Decimal("0")
-    assert {item.label for item in result.stores} == {"Горбушкин Двор", "Сайт"}
+    assert {item.label for item in result.stores} == {"Горбушкин Двор", "Склад Сайт"}
     assert {item.label for item in result.managers} == {"Менеджер 1", "Менеджер 2"}
     assert result.plan_status == "ready"
     assert result.plan is not None
@@ -1985,7 +1980,7 @@ def test_sales_period_response_calculates_forecast_comparison_and_filters(
     assert filtered.totals["revenue"] == Decimal("1000.00")
     assert filtered.totals["forecast_revenue_period_end"] == Decimal("6000.00")
     assert filtered.monthly[-1].sales_count == Decimal("10.000")
-    assert [row.label for row in filtered.by_store] == ["Сайт"]
+    assert [row.label for row in filtered.by_store] == ["Склад Сайт"]
     assert filtered.plan is not None
     assert filtered.plan.scope_type == "store"
     assert filtered.plan.approved_revenue == Decimal("6000.00")
@@ -2038,6 +2033,54 @@ def test_sales_period_manager_uses_weighted_store_margin_without_revenue_plan(
     diagnostics = {item.key: item for item in result.diagnostic_kpis}
     assert diagnostics["stores_below_plan_count"].source_status == "not_applicable"
     assert diagnostics["managers_below_target_margin_count"].value == 1
+    assert diagnostics["managers_below_target_margin_count"].meta["problem"] == [
+        {"key": "mgr-1", "label": "Менеджер 1"}
+    ]
+
+
+def test_sales_period_lists_problem_stores_and_managers_in_diagnostic_meta(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path / "missing.json")
+    _write_sales_plan_snapshot(Path(settings.executive_dashboard_sales_plan_snapshot_path))
+    _override_settings(monkeypatch, settings)
+    rows = []
+    cursor = date(2026, 6, 1)
+    while cursor <= date(2026, 6, 20):
+        rows.append(
+            _sales_kpi(
+                cursor,
+                revenue=Decimal("100.00"),
+                cost_of_sales=Decimal("80.00"),
+                store_ref="store-1",
+                store_name="Горбушкин Двор",
+            )
+        )
+        cursor += timedelta(days=1)
+    db_session.add_all(rows)
+    db_session.commit()
+
+    result = build_executive_sales_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 6, 30),
+        today=date(2026, 7, 5),
+    )
+
+    diagnostics = {item.key: item for item in result.diagnostic_kpis}
+    stores_metric = diagnostics["stores_below_plan_count"]
+    assert stores_metric.source_status == "ready"
+    assert stores_metric.value == 2
+    assert stores_metric.meta["problem"] == [
+        {"key": "store-1", "label": "Горбушкин Двор"},
+        {"key": "store-2", "label": "Склад Сайт"},
+    ]
+    managers_metric = diagnostics["managers_below_target_margin_count"]
+    assert managers_metric.source_status == "ready"
+    assert managers_metric.value == 1
+    assert managers_metric.meta["problem"] == [{"key": "mgr-1", "label": "Менеджер 1"}]
 
 
 def test_sales_period_requires_complete_store_plan_coverage(
@@ -2087,51 +2130,6 @@ def test_sales_period_requires_complete_store_plan_coverage(
     assert diagnostics["managers_below_target_margin_count"].meta["problem"] == []
 
 
-def test_sales_period_lists_problem_stores_and_managers_in_diagnostic_meta(
-    db_session: Session,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    settings = _settings(tmp_path / "missing.json")
-    _write_sales_plan_snapshot(Path(settings.executive_dashboard_sales_plan_snapshot_path))
-    _override_settings(monkeypatch, settings)
-    rows = []
-    cursor = date(2026, 6, 1)
-    while cursor <= date(2026, 6, 20):
-        rows.append(
-            _sales_kpi(
-                cursor,
-                revenue=Decimal("100.00"),
-                cost_of_sales=Decimal("80.00"),
-                store_ref="store-1",
-                store_name="Горбушкин Двор",
-            )
-        )
-        cursor += timedelta(days=1)
-    db_session.add_all(rows)
-    db_session.commit()
-
-    result = build_executive_sales_period_response(
-        db_session,
-        date_from=date(2026, 6, 1),
-        date_to=date(2026, 6, 30),
-        today=date(2026, 7, 5),
-    )
-
-    diagnostics = {item.key: item for item in result.diagnostic_kpis}
-    stores_metric = diagnostics["stores_below_plan_count"]
-    assert stores_metric.source_status == "ready"
-    assert stores_metric.value == 2
-    assert stores_metric.meta["problem"] == [
-        {"key": "store-1", "label": "Горбушкин Двор"},
-        {"key": "store-2", "label": "Сайт"},
-    ]
-    managers_metric = diagnostics["managers_below_target_margin_count"]
-    assert managers_metric.source_status == "ready"
-    assert managers_metric.value == 1
-    assert managers_metric.meta["problem"] == [{"key": "mgr-1", "label": "Менеджер 1"}]
-
-
 def test_sales_period_marks_duplicated_frozen_plan_revision_as_source_error(
     db_session: Session,
     tmp_path: Path,
@@ -2162,29 +2160,6 @@ def test_sales_period_marks_duplicated_frozen_plan_revision_as_source_error(
     assert diagnostics["margin_gap_pp"].source_status == "source_error"
     assert diagnostics["stores_below_plan_count"].source_status == "source_error"
     assert diagnostics["stores_below_plan_count"].meta["problem"] == []
-
-
-def test_sales_period_completed_range_notes_period_not_month(
-    db_session: Session,
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _override_settings(monkeypatch, _settings(tmp_path / "missing.json"))
-    cursor = date(2026, 5, 10)
-    while cursor <= date(2026, 6, 20):
-        db_session.add(_sales_kpi(cursor))
-        cursor += timedelta(days=1)
-    db_session.commit()
-
-    result = build_executive_sales_period_response(
-        db_session,
-        date_from=date(2026, 6, 14),
-        date_to=date(2026, 6, 20),
-        today=date(2026, 6, 20),
-    )
-
-    assert result.forecast_status == "complete"
-    assert result.forecast_note == "Период полностью закрыт фактическими данными."
 
 
 def test_sales_period_plan_is_not_applicable_for_partial_month(
@@ -2321,6 +2296,29 @@ def test_sales_period_does_not_recalculate_forecast_for_closed_month(
     assert result.totals["forecast_revenue_period_end"] is None
 
 
+def test_sales_period_completed_range_notes_period_not_month(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _override_settings(monkeypatch, _settings(tmp_path / "missing.json"))
+    cursor = date(2026, 5, 10)
+    while cursor <= date(2026, 6, 20):
+        db_session.add(_sales_kpi(cursor))
+        cursor += timedelta(days=1)
+    db_session.commit()
+
+    result = build_executive_sales_period_response(
+        db_session,
+        date_from=date(2026, 6, 14),
+        date_to=date(2026, 6, 20),
+        today=date(2026, 6, 20),
+    )
+
+    assert result.forecast_status == "complete"
+    assert result.forecast_note == "Период полностью закрыт фактическими данными."
+
+
 def test_debtors_block_uses_buyer_cases_not_other_receivables(
     db_session: Session,
     tmp_path: Path,
@@ -2392,7 +2390,7 @@ def test_warehouse_block_reads_piecework_snapshot(
     assert metric_by_key["pieces_picked"].value == Decimal("1250.00")
     assert metric_by_key["avg_need_fact"].value == Decimal("5.20")
     assert metric_by_key["quality_issue_count"].value == 3
-    assert warehouse.summary["top_warehouses"][0]["warehouse_name"] == "Сайт"
+    assert warehouse.summary["top_warehouses"][0]["warehouse_name"] == "Склад Сайт"
     assert "warehouse.piecework" in {source.source_key for source in result.source_freshness}
 
 
@@ -2920,7 +2918,7 @@ def test_cashflow_period_response_aggregates_period_cache(
     assert result.quality_issues[0].issue_label == "Документ без статьи ДДС"
 
 
-def test_cashflow_owner_issue_is_linked_and_marks_response_partial(
+def test_cashflow_owner_issue_keeps_live_status_and_contract(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -2953,12 +2951,12 @@ def test_cashflow_owner_issue_is_linked_and_marks_response_partial(
         date_to=date(2026, 6, 28),
     )
 
-    assert result.source_status == "partial"
+    assert result.source_status == "ready"
     issue = result.quality_issues[0]
-    assert issue.document_number == "РБГУ0151620"
-    assert issue.bitrix_task_id == "960"
-    assert issue.task_status == "completed"
-    assert issue.drilldown_url and issue.drilldown_url.endswith("/960/")
+    assert issue.document_number is None
+    assert issue.bitrix_task_id is None
+    assert issue.task_status is None
+    assert issue.drilldown_url is None
 
 
 def test_profit_loss_period_api_forbids_user_without_money_access(

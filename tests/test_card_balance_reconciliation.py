@@ -94,6 +94,7 @@ def _configure_env(monkeypatch, token: str = "card-token") -> dict[str, str]:
                 "status": "UF_CRM_CARD_BALANCE_STATUS",
                 "resolution_comment": "UF_CRM_CARD_BALANCE_RESOLUTION_COMMENT",
                 "due_at": "UF_CRM_CARD_BALANCE_DUE_AT",
+                "assigned_by": "ASSIGNED_BY_ID",
             }
         ),
     )

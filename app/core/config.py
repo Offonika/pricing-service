@@ -46,15 +46,10 @@ class Settings(BaseSettings):
     zenlogs_sources: str | None = None
     zenlogs_http_timeout_sec: float = 30.0
     zenlogs_verify_ssl: bool = True
-    competitor_ftp_import_enabled: bool = False
-    competitor_ftp_host: str | None = None
-    competitor_ftp_port: int = 21
-    competitor_ftp_user: str | None = None
-    competitor_ftp_password: str | None = None
-    competitor_ftp_tls: bool = False
-    competitor_ftp_timeout_sec: float = 30.0
-    competitor_ftp_sources: str | None = None  # name:directory:pattern with {date}, comma-separated
-    competitor_ftp_max_files_per_source: int = 2
+    competitor_http_import_enabled: bool = False
+    competitor_http_sources: str | None = None  # name:https-url-with-{date}, comma-separated
+    competitor_http_timeout_sec: float = 30.0
+    competitor_http_max_files_per_source: int = 2
     captcha_provider: str = "2captcha"
     captcha_api_key: str | None = None
 

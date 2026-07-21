@@ -5,6 +5,8 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from app.core.config import Settings
 from app.services.procurement_assortment_decisions import (
     REPO_ROOT,
@@ -171,6 +173,8 @@ def test_production_mapping_enum_map_covers_every_supported_decision() -> None:
     # scripts/ensure_procurement_bitrix_process.py против боевого Bitrix (он идемпотентно
     # подтягивает enum_map из текущего состояния поля "Статус ассортимента: решение").
     mapping_path = REPO_ROOT / "build/bitrix/procurement_order_mapping.json"
+    if not mapping_path.is_file():
+        pytest.skip("production Bitrix mapping overlay is not available")
     mapping = load_mapping(mapping_path)
 
     validate_mapping(mapping)

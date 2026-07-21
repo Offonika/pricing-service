@@ -109,6 +109,12 @@ Cron отвечает только за расписание, lock и техни
 application services. Redis используется только в контурах, где очередь реализована
 явно, и не считается общей очередью всех jobs.
 
+DB access постоянной команды объявляется в `docs/registry/cli-jobs.json`.
+Read-only PostgreSQL-команды используют `session_scope(read_only=True)`, который
+завершает scope rollback без commit. Команды записи используют явный Unit of Work;
+generic `build_engine` остаётся временным compatibility API только до завершения
+Release B и не должен появляться в новых постоянных jobs.
+
 #### Durable orchestration management jobs
 
 - Корневой `/opt/MM` хранит runtime registry, генерирует systemd units и запускает
@@ -184,7 +190,7 @@ application services. Redis используется только в конту�
 - Способ интеграции:
   - скрипт/бот парсинга складывает файлы в подготовленную директорию или отдаёт по API;
   - модуль импорта читает файл и заполняет `Competitor`, `CompetitorPrice`, обновляет `ProductMatch`.
-  - Для FTP-выгрузок конкурентов (poiskzip-moba, poiskzip-liberti) используется поток `FTP → XLSX → job import_competitor_ftp`. Источники задаются через `COMPETITOR_FTP_SOURCES` (`name:directory:pattern`, где pattern содержит `{date}`, напр. `moba-{date}.xlsx`). Job подключается к FTP (`COMPETITOR_FTP_HOST`/`PORT`/`USER`/`PASSWORD`, `COMPETITOR_FTP_TLS`, `COMPETITOR_FTP_TIMEOUT_SEC`), ищет датированные файлы, валидирует обязательные колонки (`group, sku, name, price_opt, price_roz, link, time`, опционально `amount`/`stock`), приводит `time` к MSK ISO8601, сверяет дату имени и содержимого, и пишет данные в `competitor_ftp_file` (метаданные), `competitor_ftp_raw_row` (сырьё, ошибки) и `competitor_ftp_record` (нормализованные строки). Дедуп по `(source, file_date)`, при повторной заливке файл перезаписывается. Цепочка ZenLogs (HTTP) и каталог `competitor_item`/`competitor_item_snapshot` удалены, используем только FTP-поток.
+  - Для датированных выгрузок конкурентов (poiskzip-moba, poiskzip-liberti) используется поток `HTTPS → XLSX → job import_competitor_http`. Источники задаются через `COMPETITOR_HTTP_SOURCES` (`name:https-url-with-{date}`), job проверяет текущую и предыдущую даты. Обязательные колонки (`group, sku, name, price_opt, price_roz, link, time`, опционально `amount`/`stock`) и хранилище `competitor_ftp_*` сохранены для обратной совместимости с matching. Дедуп остаётся по `(source, file_date)`, при повторной загрузке файл перезаписывается. FTP-транспорт и его runtime-настройки удалены после успешного scheduled-run HTTPS-контура.
   - Матчинг цен: job `./.venv/bin/python -m tasks.match_competitor_ftp` берёт `competitor_ftp_record`, нормализует SKU и сопоставляет с `product.article`, создаёт `CompetitorPrice` (price = `price_roz` или `price_opt`, in_stock из файла, collected_at = `observed_at`) и `ProductMatch` (confidence=1.0). unmatched/ambiguous логируются, много-матч по SKU не записывается.
 
 #### Агент по рынку смартфонов (пресс-релизы/новости)
@@ -449,7 +455,7 @@ application services. Redis используется только в конту�
    - Фоновая задача `import_competitor_prices`:
      - обновляет `Competitor` и `CompetitorPrice`;
      - при необходимости обновляет/создаёт связи в `ProductMatch`.
-  - В режиме `COMPETITOR_SOURCE_MODE=zenno` используется job `./.venv/bin/python -m tasks.import_zenlogs_competitors`, которая проходит по всем источникам из `ZENLOGS_SOURCES`, скачивает XLSX ZenLogs (`group`, `sku`, `name`, `price_opt`, `link`, `stock`) и пишет данные в `competitor_item` + `competitor_item_snapshot`, фиксируя историю цен/наличия без привязки к нашим SKU. Для FTP-прайсов есть отдельная job `./.venv/bin/python -m tasks.import_competitor_ftp`, которая выкачивает датированные XLSX по маске, валидирует и сохраняет в `competitor_ftp_*` таблицы с дедупликацией по дате файла.
+  - Активная job `./.venv/bin/python -m tasks.import_competitor_http` скачивает датированные XLSX по прямым HTTPS-ссылкам и сохраняет их в совместимые таблицы `competitor_ftp_*`, которые читает текущий matching. Названия таблиц и внутренних freshness-полей с `ftp` временно сохранены как совместимый schema contract; сетевого FTP-контура больше нет.
 
 4. **Матчинг товаров и карточек конкурентов**
    - Запускается по расписанию или после импорта.

@@ -896,7 +896,7 @@ def ingest_weekly_kpi_snapshot_batch(
         min_length=8,
         max_length=255,
     ),
-    unit_of_work: SqlAlchemyUnitOfWork = Depends(get_uow),
+    unit_of_work: SqlAlchemyUnitOfWork = Depends(get_uow, scope="function"),
     _: str = Depends(require_weekly_kpi_ingest_token),
 ) -> WeeklyKpiSnapshotIngestResponse:
     if unit_of_work.session is None:

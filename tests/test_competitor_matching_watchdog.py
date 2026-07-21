@@ -4,7 +4,27 @@ import json
 from datetime import UTC, date, datetime, timedelta
 
 from app.models import CompetitorFtpFile, CompetitorItem, Product, ProductLiveCandidateCache
-from tasks.competitor_matching_watchdog import build_report
+from tasks.competitor_matching_watchdog import build_ftp_freshness_report, build_report
+
+
+def test_ftp_freshness_report_marks_stale_source(db_session) -> None:
+    old = datetime.now(UTC) - timedelta(days=4)
+    db_session.add(
+        CompetitorFtpFile(
+            source="moba",
+            filename="moba-old.csv",
+            file_path="/tmp/moba-old.csv",
+            file_date=date.today() - timedelta(days=4),
+            ingested_at=old,
+        )
+    )
+    db_session.commit()
+
+    report = build_ftp_freshness_report(db_session, max_lag_days=1)
+
+    assert report["ok"] is False
+    assert report["checks"] == {"ftp": "bad"}
+    assert report["ftp"]["moba"]["status"] == "stale"
 
 
 def test_watchdog_uses_latest_activity_and_successful_run_for_freshness(

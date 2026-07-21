@@ -16,9 +16,10 @@ from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import text
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 
 MSK_TZ = ZoneInfo("Europe/Moscow")
 DEFAULT_OUTPUT_DIR = Path(".local/order-fulfillment-pilot")
@@ -200,7 +201,7 @@ def _fetch_contract_balances(order_numbers: list[str]) -> dict[str, dict[str, An
         )
         """)
 
-    engine = create_engine(settings.onec_database_url, pool_pre_ping=True)
+    engine = build_engine(settings.onec_database_url, pool_pre_ping=True)
     with engine.connect() as connection:
         sale_rows = [dict(row) for row in connection.execute(base_statement, params).mappings()]
         contract_balances: defaultdict[tuple[bytes, bytes, bytes], Decimal] = defaultdict(
@@ -417,7 +418,7 @@ def _fetch_nearby_payment_rows(
           AND (doc186._IDRRef IS NULL OR (doc186._Posted = 0x01 AND doc186._Marked <> 0x01))
         """)
 
-    engine = create_engine(settings.onec_database_url, pool_pre_ping=True)
+    engine = build_engine(settings.onec_database_url, pool_pre_ping=True)
     rows: list[PaymentCandidate] = []
     with engine.connect() as connection:
         params = {"window_start": window_start, "window_end": window_end}

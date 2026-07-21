@@ -9,10 +9,11 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, exists, func, or_, select
+from sqlalchemy import exists, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import CompetitorItem, Product
 from app.models.competitor_item_compatibility import CompetitorItemCompatibility
 from app.models.competitor_item_match import (
@@ -217,7 +218,7 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = get_settings()
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
     with Session(engine) as session:
         result = move_unsafe_matches_to_review(
             session,

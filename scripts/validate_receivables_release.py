@@ -6,15 +6,13 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import sys
 from datetime import date
 from pathlib import Path
 
 from sqlalchemy.orm import Session
 
-from app.infrastructure.db import get_application_engine
-from app.services.counterparty_folder_recommendations import (
-    evaluate_open_debt_source_freshness,
-)
+sys.dont_write_bytecode = True
 
 REQUIRED_UI_TEXT = "Долгообразующая накладная"
 FORBIDDEN_UI_TEXT = "Подразделение долга"
@@ -29,6 +27,11 @@ def _parse_args() -> argparse.Namespace:
 
 
 def validate_release(release_dir: Path, *, snapshot_date: date) -> dict[str, object]:
+    from app.infrastructure.db import get_application_engine
+    from app.services.counterparty_folder_recommendations import (
+        evaluate_open_debt_source_freshness,
+    )
+
     checks: dict[str, dict[str, object]] = {}
     component_path = release_dir / "ui" / "src" / "components" / "ReceivablesWorkplace.tsx"
     component_text = component_path.read_text(encoding="utf-8") if component_path.exists() else ""

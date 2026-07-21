@@ -126,6 +126,7 @@ def test_main_returns_noop_for_seeded_state(monkeypatch, tmp_path, capsys) -> No
             "procurement",
             "--delivery-state-path",
             str(state_path),
+            "--no-cache",
             "--json",
         ],
     )

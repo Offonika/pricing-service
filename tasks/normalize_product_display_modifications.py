@@ -8,10 +8,11 @@ import json
 import logging
 from pathlib import Path
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import Product
 from app.services.product_display_modification import (
     DISPLAY_MODIFICATION_PARSE_VERSION,
@@ -160,7 +161,7 @@ def main() -> None:
         parser.error("--dry-run и --apply нельзя использовать вместе")
 
     settings = get_settings()
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
     with Session(engine) as session:
         stats = normalize_products(
             session,

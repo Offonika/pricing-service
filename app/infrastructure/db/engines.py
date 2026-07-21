@@ -8,8 +8,9 @@ reuse a pool instead of creating an engine per request.
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Any
 
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine as sqlalchemy_create_engine
 from sqlalchemy.engine import Engine
 from sqlalchemy.pool import Pool
 
@@ -18,6 +19,19 @@ from app.core.config import get_settings
 
 class DatabaseNotConfiguredError(RuntimeError):
     """Raised when a required database source is not configured."""
+
+
+def build_engine(database_url: str, **engine_options: Any) -> Engine:
+    """Compatibility factory for legacy CLI and maintenance commands.
+
+    New application code should prefer the role-specific factories below.  The
+    compatibility entrypoint keeps existing command options intact while making
+    connection health checks mandatory and preventing direct SQLAlchemy engine
+    construction outside this module.
+    """
+
+    engine_options.setdefault("pool_pre_ping", True)
+    return sqlalchemy_create_engine(database_url, **engine_options)
 
 
 def build_application_engine(
@@ -39,7 +53,7 @@ def build_application_engine(
         engine_options["pool_timeout"] = pool_timeout_seconds
     if pool_recycle_seconds is not None:
         engine_options["pool_recycle"] = pool_recycle_seconds
-    return create_engine(database_url, **engine_options)
+    return sqlalchemy_create_engine(database_url, **engine_options)
 
 
 def build_onec_engine(
@@ -60,7 +74,7 @@ def build_onec_engine(
     }
     if poolclass is not None:
         engine_options["poolclass"] = poolclass
-    return create_engine(database_url, **engine_options)
+    return sqlalchemy_create_engine(database_url, **engine_options)
 
 
 def build_onec_engine_from_settings(*, poolclass: type[Pool] | None = None) -> Engine:

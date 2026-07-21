@@ -5,10 +5,10 @@ import json
 from collections import Counter
 from datetime import date, timedelta
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import CompetitorFtpRecord
 
 
@@ -43,7 +43,7 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = get_settings()
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
     since_date = date.today() - timedelta(days=args.days_back) if args.days_back else None
 
     with Session(engine) as session:

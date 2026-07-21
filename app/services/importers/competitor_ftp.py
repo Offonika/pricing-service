@@ -2,13 +2,10 @@ from __future__ import annotations
 
 import io
 import logging
-import os
-import re
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from decimal import Decimal
-from ftplib import FTP
 
 from openpyxl import load_workbook
 from sqlalchemy import delete, select
@@ -28,22 +25,12 @@ except ImportError:  # pragma: no cover
 
 logger = logging.getLogger("app.import.competitor_ftp")
 
-UTC = timezone.utc
 MSK_TZ = ZoneInfo("Europe/Moscow")
-DATE_PATTERN = r"(?P<date>\d{4}\.\d{2}\.\d{2})"
 REQUIRED_COLUMNS = {"group", "sku", "name", "price_opt", "price_roz", "link", "time"}
 
 
 class CompetitorFtpImportError(RuntimeError):
-    """Raised when FTP import fails due to config/format errors."""
-
-
-@dataclass
-class FtpSourceConfig:
-    name: str
-    directory: str
-    pattern: str
-    regex: re.Pattern[str]
+    """Raised when a competitor XLSX fails format validation."""
 
 
 @dataclass
@@ -72,115 +59,6 @@ class ParsedRow:
     @property
     def is_valid(self) -> bool:
         return self.error is None
-
-
-def _compile_pattern(pattern: str) -> re.Pattern[str]:
-    if "{date}" not in pattern:
-        raise CompetitorFtpImportError("pattern must contain {date}")
-    escaped = re.escape(pattern).replace(r"\{date\}", DATE_PATTERN)
-    return re.compile(f"^{escaped}$", re.IGNORECASE)
-
-
-def parse_sources(raw: str | None) -> list[FtpSourceConfig]:
-    if not raw:
-        return []
-    sources: list[FtpSourceConfig] = []
-    for entry in raw.split(","):
-        item = entry.strip()
-        if not item:
-            continue
-        parts = item.split(":", 2)
-        if len(parts) != 3:
-            logger.warning(
-                "ftp source skipped: expected name:directory:pattern", extra={"entry": item}
-            )
-            continue
-        name, directory, pattern = (part.strip() for part in parts)
-        if not name or not directory or not pattern:
-            logger.warning(
-                "ftp source skipped: empty name/directory/pattern", extra={"entry": item}
-            )
-            continue
-        try:
-            regex = _compile_pattern(pattern)
-        except CompetitorFtpImportError as exc:
-            logger.warning("ftp source skipped: %s", exc, extra={"entry": item})
-            continue
-        sources.append(
-            FtpSourceConfig(name=name, directory=directory, pattern=pattern, regex=regex)
-        )
-    return sources
-
-
-def _parse_file_date(filename: str, source: FtpSourceConfig) -> date | None:
-    match = source.regex.match(filename)
-    if not match:
-        return None
-    date_str = match.group("date")
-    try:
-        return datetime.strptime(date_str, "%Y.%m.%d").date()
-    except ValueError:
-        return None
-
-
-def _parse_mtime_from_mdtm(response: str) -> datetime | None:
-    # MDTM response: "213 20251130001510"
-    try:
-        ts = response.split()[-1]
-        parsed = datetime.strptime(ts, "%Y%m%d%H%M%S")
-        return parsed.replace(tzinfo=UTC)
-    except Exception:
-        return None
-
-
-def list_matching_files(
-    ftp: FTP,
-    source: FtpSourceConfig,
-) -> list[FtpFileInfo]:
-    """
-    Lists files for the source directory that match the pattern with {date}.
-    """
-    try:
-        entries = ftp.nlst(source.directory)
-    except Exception as exc:  # pragma: no cover - network-dependent
-        raise CompetitorFtpImportError(
-            f"failed to list directory {source.directory}: {exc}"
-        ) from exc
-    files: list[FtpFileInfo] = []
-    for path in entries:
-        filename = os.path.basename(path)
-        file_date = _parse_file_date(filename, source)
-        if not file_date:
-            continue
-        mtime: datetime | None = None
-        try:
-            resp = ftp.sendcmd(f"MDTM {path}")
-            mtime = _parse_mtime_from_mdtm(resp)
-        except Exception:
-            pass
-        files.append(
-            FtpFileInfo(
-                source=source.name,
-                directory=source.directory,
-                filename=filename,
-                path=path,
-                file_date=file_date,
-                mtime=mtime,
-            )
-        )
-    files.sort(
-        key=lambda f: (f.file_date, f.mtime or datetime.min.replace(tzinfo=UTC)), reverse=True
-    )
-    return files
-
-
-def download_file(ftp: FTP, path: str) -> bytes:
-    buffer = io.BytesIO()
-    try:
-        ftp.retrbinary(f"RETR {path}", buffer.write)
-    except Exception as exc:  # pragma: no cover - network-dependent
-        raise CompetitorFtpImportError(f"failed to download {path}: {exc}") from exc
-    return buffer.getvalue()
 
 
 def _normalize_bool(value: object) -> bool | None:

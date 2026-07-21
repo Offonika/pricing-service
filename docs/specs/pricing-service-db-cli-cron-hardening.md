@@ -1,0 +1,132 @@
+---
+spec_id: "pricing-service-db-cli-cron-hardening"
+title: "Pricing Service DB, CLI And Cron Hardening"
+doc_type: spec
+domain: "architecture"
+status: "accepted"
+owner: "engineering"
+source_of_truth: true
+related_code:
+  - app/infrastructure/db/
+  - tasks/
+  - infra/cron/
+  - scripts/validate_cli_registry.py
+  - docs/registry/cli-jobs.json
+related_tests:
+  - tests/test_architecture_boundaries.py
+  - tests/test_cli_registry.py
+  - tests/test_database_infrastructure.py
+contracts: []
+depends_on:
+  - docs/specs/pricing-service-architecture-hardening.md
+supersedes: []
+rollout_required: true
+updated_at: "2026-07-14"
+---
+
+# Назначение
+
+Завершить централизацию подключений к БД и транзакций в постоянных CLI/jobs,
+оставив cron только слоем расписания, lock, запуска и технического лога.
+
+# Scope / Out of Scope
+
+Входит:
+
+- перевод постоянных `tasks/`, `scripts/` и `infra/cron` на role-specific DB factories;
+- `session_scope(read_only=True)` для read-only команд без commit;
+- Unit of Work для команд, записывающих в PostgreSQL;
+- машинно-проверяемые DB access, dry-run, idempotency и side-effect metadata;
+- удаление SQL и бизнес-правил из cron entrypoints по мере миграции jobs.
+
+Не входит:
+
+- изменение бизнес-формул, внешних HTTP-контрактов или схем 1С;
+- новые Bitrix24/Telegram side effects;
+- изменение OFFONIKA-контуров;
+- перенос доменов между репозиториями.
+
+# Change Summary / Spec Delta
+
+- Было: часть постоянных CLI использует generic `build_engine` и самостоятельно
+  управляет Session/commit.
+- Станет: тип доступа к БД объявлен в CLI registry, read-only команды используют
+  централизованный scope, а write-команды — явный Unit of Work.
+- Не меняется: входные аргументы команд, расписания, форматы артефактов и бизнес-результат.
+
+# Acceptance Criteria
+
+- [ ] Постоянные CLI не используют generic `build_engine`.
+- [ ] Read-only CLI используют `session_scope(read_only=True)` и не выполняют commit.
+- [ ] PostgreSQL write-команды выполняются внутри Unit of Work и откатываются целиком.
+- [ ] 1С открывается только через read-only 1С factory.
+- [ ] CLI registry проверяет DB access, dry-run, idempotency и side-effect metadata.
+- [ ] В `infra/cron` нет SQL и бизнес-правил у мигрированных jobs.
+- [ ] Повторный запуск постоянной job не создаёт дублей или частичного состояния.
+
+# Source of Truth
+
+- PostgreSQL `pricing-service` — application state.
+- `1С УТ 10.3 / Ekama` — read-only торговый факт.
+- `app/infrastructure/db/` — единственный слой создания engines, sessions и Unit of Work.
+- `docs/registry/cli-jobs.json` — реестр эксплуатационных свойств CLI.
+
+# Data Flow
+
+```text
+cron/systemd -> thin CLI adapter -> application service -> DB scope/UoW -> repository
+1C read-only factory -> application service -> UoW -> pricing PostgreSQL
+```
+
+# API / Data Contracts
+
+Внешние HTTP API и OpenAPI не меняются. CLI arguments и форматы существующих
+JSON/CSV/XLSX артефактов сохраняются.
+
+# Invariants
+
+- Read-only scope всегда завершает транзакцию rollback, даже после успешного чтения.
+- Исключение в write-команде откатывает всю команду.
+- Cron не принимает бизнес-решения и не содержит SQL.
+- Параметры пула задаются только типизированным конфигом DB infrastructure.
+
+# Errors / Edge Cases
+
+- Недоступность 1С не оставляет частично записанный PostgreSQL state.
+- Повтор job после ошибки безопасен и следует заявленной idempotency policy.
+- Нарушение DB access policy блокируется CI до merge.
+
+# Implementation Checklist
+
+- [x] Перевести read-only команды nightly matching на central read-only session scope.
+- [x] Добавить `db_access` policy и проверку для мигрированных CLI.
+- [x] Покрыть read-only rollback тестом DB infrastructure.
+- [ ] Перевести оставшиеся read-only CLI и scripts на role-specific factories/scopes.
+- [ ] Перевести постоянные write-команды на Unit of Work.
+- [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
+- [ ] Подтвердить идемпотентность каждой постоянной scheduled job.
+
+# Review Notes / Risks
+
+- Первый срез ограничен read-only командами nightly matching; write-команды не
+  переводятся механически без проверки их текущих промежуточных commit.
+- Нельзя заменять несколько commit одним Unit of Work, пока тестом не подтверждено,
+  что job допускает атомарную транзакцию по полному batch.
+
+# Tests
+
+- Unit: commit/rollback Unit of Work и rollback read-only session scope.
+- Architecture: direct engine construction и заявленный CLI DB access.
+- Regression: полный pytest, Ruff, Black, CLI registry и architecture boundaries.
+- Rollout smoke: одна nightly job с теми же counters и artifact hashes.
+
+# Rollout
+
+1. Выпускать небольшими slices по одному job-контру.
+2. Перед переключением сравнить counters/artifacts с текущим production.
+3. Сначала выполнить scheduled job в штатном режиме без новых external side effects.
+4. Rollback выполняется переключением release symlink; миграций схемы в этом релизе нет.
+
+# Changelog
+
+- 2026-07-14 — accepted Release B spec; started read-only nightly matching slice.

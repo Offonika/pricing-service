@@ -296,7 +296,7 @@ def test_monitor_allows_procurement_grace_period_but_fails_after_1100() -> None:
     assert any("procurement_import is unhealthy" in error for error in late_errors)
 
 
-def test_monitor_owner_control_warning_before_1145_and_error_after() -> None:
+def test_monitor_owner_control_issue_keeps_live_degraded_status() -> None:
     payloads = _payloads()
     next(
         block for block in payloads["dashboard"]["blocks"] if block["key"] == "creditors_payables"
@@ -313,17 +313,11 @@ def test_monitor_owner_control_warning_before_1145_and_error_after() -> None:
         ],
     )
 
-    early_status, early_degraded, early_errors = evaluate_data_health(
+    status, degraded, errors = evaluate_data_health(
         payloads,
-        now=datetime(2026, 7, 11, 11, 44, tzinfo=MOSCOW_TZ),
-    )
-    late_status, _, late_errors = evaluate_data_health(
-        payloads,
-        now=datetime(2026, 7, 11, 11, 45, tzinfo=MOSCOW_TZ),
+        now=datetime(2026, 7, 11, 12, 0, tzinfo=MOSCOW_TZ),
     )
 
-    assert early_status == "degraded"
-    assert not early_errors
-    assert any(item["name"] == "cashflow" for item in early_degraded)
-    assert late_status == "failed"
-    assert any("high unresolved issue" in error for error in late_errors)
+    assert status == "degraded"
+    assert not errors
+    assert any(item["name"] == "cashflow" for item in degraded)

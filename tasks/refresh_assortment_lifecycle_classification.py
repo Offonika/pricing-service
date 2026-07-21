@@ -7,10 +7,11 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.services.assortment_lifecycle_classification_store import (
     build_classification_rows,
     persist_classification_rows,
@@ -73,7 +74,7 @@ def main() -> int:
             source=args.source,
             classified_at=classified_at,
         )
-        engine = create_engine(database_url, pool_pre_ping=True)
+        engine = build_engine(database_url, pool_pre_ping=True)
         try:
             result = persist_classification_rows(
                 engine,
@@ -343,7 +344,7 @@ def _load_or_build_fact_records(
             receipt_mapping = DocumentLineMapping.from_mapping(
                 _load_json_object(args.receipt_mapping_json)
             )
-            onec_engine = create_engine(onec_database_url, pool_pre_ping=True)
+            onec_engine = build_engine(onec_database_url, pool_pre_ping=True)
             try:
                 (
                     nomenclature_rows,
@@ -359,7 +360,7 @@ def _load_or_build_fact_records(
                 )
             finally:
                 onec_engine.dispose()
-            product_engine = create_engine(database_url, pool_pre_ping=True)
+            product_engine = build_engine(database_url, pool_pre_ping=True)
             try:
                 nomenclature_rows = enrich_nomenclature_rows_with_product_snapshot(
                     product_engine,

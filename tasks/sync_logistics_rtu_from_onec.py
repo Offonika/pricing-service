@@ -6,10 +6,10 @@ import logging
 import sys
 from datetime import date
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.services.logistics_onec import sync_ready_rtu_units
 
 logger = logging.getLogger(__name__)
@@ -57,8 +57,8 @@ def main() -> int:
     if not settings.onec_database_url:
         raise SystemExit("ONEC_DATABASE_URL is not configured")
 
-    app_engine = create_engine(settings.database_url, pool_pre_ping=True)
-    onec_engine = create_engine(settings.onec_database_url, pool_pre_ping=True)
+    app_engine = build_engine(settings.database_url, pool_pre_ping=True)
+    onec_engine = build_engine(settings.onec_database_url, pool_pre_ping=True)
     with Session(app_engine) as session:
         result = sync_ready_rtu_units(
             session,

@@ -29,18 +29,8 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout root docs tooling
-        uses: actions/checkout@v4
-        with:
-          repository: Offonika/MM
-          path: .ci/MM
-          ref: ${{ vars.MM_DOCS_TOOLING_REF || 'main' }}
-          token: ${{ secrets.CI_REPOS_TOKEN || github.token }}
-
       - name: Checkout pricing-service
         uses: actions/checkout@v4
-        with:
-          path: .ci/MM/pricing-service
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -48,11 +38,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install docs tooling
-        working-directory: .ci/MM
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r requirements-docs.txt
+        run: python -m pip install "PyYAML>=6.0,<7"
 
       - name: Validate pricing-service project docs
-        working-directory: .ci/MM
-        run: python scripts/validate_project_docs.py pricing-service
+        run: python .github/scripts/validate_project_docs.py

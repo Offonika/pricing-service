@@ -22,13 +22,6 @@ DOMAIN_NAMES = {
     "telephony",
 }
 TEXT_SUFFIXES = {".py", ".md", ".sh", ".yml", ".yaml", ".toml", ".example"}
-TOPCONTROL_ALLOWED = {
-    Path("tasks/import_topcontrol_products_db.py"),
-    Path("tests/test_import_onec_products.py"),
-    Path("docs/RELEASE_NOTES.md"),
-    Path("docs/manifest.yml"),
-    Path("docs/specs/pricing-service-architecture-hardening.md"),
-}
 LEGACY_BOUNDARY_ALLOWLIST = {
     Path("app/domains/management/application/weekly_kpi_ingest.py"),
 }
@@ -57,7 +50,8 @@ def find_violations(root: Path = REPO_ROOT) -> list[str]:
 
         if "topcontrol" in lowered:
             is_legacy = relative.parts[:2] == ("docs", "legacy")
-            if not is_legacy and relative not in TOPCONTROL_ALLOWED:
+            is_changelog = relative.name.lower().startswith(("changelog", "release_notes"))
+            if not is_legacy and not is_changelog:
                 violations.append(f"deprecated TopControl reference: {relative}")
 
         foreign_patterns = (
@@ -70,9 +64,14 @@ def find_violations(root: Path = REPO_ROOT) -> list[str]:
             if pattern in text:
                 violations.append(f"foreign project runtime path {pattern}: {relative}")
 
-        if relative.parts and relative.parts[0] == "app" and "create_engine" in text:
-            if relative != Path("app/infrastructure/db/engines.py"):
-                violations.append(f"create_engine outside DB factory: {relative}")
+        if (
+            relative.suffix == ".py"
+            and relative.parts
+            and relative.parts[0] in {"app", "tasks", "scripts", "infra"}
+            and "create_engine" in text
+            and relative != Path("app/infrastructure/db/engines.py")
+        ):
+            violations.append(f"create_engine outside DB factory: {relative}")
 
         if relative.parts[:2] == ("app", "domains") and path.suffix == ".py":
             violations.extend(_domain_import_violations(relative, text))

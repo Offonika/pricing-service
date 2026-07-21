@@ -213,6 +213,40 @@ def test_switch_refuses_candidate_without_a_valid_rollback_target(tmp_path: Path
     assert "no valid rollback target" in result.stderr
 
 
+def test_switch_refuses_when_active_release_changed_since_preflight(tmp_path: Path) -> None:
+    previous = tmp_path / "previous"
+    expected = tmp_path / "expected"
+    candidate = tmp_path / "candidate"
+    previous.mkdir()
+    expected.mkdir()
+    (candidate / ".venv/bin").mkdir(parents=True)
+    (candidate / "ui/dist").mkdir(parents=True)
+    fake_python = candidate / ".venv/bin/python"
+    fake_python.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    fake_python.chmod(0o755)
+    (candidate / "ui/dist/index.html").write_text("candidate", encoding="utf-8")
+    (candidate / "release-manifest.json").write_text("{}", encoding="utf-8")
+    (candidate / "requirements.lock").write_text("", encoding="utf-8")
+    active_link = tmp_path / "active"
+    active_link.symlink_to(previous)
+
+    result = _run(
+        [str(SWITCH_SCRIPT), str(candidate)],
+        env={
+            **os.environ,
+            "PRICING_SERVICE_ACTIVE_LINK": str(active_link),
+            "PRICING_SERVICE_EXPECTED_ACTIVE_RELEASE": str(expected),
+            "PRICING_SERVICE_SWITCH_LOCK_FILE": str(tmp_path / "switch.lock"),
+            "PRICING_SERVICE_SYSTEMD_PREFLIGHT": "0",
+            "PRICING_SERVICE_NGINX_PREFLIGHT": "0",
+        },
+    )
+
+    assert result.returncode == 3
+    assert "active release changed since preflight" in result.stderr
+    assert active_link.resolve() == previous
+
+
 def test_switch_stops_when_nginx_dump_fails_even_if_output_contains_active_path(
     tmp_path: Path,
 ) -> None:

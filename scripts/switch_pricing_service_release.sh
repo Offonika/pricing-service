@@ -10,6 +10,8 @@ SYSTEMD_PREFLIGHT="${PRICING_SERVICE_SYSTEMD_PREFLIGHT:-1}"
 NGINX_PREFLIGHT="${PRICING_SERVICE_NGINX_PREFLIGHT:-1}"
 FORCE_SMOKE_FAILURE="${PRICING_SERVICE_FORCE_SMOKE_FAILURE:-0}"
 PYTHON_BOOTSTRAP="${PRICING_SERVICE_PYTHON_BOOTSTRAP:-python3}"
+EXPECTED_ACTIVE_RELEASE="${PRICING_SERVICE_EXPECTED_ACTIVE_RELEASE:-}"
+SWITCH_LOCK_FILE="${PRICING_SERVICE_SWITCH_LOCK_FILE:-/var/lock/pricing-service-release-switch.lock}"
 
 hash_release_content() {
   local release_dir="$1"
@@ -27,6 +29,13 @@ hash_release_content() {
 if [[ "$RELEASE_DIR" != /* ]] || [[ ! -d "$RELEASE_DIR" ]]; then
   echo "release directory must be an existing absolute path: $RELEASE_DIR" >&2
   exit 2
+fi
+
+mkdir -p "$(dirname "$SWITCH_LOCK_FILE")"
+exec 9>"$SWITCH_LOCK_FILE"
+if ! flock -n 9; then
+  echo "another pricing-service release switch is already running" >&2
+  exit 3
 fi
 PYTHON_BIN="$RELEASE_DIR/.venv/bin/python"
 if [[ ! -x "$PYTHON_BIN" ]]; then
@@ -99,6 +108,13 @@ if [[ -z "$previous_target" ]] || [[ ! -d "$previous_target" ]]; then
   echo "active release link has no valid rollback target: $ACTIVE_LINK" >&2
   exit 2
 fi
+if [[ -n "$EXPECTED_ACTIVE_RELEASE" ]]; then
+  expected_target="$(readlink -f "$EXPECTED_ACTIVE_RELEASE" 2>/dev/null || true)"
+  if [[ -z "$expected_target" ]] || [[ "$previous_target" != "$expected_target" ]]; then
+    echo "active release changed since preflight: expected $EXPECTED_ACTIVE_RELEASE, found $previous_target" >&2
+    exit 3
+  fi
+fi
 
 (
   cd "$RELEASE_DIR"
@@ -111,13 +127,20 @@ fi
 
 chmod -R a+rX "$RELEASE_DIR/ui/dist"
 
+current_target="$(readlink -f "$ACTIVE_LINK" 2>/dev/null || true)"
+if [[ "$current_target" != "$previous_target" ]]; then
+  echo "active release changed during preflight: expected $previous_target, found $current_target" >&2
+  exit 3
+fi
+
 next_link="${ACTIVE_LINK}.next.$$"
 ln -s "$RELEASE_DIR" "$next_link"
 mv -Tf "$next_link" "$ACTIVE_LINK"
 
 rollback() {
   trap - ERR
-  if [[ -n "$previous_target" ]] && [[ -d "$previous_target" ]]; then
+  current_target="$(readlink -f "$ACTIVE_LINK" 2>/dev/null || true)"
+  if [[ "$current_target" == "$RELEASE_DIR" ]] && [[ -n "$previous_target" ]] && [[ -d "$previous_target" ]]; then
     rollback_link="${ACTIVE_LINK}.rollback.$$"
     ln -s "$previous_target" "$rollback_link"
     mv -Tf "$rollback_link" "$ACTIVE_LINK"

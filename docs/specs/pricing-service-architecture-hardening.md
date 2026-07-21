@@ -18,11 +18,15 @@ related_code:
   - scripts/export_openapi.py
   - scripts/build_pricing_service_release.sh
   - scripts/switch_pricing_service_release.sh
+  - scripts/validate_release_api_compatibility.py
+  - config/production_required_routes.json
 related_tests:
   - tests/test_import_onec_products.py
   - tests/test_orchestration_api.py
   - tests/test_product_compatibility.py
   - tests/test_release_scripts.py
+  - tests/test_release_api_compatibility.py
+  - tests/test_retail_counterparty_balances.py
   - tests/test_weekly_kpi_reports_api.py
 contracts:
   - openapi.yaml
@@ -31,7 +35,7 @@ depends_on:
   - docs/specs/README.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-20"
+updated_at: "2026-07-21"
 ---
 
 # Назначение
@@ -56,6 +60,8 @@ Spec фиксирует вывод TopControl из активного конту
 - architecture, OpenAPI, docs, migration и runtime quality gates;
 - durable run/delivery state и authenticated orchestration API для root control plane;
 - release-specific virtualenv, hash-locked dependencies и единый rollback backend/UI;
+- strict provenance от фактически активного production source commit, проверка
+  API-совместимости, race-safe switch и JSONL-аудит переключений;
 - release retention: активный релиз плюс три последних проверенных.
 
 Не входит:
@@ -80,6 +86,11 @@ Spec фиксирует вывод TopControl из активного конту
   `infra/cron`, а соседние проекты обменивались DB URL и путями `build/`.
 - Станет: cron/CLI остаются тонкими entrypoints, а межпроектный обмен идет через
   authenticated API или schema-validated artifacts в нейтральном runtime-каталоге.
+- Было: release можно было собрать без зафиксированной production-базы и постоянного
+  mutable-root, а switch допускал пустой expected-active и legacy manifest.
+- Станет: builder подтверждает ancestry от source commit активного релиза, switch
+  требует точного expected-active и совпадения `required_base_commit`, запрещает
+  legacy hash и удаление production API operations.
 - Не меняется: внешние HTTP-маршруты, business rules, роли и production delivery.
 
 # Acceptance Criteria
@@ -101,9 +112,19 @@ Spec фиксирует вывод TopControl из активного конту
 - [x] Release builder создаёт неизменяемый каталог со своим `.venv`, hash-locked
   dependencies и manifest hashes; `content_sha256` использует версионированную
   схему `sha256-files-v2-no-python-cache`, не зависящую от runtime `.pyc`.
-- [x] Release switch проверяет `content_sha256` до изменения active symlink; неизвестная
-  схема или несовпадение digest блокируют переключение, legacy manifest допускается
-  только с явным предупреждением.
+- [x] Release builder требует `PRICING_SERVICE_RELEASE_REQUIRED_BASE_REF` и
+  `PRICING_SERVICE_MUTABLE_ROOT`, проверяет ancestry через `git merge-base` и
+  записывает подтверждённые `required_base_commit`, `mutable_root`,
+  `source_verified=true`, `source_dirty=false`.
+- [x] Release switch требует `PRICING_SERVICE_EXPECTED_ACTIVE_RELEASE` и
+  `PRICING_SERVICE_MUTABLE_ROOT`, принимает только
+  `sha256-files-v2-no-python-cache`, сверяет production lineage и блокирует stale
+  candidate до изменения active symlink.
+- [x] Switch проверяет актуальность OpenAPI, запрещает удаление operations активного
+  релиза без явного policy-исключения и пишет JSONL events `rejected`, `attempt`,
+  `rolled_back`, `verified` без секретов.
+- [x] Обратный диапазон `period_start > as_of` отклоняется в service layer и
+  management API с HTTP 422 до открытия соединения с 1С.
 - [x] Forced smoke failure атомарно возвращает прежние backend и UI через один symlink.
 - [ ] Production release переключён с проверенным rollback и без
   удаления активного/rollback targets.
@@ -147,6 +168,8 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
   `schema`, `schema_sha256`, `content_sha256` и `artifact`.
 - OpenAPI `pricing-service` продолжает генерироваться из FastAPI и проверяться через
   `scripts/export_openapi.py --check`.
+- `GET /api/management/retail-counterparty-zero-balances` возвращает HTTP 422, если
+  `period_start` позже `as_of`.
 
 # Invariants
 
@@ -156,6 +179,11 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 - Side effects остаются dry-run, если они не были production-enabled до refactor.
 - Первая волна миграций additive; удаление данных и колонок запрещено.
 - Активный release symlink и rollback target не участвуют в cleanup.
+- Каждый release-кандидат основан на source commit текущего active manifest;
+  параллельное изменение active symlink блокирует switch как до, так и после preflight.
+- Mutable state указывает на постоянный абсолютный root вне source worktree и release root.
+- Forward switch не принимает legacy manifest и не удаляет production API operations
+  без отдельного изменения policy-файла, прошедшего review.
 - Scheduler не включает timer для job, пока runtime registry не переведён из
   `cron_active_timer_disabled` в разрешённое переходное/целевое состояние.
 - Delivery со статусом `unknown` не повторяется автоматически.
@@ -172,6 +200,10 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 - Старый cron вызывает deprecated module: wrapper делегирует новой команде и пишет
   warning, не меняя exit code.
 - Cleanup обнаружил runtime/reference path: каталог пропускается и попадает в отчет.
+- Production source commit не является предком кандидата, active release сменился,
+  manifest не подтверждён или mutable-root временный: build/switch завершается ошибкой.
+- После переключения smoke не прошёл: rollback выполняется только если active link всё
+  ещё указывает на этот candidate; результат фиксируется в JSONL audit.
 
 # Implementation Checklist
 
@@ -188,6 +220,10 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 - [x] Добавить durable orchestration models/API, idempotency и expired-lease guard.
 - [x] Добавить release-specific venv, dependency hashes и единый UI/backend rollback.
 - [x] Исключить Python cache из release digest и проверять v2 digest перед switch.
+- [x] Добавить strict production provenance, обязательный persistent mutable-root,
+  expected-active guard, OpenAPI route compatibility и switch audit.
+- [x] Пересоздавать read-only `.release-verified` безопасно и отклонять обратный
+  диапазон дат retail zero-balance endpoint.
 - [ ] Прогнать regression, собрать immutable release, smoke и rollback.
 - [ ] После контрольного цикла применить safe retention и удалить deprecated alias
   в следующем релизе.
@@ -214,25 +250,60 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
   TopControl outside legacy.
 - Regression: full pytest, UI tests, OpenAPI check, Alembic check, docs quality.
 - Release integrity: стабильность `content_sha256` после появления runtime `.pyc` и
-  отказ switch при изменении содержимого кандидата.
+  marker, отказ при stale/dirty/unverified candidate, неверной базе, mutable-root,
+  legacy hash, смене active release и изменении содержимого кандидата.
+- API compatibility: удалённый operation блокируется; явно разрешённое policy-исключение
+  допускается; обязательный retail zero-balance route нельзя удалить.
+- Management API: корректный диапазон дат проходит, обратный возвращает 422 до 1С.
 - Smoke: `/health`, matching, receivables, executive dashboard, procurement,
   1C catalog dry-run/sync and weekly KPI dry-run without external delivery.
 
 # Rollout
 
-1. Собрать immutable release из проверенного source tree.
-2. Запустить offline validations и локальный smoke на отдельном порту.
-3. Атомарно переключить `pricing-service-task43-current` и перезапустить service.
-4. Проверить health/OpenAPI/UI/API без Bitrix/Telegram side effects и только
-   после успешного smoke создать immutable marker `.release-verified`.
-5. Наблюдать один ночной catalog sync и один management daily cycle.
-6. При ошибке вернуть symlink на предыдущий verified release; additive migrations
+1. Считать `active_release` и его `source_commit`, создать от него отдельный чистый
+   worktree, внести и закоммитить изменения. Нельзя использовать грязный параллельный
+   checkout как source или mutable-root.
+2. Собрать immutable release, явно передав production-базу и постоянный state-root:
+
+   ```bash
+   active_release="$(readlink -f /opt/MM/pricing-service-task43-current)"
+   active_source_commit="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["source_commit"])' \
+     "$active_release/release-manifest.json")"
+   PRICING_SERVICE_SOURCE_ROOT=/opt/MM/.worktrees/<clean-worktree> \
+   PRICING_SERVICE_RELEASE_ROOT=/opt/MM/releases/pricing-service \
+   PRICING_SERVICE_RELEASE_REQUIRED_BASE_REF="$active_source_commit" \
+   PRICING_SERVICE_MUTABLE_ROOT=/opt/MM/pricing-service \
+   PRICING_SERVICE_RUNTIME_ENV_FILE=/opt/MM/pricing-service/.env \
+     scripts/build_pricing_service_release.sh <release-name>
+   ```
+
+3. Запустить offline validations и локальный smoke на отдельном порту.
+4. Непосредственно перед cutover повторно считать active release и переключить под
+   lock только с точным expected-active:
+
+   ```bash
+   PRICING_SERVICE_EXPECTED_ACTIVE_RELEASE="$active_release" \
+   PRICING_SERVICE_MUTABLE_ROOT=/opt/MM/pricing-service \
+     scripts/switch_pricing_service_release.sh \
+     /opt/MM/releases/pricing-service/<release-name>
+   ```
+
+5. Проверить health/OpenAPI/UI/API без Bitrix/Telegram side effects; marker
+   `.release-verified` создаётся switch-скриптом только после успешного smoke.
+6. Наблюдать один ночной catalog sync и один management daily cycle. Известный
+   dashboard status `owner cash transfer control has a high unresolved issue`
+   сравнивать с дорелизным baseline и не считать новой технической регрессией.
+7. При ошибке вернуть symlink на предыдущий verified release; additive migrations
    допускают запуск старого кода.
-7. После успешного цикла оставить active + 3 verified releases и архивировать/удалить
-   остальные только через safe retention report.
+8. Retention не выполнять до следующего критического планового цикла; после него
+   оставить active + 3 verified releases и удалять остальные только через safe
+   retention report.
 
 # Changelog
 
+- 2026-07-21 — strict release provenance, mandatory persistent mutable-root and
+  expected-active, route compatibility, JSONL switch audit, safe marker refresh и
+  HTTP 422 для обратного retail balance period.
 - 2026-07-20 — successful release switch создает `.release-verified`, чтобы
   ежедневный safe retention мог сохранять active + 3 rollback и удалять только
   ранее проверенные лишние релизы.

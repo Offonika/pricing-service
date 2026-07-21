@@ -127,6 +127,7 @@ from app.services.retail_counterparty_balances import (
     build_retail_counterparty_zero_balances,
     build_unavailable_retail_counterparty_zero_balances,
     normalize_counterparty_codes,
+    validate_retail_balance_period,
 )
 from app.services.retail_customer_price_types import (
     BUYERS_COUNTERPARTY_GROUP_NAME,
@@ -805,6 +806,10 @@ def get_retail_counterparty_zero_balances(
         raise HTTPException(status_code=422, detail="At most 50 counterparty codes are allowed")
     if any(len(code) > 32 for code in codes):
         raise HTTPException(status_code=422, detail="Counterparty code is too long")
+    try:
+        validate_retail_balance_period(period_start=period_start, as_of=as_of)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
 
     try:
         onec_engine = _build_onec_engine()

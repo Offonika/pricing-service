@@ -5,13 +5,13 @@ SOURCE_ROOT="${PRICING_SERVICE_SOURCE_ROOT:-/opt/MM/pricing-service}"
 RELEASE_ROOT="${PRICING_SERVICE_RELEASE_ROOT:-/opt/MM/releases/pricing-service}"
 BASE_RELEASE="${PRICING_SERVICE_BASE_RELEASE:-}"
 OVERLAY_PATHS="${PRICING_SERVICE_RELEASE_OVERLAY_PATHS:-}"
-ALLOW_DIRTY="${PRICING_SERVICE_ALLOW_DIRTY:-0}"
 ALLOW_OVERLAY="${PRICING_SERVICE_ALLOW_OVERLAY:-0}"
 BUILD_UI="${PRICING_SERVICE_BUILD_UI:-1}"
 INSTALL_VENV="${PRICING_SERVICE_INSTALL_VENV:-1}"
 PYTHON_BOOTSTRAP="${PRICING_SERVICE_PYTHON_BOOTSTRAP:-python3}"
 RUNTIME_ENV_FILE="${PRICING_SERVICE_RUNTIME_ENV_FILE:-$SOURCE_ROOT/.env}"
-MUTABLE_ROOT="${PRICING_SERVICE_MUTABLE_ROOT:-$SOURCE_ROOT}"
+MUTABLE_ROOT="${PRICING_SERVICE_MUTABLE_ROOT:-}"
+REQUIRED_BASE_REF="${PRICING_SERVICE_RELEASE_REQUIRED_BASE_REF:-}"
 RELEASE_NAME="${1:-architecture-hardening-$(date +%Y%m%d-%H%M%S)}"
 FINAL_DIR="${RELEASE_ROOT}/${RELEASE_NAME}"
 TEMP_DIR="${RELEASE_ROOT}/.${RELEASE_NAME}.tmp.$$"
@@ -46,17 +46,52 @@ if [[ ! -f "$RUNTIME_ENV_FILE" ]]; then
   echo "runtime env file is missing: $RUNTIME_ENV_FILE" >&2
   exit 2
 fi
+if [[ -z "$REQUIRED_BASE_REF" ]]; then
+  echo "PRICING_SERVICE_RELEASE_REQUIRED_BASE_REF is required" >&2
+  exit 2
+fi
+if [[ -z "$MUTABLE_ROOT" ]]; then
+  echo "PRICING_SERVICE_MUTABLE_ROOT is required" >&2
+  exit 2
+fi
 if [[ "$MUTABLE_ROOT" != /* ]]; then
   echo "mutable root must be an absolute path: $MUTABLE_ROOT" >&2
   exit 2
 fi
+if [[ ! -d "$MUTABLE_ROOT" ]]; then
+  echo "mutable root must be an existing persistent directory: $MUTABLE_ROOT" >&2
+  exit 2
+fi
+
+source_root_real="$(realpath "$SOURCE_ROOT")"
+release_root_real="$(realpath -m "$RELEASE_ROOT")"
+mutable_root_real="$(realpath "$MUTABLE_ROOT")"
+case "$mutable_root_real/" in
+  "$source_root_real/"*)
+    echo "mutable root must not be the source worktree or live inside it: $MUTABLE_ROOT" >&2
+    exit 2
+    ;;
+  "$release_root_real/"*)
+    echo "mutable root must not live inside the immutable release root: $MUTABLE_ROOT" >&2
+    exit 2
+    ;;
+esac
+MUTABLE_ROOT="$mutable_root_real"
 
 source_commit="$(git -C "$SOURCE_ROOT" rev-parse HEAD)"
+if ! required_base_commit="$(git -C "$SOURCE_ROOT" rev-parse --verify "${REQUIRED_BASE_REF}^{commit}")"; then
+  echo "required production base ref cannot be resolved: $REQUIRED_BASE_REF" >&2
+  exit 2
+fi
+if ! git -C "$SOURCE_ROOT" merge-base --is-ancestor "$required_base_commit" "$source_commit"; then
+  echo "required production base is not an ancestor of the release candidate: $required_base_commit" >&2
+  exit 2
+fi
 source_dirty=false
 if [[ -n "$(git -C "$SOURCE_ROOT" status --porcelain)" ]]; then
   source_dirty=true
 fi
-if [[ "$source_dirty" == true ]] && [[ "$ALLOW_DIRTY" != 1 ]]; then
+if [[ "$source_dirty" == true ]]; then
   echo "source checkout is dirty; build from a clean detached worktree" >&2
   exit 2
 fi
@@ -68,6 +103,10 @@ fi
 if [[ "$BUILD_UI" == 1 ]] && [[ -f "$SOURCE_ROOT/ui/package-lock.json" ]]; then
   npm --prefix "$SOURCE_ROOT/ui" ci
   npm --prefix "$SOURCE_ROOT/ui" run build
+fi
+if [[ -n "$(git -C "$SOURCE_ROOT" status --porcelain)" ]]; then
+  echo "source checkout changed during build; commit deterministic build inputs first" >&2
+  exit 2
 fi
 if [[ ! -f "$SOURCE_ROOT/ui/dist/index.html" ]]; then
   echo "ui/dist/index.html is required; build the UI from the release commit" >&2
@@ -220,6 +259,10 @@ cat >"$TEMP_DIR/release-manifest.json" <<EOF
   "base_release": "${BASE_RELEASE:-source-tree}",
   "overlay_paths": "${OVERLAY_PATHS:-all}",
   "source_commit": "$source_commit",
+  "source_verified": true,
+  "required_base_ref": "$REQUIRED_BASE_REF",
+  "required_base_commit": "$required_base_commit",
+  "mutable_root": "$MUTABLE_ROOT",
   "source_dirty": $source_dirty,
   "runtime_env_file": "$RUNTIME_ENV_FILE",
   "python_version": "$python_version",

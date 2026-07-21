@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "required_routes": [
+    {
+      "method": "GET",
+      "path": "/api/management/retail-counterparty-zero-balances",
+      "owner": "bitrix-task-997",
+      "reason": "Ежедневный контроль нулевых балансов 11 розничных контрагентов"
+    }
+  ],
+  "allowed_removed_routes": []
+}

@@ -47,6 +47,18 @@ def _default_period_start(as_of_naive: datetime) -> date:
     return as_of_naive.date().replace(day=1)
 
 
+def validate_retail_balance_period(
+    *,
+    period_start: date | None,
+    as_of: datetime | None,
+) -> tuple[datetime, str, date]:
+    as_of_naive, generated_at_msk = _as_msk_naive(as_of)
+    resolved_period_start = period_start or _default_period_start(as_of_naive)
+    if datetime.combine(resolved_period_start, time.min) > as_of_naive:
+        raise ValueError("period_start must not be later than as_of")
+    return as_of_naive, generated_at_msk, resolved_period_start
+
+
 def build_unavailable_retail_counterparty_zero_balances(
     counterparty_codes: list[str],
     *,
@@ -88,8 +100,10 @@ def build_retail_counterparty_zero_balances(
     if not codes:
         raise ValueError("at least one counterparty code is required")
 
-    as_of_naive, generated_at_msk = _as_msk_naive(as_of)
-    resolved_period_start = period_start or _default_period_start(as_of_naive)
+    as_of_naive, generated_at_msk, resolved_period_start = validate_retail_balance_period(
+        period_start=period_start,
+        as_of=as_of,
+    )
     params = {
         "counterparty_codes": codes,
         "period_start": datetime.combine(resolved_period_start, time.min),

@@ -70,10 +70,12 @@ def test_release_builder_creates_locked_release_specific_runtime(tmp_path: Path)
     subprocess.run(["git", "-C", str(source), "commit", "-qm", "fixture"], check=True)
 
     release_root = tmp_path / "releases"
+    mutable_root = tmp_path / "runtime"
     env = {
         **os.environ,
         "PRICING_SERVICE_SOURCE_ROOT": str(source),
         "PRICING_SERVICE_RELEASE_ROOT": str(release_root),
+        "PRICING_SERVICE_MUTABLE_ROOT": str(mutable_root),
         "PRICING_SERVICE_BUILD_UI": "0",
     }
     result = _run([str(BUILD_SCRIPT), "test-release"], env=env)
@@ -98,6 +100,8 @@ def test_release_builder_creates_locked_release_specific_runtime(tmp_path: Path)
         f"#!{release}/.venv/bin/python"
     )
     assert (release / ".env").resolve() == source / ".env"
+    assert (release / "build").resolve() == mutable_root / "build"
+    assert (release / "data").resolve() == mutable_root / "data"
     assert (release / "ui/dist/index.html").stat().st_mode & 0o222 == 0
 
 

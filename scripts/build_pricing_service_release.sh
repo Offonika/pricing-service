@@ -11,6 +11,7 @@ BUILD_UI="${PRICING_SERVICE_BUILD_UI:-1}"
 INSTALL_VENV="${PRICING_SERVICE_INSTALL_VENV:-1}"
 PYTHON_BOOTSTRAP="${PRICING_SERVICE_PYTHON_BOOTSTRAP:-python3}"
 RUNTIME_ENV_FILE="${PRICING_SERVICE_RUNTIME_ENV_FILE:-$SOURCE_ROOT/.env}"
+MUTABLE_ROOT="${PRICING_SERVICE_MUTABLE_ROOT:-$SOURCE_ROOT}"
 RELEASE_NAME="${1:-architecture-hardening-$(date +%Y%m%d-%H%M%S)}"
 FINAL_DIR="${RELEASE_ROOT}/${RELEASE_NAME}"
 TEMP_DIR="${RELEASE_ROOT}/.${RELEASE_NAME}.tmp.$$"
@@ -42,6 +43,10 @@ if [[ ! -f "$SOURCE_ROOT/requirements.lock" ]]; then
 fi
 if [[ ! -f "$RUNTIME_ENV_FILE" ]]; then
   echo "runtime env file is missing: $RUNTIME_ENV_FILE" >&2
+  exit 2
+fi
+if [[ "$MUTABLE_ROOT" != /* ]]; then
+  echo "mutable root must be an absolute path: $MUTABLE_ROOT" >&2
   exit 2
 fi
 
@@ -138,8 +143,8 @@ fi
 
 for mutable_name in .local .artifacts build data reports; do
   rm -rf "$TEMP_DIR/$mutable_name"
-  mkdir -p "$SOURCE_ROOT/$mutable_name"
-  ln -s "$SOURCE_ROOT/$mutable_name" "$TEMP_DIR/$mutable_name"
+  mkdir -p "$MUTABLE_ROOT/$mutable_name"
+  ln -s "$MUTABLE_ROOT/$mutable_name" "$TEMP_DIR/$mutable_name"
 done
 rm -f "$TEMP_DIR/.env"
 ln -s "$RUNTIME_ENV_FILE" "$TEMP_DIR/.env"

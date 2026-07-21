@@ -97,6 +97,7 @@ const PROFIT_LOSS_TAB_KEY = "profit_loss";
 const SALES_TAB_KEY = "sales";
 const ONLINE_STORE_TAB_KEY = "online_store";
 const ODDS_CASHFLOW_TAB_KEY = "odds_cashflow";
+const PROFIT_LOSS_EXPENSES_EXPANDED_KEY = "mm:executive:profit-loss:expenses-expanded";
 
 const TAB_DEFINITIONS = [
   { key: "today", label: "Сегодня" },
@@ -1778,6 +1779,79 @@ function profitLossRatioByKey(
   return data?.ratios.find((ratio) => ratio.key === key) || null;
 }
 
+function readProfitLossExpensesExpanded() {
+  if (typeof window === "undefined") return true;
+  try {
+    return window.localStorage.getItem(PROFIT_LOSS_EXPENSES_EXPANDED_KEY) !== "0";
+  } catch {
+    return true;
+  }
+}
+
+function writeProfitLossExpensesExpanded(expanded: boolean) {
+  try {
+    window.localStorage.setItem(PROFIT_LOSS_EXPENSES_EXPANDED_KEY, expanded ? "1" : "0");
+  } catch {
+    // localStorage может быть недоступен; сворачивание продолжит работать без памяти.
+  }
+}
+
+function ProfitLossExpenseBreakdown({ data }: { data: ExecutiveProfitLossPeriodResponse }) {
+  const [expanded, setExpanded] = useState(readProfitLossExpensesExpanded);
+  const detailsId = "executive-profit-loss-expense-details";
+  const visibleRows = data.expense_breakdown.slice(0, 8);
+  const toggleExpanded = () => {
+    setExpanded((current) => {
+      const next = !current;
+      writeProfitLossExpensesExpanded(next);
+      return next;
+    });
+  };
+
+  return (
+    <section className="executive-profit-loss-lines executive-profit-loss-expenses" aria-label="Операционные расходы по ДДС">
+      <header>
+        <div>
+          <h3>Операционные расходы по ДДС</h3>
+          <span>
+            {visibleRows.length === 0
+              ? "Нет подтвержденных расходов"
+              : `Статей: ${data.expense_breakdown.length} · ${statusLabel(data.expense_source_status)}`}
+          </span>
+        </div>
+        <div className="executive-profit-loss-expenses__summary">
+          <strong>{formatMoney(profitLossTotal(data, "operating_expenses"))}</strong>
+          <button
+            aria-controls={detailsId}
+            aria-expanded={expanded}
+            onClick={toggleExpanded}
+            type="button"
+          >
+            {expanded ? "Свернуть" : "Показать расшифровку"}
+          </button>
+        </div>
+      </header>
+      {expanded && (
+        <div className="executive-profit-loss-lines__rows" id={detailsId}>
+          {visibleRows.length === 0 ? (
+            <div className="executive-cashflow-period__empty">
+              Нет подтвержденных операционных расходов по ДДС.
+            </div>
+          ) : (
+            visibleRows.map((row) => (
+              <div className="executive-cashflow-row" key={row.key}>
+                <span>{row.label}</span>
+                <strong>{formatMoney(row.amount)}</strong>
+                <small>{profitLossExpenseDetail(row)}</small>
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function numericValue(value: string | number | null | undefined) {
   if (value === null || value === undefined || value === "") return null;
   const parsed = Number(value);
@@ -2788,12 +2862,6 @@ function ProfitLossPeriodPanel({
   const operatingMargin = profitLossRatioByKey(data, "operating_margin_pct");
   const netProfitMargin = profitLossRatioByKey(data, "net_profit_margin_pct");
   const netProfitLine = data?.lines.find((line) => line.key === "net_profit");
-  const maxDailyValue = Math.max(
-    ...((data?.daily || []).map((row) =>
-      Math.max(Math.abs(Number(row.revenue) || 0), Math.abs(Number(row.gross_profit) || 0))
-    )),
-    1
-  );
   return (
     <section className="executive-cashflow-period executive-profit-loss-period" aria-label="Отчет о прибылях и убытках за период">
       <header className="executive-panel__header">
@@ -2905,27 +2973,12 @@ function ProfitLossPeriodPanel({
             </div>
           </section>
 
+          <ProfitLossExpenseBreakdown data={data} />
+
           <InventoryLossPanel
             data={data.inventory_loss}
             key={data.inventory_loss?.month || "inventory-loss-missing"}
           />
-
-          <div className="executive-cashflow-period__chart" aria-label="Динамика ОПУ по дням">
-            {data.daily.slice(-31).map((row) => {
-              const revenueWidth = `${Math.max(3, Math.round(((Number(row.revenue) || 0) / maxDailyValue) * 100))}%`;
-              const profitWidth = `${Math.max(3, Math.round((Math.abs(Number(row.gross_profit) || 0) / maxDailyValue) * 100))}%`;
-              return (
-                <div className="executive-cashflow-day" key={row.business_date}>
-                  <span>{formatDate(row.business_date)}</span>
-                  <div>
-                    <i style={{ width: revenueWidth }} />
-                    <b style={{ width: profitWidth }} />
-                  </div>
-                  <strong>{formatMoney(row.gross_profit)}</strong>
-                </div>
-              );
-            })}
-          </div>
 
           <div className="executive-cashflow-period__tables">
             <div>
@@ -2952,22 +3005,6 @@ function ProfitLossPeriodPanel({
                     <span>{row.label}</span>
                     <strong>{formatMoney(row.gross_profit)}</strong>
                     <small>{profitLossRowDetail(row)}</small>
-                  </div>
-                ))
-              )}
-            </div>
-            <div>
-              <h3>Операционные расходы по ДДС</h3>
-              {data.expense_breakdown.length === 0 ? (
-                <div className="executive-cashflow-period__empty">
-                  Нет подтвержденных операционных расходов по ДДС.
-                </div>
-              ) : (
-                data.expense_breakdown.slice(0, 8).map((row) => (
-                  <div className="executive-cashflow-row" key={row.key}>
-                    <span>{row.label}</span>
-                    <strong>{formatMoney(row.amount)}</strong>
-                    <small>{profitLossExpenseDetail(row)}</small>
                   </div>
                 ))
               )}

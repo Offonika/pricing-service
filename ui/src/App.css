@@ -1356,6 +1356,49 @@
   font-weight: 750;
 }
 
+.executive-profit-loss-expenses > header > div:first-child {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.executive-profit-loss-expenses__summary {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  min-width: 0;
+}
+
+.executive-profit-loss-expenses__summary strong {
+  color: #18202a;
+  font-size: 14px;
+  white-space: nowrap;
+}
+
+.executive-profit-loss-expenses__summary button {
+  min-height: 34px;
+  padding: 6px 10px;
+  border: 1px solid #d0d5dd;
+  border-radius: 6px;
+  background: #ffffff;
+  color: #175cd3;
+  cursor: pointer;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.executive-profit-loss-expenses__summary button:hover {
+  border-color: #84adff;
+  background: #f5f8ff;
+}
+
+.executive-profit-loss-expenses__summary button:focus-visible {
+  outline: 3px solid rgba(46, 144, 250, 0.28);
+  outline-offset: 2px;
+}
+
 .executive-profit-loss-lines__rows {
   display: grid;
   gap: 6px;
@@ -3487,6 +3530,16 @@
 
   .executive-profit-loss-line strong {
     text-align: left;
+  }
+
+  .executive-profit-loss-expenses > header,
+  .executive-profit-loss-expenses__summary {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .executive-profit-loss-expenses__summary strong {
+    white-space: normal;
   }
 
   .executive-currency-row {

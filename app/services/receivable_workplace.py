@@ -87,7 +87,10 @@ MANUAL_STATUS_OPTIONS = [
     ReceivableWorkplaceStatusOption(value="intervention_required", label="Требуется вмешательство"),
     ReceivableWorkplaceStatusOption(
         value="not_ours_transfer",
-        label="Не наш, прошу перенести ответственным (указать РТУ если возможно)",
+        label=(
+            "Не наш, прошу перенести ответственным "
+            "(необходимо указать долгообразующую РТУ, если возможно)"
+        ),
     ),
     ReceivableWorkplaceStatusOption(value="remind", label="Напомнить"),
     ReceivableWorkplaceStatusOption(value="paid", label="Оплачено"),

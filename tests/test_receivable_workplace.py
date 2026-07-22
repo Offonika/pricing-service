@@ -265,9 +265,9 @@ def test_receivable_workplace_uses_default_credit_depth_without_onec_write(
     assert item.staff_options[0].staff_ref == "staff-1"
     assert item.documents[0].document_number == "РБГУ0001"
     status_options = {option.value: option.label for option in result.status_options}
-    assert (
-        status_options["not_ours_transfer"]
-        == "Не наш, прошу перенести ответственным (указать РТУ если возможно)"
+    assert status_options["not_ours_transfer"] == (
+        "Не наш, прошу перенести ответственным "
+        "(необходимо указать долгообразующую РТУ, если возможно)"
     )
 
 

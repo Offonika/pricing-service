@@ -26,7 +26,7 @@ contracts:
 depends_on: []
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-17"
+updated_at: "2026-07-22"
 ---
 
 # Executive Management Dashboard In Bitrix
@@ -596,7 +596,11 @@ fallback-режимом: пользователь видит прежнюю ст
 ## Refresh SLA
 
 - dashboard API — быстрый cached/read-only ответ;
-- finance snapshot — целевой лаг до 1 дня;
+- finance snapshot и периодный кэш ДДС — целевой лаг до 1 дня; запрос до текущей
+  даты при кэше по вчерашний день возвращает `partial/fresh`, а лаг более 1 дня —
+  `stale`;
+- для ОПУ monitor grace действует до 11:45, после штатной пересборки периодного
+  кэша ДДС в 11:30;
 - procurement snapshot — полный read-only список открытых `cargo + ved_import`,
   обновление в 10:35; после 11:00 `stale/missing/source_error` считается ошибкой мониторинга;
 - payables snapshot — read-only срез кредиторской задолженности 1С в 10:40;

@@ -237,6 +237,49 @@ def _freshness_for_date(
     return "fresh" if lag_days <= allowed_lag else "stale"
 
 
+def _cache_period_coverage(
+    *,
+    requested_from: date,
+    requested_to: date,
+    cache_from: date | None,
+    cache_to: date | None,
+) -> Literal["covered", "partial", "stale"]:
+    """Classify cache coverage without rejecting an allowed right-edge lag."""
+    if cache_from is None or cache_to is None or requested_from < cache_from:
+        return "stale"
+    if requested_to <= cache_to:
+        return "covered"
+    if (
+        _freshness_for_date(
+            requested_date=requested_to,
+            source_as_of=cache_to,
+        )
+        == "fresh"
+    ):
+        return "partial"
+    return "stale"
+
+
+def _cache_period_note(
+    *,
+    coverage: Literal["covered", "partial", "stale"],
+    cache_from: date | None,
+    cache_to: date | None,
+) -> str | None:
+    if coverage == "covered":
+        return None
+    cache_range = (
+        f"{cache_from.isoformat() if cache_from else '?'}.."
+        f"{cache_to.isoformat() if cache_to else '?'}"
+    )
+    if coverage == "partial":
+        return (
+            f"Кэш покрывает период {cache_range}; текущая правая граница еще не закрыта, "
+            "но дата кэша находится в пределах допустимого лага."
+        )
+    return f"Запрошенный период выходит за кэш {cache_range}."
+
+
 def _apply_date_freshness(
     source_status: str,
     *,
@@ -401,8 +444,11 @@ def _profit_loss_expenses_from_cashflow_cache(
     cache_period = payload.get("period") if isinstance(payload.get("period"), dict) else {}
     cache_from = _as_date(cache_period.get("date_from"))
     cache_to = _as_date(cache_period.get("date_to"))
-    period_outside_cache = bool(
-        cache_from is None or cache_to is None or date_from < cache_from or date_to > cache_to
+    cache_coverage = _cache_period_coverage(
+        requested_from=date_from,
+        requested_to=date_to,
+        cache_from=cache_from,
+        cache_to=cache_to,
     )
     rows_source = payload.get("rows") if isinstance(payload.get("rows"), list) else []
     rows = [
@@ -625,20 +671,24 @@ def _profit_loss_expenses_from_cashflow_cache(
         expense_status = "partial"
     if accrual_summary["source_status"] == "partial":
         expense_status = "partial"
-    if period_outside_cache:
+    if cache_coverage == "stale":
         expense_status = "stale"
+    elif cache_coverage == "partial" and expense_status == "ready":
+        expense_status = "partial"
+
+    expense_freshness = _freshness_from_status(expense_status)
+    if cache_coverage == "partial" and expense_status == "partial":
+        expense_freshness = "fresh"
 
     return {
         "source_status": expense_status,
-        "freshness_status": _freshness_from_status(expense_status),
+        "freshness_status": expense_freshness,
         "note": (
             "Расходы определены по исходящим оплатам ДДС; договоры с активными "
             "правилами заменены управленческими начислениями без двойного учета."
             + (
-                f" Запрошенный период выходит за кэш "
-                f"{cache_from.isoformat() if cache_from else '?'}.."
-                f"{cache_to.isoformat() if cache_to else '?'}."
-                if period_outside_cache
+                f" {_cache_period_note(coverage=cache_coverage, cache_from=cache_from, cache_to=cache_to)}"
+                if cache_coverage != "covered"
                 else ""
             )
         ),
@@ -4877,16 +4927,17 @@ def build_executive_cashflow_period_response(
     cache_period = payload.get("period") if isinstance(payload.get("period"), dict) else {}
     cache_from = _as_date(cache_period.get("date_from"))
     cache_to = _as_date(cache_period.get("date_to"))
-    period_note = None
-    period_outside_cache = bool(
-        cache_from is None or cache_to is None or date_from < cache_from or date_to > cache_to
+    cache_coverage = _cache_period_coverage(
+        requested_from=date_from,
+        requested_to=date_to,
+        cache_from=cache_from,
+        cache_to=cache_to,
     )
-    if period_outside_cache:
-        period_note = (
-            "Запрошенный период выходит за кэш "
-            f"{cache_from.isoformat() if cache_from else '?'}.."
-            f"{cache_to.isoformat() if cache_to else '?'}."
-        )
+    period_note = _cache_period_note(
+        coverage=cache_coverage,
+        cache_from=cache_from,
+        cache_to=cache_to,
+    )
     if not rows and not period_note:
         period_note = "В кэше нет движений ДДС по выбранным фильтрам."
     totals = _cashflow_totals(rows)
@@ -4906,11 +4957,13 @@ def build_executive_cashflow_period_response(
     effective_status = str(payload.get("source_status") or source_status or "ready")
     if not rows:
         effective_status = "source_missing" if effective_status == "ready" else effective_status
-    elif period_outside_cache:
+    elif cache_coverage == "stale":
         effective_status = "stale"
-    effective_freshness = (
-        "stale" if period_outside_cache and rows else _freshness_from_status(effective_status)
-    )
+    elif cache_coverage == "partial" and effective_status == "ready":
+        effective_status = "partial"
+    effective_freshness = _freshness_from_status(effective_status)
+    if rows and cache_coverage == "partial" and effective_status == "partial":
+        effective_freshness = "fresh"
     return ExecutiveCashflowPeriodResponse(
         date_from=date_from,
         date_to=date_to,

@@ -176,7 +176,7 @@ def evaluate_data_health(
     payloads: dict[str, dict[str, Any]],
     *,
     now: datetime,
-    profit_loss_ready_after: time = time(4, 0),
+    profit_loss_ready_after: time = time(11, 45),
     procurement_ready_after: time = time(11, 0),
     payables_ready_after: time = time(11, 0),
 ) -> tuple[str, list[dict[str, Any]], list[str]]:
@@ -367,7 +367,7 @@ def main() -> None:
     parser.add_argument("--date", default=date.today().isoformat())
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--mode", choices=("release", "monitor"), default="release")
-    parser.add_argument("--profit-loss-ready-after", type=_parse_clock, default=time(4, 0))
+    parser.add_argument("--profit-loss-ready-after", type=_parse_clock, default=time(11, 45))
     parser.add_argument("--procurement-ready-after", type=_parse_clock, default=time(11, 0))
     parser.add_argument("--payables-ready-after", type=_parse_clock, default=time(11, 0))
     args = parser.parse_args()

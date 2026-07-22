@@ -1029,6 +1029,66 @@ def test_profit_loss_open_question_uses_explicit_inflow_amount(
     assert result["open_questions"][0].amount == Decimal("108005.63")
 
 
+def test_profit_loss_expenses_allow_one_day_cache_lag(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_profit_loss_cashflow_cache(tmp_path / "cashflow_period_cache.json")
+    _override_settings(monkeypatch, _settings(tmp_path / "finance_snapshot.json"))
+
+    result = executive_dashboard._profit_loss_expenses_from_cashflow_cache(
+        session=db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 7, 1),
+    )
+
+    assert result["source_status"] == "partial"
+    assert result["freshness_status"] == "fresh"
+    assert "допустимого лага" in result["note"]
+
+
+def test_profit_loss_expenses_reject_two_day_cache_lag(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_profit_loss_cashflow_cache(tmp_path / "cashflow_period_cache.json")
+    _override_settings(monkeypatch, _settings(tmp_path / "finance_snapshot.json"))
+
+    result = executive_dashboard._profit_loss_expenses_from_cashflow_cache(
+        session=db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 7, 2),
+    )
+
+    assert result["source_status"] == "stale"
+    assert result["freshness_status"] == "stale"
+    assert "выходит за кэш" in result["note"]
+
+
+def test_profit_loss_period_does_not_become_stale_for_one_day_cache_lag(
+    db_session: Session,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _write_profit_loss_cashflow_cache(tmp_path / "cashflow_period_cache.json")
+    _override_settings(monkeypatch, _settings(tmp_path / "finance_snapshot.json"))
+    db_session.add(_sales_kpi(date(2026, 6, 30)))
+    db_session.commit()
+
+    result = build_executive_profit_loss_period_response(
+        db_session,
+        date_from=date(2026, 6, 1),
+        date_to=date(2026, 7, 1),
+    )
+
+    assert result.source_status == "partial"
+    assert result.freshness_status == "partial"
+    assert result.expense_source_status == "partial"
+    assert "допустимого лага" in (result.note or "")
+
+
 def test_profit_loss_block_reads_sales_kpi(
     db_session: Session,
     tmp_path: Path,
@@ -3168,7 +3228,7 @@ def test_cashflow_period_api_returns_money_for_finance_role(
     assert payload["quality_issues"][0]["issue_label"] == "Документ без статьи ДДС"
 
 
-def test_cashflow_period_marks_partial_cache_coverage_as_stale(
+def test_cashflow_period_allows_one_day_cache_lag_as_partial_fresh(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -3179,6 +3239,25 @@ def test_cashflow_period_marks_partial_cache_coverage_as_stale(
     result = build_executive_cashflow_period_response(
         date_from=date(2026, 6, 27),
         date_to=date(2026, 7, 1),
+    )
+
+    assert result.daily
+    assert result.source_status == "partial"
+    assert result.freshness_status == "fresh"
+    assert "допустимого лага" in (result.note or "")
+
+
+def test_cashflow_period_marks_two_day_cache_lag_as_stale(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(tmp_path / "finance_snapshot.json")
+    _write_cashflow_period_cache(tmp_path / "cashflow_period_cache.json")
+    _override_settings(monkeypatch, settings)
+
+    result = build_executive_cashflow_period_response(
+        date_from=date(2026, 6, 27),
+        date_to=date(2026, 7, 2),
     )
 
     assert result.daily

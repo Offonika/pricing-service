@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -8,12 +12,23 @@ from app.infrastructure.db.engines import build_application_engine
 from app.infrastructure.db.session import session_scope
 from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
 
+REPO_ROOT = Path(__file__).resolve().parents[1]
+
 
 def _factory():
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as connection:
         connection.execute(text("CREATE TABLE event (id INTEGER PRIMARY KEY, value TEXT)"))
     return engine, sessionmaker(bind=engine, class_=Session, expire_on_commit=False)
+
+
+def test_alembic_graph_has_single_head() -> None:
+    config = Config(str(REPO_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+
+    heads = ScriptDirectory.from_config(config).get_heads()
+
+    assert len(heads) == 1, f"expected one Alembic head, found: {heads}"
 
 
 def test_unit_of_work_commits_complete_command() -> None:

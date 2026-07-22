@@ -304,6 +304,9 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 
 # Changelog
 
+- 2026-07-22 — после консолидации `main` две независимые additive Alembic-ветки
+  объединены пустой merge-revision; release-builder снова требует единственную head
+  перед production cutover.
 - 2026-07-21 — production release переведён на workspace control-plane с
   pinned strict-switch; direct low-level cutover объявлен только test/break-glass
   интерфейсом.

@@ -255,12 +255,18 @@ fi
 if ! (
   cd "$RELEASE_DIR"
   PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$RELEASE_DIR" \
-    "$PYTHON_BIN" scripts/validate_executive_dashboard_release.py
+    "$PYTHON_BIN" scripts/validate_executive_dashboard_release.py \
+    --skip-database-revision
+); then
+  reject "candidate executive dashboard release validation failed"
+fi
+if ! (
+  cd "$RELEASE_DIR"
   PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$RELEASE_DIR" \
     "$PYTHON_BIN" scripts/validate_receivables_release.py \
     --release-dir "$RELEASE_DIR"
 ); then
-  reject "candidate release validators failed"
+  reject "candidate receivables release validation failed"
 fi
 
 chmod -R a+rX "$RELEASE_DIR/ui/dist"
@@ -298,6 +304,26 @@ rollback() {
   exit "$failure_status"
 }
 trap rollback ERR
+
+if ! (
+  cd "$RELEASE_DIR"
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$RELEASE_DIR" \
+    "$PYTHON_BIN" -m alembic upgrade head
+); then
+  reject "candidate database migration failed"
+fi
+if ! (
+  cd "$RELEASE_DIR"
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$RELEASE_DIR" \
+    "$PYTHON_BIN" scripts/validate_executive_dashboard_release.py
+); then
+  reject "candidate database revision validation failed after migration"
+fi
+
+current_target="$(readlink -f "$ACTIVE_LINK" 2>/dev/null || true)"
+if [[ "$current_target" != "$previous_target" ]]; then
+  reject "active release changed during database migration: expected $previous_target, found $current_target" 3
+fi
 
 next_link="${ACTIVE_LINK}.next.$$"
 ln -s "$RELEASE_DIR" "$next_link"

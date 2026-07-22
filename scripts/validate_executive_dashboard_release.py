@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
@@ -27,7 +28,18 @@ REQUIRED_ROUTES = {
 ASSET_RE = re.compile(r"(?:src|href)=[\"'](?:\./|/)?assets/([^\"']+)[\"']")
 
 
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--skip-database-revision",
+        action="store_true",
+        help="validate release inputs before the guarded database migration",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
+    args = _parse_args()
     from alembic.config import Config
     from alembic.runtime.migration import MigrationContext
     from alembic.script import ScriptDirectory
@@ -113,14 +125,15 @@ def main() -> None:
     script = ScriptDirectory.from_config(alembic_config)
     code_head = script.get_current_head()
     database_head = None
-    try:
-        engine = get_application_engine()
-        with engine.connect() as connection:
-            database_head = MigrationContext.configure(connection).get_current_revision()
-    except Exception as exc:  # pragma: no cover - operational diagnostic
-        errors.append(f"database migration check failed: {type(exc).__name__}: {exc}")
-    if database_head is not None and database_head != code_head:
-        errors.append(f"database revision {database_head} does not match code head {code_head}")
+    if not args.skip_database_revision:
+        try:
+            engine = get_application_engine()
+            with engine.connect() as connection:
+                database_head = MigrationContext.configure(connection).get_current_revision()
+        except Exception as exc:  # pragma: no cover - operational diagnostic
+            errors.append(f"database migration check failed: {type(exc).__name__}: {exc}")
+        if database_head is not None and database_head != code_head:
+            errors.append(f"database revision {database_head} does not match code head {code_head}")
 
     result = {
         "status": "ok" if not errors else "failed",
@@ -129,6 +142,7 @@ def main() -> None:
         "required_route_count": len(REQUIRED_ROUTES),
         "code_migration_head": code_head,
         "database_migration_head": database_head,
+        "database_revision_checked": not args.skip_database_revision,
         "errors": errors,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))

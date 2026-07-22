@@ -290,20 +290,25 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
    В production нельзя напрямую вызывать low-level builder/switch из checkout,
    worktree или release. Controller закрепляет canonical paths, повторно сверяет
    active и передаёт switch обязательный `PRICING_SERVICE_EXPECTED_ACTIVE_RELEASE`.
-4. Проверить health/OpenAPI/UI/API без Bitrix/Telegram side effects; marker
+4. Controller до смены active-ссылки выполняет миграции кандидата через
+   `alembic upgrade head`, затем требует точного совпадения database/code head.
+   Любая ошибка миграции или отдельного validator останавливает cutover.
+5. Проверить health/OpenAPI/UI/API без Bitrix/Telegram side effects; marker
    `.release-verified` создаётся switch-скриптом только после успешного smoke.
-5. Наблюдать один ночной catalog sync и один management daily cycle. Известный
+6. Наблюдать один ночной catalog sync и один management daily cycle. Известный
    dashboard status `owner cash transfer control has a high unresolved issue`
    сравнивать с дорелизным baseline и не считать новой технической регрессией.
-6. При ошибке guarded rollback возвращает symlink на предыдущий verified release;
+7. При ошибке guarded rollback возвращает symlink на предыдущий verified release;
    additive migrations
    допускают запуск старого кода.
-7. Retention не выполнять до следующего критического планового цикла; после него
+8. Retention не выполнять до следующего критического планового цикла; после него
    оставить active + 3 verified releases и удалять остальные только через safe
    retention report.
 
 # Changelog
 
+- 2026-07-22 — switch стал выполнять Alembic migration до cutover, повторно
+  проверять database/code head и fail-closed обрабатывать каждый release-validator.
 - 2026-07-22 — после консолидации `main` две независимые additive Alembic-ветки
   объединены пустой merge-revision; release-builder снова требует единственную head
   перед production cutover.

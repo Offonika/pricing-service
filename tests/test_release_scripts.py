@@ -358,7 +358,7 @@ def test_failed_smoke_restores_one_backend_and_ui_release_link(tmp_path: Path) -
     assert _audit_events(tmp_path / "switch-audit.jsonl") == ["attempt", "rolled_back"]
 
 
-def test_successful_switch_recreates_read_only_verification_marker(tmp_path: Path) -> None:
+def test_switch_does_not_mask_executive_validator_failure(tmp_path: Path) -> None:
     previous = tmp_path / "previous"
     candidate = tmp_path / "candidate"
     mutable_root = _create_mutable_root(tmp_path / "runtime")
@@ -366,7 +366,12 @@ def test_successful_switch_recreates_read_only_verification_marker(tmp_path: Pat
     _write_candidate_release(
         candidate,
         mutable_root,
-        source_commit=BASE_COMMIT,
+        fake_python_body="""#!/usr/bin/env bash
+if [[ "$*" == *"validate_executive_dashboard_release.py"* ]]; then
+  exit 17
+fi
+exit 0
+""",
     )
     active_link = tmp_path / "active"
     active_link.symlink_to(previous)
@@ -378,6 +383,160 @@ def test_successful_switch_recreates_read_only_verification_marker(tmp_path: Pat
         mutable_root=mutable_root,
         systemctl=systemctl,
     )
+
+    result = _run([str(SWITCH_SCRIPT), str(candidate)], env=env)
+
+    assert result.returncode == 2
+    assert "executive dashboard release validation failed" in result.stderr
+    assert active_link.resolve() == previous
+    assert _audit_events(tmp_path / "switch-audit.jsonl") == ["rejected"]
+
+
+def test_switch_rejects_failed_database_migration_before_cutover(tmp_path: Path) -> None:
+    previous = tmp_path / "previous"
+    candidate = tmp_path / "candidate"
+    mutable_root = _create_mutable_root(tmp_path / "runtime")
+    _write_previous_release(previous)
+    _write_candidate_release(
+        candidate,
+        mutable_root,
+        fake_python_body="""#!/usr/bin/env bash
+if [[ "$1" == "-m" && "$2" == "alembic" ]]; then
+  exit 19
+fi
+exit 0
+""",
+    )
+    active_link = tmp_path / "active"
+    active_link.symlink_to(previous)
+    systemctl_log = tmp_path / "systemctl.log"
+    systemctl = _write_fake_systemctl(tmp_path / "systemctl", log=systemctl_log)
+    env = _switch_env(
+        tmp_path,
+        active_link=active_link,
+        expected_active=previous,
+        mutable_root=mutable_root,
+        systemctl=systemctl,
+    )
+    env["SYSTEMCTL_LOG"] = str(systemctl_log)
+
+    result = _run([str(SWITCH_SCRIPT), str(candidate)], env=env)
+
+    assert result.returncode == 2
+    assert "candidate database migration failed" in result.stderr
+    assert active_link.resolve() == previous
+    assert not systemctl_log.exists()
+    assert _audit_events(tmp_path / "switch-audit.jsonl") == ["attempt", "rejected"]
+
+
+def test_switch_checks_database_revision_after_migration(tmp_path: Path) -> None:
+    previous = tmp_path / "previous"
+    candidate = tmp_path / "candidate"
+    mutable_root = _create_mutable_root(tmp_path / "runtime")
+    python_log = tmp_path / "python.log"
+    _write_previous_release(previous)
+    _write_candidate_release(
+        candidate,
+        mutable_root,
+        fake_python_body="""#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$PYTHON_LOG"
+if [[ "$*" == *"validate_executive_dashboard_release.py"* \
+      && "$*" != *"--skip-database-revision"* ]]; then
+  exit 23
+fi
+exit 0
+""",
+    )
+    active_link = tmp_path / "active"
+    active_link.symlink_to(previous)
+    systemctl = _write_fake_systemctl(tmp_path / "systemctl")
+    env = _switch_env(
+        tmp_path,
+        active_link=active_link,
+        expected_active=previous,
+        mutable_root=mutable_root,
+        systemctl=systemctl,
+    )
+    env["PYTHON_LOG"] = str(python_log)
+
+    result = _run([str(SWITCH_SCRIPT), str(candidate)], env=env)
+
+    assert result.returncode == 2
+    assert "database revision validation failed after migration" in result.stderr
+    assert active_link.resolve() == previous
+    calls = python_log.read_text(encoding="utf-8").splitlines()
+    assert "-m alembic upgrade head" in calls
+    assert _audit_events(tmp_path / "switch-audit.jsonl") == ["attempt", "rejected"]
+
+
+def test_switch_refuses_when_active_release_changes_during_migration(
+    tmp_path: Path,
+) -> None:
+    previous = tmp_path / "previous"
+    changed = tmp_path / "changed"
+    candidate = tmp_path / "candidate"
+    mutable_root = _create_mutable_root(tmp_path / "runtime")
+    _write_previous_release(previous)
+    _write_previous_release(changed)
+    _write_candidate_release(
+        candidate,
+        mutable_root,
+        fake_python_body="""#!/usr/bin/env bash
+if [[ "$1" == "-m" && "$2" == "alembic" ]]; then
+  next_link="${ACTIVE_LINK_TO_CHANGE}.migration-next"
+  ln -s "$CHANGED_TARGET" "$next_link"
+  mv -Tf "$next_link" "$ACTIVE_LINK_TO_CHANGE"
+fi
+exit 0
+""",
+    )
+    active_link = tmp_path / "active"
+    active_link.symlink_to(previous)
+    systemctl = _write_fake_systemctl(tmp_path / "systemctl")
+    env = _switch_env(
+        tmp_path,
+        active_link=active_link,
+        expected_active=previous,
+        mutable_root=mutable_root,
+        systemctl=systemctl,
+    )
+    env["ACTIVE_LINK_TO_CHANGE"] = str(active_link)
+    env["CHANGED_TARGET"] = str(changed)
+
+    result = _run([str(SWITCH_SCRIPT), str(candidate)], env=env)
+
+    assert result.returncode == 3
+    assert "active release changed during database migration" in result.stderr
+    assert active_link.resolve() == changed
+    assert _audit_events(tmp_path / "switch-audit.jsonl") == ["attempt", "rejected"]
+
+
+def test_successful_switch_recreates_read_only_verification_marker(tmp_path: Path) -> None:
+    previous = tmp_path / "previous"
+    candidate = tmp_path / "candidate"
+    mutable_root = _create_mutable_root(tmp_path / "runtime")
+    _write_previous_release(previous)
+    _write_candidate_release(
+        candidate,
+        mutable_root,
+        source_commit=BASE_COMMIT,
+        fake_python_body="""#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$PYTHON_LOG"
+exit 0
+""",
+    )
+    active_link = tmp_path / "active"
+    active_link.symlink_to(previous)
+    systemctl = _write_fake_systemctl(tmp_path / "systemctl")
+    env = _switch_env(
+        tmp_path,
+        active_link=active_link,
+        expected_active=previous,
+        mutable_root=mutable_root,
+        systemctl=systemctl,
+    )
+    python_log = tmp_path / "python.log"
+    env["PYTHON_LOG"] = str(python_log)
 
     result = _run([str(SWITCH_SCRIPT), str(candidate)], env=env)
 
@@ -405,6 +564,7 @@ def test_successful_switch_recreates_read_only_verification_marker(tmp_path: Pat
         "attempt",
         "verified",
     ]
+    assert python_log.read_text(encoding="utf-8").splitlines().count("-m alembic upgrade head") == 2
 
 
 def test_switch_requires_expected_active_release(tmp_path: Path) -> None:

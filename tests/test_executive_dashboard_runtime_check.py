@@ -176,17 +176,20 @@ def test_monitor_fails_for_stale_cashflow() -> None:
     assert any("cashflow data is unhealthy" in error for error in errors)
 
 
-def test_monitor_allows_profit_loss_grace_period_but_fails_after_0400() -> None:
+def test_monitor_allows_profit_loss_grace_period_until_cashflow_cache_refresh() -> None:
     payloads = _payloads()
     payloads["profit_loss"].update(source_status="stale", freshness_status="stale")
+    next(
+        block for block in payloads["dashboard"]["blocks"] if block["key"] == "creditors_payables"
+    ).update(source_status="ready", freshness_status="fresh")
 
     early_status, early_degraded, early_errors = evaluate_data_health(
         payloads,
-        now=datetime(2026, 7, 11, 3, 59, tzinfo=MOSCOW_TZ),
+        now=datetime(2026, 7, 11, 11, 44, tzinfo=MOSCOW_TZ),
     )
     late_status, _, late_errors = evaluate_data_health(
         payloads,
-        now=datetime(2026, 7, 11, 4, 0, tzinfo=MOSCOW_TZ),
+        now=datetime(2026, 7, 11, 11, 45, tzinfo=MOSCOW_TZ),
     )
 
     assert early_status == "degraded"

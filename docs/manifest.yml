@@ -215,13 +215,58 @@ documents:
       - tests/test_ut103_procurement_orders_exporter.py
       - tests/test_export_ut103_procurement_supplier_orders_task.py
     keywords: [procurement, supplier-order, decision-contract, roadmap, wechat, bitrix24, onec, akb]
+  - path: docs/specs/assortment-status-contour-plan.md
+    title: Assortment Status Contour Canonical Plan
+    doc_type: spec
+    domain: procurement
+    status: accepted
+    owner: operations
+    source_of_truth: true
+    related_code:
+      - app/models/procurement_order_formation.py
+      - app/api/procurement_order_formation.py
+      - app/services/procurement_order_formation.py
+      - app/services/procurement_order_formation_workspace.py
+      - ui/src/components/ProcurementOrderFormationApp.tsx
+      - ui/src/components/ProcurementOrderFormationWorkspace.tsx
+    related_tests:
+      - tests/test_procurement_order_formation.py
+      - tests/test_procurement_order_formation_workspace.py
+      - tests/test_procurement_order_formation_api.py
+      - tests/test_procurement_order_formation_dry_run.py
+    keywords: [assortment-status, canonical-plan, procurement, order-formation, newborn-need, onec]
+  - path: docs/specs/assortment-status-legacy-rule-inventory.md
+    title: Assortment Status Legacy Rule Inventory
+    doc_type: spec
+    domain: procurement
+    status: accepted
+    owner: operations
+    source_of_truth: false
+    related_code:
+      - tasks/build_display_auto_order_dry_run.py
+      - tasks/report_display_marketplace_dependency_risk.py
+      - tasks/build_procurement_order_formation_dry_run.py
+      - app/services/assortment_lifecycle.py
+      - app/services/transfer_assistant.py
+      - app/services/procurement_order_formation.py
+      - config/assortment/display-auto-order-policy.json
+      - ui/src/components/ProcurementOrderFormationApp.tsx
+      - ui/src/components/ProcurementOrderFormationWorkspace.tsx
+    related_tests:
+      - tests/test_build_display_auto_order_dry_run_task.py
+      - tests/test_assortment_lifecycle.py
+      - tests/test_transfer_assistant.py
+      - tests/test_procurement_order_formation.py
+      - tests/test_procurement_order_formation_workspace.py
+      - tests/test_procurement_order_formation_dry_run.py
+    keywords: [assortment-status, legacy-rules, effective-availability, demand-channel, transfer-first, analog-score, supplier-score, order-schedule]
   - path: docs/specs/procurement-order-auto-order-unified-contour.md
     title: Procurement Order And Auto Order Unified Contour
     doc_type: spec
     domain: procurement
-    status: draft
+    status: superseded
     owner: operations
-    source_of_truth: true
+    source_of_truth: false
     related_code:
       - app/api/procurement_assortment_decisions.py
       - app/schemas/procurement_assortment_decisions.py
@@ -364,6 +409,16 @@ documents:
     related_code: [app/api/bitrix_receivables.py, app/api/receivables.py, app/api/receivable_workplace.py, app/api/management.py, app/models/receivable_case.py, app/models/receivable_work.py, app/schemas/bitrix_receivables.py, app/schemas/receivable_workplace.py, app/services/bitrix_receivables_auth.py, app/services/receivables.py, app/services/receivable_credit_profile.py, app/services/receivable_decision_portrait.py, app/services/receivable_decision_onec_metrics.py, app/services/receivable_workplace.py, app/services/receivable_workflow.py, app/services/management_rules.py, ui/src/api/bitrix.ts, ui/src/components/ReceivablesWorkplace.tsx, scripts/build_receivable_decision_blueprint.py, tasks/build_receivable_credit_profiles.py, tasks/build_receivable_decision_portraits.py, infra/cron/new_daily_receivables_from_a.py]
     related_tests: [tests/test_receivables.py, tests/test_receivable_workplace.py, tests/test_receivable_workflow.py, tests/test_receivable_decision_blueprint.py, tests/test_receivable_credit_profile.py, tests/test_receivable_decision_onec_metrics.py, tests/test_receivable_decision_portrait.py, tests/test_management_rules.py, tests/test_management_tasks_api.py, tests/test_new_daily_receivables_from_a.py]
     keywords: [receivables, bitrix24, smart-process, debt, sms]
+  - path: docs/specs/customer-price-type-management-v1.md
+    title: Customer Price Type Management V1
+    doc_type: spec
+    domain: customer-price-types
+    status: accepted
+    owner: product
+    source_of_truth: true
+    related_code: [config/price_types/ruleset.yaml, app/domains/customer_price_types/, app/infrastructure/customer_price_type_sources.py, app/infrastructure/customer_price_types.py, app/services/customer_price_types.py, app/models/customer_price_type.py, app/api/customer_price_types.py, scripts/build_bronze_monthly_inventory.py, scripts/build_customer_returns_portrait.py, scripts/build_customer_price_type_blueprint.py, app/services/exporters/ut103_customer_price_types.py, tasks/export_ut103_customer_price_types.py]
+    related_tests: [tests/test_customer_price_type_core.py, tests/test_customer_price_type_sources.py, tests/test_customer_price_type_migration.py, tests/test_customer_price_type_api.py, tests/test_price_type_ruleset.py, tests/test_customer_price_type_blueprint.py, tests/test_ut103_customer_price_type_exporter.py, tests/test_export_ut103_customer_price_types_task.py]
+    keywords: [customer-price-types, onec, bitrix24, embedded-app, smart-process, ruleset, snapshots, actionable-cases]
   - path: docs/specs/counterparty-folder-recommendations.md
     title: Counterparty Folder Recommendations
     doc_type: spec

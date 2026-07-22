@@ -49,6 +49,10 @@ READ_ITEM_FIELDS = [
     "movedTime",
 ]
 
+BUILTIN_FIELD_MAP = {
+    "assigned_by": "ASSIGNED_BY_ID",
+}
+
 
 def _base_filter(settings: Settings, extra: dict[str, Any] | None = None) -> dict[str, Any]:
     base: dict[str, Any] = {}
@@ -161,7 +165,9 @@ def _field_write_name(field_name: str, *, logical_key: str | None = None) -> str
 
 
 def _field(settings: Settings, logical_key: str) -> str | None:
-    return settings.card_balance_bitrix_field_map.get(logical_key)
+    return settings.card_balance_bitrix_field_map.get(logical_key) or BUILTIN_FIELD_MAP.get(
+        logical_key
+    )
 
 
 def _default_assigned_by_id(settings: Settings) -> int | None:

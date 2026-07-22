@@ -27,6 +27,7 @@ def _source_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
     runtime = tmp_path / "runtime"
     (source / "ui" / "dist" / "assets").mkdir(parents=True)
     (source / "pkg" / "__pycache__").mkdir(parents=True)
+    (source / "alembic" / "versions").mkdir(parents=True)
     (source / "embeddings").mkdir()
     (source / ".pytest_cache").mkdir()
     (source / ".ruff_cache").mkdir()
@@ -34,6 +35,11 @@ def _source_tree(tmp_path: Path) -> tuple[Path, Path, Path]:
     (runtime / "embeddings").mkdir()
     (runtime / ".env").write_text("DATABASE_URL=test\n", encoding="utf-8")
     (source / "app.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (source / "requirements.lock").write_text("", encoding="utf-8")
+    (source / "alembic" / "versions" / "0001_test.py").write_text(
+        'revision = "test-revision"\ndown_revision = None\n',
+        encoding="utf-8",
+    )
     (source / "embeddings" / "source-only.npy").write_bytes(b"must-not-be-released")
     (runtime / "embeddings" / "persistent-index.json").write_text(
         '{"meta": {}}\n', encoding="utf-8"
@@ -65,10 +71,16 @@ def _run_builder(
     env = {
         **os.environ,
         "PRICING_SERVICE_SOURCE_ROOT": str(source),
-        "PRICING_SERVICE_RUNTIME_ROOT": str(runtime),
         "PRICING_SERVICE_RELEASE_ROOT": str(releases),
-        "PRICING_SERVICE_PYTHON_BIN": str(PYTHON_BIN),
-        "PRICING_SERVICE_ALEMBIC_REVISION": "test-revision",
+        "PRICING_SERVICE_RUNTIME_ENV_FILE": str(runtime / ".env"),
+        "PRICING_SERVICE_MUTABLE_ROOT": str(runtime),
+        "PRICING_SERVICE_RELEASE_REQUIRED_BASE_REF": subprocess.check_output(
+            ["git", "-C", str(source), "rev-parse", "HEAD"], text=True
+        ).strip(),
+        "PRICING_SERVICE_PYTHON_BOOTSTRAP": str(PYTHON_BIN),
+        "PRICING_SERVICE_BUILD_UI": "0",
+        "PRICING_SERVICE_INSTALL_VENV": "0",
+        "PRICING_SERVICE_ALLOW_OVERLAY": "1" if base_release is not None else "0",
     }
     if base_release is not None:
         env["PRICING_SERVICE_BASE_RELEASE"] = str(base_release)

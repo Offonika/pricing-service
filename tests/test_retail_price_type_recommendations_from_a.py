@@ -20,10 +20,17 @@ def _report() -> dict[str, object]:
         "source_status": "ready",
         "summary": {
             "actionable_count": 2,
-            "set_silver_count": 1,
+            "set_silver_count": 0,
             "set_gold_count": 0,
             "downgrade_to_silver_count": 0,
             "downgrade_to_bronze_count": 1,
+            "downgrade_to_gold_count": 0,
+            "downgrade_to_retail_count": 0,
+            "manager_work_count": 0,
+            "isolate_count": 1,
+            "recovery_count": 0,
+            "data_check_count": 1,
+            "special_review_count": 0,
             "rules": {
                 "silver": "300 000 ₽ <= чистые продажи < 1 200 000 ₽",
                 "gold": "1 200 000 ₽ <= чистые продажи",
@@ -31,7 +38,7 @@ def _report() -> dict[str, object]:
         },
         "payload": [
             {
-                "action_label": "Поставить серебро",
+                "action_label": "Сверка данных",
                 "counterparty_name": "Клиент 1",
                 "current_price_type": "2.Бронзовый",
                 "current_level_label": "Бронза",
@@ -86,20 +93,20 @@ def test_export_recommendations_xlsx(tmp_path: Path) -> None:
     wb = load_workbook(path)
     ws = wb["Типы цен"]
 
-    assert ws["B1"].value == "Рекомендации по типам цен клиентов"
+    assert ws["B1"].value == "Рекомендации и ручные проверки типов цен клиентов"
     assert ws["B3"].value == 2
-    assert ws["E9"].value == "Продажи (чистые)"
-    assert ws["F9"].value == "Продажи прошлый месяц"
-    assert ws["G9"].value == "Изменение продаж"
-    assert ws["H9"].value == "Изменение, %"
-    assert ws["I9"].value == "Возвраты"
-    assert ws["N9"].value == "Код 1С"
-    assert ws["A10"].value == "Поставить серебро"
-    assert ws["F10"].value == 200000
-    assert ws["G10"].value == 300000
-    assert ws["H10"].value == 1.5
-    assert ws["N10"].value == "РБ000001"
-    assert ws["B11"].value == "Клиент 2"
+    assert ws["E15"].value == "Продажи (чистые)"
+    assert ws["F15"].value == "Продажи прошлый месяц"
+    assert ws["G15"].value == "Изменение продаж"
+    assert ws["H15"].value == "Изменение, %"
+    assert ws["I15"].value == "Возвраты"
+    assert ws["N15"].value == "Код 1С"
+    assert ws["A16"].value == "Сверка данных"
+    assert ws["F16"].value == 200000
+    assert ws["G16"].value == 300000
+    assert ws["H16"].value == 1.5
+    assert ws["N16"].value == "РБ000001"
+    assert ws["B17"].value == "Клиент 2"
     assert len(ws.conditional_formatting) >= 3
 
 
@@ -107,8 +114,10 @@ def test_render_telegram_message_includes_action_counts() -> None:
     message = render_telegram_message(_report())
 
     assert "Ежемесячный отчет по типам цен клиентов за 2026-03." in message
-    assert "поставить серебро 1" in message
-    assert "перевести на бронзу 1" in message
+    assert "К ручной работе: 2" in message
+    assert "изолятор 1" in message
+    assert "сверка данных 1" in message
+    assert "не меняют тип цены автоматически" in message
 
 
 def test_sync_retail_price_type_recommendations_delivers_once(tmp_path: Path) -> None:

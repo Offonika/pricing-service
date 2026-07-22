@@ -1326,6 +1326,8 @@
 }
 
 .executive-profit-loss-lines {
+  --pnl-action-column: 154px;
+  --pnl-amount-column: clamp(172px, 15vw, 220px);
   display: grid;
   gap: 8px;
   min-width: 0;
@@ -1363,8 +1365,9 @@
 
 .executive-profit-loss-line {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(116px, auto);
+  grid-template-columns: minmax(0, 1fr) var(--pnl-amount-column) var(--pnl-action-column);
   gap: 3px 8px;
+  align-items: center;
   min-width: 0;
   padding: 8px 9px;
   border: 1px solid #e4e9f0;
@@ -1384,17 +1387,120 @@
 }
 
 .executive-profit-loss-line strong {
+  grid-column: 2;
   min-width: 0;
   color: #18202a;
   font-size: 13px;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
   line-height: 1.2;
   text-align: right;
-  overflow-wrap: anywhere;
+  white-space: nowrap;
 }
 
 .executive-profit-loss-line small {
-  grid-column: 1 / -1;
+  grid-column: 1 / 3;
   font-weight: 650;
+}
+
+.executive-profit-loss-line__action-placeholder {
+  grid-column: 3;
+  grid-row: 1;
+}
+
+.executive-profit-loss-line--expandable {
+  display: block;
+  padding: 0;
+}
+
+.executive-profit-loss-line--expandable > summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--pnl-amount-column) var(--pnl-action-column);
+  gap: 3px 8px;
+  align-items: center;
+  padding: 8px 9px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.executive-profit-loss-line--expandable > summary::-webkit-details-marker {
+  display: none;
+}
+
+.executive-profit-loss-line--expandable > summary:focus-visible {
+  outline: 3px solid rgba(46, 144, 250, 0.28);
+  outline-offset: 2px;
+}
+
+.executive-profit-loss-line--expandable > summary > small {
+  grid-column: 1 / 3;
+}
+
+.executive-profit-loss-line__toggle {
+  grid-column: 3;
+  grid-row: 1;
+  align-self: center;
+  justify-self: end;
+  width: 100%;
+  color: #175cd3 !important;
+  font-size: 10px !important;
+  font-weight: 800 !important;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.executive-profit-loss-line__toggle::after {
+  content: "⌄";
+  display: inline-block;
+  margin-left: 5px;
+  transition: transform 160ms ease;
+}
+
+.executive-profit-loss-line__toggle .is-open,
+.executive-profit-loss-line--expandable[open] .executive-profit-loss-line__toggle .is-closed {
+  display: none;
+}
+
+.executive-profit-loss-line--expandable[open] .executive-profit-loss-line__toggle .is-open {
+  display: inline;
+}
+
+.executive-profit-loss-line--expandable[open] .executive-profit-loss-line__toggle::after {
+  transform: rotate(180deg);
+}
+
+.executive-profit-loss-line__drilldown {
+  padding: 10px;
+  border-top: 1px solid #d9e0e8;
+  background: #f8fafc;
+}
+
+.executive-profit-loss-drilldown__grid {
+  display: grid;
+  gap: 6px;
+}
+
+.executive-profit-loss-drilldown__columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.executive-profit-loss-drilldown__columns > section {
+  display: grid;
+  align-content: start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.executive-profit-loss-drilldown__columns h4 {
+  margin: 0 0 2px;
+  color: #344054;
+  font-size: 12px;
+}
+
+.executive-profit-loss-open-questions {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .executive-profit-loss-line--expense {
@@ -1407,9 +1513,194 @@
   background: #f6fef9;
 }
 
+.executive-profit-loss-line--receipt-surplus {
+  border-left-color: #2e90fa;
+  background: #eff8ff;
+}
+
 .executive-profit-loss-line--source_missing {
   border-left-color: #98a2b3;
   background: #fbfcfe;
+}
+
+.executive-inventory-loss {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #d9e0e8;
+  border-radius: 8px;
+  background: #f8fafc;
+}
+
+.executive-inventory-loss--embedded {
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.executive-inventory-loss__header,
+.executive-inventory-loss__section > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  min-width: 0;
+}
+
+.executive-inventory-loss__header h3,
+.executive-inventory-loss__section h4,
+.executive-inventory-loss__history h4 {
+  margin: 0;
+  color: #18202a;
+  font-size: 14px;
+}
+
+.executive-inventory-loss__header span,
+.executive-inventory-loss__section header span {
+  display: block;
+  margin-top: 3px;
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.executive-inventory-loss__header > strong,
+.executive-inventory-loss__section > header > strong {
+  color: #475467;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.executive-inventory-loss__kpis {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.executive-inventory-loss__history,
+.executive-inventory-loss__section {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 10px;
+  border: 1px solid #e4e9f0;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.executive-inventory-loss__table-wrap {
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.executive-inventory-loss__table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.executive-inventory-loss__table th,
+.executive-inventory-loss__table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid #eef2f6;
+  text-align: left;
+  vertical-align: top;
+}
+
+.executive-inventory-loss__table th {
+  background: #f8fafc;
+  color: #475467;
+  font-size: 11px;
+  font-weight: 800;
+}
+
+.executive-inventory-loss__table td {
+  color: #344054;
+  overflow-wrap: anywhere;
+}
+
+.executive-inventory-loss__table tr.is-warning td {
+  background: #fffbeb;
+}
+
+.executive-inventory-loss__table tr.is-receipt-surplus td {
+  background: #eff8ff;
+  color: #175cd3;
+}
+
+.executive-inventory-loss__actions {
+  display: grid;
+  gap: 8px;
+}
+
+.executive-inventory-loss__actions article {
+  display: grid;
+  gap: 5px;
+  padding: 9px 10px;
+  border: 1px solid #fedf89;
+  border-left: 4px solid #f79009;
+  border-radius: 7px;
+  background: #fffcf5;
+}
+
+.executive-inventory-loss__actions strong,
+.executive-inventory-loss__actions span,
+.executive-inventory-loss__actions small {
+  display: block;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.executive-inventory-loss__actions strong {
+  color: #7a2e0e;
+  font-size: 12px;
+}
+
+.executive-inventory-loss__actions span,
+.executive-inventory-loss__actions small {
+  margin-top: 2px;
+  color: #667085;
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.executive-inventory-loss__quality {
+  padding: 9px 10px;
+  border: 1px dashed #98a2b3;
+  border-radius: 7px;
+  background: #ffffff;
+}
+
+.executive-inventory-loss__quality summary {
+  color: #475467;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 750;
+}
+
+.executive-inventory-loss__quality dl {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 10px 0 0;
+}
+
+.executive-inventory-loss__quality dl div {
+  padding: 7px 8px;
+  border-radius: 6px;
+  background: #f8fafc;
+}
+
+.executive-inventory-loss__quality dt {
+  color: #667085;
+  font-size: 10px;
+}
+
+.executive-inventory-loss__quality dd {
+  margin: 3px 0 0;
+  color: #18202a;
+  font-size: 12px;
+  font-weight: 800;
 }
 
 .executive-cashflow-period__chart {
@@ -1465,6 +1756,10 @@
 
 .executive-cashflow-day b {
   background: #f79009;
+}
+
+.executive-inventory-loss__history .executive-cashflow-day b.is-receipt-surplus {
+  background: #2e90fa;
 }
 
 .executive-cashflow-period__tables {
@@ -1643,6 +1938,125 @@
   opacity: 0.55;
 }
 
+.executive-profit-loss-trend {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #e4e9f0;
+  border-radius: 8px;
+  background: #fcfcfd;
+}
+
+.executive-profit-loss-trend > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.executive-profit-loss-trend h3 {
+  margin: 0;
+  color: var(--color-text);
+  font-size: 16px;
+}
+
+.executive-profit-loss-trend header span {
+  color: var(--color-text-muted);
+  font-size: 12px;
+}
+
+.executive-profit-loss-trend__switch {
+  display: inline-flex;
+  padding: 2px;
+  border: 1px solid #d0d5dd;
+  border-radius: 7px;
+  background: #fff;
+}
+
+.executive-profit-loss-trend__switch button {
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #667085;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.executive-profit-loss-trend__switch button[aria-pressed="true"] {
+  background: #eff4ff;
+  color: #175cd3;
+}
+
+.executive-profit-loss-trend__legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 16px;
+  color: #667085;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.executive-profit-loss-trend__legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.executive-profit-loss-trend__legend i {
+  width: 24px;
+  height: 4px;
+  border-radius: 999px;
+  background: #2e90fa;
+}
+
+.executive-profit-loss-trend__legend .operating { background: #12b76a; }
+.executive-profit-loss-trend__legend .net { background: #7a5af8; }
+.executive-profit-loss-trend__legend .net-margin { background: #c11574; }
+.executive-profit-loss-trend__legend .expense { height: 9px; background: #98a2b3; opacity: 0.45; }
+.executive-profit-loss-trend__legend .comparison {
+  height: 0;
+  border-top: 2px dashed #98a2b3;
+  border-radius: 0;
+  background: transparent;
+}
+
+.executive-profit-loss-trend__canvas {
+  position: relative;
+  overflow-x: auto;
+}
+
+.executive-profit-loss-trend__canvas svg {
+  min-width: 720px;
+  overflow: visible;
+}
+
+.executive-profit-loss-trend__grid { stroke: #e4e9f0; stroke-width: 1; }
+.executive-profit-loss-trend__axis { fill: #667085; font-size: 11px; font-weight: 650; }
+.executive-profit-loss-trend__axis--right { fill: #c11574; }
+.executive-profit-loss-trend__expense-bar { fill: #98a2b3; opacity: 0.22; }
+.executive-profit-loss-trend__line {
+  fill: none;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 4;
+}
+.executive-profit-loss-trend__line--gross { stroke: #2e90fa; }
+.executive-profit-loss-trend__line--operating { stroke: #12b76a; }
+.executive-profit-loss-trend__line--net { stroke: #7a5af8; }
+.executive-profit-loss-trend__line--net-margin { stroke: #c11574; stroke-width: 3; stroke-dasharray: 3 3; }
+.executive-profit-loss-trend__line--comparison { stroke: #98a2b3; stroke-width: 2; stroke-dasharray: 6 6; }
+.executive-profit-loss-trend__point { stroke: #fff; stroke-width: 2; }
+.executive-profit-loss-trend__point--gross { fill: #2e90fa; }
+.executive-profit-loss-trend__point--operating { fill: #12b76a; }
+.executive-profit-loss-trend__point--net { fill: #7a5af8; }
+.executive-profit-loss-trend__point--net-margin { fill: #c11574; }
+.executive-profit-loss-trend__point--preliminary { fill: #fff; stroke: #f79009; stroke-width: 3; }
+.executive-profit-loss-trend__tooltip { z-index: 3; }
+.executive-profit-loss-trend__tooltip small { max-width: 280px; color: #b54708; }
+
 .executive-sales-charts {
   position: relative;
   display: grid;
@@ -1663,6 +2077,31 @@
   margin: 0 0 4px;
   color: #18202a;
   font-size: 13px;
+}
+
+.executive-online-store__analysis {
+  display: grid;
+  grid-template-columns: minmax(0, 2fr) minmax(280px, 1fr);
+  gap: 10px;
+}
+
+.executive-online-store__analysis .executive-sales-daily {
+  margin-top: 0;
+}
+
+.executive-online-store__funnel .executive-sales-day {
+  grid-template-columns: minmax(130px, 0.8fr) minmax(90px, 1fr) minmax(52px, auto);
+}
+
+.executive-online-store__tables {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.executive-online-store__tables a {
+  color: #1769e0;
+  font: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
 }
 
 .executive-sales-day {
@@ -3031,6 +3470,15 @@
     grid-template-columns: 1fr;
   }
 
+  .executive-online-store__analysis {
+    grid-template-columns: 1fr;
+  }
+
+  .executive-inventory-loss__kpis,
+  .executive-inventory-loss__quality dl {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
   .executive-sales-period__tables {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -3044,6 +3492,16 @@
 @media (max-width: 720px) {
   .executive {
     padding: 12px;
+  }
+
+  .executive-inventory-loss__header,
+  .executive-inventory-loss__section > header {
+    display: grid;
+  }
+
+  .executive-inventory-loss__kpis,
+  .executive-inventory-loss__quality dl {
+    grid-template-columns: 1fr;
   }
 
   .executive-sales-diagnostics__header {
@@ -3136,11 +3594,44 @@
   }
 
   .executive-profit-loss-line {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr) auto;
   }
 
   .executive-profit-loss-line strong {
+    grid-column: 2;
+    text-align: right;
+  }
+
+  .executive-profit-loss-line small {
+    grid-column: 1 / -1;
+  }
+
+  .executive-profit-loss-line__action-placeholder {
+    display: none;
+  }
+
+  .executive-profit-loss-line--expandable > summary {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .executive-profit-loss-line--expandable > summary > strong {
+    text-align: right;
+  }
+
+  .executive-profit-loss-line--expandable > summary > small {
+    grid-column: 1 / -1;
+  }
+
+  .executive-profit-loss-line__toggle {
+    grid-column: 1 / -1;
+    grid-row: auto;
+    justify-self: start;
+    width: auto;
     text-align: left;
+  }
+
+  .executive-profit-loss-drilldown__columns {
+    grid-template-columns: 1fr;
   }
 
   .executive-currency-row {

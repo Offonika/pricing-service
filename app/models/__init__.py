@@ -27,6 +27,14 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.counterparty_duplicate_case import CounterpartyDuplicateCase
     from app.models.counterparty_folder_snapshot import CounterpartyFolderSnapshot
     from app.models.counterparty_manager_assignment import CounterpartyManagerAssignment
+    from app.models.customer_price_type import (
+        CustomerPriceTypeCase,
+        CustomerPriceTypeCaseEvent,
+        CustomerPriceTypeProfile,
+        CustomerPriceTypeQualitySample,
+        CustomerPriceTypeRun,
+        CustomerPriceTypeSnapshot,
+    )
     from app.models.device_brand import (
         CompatibilityMappingDecision,
         DeviceBrand,
@@ -68,6 +76,12 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         MatchingPropertyValueMap,
     )
     from app.models.onec_sales_daily_kpi import OneCSalesDailyKpi
+    from app.models.orchestration import (
+        OrchestrationApiRequest,
+        OrchestrationDeliveryAttempt,
+        OrchestrationDeliveryIntent,
+        OrchestrationJobRun,
+    )
     from app.models.price_recommendation import PriceRecommendation
     from app.models.pricing_strategy_version import PricingStrategyVersion
     from app.models.procurement_order_formation import (
@@ -144,6 +158,12 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "CardBalanceReconciliationEvent",
         "CounterpartyDuplicateCase",
         "CounterpartyFolderSnapshot",
+        "CustomerPriceTypeProfile",
+        "CustomerPriceTypeRun",
+        "CustomerPriceTypeSnapshot",
+        "CustomerPriceTypeCase",
+        "CustomerPriceTypeCaseEvent",
+        "CustomerPriceTypeQualitySample",
         "CompetitorFtpFile",
         "CompetitorFtpRawRow",
         "CompetitorFtpRecord",
@@ -188,6 +208,10 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "LogisticsRouteRunItem",
         "LogisticsManualReview",
         "OneCSalesDailyKpi",
+        "OrchestrationApiRequest",
+        "OrchestrationJobRun",
+        "OrchestrationDeliveryIntent",
+        "OrchestrationDeliveryAttempt",
         "MatchingPropertyProfile",
         "MatchingPropertyRule",
         "MatchingPropertyRuleAudit",

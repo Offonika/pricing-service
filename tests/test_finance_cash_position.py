@@ -1,13 +1,20 @@
 from app.services.finance_cash_position import classify_money_place
 
 
-def test_classify_money_place_separates_bank_accounts_cards_and_cashboxes() -> None:
+def test_classify_money_place_separates_savings_cards_and_cashboxes() -> None:
     assert (
         classify_money_place(
             "Сберегательный счет 3277",
             ["Сберегательный счет 3277", "Cберсчета"],
         )
-        == "bank_accounts"
+        == "savings_accounts"
+    )
+    assert (
+        classify_money_place(
+            "5462 карта Гейдаров",
+            ["5462 карта Гейдаров", "Сайт", "Банковские счета"],
+        )
+        == "savings_accounts"
     )
     assert (
         classify_money_place(

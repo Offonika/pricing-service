@@ -12,6 +12,7 @@ MSK_TZ = ZoneInfo("Europe/Moscow")
 
 CATEGORY_LABELS = {
     "bank_accounts": "счета",
+    "savings_accounts": "сберсчета/личные счета",
     "cashboxes": "кассы",
     "cards": "карты/эквайринг",
     "other": "прочее",
@@ -62,6 +63,10 @@ def _chain_for(row: dict[str, Any], rows_by_ref: dict[str, dict[str, Any]]) -> l
 
 
 def classify_money_place(name: str, chain: list[str]) -> str:
+    # «Расчетные счета» (bank_accounts) — только справочник 1С «Банковские счета».
+    # Здесь классифицируются объекты справочника «Кассы»: всё из папок
+    # «Банковские счета»/«Сберсчета» — это сберсчета и личные счета, отдельная
+    # категория, чтобы перемещение папок в 1С не искажало остаток по счетам.
     normalized_name = name.lower().replace("ё", "е")
     normalized_chain = " / ".join(chain).lower().replace("ё", "е")
     if (
@@ -70,7 +75,7 @@ def classify_money_place(name: str, chain: list[str]) -> str:
         or "сберсчета" in normalized_chain
         or "сберегательный счет" in normalized_name
     ):
-        return "bank_accounts"
+        return "savings_accounts"
     if (
         "карта" in normalized_name
         or "карты" in normalized_chain

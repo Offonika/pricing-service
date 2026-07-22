@@ -84,6 +84,7 @@ from tasks.match_competitor_items_embeddings import (
     _product_display_matrix_tags,
     _product_display_matrix_vendor_tags,
     _product_display_quality,
+    _safe_battery_part_code_auto_accept,
     _safe_battery_part_code_model_suggest,
     _safe_battery_verification_suggest,
     _safe_disposable_battery_suggest,
@@ -1146,6 +1147,57 @@ def test_basic_guardrails_reject_battery_connector_against_battery():
     assert result.reason == "catalog_family_conflict"
 
 
+def test_basic_guardrails_reject_battery_programmer_flex_against_battery():
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="JCID-V1SE-IP11",
+        name="Шлейф для программатора JCID V1SE АКБ для iPhone 11",
+        normalized_title="Шлейф программатора JCID V1SE АКБ iPhone 11",
+        item_type="battery",
+    )
+    product = Product(name="Аккумулятор для Apple iPhone 11 (Premium)")
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
+def test_basic_guardrails_reject_battery_cell_against_complete_battery():
+    item = CompetitorItem(
+        competitor="moba",
+        external_id="CELL-IP11",
+        name="Ячейка (банка) аккумулятора для iPhone 11 - Battery Collection",
+        normalized_title="Ячейка банка аккумулятора iPhone 11 Battery Collection",
+        item_type="battery",
+    )
+    product = Product(name="Аккумулятор для Apple iPhone 11 (ORIG100)")
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
+def test_basic_guardrails_reject_phone_battery_against_sim_tray():
+    item = CompetitorItem(
+        competitor="liberti",
+        external_id="BTT-SAM-A320",
+        name="Аккумулятор Samsung SM-A320F A3 2017 (EB-BA320ABE)",
+        normalized_title="Аккумулятор Samsung A320F A3 2017 EB-BA320ABE",
+        item_type="battery",
+    )
+    product = Product(
+        name="Держатель сим-карты для Samsung A320 Galaxy A3 (2017)",
+        subject="держатель сим-карты",
+    )
+
+    result = basic_candidate_guardrails(item, product)
+
+    assert result.allowed is False
+    assert result.reason == "catalog_family_conflict"
+
+
 def test_basic_guardrails_reject_sim_tray_against_back_cover():
     item = CompetitorItem(
         competitor="liberti",
@@ -1353,6 +1405,38 @@ def test_safe_battery_part_code_model_suggest_allows_close_alternatives():
     )
 
 
+def test_battery_part_code_auto_accept_requires_matching_premium_tier():
+    product = Product(
+        name="Аккумулятор для Xiaomi 17 Pro (BM6H) (Premium)",
+        subject="аккумулятор",
+    )
+    plain_item = CompetitorItem(
+        competitor="moba",
+        external_id="BTT-BM6H",
+        name="Аккумулятор для Xiaomi 17 Pro (BM6H)",
+        item_type="battery",
+    )
+    premium_item = CompetitorItem(
+        competitor="moba",
+        external_id="BTT-BM6H-PREMIUM",
+        name="Аккумулятор для Xiaomi 17 Pro (BM6H) - Battery Collection (Премиум)",
+        item_type="battery",
+    )
+
+    assert not _safe_battery_part_code_auto_accept(
+        plain_item,
+        product,
+        score=0.85,
+        min_score=0.80,
+    )
+    assert _safe_battery_part_code_auto_accept(
+        premium_item,
+        product,
+        score=0.85,
+        min_score=0.80,
+    )
+
+
 def test_battery_original_part_code_sweeper_accepts_or100_to_orig100(db_session):
     product = Product(
         name="Аккумулятор для Xiaomi Redmi 10C (220333QNY) / Redmi 10A (220233L2G) (BN5G) (ORIG100) (SP)",
@@ -1448,7 +1532,7 @@ def test_battery_original_part_code_sweeper_accepts_or100_to_orig100(db_session)
 
 def test_battery_part_code_sweeper_accepts_exact_code_and_skips_quality_signals(db_session):
     product = Product(
-        name="Аккумулятор для Xiaomi 17 Pro (25098PN5AC) (BM6H) (Premium)",
+        name="Аккумулятор для Xiaomi 17 Pro (25098PN5AC) (BM6H)",
         article="077001",
         category="Аккумуляторы",
         subject="аккумулятор",
@@ -1468,7 +1552,7 @@ def test_battery_part_code_sweeper_accepts_exact_code_and_skips_quality_signals(
     bl_product = Product(
         name=(
             "Аккумулятор для Infinix Hot 60 Pro (X6885) / 60 Pro+ (X6886) / "
-            "60i 4G (X6728) (BL-50FX) (Premium)"
+            "60i 4G (X6728) (BL-50FX)"
         ),
         article="073309",
         category="Аккумуляторы",
@@ -1477,7 +1561,7 @@ def test_battery_part_code_sweeper_accepts_exact_code_and_skips_quality_signals(
     no_code_product = Product(
         name=(
             "Аккумулятор для ZTE Nubia Red Magic 10 Pro (NX789J) / "
-            "Nubia Red Magic 10S Pro (NX789J) (Premium)"
+            "Nubia Red Magic 10S Pro (NX789J)"
         ),
         article="075190",
         category="Аккумуляторы",

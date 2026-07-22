@@ -64,6 +64,14 @@
   и тестах.
 - `pricing-service` — отдельный вложенный Git-репозиторий. Git-операции выполняй
   внутри него и не включай изменения соседних проектов в один коммит.
+- Единственный штатный production entrypoint для сборки и cutover —
+  `/usr/local/sbin/mm-pricing-service-release`. Скрипты
+  `scripts/build_pricing_service_release.sh` и
+  `scripts/switch_pricing_service_release.sh` являются реализацией низкого уровня;
+  прямой запуск допустим только в тестах или как отдельно подтверждённый break-glass.
+- Production source должен быть отдельным clean worktree. Не собирай release из
+  mutable-root `/opt/MM/pricing-service` и не вычисляй production-базу вручную:
+  контроллер читает её из фактически активного manifest.
 
 ## 4. Контекст изменений
 

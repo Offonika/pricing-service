@@ -29,7 +29,7 @@ interface ClassificationEdit {
 }
 
 const ORDER_STATUS_LABELS: Record<string, string> = {
-  draft: "Черновик сформирован",
+  draft: "Заказ на подтверждении",
   review: "На проверке",
   approved: "Согласовано к 1С",
   transmitting: "Передача в 1С",

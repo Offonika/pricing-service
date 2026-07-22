@@ -5,10 +5,16 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from app.core.config import Settings
 from app.services.procurement_assortment_decisions import (
+    REPO_ROOT,
+    SUPPORTED_DECISIONS,
+    load_mapping,
     sync_decision_to_manual_overrides,
     update_decision,
+    validate_mapping,
 )
 
 
@@ -153,3 +159,32 @@ def test_sync_decision_reports_blockers_without_writing_manual_override(tmp_path
     assert result["synced"] is False
     assert result["blockers"] == ["manual_reason_required"]
     assert not manual_path.exists()
+
+
+def test_production_mapping_enum_map_covers_every_supported_decision() -> None:
+    # Контрактный тест против РЕАЛЬНОГО файла build/bitrix/procurement_order_mapping.json,
+    # а не тестовой фикстуры. Раньше все тесты этого модуля использовали _mapping()
+    # с уже заполненным enum_map, поэтому пустой enum_map в проде ни разу не был замечен
+    # тестами: write-путь (update_decision) в реальности падает с ValueError на первой же
+    # попытке записать решение, а тесты этого не видели.
+    #
+    # Если этот тест красный — значит build/bitrix/procurement_order_mapping.json ещё не
+    # синхронизирован с реальными Bitrix enum ID. Чинить нужно НЕ здесь: перезапустить
+    # scripts/ensure_procurement_bitrix_process.py против боевого Bitrix (он идемпотентно
+    # подтягивает enum_map из текущего состояния поля "Статус ассортимента: решение").
+    mapping_path = REPO_ROOT / "build/bitrix/procurement_order_mapping.json"
+    if not mapping_path.is_file():
+        pytest.skip("production Bitrix mapping overlay is not available")
+    mapping = load_mapping(mapping_path)
+
+    validate_mapping(mapping)
+
+    enum_map = (mapping.get("enum_map") or {}).get("assortment_status_decision") or {}
+    required = {*SUPPORTED_DECISIONS, "no_change"}
+    missing = sorted(required - enum_map.keys())
+    assert not missing, (
+        "enum_map.assortment_status_decision не содержит ID для: "
+        f"{missing}. Запись решения оператора в Bitrix упадёт для этих значений. "
+        "Починка: перезапустить scripts/ensure_procurement_bitrix_process.py "
+        "против боевого Bitrix, не редактировать JSON руками."
+    )

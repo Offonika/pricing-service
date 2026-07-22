@@ -1,0 +1,25 @@
+[Unit]
+Description=pricing-service (FastAPI immutable release)
+After=network.target postgresql.service redis-server.service
+Wants=postgresql.service redis-server.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/MM/pricing-service-task43-current
+Environment=PYTHONDONTWRITEBYTECODE=1
+EnvironmentFile=/opt/MM/pricing-service-task43-current/.env
+ExecStart=/opt/MM/pricing-service-task43-current/.venv/bin/python -m uvicorn app.main:app --host 127.0.0.1 --port 18080
+Restart=always
+RestartSec=2
+KillSignal=SIGINT
+TimeoutStopSec=20
+MemoryHigh=900M
+MemoryMax=1200M
+TasksMax=512
+OOMPolicy=stop
+StandardOutput=append:/var/log/pricing/pricing-service.log
+StandardError=append:/var/log/pricing/pricing-service.log
+
+[Install]
+WantedBy=multi-user.target

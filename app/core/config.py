@@ -83,6 +83,7 @@ class Settings(BaseSettings):
     counterparty_duplicate_p2_enabled: bool = False
     counterparty_duplicate_fuzzy_threshold: float = 0.9
     management_internal_api_token: str | None = None
+    orchestration_internal_api_token: str | None = None
     logistics_internal_api_token: str | None = None
     expertise_internal_api_token: str | None = None
     expertise_onec_sql: str | None = None
@@ -273,10 +274,16 @@ class Settings(BaseSettings):
     executive_management_balance_bp_tax_snapshot_path: str = (
         "/var/lib/mm-data-contracts/executive-dashboard/bp_tax_snapshot.json"
     )
+    executive_dashboard_bp_tax_accrual_root: str = (
+        "/var/lib/mm-data-contracts/executive-dashboard/bp-tax-accruals"
+    )
     executive_management_balance_payroll_snapshot_path: str = (
         "/var/lib/mm-data-contracts/executive-dashboard/employee_payroll_balance_snapshot.json"
     )
     executive_dashboard_source_max_lag_days: int = 1
+    yandex_metrika_token: str | None = None
+    yandex_metrika_counter_id: str = "49993429"
+    yandex_metrika_timeout_seconds: float = 20.0
     executive_management_balance_accounting_database_url: str | None = None
     executive_management_balance_tolerance_rub: float = 1.0
     executive_service_accrual_source_path: str = (
@@ -299,6 +306,20 @@ class Settings(BaseSettings):
     executive_dashboard_bitrix_session_secret: str | None = None
     executive_dashboard_bitrix_session_ttl_seconds: int = 3600
     executive_dashboard_bitrix_rest_timeout_seconds: float = 6.0
+    customer_price_type_bitrix_enabled: bool = False
+    customer_price_type_bitrix_allowed_domains: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    customer_price_type_bitrix_allowed_member_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    customer_price_type_bitrix_full_access_user_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    customer_price_type_access_rules_json: str | None = None
+    customer_price_type_bitrix_session_secret: str | None = None
+    customer_price_type_bitrix_session_ttl_seconds: int = 3600
+    customer_price_type_bitrix_rest_timeout_seconds: float = 6.0
     management_receivables_max_lag_days: int = 1
     management_staffing_max_lag_days: int = 1
     management_task_payloads_max_lag_days: int = 1
@@ -512,6 +533,9 @@ class Settings(BaseSettings):
         "executive_dashboard_bitrix_allowed_member_ids",
         "executive_dashboard_bitrix_full_access_user_ids",
         "executive_dashboard_bitrix_domain_access_user_ids",
+        "customer_price_type_bitrix_allowed_domains",
+        "customer_price_type_bitrix_allowed_member_ids",
+        "customer_price_type_bitrix_full_access_user_ids",
         mode="before",
     )
     @classmethod

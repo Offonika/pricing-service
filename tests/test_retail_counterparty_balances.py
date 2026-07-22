@@ -110,6 +110,24 @@ def test_unavailable_retail_zero_balance_control_marks_every_requested_code() ->
     assert [item["status"] for item in result["items"]] == ["unavailable", "unavailable"]
 
 
+def test_retail_zero_balance_control_rejects_reverse_period() -> None:
+    engine = FakeEngine([])
+
+    try:
+        build_retail_counterparty_zero_balances(
+            engine,
+            counterparty_codes=["РБ1"],
+            period_start=date(2026, 7, 15),
+            as_of=datetime(2026, 7, 14, 9, 10),
+        )
+    except ValueError as error:
+        assert str(error) == "period_start must not be later than as_of"
+    else:
+        raise AssertionError("reverse period must be rejected")
+
+    assert engine.connection.params == {}
+
+
 def test_retail_zero_balance_endpoint_accepts_repeated_codes(monkeypatch) -> None:
     engine = FakeEngine([])
     captured = {}
@@ -169,6 +187,32 @@ def test_retail_zero_balance_endpoint_accepts_repeated_codes(monkeypatch) -> Non
     assert captured["codes"] == ["РБ1", "РБ2"]
     assert response.json()["warning_count"] == 1
     assert engine.disposed is True
+    get_settings.cache_clear()
+
+
+def test_retail_zero_balance_endpoint_rejects_reverse_period_before_onec(
+    monkeypatch,
+) -> None:
+    def unexpected_engine():
+        raise AssertionError("1C engine must not be opened for an invalid period")
+
+    monkeypatch.setenv("MANAGEMENT_INTERNAL_API_TOKEN", "secret-token")
+    monkeypatch.setattr("app.api.management._build_onec_engine", unexpected_engine)
+    get_settings.cache_clear()
+    client = TestClient(app)
+
+    response = client.get(
+        "/api/management/retail-counterparty-zero-balances",
+        params={
+            "counterparty_code": "РБ1",
+            "period_start": "2026-07-15",
+            "as_of": "2026-07-14T09:10:00+03:00",
+        },
+        headers={"Authorization": "Bearer secret-token"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "period_start must not be later than as_of"
     get_settings.cache_clear()
 
 

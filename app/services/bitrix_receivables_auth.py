@@ -469,6 +469,15 @@ def _resolve_department_refs_by_names(
     return refs
 
 
+def resolve_receivable_department_refs_by_names(
+    session: Session,
+    *,
+    names: set[str],
+) -> set[str]:
+    """Public reuse boundary for the established Bitrix-name to 1C-ref mapping."""
+    return _resolve_department_refs_by_names(session, names=names)
+
+
 def _resolve_bitrix_profile_access(
     session: Session,
     *,

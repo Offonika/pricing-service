@@ -78,6 +78,57 @@ class OnlineDemandLandingPage:
         return _quantize_pct(Decimal(self.purchases) * Decimal("100") / Decimal(self.visits))
 
 
+@dataclass(frozen=True, slots=True)
+class OnlineDemandBreakdownRow:
+    key: str
+    label: str
+    visits: int
+    visitors: int
+    purchases: int
+    click_buy: int
+    begin_checkout: int
+    phone_clicks: int
+    site_searches: int
+
+    @property
+    def purchase_conversion_pct(self) -> Decimal:
+        if self.visits <= 0:
+            return Decimal("0")
+        return _quantize_pct(Decimal(self.purchases) * Decimal("100") / Decimal(self.visits))
+
+
+@dataclass(frozen=True, slots=True)
+class OnlineDemandDailyRow:
+    business_date: date
+    visits: int
+    visitors: int
+    purchases: int
+    click_buy: int
+    begin_checkout: int
+    phone_clicks: int
+    site_searches: int
+
+    @property
+    def purchase_conversion_pct(self) -> Decimal:
+        if self.visits <= 0:
+            return Decimal("0")
+        return _quantize_pct(Decimal(self.purchases) * Decimal("100") / Decimal(self.visits))
+
+
+@dataclass(frozen=True, slots=True)
+class OnlineStoreAnalytics:
+    date_from: date
+    date_to: date
+    compare_date_from: date
+    compare_date_to: date
+    current: OnlineDemandPeriodMetrics
+    previous: OnlineDemandPeriodMetrics
+    daily: tuple[OnlineDemandDailyRow, ...]
+    traffic_sources: tuple[OnlineDemandBreakdownRow, ...]
+    landing_pages: tuple[OnlineDemandLandingPage, ...]
+    counter_id: str = DEFAULT_METRIKA_COUNTER_ID
+
+
 def _quantize_pct(value: Decimal) -> Decimal:
     return value.quantize(PERCENT_QUANT, rounding=ROUND_HALF_UP)
 
@@ -228,6 +279,31 @@ def _landing_pages_report_url(
     return f"{base_url.rstrip('/')}/stat/v1/data?{urllib.parse.urlencode(params)}"
 
 
+def _dimension_report_url(
+    *,
+    counter_id: str,
+    date_from: date,
+    date_to: date,
+    goal_ids: dict[str, int],
+    dimension: str,
+    sort: str,
+    limit: int,
+    base_url: str,
+) -> str:
+    params = {
+        "ids": counter_id,
+        "date1": date_from.isoformat(),
+        "date2": date_to.isoformat(),
+        "dimensions": dimension,
+        "metrics": ",".join(_metric_names(goal_ids)),
+        "sort": sort,
+        "limit": str(limit),
+        "accuracy": "full",
+        "lang": "ru",
+    }
+    return f"{base_url.rstrip('/')}/stat/v1/data?{urllib.parse.urlencode(params)}"
+
+
 def _period_metrics_from_payload(payload: dict[str, Any]) -> OnlineDemandPeriodMetrics:
     totals = payload.get("totals") or []
     visits = _safe_int(totals[0] if len(totals) > 0 else 0)
@@ -292,6 +368,55 @@ def _landing_pages_from_payload(payload: dict[str, Any]) -> list[OnlineDemandLan
             )
         )
     return pages
+
+
+def _breakdown_rows_from_payload(payload: dict[str, Any]) -> list[OnlineDemandBreakdownRow]:
+    rows: list[OnlineDemandBreakdownRow] = []
+    for row in payload.get("data") or []:
+        dimensions = row.get("dimensions") or []
+        metrics = row.get("metrics") or []
+        dimension = dimensions[0] if dimensions else {}
+        label = str(dimension.get("name") or "Не определено")
+        rows.append(
+            OnlineDemandBreakdownRow(
+                key=str(dimension.get("id") or label),
+                label=label,
+                visits=_safe_int(metrics[0] if len(metrics) > 0 else 0),
+                visitors=_safe_int(metrics[1] if len(metrics) > 1 else 0),
+                purchases=_safe_int(metrics[2] if len(metrics) > 2 else 0),
+                click_buy=_safe_int(metrics[3] if len(metrics) > 3 else 0),
+                begin_checkout=_safe_int(metrics[4] if len(metrics) > 4 else 0),
+                phone_clicks=_safe_int(metrics[5] if len(metrics) > 5 else 0),
+                site_searches=_safe_int(metrics[6] if len(metrics) > 6 else 0),
+            )
+        )
+    return rows
+
+
+def _daily_rows_from_payload(payload: dict[str, Any]) -> list[OnlineDemandDailyRow]:
+    rows: list[OnlineDemandDailyRow] = []
+    for row in payload.get("data") or []:
+        dimensions = row.get("dimensions") or []
+        metrics = row.get("metrics") or []
+        raw_date = str((dimensions[0] if dimensions else {}).get("name") or "")
+        try:
+            business_date = date.fromisoformat(raw_date)
+        except ValueError:
+            continue
+        rows.append(
+            OnlineDemandDailyRow(
+                business_date=business_date,
+                visits=_safe_int(metrics[0] if len(metrics) > 0 else 0),
+                visitors=_safe_int(metrics[1] if len(metrics) > 1 else 0),
+                purchases=_safe_int(metrics[2] if len(metrics) > 2 else 0),
+                click_buy=_safe_int(metrics[3] if len(metrics) > 3 else 0),
+                begin_checkout=_safe_int(metrics[4] if len(metrics) > 4 else 0),
+                phone_clicks=_safe_int(metrics[5] if len(metrics) > 5 else 0),
+                site_searches=_safe_int(metrics[6] if len(metrics) > 6 else 0),
+            )
+        )
+    rows.sort(key=lambda item: item.business_date)
+    return rows
 
 
 def fetch_online_demand_weekly_summary(
@@ -382,6 +507,96 @@ def fetch_online_demand_landing_pages(
         timeout=timeout,
     )
     return _landing_pages_from_payload(payload)
+
+
+def fetch_online_store_analytics(
+    *,
+    token: str,
+    counter_id: str,
+    date_from: date,
+    date_to: date,
+    compare_date_from: date,
+    compare_date_to: date,
+    landing_page_limit: int = 15,
+    traffic_source_limit: int = 20,
+    base_url: str = DEFAULT_METRIKA_BASE_URL,
+    timeout: float = 20.0,
+    goal_names: tuple[str, ...] = DEFAULT_METRIKA_GOAL_NAMES,
+) -> OnlineStoreAnalytics:
+    goal_ids = _goal_ids_by_name(
+        token=token,
+        counter_id=counter_id,
+        goal_names=goal_names,
+        base_url=base_url,
+        timeout=timeout,
+    )
+    current_payload = _request_json(
+        _dimension_report_url(
+            counter_id=counter_id,
+            date_from=date_from,
+            date_to=date_to,
+            goal_ids=goal_ids,
+            dimension=TRAFFIC_SOURCE_DIMENSION,
+            sort="-ym:s:visits",
+            limit=traffic_source_limit,
+            base_url=base_url,
+        ),
+        token=token,
+        timeout=timeout,
+    )
+    previous_payload = _request_json(
+        _dimension_report_url(
+            counter_id=counter_id,
+            date_from=compare_date_from,
+            date_to=compare_date_to,
+            goal_ids=goal_ids,
+            dimension=TRAFFIC_SOURCE_DIMENSION,
+            sort="-ym:s:visits",
+            limit=traffic_source_limit,
+            base_url=base_url,
+        ),
+        token=token,
+        timeout=timeout,
+    )
+    daily_payload = _request_json(
+        _dimension_report_url(
+            counter_id=counter_id,
+            date_from=date_from,
+            date_to=date_to,
+            goal_ids=goal_ids,
+            dimension="ym:s:date",
+            sort="ym:s:date",
+            limit=366,
+            base_url=base_url,
+        ),
+        token=token,
+        timeout=timeout,
+    )
+    landing_pages_payload = _request_json(
+        _landing_pages_report_url(
+            counter_id=counter_id,
+            date_from=date_from,
+            date_to=date_to,
+            goal_ids=goal_ids,
+            base_url=base_url,
+            sort="-ym:s:visits",
+            limit=landing_page_limit,
+        ),
+        token=token,
+        timeout=timeout,
+    )
+    return OnlineStoreAnalytics(
+        date_from=date_from,
+        date_to=date_to,
+        compare_date_from=compare_date_from,
+        compare_date_to=compare_date_to,
+        current=_period_metrics_from_payload(current_payload),
+        previous=_period_metrics_from_payload(previous_payload),
+        daily=tuple(_daily_rows_from_payload(daily_payload)),
+        traffic_sources=tuple(_breakdown_rows_from_payload(current_payload)),
+        landing_pages=tuple(_landing_pages_from_payload(landing_pages_payload)),
+        counter_id=counter_id,
+    )
 
 
 def online_demand_rows(summary: OnlineDemandWeeklySummary) -> list[list[Any]]:

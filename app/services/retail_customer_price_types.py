@@ -1,96 +1,87 @@
+"""Deprecated compatibility projection for customer price-type recommendations.
+
+The public compatibility endpoint remains read-only, but all decisions are made
+by the canonical customer-price-type domain engine and the versioned ruleset.
+"""
+
 from __future__ import annotations
 
+import hashlib
 import re
+from collections import defaultdict
 from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
-from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal
+from pathlib import Path
 from typing import Any
 
-from sqlalchemy import and_, func
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.domains.customer_price_types import (
+    ContractFact,
+    CustomerPriceTypeFacts,
+    CustomerPriceTypeRulesEngine,
+    load_price_type_ruleset,
+    proven_history_coverage_months,
+)
 from app.models import ReceivableLedgerEvent
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+RULESET = load_price_type_ruleset(REPO_ROOT / "config/price_types/ruleset.yaml")
+ENGINE = CustomerPriceTypeRulesEngine(RULESET)
 
 BUYERS_CONTRACT_KIND_NAME = "С покупателем"
 BUYERS_COUNTERPARTY_GROUP_NAME = "ПОКУПАТЕЛИ"
 REGULAR_RECEIVABLES_LAYER = "regular_receivables"
+
+PRICE_LEVEL_RETAIL = "retail"
 PRICE_LEVEL_BRONZE = "bronze"
 PRICE_LEVEL_SILVER = "silver"
 PRICE_LEVEL_GOLD = "gold"
+PRICE_LEVEL_PLATINUM = "platinum"
 PRICE_LEVEL_UNKNOWN = "unknown"
-
-PRICE_LEVEL_RANK = {
-    PRICE_LEVEL_UNKNOWN: 0,
-    PRICE_LEVEL_BRONZE: 1,
-    PRICE_LEVEL_SILVER: 2,
-    PRICE_LEVEL_GOLD: 3,
-}
-PRICE_LEVEL_LABEL = {
-    PRICE_LEVEL_UNKNOWN: "Не распознан",
-    PRICE_LEVEL_BRONZE: "Бронза",
-    PRICE_LEVEL_SILVER: "Серебро",
-    PRICE_LEVEL_GOLD: "Золото",
-}
-REGLEMENT_PRICE_TYPE = {
-    PRICE_LEVEL_BRONZE: "2.Бронзовый",
-    PRICE_LEVEL_SILVER: "3.Серебряный",
-    PRICE_LEVEL_GOLD: "4.Золотой",
-}
-
-BRONZE_MIN_AMOUNT = Decimal("5000")
-SILVER_MIN_AMOUNT = Decimal("300000")
-GOLD_MIN_AMOUNT = Decimal("1200000")
-GOLD_REGLEMENT_UPPER_HINT = Decimal("2500000")
 
 ACTION_KEEP = "keep"
 ACTION_SET_SILVER = "set_silver"
 ACTION_SET_GOLD = "set_gold"
+ACTION_DOWNGRADE_TO_GOLD = "downgrade_to_gold"
 ACTION_DOWNGRADE_TO_SILVER = "downgrade_to_silver"
 ACTION_DOWNGRADE_TO_BRONZE = "downgrade_to_bronze"
+ACTION_DOWNGRADE_TO_RETAIL = "downgrade_to_retail"
+ACTION_MANAGER_RETENTION = "manager_retention"
+ACTION_ISOLATE = "isolate"
+ACTION_RECOVERY = "recovery"
+ACTION_DATA_CHECK = "data_check"
+ACTION_SPECIAL_REVIEW = "special_review"
 ACTION_REVIEW_CURRENT_TYPE = "review_current_type"
 
 ACTION_LABEL = {
     ACTION_KEEP: "Оставить без изменений",
-    ACTION_SET_SILVER: "Поставить серебро",
-    ACTION_SET_GOLD: "Поставить золото",
-    ACTION_DOWNGRADE_TO_SILVER: "Понизить до серебра",
-    ACTION_DOWNGRADE_TO_BRONZE: "Перевести на бронзу",
+    ACTION_SET_SILVER: "Повышения заморожены",
+    ACTION_SET_GOLD: "Повышения заморожены",
+    ACTION_DOWNGRADE_TO_GOLD: "К проверке: понижение до золота",
+    ACTION_DOWNGRADE_TO_SILVER: "К проверке: понижение до серебра",
+    ACTION_DOWNGRADE_TO_BRONZE: "К проверке: понижение до бронзы",
+    ACTION_DOWNGRADE_TO_RETAIL: "К проверке: перевод в розницу",
+    ACTION_MANAGER_RETENTION: "Удержание и работа менеджера",
+    ACTION_ISOLATE: "Полный месяц изолятора",
+    ACTION_RECOVERY: "CRM-реанимация",
+    ACTION_DATA_CHECK: "Сверка данных",
+    ACTION_SPECIAL_REVIEW: "Специальная ручная проверка",
     ACTION_REVIEW_CURRENT_TYPE: "Проверить текущий тип цен",
 }
 
 
-@dataclass(slots=True)
-class _MonthlyCounterpartyTotals:
-    counterparty_ref: str
-    counterparty_name: str | None
-    sales_amount: Decimal = Decimal("0.00")
-    return_amount: Decimal = Decimal("0.00")
-    purchase_amount: Decimal = Decimal("0.00")
-    document_count: int = 0
-    last_sale_at: datetime | None = None
+def _month_start(value: str) -> date:
+    if not re.fullmatch(r"\d{4}-\d{2}", value):
+        raise ValueError("month must be in YYYY-MM format")
+    return date.fromisoformat(f"{value}-01")
 
 
-@dataclass(slots=True)
-class _CurrentPriceType:
-    counterparty_ref: str
-    counterparty_name: str | None
-    contract_ref: str | None
-    contract_name: str | None
-    current_price_type: str | None
-    current_level: str
-    last_seen_at: datetime | None
-
-
-def _to_decimal(value: Any) -> Decimal:
-    if value is None:
-        return Decimal("0.00")
-    if isinstance(value, Decimal):
-        return value
-    try:
-        return Decimal(str(value))
-    except (InvalidOperation, ValueError):
-        return Decimal("0.00")
+def _add_months(value: date, months: int) -> date:
+    total = value.year * 12 + value.month - 1 + months
+    return date(total // 12, total % 12 + 1, 1)
 
 
 def _money(value: Decimal) -> Decimal:
@@ -101,102 +92,67 @@ def _ratio(value: Decimal) -> Decimal:
     return value.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
 
 
-def _month_start(month: str) -> date:
-    if not re.fullmatch(r"\d{4}-\d{2}", month):
-        raise ValueError("month must be in YYYY-MM format")
-    return date.fromisoformat(f"{month}-01")
+def _normalized_ref(value: Any) -> str:
+    return str(value or "").strip().casefold()
 
 
-def _add_months(value: date, months: int) -> date:
-    year = value.year + (value.month - 1 + months) // 12
-    month = (value.month - 1 + months) % 12 + 1
-    return date(year, month, 1)
-
-
-def _normalize_text(value: Any) -> str:
-    lowered = str(value or "").lower().replace("ё", "е")
-    normalized = re.sub(r"[^a-z0-9а-я]+", " ", lowered, flags=re.IGNORECASE)
-    return " ".join(normalized.split())
-
-
-def _normalize_ref(value: Any) -> str:
-    return str(value or "").strip().upper()
+def _engine_ref(value: str) -> str:
+    normalized = _normalized_ref(value)
+    if re.fullmatch(r"0x[0-9a-f]{32}", normalized):
+        return normalized
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:32]
+    return f"0x{digest}"
 
 
 def normalize_price_level(value: Any) -> str:
-    normalized = _normalize_text(value)
-    if not normalized:
-        return PRICE_LEVEL_UNKNOWN
-    if "золот" in normalized or "gold" in normalized:
-        return PRICE_LEVEL_GOLD
-    if "сереб" in normalized or "silver" in normalized:
-        return PRICE_LEVEL_SILVER
-    if "бронз" in normalized or "bronze" in normalized:
-        return PRICE_LEVEL_BRONZE
+    raw = " ".join(str(value or "").split()).casefold()
+    for prefix in RULESET.retail_prefixes:
+        if raw.startswith(prefix.casefold()):
+            return PRICE_LEVEL_RETAIL
+    for level in RULESET.levels:
+        if raw.startswith(level.price_type_prefix.casefold()):
+            return level.key
     return PRICE_LEVEL_UNKNOWN
 
 
 def recommended_level_for_purchase_amount(amount: Decimal) -> str:
-    if amount >= GOLD_MIN_AMOUNT:
-        return PRICE_LEVEL_GOLD
-    if amount >= SILVER_MIN_AMOUNT:
-        return PRICE_LEVEL_SILVER
-    return PRICE_LEVEL_BRONZE
+    """Return an informational level only; v1 never turns it into an upgrade."""
+    result = PRICE_LEVEL_BRONZE
+    for level in RULESET.levels:
+        if amount >= level.retention_norm_3m:
+            result = level.key
+    return result
 
 
-def _rule_note(amount: Decimal, recommended_level: str) -> str:
-    if recommended_level == PRICE_LEVEL_GOLD:
-        if amount > GOLD_REGLEMENT_UPPER_HINT:
-            return (
-                "Чистые продажи от 1 200 000 ₽; сумма выше опубликованной верхней границы "
-                "2 500 000 ₽, поэтому оставлен максимальный уровень регламента."
-            )
-        return "Чистые продажи от 1 200 000 ₽: по регламенту уровень Золото."
-    if recommended_level == PRICE_LEVEL_SILVER:
-        return "Чистые продажи от 300 000 ₽ до 1 200 000 ₽: по регламенту уровень Серебро."
-    if amount < BRONZE_MIN_AMOUNT:
-        return (
-            "Чистые продажи ниже 5 000 ₽; отдельного нижнего уровня в регламенте нет, "
-            "для понижения используется Бронза."
-        )
-    return "Чистые продажи ниже 300 000 ₽: по регламенту уровень Бронза."
+def _month_expression(session: Session):
+    dialect = session.bind.dialect.name if session.bind is not None else ""
+    if dialect == "sqlite":
+        return func.strftime("%Y-%m", ReceivableLedgerEvent.external_document_date)
+    return func.to_char(ReceivableLedgerEvent.external_document_date, "YYYY-MM")
 
 
-def _action_for_levels(current_level: str, recommended_level: str) -> str:
-    if current_level == recommended_level:
-        return ACTION_KEEP
-    if recommended_level == PRICE_LEVEL_GOLD:
-        return ACTION_SET_GOLD
-    if recommended_level == PRICE_LEVEL_SILVER:
-        if current_level == PRICE_LEVEL_GOLD:
-            return ACTION_DOWNGRADE_TO_SILVER
-        return ACTION_SET_SILVER
-    if recommended_level == PRICE_LEVEL_BRONZE and current_level in {
-        PRICE_LEVEL_SILVER,
-        PRICE_LEVEL_GOLD,
-    }:
-        return ACTION_DOWNGRADE_TO_BRONZE
-    return ACTION_REVIEW_CURRENT_TYPE
-
-
-def _is_actionable(action: str) -> bool:
-    return action not in {ACTION_KEEP, ACTION_REVIEW_CURRENT_TYPE}
-
-
-def _load_monthly_totals(
+def _load_rows(
     session: Session,
     *,
     period_start: datetime,
     period_end: datetime,
-) -> dict[str, _MonthlyCounterpartyTotals]:
+) -> tuple[
+    dict[str, dict[str, Decimal]],
+    dict[str, dict[str, Any]],
+]:
+    month_expr = _month_expression(session)
     rows = (
         session.query(
-            ReceivableLedgerEvent.counterparty_ref.label("counterparty_ref"),
+            ReceivableLedgerEvent.counterparty_ref,
             func.max(ReceivableLedgerEvent.counterparty_name).label("counterparty_name"),
-            ReceivableLedgerEvent.event_type.label("event_type"),
+            ReceivableLedgerEvent.contract_ref,
+            func.max(ReceivableLedgerEvent.contract_name).label("contract_name"),
+            month_expr.label("month_key"),
+            ReceivableLedgerEvent.event_type,
             func.sum(ReceivableLedgerEvent.amount_delta).label("amount"),
             func.count(ReceivableLedgerEvent.id).label("document_count"),
             func.max(ReceivableLedgerEvent.external_document_date).label("last_sale_at"),
+            func.min(ReceivableLedgerEvent.external_document_date).label("first_activity_at"),
         )
         .filter(
             ReceivableLedgerEvent.external_document_date >= period_start,
@@ -205,103 +161,104 @@ def _load_monthly_totals(
             ReceivableLedgerEvent.source_layer == REGULAR_RECEIVABLES_LAYER,
             ReceivableLedgerEvent.contract_kind_name == BUYERS_CONTRACT_KIND_NAME,
         )
-        .group_by(ReceivableLedgerEvent.counterparty_ref, ReceivableLedgerEvent.event_type)
+        .group_by(
+            ReceivableLedgerEvent.counterparty_ref,
+            ReceivableLedgerEvent.contract_ref,
+            month_expr,
+            ReceivableLedgerEvent.event_type,
+        )
         .all()
     )
-
-    totals: dict[str, _MonthlyCounterpartyTotals] = {}
+    raw: dict[tuple[str, str], Decimal] = defaultdict(Decimal)
+    metadata: dict[str, dict[str, Any]] = {}
     for row in rows:
-        counterparty_ref = str(row.counterparty_ref or "").strip()
-        if not counterparty_ref:
+        ref = _normalized_ref(row.counterparty_ref)
+        if not ref:
             continue
-        item = totals.setdefault(
-            counterparty_ref,
-            _MonthlyCounterpartyTotals(
-                counterparty_ref=counterparty_ref,
-                counterparty_name=row.counterparty_name,
-            ),
+        amount = Decimal(str(row.amount or 0))
+        if row.event_type == "return":
+            amount = -abs(amount)
+        raw[(ref, str(row.month_key))] += amount
+        item = metadata.setdefault(
+            ref,
+            {
+                "counterparty_name": row.counterparty_name,
+                "contracts": {},
+                "sales_amount": Decimal("0"),
+                "return_amount": Decimal("0"),
+                "document_count": 0,
+                "last_sale_at": None,
+                "first_activity_at": None,
+            },
         )
-        if row.counterparty_name and not item.counterparty_name:
-            item.counterparty_name = row.counterparty_name
-        amount = _to_decimal(row.amount)
+        if row.contract_ref:
+            item["contracts"].setdefault(
+                str(row.contract_ref), str(row.contract_name or "").strip() or None
+            )
         if row.event_type == "sale":
-            item.sales_amount += amount
-        elif row.event_type == "return":
-            item.return_amount += abs(amount)
-            item.sales_amount += Decimal("0.00")
-            amount = -abs(amount) if amount > 0 else amount
-        item.purchase_amount += amount
-        item.document_count += int(row.document_count or 0)
-        if row.last_sale_at and (item.last_sale_at is None or row.last_sale_at > item.last_sale_at):
-            item.last_sale_at = row.last_sale_at
-
-    for item in totals.values():
-        item.purchase_amount = max(Decimal("0.00"), _money(item.purchase_amount))
-        item.sales_amount = _money(item.sales_amount)
-        item.return_amount = _money(item.return_amount)
-    return totals
-
-
-def _load_current_price_types(
-    session: Session,
-    *,
-    period_end: datetime,
-) -> dict[str, _CurrentPriceType]:
-    latest_dates = (
+            item["sales_amount"] += Decimal(str(row.amount or 0))
+        else:
+            item["return_amount"] += abs(Decimal(str(row.amount or 0)))
+        item["document_count"] += int(row.document_count or 0)
+        if row.last_sale_at and (
+            item["last_sale_at"] is None or row.last_sale_at > item["last_sale_at"]
+        ):
+            item["last_sale_at"] = row.last_sale_at
+        if row.first_activity_at and (
+            item["first_activity_at"] is None or row.first_activity_at < item["first_activity_at"]
+        ):
+            item["first_activity_at"] = row.first_activity_at
+    first_activity_rows = (
         session.query(
-            ReceivableLedgerEvent.counterparty_ref.label("counterparty_ref"),
-            func.max(ReceivableLedgerEvent.external_document_date).label("last_seen_at"),
+            ReceivableLedgerEvent.counterparty_ref,
+            func.min(ReceivableLedgerEvent.external_document_date).label("first_activity_at"),
         )
         .filter(
             ReceivableLedgerEvent.external_document_date < period_end,
+            ReceivableLedgerEvent.event_type.in_(("sale", "return")),
             ReceivableLedgerEvent.source_layer == REGULAR_RECEIVABLES_LAYER,
             ReceivableLedgerEvent.contract_kind_name == BUYERS_CONTRACT_KIND_NAME,
-            ReceivableLedgerEvent.contract_name.isnot(None),
         )
         .group_by(ReceivableLedgerEvent.counterparty_ref)
-        .subquery()
-    )
-
-    rows = (
-        session.query(
-            ReceivableLedgerEvent.counterparty_ref,
-            ReceivableLedgerEvent.counterparty_name,
-            ReceivableLedgerEvent.contract_ref,
-            ReceivableLedgerEvent.contract_name,
-            ReceivableLedgerEvent.external_document_date,
-            ReceivableLedgerEvent.id,
-        )
-        .join(
-            latest_dates,
-            and_(
-                ReceivableLedgerEvent.counterparty_ref == latest_dates.c.counterparty_ref,
-                ReceivableLedgerEvent.external_document_date == latest_dates.c.last_seen_at,
-            ),
-        )
-        .order_by(
-            ReceivableLedgerEvent.counterparty_ref,
-            ReceivableLedgerEvent.external_document_date.desc(),
-            ReceivableLedgerEvent.id.desc(),
-        )
         .all()
     )
+    for row in first_activity_rows:
+        ref = _normalized_ref(row.counterparty_ref)
+        if ref in metadata:
+            metadata[ref]["first_activity_at"] = row.first_activity_at
+    monthly: dict[str, dict[str, Decimal]] = defaultdict(dict)
+    for (ref, month), amount in raw.items():
+        monthly[ref][month] = _money(amount)
+    return monthly, metadata
 
-    current: dict[str, _CurrentPriceType] = {}
-    for row in rows:
-        counterparty_ref = str(row.counterparty_ref or "").strip()
-        if not counterparty_ref or counterparty_ref in current:
-            continue
-        level = normalize_price_level(row.contract_name)
-        current[counterparty_ref] = _CurrentPriceType(
-            counterparty_ref=counterparty_ref,
-            counterparty_name=row.counterparty_name,
-            contract_ref=row.contract_ref,
-            contract_name=row.contract_name,
-            current_price_type=row.contract_name,
-            current_level=level,
-            last_seen_at=row.external_document_date,
-        )
-    return current
+
+def _decision_action(decision) -> str:
+    target = decision.recommended_price_type
+    if decision.recommendation == "keep_current":
+        return ACTION_KEEP
+    if decision.recommendation == "manager_retention":
+        return ACTION_MANAGER_RETENTION
+    if decision.recommendation == "isolate":
+        if target == "4.Золотой":
+            return ACTION_DOWNGRADE_TO_GOLD
+        if target == "3.Серебряный":
+            return ACTION_DOWNGRADE_TO_SILVER
+        if target == "2.Бронзовый":
+            return ACTION_DOWNGRADE_TO_BRONZE
+        if target == "Розница":
+            return ACTION_DOWNGRADE_TO_RETAIL
+        return ACTION_ISOLATE
+    if decision.recommendation == "downgrade_to_retail":
+        return ACTION_DOWNGRADE_TO_RETAIL
+    if decision.recommendation == "recovery":
+        return ACTION_RECOVERY
+    if decision.recommendation == "data_check":
+        return ACTION_DATA_CHECK
+    if decision.recommendation.startswith("manual_override:"):
+        return ACTION_SPECIAL_REVIEW if decision.action_required else ACTION_KEEP
+    if decision.recommendation == "special_review":
+        return ACTION_SPECIAL_REVIEW
+    return ACTION_REVIEW_CURRENT_TYPE
 
 
 def build_retail_customer_price_type_recommendations(
@@ -315,189 +272,174 @@ def build_retail_customer_price_type_recommendations(
     contract_price_type_loader: Callable[[set[str]], dict[str, str]] | None = None,
     previous_purchase_amounts_by_ref: dict[str, Decimal] | None = None,
 ) -> dict[str, Any]:
-    start_date = _month_start(month)
-    end_date = _add_months(start_date, 1)
-    previous_start_date = _add_months(start_date, -1)
-    period_start = datetime.combine(start_date, time.min)
-    period_end = datetime.combine(end_date, time.min)
-    previous_period_start = datetime.combine(previous_start_date, time.min)
-
-    monthly_totals = _load_monthly_totals(
+    snapshot_month = _month_start(month)
+    period_start = _add_months(snapshot_month, -11)
+    period_end = _add_months(snapshot_month, 1)
+    monthly, metadata = _load_rows(
         session,
-        period_start=period_start,
-        period_end=period_end,
+        period_start=datetime.combine(period_start, time.min),
+        period_end=datetime.combine(period_end, time.min),
     )
-    previous_monthly_totals = _load_monthly_totals(
-        session,
-        period_start=previous_period_start,
-        period_end=period_start,
-    )
-    current_types = _load_current_price_types(session, period_end=period_end)
-    contract_price_types_by_ref: dict[str, str] = {}
-    if contract_price_type_loader is not None:
-        contract_refs = {
-            current.contract_ref
-            for current in current_types.values()
-            if current.contract_ref is not None
-        }
-        contract_price_types_by_ref = {
-            _normalize_ref(contract_ref): str(price_type).strip()
-            for contract_ref, price_type in contract_price_type_loader(contract_refs).items()
-            if _normalize_ref(contract_ref) and str(price_type or "").strip()
-        }
-
-    def _current_price_type(current: _CurrentPriceType) -> str | None:
-        if current.contract_ref is not None:
-            price_type = contract_price_types_by_ref.get(_normalize_ref(current.contract_ref))
-            if price_type:
-                return price_type
-        return current.current_price_type
-
-    def _current_level(current: _CurrentPriceType) -> str:
-        return normalize_price_level(_current_price_type(current))
-
-    candidate_refs = set(monthly_totals)
-    candidate_refs.update(
-        ref
-        for ref, current in current_types.items()
-        if _current_level(current) in {PRICE_LEVEL_SILVER, PRICE_LEVEL_GOLD}
-    )
-    allowed_ref_keys = (
-        {_normalize_ref(value) for value in allowed_counterparty_refs if _normalize_ref(value)}
-        if allowed_counterparty_refs is not None
-        else None
-    )
-    if allowed_ref_keys is not None:
-        candidate_refs = {
-            counterparty_ref
-            for counterparty_ref in candidate_refs
-            if _normalize_ref(counterparty_ref) in allowed_ref_keys
-        }
+    candidate_refs = set(metadata)
+    if allowed_counterparty_refs is not None:
+        allowed = {_normalized_ref(value) for value in allowed_counterparty_refs}
+        candidate_refs &= allowed
     code_mapping = {
-        _normalize_ref(counterparty_ref): str(counterparty_code).strip()
-        for counterparty_ref, counterparty_code in (counterparty_codes_by_ref or {}).items()
-        if _normalize_ref(counterparty_ref) and str(counterparty_code or "").strip()
+        _normalized_ref(ref): str(code).strip()
+        for ref, code in (counterparty_codes_by_ref or {}).items()
     }
-    previous_purchase_mapping = {
-        _normalize_ref(counterparty_ref): _money(_to_decimal(purchase_amount))
-        for counterparty_ref, purchase_amount in (previous_purchase_amounts_by_ref or {}).items()
-        if _normalize_ref(counterparty_ref)
+    all_contract_refs = {
+        contract_ref for ref in candidate_refs for contract_ref in metadata[ref]["contracts"]
     }
+    loaded_price_types = (
+        {
+            _normalized_ref(ref): str(value).strip()
+            for ref, value in contract_price_type_loader(all_contract_refs).items()
+        }
+        if contract_price_type_loader and all_contract_refs
+        else {}
+    )
 
     rows: list[dict[str, Any]] = []
-    action_counts: dict[str, int] = {action: 0 for action in ACTION_LABEL}
-    for counterparty_ref in candidate_refs:
-        totals = monthly_totals.get(
-            counterparty_ref,
-            _MonthlyCounterpartyTotals(counterparty_ref=counterparty_ref, counterparty_name=None),
-        )
-        current = current_types.get(
-            counterparty_ref,
-            _CurrentPriceType(
-                counterparty_ref=counterparty_ref,
-                counterparty_name=totals.counterparty_name,
-                contract_ref=None,
-                contract_name=None,
-                current_price_type=None,
-                current_level=PRICE_LEVEL_UNKNOWN,
-                last_seen_at=None,
-            ),
-        )
-        current_price_type = _current_price_type(current)
-        current_level = normalize_price_level(current_price_type)
-        recommended_level = recommended_level_for_purchase_amount(totals.purchase_amount)
-        previous_totals = previous_monthly_totals.get(counterparty_ref)
-        previous_purchase_amount = (
-            previous_purchase_mapping.get(_normalize_ref(counterparty_ref))
-            if _normalize_ref(counterparty_ref) in previous_purchase_mapping
-            else (
-                _money(previous_totals.purchase_amount)
-                if previous_totals is not None
-                else Decimal("0.00")
+    counts: dict[str, int] = defaultdict(int)
+    case_counts: dict[str, int] = defaultdict(int)
+    window_keys = [_add_months(snapshot_month, delta).strftime("%Y-%m") for delta in (-2, -1, 0)]
+    previous_keys = [_add_months(snapshot_month, delta).strftime("%Y-%m") for delta in (-3, -2, -1)]
+    for ref in sorted(candidate_refs):
+        item = metadata[ref]
+        contracts = tuple(
+            ContractFact(
+                contract_ref=contract_ref,
+                contract_name=contract_name,
+                price_type_name=(
+                    loaded_price_types.get(_normalized_ref(contract_ref)) or contract_name
+                ),
             )
+            for contract_ref, contract_name in sorted(item["contracts"].items())
         )
-        purchase_delta_amount = _money(totals.purchase_amount - previous_purchase_amount)
-        purchase_delta_pct = (
-            _ratio(purchase_delta_amount / previous_purchase_amount)
-            if previous_purchase_amount > 0
-            else None
+        values = monthly.get(ref, {})
+        total = sum((values.get(key, Decimal("0")) for key in window_keys), Decimal("0"))
+        previous_total = sum((values.get(key, Decimal("0")) for key in previous_keys), Decimal("0"))
+        external_previous = (previous_purchase_amounts_by_ref or {}).get(ref)
+        if external_previous is None:
+            external_previous = (previous_purchase_amounts_by_ref or {}).get(ref.upper())
+        if external_previous is not None:
+            previous_total = Decimal(str(external_previous))
+        first_activity_at = item["first_activity_at"]
+        first_activity_date = (
+            first_activity_at.date()
+            if isinstance(first_activity_at, datetime)
+            else first_activity_at
         )
-        action = _action_for_levels(current_level, recommended_level)
-        action_counts[action] = action_counts.get(action, 0) + 1
-        if actionable_only and not _is_actionable(action):
+        facts = CustomerPriceTypeFacts(
+            counterparty_ref=_engine_ref(ref),
+            counterparty_code=code_mapping.get(ref),
+            counterparty_name=item["counterparty_name"],
+            snapshot_month=snapshot_month,
+            contracts=contracts,
+            monthly_sales=dict(values),
+            source_statuses={
+                "contracts": "ready",
+                "sales_history": "ready",
+                "ledger_reconciliation": "ready",
+                "master_data": "ready",
+            },
+            first_activity_date=first_activity_date,
+            history_coverage_months=proven_history_coverage_months(
+                first_activity_date, snapshot_month
+            ),
+            direct_onec_total_3m=total,
+            ledger_total_3m=total,
+            economics_status="missing",
+            returns={"return_amount": str(_money(item["return_amount"]))},
+        )
+        decision = ENGINE.evaluate(facts)
+        action = _decision_action(decision)
+        counts[action] += 1
+        if decision.case_type:
+            case_counts[decision.case_type] += 1
+        if actionable_only and not decision.action_required:
             continue
-
-        counterparty_name = totals.counterparty_name or current.counterparty_name
-        counterparty_code = code_mapping.get(_normalize_ref(counterparty_ref))
+        delta = _money(total - previous_total)
+        delta_pct = _ratio(delta / previous_total) if previous_total > 0 else None
         rows.append(
             {
-                "counterparty_ref": counterparty_ref,
-                "counterparty_code": counterparty_code,
-                "counterparty_name": counterparty_name,
-                "current_price_type": current_price_type,
-                "current_level": current_level,
-                "current_level_label": PRICE_LEVEL_LABEL[current_level],
-                "recommended_price_type": REGLEMENT_PRICE_TYPE[recommended_level],
-                "recommended_level": recommended_level,
-                "recommended_level_label": PRICE_LEVEL_LABEL[recommended_level],
+                "counterparty_ref": ref,
+                "counterparty_code": code_mapping.get(ref),
+                "counterparty_name": item["counterparty_name"],
+                "current_price_type": decision.current_price_type,
+                "current_level": decision.current_level or PRICE_LEVEL_UNKNOWN,
+                "current_level_label": decision.current_level or "Не распознан",
+                "recommended_price_type": decision.recommended_price_type,
+                "recommended_level": normalize_price_level(decision.recommended_price_type),
+                "recommended_level_label": decision.recommended_price_type or "Ручная проверка",
                 "action": action,
                 "action_label": ACTION_LABEL[action],
-                "purchase_amount": _money(totals.purchase_amount),
-                "net_sales_amount": _money(totals.purchase_amount),
-                "previous_purchase_amount": previous_purchase_amount,
-                "previous_net_sales_amount": previous_purchase_amount,
-                "purchase_delta_amount": purchase_delta_amount,
-                "net_sales_delta_amount": purchase_delta_amount,
-                "purchase_delta_pct": purchase_delta_pct,
-                "net_sales_delta_pct": purchase_delta_pct,
-                "sales_amount": _money(totals.sales_amount),
-                "return_amount": _money(totals.return_amount),
-                "document_count": totals.document_count,
-                "last_sale_at": totals.last_sale_at,
-                "current_price_seen_at": current.last_seen_at,
-                "rule_note": _rule_note(totals.purchase_amount, recommended_level),
+                "purchase_amount": _money(total),
+                "net_sales_amount": _money(total),
+                "previous_purchase_amount": _money(previous_total),
+                "previous_net_sales_amount": _money(previous_total),
+                "purchase_delta_amount": delta,
+                "net_sales_delta_amount": delta,
+                "purchase_delta_pct": delta_pct,
+                "net_sales_delta_pct": delta_pct,
+                "sales_amount": _money(item["sales_amount"]),
+                "return_amount": _money(item["return_amount"]),
+                "document_count": item["document_count"],
+                "last_sale_at": item["last_sale_at"],
+                "current_price_seen_at": item["last_sale_at"],
+                "rule_note": decision.recommendation_reason,
             }
         )
 
     rows.sort(
         key=lambda item: (
-            PRICE_LEVEL_RANK.get(str(item["recommended_level"]), 0),
-            _to_decimal(item["purchase_amount"]),
+            Decimal(str(item["purchase_amount"])),
             str(item.get("counterparty_name") or ""),
         ),
         reverse=True,
     )
     if limit is not None:
         rows = rows[:limit]
-
+    actionable_count = sum(
+        count
+        for action, count in counts.items()
+        if action not in {ACTION_KEEP, ACTION_REVIEW_CURRENT_TYPE}
+    )
     return {
         "month": month,
-        "previous_month": previous_start_date.strftime("%Y-%m"),
-        "month_start": start_date,
-        "month_end": end_date - timedelta(days=1),
-        "freshness_status": "fresh" if monthly_totals or current_types else "missing",
-        "source_status": "ready" if monthly_totals or current_types else "empty",
+        "previous_month": _add_months(snapshot_month, -1).strftime("%Y-%m"),
+        "month_start": _add_months(snapshot_month, -2),
+        "month_end": _add_months(snapshot_month, 1) - timedelta(days=1),
+        "freshness_status": "fresh" if candidate_refs else "missing",
+        "source_status": "ready" if candidate_refs else "empty",
         "summary": {
             "total_candidates": len(candidate_refs),
             "returned_count": len(rows),
             "buyer_group_counterparty_count": (
-                len(allowed_ref_keys) if allowed_ref_keys is not None else None
+                len(allowed_counterparty_refs) if allowed_counterparty_refs is not None else None
             ),
-            "actionable_count": sum(
-                count for action, count in action_counts.items() if _is_actionable(action)
-            ),
-            "keep_count": action_counts.get(ACTION_KEEP, 0),
-            "set_silver_count": action_counts.get(ACTION_SET_SILVER, 0),
-            "set_gold_count": action_counts.get(ACTION_SET_GOLD, 0),
-            "downgrade_to_silver_count": action_counts.get(ACTION_DOWNGRADE_TO_SILVER, 0),
-            "downgrade_to_bronze_count": action_counts.get(ACTION_DOWNGRADE_TO_BRONZE, 0),
-            "review_current_type_count": action_counts.get(ACTION_REVIEW_CURRENT_TYPE, 0),
+            "actionable_count": actionable_count,
+            "keep_count": counts[ACTION_KEEP],
+            "set_silver_count": 0,
+            "set_gold_count": 0,
+            "downgrade_to_gold_count": counts[ACTION_DOWNGRADE_TO_GOLD],
+            "downgrade_to_silver_count": counts[ACTION_DOWNGRADE_TO_SILVER],
+            "downgrade_to_bronze_count": counts[ACTION_DOWNGRADE_TO_BRONZE],
+            "downgrade_to_retail_count": counts[ACTION_DOWNGRADE_TO_RETAIL],
+            "manager_work_count": case_counts["manager_work"],
+            "isolate_count": case_counts["isolate"],
+            "recovery_count": case_counts["recovery"],
+            "data_check_count": case_counts["data_check"],
+            "special_review_count": case_counts["special_review"],
+            "review_current_type_count": counts[ACTION_REVIEW_CURRENT_TYPE],
+            "ruleset_version": RULESET.version,
             "rules": {
-                "bronze": "5 000 ₽ <= чистые продажи < 300 000 ₽",
-                "silver": "300 000 ₽ <= чистые продажи < 1 200 000 ₽",
-                "gold": (
-                    "1 200 000 ₽ <= чистые продажи; " "в регламенте верхняя подсказка 2 500 000 ₽"
-                ),
+                level.key: (
+                    f"3м >= {level.retention_norm_3m}; "
+                    f"последний месяц >= {level.hold_last_month}"
+                )
+                for level in RULESET.levels
             },
         },
         "payload": rows,

@@ -3,12 +3,14 @@
 
 from __future__ import annotations
 
+import ast
 import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 DOMAIN_NAMES = {
     "catalog",
+    "customer_price_types",
     "matching",
     "pricing",
     "assortment",
@@ -20,6 +22,9 @@ DOMAIN_NAMES = {
     "telephony",
 }
 TEXT_SUFFIXES = {".py", ".md", ".sh", ".yml", ".yaml", ".toml", ".example"}
+LEGACY_BOUNDARY_ALLOWLIST = {
+    Path("app/domains/management/application/weekly_kpi_ingest.py"),
+}
 
 
 def _text_files(root: Path) -> list[Path]:
@@ -68,6 +73,9 @@ def find_violations(root: Path = REPO_ROOT) -> list[str]:
         ):
             violations.append(f"create_engine outside DB factory: {relative}")
 
+        if relative.parts[:2] == ("app", "domains") and path.suffix == ".py":
+            violations.extend(_domain_import_violations(relative, text))
+
     markdown_tasks = sorted((root / "tasks").glob("*.md"))
     for path in markdown_tasks:
         violations.append(f"Markdown task must live in docs: {path.relative_to(root)}")
@@ -77,6 +85,38 @@ def find_violations(root: Path = REPO_ROOT) -> list[str]:
     for name in sorted(DOMAIN_NAMES - existing_domains):
         violations.append(f"missing domain package: app/domains/{name}")
     return sorted(set(violations))
+
+
+def _domain_import_violations(relative: Path, text: str) -> list[str]:
+    if relative in LEGACY_BOUNDARY_ALLOWLIST:
+        return []
+    try:
+        tree = ast.parse(text)
+    except SyntaxError:
+        return [f"cannot parse domain module: {relative}"]
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module)
+
+    violations: list[str] = []
+    forbidden_roots = ("fastapi", "sqlalchemy", "app.api", "app.infrastructure", "app.models")
+    for name in sorted(imported):
+        if name in forbidden_roots or name.startswith(
+            tuple(f"{root}." for root in forbidden_roots)
+        ):
+            violations.append(f"domain imports framework/infrastructure {name}: {relative}")
+
+        parts = name.split(".")
+        if len(parts) >= 3 and parts[:2] == ["app", "domains"]:
+            current_domain = relative.parts[2] if len(relative.parts) > 2 else ""
+            target_domain = parts[2]
+            allowed_surface = len(parts) >= 4 and parts[3] in {"contracts", "public"}
+            if target_domain != current_domain and not allowed_surface:
+                violations.append(f"cross-domain private import {name}: {relative}")
+    return violations
 
 
 def main() -> int:

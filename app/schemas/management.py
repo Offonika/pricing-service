@@ -4,7 +4,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class ManagementEnvelope(BaseModel):
@@ -294,6 +294,7 @@ class TaskEfficiencyResponse(ManagementEnvelope):
 
 
 class RetailDirectorMonthlyKpiPayload(BaseModel):
+    schema_version: int = 1
     month: str
     title: str | None = None
     subtitle: str | None = None
@@ -303,7 +304,12 @@ class RetailDirectorMonthlyKpiPayload(BaseModel):
     receipt_amount: Decimal | None = None
     shrinkage_amount: Decimal | None = None
     shrinkage_pct: Decimal | None = None
+    norm_pct: Decimal | None = None
     matched_store_count: int | None = None
+    stores: list[dict[str, Any]] = Field(default_factory=list)
+    top_documents: list[dict[str, Any]] = Field(default_factory=list)
+    data_quality: dict[str, Any] = Field(default_factory=dict)
+    owner: dict[str, Any] = Field(default_factory=dict)
     kpi_index_sum: Decimal | None = None
     kpi_bonus_amount: Decimal | None = None
     to_pay: Decimal | None = None

@@ -6,10 +6,12 @@ import tempfile
 from datetime import date
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
+from app.api import management as management_api
 from app.api.dependencies import get_db
 from app.core.config import get_settings
 from app.main import app
@@ -40,6 +42,29 @@ def override_db(engine):
             db.close()
 
     return _override
+
+
+def test_retail_director_monthly_kpi_returns_source_error_for_malformed_payload(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        management_api,
+        "load_retail_director_monthly_kpi",
+        lambda _: {
+            "schema_version": 2,
+            "month": "2026-06",
+            "writeoff_amount": "not-a-number",
+        },
+    )
+
+    response = management_api.get_retail_director_monthly_kpi(
+        month="2026-06",
+        _="test-token",
+    )
+
+    assert response.source_status == "source_error"
+    assert response.freshness_status == "error"
+    assert response.payload is None
 
 
 def seed_management_data(engine) -> None:
@@ -73,6 +98,7 @@ def seed_retail_director_monthly_report(tmp_path: Path) -> None:
     (report_dir / "retail-director-summary-2026-03.json").write_text(
         """
 {
+  "schema_version": 2,
   "header": {
     "title": "Итоги месяца 2026-03",
     "subtitle": "Сагиян Арсен Левонович / Руководитель сети торговых точек",
@@ -84,7 +110,55 @@ def seed_retail_director_monthly_report(tmp_path: Path) -> None:
     "receipt_amount": 526672.97,
     "shrinkage_amount": 702448.85,
     "shrinkage_pct": 0.8499,
-    "matched_store_count": 12
+    "norm_pct": 0.5,
+    "matched_store_count": 12,
+    "stores": [
+      {
+        "store_ref": "store-1",
+        "store_name": "Магазин 1",
+        "sales_amount": 100000,
+        "writeoff_amount": 1000,
+        "receipt_amount": 100,
+        "shrinkage_amount": 900,
+        "shrinkage_pct": 0.9,
+        "norm_pct": 0.5,
+        "variance_to_norm_pct": 0.4,
+        "above_norm": true,
+        "source_status": "ready",
+        "has_operations": true
+      }
+    ],
+    "top_documents": [
+      {
+        "stable_key": "writeoff:doc-1",
+        "operation_kind": "inventory_writeoff",
+        "operation_label": "Инвентаризационное списание",
+        "document_type": "_Document210",
+        "document_ref": "doc-1",
+        "document_number": "0001",
+        "document_date": "2026-03-15",
+        "store_ref": "store-1",
+        "store_name": "Магазин 1",
+        "amount": 1000,
+        "effect_amount": 1000
+      }
+    ],
+    "data_quality": {
+      "source_status": "ready",
+      "approved_store_count": 12,
+      "source_store_count": 12,
+      "matched_store_count": 12,
+      "unmatched_store_count": 0,
+      "source_document_count": 1,
+      "matched_document_count": 1,
+      "unmatched_document_count": 0,
+      "unmatched_writeoff_amount": "0.00",
+      "unmatched_receipt_amount": "0.00"
+    },
+    "owner": {
+      "employee_name": "Сагиян Арсен Левонович",
+      "role_code": "retail_director"
+    }
   },
   "compensation": {
     "kpi_index_sum": 0.7214,
@@ -235,7 +309,13 @@ def test_management_api_endpoints(monkeypatch) -> None:
     assert retail_director_monthly.status_code == 200
     retail_director_monthly_payload = retail_director_monthly.json()
     assert retail_director_monthly_payload["source_status"] == "ready"
+    assert retail_director_monthly_payload["payload"]["schema_version"] == 2
     assert retail_director_monthly_payload["payload"]["shrinkage_amount"] == "702448.85"
+    assert retail_director_monthly_payload["payload"]["norm_pct"] == "0.5"
+    assert retail_director_monthly_payload["payload"]["stores"][0]["store_ref"] == "store-1"
+    assert (
+        retail_director_monthly_payload["payload"]["top_documents"][0]["document_number"] == "0001"
+    )
     assert retail_director_monthly_payload["payload"]["kpi_bonus_amount"] == "54105.0"
 
     task_efficiency = client.get(

@@ -265,6 +265,22 @@ class ExecutiveProfitLossDailyRow(ExecutiveProfitLossBreakdownRow):
     business_date: date
 
 
+class ExecutiveProfitLossMonthlyRow(BaseModel):
+    month: str
+    revenue: Decimal = Decimal("0")
+    gross_profit: Decimal | None = None
+    operating_expenses: Decimal | None = None
+    operating_profit: Decimal | None = None
+    net_profit: Decimal | None = None
+    gross_margin_pct: Decimal | None = None
+    operating_margin_pct: Decimal | None = None
+    net_profit_margin_pct: Decimal | None = None
+    comparison_net_profit: Decimal | None = None
+    source_status: str = "source_missing"
+    is_preliminary: bool = True
+    note: str | None = None
+
+
 class ExecutiveProfitLossExpenseBreakdownRow(BaseModel):
     key: str
     label: str
@@ -293,6 +309,114 @@ class ExecutiveProfitLossOpenQuestion(BaseModel):
     meta: dict[str, Any] = Field(default_factory=dict)
 
 
+class ExecutiveProfitLossInventoryHistoryItem(BaseModel):
+    month: str
+    source_status: str = "ready"
+    writeoff_amount: Decimal | None = None
+    receipt_amount: Decimal | None = None
+    loss_amount: Decimal | None = None
+    loss_pct: Decimal | None = None
+
+
+class ExecutiveProfitLossInventoryStore(BaseModel):
+    store_ref: str
+    store_name: str
+    sales_amount: Decimal | None = None
+    writeoff_amount: Decimal | None = None
+    receipt_amount: Decimal | None = None
+    loss_amount: Decimal | None = None
+    loss_pct: Decimal | None = None
+    norm_pct: Decimal | None = None
+    variance_to_norm_pct: Decimal | None = None
+    above_norm: bool = False
+    source_status: str = "ready"
+    has_operations: bool = False
+
+
+class ExecutiveProfitLossInventoryDocument(BaseModel):
+    stable_key: str
+    operation_kind: str
+    operation_label: str
+    document_type: str
+    document_ref: str
+    document_number: str
+    document_date: date | None = None
+    store_ref: str
+    store_name: str
+    amount: Decimal
+    effect_amount: Decimal
+
+
+class ExecutiveProfitLossInventoryAction(BaseModel):
+    stable_key: str
+    action_type: str
+    severity: str
+    title: str
+    description: str
+    amount: Decimal | None = None
+    store_ref: str | None = None
+    store_name: str | None = None
+    responsible_name: str | None = None
+    recommended_action: str
+
+
+class ExecutiveProfitLossInventoryDataQuality(BaseModel):
+    source_status: str = "source_missing"
+    approved_store_count: int = 0
+    source_store_count: int = 0
+    matched_store_count: int = 0
+    unmatched_store_count: int = 0
+    source_document_count: int = 0
+    matched_document_count: int = 0
+    unmatched_document_count: int = 0
+    unmatched_writeoff_amount: Decimal = Decimal("0")
+    unmatched_receipt_amount: Decimal = Decimal("0")
+    excluded_store_count: int = 0
+    excluded_document_count: int = 0
+    excluded_writeoff_amount: Decimal = Decimal("0")
+    excluded_receipt_amount: Decimal = Decimal("0")
+    store_scope_status: str = "unknown"
+    store_scope_source: str | None = None
+    store_scope_month: str | None = None
+    norm_source_status: str = "unknown"
+    norm_source: str | None = None
+
+
+class ExecutiveProfitLossInventoryOwner(BaseModel):
+    employee_key: str | None = None
+    employee_bitrix_id: str | None = None
+    employee_name: str | None = None
+    role_code: str | None = None
+
+
+class ExecutiveProfitLossInventoryLoss(BaseModel):
+    schema_version: int = 1
+    month: str
+    source_status: str = "source_missing"
+    detail_source_status: str = "source_missing"
+    writeoff_amount: Decimal | None = None
+    receipt_amount: Decimal | None = None
+    loss_amount: Decimal | None = None
+    loss_pct: Decimal | None = None
+    norm_pct: Decimal | None = None
+    variance_to_norm_pct: Decimal | None = None
+    matched_store_count: int | None = None
+    previous_month: ExecutiveProfitLossInventoryHistoryItem | None = None
+    average_loss_amount_3m: Decimal | None = None
+    average_loss_pct_3m: Decimal | None = None
+    history_source_status: str = "source_missing"
+    history: list[ExecutiveProfitLossInventoryHistoryItem] = Field(default_factory=list)
+    stores: list[ExecutiveProfitLossInventoryStore] = Field(default_factory=list)
+    top_documents: list[ExecutiveProfitLossInventoryDocument] = Field(default_factory=list)
+    actions: list[ExecutiveProfitLossInventoryAction] = Field(default_factory=list)
+    data_quality: ExecutiveProfitLossInventoryDataQuality = Field(
+        default_factory=ExecutiveProfitLossInventoryDataQuality
+    )
+    owner: ExecutiveProfitLossInventoryOwner | None = None
+    warnings: list[str] = Field(default_factory=list)
+    note: str | None = None
+
+
 class ExecutiveProfitLossPeriodResponse(BaseModel):
     date_from: date
     date_to: date
@@ -304,11 +428,13 @@ class ExecutiveProfitLossPeriodResponse(BaseModel):
     ratios: list[ExecutiveProfitLossRatio] = Field(default_factory=list)
     lines: list[ExecutiveProfitLossLineItem] = Field(default_factory=list)
     daily: list[ExecutiveProfitLossDailyRow] = Field(default_factory=list)
+    monthly: list[ExecutiveProfitLossMonthlyRow] = Field(default_factory=list)
     by_store: list[ExecutiveProfitLossBreakdownRow] = Field(default_factory=list)
     by_manager: list[ExecutiveProfitLossBreakdownRow] = Field(default_factory=list)
     expense_source_status: str = "source_missing"
     expense_breakdown: list[ExecutiveProfitLossExpenseBreakdownRow] = Field(default_factory=list)
     expense_open_questions: list[ExecutiveProfitLossOpenQuestion] = Field(default_factory=list)
+    inventory_loss: ExecutiveProfitLossInventoryLoss | None = None
     filters: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -393,6 +519,55 @@ class ExecutiveSalesPeriodResponse(BaseModel):
     stores: list[ExecutiveSalesFilterOption] = Field(default_factory=list)
     managers: list[ExecutiveSalesFilterOption] = Field(default_factory=list)
     filters: dict[str, Any] = Field(default_factory=dict)
+
+
+class ExecutiveOnlineStoreDailyRow(BaseModel):
+    business_date: date
+    visits: int = 0
+    visitors: int = 0
+    purchases: int = 0
+    click_buy: int = 0
+    begin_checkout: int = 0
+    phone_clicks: int = 0
+    site_searches: int = 0
+    purchase_conversion_pct: Decimal = Decimal("0")
+
+
+class ExecutiveOnlineStoreTrafficSourceRow(BaseModel):
+    key: str
+    label: str
+    visits: int = 0
+    visitors: int = 0
+    purchases: int = 0
+    purchase_conversion_pct: Decimal = Decimal("0")
+
+
+class ExecutiveOnlineStoreLandingPageRow(BaseModel):
+    url: str
+    visits: int = 0
+    visitors: int = 0
+    purchases: int = 0
+    click_buy: int = 0
+    begin_checkout: int = 0
+    purchase_conversion_pct: Decimal = Decimal("0")
+
+
+class ExecutiveOnlineStorePeriodResponse(BaseModel):
+    date_from: date
+    date_to: date
+    compare_date_from: date
+    compare_date_to: date
+    generated_at: datetime
+    source_status: str = "ready"
+    freshness_status: str = "fresh"
+    counter_id: str
+    site: str = "master-mobile.ru"
+    note: str | None = None
+    totals: dict[str, Decimal | int | str | None] = Field(default_factory=dict)
+    comparison: dict[str, Decimal | int | str | None] = Field(default_factory=dict)
+    daily: list[ExecutiveOnlineStoreDailyRow] = Field(default_factory=list)
+    traffic_sources: list[ExecutiveOnlineStoreTrafficSourceRow] = Field(default_factory=list)
+    landing_pages: list[ExecutiveOnlineStoreLandingPageRow] = Field(default_factory=list)
 
 
 class BitrixExecutiveDashboardSessionRequest(BaseModel):

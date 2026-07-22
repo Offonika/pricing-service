@@ -3079,6 +3079,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/executive-dashboard/online-store-period:
+    get:
+      summary: Get Executive Dashboard Online Store Period
+      operationId: get_executive_dashboard_online_store_period_api_management_executive_dashboard_online_store_period_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date_from
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date From
+      - name: date_to
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Date To
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutiveOnlineStorePeriodResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/management/retail-director-monthly-kpi:
     get:
       summary: Get Retail Director Monthly Kpi
@@ -3110,6 +3148,7 @@ paths:
     get:
       summary: Get Retail Customer Price Type Recommendations
       operationId: get_retail_customer_price_type_recommendations_api_management_retail_customer_price_type_recommendations_get
+      deprecated: true
       security:
       - HTTPBearer: []
       parameters:
@@ -4399,6 +4438,475 @@ paths:
                 $ref: '#/components/schemas/CounterpartyDuplicateHealthResponse'
       security:
       - HTTPBearer: []
+  /api/customer-price-types/session:
+    post:
+      tags:
+      - customer-price-types
+      summary: Create Customer Price Type Session
+      operationId: create_customer_price_type_session_api_customer_price_types_session_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerPriceTypeSessionRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeSessionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/summary:
+    get:
+      tags:
+      - customer-price-types
+      summary: Get Customer Price Type Summary
+      operationId: get_customer_price_type_summary_api_customer_price_types_summary_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: snapshot_month
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Snapshot Month
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeSummaryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/worklists:
+    get:
+      tags:
+      - customer-price-types
+      summary: Get Customer Price Type Worklists
+      operationId: get_customer_price_type_worklists_api_customer_price_types_worklists_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: snapshot_month
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Snapshot Month
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeWorklistsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/cases:
+    get:
+      tags:
+      - customer-price-types
+      summary: List Customer Price Type Cases
+      operationId: list_customer_price_type_cases_api_customer_price_types_cases_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: snapshot_month
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Snapshot Month
+      - name: worklist
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - manager_work
+            - isolate
+            - recovery
+            - data_check
+            - special_review
+            - downgrade_approval
+            type: string
+          - type: 'null'
+          title: Worklist
+      - name: stage
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Stage
+      - name: review_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Review Type
+      - name: source_status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Status
+      - name: department_ref
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Ref
+      - name: search
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Search
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeCaseListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/cases/{case_id}:
+    get:
+      tags:
+      - customer-price-types
+      summary: Get Customer Price Type Case
+      operationId: get_customer_price_type_case_api_customer_price_types_cases__case_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Case Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeCaseDetailResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/profiles/{counterparty_ref}:
+    get:
+      tags:
+      - customer-price-types
+      summary: Get Customer Price Type Profile
+      operationId: get_customer_price_type_profile_api_customer_price_types_profiles__counterparty_ref__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: counterparty_ref
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Counterparty Ref
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeProfileResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/runs/{run_id}:
+    get:
+      tags:
+      - customer-price-types
+      summary: Get Customer Price Type Run
+      operationId: get_customer_price_type_run_api_customer_price_types_runs__run_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Run Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeRunResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/quality/samples/prepare:
+    post:
+      tags:
+      - customer-price-types
+      summary: Prepare Customer Price Type Quality Samples
+      operationId: prepare_customer_price_type_quality_samples_api_customer_price_types_quality_samples_prepare_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerPriceTypeQualityPrepareRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeQualityPrepareResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/customer-price-types/quality/samples:
+    get:
+      tags:
+      - customer-price-types
+      summary: List Customer Price Type Quality Samples
+      operationId: list_customer_price_type_quality_samples_api_customer_price_types_quality_samples_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: snapshot_month
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Snapshot Month
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - pending
+            - reviewed
+            type: string
+          - type: 'null'
+          title: Status
+      - name: group
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - manager_work
+            - isolate
+            - recovery
+            - data_check
+            - special_review
+            - downgrade_approval
+            - no_action
+            type: string
+          - type: 'null'
+          title: Group
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeQualitySampleListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/quality/samples/{sample_id}:
+    get:
+      tags:
+      - customer-price-types
+      summary: Get Customer Price Type Quality Sample
+      operationId: get_customer_price_type_quality_sample_api_customer_price_types_quality_samples__sample_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: sample_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Sample Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeQualitySampleDetailResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    put:
+      tags:
+      - customer-price-types
+      summary: Review Customer Price Type Quality Sample
+      operationId: review_customer_price_type_quality_sample_api_customer_price_types_quality_samples__sample_id__put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: sample_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Sample Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerPriceTypeQualityReviewRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeQualitySampleResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/quality/metrics:
+    get:
+      tags:
+      - customer-price-types
+      summary: Get Customer Price Type Quality Metrics
+      operationId: get_customer_price_type_quality_metrics_api_customer_price_types_quality_metrics_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: snapshot_month
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Snapshot Month
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeQualityMetricsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/expertise/sync/cases:
     post:
       summary: Sync Cases
@@ -6795,6 +7303,222 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/internal/orchestration/runs/claim:
+    post:
+      tags:
+      - management-orchestration
+      summary: Claim Run
+      operationId: claim_run_api_management_internal_orchestration_runs_claim_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 255
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunClaimRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/internal/orchestration/runs/{run_id}/heartbeat:
+    post:
+      tags:
+      - management-orchestration
+      summary: Heartbeat Run
+      operationId: heartbeat_run_api_management_internal_orchestration_runs__run_id__heartbeat_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Run Id
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 255
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunHeartbeatRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/internal/orchestration/runs/{run_id}/finish:
+    post:
+      tags:
+      - management-orchestration
+      summary: Finish Run
+      operationId: finish_run_api_management_internal_orchestration_runs__run_id__finish_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: run_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Run Id
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 255
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/RunFinishRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RunResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/internal/orchestration/delivery-intents/claim:
+    post:
+      tags:
+      - management-orchestration
+      summary: Claim Delivery
+      operationId: claim_delivery_api_management_internal_orchestration_delivery_intents_claim_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 255
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryClaimRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/internal/orchestration/delivery-intents/{intent_id}/finish:
+    post:
+      tags:
+      - management-orchestration
+      summary: Finish Delivery
+      operationId: finish_delivery_api_management_internal_orchestration_delivery_intents__intent_id__finish_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: intent_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Intent Id
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 255
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/DeliveryFinishRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DeliveryResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/internal/orchestration/health:
+    get:
+      tags:
+      - management-orchestration
+      summary: Get Orchestration Health
+      operationId: get_orchestration_health_api_management_internal_orchestration_health_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrchestrationHealthResponse'
+      security:
+      - HTTPBearer: []
   /api/procurement-labels/session:
     post:
       summary: Create Bitrix Procurement Labels Session
@@ -11273,6 +11997,1189 @@ components:
           default: manual
       type: object
       title: CurrentMatch
+    CustomerPriceTypeCaseDetailResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        case:
+          $ref: '#/components/schemas/CustomerPriceTypeCaseItem'
+        snapshot:
+          $ref: '#/components/schemas/CustomerPriceTypeSnapshotResponse'
+        events:
+          items:
+            $ref: '#/components/schemas/CustomerPriceTypeCaseEventResponse'
+          type: array
+          title: Events
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - case
+      - snapshot
+      title: CustomerPriceTypeCaseDetailResponse
+    CustomerPriceTypeCaseEventResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        event_type:
+          type: string
+          title: Event Type
+        event_at:
+          type: string
+          format: date-time
+          title: Event At
+        actor:
+          type: string
+          title: Actor
+        source:
+          type: string
+          title: Source
+        before_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Before Status
+        after_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: After Status
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+        metadata:
+          additionalProperties: true
+          type: object
+          title: Metadata
+        idempotency_key:
+          type: string
+          title: Idempotency Key
+      type: object
+      required:
+      - id
+      - event_type
+      - event_at
+      - actor
+      - source
+      - idempotency_key
+      title: CustomerPriceTypeCaseEventResponse
+    CustomerPriceTypeCaseItem:
+      properties:
+        id:
+          type: integer
+          title: Id
+        case_key:
+          type: string
+          title: Case Key
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        counterparty_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Code
+        counterparty_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Name
+        snapshot_month:
+          type: string
+          format: date
+          title: Snapshot Month
+        stage:
+          type: string
+          title: Stage
+        case_type:
+          type: string
+          title: Case Type
+        review_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Review Type
+        reasons:
+          items:
+            type: string
+          type: array
+          title: Reasons
+        owner_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Ref
+        owner_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Name
+        department_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Ref
+        department_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Name
+        due_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Due At
+        system_recommendation:
+          type: string
+          title: System Recommendation
+        recommended_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Price Type
+        human_final_decision:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Human Final Decision
+        approval_status:
+          type: string
+          title: Approval Status
+        action_required:
+          type: boolean
+          title: Action Required
+        snapshot_hash:
+          type: string
+          title: Snapshot Hash
+        version:
+          type: integer
+          title: Version
+      type: object
+      required:
+      - id
+      - case_key
+      - counterparty_ref
+      - snapshot_month
+      - stage
+      - case_type
+      - system_recommendation
+      - approval_status
+      - action_required
+      - snapshot_hash
+      - version
+      title: CustomerPriceTypeCaseItem
+    CustomerPriceTypeCaseListResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        total:
+          type: integer
+          title: Total
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+        payload:
+          items:
+            $ref: '#/components/schemas/CustomerPriceTypeCaseItem'
+          type: array
+          title: Payload
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - total
+      - limit
+      - offset
+      title: CustomerPriceTypeCaseListResponse
+    CustomerPriceTypeProfileResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        id:
+          type: integer
+          title: Id
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        counterparty_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Code
+        counterparty_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Name
+        department_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Ref
+        department_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Name
+        owner_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Ref
+        owner_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Name
+        is_service_card:
+          type: boolean
+          title: Is Service Card
+        is_hygiene:
+          type: boolean
+          title: Is Hygiene
+        master_data_flags:
+          items:
+            type: string
+          type: array
+          title: Master Data Flags
+        latest_snapshot:
+          anyOf:
+          - $ref: '#/components/schemas/CustomerPriceTypeSnapshotResponse'
+          - type: 'null'
+        open_case:
+          anyOf:
+          - $ref: '#/components/schemas/CustomerPriceTypeCaseItem'
+          - type: 'null'
+        history:
+          items:
+            $ref: '#/components/schemas/CustomerPriceTypeSnapshotResponse'
+          type: array
+          title: History
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - id
+      - counterparty_ref
+      - is_service_card
+      - is_hygiene
+      title: CustomerPriceTypeProfileResponse
+    CustomerPriceTypeQualityGroupMetrics:
+      properties:
+        population_count:
+          type: integer
+          title: Population Count
+        selected_count:
+          type: integer
+          title: Selected Count
+        reviewed_count:
+          type: integer
+          title: Reviewed Count
+        true_positive:
+          type: integer
+          title: True Positive
+        false_positive:
+          type: integer
+          title: False Positive
+        false_negative:
+          type: integer
+          title: False Negative
+        precision:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Precision
+        recall:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Recall
+      type: object
+      required:
+      - population_count
+      - selected_count
+      - reviewed_count
+      - true_positive
+      - false_positive
+      - false_negative
+      title: CustomerPriceTypeQualityGroupMetrics
+    CustomerPriceTypeQualityMetricsResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        metrics_scope:
+          type: string
+          enum:
+          - portfolio
+          - special_review_only
+          title: Metrics Scope
+        metrics_ready:
+          type: boolean
+          title: Metrics Ready
+        population_count:
+          type: integer
+          title: Population Count
+        selected_count:
+          type: integer
+          title: Selected Count
+        reviewed_count:
+          type: integer
+          title: Reviewed Count
+        coverage:
+          type: number
+          title: Coverage
+        override_rate:
+          type: number
+          title: Override Rate
+        critical_false_downgrade_count:
+          type: integer
+          title: Critical False Downgrade Count
+        groups:
+          additionalProperties:
+            $ref: '#/components/schemas/CustomerPriceTypeQualityGroupMetrics'
+          type: object
+          title: Groups
+        matrix:
+          additionalProperties:
+            additionalProperties:
+              type: integer
+            type: object
+          type: object
+          title: Matrix
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - metrics_scope
+      - metrics_ready
+      - population_count
+      - selected_count
+      - reviewed_count
+      - coverage
+      - override_rate
+      - critical_false_downgrade_count
+      title: CustomerPriceTypeQualityMetricsResponse
+    CustomerPriceTypeQualityPrepareRequest:
+      properties:
+        snapshot_month:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Snapshot Month
+        per_group:
+          type: integer
+          maximum: 200.0
+          minimum: 1.0
+          title: Per Group
+          default: 30
+      type: object
+      title: CustomerPriceTypeQualityPrepareRequest
+    CustomerPriceTypeQualityPrepareResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        created:
+          type: integer
+          title: Created
+        total:
+          type: integer
+          title: Total
+        per_group:
+          type: integer
+          title: Per Group
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - created
+      - total
+      - per_group
+      title: CustomerPriceTypeQualityPrepareResponse
+    CustomerPriceTypeQualityProfileResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        counterparty_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Code
+        counterparty_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Name
+        department_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Ref
+        department_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Name
+        owner_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Ref
+        owner_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Name
+        master_data_flags:
+          items:
+            type: string
+          type: array
+          title: Master Data Flags
+      type: object
+      required:
+      - id
+      - counterparty_ref
+      title: CustomerPriceTypeQualityProfileResponse
+    CustomerPriceTypeQualityReviewRequest:
+      properties:
+        correct_group:
+          type: string
+          enum:
+          - manager_work
+          - isolate
+          - recovery
+          - data_check
+          - special_review
+          - downgrade_approval
+          - no_action
+          title: Correct Group
+        comment:
+          anyOf:
+          - type: string
+            maxLength: 2000
+          - type: 'null'
+          title: Comment
+        expected_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Version
+      type: object
+      required:
+      - correct_group
+      - expected_version
+      title: CustomerPriceTypeQualityReviewRequest
+    CustomerPriceTypeQualitySampleDetailResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        sample:
+          $ref: '#/components/schemas/CustomerPriceTypeQualitySampleResponse'
+        profile:
+          $ref: '#/components/schemas/CustomerPriceTypeQualityProfileResponse'
+        snapshot:
+          $ref: '#/components/schemas/CustomerPriceTypeSnapshotResponse'
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - sample
+      - profile
+      - snapshot
+      title: CustomerPriceTypeQualitySampleDetailResponse
+    CustomerPriceTypeQualitySampleListResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        total:
+          type: integer
+          title: Total
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+        payload:
+          items:
+            $ref: '#/components/schemas/CustomerPriceTypeQualitySampleResponse'
+          type: array
+          title: Payload
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - total
+      - limit
+      - offset
+      title: CustomerPriceTypeQualitySampleListResponse
+    CustomerPriceTypeQualitySampleResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        run_id:
+          type: integer
+          title: Run Id
+        snapshot_id:
+          type: integer
+          title: Snapshot Id
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        counterparty_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Code
+        counterparty_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Name
+        current_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Price Type
+        recommended_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Price Type
+        system_recommendation:
+          type: string
+          title: System Recommendation
+        recommendation_reason:
+          type: string
+          title: Recommendation Reason
+        stop_factors:
+          items:
+            type: string
+          type: array
+          title: Stop Factors
+        system_group:
+          type: string
+          enum:
+          - manager_work
+          - isolate
+          - recovery
+          - data_check
+          - special_review
+          - downgrade_approval
+          - no_action
+          title: System Group
+        correct_group:
+          anyOf:
+          - type: string
+            enum:
+            - manager_work
+            - isolate
+            - recovery
+            - data_check
+            - special_review
+            - downgrade_approval
+            - no_action
+          - type: 'null'
+          title: Correct Group
+        status:
+          type: string
+          enum:
+          - pending
+          - reviewed
+          title: Status
+        selected_by:
+          type: string
+          title: Selected By
+        selected_at:
+          type: string
+          format: date-time
+          title: Selected At
+        reviewed_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reviewed By
+        reviewed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Reviewed At
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+        version:
+          type: integer
+          title: Version
+      type: object
+      required:
+      - id
+      - run_id
+      - snapshot_id
+      - counterparty_ref
+      - system_recommendation
+      - recommendation_reason
+      - system_group
+      - status
+      - selected_by
+      - selected_at
+      - version
+      title: CustomerPriceTypeQualitySampleResponse
+    CustomerPriceTypeRunResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          type: string
+          format: date
+          title: Snapshot Month
+        ruleset_version:
+          type: string
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        id:
+          type: integer
+          title: Id
+        run_key:
+          type: string
+          title: Run Key
+        as_of:
+          type: string
+          format: date
+          title: As Of
+        window_start:
+          type: string
+          format: date
+          title: Window Start
+        window_end:
+          type: string
+          format: date
+          title: Window End
+        source_statuses:
+          additionalProperties:
+            type: string
+          type: object
+          title: Source Statuses
+        source_fingerprint:
+          type: string
+          title: Source Fingerprint
+        input_count:
+          type: integer
+          title: Input Count
+        excluded_count:
+          type: integer
+          title: Excluded Count
+        calculated_count:
+          type: integer
+          title: Calculated Count
+        conflict_count:
+          type: integer
+          title: Conflict Count
+        actionable_count:
+          type: integer
+          title: Actionable Count
+        status:
+          type: string
+          title: Status
+        error_summary:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Error Summary
+        started_at:
+          type: string
+          format: date-time
+          title: Started At
+        completed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Completed At
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - id
+      - run_key
+      - as_of
+      - window_start
+      - window_end
+      - source_fingerprint
+      - input_count
+      - excluded_count
+      - calculated_count
+      - conflict_count
+      - actionable_count
+      - status
+      - started_at
+      title: CustomerPriceTypeRunResponse
+    CustomerPriceTypeSessionRequest:
+      properties:
+        access_token:
+          type: string
+          minLength: 1
+          title: Access Token
+        domain:
+          type: string
+          minLength: 1
+          title: Domain
+        member_id:
+          type: string
+          minLength: 1
+          title: Member Id
+      type: object
+      required:
+      - access_token
+      - domain
+      - member_id
+      title: CustomerPriceTypeSessionRequest
+    CustomerPriceTypeSessionResponse:
+      properties:
+        session_token:
+          type: string
+          title: Session Token
+        token_type:
+          type: string
+          title: Token Type
+          default: Bearer
+        expires_at:
+          type: string
+          format: date-time
+          title: Expires At
+        expires_in:
+          type: integer
+          title: Expires In
+        user:
+          $ref: '#/components/schemas/CustomerPriceTypeSessionUser'
+      type: object
+      required:
+      - session_token
+      - expires_at
+      - expires_in
+      - user
+      title: CustomerPriceTypeSessionResponse
+    CustomerPriceTypeSessionUser:
+      properties:
+        user_id:
+          type: string
+          title: User Id
+        name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Name
+        role:
+          type: string
+          title: Role
+        can_view_money:
+          type: boolean
+          title: Can View Money
+      type: object
+      required:
+      - user_id
+      - role
+      - can_view_money
+      title: CustomerPriceTypeSessionUser
+    CustomerPriceTypeSnapshotResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        run_id:
+          type: integer
+          title: Run Id
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        snapshot_month:
+          type: string
+          format: date
+          title: Snapshot Month
+        ruleset_version:
+          type: string
+          title: Ruleset Version
+        current_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Price Type
+        current_level:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Level
+        price_type_variant:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Price Type Variant
+        contract_candidates:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Contract Candidates
+        monthly_sales:
+          anyOf:
+          - additionalProperties:
+              type: string
+            type: object
+          - type: 'null'
+          title: Monthly Sales
+        total_3m:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Total 3M
+        last_month:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Last Month
+        economics:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Economics
+        payments:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payments
+        returns:
+          additionalProperties: true
+          type: object
+          title: Returns
+        history:
+          additionalProperties: true
+          type: object
+          title: History
+        source_status:
+          type: string
+          title: Source Status
+        source_statuses:
+          additionalProperties:
+            type: string
+          type: object
+          title: Source Statuses
+        conflicts:
+          items:
+            type: string
+          type: array
+          title: Conflicts
+        stop_factors:
+          items:
+            type: string
+          type: array
+          title: Stop Factors
+        system_recommendation:
+          type: string
+          title: System Recommendation
+        recommended_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Price Type
+        recommendation_reason:
+          type: string
+          title: Recommendation Reason
+        action_required:
+          type: boolean
+          title: Action Required
+        case_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Case Type
+        review_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Review Type
+        reasons:
+          items:
+            type: string
+          type: array
+          title: Reasons
+        snapshot_hash:
+          type: string
+          title: Snapshot Hash
+        money_visible:
+          type: boolean
+          title: Money Visible
+      type: object
+      required:
+      - id
+      - run_id
+      - counterparty_ref
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - system_recommendation
+      - recommendation_reason
+      - action_required
+      - snapshot_hash
+      - money_visible
+      title: CustomerPriceTypeSnapshotResponse
+    CustomerPriceTypeSummary:
+      properties:
+        profile_count:
+          type: integer
+          title: Profile Count
+          default: 0
+        actionable_count:
+          type: integer
+          title: Actionable Count
+          default: 0
+        levels:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Levels
+        recommendations:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Recommendations
+        source_statuses:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Source Statuses
+        review_types:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Review Types
+        departments:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Departments
+      type: object
+      title: CustomerPriceTypeSummary
+    CustomerPriceTypeSummaryResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        summary:
+          $ref: '#/components/schemas/CustomerPriceTypeSummary'
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - summary
+      title: CustomerPriceTypeSummaryResponse
+    CustomerPriceTypeWorklistsResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        worklists:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Worklists
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      title: CustomerPriceTypeWorklistsResponse
     DecisionHistoryItem:
       properties:
         id:
@@ -11349,6 +13256,109 @@ components:
       required:
       - items
       title: DecisionHistoryResponse
+    DeliveryClaimRequest:
+      properties:
+        run_id:
+          type: string
+          format: uuid
+          title: Run Id
+        job_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          pattern: ^[a-z0-9][a-z0-9._-]*$
+          title: Job Id
+        channel:
+          type: string
+          maxLength: 64
+          minLength: 1
+          pattern: ^[a-z0-9][a-z0-9._-]*$
+          title: Channel
+        dedupe_key:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Dedupe Key
+        target_fingerprint:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Target Fingerprint
+        payload_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Payload Sha256
+        artifact_refs:
+          items:
+            type: string
+          type: array
+          maxItems: 50
+          title: Artifact Refs
+        worker_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Worker Id
+        lease_seconds:
+          type: integer
+          maximum: 3600.0
+          minimum: 30.0
+          title: Lease Seconds
+          default: 300
+        max_attempts:
+          type: integer
+          maximum: 10.0
+          minimum: 1.0
+          title: Max Attempts
+          default: 3
+      type: object
+      required:
+      - run_id
+      - job_id
+      - channel
+      - dedupe_key
+      - target_fingerprint
+      - payload_sha256
+      - worker_id
+      title: DeliveryClaimRequest
+    DeliveryFinishRequest:
+      properties:
+        worker_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Worker Id
+        outcome:
+          type: string
+          enum:
+          - delivered
+          - failed
+          - unknown
+          - manual_review
+          - cancelled
+          title: Outcome
+        external_ref:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: External Ref
+        error_code:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Error Code
+        error_detail:
+          anyOf:
+          - type: string
+            maxLength: 4000
+          - type: 'null'
+          title: Error Detail
+      type: object
+      required:
+      - worker_id
+      - outcome
+      title: DeliveryFinishRequest
     DeliveryMethodReportItem:
       properties:
         raw_delivery_method:
@@ -11380,6 +13390,58 @@ components:
           title: Items
       type: object
       title: DeliveryMethodReportResponse
+    DeliveryResponse:
+      properties:
+        intent_id:
+          type: string
+          format: uuid
+          title: Intent Id
+        run_id:
+          type: string
+          format: uuid
+          title: Run Id
+        job_id:
+          type: string
+          title: Job Id
+        channel:
+          type: string
+          title: Channel
+        dedupe_key:
+          type: string
+          title: Dedupe Key
+        status:
+          type: string
+          title: Status
+        should_send:
+          type: boolean
+          title: Should Send
+        attempts_count:
+          type: integer
+          title: Attempts Count
+        manual_review_required:
+          type: boolean
+          title: Manual Review Required
+        external_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: External Ref
+        idempotency_replayed:
+          type: boolean
+          title: Idempotency Replayed
+      type: object
+      required:
+      - intent_id
+      - run_id
+      - job_id
+      - channel
+      - dedupe_key
+      - status
+      - should_send
+      - attempts_count
+      - manual_review_required
+      - idempotency_replayed
+      title: DeliveryResponse
     DeviceModelCreate:
       properties:
         brand:
@@ -12230,6 +14292,199 @@ components:
       - freshness_status
       - generated_at
       title: ExecutiveManagementBalanceResponse
+    ExecutiveOnlineStoreDailyRow:
+      properties:
+        business_date:
+          type: string
+          format: date
+          title: Business Date
+        visits:
+          type: integer
+          title: Visits
+          default: 0
+        visitors:
+          type: integer
+          title: Visitors
+          default: 0
+        purchases:
+          type: integer
+          title: Purchases
+          default: 0
+        click_buy:
+          type: integer
+          title: Click Buy
+          default: 0
+        begin_checkout:
+          type: integer
+          title: Begin Checkout
+          default: 0
+        phone_clicks:
+          type: integer
+          title: Phone Clicks
+          default: 0
+        site_searches:
+          type: integer
+          title: Site Searches
+          default: 0
+        purchase_conversion_pct:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Purchase Conversion Pct
+          default: '0'
+      type: object
+      required:
+      - business_date
+      title: ExecutiveOnlineStoreDailyRow
+    ExecutiveOnlineStoreLandingPageRow:
+      properties:
+        url:
+          type: string
+          title: Url
+        visits:
+          type: integer
+          title: Visits
+          default: 0
+        visitors:
+          type: integer
+          title: Visitors
+          default: 0
+        purchases:
+          type: integer
+          title: Purchases
+          default: 0
+        click_buy:
+          type: integer
+          title: Click Buy
+          default: 0
+        begin_checkout:
+          type: integer
+          title: Begin Checkout
+          default: 0
+        purchase_conversion_pct:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Purchase Conversion Pct
+          default: '0'
+      type: object
+      required:
+      - url
+      title: ExecutiveOnlineStoreLandingPageRow
+    ExecutiveOnlineStorePeriodResponse:
+      properties:
+        date_from:
+          type: string
+          format: date
+          title: Date From
+        date_to:
+          type: string
+          format: date
+          title: Date To
+        compare_date_from:
+          type: string
+          format: date
+          title: Compare Date From
+        compare_date_to:
+          type: string
+          format: date
+          title: Compare Date To
+        generated_at:
+          type: string
+          format: date-time
+          title: Generated At
+        source_status:
+          type: string
+          title: Source Status
+          default: ready
+        freshness_status:
+          type: string
+          title: Freshness Status
+          default: fresh
+        counter_id:
+          type: string
+          title: Counter Id
+        site:
+          type: string
+          title: Site
+          default: master-mobile.ru
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+        totals:
+          additionalProperties:
+            anyOf:
+            - type: string
+              pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+            - type: integer
+            - type: string
+            - type: 'null'
+          type: object
+          title: Totals
+        comparison:
+          additionalProperties:
+            anyOf:
+            - type: string
+              pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+            - type: integer
+            - type: string
+            - type: 'null'
+          type: object
+          title: Comparison
+        daily:
+          items:
+            $ref: '#/components/schemas/ExecutiveOnlineStoreDailyRow'
+          type: array
+          title: Daily
+        traffic_sources:
+          items:
+            $ref: '#/components/schemas/ExecutiveOnlineStoreTrafficSourceRow'
+          type: array
+          title: Traffic Sources
+        landing_pages:
+          items:
+            $ref: '#/components/schemas/ExecutiveOnlineStoreLandingPageRow'
+          type: array
+          title: Landing Pages
+      type: object
+      required:
+      - date_from
+      - date_to
+      - compare_date_from
+      - compare_date_to
+      - generated_at
+      - counter_id
+      title: ExecutiveOnlineStorePeriodResponse
+    ExecutiveOnlineStoreTrafficSourceRow:
+      properties:
+        key:
+          type: string
+          title: Key
+        label:
+          type: string
+          title: Label
+        visits:
+          type: integer
+          title: Visits
+          default: 0
+        visitors:
+          type: integer
+          title: Visitors
+          default: 0
+        purchases:
+          type: integer
+          title: Purchases
+          default: 0
+        purchase_conversion_pct:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Purchase Conversion Pct
+          default: '0'
+      type: object
+      required:
+      - key
+      - label
+      title: ExecutiveOnlineStoreTrafficSourceRow
     ExecutiveProfitLossBreakdownRow:
       properties:
         key:
@@ -12389,6 +14644,442 @@ components:
       - key
       - label
       title: ExecutiveProfitLossExpenseBreakdownRow
+    ExecutiveProfitLossInventoryAction:
+      properties:
+        stable_key:
+          type: string
+          title: Stable Key
+        action_type:
+          type: string
+          title: Action Type
+        severity:
+          type: string
+          title: Severity
+        title:
+          type: string
+          title: Title
+        description:
+          type: string
+          title: Description
+        amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Amount
+        store_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Store Ref
+        store_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Store Name
+        responsible_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Responsible Name
+        recommended_action:
+          type: string
+          title: Recommended Action
+      type: object
+      required:
+      - stable_key
+      - action_type
+      - severity
+      - title
+      - description
+      - recommended_action
+      title: ExecutiveProfitLossInventoryAction
+    ExecutiveProfitLossInventoryDataQuality:
+      properties:
+        source_status:
+          type: string
+          title: Source Status
+          default: source_missing
+        approved_store_count:
+          type: integer
+          title: Approved Store Count
+          default: 0
+        source_store_count:
+          type: integer
+          title: Source Store Count
+          default: 0
+        matched_store_count:
+          type: integer
+          title: Matched Store Count
+          default: 0
+        unmatched_store_count:
+          type: integer
+          title: Unmatched Store Count
+          default: 0
+        source_document_count:
+          type: integer
+          title: Source Document Count
+          default: 0
+        matched_document_count:
+          type: integer
+          title: Matched Document Count
+          default: 0
+        unmatched_document_count:
+          type: integer
+          title: Unmatched Document Count
+          default: 0
+        unmatched_writeoff_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Unmatched Writeoff Amount
+          default: '0'
+        unmatched_receipt_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Unmatched Receipt Amount
+          default: '0'
+        excluded_store_count:
+          type: integer
+          title: Excluded Store Count
+          default: 0
+        excluded_document_count:
+          type: integer
+          title: Excluded Document Count
+          default: 0
+        excluded_writeoff_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Excluded Writeoff Amount
+          default: '0'
+        excluded_receipt_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Excluded Receipt Amount
+          default: '0'
+        store_scope_status:
+          type: string
+          title: Store Scope Status
+          default: unknown
+        store_scope_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Store Scope Source
+        store_scope_month:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Store Scope Month
+        norm_source_status:
+          type: string
+          title: Norm Source Status
+          default: unknown
+        norm_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Norm Source
+      type: object
+      title: ExecutiveProfitLossInventoryDataQuality
+    ExecutiveProfitLossInventoryDocument:
+      properties:
+        stable_key:
+          type: string
+          title: Stable Key
+        operation_kind:
+          type: string
+          title: Operation Kind
+        operation_label:
+          type: string
+          title: Operation Label
+        document_type:
+          type: string
+          title: Document Type
+        document_ref:
+          type: string
+          title: Document Ref
+        document_number:
+          type: string
+          title: Document Number
+        document_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Document Date
+        store_ref:
+          type: string
+          title: Store Ref
+        store_name:
+          type: string
+          title: Store Name
+        amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Amount
+        effect_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Effect Amount
+      type: object
+      required:
+      - stable_key
+      - operation_kind
+      - operation_label
+      - document_type
+      - document_ref
+      - document_number
+      - store_ref
+      - store_name
+      - amount
+      - effect_amount
+      title: ExecutiveProfitLossInventoryDocument
+    ExecutiveProfitLossInventoryHistoryItem:
+      properties:
+        month:
+          type: string
+          title: Month
+        source_status:
+          type: string
+          title: Source Status
+          default: ready
+        writeoff_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Writeoff Amount
+        receipt_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Receipt Amount
+        loss_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Loss Amount
+        loss_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Loss Pct
+      type: object
+      required:
+      - month
+      title: ExecutiveProfitLossInventoryHistoryItem
+    ExecutiveProfitLossInventoryLoss:
+      properties:
+        schema_version:
+          type: integer
+          title: Schema Version
+          default: 1
+        month:
+          type: string
+          title: Month
+        source_status:
+          type: string
+          title: Source Status
+          default: source_missing
+        detail_source_status:
+          type: string
+          title: Detail Source Status
+          default: source_missing
+        writeoff_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Writeoff Amount
+        receipt_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Receipt Amount
+        loss_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Loss Amount
+        loss_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Loss Pct
+        norm_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Norm Pct
+        variance_to_norm_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Variance To Norm Pct
+        matched_store_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Matched Store Count
+        previous_month:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutiveProfitLossInventoryHistoryItem'
+          - type: 'null'
+        average_loss_amount_3m:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Average Loss Amount 3M
+        average_loss_pct_3m:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Average Loss Pct 3M
+        history_source_status:
+          type: string
+          title: History Source Status
+          default: source_missing
+        history:
+          items:
+            $ref: '#/components/schemas/ExecutiveProfitLossInventoryHistoryItem'
+          type: array
+          title: History
+        stores:
+          items:
+            $ref: '#/components/schemas/ExecutiveProfitLossInventoryStore'
+          type: array
+          title: Stores
+        top_documents:
+          items:
+            $ref: '#/components/schemas/ExecutiveProfitLossInventoryDocument'
+          type: array
+          title: Top Documents
+        actions:
+          items:
+            $ref: '#/components/schemas/ExecutiveProfitLossInventoryAction'
+          type: array
+          title: Actions
+        data_quality:
+          $ref: '#/components/schemas/ExecutiveProfitLossInventoryDataQuality'
+        owner:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutiveProfitLossInventoryOwner'
+          - type: 'null'
+        warnings:
+          items:
+            type: string
+          type: array
+          title: Warnings
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+      type: object
+      required:
+      - month
+      title: ExecutiveProfitLossInventoryLoss
+    ExecutiveProfitLossInventoryOwner:
+      properties:
+        employee_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Employee Key
+        employee_bitrix_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Employee Bitrix Id
+        employee_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Employee Name
+        role_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Role Code
+      type: object
+      title: ExecutiveProfitLossInventoryOwner
+    ExecutiveProfitLossInventoryStore:
+      properties:
+        store_ref:
+          type: string
+          title: Store Ref
+        store_name:
+          type: string
+          title: Store Name
+        sales_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Sales Amount
+        writeoff_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Writeoff Amount
+        receipt_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Receipt Amount
+        loss_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Loss Amount
+        loss_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Loss Pct
+        norm_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Norm Pct
+        variance_to_norm_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Variance To Norm Pct
+        above_norm:
+          type: boolean
+          title: Above Norm
+          default: false
+        source_status:
+          type: string
+          title: Source Status
+          default: ready
+        has_operations:
+          type: boolean
+          title: Has Operations
+          default: false
+      type: object
+      required:
+      - store_ref
+      - store_name
+      title: ExecutiveProfitLossInventoryStore
     ExecutiveProfitLossLineItem:
       properties:
         key:
@@ -12431,6 +15122,81 @@ components:
       - key
       - label
       title: ExecutiveProfitLossLineItem
+    ExecutiveProfitLossMonthlyRow:
+      properties:
+        month:
+          type: string
+          title: Month
+        revenue:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Revenue
+          default: '0'
+        gross_profit:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Gross Profit
+        operating_expenses:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Operating Expenses
+        operating_profit:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Operating Profit
+        net_profit:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Net Profit
+        gross_margin_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Gross Margin Pct
+        operating_margin_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Operating Margin Pct
+        net_profit_margin_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Net Profit Margin Pct
+        comparison_net_profit:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Comparison Net Profit
+        source_status:
+          type: string
+          title: Source Status
+          default: source_missing
+        is_preliminary:
+          type: boolean
+          title: Is Preliminary
+          default: true
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+      type: object
+      required:
+      - month
+      title: ExecutiveProfitLossMonthlyRow
     ExecutiveProfitLossOpenQuestion:
       properties:
         key:
@@ -12529,6 +15295,11 @@ components:
             $ref: '#/components/schemas/ExecutiveProfitLossDailyRow'
           type: array
           title: Daily
+        monthly:
+          items:
+            $ref: '#/components/schemas/ExecutiveProfitLossMonthlyRow'
+          type: array
+          title: Monthly
         by_store:
           items:
             $ref: '#/components/schemas/ExecutiveProfitLossBreakdownRow'
@@ -12553,6 +15324,10 @@ components:
             $ref: '#/components/schemas/ExecutiveProfitLossOpenQuestion'
           type: array
           title: Expense Open Questions
+        inventory_loss:
+          anyOf:
+          - $ref: '#/components/schemas/ExecutiveProfitLossInventoryLoss'
+          - type: 'null'
         filters:
           additionalProperties: true
           type: object
@@ -15634,6 +18409,43 @@ components:
       - brand
       - model_name
       title: ModelDemandTimeseriesItem
+    OrchestrationHealthResponse:
+      properties:
+        status:
+          type: string
+          enum:
+          - ready
+          - degraded
+          title: Status
+        checked_at:
+          type: string
+          format: date-time
+          title: Checked At
+        run_status_counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Run Status Counts
+        delivery_status_counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Delivery Status Counts
+        stale_run_count:
+          type: integer
+          title: Stale Run Count
+        manual_review_count:
+          type: integer
+          title: Manual Review Count
+      type: object
+      required:
+      - status
+      - checked_at
+      - run_status_counts
+      - delivery_status_counts
+      - stale_run_count
+      - manual_review_count
+      title: OrchestrationHealthResponse
     OrderFulfillmentMentionResponse:
       properties:
         site_order_number:
@@ -19509,6 +22321,10 @@ components:
       title: RetailCustomerPriceTypeRecommendationResponse
     RetailDirectorMonthlyKpiPayload:
       properties:
+        schema_version:
+          type: integer
+          title: Schema Version
+          default: 1
         month:
           type: string
           title: Month
@@ -19556,11 +22372,37 @@ components:
             pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Shrinkage Pct
+        norm_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Norm Pct
         matched_store_count:
           anyOf:
           - type: integer
           - type: 'null'
           title: Matched Store Count
+        stores:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Stores
+        top_documents:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Top Documents
+        data_quality:
+          additionalProperties: true
+          type: object
+          title: Data Quality
+        owner:
+          additionalProperties: true
+          type: object
+          title: Owner
         kpi_index_sum:
           anyOf:
           - type: string
@@ -19815,6 +22657,153 @@ components:
       required:
       - competitor_item_id
       title: RevokeRequest
+    RunClaimRequest:
+      properties:
+        job_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          pattern: ^[a-z0-9][a-z0-9._-]*$
+          title: Job Id
+        run_key:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Run Key
+        scheduled_for:
+          type: string
+          format: date-time
+          title: Scheduled For
+        input_sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          title: Input Sha256
+        mode:
+          type: string
+          enum:
+          - shadow
+          - production
+          - replay
+          title: Mode
+          default: production
+        worker_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Worker Id
+        lease_seconds:
+          type: integer
+          maximum: 3600.0
+          minimum: 30.0
+          title: Lease Seconds
+          default: 300
+      type: object
+      required:
+      - job_id
+      - run_key
+      - scheduled_for
+      - input_sha256
+      - worker_id
+      title: RunClaimRequest
+    RunFinishRequest:
+      properties:
+        worker_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Worker Id
+        status:
+          type: string
+          enum:
+          - succeeded
+          - partial
+          - failed
+          - skipped
+          - blocked
+          title: Status
+        result:
+          additionalProperties: true
+          type: object
+          title: Result
+        error_code:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Error Code
+        error_detail:
+          anyOf:
+          - type: string
+            maxLength: 4000
+          - type: 'null'
+          title: Error Detail
+      type: object
+      required:
+      - worker_id
+      - status
+      title: RunFinishRequest
+    RunHeartbeatRequest:
+      properties:
+        worker_id:
+          type: string
+          maxLength: 128
+          minLength: 1
+          title: Worker Id
+        lease_seconds:
+          type: integer
+          maximum: 3600.0
+          minimum: 30.0
+          title: Lease Seconds
+          default: 300
+      type: object
+      required:
+      - worker_id
+      title: RunHeartbeatRequest
+    RunResponse:
+      properties:
+        run_id:
+          type: string
+          format: uuid
+          title: Run Id
+        job_id:
+          type: string
+          title: Job Id
+        run_key:
+          type: string
+          title: Run Key
+        status:
+          type: string
+          title: Status
+        should_execute:
+          type: boolean
+          title: Should Execute
+        resource_replayed:
+          type: boolean
+          title: Resource Replayed
+        idempotency_replayed:
+          type: boolean
+          title: Idempotency Replayed
+        lease_expires_at:
+          type: string
+          format: date-time
+          title: Lease Expires At
+        completed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Completed At
+      type: object
+      required:
+      - run_id
+      - job_id
+      - run_key
+      - status
+      - should_execute
+      - resource_replayed
+      - idempotency_replayed
+      - lease_expires_at
+      title: RunResponse
     ScreenInfo:
       properties:
         size_inch:

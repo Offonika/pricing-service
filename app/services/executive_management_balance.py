@@ -391,6 +391,29 @@ def _load_opening_equity_lines(
                 ),
             )
         )
+    if balance_date == baseline_date:
+        component_by_key = {
+            str(item.get("key")): item
+            for item in payload.get("components") or []
+            if isinstance(item, dict)
+        }
+        for section, key, label, order in _BP_BALANCE_LINE_LAYOUT:
+            raw = component_by_key.get(key)
+            if not isinstance(raw, dict):
+                continue
+            result.append(
+                BalanceLineDraft(
+                    section=section,
+                    key=key,
+                    label=label,
+                    amount=_money(raw.get("amount")),
+                    order=order,
+                    source_key=str(raw.get("source_key") or "management_opening_equity"),
+                    source_status=str(raw.get("source_status") or "source_error"),
+                    source_as_of=baseline_date,
+                    note=str(raw.get("note")) if raw.get("note") else None,
+                )
+            )
     return (
         result,
         {

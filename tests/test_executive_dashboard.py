@@ -830,11 +830,17 @@ def test_management_balance_places_assets_and_liabilities_on_their_sides(
         "0",
         "0",
         "0",
-        "200.00",
     ]
     assert block.summary["balance_assets"][2]["label"] == "Дебиторка поставщиков"
     assert block.summary["balance_assets"][4]["label"] == "Прочие дебиторы"
-    assert block.summary["balance_liabilities"][3]["label"] == "Задолженность собственникам"
+    equity = {row["key"]: row for row in block.summary["balance_equity"]}
+    assert equity["owner_contributed_funds"]["amount"] == "200.00"
+    assert equity["owner_contributed_funds"]["label"] == "Средства, внесённые собственниками"
+    assert equity["owner_contributed_funds"]["recognition_method"] == (
+        "management_equity_reclassification"
+    )
+    assert equity["current_period_result"]["label"] == "Чистая прибыль текущего года"
+    assert equity["current_period_result"]["recognition_method"] == "management_profit_loss_ytd"
 
 
 def test_management_balance_does_not_activate_unreleased_owner_cash_formula(

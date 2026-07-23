@@ -4143,14 +4143,6 @@ def _build_management_balance_block(
             as_of=payables_as_of,
             masked=masked,
         ),
-        _balance_line(
-            key="owners",
-            label="Задолженность собственникам",
-            amount=owner_payable,
-            source_status=payables_status,
-            as_of=payables_as_of,
-            masked=masked,
-        ),
     ]
     if has_service_settlements:
         assets[2:2] = [
@@ -4225,7 +4217,6 @@ def _build_management_balance_block(
                 accrued_service_liability,
                 employee_payable,
                 other_payable,
-                owner_payable,
             )
             if amount is not None
         ),
@@ -4241,8 +4232,40 @@ def _build_management_balance_block(
         if value
     ]
     as_of = max(source_dates) if source_dates else None
-    equity_lines = []
-    if has_service_settlements:
+    period_result = build_executive_profit_loss_period_response(
+        session,
+        date_from=requested_date.replace(month=1, day=1),
+        date_to=requested_date,
+    )
+    source_status = _combine_source_status_strings([source_status, period_result.source_status])
+    net_profit_raw = period_result.totals.get("net_profit")
+    net_profit_ytd = _decimal(net_profit_raw) if net_profit_raw is not None else None
+    equity_lines = [
+        _balance_line(
+            key="owner_contributed_funds",
+            label="Средства, внесённые собственниками",
+            amount=owner_payable,
+            source_status=payables_status,
+            as_of=payables_as_of,
+            masked=masked,
+            note=(
+                "Управленческая классификация финансирования собственников. "
+                "Юридическая переквалификация задолженности требует подтверждающих документов."
+            ),
+            recognition_method="management_equity_reclassification",
+        ),
+        _balance_line(
+            key="current_period_result",
+            label="Чистая прибыль текущего года",
+            amount=net_profit_ytd,
+            source_status=period_result.source_status,
+            as_of=requested_date,
+            masked=masked,
+            note=f"Накопительно с 01.01.{requested_date.year} по данным управленческого ОПиУ.",
+            recognition_method="management_profit_loss_ytd",
+        ),
+    ]
+    if has_service_settlements and net_profit_ytd is None:
         equity_lines.append(
             _balance_line(
                 key="service_accrual_result_adjustment",
@@ -4251,10 +4274,20 @@ def _build_management_balance_block(
                 source_status=str(accrual_adjustments["source_status"]),
                 as_of=requested_date,
                 masked=masked,
+                note="Временная корректировка до появления результата управленческого ОПиУ.",
                 recognition_method="accrual",
                 estimated_count=int(accrual_adjustments["estimated_count"]),
             )
         )
+    equity_total = sum(
+        (
+            _decimal(item.get("amount"))
+            for item in equity_lines
+            if item.get("amount") is not None and item.get("include_in_total", True)
+        ),
+        Decimal("0"),
+    )
+    liabilities_and_equity_total = liabilities_total + equity_total
     return ExecutiveDashboardBlock(
         key="creditors_payables",
         title="Управленческий баланс",
@@ -4268,17 +4301,20 @@ def _build_management_balance_block(
             "monthly_balance_endpoint": ("/api/management/executive-dashboard/management-balance"),
             "note": (
                 "Частичный управленческий баланс в рублях. Товарные остатки взяты "
-                "по фактической стоимости партий в 1С УТ 10.3. Не включены налоги, "
-                "прочие активы и обязательства вне подключенных источников, капитал."
+                "по фактической стоимости партий в 1С УТ 10.3. Чистая прибыль "
+                "текущего года взята из управленческого ОПиУ. Не включены прочие "
+                "активы и обязательства вне подключенных источников."
             ),
             "amount_currency": "RUB",
             "balance_assets": assets,
             "balance_liabilities": liabilities,
             "balance_equity": equity_lines,
             "balance_assets_total_label": "Итого подключенные активы",
-            "balance_liabilities_total_label": "Итого подключенные пассивы",
+            "balance_liabilities_total_label": "Итого обязательства и собственные средства",
             "balance_assets_total": None if masked else str(assets_total),
-            "balance_liabilities_total": None if masked else str(liabilities_total),
+            "balance_liabilities_total": (None if masked else str(liabilities_and_equity_total)),
+            "balance_obligations_total": None if masked else str(liabilities_total),
+            "balance_equity_total": None if masked else str(equity_total),
         },
         metrics=[
             _metric(
@@ -4292,8 +4328,8 @@ def _build_management_balance_block(
             ),
             _metric(
                 "balance_liabilities_total",
-                "Пассивы по подключенным статьям",
-                liabilities_total,
+                "Обязательства и собственные средства",
+                liabilities_and_equity_total,
                 unit="RUB",
                 tone="warning",
                 masked=masked,

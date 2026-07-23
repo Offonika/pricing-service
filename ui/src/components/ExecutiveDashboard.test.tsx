@@ -601,9 +601,13 @@ describe("executive management balance", () => {
       note: "Оперативный срез",
     });
 
-    render(<MonthlyManagementBalance asOf="2026-07-13" canCloseMonth={false} refreshNonce={0} />);
+    render(<MonthlyManagementBalance canCloseMonth={false} refreshNonce={0} />);
 
     expect(await screen.findByText("Сверка зарплаты выполнена частично")).toBeVisible();
+    expect(fetchExecutiveManagementBalance).toHaveBeenCalledWith({
+      month: undefined,
+      view: undefined,
+    });
     expect(screen.getByText(/Неподтверждено:/)).toHaveTextContent(/4\s*301\s*900 ₽/);
     expect(screen.getByText(/Неподтверждено:/)).toHaveTextContent("в итог баланса не включено");
     expect(screen.getByText(/Неподтверждено:/)).toHaveTextContent("Сопоставлено сотрудников: 0%");

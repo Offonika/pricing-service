@@ -5,10 +5,7 @@ import json
 from datetime import date
 from pathlib import Path
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
-
-from app.core.config import get_settings
+from app.infrastructure.db.session import get_application_session_factory
 from app.services.executive_management_balance import (
     atomic_write_management_balance_components,
     build_management_balance_components_export,
@@ -30,31 +27,27 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
-    settings = get_settings()
-    engine = create_engine(settings.database_url, pool_pre_ping=True)
-    try:
-        with Session(engine) as session:
-            payload = build_management_balance_components_export(
-                session,
-                balance_date=args.date,
-            )
-        if not args.dry_run:
-            atomic_write_management_balance_components(args.output, payload)
-        print(
-            json.dumps(
-                {
-                    "status": "dry_run" if args.dry_run else "ok",
-                    "output": str(args.output),
-                    "as_of": payload["as_of"],
-                    "source_hash": payload["source_hash"],
-                    "totals": payload["totals"],
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
+    session_factory = get_application_session_factory()
+    with session_factory() as session:
+        payload = build_management_balance_components_export(
+            session,
+            balance_date=args.date,
         )
-    finally:
-        engine.dispose()
+    if not args.dry_run:
+        atomic_write_management_balance_components(args.output, payload)
+    print(
+        json.dumps(
+            {
+                "status": "dry_run" if args.dry_run else "ok",
+                "output": str(args.output),
+                "as_of": payload["as_of"],
+                "source_hash": payload["source_hash"],
+                "totals": payload["totals"],
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+    )
 
 
 if __name__ == "__main__":

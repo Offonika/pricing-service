@@ -1614,7 +1614,7 @@ export function MonthlyManagementBalance({
                   <h3>Мост собственного капитала</h3>
                   <span>
                     Рассчитано автоматически на{" "}
-                    {formatDate(String(openingEquity.baseline_date || "2026-06-30"))}
+                    {formatDate(String(openingEquity.baseline_date || "2026-01-01"))}
                   </span>
                 </div>
                 <small>

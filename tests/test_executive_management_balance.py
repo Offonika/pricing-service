@@ -252,7 +252,8 @@ def test_opening_equity_contract_is_frozen_and_exposes_versioned_bridge(
         json.dumps(
             {
                 "contract_version": "management-opening-equity-snapshot.v1",
-                "baseline_date": "2026-06-30",
+                "baseline_date": "2026-01-01",
+                "source_cutoff_date": "2025-12-31",
                 "version": 2,
                 "source_hash": "a" * 64,
                 "source_status": "partial",
@@ -306,21 +307,23 @@ def test_opening_equity_contract_is_frozen_and_exposes_versioned_bridge(
         "retained_earnings": Decimal("300000000.00"),
         "prior_period_adjustments": Decimal("125.50"),
     }
-    assert all(line.source_as_of == date(2026, 6, 30) for line in lines)
-    assert summary["baseline_date"] == "2026-06-30"
+    assert all(line.source_as_of == date(2026, 1, 1) for line in lines)
+    assert summary["baseline_date"] == "2026-01-01"
+    assert summary["source_cutoff_date"] == "2025-12-31"
     assert summary["version"] == 2
     assert summary["source_hash"] == "a" * 64
     assert summary["daily_balancing_forbidden"] is True
 
 
-def test_opening_equity_supplies_historical_bp_lines_on_baseline(
+def test_opening_equity_replays_all_historical_components_on_baseline(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "opening-equity.json"
     path.write_text(
         json.dumps(
             {
-                "baseline_date": "2026-06-30",
+                "baseline_date": "2026-01-01",
+                "source_cutoff_date": "2025-12-31",
                 "version": 1,
                 "source_hash": "b" * 64,
                 "source_status": "partial",
@@ -336,16 +339,31 @@ def test_opening_equity_supplies_historical_bp_lines_on_baseline(
                 },
                 "components": [
                     {
+                        "section": "asset",
+                        "key": "cash",
+                        "label": "Деньги",
+                        "amount": "1000000.00",
+                        "source_status": "ready",
+                        "source_key": "onec_ut_money_places",
+                        "as_of": "2025-12-31",
+                    },
+                    {
+                        "section": "asset",
                         "key": "tax_receivables",
+                        "label": "Налоги к возмещению",
                         "amount": "1286476.07",
                         "source_status": "partial",
                         "source_key": "onec_bp_tax_accounting",
+                        "as_of": "2025-12-31",
                     },
                     {
+                        "section": "liability",
                         "key": "loans_and_interest",
+                        "label": "Займы и проценты",
                         "amount": "60000.00",
                         "source_status": "partial",
                         "source_key": "onec_bp_loans",
+                        "as_of": "2025-12-31",
                     },
                 ],
                 "control": {"daily_balancing_forbidden": True},
@@ -355,18 +373,21 @@ def test_opening_equity_supplies_historical_bp_lines_on_baseline(
     )
 
     lines, _summary = balance_service._load_opening_equity_lines(
-        balance_date=date(2026, 6, 30),
+        balance_date=date(2026, 1, 1),
         snapshot_path=str(path),
     )
 
     amounts = {line.key: line.amount for line in lines}
+    assert amounts["cash"] == Decimal("1000000.00")
     assert amounts["tax_receivables"] == Decimal("1286476.07")
     assert amounts["loans_and_interest"] == Decimal("60000.00")
+    historical = [line for line in lines if line.key in {"cash", "tax_receivables"}]
+    assert {line.source_as_of for line in historical} == {date(2025, 12, 31)}
 
 
 def test_opening_equity_is_not_applied_before_baseline(tmp_path: Path) -> None:
     lines, summary = balance_service._load_opening_equity_lines(
-        balance_date=date(2026, 6, 29),
+        balance_date=date(2025, 12, 31),
         snapshot_path=str(tmp_path / "missing.json"),
     )
 
@@ -628,6 +649,29 @@ def test_closed_snapshot_is_immutable_and_close_is_idempotent(
         )
     )
     assert audit_count == 1
+
+
+def test_opening_boundary_can_be_persisted_as_closed_draft(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings()
+    monkeypatch.setattr(balance_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        balance_service, "_build_draft_lines", lambda *args, **kwargs: _complete_lines()
+    )
+
+    snapshot = build_and_persist_management_balance_snapshot(
+        db_session,
+        balance_date=date(2026, 1, 1),
+        view="closed",
+        actor="test:opening-builder",
+    )
+
+    assert snapshot.period_month == date(2026, 1, 1)
+    assert snapshot.balance_date == date(2026, 1, 1)
+    assert snapshot.view_mode == "closed"
+    assert snapshot.validation_errors == []
 
 
 def test_snapshot_build_is_idempotent_by_content(

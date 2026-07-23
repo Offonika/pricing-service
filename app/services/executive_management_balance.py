@@ -36,7 +36,7 @@ BalanceView = Literal["closed", "operational"]
 BalanceSection = Literal["asset", "liability", "equity"]
 BalanceTrigger = Literal["cron", "manual"]
 MONEY = Decimal("0.01")
-OPENING_EQUITY_BASELINE_DATE = date(2026, 6, 30)
+OPENING_EQUITY_BASELINE_DATE = date(2026, 1, 1)
 
 
 class ManagementBalanceNotFoundError(LookupError):
@@ -84,6 +84,7 @@ _ACCOUNTING_LINES: tuple[tuple[BalanceSection, str, str, int], ...] = (
     ("equity", "prior_period_adjustments", "Корректировки прошлых периодов", 25),
     ("equity", "current_period_result", "Результат текущего периода", 30),
 )
+
 
 _BP_BALANCE_LINE_LAYOUT: tuple[tuple[BalanceSection, str, str, int], ...] = (
     ("asset", "fixed_assets_net", "Основные средства за вычетом амортизации", 70),
@@ -399,27 +400,40 @@ def _load_opening_equity_lines(
                 ),
             )
         )
+    source_cutoff_date = _as_date(payload.get("source_cutoff_date"))
     if balance_date == baseline_date:
-        component_by_key = {
-            str(item.get("key")): item
-            for item in payload.get("components") or []
-            if isinstance(item, dict)
-        }
-        for section, key, label, order in _BP_BALANCE_LINE_LAYOUT:
-            raw = component_by_key.get(key)
+        for index, raw in enumerate(payload.get("components") or [], start=1):
             if not isinstance(raw, dict):
                 continue
+            section = str(raw.get("section"))
+            key = str(raw.get("key") or "")
+            if section not in {"asset", "liability", "equity"} or not key:
+                continue
+            if key in {"retained_earnings", "prior_period_adjustments"}:
+                continue
+            label = str(raw.get("label") or key)
+            raw_order = raw.get("order")
+            order = int(raw_order) if isinstance(raw_order, int) else index * 10
             result.append(
                 BalanceLineDraft(
-                    section=section,
+                    section=section,  # type: ignore[arg-type]
                     key=key,
                     label=label,
                     amount=_money(raw.get("amount")),
                     order=order,
                     source_key=str(raw.get("source_key") or "management_opening_equity"),
                     source_status=str(raw.get("source_status") or "source_error"),
-                    source_as_of=baseline_date,
+                    source_as_of=(
+                        _as_date(raw.get("as_of")) or source_cutoff_date or baseline_date
+                    ),
                     note=str(raw.get("note")) if raw.get("note") else None,
+                    include_in_total=bool(raw.get("include_in_total", True)),
+                    recognition_method=(
+                        str(raw.get("recognition_method"))
+                        if raw.get("recognition_method")
+                        else None
+                    ),
+                    estimated_count=int(raw.get("estimated_count") or 0),
                 )
             )
     return (
@@ -428,6 +442,7 @@ def _load_opening_equity_lines(
             "configured": True,
             "status": str(payload.get("source_status") or "source_error"),
             "baseline_date": baseline_date.isoformat(),
+            "source_cutoff_date": (source_cutoff_date.isoformat() if source_cutoff_date else None),
             "version": int(payload.get("version") or 0),
             "source_hash": payload.get("source_hash"),
             "contract_version": payload.get("contract_version"),
@@ -878,6 +893,8 @@ def _build_draft_lines(
     )
     for section, key, label, order in _ACCOUNTING_LINES:
         if key == "taxes_payable":
+            if any(line.key == key for line in lines):
+                continue
             lines.append(bp_tax_line)
             continue
         if any(line.key == key for line in lines):
@@ -1270,7 +1287,11 @@ def build_management_balance_snapshot_command(
     period_month = actual_date.replace(day=1)
     if view == "operational" and period_month != today.replace(day=1):
         raise ValueError("operational snapshot can only be built for the current month")
-    if view == "closed" and actual_date != month_end(period_month):
+    if (
+        view == "closed"
+        and actual_date != month_end(period_month)
+        and actual_date != OPENING_EQUITY_BASELINE_DATE
+    ):
         raise ValueError("closed draft must use the last calendar day of the month")
 
     lines, source_summary = _build_draft_lines(

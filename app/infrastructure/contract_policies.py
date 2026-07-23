@@ -70,11 +70,11 @@ CONTRACT_POLICIES: ContractPolicyRegistry = ContractPolicyRegistry(
             "5284b96a1002cfc0c4d6639e780fe7e469f950b4a69aefad0e3639aeadfb0e10",
             timedelta(hours=48),
         ),
-        ("executive-dashboard/management-opening-equity/2026-06-30/current.json"): ContractPolicy(
+        ("executive-dashboard/management-opening-equity/2026-01-01/current.json"): ContractPolicy(
             "management-opening-equity-snapshot.v1",
             "mm-compensation",
             "management-opening-equity-snapshot.schema.json",
-            "b2e546a4b7aa25bbc12983d4b77c84311944b96ee22a3cf3cffbd9fd680d57e3",
+            "66d41d919332c497125eb131aa2f4cba60c2c231091217fdc1dc44d5bfcf5805",
             timedelta(days=3650),
         ),
         "executive-dashboard/cashflow_period_cache.json": ContractPolicy(

@@ -284,7 +284,7 @@ class Settings(BaseSettings):
     )
     executive_management_balance_opening_equity_snapshot_path: str = (
         "/var/lib/mm-data-contracts/executive-dashboard/"
-        "management-opening-equity/2026-06-30/current.json"
+        "management-opening-equity/2026-01-01/current.json"
     )
     executive_dashboard_bp_tax_accrual_root: str = (
         "/var/lib/mm-data-contracts/executive-dashboard/bp-tax-accruals"

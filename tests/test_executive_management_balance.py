@@ -186,6 +186,161 @@ def test_bp_tax_snapshot_requires_exact_balance_date(tmp_path: Path) -> None:
     assert summary["status"] == "stale"
 
 
+def test_bp_balance_snapshot_populates_verified_lines_and_keeps_unverified_unknown(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "bp-balance.json"
+    path.write_text(
+        json.dumps(
+            {
+                "contract_version": "executive-bp-balance-snapshot.v1",
+                "as_of": "2026-06-30",
+                "source_status": "partial",
+                "lines": {
+                    "fixed_assets_net": {
+                        "amount": "1500000.00",
+                        "source_status": "partial",
+                        "source_key": "onec_bp_fixed_assets",
+                    },
+                    "tax_receivables": {
+                        "amount": "100000.00",
+                        "source_status": "partial",
+                        "source_key": "onec_bp_tax_accounting",
+                    },
+                    "loans_and_interest": {
+                        "amount": "70000.00",
+                        "source_status": "partial",
+                        "source_key": "onec_bp_loans",
+                    },
+                    "owner_capital": {
+                        "amount": "10000.00",
+                        "source_status": "partial",
+                        "source_key": "onec_bp_owner_capital",
+                    },
+                    "other_liabilities": {
+                        "amount": None,
+                        "source_status": "source_unverified",
+                        "source_key": "onec_bp_other_liabilities",
+                    },
+                },
+                "excluded": [{"family": "retained_earnings_accounting"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    lines, summary = balance_service._load_bp_balance_lines(
+        balance_date=date(2026, 6, 30),
+        snapshot_path=str(path),
+    )
+
+    amounts = {line.key: line.amount for line in lines}
+    assert amounts["fixed_assets_net"] == Decimal("1500000.00")
+    assert amounts["tax_receivables"] == Decimal("100000.00")
+    assert amounts["loans_and_interest"] == Decimal("70000.00")
+    assert amounts["owner_capital"] == Decimal("10000.00")
+    assert amounts["other_liabilities"] is None
+    assert summary["status"] == "partial"
+    assert summary["as_of"] == "2026-06-30"
+
+
+def test_opening_equity_contract_is_frozen_and_exposes_versioned_bridge(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "opening-equity.json"
+    path.write_text(
+        json.dumps(
+            {
+                "contract_version": "management-opening-equity-snapshot.v1",
+                "baseline_date": "2026-06-30",
+                "version": 2,
+                "source_hash": "a" * 64,
+                "source_status": "partial",
+                "calculation_method": (
+                    "assets_minus_liabilities_minus_known_equity_at_frozen_baseline"
+                ),
+                "lines": {
+                    "retained_earnings": {
+                        "amount": "300000000.00",
+                        "source_status": "partial",
+                        "source_key": "management_opening_equity",
+                    },
+                    "prior_period_adjustments": {
+                        "amount": "125.50",
+                        "source_status": "partial",
+                        "source_key": "management_opening_equity",
+                    },
+                },
+                "bridge": {"imbalance_amount": "0.00"},
+                "control": {"daily_balancing_forbidden": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    lines, summary = balance_service._load_opening_equity_lines(
+        balance_date=date(2026, 7, 23),
+        snapshot_path=str(path),
+    )
+
+    amounts = {line.key: line.amount for line in lines}
+    assert amounts == {
+        "retained_earnings": Decimal("300000000.00"),
+        "prior_period_adjustments": Decimal("125.50"),
+    }
+    assert all(line.source_as_of == date(2026, 6, 30) for line in lines)
+    assert summary["baseline_date"] == "2026-06-30"
+    assert summary["version"] == 2
+    assert summary["source_hash"] == "a" * 64
+    assert summary["daily_balancing_forbidden"] is True
+
+
+def test_opening_equity_is_not_applied_before_baseline(tmp_path: Path) -> None:
+    lines, summary = balance_service._load_opening_equity_lines(
+        balance_date=date(2026, 6, 29),
+        snapshot_path=str(tmp_path / "missing.json"),
+    )
+
+    assert lines == []
+    assert summary["status"] == "not_applicable"
+
+
+def test_components_export_avoids_opening_equity_recursion(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_build(
+        _session: Session,
+        *,
+        balance_date: date,
+        access_context: object,
+        include_contract_enrichment: bool,
+    ) -> tuple[list[BalanceLineDraft], dict[str, object]]:
+        captured.update(
+            {
+                "balance_date": balance_date,
+                "access_context": access_context,
+                "include_contract_enrichment": include_contract_enrichment,
+            }
+        )
+        return _complete_lines()
+
+    monkeypatch.setattr(balance_service, "_build_draft_lines", fake_build)
+
+    payload = balance_service.build_management_balance_components_export(
+        db_session,
+        balance_date=date(2026, 6, 30),
+    )
+
+    assert captured["balance_date"] == date(2026, 6, 30)
+    assert captured["include_contract_enrichment"] is False
+    assert payload["as_of"] == "2026-06-30"
+    assert payload["totals"]["pre_opening_imbalance"] == "0.00"
+    assert len(payload["source_hash"]) == 64
+
+
 def test_salary_snapshot_replaces_net_employee_line_with_gross_articles(
     tmp_path: Path,
 ) -> None:

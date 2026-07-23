@@ -3,6 +3,8 @@ from __future__ import annotations
 import calendar
 import hashlib
 import json
+import os
+import tempfile
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -34,6 +36,7 @@ BalanceView = Literal["closed", "operational"]
 BalanceSection = Literal["asset", "liability", "equity"]
 BalanceTrigger = Literal["cron", "manual"]
 MONEY = Decimal("0.01")
+OPENING_EQUITY_BASELINE_DATE = date(2026, 6, 30)
 
 
 class ManagementBalanceNotFoundError(LookupError):
@@ -78,7 +81,16 @@ _ACCOUNTING_LINES: tuple[tuple[BalanceSection, str, str, int], ...] = (
     ("liability", "other_liabilities", "Прочие обязательства", 60),
     ("equity", "owner_capital", "Уставный и добавочный капитал по КА/БП", 10),
     ("equity", "retained_earnings", "Нераспределённая прибыль прошлых лет", 20),
+    ("equity", "prior_period_adjustments", "Корректировки прошлых периодов", 25),
     ("equity", "current_period_result", "Результат текущего периода", 30),
+)
+
+_BP_BALANCE_LINE_LAYOUT: tuple[tuple[BalanceSection, str, str, int], ...] = (
+    ("asset", "fixed_assets_net", "Основные средства за вычетом амортизации", 70),
+    ("asset", "tax_receivables", "Налоги к возмещению", 80),
+    ("liability", "loans_and_interest", "Займы и проценты", 50),
+    ("liability", "other_liabilities", "Прочие обязательства", 60),
+    ("equity", "owner_capital", "Уставный и добавочный капитал по КА/БП", 10),
 )
 
 
@@ -146,6 +158,265 @@ def _line_from_compact(
             str(item.get("recognition_method")) if item.get("recognition_method") else None
         ),
         estimated_count=int(item.get("estimated_count") or 0),
+    )
+
+
+def _unavailable_contract_lines(
+    *,
+    layout: tuple[tuple[BalanceSection, str, str, int], ...],
+    source_key: str,
+    source_status: str,
+    source_as_of: date | None,
+    note: str,
+) -> list[BalanceLineDraft]:
+    return [
+        BalanceLineDraft(
+            section=section,
+            key=key,
+            label=label,
+            amount=None,
+            order=order,
+            source_key=source_key,
+            source_status=source_status,
+            source_as_of=source_as_of,
+            note=note,
+        )
+        for section, key, label, order in layout
+    ]
+
+
+def _load_bp_balance_lines(
+    *,
+    balance_date: date,
+    snapshot_path: str,
+) -> tuple[list[BalanceLineDraft], dict[str, Any]]:
+    path = Path(snapshot_path)
+    source_key = "onec_bp_balance"
+    try:
+        payload = read_json_contract(path)
+    except FileNotFoundError:
+        note = "Не опубликован read-only снимок балансовых счетов БП"
+        return (
+            _unavailable_contract_lines(
+                layout=_BP_BALANCE_LINE_LAYOUT,
+                source_key=source_key,
+                source_status="source_missing",
+                source_as_of=None,
+                note=note,
+            ),
+            {"configured": False, "status": "source_missing", "note": note},
+        )
+    except (ContractIntegrityError, OSError, ValueError, json.JSONDecodeError) as exc:
+        note = f"Снимок балансовых счетов БП не прошёл проверку: {type(exc).__name__}"
+        return (
+            _unavailable_contract_lines(
+                layout=_BP_BALANCE_LINE_LAYOUT,
+                source_key=source_key,
+                source_status="source_error",
+                source_as_of=None,
+                note=note,
+            ),
+            {"configured": True, "status": "source_error", "note": note},
+        )
+
+    source_as_of = _as_date(payload.get("as_of"))
+    raw_lines = payload.get("lines")
+    if source_as_of is None or not isinstance(raw_lines, dict):
+        note = "Снимок балансовых счетов БП не содержит обязательную дату или строки"
+        return (
+            _unavailable_contract_lines(
+                layout=_BP_BALANCE_LINE_LAYOUT,
+                source_key=source_key,
+                source_status="source_error",
+                source_as_of=source_as_of,
+                note=note,
+            ),
+            {"configured": True, "status": "source_error", "note": note},
+        )
+    if source_as_of != balance_date:
+        status = "stale" if source_as_of < balance_date else "source_error"
+        note = (
+            f"Снимок балансовых счетов БП рассчитан на {source_as_of.isoformat()}, "
+            f"требуется дата {balance_date.isoformat()}"
+        )
+        return (
+            _unavailable_contract_lines(
+                layout=_BP_BALANCE_LINE_LAYOUT,
+                source_key=source_key,
+                source_status=status,
+                source_as_of=source_as_of,
+                note=note,
+            ),
+            {
+                "configured": True,
+                "status": status,
+                "as_of": source_as_of.isoformat(),
+                "note": note,
+            },
+        )
+
+    result: list[BalanceLineDraft] = []
+    for section, key, label, order in _BP_BALANCE_LINE_LAYOUT:
+        raw = raw_lines.get(key)
+        if not isinstance(raw, dict):
+            result.append(
+                BalanceLineDraft(
+                    section,
+                    key,
+                    label,
+                    None,
+                    order,
+                    source_key,
+                    "source_error",
+                    source_as_of,
+                    f"В снимке БП отсутствует строка {key}",
+                )
+            )
+            continue
+        result.append(
+            BalanceLineDraft(
+                section=section,
+                key=key,
+                label=label,
+                amount=_money(raw.get("amount")),
+                order=order,
+                source_key=str(raw.get("source_key") or source_key),
+                source_status=str(raw.get("source_status") or "source_error"),
+                source_as_of=source_as_of,
+                note=str(raw.get("note")) if raw.get("note") else None,
+            )
+        )
+    return (
+        result,
+        {
+            "configured": True,
+            "status": str(payload.get("source_status") or "source_error"),
+            "as_of": source_as_of.isoformat(),
+            "contract_version": payload.get("contract_version"),
+            "excluded": list(payload.get("excluded") or []),
+        },
+    )
+
+
+def _load_opening_equity_lines(
+    *,
+    balance_date: date,
+    snapshot_path: str,
+) -> tuple[list[BalanceLineDraft], dict[str, Any]]:
+    if balance_date < OPENING_EQUITY_BASELINE_DATE:
+        return [], {
+            "configured": True,
+            "status": "not_applicable",
+            "baseline_date": OPENING_EQUITY_BASELINE_DATE.isoformat(),
+        }
+    layout: tuple[tuple[BalanceSection, str, str, int], ...] = (
+        ("equity", "retained_earnings", "Входящий управленческий капитал", 20),
+        (
+            "equity",
+            "prior_period_adjustments",
+            "Корректировки прошлых периодов",
+            25,
+        ),
+    )
+    path = Path(snapshot_path)
+    try:
+        payload = read_json_contract(path)
+    except FileNotFoundError:
+        note = "Не опубликован контракт входящего управленческого капитала"
+        return (
+            _unavailable_contract_lines(
+                layout=layout,
+                source_key="management_opening_equity",
+                source_status="source_missing",
+                source_as_of=OPENING_EQUITY_BASELINE_DATE,
+                note=note,
+            ),
+            {"configured": False, "status": "source_missing", "note": note},
+        )
+    except (ContractIntegrityError, OSError, ValueError, json.JSONDecodeError) as exc:
+        note = f"Контракт входящего капитала не прошёл проверку: {type(exc).__name__}"
+        return (
+            _unavailable_contract_lines(
+                layout=layout,
+                source_key="management_opening_equity",
+                source_status="source_error",
+                source_as_of=OPENING_EQUITY_BASELINE_DATE,
+                note=note,
+            ),
+            {"configured": True, "status": "source_error", "note": note},
+        )
+
+    baseline_date = _as_date(payload.get("baseline_date"))
+    raw_lines = payload.get("lines")
+    if baseline_date != OPENING_EQUITY_BASELINE_DATE or not isinstance(raw_lines, dict):
+        note = "Контракт входящего капитала содержит неверную базовую дату или строки"
+        return (
+            _unavailable_contract_lines(
+                layout=layout,
+                source_key="management_opening_equity",
+                source_status="source_error",
+                source_as_of=baseline_date,
+                note=note,
+            ),
+            {"configured": True, "status": "source_error", "note": note},
+        )
+
+    result: list[BalanceLineDraft] = []
+    for section, key, label, order in layout:
+        raw = raw_lines.get(key)
+        if not isinstance(raw, dict) or _money(raw.get("amount")) is None:
+            result.append(
+                BalanceLineDraft(
+                    section,
+                    key,
+                    label,
+                    None,
+                    order,
+                    "management_opening_equity",
+                    "source_error",
+                    baseline_date,
+                    f"В контракте входящего капитала отсутствует сумма {key}",
+                )
+            )
+            continue
+        result.append(
+            BalanceLineDraft(
+                section=section,
+                key=key,
+                label=label,
+                amount=_money(raw.get("amount")),
+                order=order,
+                source_key=str(raw.get("source_key") or "management_opening_equity"),
+                source_status=str(
+                    raw.get("source_status") or payload.get("source_status") or "ready"
+                ),
+                source_as_of=baseline_date,
+                note=str(raw.get("note")) if raw.get("note") else None,
+                recognition_method=(
+                    "frozen_opening_equity"
+                    if key == "retained_earnings"
+                    else "prior_period_adjustment"
+                ),
+            )
+        )
+    return (
+        result,
+        {
+            "configured": True,
+            "status": str(payload.get("source_status") or "source_error"),
+            "baseline_date": baseline_date.isoformat(),
+            "version": int(payload.get("version") or 0),
+            "source_hash": payload.get("source_hash"),
+            "contract_version": payload.get("contract_version"),
+            "calculation_method": payload.get("calculation_method"),
+            "automatic": True,
+            "daily_balancing_forbidden": bool(
+                (payload.get("control") or {}).get("daily_balancing_forbidden")
+            ),
+            "unresolved": list(payload.get("unresolved") or []),
+            "excluded": list(payload.get("excluded") or []),
+            "baseline_bridge": dict(payload.get("bridge") or {}),
+        },
     )
 
 
@@ -470,6 +741,7 @@ def _build_draft_lines(
     *,
     balance_date: date,
     access_context: ExecutiveDashboardAuthContext,
+    include_contract_enrichment: bool = True,
 ) -> tuple[list[BalanceLineDraft], dict[str, Any]]:
     dashboard = build_executive_dashboard(
         session,
@@ -544,7 +816,7 @@ def _build_draft_lines(
             _load_owner_dividends_line(
                 balance_date=balance_date,
                 snapshot_path=settings.executive_dashboard_owner_cash_control_snapshot_path,
-                accounting_includes_dividends=accounting_configured,
+                accounting_includes_dividends=False,
                 max_lag_days=settings.executive_dashboard_source_max_lag_days,
             )
         )
@@ -552,6 +824,29 @@ def _build_draft_lines(
         balance_date=balance_date,
         snapshot_path=settings.executive_management_balance_bp_tax_snapshot_path,
     )
+    bp_balance_summary: dict[str, Any] = {
+        "configured": False,
+        "status": "not_loaded",
+    }
+    opening_equity_summary: dict[str, Any] = {
+        "configured": False,
+        "status": "not_loaded",
+    }
+    if include_contract_enrichment:
+        bp_balance_lines, bp_balance_summary = _load_bp_balance_lines(
+            balance_date=balance_date,
+            snapshot_path=settings.executive_management_balance_bp_snapshot_path,
+        )
+        for line in bp_balance_lines:
+            lines = [existing for existing in lines if existing.key != line.key]
+            lines.append(line)
+        opening_equity_lines, opening_equity_summary = _load_opening_equity_lines(
+            balance_date=balance_date,
+            snapshot_path=(settings.executive_management_balance_opening_equity_snapshot_path),
+        )
+        for line in opening_equity_lines:
+            lines = [existing for existing in lines if existing.key != line.key]
+            lines.append(line)
     accounting_status = "source_unverified" if accounting_configured else "source_missing"
     accounting_note = (
         "Read-only КА/БП настроена, но сопоставление счетов ещё не прошло контрольную сверку"
@@ -606,18 +901,36 @@ def _build_draft_lines(
             ),
         },
         "accounting": {
-            "configured": accounting_configured or bool(bp_tax_summary.get("configured")),
+            "configured": (
+                accounting_configured
+                or bool(bp_tax_summary.get("configured"))
+                or bool(bp_balance_summary.get("configured"))
+            ),
             "status": (
-                "partial"
-                if bp_tax_summary.get("status") == "ready"
-                else bp_tax_summary.get("status") or accounting_status
+                bp_balance_summary.get("status")
+                if bp_balance_summary.get("status") not in {None, "not_loaded"}
+                else (
+                    "partial"
+                    if bp_tax_summary.get("status") == "ready"
+                    else bp_tax_summary.get("status") or accounting_status
+                )
             ),
-            "as_of": bp_tax_summary.get("as_of"),
+            "as_of": bp_balance_summary.get("as_of") or bp_tax_summary.get("as_of"),
             "note": (
-                "Налоги к уплате подтверждены из БП; остальные статьи КА/БП " "ещё не подключены"
-                if bp_tax_summary.get("status") == "ready"
-                else bp_tax_summary.get("note") or accounting_note
+                bp_balance_summary.get("note")
+                or (
+                    "Балансовые статьи БП подключены; прочие обязательства "
+                    "остаются неподтверждёнными до сверки с УТ"
+                    if bp_balance_summary.get("status") == "partial"
+                    else (
+                        "Налоги к уплате подтверждены из БП; остальные статьи "
+                        "КА/БП ещё не подключены"
+                        if bp_tax_summary.get("status") == "ready"
+                        else bp_tax_summary.get("note") or accounting_note
+                    )
+                )
             ),
+            "bp_balance": bp_balance_summary,
         },
         "owner_cash_control": {
             "status": next(
@@ -639,7 +952,33 @@ def _build_draft_lines(
             ),
         },
         "salary_reconciliation": salary_summary,
+        "opening_equity": opening_equity_summary,
     }
+    if opening_equity_summary.get("status") not in {
+        None,
+        "not_loaded",
+        "not_applicable",
+        "source_missing",
+        "source_error",
+    }:
+        amounts = {line.key: line.amount for line in lines}
+        bridge_keys = (
+            "retained_earnings",
+            "prior_period_adjustments",
+            "owner_capital",
+            "owner_contributed_funds",
+            "current_period_result",
+            "dividends_paid_ytd",
+        )
+        bridge = {key: str(amounts[key]) for key in bridge_keys if amounts.get(key) is not None}
+        bridge_total = sum(
+            (amounts.get(key) or Decimal("0") for key in bridge_keys),
+            Decimal("0"),
+        ).quantize(MONEY)
+        opening_equity_summary["bridge"] = {
+            **bridge,
+            "equity_bridge_total": str(bridge_total),
+        }
     return lines, source_summary
 
 
@@ -817,6 +1156,82 @@ def _management_balance_content_sha256(
         separators=(",", ":"),
     ).encode("utf-8")
     return hashlib.sha256(canonical).hexdigest()
+
+
+def build_management_balance_components_export(
+    session: Session,
+    *,
+    balance_date: date,
+) -> dict[str, Any]:
+    """Build historical balance inputs without persistence or opening-equity recursion."""
+    lines, source_summary = _build_draft_lines(
+        session,
+        balance_date=balance_date,
+        access_context=full_executive_dashboard_context(),
+        include_contract_enrichment=False,
+    )
+    assets, liabilities, equity, imbalance = _totals(lines)
+    serialized_lines = [
+        {
+            "section": line.section,
+            "key": line.key,
+            "label": line.label,
+            "amount": str(line.amount) if line.amount is not None else None,
+            "order": line.order,
+            "source_key": line.source_key,
+            "source_status": line.source_status,
+            "as_of": line.source_as_of.isoformat() if line.source_as_of else None,
+            "note": line.note,
+            "include_in_total": line.include_in_total,
+            "recognition_method": line.recognition_method,
+            "estimated_count": line.estimated_count,
+        }
+        for line in lines
+    ]
+    canonical = {
+        "as_of": balance_date.isoformat(),
+        "lines": serialized_lines,
+        "source_summary": source_summary,
+    }
+    source_hash = hashlib.sha256(
+        json.dumps(
+            canonical,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return {
+        "schema_version": 1,
+        "contract_version": "management-balance-components.v1",
+        "generated_at": datetime.now(UTC).isoformat(),
+        **canonical,
+        "source_hash": source_hash,
+        "totals": {
+            "assets": str(assets),
+            "liabilities": str(liabilities),
+            "known_equity": str(equity),
+            "pre_opening_imbalance": str(imbalance),
+        },
+    }
+
+
+def atomic_write_management_balance_components(
+    path: Path,
+    payload: dict[str, Any],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temp_name, path)
+    except BaseException:
+        Path(temp_name).unlink(missing_ok=True)
+        raise
 
 
 def build_management_balance_snapshot_command(

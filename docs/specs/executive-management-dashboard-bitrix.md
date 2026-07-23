@@ -15,6 +15,7 @@ related_code:
   - app/services/executive_dashboard.py
   - app/services/executive_management_balance.py
   - tasks/build_executive_management_balance_snapshot.py
+  - tasks/export_executive_management_balance_components.py
   - infra/cron/executive_management_balance_snapshot.sh
   - ui/src/api/executiveDashboard.ts
   - ui/src/components/ExecutiveDashboard.tsx
@@ -26,7 +27,7 @@ contracts:
 depends_on: []
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-22"
+updated_at: "2026-07-23"
 ---
 
 # Executive Management Dashboard In Bitrix
@@ -668,6 +669,34 @@ fallback-режимом: пользователь видит прежнюю ст
 регистры КА/БП. Backfill 12 месяцев допускается только после подключения
 исторического КА/БП: значения текущего snapshot нельзя копировать в прошлые
 месяцы.
+
+## Входящий капитал на 30.06.2026
+
+С 30.06.2026 помесячный баланс читает версионированный контракт
+`management-opening-equity-snapshot.v1`, который автоматически рассчитывает и
+публикует `mm-compensation`. `pricing-service` не пересчитывает остаточный
+капитал на текущую дату и не создаёт ежедневную балансирующую статью.
+
+Контракт добавляет:
+
+- `retained_earnings` — замороженный входящий управленческий капитал;
+- `prior_period_adjustments` — поздние уточнения источников до 30.06 без
+  переписывания исходной суммы;
+- `source_summary.opening_equity` — дату базы, версию, source hash, статус и
+  мост капитала;
+- read-only BP-строки ОС, налоговой дебиторки, займов и капитала из отдельного
+  `executive-bp-balance-snapshot.v1`.
+
+BP-снимок обязан точно совпадать с датой баланса. Другую дату нельзя считать
+актуальной или переносить в прошлое. Неподтверждённые зарплата, услуги, owner
+cash control и прочие обязательства остаются отдельными блокерами. Дивиденды
+после базовой даты уменьшают капитал самостоятельной строкой и не исключаются
+из итога только из-за наличия бухгалтерского подключения.
+
+Для одноразового bootstrap задача
+`tasks/export_executive_management_balance_components.py` строит исторические
+компоненты без записи в БД и без чтения opening-equity контракта, исключая
+циклическую зависимость producer/consumer.
 
 ## Rollout
 

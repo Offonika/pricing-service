@@ -2465,6 +2465,60 @@
   font-size: 12px;
 }
 
+.executive-management-balance__equity-bridge {
+  margin-bottom: 10px;
+  padding: 11px 12px;
+  border: 1px solid #84adff;
+  border-radius: 8px;
+  background: #eff4ff;
+}
+
+.executive-management-balance__equity-bridge header,
+.executive-management-balance__equity-bridge p {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: baseline;
+}
+
+.executive-management-balance__equity-bridge header {
+  margin-bottom: 8px;
+}
+
+.executive-management-balance__equity-bridge h3,
+.executive-management-balance__equity-bridge p {
+  margin: 0;
+}
+
+.executive-management-balance__equity-bridge h3 {
+  color: #1849a9;
+  font-size: 14px;
+}
+
+.executive-management-balance__equity-bridge header span,
+.executive-management-balance__equity-bridge header small {
+  color: #475467;
+  font-size: 11px;
+}
+
+.executive-management-balance__equity-bridge p {
+  padding: 3px 0;
+  color: #344054;
+  font-size: 12px;
+}
+
+.executive-management-balance__equity-bridge p strong {
+  color: #18202a;
+  text-align: right;
+}
+
+.executive-management-balance__equity-bridge-total {
+  margin-top: 5px !important;
+  padding-top: 7px !important;
+  border-top: 1px solid #84adff;
+  font-weight: 800;
+}
+
 .executive-block__header {
   display: flex;
   align-items: flex-start;

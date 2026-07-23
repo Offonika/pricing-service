@@ -272,6 +272,24 @@ def test_opening_equity_contract_is_frozen_and_exposes_versioned_bridge(
                     },
                 },
                 "bridge": {"imbalance_amount": "0.00"},
+                "components": [
+                    {
+                        "section": "asset",
+                        "key": "tax_receivables",
+                        "label": "Налоги к возмещению",
+                        "amount": "1286476.07",
+                        "source_status": "partial",
+                        "source_key": "onec_bp_tax_accounting",
+                    },
+                    {
+                        "section": "liability",
+                        "key": "loans_and_interest",
+                        "label": "Займы и проценты",
+                        "amount": "60000.00",
+                        "source_status": "partial",
+                        "source_key": "onec_bp_loans",
+                    },
+                ],
                 "control": {"daily_balancing_forbidden": True},
             }
         ),
@@ -293,6 +311,57 @@ def test_opening_equity_contract_is_frozen_and_exposes_versioned_bridge(
     assert summary["version"] == 2
     assert summary["source_hash"] == "a" * 64
     assert summary["daily_balancing_forbidden"] is True
+
+
+def test_opening_equity_supplies_historical_bp_lines_on_baseline(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "opening-equity.json"
+    path.write_text(
+        json.dumps(
+            {
+                "baseline_date": "2026-06-30",
+                "version": 1,
+                "source_hash": "b" * 64,
+                "source_status": "partial",
+                "lines": {
+                    "retained_earnings": {
+                        "amount": "300000000.00",
+                        "source_status": "partial",
+                    },
+                    "prior_period_adjustments": {
+                        "amount": "0.00",
+                        "source_status": "partial",
+                    },
+                },
+                "components": [
+                    {
+                        "key": "tax_receivables",
+                        "amount": "1286476.07",
+                        "source_status": "partial",
+                        "source_key": "onec_bp_tax_accounting",
+                    },
+                    {
+                        "key": "loans_and_interest",
+                        "amount": "60000.00",
+                        "source_status": "partial",
+                        "source_key": "onec_bp_loans",
+                    },
+                ],
+                "control": {"daily_balancing_forbidden": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    lines, _summary = balance_service._load_opening_equity_lines(
+        balance_date=date(2026, 6, 30),
+        snapshot_path=str(path),
+    )
+
+    amounts = {line.key: line.amount for line in lines}
+    assert amounts["tax_receivables"] == Decimal("1286476.07")
+    assert amounts["loans_and_interest"] == Decimal("60000.00")
 
 
 def test_opening_equity_is_not_applied_before_baseline(tmp_path: Path) -> None:

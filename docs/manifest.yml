@@ -456,6 +456,7 @@ documents:
       - app/services/executive_dashboard.py
       - app/services/executive_management_balance.py
       - tasks/build_executive_management_balance_snapshot.py
+      - tasks/export_executive_management_balance_components.py
       - infra/cron/executive_management_balance_snapshot.sh
       - infra/cron/executive_management_balance_snapshot.cron
       - ui/src/api/executiveDashboard.ts

@@ -4305,9 +4305,9 @@ def _build_management_balance_block(
             recognition_method="management_profit_loss_ytd",
         ),
     ]
-    accounting_includes_dividends = bool(
-        get_settings().executive_management_balance_accounting_database_url
-    )
+    # The opening-equity contract uses accounts 80/82/83 and a frozen
+    # management residual. Neither includes post-baseline cash dividends.
+    accounting_includes_dividends = False
     if dividends_ytd or owner_status != "ready":
         warning_note = (
             f"; {dividend_warning_count} РКО имеют комментарий «Зарплата»"

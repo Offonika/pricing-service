@@ -1491,6 +1491,28 @@ export function MonthlyManagementBalance({
         salaryReconciliation.closing_blocked ||
         unconfirmedSalaryAmount > 0)
   );
+  const openingEquityValue = balance?.source_summary?.opening_equity;
+  const openingEquity =
+    openingEquityValue &&
+    typeof openingEquityValue === "object" &&
+    !Array.isArray(openingEquityValue)
+      ? (openingEquityValue as Record<string, unknown>)
+      : null;
+  const openingBridgeValue = openingEquity?.bridge;
+  const openingBridge =
+    openingBridgeValue &&
+    typeof openingBridgeValue === "object" &&
+    !Array.isArray(openingBridgeValue)
+      ? (openingBridgeValue as Record<string, unknown>)
+      : null;
+  const openingBridgeRows = [
+    ["retained_earnings", "Входящий капитал"],
+    ["prior_period_adjustments", "Корректировки прошлых периодов"],
+    ["owner_capital", "Уставный и добавочный капитал"],
+    ["owner_contributed_funds", "Средства, внесённые собственниками"],
+    ["current_period_result", "Чистая прибыль текущего года"],
+    ["dividends_paid_ytd", "Минус выплаченные дивиденды"],
+  ].filter(([key]) => openingBridge?.[key] !== undefined);
 
   return (
     <section className={`executive-block executive-block--management-balance executive-block--${balance?.source_status || "source_missing"}`}>
@@ -1581,6 +1603,42 @@ export function MonthlyManagementBalance({
                 Сопоставлено сотрудников: {formatPlainNumber(salaryMappingCoverage)}%.
               </span>
             </div>
+          )}
+          {openingEquity && openingBridge && (
+            <section
+              className="executive-management-balance__equity-bridge"
+              aria-label="Мост собственного капитала"
+            >
+              <header>
+                <div>
+                  <h3>Мост собственного капитала</h3>
+                  <span>
+                    Рассчитано автоматически на{" "}
+                    {formatDate(String(openingEquity.baseline_date || "2026-06-30"))}
+                  </span>
+                </div>
+                <small>
+                  версия {String(openingEquity.version || "—")} ·{" "}
+                  {String(openingEquity.source_hash || "").slice(0, 12)}
+                </small>
+              </header>
+              <div>
+                {openingBridgeRows.map(([key, label]) => (
+                  <p key={key}>
+                    <span>{label}</span>
+                    <strong>{formatSignedMoney(openingBridge[key] as string | number)}</strong>
+                  </p>
+                ))}
+                <p className="executive-management-balance__equity-bridge-total">
+                  <span>Итого собственный капитал по мосту</span>
+                  <strong>
+                    {formatMoney(
+                      openingBridge.equity_bridge_total as string | number
+                    )}
+                  </strong>
+                </p>
+              </div>
+            </section>
           )}
           {Number(balance.imbalance_amount) !== 0 && (
             <div className="executive-management-balance__warning" role="status">

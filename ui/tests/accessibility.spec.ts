@@ -57,6 +57,21 @@ test("Bitrix executive dashboard renders a successful API response", async ({ pa
           assets_total: "100.00", liabilities_total: "0.00", equity_total: "200.00",
           liabilities_and_equity_total: "200.00", imbalance_amount: "-100.00",
           can_close: false, validation_errors: [{ code: "mandatory_sources_incomplete" }],
+          source_summary: {
+            opening_equity: {
+              status: "partial",
+              baseline_date: "2026-06-30",
+              version: 1,
+              source_hash: "abcdef1234567890",
+              bridge: {
+                retained_earnings: "300000000.00",
+                owner_contributed_funds: "24808062.82",
+                current_period_result: "44972856.05",
+                dividends_paid_ytd: "-13765228.19",
+                equity_bridge_total: "356015690.68",
+              },
+            },
+          },
           available_months: ["2026-07", "2026-06"], note: "Полный баланс не подтверждён",
         }),
       });
@@ -126,6 +141,8 @@ test("Bitrix executive dashboard renders a successful API response", async ({ pa
   await expect(page.locator(".executive-management-balance-section")).toContainText("Дебиторка поставщиков");
   await expect(page.locator(".executive-management-balance-section")).toContainText("Дебиторка сотрудников");
   await expect(page.locator(".executive-management-balance-section")).toContainText("Прочие дебиторы");
+  await expect(page.getByRole("heading", { name: "Мост собственного капитала" })).toBeVisible();
+  await expect(page.getByText("Рассчитано автоматически на 30.06.2026")).toBeVisible();
   await page.getByRole("button", { name: "Закрытый месяц" }).click();
   await expect(page.getByText("Закрытая версия отсутствует", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Оперативный на сегодня" })).toHaveAttribute("aria-pressed", "true");
@@ -138,7 +155,9 @@ test("Bitrix executive dashboard renders a successful API response", async ({ pa
   expect(balanceBox!.y).toBeGreaterThan(gridBox!.y + gridBox!.height);
   expect(Math.abs(balanceBox!.width - gridBox!.width)).toBeLessThanOrEqual(1);
   await page.getByLabel("Дата управленческой витрины").fill("2026-06-30");
+  await page.getByLabel("Месяц управленческого баланса").selectOption("2026-06");
   await expect(page.getByLabel("Месяц управленческого баланса")).toHaveValue("2026-06");
+  await page.getByRole("button", { name: "Закрытый месяц" }).click();
   await expect(page.getByRole("button", { name: "Закрытый месяц" })).toHaveAttribute("aria-pressed", "true");
   await expect(page.getByText("Источники пока не переданы")).toBeVisible();
   const desktopResults = await new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();

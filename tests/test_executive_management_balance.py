@@ -395,6 +395,55 @@ def test_opening_equity_is_not_applied_before_baseline(tmp_path: Path) -> None:
     assert summary["status"] == "not_applicable"
 
 
+def test_baseline_replay_drops_live_amounts_not_present_in_frozen_contract() -> None:
+    lines = [
+        BalanceLineDraft(
+            "liability",
+            "accrued_service_liability",
+            "Live начисление услуг",
+            Decimal("10.00"),
+            10,
+            "management_service_accruals",
+            "ready",
+            date(2026, 1, 1),
+        ),
+        BalanceLineDraft(
+            "liability",
+            "salary_blocker",
+            "Неподтверждённая зарплата",
+            None,
+            20,
+            "ut_bp_salary_reconciliation",
+            "source_missing",
+            None,
+        ),
+    ]
+    opening_lines = [
+        BalanceLineDraft(
+            "liability",
+            "service_liability",
+            "Услуги по факту закрытия",
+            Decimal("10.00"),
+            10,
+            "onec_ut_legal_entity_settlements",
+            "ready",
+            date(2025, 12, 31),
+        )
+    ]
+
+    merged = balance_service._merge_opening_equity_lines(
+        lines=lines,
+        opening_lines=opening_lines,
+        balance_date=date(2026, 1, 1),
+    )
+
+    assert {line.key for line in merged} == {"salary_blocker", "service_liability"}
+    assert sum(
+        (line.amount for line in merged if line.amount is not None and line.include_in_total),
+        Decimal("0"),
+    ) == Decimal("10.00")
+
+
 def test_components_export_avoids_opening_equity_recursion(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,

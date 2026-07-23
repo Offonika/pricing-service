@@ -1396,11 +1396,9 @@ function formatSignedMoney(value: string | number) {
 }
 
 export function MonthlyManagementBalance({
-  asOf,
   refreshNonce,
   canCloseMonth,
 }: {
-  asOf: string;
   refreshNonce: number;
   canCloseMonth: boolean;
 }) {
@@ -1444,17 +1442,14 @@ export function MonthlyManagementBalance({
   }, []);
 
   useEffect(() => {
-    const selectedMonth = asOf.slice(0, 7);
-    const selectedView: ExecutiveManagementBalanceView =
-      selectedMonth === todayIso().slice(0, 7) ? "operational" : "closed";
     let cancelled = false;
     Promise.resolve().then(() => {
-      if (!cancelled) load(selectedMonth, selectedView);
+      if (!cancelled) load();
     });
     return () => {
       cancelled = true;
     };
-  }, [asOf, load, refreshNonce]);
+  }, [load, refreshNonce]);
 
   const chooseMonth = (nextMonth: string) => {
     load(nextMonth, view || "operational");
@@ -4824,7 +4819,6 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
           {managementBalance && (
             <div className="executive-management-balance-section">
               <MonthlyManagementBalance
-                asOf={date}
                 canCloseMonth={currentAccess === "full" || data.roles.includes("finance")}
                 refreshNonce={refreshNonce}
               />

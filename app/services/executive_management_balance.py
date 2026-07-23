@@ -67,7 +67,7 @@ _ACCOUNTING_LINES: tuple[tuple[BalanceSection, str, str, int], ...] = (
     ("liability", "taxes_payable", "Налоги к уплате", 40),
     ("liability", "loans_and_interest", "Займы и проценты", 50),
     ("liability", "other_liabilities", "Прочие обязательства", 60),
-    ("equity", "owner_capital", "Вклады собственников", 10),
+    ("equity", "owner_capital", "Уставный и добавочный капитал по КА/БП", 10),
     ("equity", "retained_earnings", "Нераспределённая прибыль прошлых лет", 20),
     ("equity", "current_period_result", "Результат текущего периода", 30),
 )
@@ -508,11 +508,12 @@ def _build_draft_lines(
             )
         )
     for order, item in enumerate(summary.get("balance_equity") or [], start=1):
-        source_key = (
-            "management_owner_cash_control"
-            if str(item.get("key")) == "dividends_paid_ytd"
-            else "management_service_accruals"
-        )
+        source_key = {
+            "dividends_paid_ytd": "management_owner_cash_control",
+            "owner_contributed_funds": "onec_counterparty_settlements",
+            "current_period_result": "management_profit_loss",
+            "service_accrual_result_adjustment": "management_service_accruals",
+        }.get(str(item.get("key")), "ka_bp_accounting")
         lines.append(
             _line_from_compact(
                 item,
@@ -551,6 +552,8 @@ def _build_draft_lines(
     for section, key, label, order in _ACCOUNTING_LINES:
         if key == "taxes_payable":
             lines.append(bp_tax_line)
+            continue
+        if any(line.key == key for line in lines):
             continue
         lines.append(
             BalanceLineDraft(

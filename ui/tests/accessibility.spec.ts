@@ -50,13 +50,11 @@ test("Bitrix executive dashboard renders a successful API response", async ({ pa
             { key: "employee_receivables", label: "Дебиторка сотрудников", section: "asset", amount: "50.00", source_key: "onec_settlements", source_status: "ready", source_as_of: "2026-07-11" },
             { key: "other_receivables", label: "Прочие дебиторы", section: "asset", amount: "20.00", source_key: "onec_settlements", source_status: "ready", source_as_of: "2026-07-11" },
           ],
-          liabilities: [
-            { key: "owners", label: "Задолженность собственникам", section: "liability", amount: "200.00", source_key: "onec_settlements", source_status: "ready", source_as_of: "2026-07-11" },
-          ],
+          liabilities: [],
           equity: [
-            { key: "owner_capital", label: "Вклады собственников", section: "equity", amount: null, source_key: "ka_bp", source_status: "source_missing" },
+            { key: "owner_contributed_funds", label: "Средства, внесённые собственниками", section: "equity", amount: "200.00", source_key: "onec_settlements", source_status: "ready", source_as_of: "2026-07-11" },
           ],
-          assets_total: "100.00", liabilities_total: "200.00", equity_total: "0.00",
+          assets_total: "100.00", liabilities_total: "0.00", equity_total: "200.00",
           liabilities_and_equity_total: "200.00", imbalance_amount: "-100.00",
           can_close: false, validation_errors: [{ code: "mandatory_sources_incomplete" }],
           available_months: ["2026-07", "2026-06"], note: "Полный баланс не подтверждён",
@@ -98,7 +96,8 @@ test("Bitrix executive dashboard renders a successful API response", async ({ pa
             as_of: "2026-07-11", drilldown_url: null,
             summary: {
               balance_assets: [{ key: "cash", label: "Денежные средства", amount: "100.00" }],
-              balance_liabilities: [{ key: "owners", label: "Задолженность собственникам", amount: "200.00" }],
+              balance_liabilities: [],
+              balance_equity: [{ key: "owner_contributed_funds", label: "Средства, внесённые собственниками", amount: "200.00" }],
               balance_assets_total: "100.00",
               balance_liabilities_total: "200.00",
             },
@@ -120,7 +119,7 @@ test("Bitrix executive dashboard renders a successful API response", async ({ pa
   await expect(page.getByRole("heading", { name: "Единая управленческая витрина" })).toBeVisible();
   await expect(page.getByText("Деньги / ДДС", { exact: true }).first()).toBeVisible();
   await expect(page.getByText(/100\s*₽/).first()).toBeVisible();
-  await expect(page.locator(".executive-management-balance-section")).toContainText("Задолженность собственникам");
+  await expect(page.locator(".executive-management-balance-section")).toContainText("Средства, внесённые собственниками");
   await expect(page.locator(".executive-management-balance-section")).toContainText("Собственные средства");
   await expect(page.getByLabel("Месяц управленческого баланса")).toHaveValue("2026-07");
   await expect(page.locator(".executive-management-balance-section")).toContainText("Источник не подтверждён");

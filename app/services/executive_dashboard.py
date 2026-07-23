@@ -4166,14 +4166,6 @@ def _build_management_balance_block(
             masked=masked,
         ),
         _balance_line(
-            key="owners",
-            label="Задолженность собственникам",
-            amount=owner_payable,
-            source_status=payables_status,
-            as_of=payables_as_of,
-            masked=masked,
-        ),
-        _balance_line(
             key="owner_funds_unclassified",
             label="Средства собственника, назначение не определено",
             amount=(
@@ -4262,7 +4254,6 @@ def _build_management_balance_block(
                 accrued_service_liability,
                 employee_payable,
                 other_payable,
-                owner_payable,
                 owner_unclassified_funds,
                 owner_related_party_liability,
             )
@@ -4281,7 +4272,39 @@ def _build_management_balance_block(
         if value
     ]
     as_of = max(source_dates) if source_dates else None
-    equity_lines = []
+    period_result = build_executive_profit_loss_period_response(
+        session,
+        date_from=requested_date.replace(month=1, day=1),
+        date_to=requested_date,
+    )
+    source_status = _combine_source_status_strings([source_status, period_result.source_status])
+    net_profit_raw = period_result.totals.get("net_profit")
+    net_profit_ytd = _decimal(net_profit_raw) if net_profit_raw is not None else None
+    equity_lines = [
+        _balance_line(
+            key="owner_contributed_funds",
+            label="Средства, внесённые собственниками",
+            amount=owner_payable,
+            source_status=payables_status,
+            as_of=payables_as_of,
+            masked=masked,
+            note=(
+                "Управленческая классификация финансирования собственников. "
+                "Юридическая переквалификация задолженности требует подтверждающих документов."
+            ),
+            recognition_method="management_equity_reclassification",
+        ),
+        _balance_line(
+            key="current_period_result",
+            label="Чистая прибыль текущего года",
+            amount=net_profit_ytd,
+            source_status=period_result.source_status,
+            as_of=requested_date,
+            masked=masked,
+            note=f"Накопительно с 01.01.{requested_date.year} по данным управленческого ОПиУ.",
+            recognition_method="management_profit_loss_ytd",
+        ),
+    ]
     accounting_includes_dividends = bool(
         get_settings().executive_management_balance_accounting_database_url
     )
@@ -4313,7 +4336,7 @@ def _build_management_balance_block(
                 recognition_method="equity_distribution",
             )
         )
-    if has_service_settlements:
+    if has_service_settlements and net_profit_ytd is None:
         equity_lines.append(
             _balance_line(
                 key="service_accrual_result_adjustment",
@@ -4322,6 +4345,7 @@ def _build_management_balance_block(
                 source_status=str(accrual_adjustments["source_status"]),
                 as_of=requested_date,
                 masked=masked,
+                note="Временная корректировка до появления результата управленческого ОПиУ.",
                 recognition_method="accrual",
                 estimated_count=int(accrual_adjustments["estimated_count"]),
             )
@@ -4348,8 +4372,9 @@ def _build_management_balance_block(
             "monthly_balance_endpoint": ("/api/management/executive-dashboard/management-balance"),
             "note": (
                 "Частичный управленческий баланс в рублях. Товарные остатки взяты "
-                "по фактической стоимости партий в 1С УТ 10.3. Не включены налоги, "
-                "прочие активы и обязательства вне подключенных источников, капитал."
+                "по фактической стоимости партий в 1С УТ 10.3. Чистая прибыль "
+                "текущего года взята из управленческого ОПиУ. Не включены прочие "
+                "активы и обязательства вне подключенных источников."
             ),
             "amount_currency": "RUB",
             "balance_assets": assets,

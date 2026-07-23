@@ -229,6 +229,7 @@ class Settings(BaseSettings):
     receivable_workflow_enabled: bool = False
     receivable_bitrix_webhook_url: str | None = None
     receivable_bitrix_entity_type_id: int | None = None
+    crm_company_onec_counterparty_ids_field: str = "UF_CRM_MM_ONEC_COUNTERPARTY_IDS"
     receivable_bitrix_category_id: int | None = None
     receivable_bitrix_stage_map: dict[str, str] = Field(default_factory=dict)
     receivable_bitrix_field_map: dict[str, str] = Field(default_factory=dict)

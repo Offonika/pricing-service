@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Security
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -32,6 +32,12 @@ from app.services.counterparty_folder_recommendations import (
     STATUS_NO_OVERDUE,
     STATUS_OK,
     build_counterparty_folder_recommendations,
+)
+from app.services.customer_card_links import (
+    CustomerCardConflict,
+    CustomerCardNotFound,
+    CustomerCardResolutionError,
+    resolve_customer_card_link,
 )
 from app.services.receivable_workplace import (
     WorkplaceSortBy,
@@ -64,6 +70,30 @@ def _rewrite_index_asset_paths(index_html: str) -> str:
         .replace('href="./assets/', 'href="/assets/')
         .replace('href="./vite.svg"', 'href="/vite.svg"')
     )
+
+
+@page_router.get(
+    "/customer-card/{onec_reference}",
+    response_class=RedirectResponse,
+    include_in_schema=False,
+)
+def open_customer_card(onec_reference: str) -> RedirectResponse:
+    try:
+        link = resolve_customer_card_link(onec_reference, settings=get_settings())
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error)) from error
+    except CustomerCardNotFound as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except CustomerCardConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except CustomerCardResolutionError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(
+            status_code=503,
+            detail="Bitrix временно недоступен",
+        ) from error
+    return RedirectResponse(url=link.url, status_code=307)
 
 
 @page_router.get("/receivables/workplace", response_class=HTMLResponse, include_in_schema=False)

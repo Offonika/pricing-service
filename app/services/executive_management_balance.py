@@ -449,6 +449,21 @@ def _load_opening_equity_lines(
     )
 
 
+def _merge_opening_equity_lines(
+    *,
+    lines: list[BalanceLineDraft],
+    opening_lines: list[BalanceLineDraft],
+    balance_date: date,
+) -> list[BalanceLineDraft]:
+    result = list(lines)
+    if balance_date == OPENING_EQUITY_BASELINE_DATE:
+        result = [line for line in result if line.amount is None or not line.include_in_total]
+    for line in opening_lines:
+        result = [existing for existing in result if existing.key != line.key]
+        result.append(line)
+    return result
+
+
 def _load_bp_tax_line(
     *,
     balance_date: date,
@@ -873,9 +888,11 @@ def _build_draft_lines(
             balance_date=balance_date,
             snapshot_path=(settings.executive_management_balance_opening_equity_snapshot_path),
         )
-        for line in opening_equity_lines:
-            lines = [existing for existing in lines if existing.key != line.key]
-            lines.append(line)
+        lines = _merge_opening_equity_lines(
+            lines=lines,
+            opening_lines=opening_equity_lines,
+            balance_date=balance_date,
+        )
     accounting_status = "source_unverified" if accounting_configured else "source_missing"
     accounting_note = (
         "Read-only КА/БП настроена, но сопоставление счетов ещё не прошло контрольную сверку"

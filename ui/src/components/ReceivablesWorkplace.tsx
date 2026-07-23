@@ -382,15 +382,10 @@ function ReceivableRow({
             {edit.comment || "Добавить комментарий"}
           </button>
         </td>
-        <td>
-          <button className="btn" disabled={saving} onClick={onSave} type="button">
-            {saving ? "..." : "Сохранить"}
-          </button>
-        </td>
       </tr>
       {commentExpanded && (
         <tr className="receivables__comment-editor-row">
-          <td colSpan={15}>
+          <td colSpan={14}>
             <div className="receivables__comment-editor">
               <label>
                 <strong>Комментарий по {item.counterparty_name || item.counterparty_ref}</strong>
@@ -415,7 +410,7 @@ function ReceivableRow({
       )}
       {expanded && (
         <tr className="receivables__details">
-          <td colSpan={15}>
+          <td colSpan={14}>
             <div className="receivables__documents">
               <div className="receivables__documents-head">
                 <strong>Накладные</strong>
@@ -867,7 +862,6 @@ export function ReceivablesWorkplace({
                   <th>Следующий контакт</th>
                   <th>Перенес</th>
                   <th>Комментарий</th>
-                  <th></th>
                 </tr>
               </thead>
               <tbody>

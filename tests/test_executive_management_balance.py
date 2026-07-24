@@ -250,6 +250,87 @@ def test_month_parser_and_leap_year_end() -> None:
         parse_month("2024-13")
 
 
+def test_exact_cash_position_replaces_compact_balance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lines = [
+        BalanceLineDraft(
+            "asset",
+            "cash",
+            "Денежные средства",
+            Decimal("999.00"),
+            10,
+            "onec_cash_position",
+            "partial",
+            date(2026, 2, 1),
+        )
+    ]
+    monkeypatch.setattr(
+        balance_service,
+        "_load_cashflow_period_cache",
+        lambda: (
+            {
+                "cash_position": {
+                    "rows": [
+                        {
+                            "snapshot_date": "2026-01-31",
+                            "total_balance_rub": "16356506.09",
+                            "source_status": "partial",
+                        }
+                    ]
+                }
+            },
+            "partial",
+            "fixture",
+        ),
+    )
+
+    summary = balance_service._apply_exact_cash_position(
+        lines=lines,
+        balance_date=date(2026, 1, 31),
+    )
+
+    assert lines[0].amount == Decimal("16356506.09")
+    assert lines[0].source_as_of == date(2026, 1, 31)
+    assert summary == {
+        "status": "partial",
+        "as_of": "2026-01-31",
+        "method": "fact_cash_position_daily_exact_date",
+    }
+
+
+def test_historical_cash_is_not_backfilled_without_exact_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lines = [
+        BalanceLineDraft(
+            "asset",
+            "cash",
+            "Денежные средства",
+            Decimal("999.00"),
+            10,
+            "onec_cash_position",
+            "ready",
+            date(2026, 7, 24),
+        )
+    ]
+    monkeypatch.setattr(
+        balance_service,
+        "_load_cashflow_period_cache",
+        lambda: ({"cash_position": {"rows": []}}, "partial", "fixture"),
+    )
+
+    summary = balance_service._apply_exact_cash_position(
+        lines=lines,
+        balance_date=date(2026, 1, 31),
+    )
+
+    assert lines[0].amount is None
+    assert lines[0].source_status == "source_missing"
+    assert lines[0].source_as_of is None
+    assert summary["status"] == "source_missing"
+
+
 def test_bp_tax_snapshot_populates_taxes_payable(tmp_path: Path) -> None:
     path = tmp_path / "bp-tax.json"
     path.write_text(

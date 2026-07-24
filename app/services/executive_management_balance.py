@@ -5,7 +5,7 @@ import hashlib
 import json
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -863,6 +863,10 @@ def _build_draft_lines(
             )
         )
 
+    cash_position_summary = _apply_exact_cash_position(
+        lines=lines,
+        balance_date=balance_date,
+    )
     settings = get_settings()
     salary_lines, salary_summary = _load_salary_reconciliation_lines(
         balance_date=balance_date,
@@ -930,10 +934,20 @@ def _build_draft_lines(
             )
         )
 
+    trade_lines = [line for line in lines if line.source_key == "onec_counterparty_settlements"]
+    trade_as_of = max(
+        (line.source_as_of for line in trade_lines if line.source_as_of is not None),
+        default=None,
+    )
     source_summary = {
         "trade_detail": {
-            "status": compact.source_status if compact is not None else "source_missing",
-            "as_of": compact.as_of.isoformat() if compact and compact.as_of else None,
+            "status": (
+                next(
+                    (line.source_status for line in trade_lines),
+                    "source_missing",
+                )
+            ),
+            "as_of": trade_as_of.isoformat() if trade_as_of else None,
         },
         "inventory": {
             "status": next(
@@ -957,6 +971,7 @@ def _build_draft_lines(
                 None,
             ),
         },
+        "cash_position": cash_position_summary,
         "accounting": {
             "configured": (
                 accounting_configured
@@ -1028,6 +1043,63 @@ def _build_draft_lines(
             "equity_bridge_total": str(bridge_total),
         }
     return lines, source_summary
+
+
+def _apply_exact_cash_position(
+    *,
+    lines: list[BalanceLineDraft],
+    balance_date: date,
+) -> dict[str, Any]:
+    payload, cache_status, cache_note = _load_cashflow_period_cache()
+    position = (
+        _cash_position_balance(
+            payload,
+            snapshot_date=balance_date,
+            cache_status=cache_status,
+        )
+        if payload is not None
+        else None
+    )
+    if position is not None:
+        amount, source_status, source_as_of = position
+        for index, line in enumerate(lines):
+            if line.section == "asset" and line.key == "cash":
+                lines[index] = replace(
+                    line,
+                    amount=amount,
+                    source_key="onec_cash_position",
+                    source_status=source_status,
+                    source_as_of=source_as_of,
+                    note=("Точный рублёвый остаток на дату из " "finance.fact_cash_position_daily"),
+                )
+                break
+        return {
+            "status": source_status,
+            "as_of": source_as_of.isoformat(),
+            "method": "fact_cash_position_daily_exact_date",
+        }
+
+    if balance_date < date.today():
+        for index, line in enumerate(lines):
+            if line.section == "asset" and line.key == "cash":
+                lines[index] = replace(
+                    line,
+                    amount=None,
+                    source_key="onec_cash_position",
+                    source_status="source_missing",
+                    source_as_of=None,
+                    note=(
+                        "Нет точного рублёвого остатка "
+                        f"finance.fact_cash_position_daily на {balance_date:%d.%m.%Y}"
+                    ),
+                )
+                break
+    return {
+        "status": "source_missing",
+        "as_of": None,
+        "method": "fact_cash_position_daily_exact_date",
+        "note": cache_note,
+    }
 
 
 def _validation_errors(

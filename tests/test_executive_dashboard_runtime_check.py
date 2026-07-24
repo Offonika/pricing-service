@@ -86,6 +86,17 @@ def _payloads() -> dict[str, dict]:
                 }
             },
         },
+        "management_balance_turnover": {
+            "month": "2026-07",
+            "date_from": "2026-01-01",
+            "date_to": "2026-07-11",
+            "source_scope": "onec_ut_10_3_plus_bp_accrued_taxes",
+            "turnover_method": "net_change_from_snapshots",
+            "source_status": "partial",
+            "lines": [],
+            "totals": [],
+            "excluded_lines": [],
+        },
         "service_accruals": {
             "month": "2026-07",
             "source_status": "ready",
@@ -114,6 +125,8 @@ def _runtime_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=payloads["sales"])
     if path.endswith("/service-accruals"):
         return httpx.Response(200, json=payloads["service_accruals"])
+    if path.endswith("/management-balance-turnover"):
+        return httpx.Response(200, json=payloads["management_balance_turnover"])
     if path.endswith("/management-balance"):
         return httpx.Response(200, json=payloads["management_balance"])
     if path == "/api/management/executive-dashboard":
@@ -133,7 +146,7 @@ def test_collect_runtime_checks_accepts_empty_actions_and_session_probe_422() ->
         )
 
     assert not errors
-    assert len(checks) == 9
+    assert len(checks) == 10
     assert payloads["actions"]["payload"] == []
 
 

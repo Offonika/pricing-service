@@ -35,6 +35,7 @@ from app.schemas.executive_dashboard import (
     ExecutiveDashboardResponse,
     ExecutiveManagementBalanceCloseRequest,
     ExecutiveManagementBalanceResponse,
+    ExecutiveManagementBalanceTurnoverResponse,
     ExecutiveOnlineStorePeriodResponse,
     ExecutiveProfitLossPeriodResponse,
     ExecutiveSalesPeriodResponse,
@@ -106,6 +107,7 @@ from app.services.executive_management_balance import (
     ManagementBalanceNotFoundError,
     close_management_balance,
     get_management_balance,
+    get_management_balance_turnover,
     month_end,
 )
 from app.services.executive_online_store import (
@@ -186,6 +188,31 @@ def get_executive_management_balance(
         raise HTTPException(status_code=403, detail="Нет доступа к управленческому балансу")
     try:
         return get_management_balance(
+            db,
+            month=month,
+            view=view,
+            access_context=access,
+        )
+    except (ManagementBalanceNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get(
+    "/executive-dashboard/management-balance-turnover",
+    response_model=ExecutiveManagementBalanceTurnoverResponse,
+)
+def get_executive_management_balance_turnover(
+    month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    view: Literal["closed", "operational"] | None = Query(default=None),
+    db: Session = Depends(get_db),
+    access: ExecutiveDashboardAuthContext = Depends(require_executive_dashboard_access),
+) -> ExecutiveManagementBalanceTurnoverResponse:
+    if not access.allows_block("creditors_payables") or not access.can_view_money_block(
+        "creditors_payables"
+    ):
+        raise HTTPException(status_code=403, detail="Нет доступа к управленческой ОСВ")
+    try:
+        return get_management_balance_turnover(
             db,
             month=month,
             view=view,

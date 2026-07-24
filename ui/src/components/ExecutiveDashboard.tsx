@@ -5,6 +5,7 @@ import {
   fetchExecutiveDashboard,
   fetchExecutiveDashboardActions,
   fetchExecutiveManagementBalance,
+  fetchExecutiveManagementBalanceTurnover,
   fetchExecutiveOnlineStorePeriod,
   fetchExecutiveProfitLossPeriod,
   fetchExecutiveSalesPeriod,
@@ -17,6 +18,7 @@ import {
   type ExecutiveDashboardResponse,
   type ExecutiveManagementBalanceLineItem,
   type ExecutiveManagementBalanceResponse,
+  type ExecutiveManagementBalanceTurnoverResponse,
   type ExecutiveManagementBalanceView,
   type ExecutiveOnlineStorePeriodResponse,
   type ExecutiveProfitLossBreakdownRow,
@@ -1395,6 +1397,110 @@ function formatSignedMoney(value: string | number) {
   return `${numeric > 0 ? "+" : numeric < 0 ? "−" : ""}${formatted}`;
 }
 
+function formatTurnoverMoney(value?: string | number | null) {
+  return value === null || value === undefined ? "—" : formatMoney(value);
+}
+
+function turnoverSourceLabel(sourceKey: string) {
+  if (sourceKey === "onec_bp_tax_accounting") return "БП · начисленные налоги";
+  if (sourceKey.startsWith("management_")) return "Управленческий расчёт";
+  return "УТ 10.3";
+}
+
+function ManagementBalanceTurnoverTable({
+  turnover,
+}: {
+  turnover: ExecutiveManagementBalanceTurnoverResponse;
+}) {
+  const sectionLabels = {
+    asset: "Активы",
+    liability: "Обязательства",
+    equity: "Собственные средства",
+  } as const;
+
+  return (
+    <section
+      className="executive-management-balance__turnover"
+      aria-label="Оборотно-сальдовая ведомость по статьям баланса"
+    >
+      <header>
+        <div>
+          <h3>Оборотно-сальдовая ведомость</h3>
+          <span>
+            с {formatDate(turnover.date_from)} по {formatDate(turnover.date_to)}
+          </span>
+        </div>
+        <small>УТ 10.3 · из БП только начисленные налоги</small>
+      </header>
+      <div className="executive-management-balance__turnover-note" role="note">
+        <strong>Сверочная версия</strong>
+        <span>{turnover.note}</span>
+      </div>
+      <div className="executive-management-balance__turnover-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th scope="col">Статья баланса</th>
+              <th scope="col">Сальдо начальное</th>
+              <th scope="col">Дебет</th>
+              <th scope="col">Кредит</th>
+              <th scope="col">Сальдо конечное</th>
+              <th scope="col">Контроль</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(["asset", "liability", "equity"] as const).map((section) => {
+              const lines = turnover.lines.filter((line) => line.section === section);
+              const total = turnover.totals.find((item) => item.section === section);
+              return [
+                <tr className="executive-management-balance__turnover-section" key={`${section}-title`}>
+                  <th colSpan={6} scope="rowgroup">{sectionLabels[section]}</th>
+                </tr>,
+                ...lines.map((line) => (
+                  <tr key={`${section}-${line.key}`}>
+                    <th scope="row">
+                      <span>{line.label}</span>
+                      <small>
+                        {turnoverSourceLabel(line.source_key)} · {line.source_status}
+                      </small>
+                      {line.note && <small>{line.note}</small>}
+                    </th>
+                    <td>{formatTurnoverMoney(line.opening_balance)}</td>
+                    <td>{formatTurnoverMoney(line.debit_turnover)}</td>
+                    <td>{formatTurnoverMoney(line.credit_turnover)}</td>
+                    <td>{formatTurnoverMoney(line.closing_balance)}</td>
+                    <td className={Number(line.reconciliation_difference || 0) === 0 ? "is-ok" : "is-error"}>
+                      {formatTurnoverMoney(line.reconciliation_difference)}
+                    </td>
+                  </tr>
+                )),
+                total ? (
+                  <tr className="executive-management-balance__turnover-total" key={`${section}-total`}>
+                    <th scope="row">{total.label}</th>
+                    <td>{formatMoney(total.opening_balance)}</td>
+                    <td>{formatMoney(total.debit_turnover)}</td>
+                    <td>{formatMoney(total.credit_turnover)}</td>
+                    <td>{formatMoney(total.closing_balance)}</td>
+                    <td className={Number(total.reconciliation_difference) === 0 ? "is-ok" : "is-error"}>
+                      {formatMoney(total.reconciliation_difference)}
+                    </td>
+                  </tr>
+                ) : null,
+              ];
+            })}
+          </tbody>
+        </table>
+      </div>
+      {turnover.excluded_lines.length > 0 && (
+        <footer>
+          Не включено строк БП: {turnover.excluded_lines.length}. Они исключены по принятой
+          методике; из БП в ОСВ используется только задолженность по начисленным налогам.
+        </footer>
+      )}
+    </section>
+  );
+}
+
 export function MonthlyManagementBalance({
   refreshNonce,
   canCloseMonth,
@@ -1403,22 +1509,36 @@ export function MonthlyManagementBalance({
   canCloseMonth: boolean;
 }) {
   const [balance, setBalance] = useState<ExecutiveManagementBalanceResponse | null>(null);
+  const [turnover, setTurnover] = useState<ExecutiveManagementBalanceTurnoverResponse | null>(null);
   const [month, setMonth] = useState<string | undefined>();
   const [view, setView] = useState<ExecutiveManagementBalanceView | undefined>();
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
+  const [turnoverMessage, setTurnoverMessage] = useState("");
 
   const load = useCallback(async (nextMonth?: string, nextView?: ExecutiveManagementBalanceView) => {
     setMonth(nextMonth);
     setView(nextView);
     setLoading(true);
     setMessage("");
+    setTurnoverMessage("");
     setBalance(null);
+    setTurnover(null);
     try {
       const payload = await fetchExecutiveManagementBalance({ month: nextMonth, view: nextView });
       setBalance(payload);
       setMonth(payload.month);
       setView(payload.view);
+      try {
+        setTurnover(
+          await fetchExecutiveManagementBalanceTurnover({
+            month: payload.month,
+            view: payload.view,
+          })
+        );
+      } catch (error: unknown) {
+        setTurnoverMessage(errorMessage(error));
+      }
     } catch (error: unknown) {
       if (nextView === "closed") {
         try {
@@ -1430,6 +1550,16 @@ export function MonthlyManagementBalance({
           setMonth(fallback.month);
           setView(fallback.view);
           setMessage("Закрытая версия отсутствует. Показан доступный оперативный срез.");
+          try {
+            setTurnover(
+              await fetchExecutiveManagementBalanceTurnover({
+                month: fallback.month,
+                view: fallback.view,
+              })
+            );
+          } catch (turnoverError: unknown) {
+            setTurnoverMessage(errorMessage(turnoverError));
+          }
           return;
         } catch {
           // No operational history exists for this month either.
@@ -1664,6 +1794,13 @@ export function MonthlyManagementBalance({
               <footer><span>Итого собственные средства</span><strong>{formatMoney(balance.equity_total)}</strong></footer>
             </section>
           </div>
+          {turnover && <ManagementBalanceTurnoverTable turnover={turnover} />}
+          {turnoverMessage && (
+            <div className="executive-management-balance__warning" role="status">
+              <strong>ОСВ пока недоступна</strong>
+              <span>{turnoverMessage}</span>
+            </div>
+          )}
           <footer className="executive-block__footer executive-management-balance__footer">
             <span>{balance.note}</span>
             {balance.validation_errors.length > 0 && (

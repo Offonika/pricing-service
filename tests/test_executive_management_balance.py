@@ -28,6 +28,7 @@ from app.services.executive_management_balance import (
     build_management_balance_snapshot_command,
     close_management_balance,
     get_management_balance,
+    get_management_balance_turnover,
     month_end,
     parse_month,
 )
@@ -115,6 +116,121 @@ def _complete_lines() -> tuple[list[BalanceLineDraft], dict[str, object]]:
                 "blockers": [],
             },
         },
+    )
+
+
+def _turnover_fixture_lines(
+    *,
+    as_of: date,
+    cash: str,
+    fixed_assets: str,
+    suppliers: str,
+    taxes: str,
+    equity: str,
+) -> tuple[list[BalanceLineDraft], dict[str, object]]:
+    return (
+        [
+            BalanceLineDraft(
+                "asset",
+                "cash",
+                "Денежные средства",
+                Decimal(cash),
+                10,
+                "onec_cash_position",
+                "ready",
+                as_of,
+            ),
+            BalanceLineDraft(
+                "asset",
+                "fixed_assets_net",
+                "Основные средства",
+                Decimal(fixed_assets),
+                20,
+                "onec_bp_fixed_assets",
+                "ready",
+                as_of,
+            ),
+            BalanceLineDraft(
+                "liability",
+                "suppliers",
+                "Задолженность поставщикам",
+                Decimal(suppliers),
+                10,
+                "onec_counterparty_settlements",
+                "ready",
+                as_of,
+            ),
+            BalanceLineDraft(
+                "liability",
+                "taxes_payable",
+                "Начисленные налоги",
+                Decimal(taxes),
+                20,
+                "onec_bp_tax_accounting",
+                "ready",
+                as_of,
+            ),
+            BalanceLineDraft(
+                "equity",
+                "retained_earnings",
+                "Управленческий капитал",
+                Decimal(equity),
+                10,
+                "management_opening_equity",
+                "ready",
+                as_of,
+            ),
+        ],
+        {
+            "trade_detail": {"status": "ready", "as_of": as_of.isoformat()},
+            "accounting": {"configured": True, "status": "partial"},
+            "salary_reconciliation": {
+                "configured": True,
+                "status": "ready",
+                "closing_blocked": False,
+                "blockers": [],
+            },
+        },
+    )
+
+
+def _build_turnover_fixture(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings()
+    monkeypatch.setattr(balance_service, "get_settings", lambda: settings)
+    opening = _turnover_fixture_lines(
+        as_of=date(2026, 1, 1),
+        cash="100.00",
+        fixed_assets="50.00",
+        suppliers="80.00",
+        taxes="10.00",
+        equity="60.00",
+    )
+    monkeypatch.setattr(balance_service, "_build_draft_lines", lambda *args, **kwargs: opening)
+    opening_snapshot = build_and_persist_management_balance_snapshot(
+        db_session,
+        balance_date=date(2026, 1, 1),
+        view="closed",
+    )
+    opening_snapshot.status = "closed"
+    opening_snapshot.validation_errors = []
+    db_session.commit()
+
+    closing = _turnover_fixture_lines(
+        as_of=date(2026, 6, 30),
+        cash="120.00",
+        fixed_assets="45.00",
+        suppliers="70.00",
+        taxes="15.00",
+        equity="80.00",
+    )
+    monkeypatch.setattr(balance_service, "_build_draft_lines", lambda *args, **kwargs: closing)
+    build_and_persist_management_balance_snapshot(
+        db_session,
+        balance_date=date(2026, 6, 30),
+        view="closed",
     )
 
 
@@ -877,3 +993,61 @@ def test_management_balance_api_is_independent_from_dashboard_date(
     assert payload["month"] == date.today().strftime("%Y-%m")
     assert "date" not in payload
     assert payload["can_close"] is False
+
+
+def test_management_balance_turnover_uses_ut_scope_and_bp_taxes_only(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _build_turnover_fixture(db_session, monkeypatch)
+
+    response = get_management_balance_turnover(
+        db_session,
+        month="2026-06",
+        view="closed",
+        access_context=bitrix_executive_dashboard_auth.full_executive_dashboard_context(),
+    )
+
+    lines = {line.key: line for line in response.lines}
+    assert response.source_scope == "onec_ut_10_3_plus_bp_accrued_taxes"
+    assert response.date_from == date(2026, 1, 1)
+    assert response.date_to == date(2026, 6, 30)
+    assert "fixed_assets_net" not in lines
+    assert any(item["key"] == "fixed_assets_net" for item in response.excluded_lines)
+    assert lines["cash"].opening_balance == Decimal("100.00")
+    assert lines["cash"].debit_turnover == Decimal("20.00")
+    assert lines["cash"].credit_turnover == Decimal("0.00")
+    assert lines["suppliers"].debit_turnover == Decimal("10.00")
+    assert lines["suppliers"].credit_turnover == Decimal("0.00")
+    assert lines["taxes_payable"].debit_turnover == Decimal("0.00")
+    assert lines["taxes_payable"].credit_turnover == Decimal("5.00")
+    assert lines["retained_earnings"].credit_turnover == Decimal("20.00")
+    assert all(line.reconciliation_difference == Decimal("0.00") for line in response.lines)
+    assert response.turnover_method == "net_change_from_snapshots"
+
+
+def test_management_balance_turnover_api_uses_balance_permissions(
+    client: TestClient,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _build_turnover_fixture(db_session, monkeypatch)
+    settings = _settings()
+    monkeypatch.setattr(bitrix_executive_dashboard_auth, "get_settings", lambda: settings)
+    app.dependency_overrides[get_db] = lambda: db_session
+    try:
+        response = client.get(
+            (
+                "/api/management/executive-dashboard/management-balance-turnover"
+                "?month=2026-06&view=closed"
+            ),
+            headers={"Authorization": "Bearer secret-token"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["date_from"] == "2026-01-01"
+    assert payload["date_to"] == "2026-06-30"
+    assert payload["source_scope"] == "onec_ut_10_3_plus_bp_accrued_taxes"

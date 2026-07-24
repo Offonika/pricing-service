@@ -14,6 +14,7 @@ import {
   fetchExecutiveDashboard,
   fetchExecutiveDashboardActions,
   fetchExecutiveManagementBalance,
+  fetchExecutiveManagementBalanceTurnover,
   fetchExecutiveOnlineStorePeriod,
   fetchExecutiveProfitLossPeriod,
   fetchExecutiveSalesPeriod,
@@ -25,6 +26,7 @@ vi.mock("../api/executiveDashboard", () => ({
   fetchExecutiveDashboard: vi.fn(),
   fetchExecutiveDashboardActions: vi.fn(),
   fetchExecutiveManagementBalance: vi.fn(),
+  fetchExecutiveManagementBalanceTurnover: vi.fn(),
   fetchExecutiveOnlineStorePeriod: vi.fn(),
   fetchExecutiveProfitLossPeriod: vi.fn(),
   fetchExecutiveSalesPeriod: vi.fn(),
@@ -521,6 +523,7 @@ describe("executive management balance", () => {
   afterEach(() => {
     cleanup();
     vi.mocked(fetchExecutiveManagementBalance).mockReset();
+    vi.mocked(fetchExecutiveManagementBalanceTurnover).mockReset();
   });
 
   it("renders the balance separately from the KPI cards", () => {
@@ -611,6 +614,131 @@ describe("executive management balance", () => {
     expect(screen.getByText(/Неподтверждено:/)).toHaveTextContent(/4\s*301\s*900 ₽/);
     expect(screen.getByText(/Неподтверждено:/)).toHaveTextContent("в итог баланса не включено");
     expect(screen.getByText(/Неподтверждено:/)).toHaveTextContent("Сопоставлено сотрудников: 0%");
+  });
+
+  it("shows a trial balance scoped to UT 10.3 and accrued BP taxes", async () => {
+    vi.mocked(fetchExecutiveManagementBalance).mockResolvedValue({
+      month: "2026-06",
+      balance_date: "2026-06-30",
+      view: "closed",
+      version: 2,
+      status: "closed",
+      source_status: "ready",
+      freshness_status: "fresh",
+      generated_at: "2026-06-30T10:00:00+03:00",
+      currency: "RUB",
+      assets: [],
+      liabilities: [],
+      equity: [],
+      assets_total: "120.00",
+      liabilities_total: "85.00",
+      equity_total: "35.00",
+      liabilities_and_equity_total: "120.00",
+      imbalance_amount: "0.00",
+      can_close: false,
+      validation_errors: [],
+      source_summary: {},
+      available_months: ["2026-06"],
+      note: "Закрытый месяц",
+    });
+    vi.mocked(fetchExecutiveManagementBalanceTurnover).mockResolvedValue({
+      month: "2026-06",
+      date_from: "2026-01-01",
+      date_to: "2026-06-30",
+      view: "closed",
+      opening_version: 1,
+      closing_version: 2,
+      opening_content_sha256: "a".repeat(64),
+      closing_content_sha256: "b".repeat(64),
+      turnover_method: "net_change_from_snapshots",
+      source_scope: "onec_ut_10_3_plus_bp_accrued_taxes",
+      source_status: "ready",
+      currency: "RUB",
+      lines: [
+        {
+          key: "cash",
+          label: "Денежные средства",
+          section: "asset",
+          opening_balance: "100.00",
+          debit_turnover: "20.00",
+          credit_turnover: "0.00",
+          closing_balance: "120.00",
+          reconciliation_difference: "0.00",
+          turnover_method: "net_change_from_snapshots",
+          source_key: "onec_cash_position",
+          source_status: "ready",
+        },
+        {
+          key: "taxes_payable",
+          label: "Начисленные налоги",
+          section: "liability",
+          opening_balance: "10.00",
+          debit_turnover: "0.00",
+          credit_turnover: "5.00",
+          closing_balance: "15.00",
+          reconciliation_difference: "0.00",
+          turnover_method: "net_change_from_snapshots",
+          source_key: "onec_bp_tax_accounting",
+          source_status: "ready",
+        },
+      ],
+      totals: [
+        {
+          section: "asset",
+          label: "Итого активы",
+          opening_balance: "100.00",
+          debit_turnover: "20.00",
+          credit_turnover: "0.00",
+          closing_balance: "120.00",
+          reconciliation_difference: "0.00",
+          unknown_line_count: 0,
+        },
+        {
+          section: "liability",
+          label: "Итого обязательства",
+          opening_balance: "10.00",
+          debit_turnover: "0.00",
+          credit_turnover: "5.00",
+          closing_balance: "15.00",
+          reconciliation_difference: "0.00",
+          unknown_line_count: 0,
+        },
+        {
+          section: "equity",
+          label: "Итого собственные средства",
+          opening_balance: "0.00",
+          debit_turnover: "0.00",
+          credit_turnover: "0.00",
+          closing_balance: "0.00",
+          reconciliation_difference: "0.00",
+          unknown_line_count: 0,
+        },
+      ],
+      excluded_lines: [
+        {
+          key: "fixed_assets_net",
+          source_key: "onec_bp_fixed_assets",
+          reason: "В БП для ОСВ разрешена только строка начисленных налогов",
+        },
+      ],
+      opening_imbalance_amount: "0.00",
+      closing_imbalance_amount: "0.00",
+      unknown_line_count: 0,
+      note: "Обороты рассчитаны как чистое изменение между снимками.",
+    });
+
+    render(<MonthlyManagementBalance canCloseMonth={false} refreshNonce={0} />);
+
+    expect(await screen.findByText("Оборотно-сальдовая ведомость")).toBeVisible();
+    expect(screen.getByText("УТ 10.3 · из БП только начисленные налоги")).toBeVisible();
+    const table = screen.getByRole("table");
+    expect(within(table).getByText("Денежные средства").closest("tr")).toHaveTextContent(
+      /100 ₽/
+    );
+    expect(within(table).getByText("Начисленные налоги").closest("tr")).toHaveTextContent(
+      /10 ₽/
+    );
+    expect(screen.getByText(/Не включено строк БП: 1/)).toBeVisible();
   });
 });
 

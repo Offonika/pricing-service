@@ -127,6 +127,57 @@ class ExecutiveManagementBalanceResponse(BaseModel):
     note: str | None = None
 
 
+class ExecutiveManagementBalanceTurnoverLine(BaseModel):
+    key: str
+    label: str
+    section: Literal["asset", "liability", "equity"]
+    opening_balance: Decimal | None = None
+    debit_turnover: Decimal | None = None
+    credit_turnover: Decimal | None = None
+    closing_balance: Decimal | None = None
+    reconciliation_difference: Decimal | None = None
+    turnover_method: Literal["net_change_from_snapshots"] = "net_change_from_snapshots"
+    source_key: str
+    source_status: str
+    source_as_of: date | None = None
+    note: str | None = None
+
+
+class ExecutiveManagementBalanceTurnoverTotal(BaseModel):
+    section: Literal["asset", "liability", "equity"]
+    label: str
+    opening_balance: Decimal = Decimal("0")
+    debit_turnover: Decimal = Decimal("0")
+    credit_turnover: Decimal = Decimal("0")
+    closing_balance: Decimal = Decimal("0")
+    reconciliation_difference: Decimal = Decimal("0")
+    unknown_line_count: int = 0
+
+
+class ExecutiveManagementBalanceTurnoverResponse(BaseModel):
+    month: str
+    date_from: date
+    date_to: date
+    view: ExecutiveManagementBalanceView
+    opening_version: int
+    closing_version: int
+    opening_content_sha256: str
+    closing_content_sha256: str
+    turnover_method: Literal["net_change_from_snapshots"] = "net_change_from_snapshots"
+    source_scope: Literal["onec_ut_10_3_plus_bp_accrued_taxes"] = (
+        "onec_ut_10_3_plus_bp_accrued_taxes"
+    )
+    source_status: str
+    currency: str = "RUB"
+    lines: list[ExecutiveManagementBalanceTurnoverLine] = Field(default_factory=list)
+    totals: list[ExecutiveManagementBalanceTurnoverTotal] = Field(default_factory=list)
+    excluded_lines: list[dict[str, Any]] = Field(default_factory=list)
+    opening_imbalance_amount: Decimal = Decimal("0")
+    closing_imbalance_amount: Decimal = Decimal("0")
+    unknown_line_count: int = 0
+    note: str
+
+
 class ExecutiveManagementBalanceCloseRequest(BaseModel):
     confirm: bool
     note: str | None = Field(default=None, max_length=1000)

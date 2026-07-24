@@ -2519,6 +2519,122 @@
   font-weight: 800;
 }
 
+.executive-management-balance__turnover {
+  margin: 20px 0 0;
+  border: 1px solid #d9e0e8;
+  border-radius: 16px;
+  background: #ffffff;
+  overflow: hidden;
+}
+
+.executive-management-balance__turnover > header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 18px 20px 14px;
+}
+
+.executive-management-balance__turnover h3,
+.executive-management-balance__turnover header span {
+  margin: 0;
+}
+
+.executive-management-balance__turnover h3 {
+  font-size: 17px;
+}
+
+.executive-management-balance__turnover header span,
+.executive-management-balance__turnover header small,
+.executive-management-balance__turnover footer {
+  color: #667085;
+  font-size: 12px;
+}
+
+.executive-management-balance__turnover-note {
+  display: flex;
+  gap: 8px;
+  margin: 0 20px 14px;
+  padding: 10px 12px;
+  border-radius: 10px;
+  background: #fff8e8;
+  color: #6e5010;
+  font-size: 12px;
+}
+
+.executive-management-balance__turnover-scroll {
+  overflow-x: auto;
+}
+
+.executive-management-balance__turnover table {
+  width: 100%;
+  min-width: 900px;
+  border-collapse: collapse;
+}
+
+.executive-management-balance__turnover th,
+.executive-management-balance__turnover td {
+  padding: 10px 12px;
+  border-top: 1px solid #d9e0e8;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.executive-management-balance__turnover thead th {
+  color: #667085;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.executive-management-balance__turnover th:first-child {
+  width: 34%;
+  text-align: left;
+  white-space: normal;
+}
+
+.executive-management-balance__turnover tbody th {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.executive-management-balance__turnover tbody th span,
+.executive-management-balance__turnover tbody th small {
+  display: block;
+}
+
+.executive-management-balance__turnover tbody th small {
+  margin-top: 3px;
+  color: #667085;
+  font-weight: 400;
+}
+
+.executive-management-balance__turnover-section th {
+  background: #f8fafc;
+  color: #667085;
+  font-size: 12px;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.executive-management-balance__turnover-total {
+  background: #f8fafc;
+  font-weight: 700;
+}
+
+.executive-management-balance__turnover .is-ok {
+  color: #067647;
+}
+
+.executive-management-balance__turnover .is-error {
+  color: #b42318;
+}
+
+.executive-management-balance__turnover footer {
+  padding: 12px 20px 14px;
+  border-top: 1px solid #d9e0e8;
+}
+
 .executive-block__header {
   display: flex;
   align-items: flex-start;

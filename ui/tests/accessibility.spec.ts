@@ -25,6 +25,59 @@ test("Bitrix executive dashboard renders a successful API response", async ({ pa
   })));
   await page.route("**/api/management/executive-dashboard**", (route) => {
     const url = new URL(route.request().url());
+    if (url.pathname.endsWith("/management-balance-turnover")) {
+      const month = url.searchParams.get("month") || "2026-07";
+      const dateTo = month === "2026-06" ? "2026-06-30" : "2026-07-11";
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          month,
+          date_from: "2026-01-01",
+          date_to: dateTo,
+          view: url.searchParams.get("view") || "operational",
+          opening_version: 1,
+          closing_version: 1,
+          opening_content_sha256: "a".repeat(64),
+          closing_content_sha256: "b".repeat(64),
+          turnover_method: "net_change_from_snapshots",
+          source_scope: "onec_ut_10_3_plus_bp_accrued_taxes",
+          source_status: "partial",
+          currency: "RUB",
+          lines: [
+            {
+              key: "cash", label: "Денежные средства", section: "asset",
+              opening_balance: "80.00", debit_turnover: "20.00", credit_turnover: "0.00",
+              closing_balance: "100.00", reconciliation_difference: "0.00",
+              turnover_method: "net_change_from_snapshots", source_key: "onec_cash",
+              source_status: "ready",
+            },
+          ],
+          totals: [
+            {
+              section: "asset", label: "Итого активы", opening_balance: "80.00",
+              debit_turnover: "20.00", credit_turnover: "0.00", closing_balance: "100.00",
+              reconciliation_difference: "0.00", unknown_line_count: 0,
+            },
+            {
+              section: "liability", label: "Итого обязательства", opening_balance: "0.00",
+              debit_turnover: "0.00", credit_turnover: "0.00", closing_balance: "0.00",
+              reconciliation_difference: "0.00", unknown_line_count: 0,
+            },
+            {
+              section: "equity", label: "Итого собственные средства", opening_balance: "0.00",
+              debit_turnover: "0.00", credit_turnover: "0.00", closing_balance: "0.00",
+              reconciliation_difference: "0.00", unknown_line_count: 0,
+            },
+          ],
+          excluded_lines: [],
+          opening_imbalance_amount: "0.00",
+          closing_imbalance_amount: "0.00",
+          unknown_line_count: 0,
+          note: "Обороты рассчитаны как чистое изменение между снимками.",
+        }),
+      });
+    }
     if (url.pathname.endsWith("/management-balance")) {
       const month = url.searchParams.get("month") || "2026-07";
       const view = url.searchParams.get("view") || "operational";
@@ -60,7 +113,7 @@ test("Bitrix executive dashboard renders a successful API response", async ({ pa
           source_summary: {
             opening_equity: {
               status: "partial",
-              baseline_date: "2026-06-30",
+              baseline_date: "2026-01-01",
               version: 1,
               source_hash: "abcdef1234567890",
               bridge: {
@@ -142,7 +195,7 @@ test("Bitrix executive dashboard renders a successful API response", async ({ pa
   await expect(page.locator(".executive-management-balance-section")).toContainText("Дебиторка сотрудников");
   await expect(page.locator(".executive-management-balance-section")).toContainText("Прочие дебиторы");
   await expect(page.getByRole("heading", { name: "Мост собственного капитала" })).toBeVisible();
-  await expect(page.getByText("Рассчитано автоматически на 30.06.2026")).toBeVisible();
+  await expect(page.getByText("Рассчитано автоматически на 01.01.2026")).toBeVisible();
   await page.getByRole("button", { name: "Закрытый месяц" }).click();
   await expect(page.getByText("Закрытая версия отсутствует", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Оперативный на сегодня" })).toHaveAttribute("aria-pressed", "true");

@@ -21,6 +21,7 @@ REQUIRED_ROUTES = {
     ("GET", "/api/management/executive-dashboard/profit-loss-period"),
     ("GET", "/api/management/executive-dashboard/sales-period"),
     ("GET", "/api/management/executive-dashboard/management-balance"),
+    ("GET", "/api/management/executive-dashboard/management-balance-turnover"),
     ("POST", "/api/management/executive-dashboard/management-balance/{month}/close"),
     ("GET", "/api/management/executive-dashboard/service-accruals"),
 }

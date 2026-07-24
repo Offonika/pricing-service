@@ -98,6 +98,19 @@ def _validate_payload_shape(name: str, payload: Any) -> list[str]:
             source_summary.get("salary_reconciliation"), dict
         ):
             errors.append("management_balance response does not contain salary_reconciliation")
+    elif name == "management_balance_turnover":
+        for field, field_type in (
+            ("month", str),
+            ("date_from", str),
+            ("date_to", str),
+            ("source_scope", str),
+            ("turnover_method", str),
+            ("lines", list),
+            ("totals", list),
+            ("excluded_lines", list),
+        ):
+            if not isinstance(payload.get(field), field_type):
+                errors.append(f"{name} response has invalid or missing {field}")
     return errors
 
 
@@ -146,6 +159,9 @@ def collect_runtime_checks(
             f"?date_from={month_start}&date_to={requested_date.isoformat()}"
         ),
         "management_balance": ("/api/management/executive-dashboard/management-balance"),
+        "management_balance_turnover": (
+            "/api/management/executive-dashboard/management-balance-turnover"
+        ),
         "service_accruals": (
             "/api/management/executive-dashboard/service-accruals" f"?month={month_start[:7]}"
         ),

@@ -126,6 +126,55 @@ export interface ExecutiveManagementBalanceResponse {
   note?: string | null;
 }
 
+export interface ExecutiveManagementBalanceTurnoverLine {
+  key: string;
+  label: string;
+  section: "asset" | "liability" | "equity";
+  opening_balance?: string | null;
+  debit_turnover?: string | null;
+  credit_turnover?: string | null;
+  closing_balance?: string | null;
+  reconciliation_difference?: string | null;
+  turnover_method: "net_change_from_snapshots";
+  source_key: string;
+  source_status: string;
+  source_as_of?: string | null;
+  note?: string | null;
+}
+
+export interface ExecutiveManagementBalanceTurnoverTotal {
+  section: "asset" | "liability" | "equity";
+  label: string;
+  opening_balance: string;
+  debit_turnover: string;
+  credit_turnover: string;
+  closing_balance: string;
+  reconciliation_difference: string;
+  unknown_line_count: number;
+}
+
+export interface ExecutiveManagementBalanceTurnoverResponse {
+  month: string;
+  date_from: string;
+  date_to: string;
+  view: ExecutiveManagementBalanceView;
+  opening_version: number;
+  closing_version: number;
+  opening_content_sha256: string;
+  closing_content_sha256: string;
+  turnover_method: "net_change_from_snapshots";
+  source_scope: "onec_ut_10_3_plus_bp_accrued_taxes";
+  source_status: string;
+  currency: string;
+  lines: ExecutiveManagementBalanceTurnoverLine[];
+  totals: ExecutiveManagementBalanceTurnoverTotal[];
+  excluded_lines: Array<Record<string, unknown>>;
+  opening_imbalance_amount: string;
+  closing_imbalance_amount: string;
+  unknown_line_count: number;
+  note: string;
+}
+
 export interface ExecutiveCashflowRatio {
   key: string;
   label: string;
@@ -544,6 +593,22 @@ export async function fetchExecutiveManagementBalance(params?: {
 }) {
   const response = await api.get<ExecutiveManagementBalanceResponse>(
     "/management/executive-dashboard/management-balance",
+    {
+      params: {
+        month: params?.month || undefined,
+        view: params?.view || undefined,
+      },
+    }
+  );
+  return response.data;
+}
+
+export async function fetchExecutiveManagementBalanceTurnover(params?: {
+  month?: string;
+  view?: ExecutiveManagementBalanceView;
+}) {
+  const response = await api.get<ExecutiveManagementBalanceTurnoverResponse>(
+    "/management/executive-dashboard/management-balance-turnover",
     {
       params: {
         month: params?.month || undefined,

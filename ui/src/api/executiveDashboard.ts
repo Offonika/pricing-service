@@ -160,6 +160,9 @@ export interface ExecutiveManagementBalanceTurnoverResponse {
   view: ExecutiveManagementBalanceView;
   opening_version: number;
   closing_version: number;
+  opening_status: string;
+  closing_status: string;
+  opening_validation_error_count: number;
   opening_content_sha256: string;
   closing_content_sha256: string;
   turnover_method: "net_change_from_snapshots";

@@ -161,6 +161,9 @@ class ExecutiveManagementBalanceTurnoverResponse(BaseModel):
     view: ExecutiveManagementBalanceView
     opening_version: int
     closing_version: int
+    opening_status: str
+    closing_status: str
+    opening_validation_error_count: int = 0
     opening_content_sha256: str
     closing_content_sha256: str
     turnover_method: Literal["net_change_from_snapshots"] = "net_change_from_snapshots"

@@ -14452,6 +14452,16 @@ components:
         closing_version:
           type: integer
           title: Closing Version
+        opening_status:
+          type: string
+          title: Opening Status
+        closing_status:
+          type: string
+          title: Closing Status
+        opening_validation_error_count:
+          type: integer
+          title: Opening Validation Error Count
+          default: 0
         opening_content_sha256:
           type: string
           title: Opening Content Sha256
@@ -14516,6 +14526,8 @@ components:
       - view
       - opening_version
       - closing_version
+      - opening_status
+      - closing_status
       - opening_content_sha256
       - closing_content_sha256
       - source_status

@@ -1680,7 +1680,17 @@ def _opening_management_balance_snapshot(
         .limit(1)
     )
     if snapshot is None:
-        raise ManagementBalanceNotFoundError("Нет закрытого начального баланса на 01.01.2026")
+        snapshot = session.scalar(
+            select(ExecutiveManagementBalanceSnapshot)
+            .where(
+                ExecutiveManagementBalanceSnapshot.balance_date == OPENING_EQUITY_BASELINE_DATE,
+                ExecutiveManagementBalanceSnapshot.view_mode == "closed",
+            )
+            .order_by(ExecutiveManagementBalanceSnapshot.version.desc())
+            .limit(1)
+        )
+    if snapshot is None:
+        raise ManagementBalanceNotFoundError("Нет начального баланса на 01.01.2026")
     return snapshot
 
 
@@ -1868,6 +1878,9 @@ def get_management_balance_turnover(
         view=closing_snapshot.view_mode,  # type: ignore[arg-type]
         opening_version=opening_snapshot.version,
         closing_version=closing_snapshot.version,
+        opening_status=opening_snapshot.status,
+        closing_status=closing_snapshot.status,
+        opening_validation_error_count=len(opening_snapshot.validation_errors or []),
         opening_content_sha256=opening_snapshot.content_sha256,
         closing_content_sha256=closing_snapshot.content_sha256,
         source_status=source_status,

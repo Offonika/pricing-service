@@ -197,6 +197,8 @@ def _turnover_fixture_lines(
 def _build_turnover_fixture(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    opening_status: str = "closed",
 ) -> None:
     settings = _settings()
     monkeypatch.setattr(balance_service, "get_settings", lambda: settings)
@@ -214,8 +216,9 @@ def _build_turnover_fixture(
         balance_date=date(2026, 1, 1),
         view="closed",
     )
-    opening_snapshot.status = "closed"
-    opening_snapshot.validation_errors = []
+    opening_snapshot.status = opening_status
+    if opening_status == "closed":
+        opening_snapshot.validation_errors = []
     db_session.commit()
 
     closing = _turnover_fixture_lines(
@@ -1012,6 +1015,7 @@ def test_management_balance_turnover_uses_ut_scope_and_bp_taxes_only(
     assert response.source_scope == "onec_ut_10_3_plus_bp_accrued_taxes"
     assert response.date_from == date(2026, 1, 1)
     assert response.date_to == date(2026, 6, 30)
+    assert response.opening_status == "closed"
     assert "fixed_assets_net" not in lines
     assert any(item["key"] == "fixed_assets_net" for item in response.excluded_lines)
     assert lines["cash"].opening_balance == Decimal("100.00")
@@ -1024,6 +1028,24 @@ def test_management_balance_turnover_uses_ut_scope_and_bp_taxes_only(
     assert lines["retained_earnings"].credit_turnover == Decimal("20.00")
     assert all(line.reconciliation_difference == Decimal("0.00") for line in response.lines)
     assert response.turnover_method == "net_change_from_snapshots"
+
+
+def test_management_balance_turnover_accepts_confirmed_opening_draft(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _build_turnover_fixture(db_session, monkeypatch, opening_status="draft")
+
+    response = get_management_balance_turnover(
+        db_session,
+        month="2026-06",
+        view="closed",
+        access_context=bitrix_executive_dashboard_auth.full_executive_dashboard_context(),
+    )
+
+    assert response.opening_status == "draft"
+    assert response.opening_validation_error_count > 0
+    assert response.date_from == date(2026, 1, 1)
 
 
 def test_management_balance_turnover_api_uses_balance_permissions(

@@ -1436,6 +1436,16 @@ function ManagementBalanceTurnoverTable({
         <strong>Сверочная версия</strong>
         <span>{turnover.note}</span>
       </div>
+      {turnover.opening_status !== "closed" && (
+        <div className="executive-management-balance__turnover-note" role="note">
+          <strong>Начальный баланс — рабочая база</strong>
+          <span>
+            Версия {turnover.opening_version} подтверждена для сверки, но содержит{" "}
+            {turnover.opening_validation_error_count} контрольных блокера. Начальные суммы можно
+            уточнить позднее.
+          </span>
+        </div>
+      )}
       <div className="executive-management-balance__turnover-scroll">
         <table>
           <thead>

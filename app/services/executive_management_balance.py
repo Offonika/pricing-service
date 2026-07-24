@@ -1829,12 +1829,11 @@ def _turnover_closing_snapshot(
 
 def _gross_cash_turnover(
     *,
+    payload: dict[str, Any],
+    cache_status: str,
     date_from: date,
     date_to: date,
 ) -> tuple[Decimal, Decimal, str, str] | None:
-    payload, cache_status, _cache_note = _load_cashflow_period_cache()
-    if not payload:
-        return None
     cache_period = payload.get("period") if isinstance(payload.get("period"), dict) else {}
     cache_from = _as_date(cache_period.get("date_from"))
     cache_to = _as_date(cache_period.get("date_to"))
@@ -1856,10 +1855,41 @@ def _gross_cash_turnover(
         outflow.quantize(MONEY),
         str(payload.get("source_status") or cache_status or "ready"),
         (
-            "Валовые обороты УТ 10.3 за выбранный период; "
+            "Валовые обороты УТ 10.3 в управленческих рублях за выбранный период; "
             "внутренние перемещения включены в дебет и кредит"
         ),
     )
+
+
+def _cash_position_balance(
+    payload: dict[str, Any],
+    *,
+    snapshot_date: date,
+    cache_status: str,
+) -> tuple[Decimal, str, date] | None:
+    cash_position = (
+        payload.get("cash_position") if isinstance(payload.get("cash_position"), dict) else {}
+    )
+    raw_positions = cash_position.get("rows") if isinstance(cash_position.get("rows"), list) else []
+    for raw_position in raw_positions:
+        if not isinstance(raw_position, dict):
+            continue
+        position_date = _as_date(raw_position.get("snapshot_date"))
+        if position_date != snapshot_date:
+            continue
+        amount = _money(
+            raw_position.get("total_balance_rub")
+            if raw_position.get("total_balance_rub") is not None
+            else raw_position.get("total_balance")
+        )
+        if amount is None:
+            return None
+        return (
+            amount.quantize(MONEY),
+            str(raw_position.get("source_status") or cache_status or "ready"),
+            position_date,
+        )
+    return None
 
 
 def get_management_balance_turnover(
@@ -1943,9 +1973,34 @@ def get_management_balance_turnover(
         for line in closing_lines
         if _turnover_line_in_source_scope(line)
     }
-    gross_cash_turnover = _gross_cash_turnover(
-        date_from=selected_from,
-        date_to=closing_snapshot.balance_date,
+    cashflow_payload, cashflow_cache_status, _cashflow_cache_note = _load_cashflow_period_cache()
+    gross_cash_turnover = (
+        _gross_cash_turnover(
+            payload=cashflow_payload,
+            cache_status=cashflow_cache_status,
+            date_from=selected_from,
+            date_to=closing_snapshot.balance_date,
+        )
+        if cashflow_payload
+        else None
+    )
+    opening_cash_position = (
+        _cash_position_balance(
+            cashflow_payload,
+            snapshot_date=selected_from - timedelta(days=1),
+            cache_status=cashflow_cache_status,
+        )
+        if cashflow_payload and selected_from > OPENING_EQUITY_BASELINE_DATE
+        else None
+    )
+    closing_cash_position = (
+        _cash_position_balance(
+            cashflow_payload,
+            snapshot_date=closing_snapshot.balance_date,
+            cache_status=cashflow_cache_status,
+        )
+        if cashflow_payload
+        else None
     )
     line_keys = set(opening_by_key) | set(closing_by_key)
     section_order = {"asset": 0, "liability": 1, "equity": 2}
@@ -1962,6 +2017,25 @@ def get_management_balance_turnover(
         assert anchor is not None
         opening_balance = opening_line.amount if opening_line is not None else Decimal("0.00")
         closing_balance = closing_line.amount if closing_line is not None else Decimal("0.00")
+        is_cash = anchor.section == "asset" and anchor.line_key == "cash"
+        cash_position_notes: list[str] = []
+        cash_position_statuses: list[str] = []
+        cash_source_as_of = anchor.source_as_of
+        if is_cash and opening_cash_position is not None:
+            opening_balance, position_status, position_date = opening_cash_position
+            cash_position_statuses.append(position_status)
+            cash_position_notes.append(
+                f"Начальный остаток на {position_date:%d.%m.%Y}: "
+                "рублёвый snapshot fact_cash_position_daily"
+            )
+        if is_cash and closing_cash_position is not None:
+            closing_balance, position_status, position_date = closing_cash_position
+            cash_position_statuses.append(position_status)
+            cash_source_as_of = position_date
+            cash_position_notes.append(
+                f"Конечный остаток на {position_date:%d.%m.%Y}: "
+                "рублёвый snapshot fact_cash_position_daily"
+            )
         debit, credit, difference = _turnover_amounts(
             section=anchor.section,  # type: ignore[arg-type]
             opening_balance=opening_balance,
@@ -1978,6 +2052,7 @@ def get_management_balance_turnover(
             )
             if note
         ]
+        notes.extend(cash_position_notes)
         if opening_line is None:
             notes.append(
                 f"На {selected_from:%d.%m.%Y} статья отсутствовала; "
@@ -1992,19 +2067,14 @@ def get_management_balance_turnover(
         line_source_status = anchor.source_status
         if missing_side or line_source_statuses != {"ready"}:
             line_source_status = "partial"
-        if (
-            anchor.section == "asset"
-            and anchor.line_key == "cash"
-            and gross_cash_turnover is not None
-            and opening_balance is not None
-            and closing_balance is not None
-        ):
+        if is_cash and gross_cash_turnover is not None:
             debit, credit, cash_status, cash_note = gross_cash_turnover
             expected_closing = opening_balance + debit - credit
             difference = (closing_balance - expected_closing).quantize(MONEY)
             turnover_method = "gross_cashflow_movements"
             notes.append(cash_note)
-            if cash_status != "ready":
+            cash_position_statuses.append(cash_status)
+            if any(status != "ready" for status in cash_position_statuses):
                 line_source_status = "partial"
         turnover_lines.append(
             ExecutiveManagementBalanceTurnoverLine(
@@ -2019,7 +2089,7 @@ def get_management_balance_turnover(
                 turnover_method=turnover_method,
                 source_key=anchor.source_key,
                 source_status=line_source_status,
-                source_as_of=anchor.source_as_of,
+                source_as_of=cash_source_as_of,
                 note="; ".join(dict.fromkeys(notes)) or None,
             )
         )

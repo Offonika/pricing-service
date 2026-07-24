@@ -1068,6 +1068,15 @@ def test_management_balance_turnover_uses_gross_cash_movements_in_common_stateme
                         "is_internal_transfer": False,
                     },
                 ],
+                "cash_position": {
+                    "rows": [
+                        {
+                            "snapshot_date": "2026-06-30",
+                            "total_balance": "115.00",
+                            "source_status": "partial",
+                        }
+                    ]
+                },
             },
             "ready",
             "fixture",
@@ -1091,9 +1100,12 @@ def test_management_balance_turnover_uses_gross_cash_movements_in_common_stateme
     assert lines["cash"].opening_balance == Decimal("100.00")
     assert lines["cash"].debit_turnover == Decimal("45.00")
     assert lines["cash"].credit_turnover == Decimal("30.00")
-    assert lines["cash"].closing_balance == Decimal("120.00")
-    assert lines["cash"].reconciliation_difference == Decimal("5.00")
+    assert lines["cash"].closing_balance == Decimal("115.00")
+    assert lines["cash"].reconciliation_difference == Decimal("0.00")
     assert lines["cash"].turnover_method == "gross_cashflow_movements"
+    assert lines["cash"].source_as_of == date(2026, 6, 30)
+    assert "управленческих рублях" in (lines["cash"].note or "")
+    assert "рублёвый snapshot" in (lines["cash"].note or "")
     assert lines["suppliers"].turnover_method == "net_change_from_snapshots"
 
 
@@ -1116,6 +1128,42 @@ def test_management_balance_turnover_applies_range_to_all_lines(
         balance_date=date.today(),
         view="operational",
     )
+    monkeypatch.setattr(
+        balance_service,
+        "_load_cashflow_period_cache",
+        lambda: (
+            {
+                "source_status": "ready",
+                "period": {
+                    "date_from": "2026-01-01",
+                    "date_to": date.today().isoformat(),
+                },
+                "rows": [
+                    {
+                        "business_date": date.today().isoformat(),
+                        "inflow_amount": "20.00",
+                        "outflow_amount": "5.00",
+                    }
+                ],
+                "cash_position": {
+                    "rows": [
+                        {
+                            "snapshot_date": "2026-06-30",
+                            "total_balance_rub": "125.00",
+                            "source_status": "ready",
+                        },
+                        {
+                            "snapshot_date": date.today().isoformat(),
+                            "total_balance_rub": "140.00",
+                            "source_status": "ready",
+                        },
+                    ]
+                },
+            },
+            "ready",
+            "fixture",
+        ),
+    )
 
     response = get_management_balance_turnover(
         db_session,
@@ -1130,8 +1178,12 @@ def test_management_balance_turnover_applies_range_to_all_lines(
     assert response.date_from == date(2026, 7, 1)
     assert response.date_to == date.today()
     assert response.opening_balance_date == date(2026, 6, 30)
-    assert lines["cash"].opening_balance == Decimal("120.00")
-    assert lines["cash"].closing_balance == Decimal("130.00")
+    assert lines["cash"].opening_balance == Decimal("125.00")
+    assert lines["cash"].closing_balance == Decimal("140.00")
+    assert lines["cash"].debit_turnover == Decimal("20.00")
+    assert lines["cash"].credit_turnover == Decimal("5.00")
+    assert lines["cash"].reconciliation_difference == Decimal("0.00")
+    assert lines["cash"].source_as_of == date.today()
     assert lines["suppliers"].opening_balance == Decimal("70.00")
     assert lines["suppliers"].closing_balance == Decimal("65.00")
 

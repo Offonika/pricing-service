@@ -1871,6 +1871,17 @@ def get_management_balance_turnover(
     source_status = closing_snapshot.source_status
     if unknown_line_count or any(line.source_status == "partial" for line in turnover_lines):
         source_status = "partial"
+    totals_by_section = {total.section: total for total in totals}
+    opening_scope_imbalance = (
+        totals_by_section["asset"].opening_balance
+        - totals_by_section["liability"].opening_balance
+        - totals_by_section["equity"].opening_balance
+    ).quantize(MONEY)
+    closing_scope_imbalance = (
+        totals_by_section["asset"].closing_balance
+        - totals_by_section["liability"].closing_balance
+        - totals_by_section["equity"].closing_balance
+    ).quantize(MONEY)
     return ExecutiveManagementBalanceTurnoverResponse(
         month=closing_snapshot.period_month.strftime("%Y-%m"),
         date_from=opening_snapshot.balance_date,
@@ -1889,6 +1900,8 @@ def get_management_balance_turnover(
         excluded_lines=excluded_lines,
         opening_imbalance_amount=opening_snapshot.imbalance_amount,
         closing_imbalance_amount=closing_snapshot.imbalance_amount,
+        opening_scope_imbalance_amount=opening_scope_imbalance,
+        closing_scope_imbalance_amount=closing_scope_imbalance,
         unknown_line_count=unknown_line_count,
         note=(
             "Управленческий контур: УТ 10.3; из БП включены только начисленные налоги. "

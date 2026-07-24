@@ -14511,6 +14511,16 @@ components:
           pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           title: Closing Imbalance Amount
           default: '0'
+        opening_scope_imbalance_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Opening Scope Imbalance Amount
+          default: '0'
+        closing_scope_imbalance_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Closing Scope Imbalance Amount
+          default: '0'
         unknown_line_count:
           type: integer
           title: Unknown Line Count

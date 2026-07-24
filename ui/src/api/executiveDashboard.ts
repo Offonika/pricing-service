@@ -174,6 +174,8 @@ export interface ExecutiveManagementBalanceTurnoverResponse {
   excluded_lines: Array<Record<string, unknown>>;
   opening_imbalance_amount: string;
   closing_imbalance_amount: string;
+  opening_scope_imbalance_amount: string;
+  closing_scope_imbalance_amount: string;
   unknown_line_count: number;
   note: string;
 }

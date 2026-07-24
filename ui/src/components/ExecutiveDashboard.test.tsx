@@ -726,6 +726,8 @@ describe("executive management balance", () => {
       ],
       opening_imbalance_amount: "0.00",
       closing_imbalance_amount: "0.00",
+      opening_scope_imbalance_amount: "90.00",
+      closing_scope_imbalance_amount: "105.00",
       unknown_line_count: 0,
       note: "Обороты рассчитаны как чистое изменение между снимками.",
     });
@@ -742,6 +744,7 @@ describe("executive management balance", () => {
       /10 ₽/
     );
     expect(screen.getByText(/Не включено строк БП: 1/)).toBeVisible();
+    expect(screen.getByText("Итоги ограниченного контура не равны")).toBeVisible();
   });
 });
 

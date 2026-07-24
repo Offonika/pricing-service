@@ -1446,6 +1446,17 @@ function ManagementBalanceTurnoverTable({
           </span>
         </div>
       )}
+      {(Number(turnover.opening_scope_imbalance_amount) !== 0 ||
+        Number(turnover.closing_scope_imbalance_amount) !== 0) && (
+        <div className="executive-management-balance__turnover-note" role="alert">
+          <strong>Итоги ограниченного контура не равны</strong>
+          <span>
+            Контроль на начало: {formatSignedMoney(turnover.opening_scope_imbalance_amount)};
+            на конец: {formatSignedMoney(turnover.closing_scope_imbalance_amount)}. Расхождение
+            остаётся видимым, потому что статьи БП, кроме начисленных налогов, не включаются.
+          </span>
+        </div>
+      )}
       <div className="executive-management-balance__turnover-scroll">
         <table>
           <thead>

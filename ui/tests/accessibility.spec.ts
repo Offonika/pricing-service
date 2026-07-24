@@ -76,6 +76,8 @@ test("Bitrix executive dashboard renders a successful API response", async ({ pa
           excluded_lines: [],
           opening_imbalance_amount: "0.00",
           closing_imbalance_amount: "0.00",
+          opening_scope_imbalance_amount: "80.00",
+          closing_scope_imbalance_amount: "100.00",
           unknown_line_count: 0,
           note: "Обороты рассчитаны как чистое изменение между снимками.",
         }),

@@ -177,6 +177,8 @@ class ExecutiveManagementBalanceTurnoverResponse(BaseModel):
     excluded_lines: list[dict[str, Any]] = Field(default_factory=list)
     opening_imbalance_amount: Decimal = Decimal("0")
     closing_imbalance_amount: Decimal = Decimal("0")
+    opening_scope_imbalance_amount: Decimal = Decimal("0")
+    closing_scope_imbalance_amount: Decimal = Decimal("0")
     unknown_line_count: int = 0
     note: str
 

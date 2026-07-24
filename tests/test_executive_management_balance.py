@@ -1027,6 +1027,8 @@ def test_management_balance_turnover_uses_ut_scope_and_bp_taxes_only(
     assert lines["taxes_payable"].credit_turnover == Decimal("5.00")
     assert lines["retained_earnings"].credit_turnover == Decimal("20.00")
     assert all(line.reconciliation_difference == Decimal("0.00") for line in response.lines)
+    assert response.opening_scope_imbalance_amount == Decimal("-50.00")
+    assert response.closing_scope_imbalance_amount == Decimal("-45.00")
     assert response.turnover_method == "net_change_from_snapshots"
 
 

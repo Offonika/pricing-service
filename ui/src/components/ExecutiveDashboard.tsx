@@ -1409,31 +1409,29 @@ function turnoverSourceLabel(sourceKey: string) {
 
 function ManagementBalanceTurnoverTable({
   turnover,
-  cashMonthFrom,
-  cashMonthTo,
-  cashPeriodLoading,
-  onCashMonthFromChange,
-  onCashMonthToChange,
-  onCashPeriodApply,
+  periodMonthFrom,
+  periodMonthTo,
+  periodLoading,
+  onPeriodMonthFromChange,
+  onPeriodMonthToChange,
+  onPeriodApply,
 }: {
   turnover: ExecutiveManagementBalanceTurnoverResponse;
-  cashMonthFrom: string;
-  cashMonthTo: string;
-  cashPeriodLoading: boolean;
-  onCashMonthFromChange: (month: string) => void;
-  onCashMonthToChange: (month: string) => void;
-  onCashPeriodApply: () => void;
+  periodMonthFrom: string;
+  periodMonthTo: string;
+  periodLoading: boolean;
+  onPeriodMonthFromChange: (month: string) => void;
+  onPeriodMonthToChange: (month: string) => void;
+  onPeriodApply: () => void;
 }) {
   const sectionLabels = {
     asset: "Активы",
     liability: "Обязательства",
     equity: "Собственные средства",
   } as const;
-  const availableCashMonths = turnover.available_months || [];
-  const firstCashMonth = availableCashMonths[0];
-  const lastCashMonth = availableCashMonths[availableCashMonths.length - 1];
-  const cashMonthly = turnover.cash_monthly || [];
-  const cashPeriodInvalid = !cashMonthFrom || !cashMonthTo || cashMonthFrom > cashMonthTo;
+  const availablePeriodStarts = turnover.available_period_starts || ["2026-01"];
+  const availablePeriodEnds = turnover.available_period_ends || turnover.available_months || [];
+  const periodInvalid = !periodMonthFrom || !periodMonthTo || periodMonthFrom > periodMonthTo;
 
   return (
     <section
@@ -1447,8 +1445,48 @@ function ManagementBalanceTurnoverTable({
             с {formatDate(turnover.date_from)} по {formatDate(turnover.date_to)}
           </span>
         </div>
-        <small>УТ 10.3 · из БП только начисленные налоги</small>
+        <div className="executive-management-balance__turnover-period">
+          <label>
+            <span>Период с</span>
+            <select
+              aria-label="Начальный месяц оборотно-сальдовой ведомости"
+              disabled={periodLoading}
+              onChange={(event) => onPeriodMonthFromChange(event.target.value)}
+              value={periodMonthFrom}
+            >
+              {availablePeriodStarts.map((item) => (
+                <option key={item} value={item}>{formatBalanceMonth(item)}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Период по</span>
+            <select
+              aria-label="Конечный месяц оборотно-сальдовой ведомости"
+              disabled={periodLoading}
+              onChange={(event) => onPeriodMonthToChange(event.target.value)}
+              value={periodMonthTo}
+            >
+              {availablePeriodEnds.map((item) => (
+                <option key={item} value={item}>{formatBalanceMonth(item)}</option>
+              ))}
+            </select>
+          </label>
+          <button
+            disabled={periodLoading || periodInvalid}
+            onClick={onPeriodApply}
+            type="button"
+          >
+            {periodLoading ? "Загрузка…" : "Показать ОСВ"}
+          </button>
+        </div>
       </header>
+      {periodInvalid && (
+        <div className="executive-management-balance__turnover-note" role="alert">
+          <strong>Проверьте период</strong>
+          <span>Конечный месяц не может быть раньше начального.</span>
+        </div>
+      )}
       <div className="executive-management-balance__turnover-note" role="note">
         <strong>Сверочная версия</strong>
         <span>{turnover.note}</span>
@@ -1474,120 +1512,6 @@ function ManagementBalanceTurnoverTable({
           </span>
         </div>
       )}
-      <section
-        className="executive-management-balance__cash-monthly"
-        aria-label="Помесячная сверка денежных средств"
-      >
-        <header>
-          <div>
-            <h4>Денежные средства по месяцам</h4>
-            <span>Начальный остаток + приход − расход = расчётный остаток</span>
-          </div>
-          <div className="executive-management-balance__cash-period">
-            <label>
-              <span>Месяц начала</span>
-              <input
-                aria-label="Месяц начала оборотов денежных средств"
-                disabled={cashPeriodLoading}
-                max={lastCashMonth}
-                min={firstCashMonth}
-                onChange={(event) => onCashMonthFromChange(event.target.value)}
-                type="month"
-                value={cashMonthFrom}
-              />
-            </label>
-            <label>
-              <span>Месяц конца</span>
-              <input
-                aria-label="Месяц конца оборотов денежных средств"
-                disabled={cashPeriodLoading}
-                max={lastCashMonth}
-                min={firstCashMonth}
-                onChange={(event) => onCashMonthToChange(event.target.value)}
-                type="month"
-                value={cashMonthTo}
-              />
-            </label>
-            <button
-              disabled={cashPeriodLoading || cashPeriodInvalid}
-              onClick={onCashPeriodApply}
-              type="button"
-            >
-              {cashPeriodLoading ? "Загрузка…" : "Показать"}
-            </button>
-          </div>
-        </header>
-        {cashPeriodInvalid && (
-          <div className="executive-management-balance__turnover-note" role="alert">
-            <strong>Проверьте период</strong>
-            <span>Месяц окончания не может быть раньше месяца начала.</span>
-          </div>
-        )}
-        {turnover.cash_note && (
-          <div className="executive-management-balance__cash-method" role="note">
-            {turnover.cash_note}
-          </div>
-        )}
-        {cashMonthly.length > 0 ? (
-          <div className="executive-management-balance__turnover-scroll">
-            <table aria-label="Обороты и остатки денежных средств по месяцам">
-              <thead>
-                <tr>
-                  <th scope="col">Месяц</th>
-                  <th scope="col">Остаток на начало</th>
-                  <th scope="col">Приход</th>
-                  <th scope="col">Расход</th>
-                  <th scope="col">Расчётный конец</th>
-                  <th scope="col">Фактический снимок</th>
-                  <th scope="col">Разница</th>
-                </tr>
-              </thead>
-              <tbody>
-                {cashMonthly.map((row) => (
-                  <tr key={row.month}>
-                    <th scope="row">
-                      <span>{formatBalanceMonth(row.month)}</span>
-                      <small>
-                        {row.is_closed_month
-                          ? `по ${formatDate(row.date_to)}`
-                          : `незакрытый · по ${formatDate(row.date_to)}`}
-                      </small>
-                      {row.note && <small>{row.note}</small>}
-                    </th>
-                    <td>{formatMoney(row.opening_balance)}</td>
-                    <td>{formatMoney(row.gross_inflow)}</td>
-                    <td>{formatMoney(row.gross_outflow)}</td>
-                    <td>{formatMoney(row.calculated_closing_balance)}</td>
-                    <td>
-                      {formatTurnoverMoney(row.actual_closing_balance)}
-                      {row.actual_snapshot_date && (
-                        <small>{formatDate(row.actual_snapshot_date)}</small>
-                      )}
-                    </td>
-                    <td
-                      className={
-                        row.reconciliation_difference === null ||
-                        row.reconciliation_difference === undefined
-                          ? ""
-                          : Number(row.reconciliation_difference) === 0
-                            ? "is-ok"
-                            : "is-error"
-                      }
-                    >
-                      {formatTurnoverMoney(row.reconciliation_difference)}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : (
-          <div className="executive-management-balance__turnover-note" role="status">
-            <strong>Помесячные обороты пока недоступны</strong>
-            <span>{turnover.cash_note || "Источник ДДС не передал данные."}</span>
-          </div>
-        )}
-      </section>
       <div className="executive-management-balance__turnover-scroll">
         <table aria-label="Оборотно-сальдовая ведомость по статьям баланса">
           <thead>
@@ -1614,6 +1538,11 @@ function ManagementBalanceTurnoverTable({
                       <span>{line.label}</span>
                       <small>
                         {turnoverSourceLabel(line.source_key)} · {line.source_status}
+                      </small>
+                      <small>
+                        {line.turnover_method === "gross_cashflow_movements"
+                          ? "Валовые обороты 1С"
+                          : "Чистое изменение сальдо"}
                       </small>
                       {line.note && <small>{line.note}</small>}
                     </th>
@@ -1664,9 +1593,9 @@ export function MonthlyManagementBalance({
   const [turnover, setTurnover] = useState<ExecutiveManagementBalanceTurnoverResponse | null>(null);
   const [month, setMonth] = useState<string | undefined>();
   const [view, setView] = useState<ExecutiveManagementBalanceView | undefined>();
-  const [cashMonthFrom, setCashMonthFrom] = useState("");
-  const [cashMonthTo, setCashMonthTo] = useState("");
-  const [cashPeriodLoading, setCashPeriodLoading] = useState(false);
+  const [turnoverMonthFrom, setTurnoverMonthFrom] = useState("");
+  const [turnoverMonthTo, setTurnoverMonthTo] = useState("");
+  const [turnoverPeriodLoading, setTurnoverPeriodLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
   const [turnoverMessage, setTurnoverMessage] = useState("");
@@ -1690,12 +1619,12 @@ export function MonthlyManagementBalance({
           view: payload.view,
         });
         setTurnover(turnoverPayload);
-        setCashMonthFrom(
+        setTurnoverMonthFrom(
           turnoverPayload.selected_month_from ||
-            turnoverPayload.available_months?.[0] ||
+            turnoverPayload.available_period_starts?.[0] ||
             "2026-01"
         );
-        setCashMonthTo(turnoverPayload.selected_month_to || payload.month);
+        setTurnoverMonthTo(turnoverPayload.selected_month_to || payload.month);
       } catch (error: unknown) {
         setTurnoverMessage(errorMessage(error));
       }
@@ -1716,12 +1645,12 @@ export function MonthlyManagementBalance({
               view: fallback.view,
             });
             setTurnover(turnoverPayload);
-            setCashMonthFrom(
+            setTurnoverMonthFrom(
               turnoverPayload.selected_month_from ||
-                turnoverPayload.available_months?.[0] ||
+                turnoverPayload.available_period_starts?.[0] ||
                 "2026-01"
             );
-            setCashMonthTo(turnoverPayload.selected_month_to || fallback.month);
+            setTurnoverMonthTo(turnoverPayload.selected_month_to || fallback.month);
           } catch (turnoverError: unknown) {
             setTurnoverMessage(errorMessage(turnoverError));
           }
@@ -1752,25 +1681,30 @@ export function MonthlyManagementBalance({
   const chooseView = (nextView: ExecutiveManagementBalanceView) => {
     load(month, nextView);
   };
-  const applyCashPeriod = () => {
-    if (!balance || !cashMonthFrom || !cashMonthTo || cashMonthFrom > cashMonthTo) {
+  const applyTurnoverPeriod = () => {
+    if (
+      !balance ||
+      !turnoverMonthFrom ||
+      !turnoverMonthTo ||
+      turnoverMonthFrom > turnoverMonthTo
+    ) {
       return;
     }
-    setCashPeriodLoading(true);
+    setTurnoverPeriodLoading(true);
     setTurnoverMessage("");
     fetchExecutiveManagementBalanceTurnover({
       month: balance.month,
-      monthFrom: cashMonthFrom,
-      monthTo: cashMonthTo,
+      monthFrom: turnoverMonthFrom,
+      monthTo: turnoverMonthTo,
       view: balance.view,
     })
       .then((payload) => {
         setTurnover(payload);
-        setCashMonthFrom(payload.selected_month_from || cashMonthFrom);
-        setCashMonthTo(payload.selected_month_to || cashMonthTo);
+        setTurnoverMonthFrom(payload.selected_month_from || turnoverMonthFrom);
+        setTurnoverMonthTo(payload.selected_month_to || turnoverMonthTo);
       })
       .catch((error: unknown) => setTurnoverMessage(errorMessage(error)))
-      .finally(() => setCashPeriodLoading(false));
+      .finally(() => setTurnoverPeriodLoading(false));
   };
   const closeMonth = () => {
     if (!balance || !window.confirm(`Закрыть управленческий баланс за ${formatBalanceMonth(balance.month)}?`)) {
@@ -1981,12 +1915,12 @@ export function MonthlyManagementBalance({
           </div>
           {turnover && (
             <ManagementBalanceTurnoverTable
-              cashMonthFrom={cashMonthFrom}
-              cashMonthTo={cashMonthTo}
-              cashPeriodLoading={cashPeriodLoading}
-              onCashMonthFromChange={setCashMonthFrom}
-              onCashMonthToChange={setCashMonthTo}
-              onCashPeriodApply={applyCashPeriod}
+              onPeriodApply={applyTurnoverPeriod}
+              onPeriodMonthFromChange={setTurnoverMonthFrom}
+              onPeriodMonthToChange={setTurnoverMonthTo}
+              periodLoading={turnoverPeriodLoading}
+              periodMonthFrom={turnoverMonthFrom}
+              periodMonthTo={turnoverMonthTo}
               turnover={turnover}
             />
           )}

@@ -2562,56 +2562,25 @@
   font-size: 12px;
 }
 
-.executive-management-balance__cash-monthly {
-  margin: 4px 20px 20px;
-  border: 1px solid #d9e0e8;
-  border-radius: 12px;
-  overflow: hidden;
-}
-
-.executive-management-balance__cash-monthly > header {
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 14px 16px;
-  background: #f8fafc;
-}
-
-.executive-management-balance__cash-monthly h4,
-.executive-management-balance__cash-monthly header span {
-  margin: 0;
-}
-
-.executive-management-balance__cash-monthly h4 {
-  font-size: 15px;
-}
-
-.executive-management-balance__cash-monthly header span,
-.executive-management-balance__cash-method {
-  color: #667085;
-  font-size: 12px;
-}
-
-.executive-management-balance__cash-period {
+.executive-management-balance__turnover-period {
   display: flex;
   align-items: flex-end;
   gap: 8px;
 }
 
-.executive-management-balance__cash-period label {
+.executive-management-balance__turnover-period label {
   display: grid;
   gap: 4px;
 }
 
-.executive-management-balance__cash-period label span {
+.executive-management-balance__turnover-period label span {
   color: #475467;
   font-size: 11px;
   font-weight: 600;
 }
 
-.executive-management-balance__cash-period input,
-.executive-management-balance__cash-period button {
+.executive-management-balance__turnover-period select,
+.executive-management-balance__turnover-period button {
   min-height: 36px;
   border: 1px solid #cfd8e3;
   border-radius: 8px;
@@ -2620,11 +2589,11 @@
   font: inherit;
 }
 
-.executive-management-balance__cash-period input {
+.executive-management-balance__turnover-period select {
   padding: 6px 9px;
 }
 
-.executive-management-balance__cash-period button {
+.executive-management-balance__turnover-period button {
   padding: 6px 12px;
   border-color: #1f5eff;
   background: #1f5eff;
@@ -2632,26 +2601,9 @@
   cursor: pointer;
 }
 
-.executive-management-balance__cash-period button:disabled {
+.executive-management-balance__turnover-period button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
-}
-
-.executive-management-balance__cash-method {
-  padding: 10px 16px;
-  border-top: 1px solid #d9e0e8;
-}
-
-.executive-management-balance__cash-monthly
-  .executive-management-balance__turnover-note {
-  margin-top: 12px;
-}
-
-.executive-management-balance__cash-monthly td small {
-  display: block;
-  margin-top: 3px;
-  color: #667085;
-  font-size: 11px;
 }
 
 .executive-management-balance__turnover-scroll {
@@ -3956,19 +3908,13 @@
     grid-template-columns: 1fr;
   }
 
-  .executive-management-balance__cash-monthly {
-    margin-right: 12px;
-    margin-left: 12px;
-  }
-
-  .executive-management-balance__cash-monthly > header,
-  .executive-management-balance__cash-period {
+  .executive-management-balance__turnover-period {
     align-items: stretch;
     flex-direction: column;
   }
 
-  .executive-management-balance__cash-period input,
-  .executive-management-balance__cash-period button {
+  .executive-management-balance__turnover-period select,
+  .executive-management-balance__turnover-period button {
     width: 100%;
   }
 

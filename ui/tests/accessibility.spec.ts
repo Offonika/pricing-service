@@ -27,14 +27,16 @@ test("Bitrix executive dashboard renders a successful API response", async ({ pa
     const url = new URL(route.request().url());
     if (url.pathname.endsWith("/management-balance-turnover")) {
       const month = url.searchParams.get("month") || "2026-07";
-      const dateTo = month === "2026-06" ? "2026-06-30" : "2026-07-11";
+      const selectedTo = url.searchParams.get("month_to") || month;
+      const dateTo = selectedTo === "2026-06" ? "2026-06-30" : "2026-07-11";
       return route.fulfill({
         status: 200,
         contentType: "application/json",
         body: JSON.stringify({
-          month,
+          month: selectedTo,
           date_from: "2026-01-01",
           date_to: dateTo,
+          opening_balance_date: "2026-01-01",
           view: url.searchParams.get("view") || "operational",
           opening_version: 1,
           closing_version: 1,
@@ -43,7 +45,7 @@ test("Bitrix executive dashboard renders a successful API response", async ({ pa
           opening_validation_error_count: 4,
           opening_content_sha256: "a".repeat(64),
           closing_content_sha256: "b".repeat(64),
-          turnover_method: "net_change_from_snapshots",
+          turnover_method: "mixed_gross_cashflow_and_net_change",
           source_scope: "onec_ut_10_3_plus_bp_accrued_taxes",
           source_status: "partial",
           currency: "RUB",
@@ -52,7 +54,7 @@ test("Bitrix executive dashboard renders a successful API response", async ({ pa
               key: "cash", label: "Денежные средства", section: "asset",
               opening_balance: "80.00", debit_turnover: "20.00", credit_turnover: "0.00",
               closing_balance: "100.00", reconciliation_difference: "0.00",
-              turnover_method: "net_change_from_snapshots", source_key: "onec_cash",
+              turnover_method: "gross_cashflow_movements", source_key: "onec_cash",
               source_status: "ready",
             },
           ],
@@ -79,30 +81,13 @@ test("Bitrix executive dashboard renders a successful API response", async ({ pa
           opening_scope_imbalance_amount: "80.00",
           closing_scope_imbalance_amount: "100.00",
           unknown_line_count: 0,
-          available_months: ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07"],
+          available_months: ["2026-06", "2026-07"],
+          available_period_starts: ["2026-01", "2026-07"],
+          available_period_ends: ["2026-06", "2026-07"],
           selected_month_from: url.searchParams.get("month_from") || "2026-01",
-          selected_month_to: url.searchParams.get("month_to") || month,
-          cash_turnover_method: "opening_snapshot_plus_gross_cashflow",
-          cash_source_status: "partial",
-          cash_note:
-            "Расчёт: остаток на 01.01.2026 + валовые приходы − валовые расходы УТ 10.3.",
-          cash_monthly: [
-            {
-              month,
-              date_from: `${month}-01`,
-              date_to: dateTo,
-              opening_balance: "80.00",
-              gross_inflow: "40.00",
-              gross_outflow: "20.00",
-              calculated_closing_balance: "100.00",
-              actual_closing_balance: "101.00",
-              actual_snapshot_date: dateTo,
-              reconciliation_difference: "1.00",
-              is_closed_month: month === "2026-06",
-              source_status: "partial",
-            },
-          ],
-          note: "Обороты рассчитаны как чистое изменение между снимками.",
+          selected_month_to: selectedTo,
+          note:
+            "Диапазон применяется ко всей ОСВ. По денежным средствам показаны валовые движения УТ 10.3.",
         }),
       });
     }
@@ -224,9 +209,9 @@ test("Bitrix executive dashboard renders a successful API response", async ({ pa
   await expect(page.locator(".executive-management-balance-section")).toContainText("Прочие дебиторы");
   await expect(page.getByRole("heading", { name: "Мост собственного капитала" })).toBeVisible();
   await expect(page.getByText("Рассчитано автоматически на 01.01.2026")).toBeVisible();
-  await expect(page.getByLabel("Месяц начала оборотов денежных средств")).toHaveValue("2026-01");
-  await expect(page.getByLabel("Месяц конца оборотов денежных средств")).toHaveValue("2026-07");
-  await expect(page.getByRole("table", { name: "Обороты и остатки денежных средств по месяцам" })).toBeVisible();
+  await expect(page.getByLabel("Начальный месяц оборотно-сальдовой ведомости")).toHaveValue("2026-01");
+  await expect(page.getByLabel("Конечный месяц оборотно-сальдовой ведомости")).toHaveValue("2026-07");
+  await expect(page.getByRole("table", { name: "Оборотно-сальдовая ведомость по статьям баланса" })).toBeVisible();
   await page.getByRole("button", { name: "Закрытый месяц" }).click();
   await expect(page.getByText("Закрытая версия отсутствует", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Оперативный на сегодня" })).toHaveAttribute("aria-pressed", "true");

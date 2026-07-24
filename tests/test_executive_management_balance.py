@@ -24,6 +24,7 @@ from app.services import executive_management_balance as balance_service
 from app.services.executive_management_balance import (
     BalanceLineDraft,
     ManagementBalanceCloseError,
+    ManagementBalanceNotFoundError,
     build_and_persist_management_balance_snapshot,
     build_management_balance_snapshot_command,
     close_management_balance,
@@ -202,6 +203,11 @@ def _build_turnover_fixture(
 ) -> None:
     settings = _settings()
     monkeypatch.setattr(balance_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        balance_service,
+        "_load_cashflow_period_cache",
+        lambda: (None, "source_missing", "fixture without cashflow"),
+    )
     opening = _turnover_fixture_lines(
         as_of=date(2026, 1, 1),
         cash="100.00",
@@ -1015,6 +1021,7 @@ def test_management_balance_turnover_uses_ut_scope_and_bp_taxes_only(
     assert response.source_scope == "onec_ut_10_3_plus_bp_accrued_taxes"
     assert response.date_from == date(2026, 1, 1)
     assert response.date_to == date(2026, 6, 30)
+    assert response.opening_balance_date == date(2026, 1, 1)
     assert response.opening_status == "closed"
     assert "fixed_assets_net" not in lines
     assert any(item["key"] == "fixed_assets_net" for item in response.excluded_lines)
@@ -1029,10 +1036,12 @@ def test_management_balance_turnover_uses_ut_scope_and_bp_taxes_only(
     assert all(line.reconciliation_difference == Decimal("0.00") for line in response.lines)
     assert response.opening_scope_imbalance_amount == Decimal("-50.00")
     assert response.closing_scope_imbalance_amount == Decimal("-45.00")
-    assert response.turnover_method == "net_change_from_snapshots"
+    assert response.turnover_method == "mixed_gross_cashflow_and_net_change"
+    assert response.available_period_starts == ["2026-01", "2026-07"]
+    assert response.available_period_ends == ["2026-06"]
 
 
-def test_management_balance_turnover_builds_monthly_cash_reconciliation(
+def test_management_balance_turnover_uses_gross_cash_movements_in_common_statement(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1044,7 +1053,7 @@ def test_management_balance_turnover_builds_monthly_cash_reconciliation(
             {
                 "generated_at": "2026-03-01T08:30:00+00:00",
                 "source_status": "ready",
-                "period": {"date_from": "2026-01-01", "date_to": "2026-02-28"},
+                "period": {"date_from": "2026-01-01", "date_to": "2026-06-30"},
                 "rows": [
                     {
                         "business_date": "2026-01-10",
@@ -1053,26 +1062,12 @@ def test_management_balance_turnover_builds_monthly_cash_reconciliation(
                         "is_internal_transfer": False,
                     },
                     {
-                        "business_date": "2026-02-10",
+                        "business_date": "2026-06-10",
                         "inflow_amount": "5.00",
                         "outflow_amount": "20.00",
                         "is_internal_transfer": False,
                     },
                 ],
-                "cash_position": {
-                    "rows": [
-                        {
-                            "snapshot_date": "2026-01-31",
-                            "total_balance": "131.00",
-                            "source_status": "partial",
-                        },
-                        {
-                            "snapshot_date": "2026-02-28",
-                            "total_balance": "115.00",
-                            "source_status": "ready",
-                        },
-                    ]
-                },
             },
             "ready",
             "fixture",
@@ -1083,38 +1078,65 @@ def test_management_balance_turnover_builds_monthly_cash_reconciliation(
         db_session,
         month="2026-06",
         month_from="2026-01",
-        month_to="2026-02",
+        month_to="2026-06",
         view="closed",
         access_context=bitrix_executive_dashboard_auth.full_executive_dashboard_context(),
     )
 
     assert response.selected_month_from == "2026-01"
-    assert response.selected_month_to == "2026-02"
-    assert response.available_months == [
-        "2026-01",
-        "2026-02",
-        "2026-03",
-        "2026-04",
-        "2026-05",
-        "2026-06",
-    ]
-    assert response.cash_source_status == "partial"
-    assert response.cash_turnover_method == "opening_snapshot_plus_gross_cashflow"
-    assert len(response.cash_monthly) == 2
-    january, february = response.cash_monthly
-    assert january.opening_balance == Decimal("100.00")
-    assert january.gross_inflow == Decimal("40.00")
-    assert january.gross_outflow == Decimal("10.00")
-    assert january.calculated_closing_balance == Decimal("130.00")
-    assert january.actual_closing_balance == Decimal("131.00")
-    assert january.reconciliation_difference == Decimal("1.00")
-    assert february.opening_balance == Decimal("130.00")
-    assert february.calculated_closing_balance == Decimal("115.00")
-    assert february.actual_closing_balance == Decimal("115.00")
-    assert february.reconciliation_difference == Decimal("0.00")
+    assert response.selected_month_to == "2026-06"
+    assert response.available_period_starts == ["2026-01", "2026-07"]
+    assert response.available_period_ends == ["2026-06"]
+    lines = {line.key: line for line in response.lines}
+    assert lines["cash"].opening_balance == Decimal("100.00")
+    assert lines["cash"].debit_turnover == Decimal("45.00")
+    assert lines["cash"].credit_turnover == Decimal("30.00")
+    assert lines["cash"].closing_balance == Decimal("120.00")
+    assert lines["cash"].reconciliation_difference == Decimal("5.00")
+    assert lines["cash"].turnover_method == "gross_cashflow_movements"
+    assert lines["suppliers"].turnover_method == "net_change_from_snapshots"
 
 
-def test_management_balance_turnover_rejects_reversed_cash_month_range(
+def test_management_balance_turnover_applies_range_to_all_lines(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _build_turnover_fixture(db_session, monkeypatch)
+    current = _turnover_fixture_lines(
+        as_of=date.today(),
+        cash="130.00",
+        fixed_assets="45.00",
+        suppliers="65.00",
+        taxes="17.00",
+        equity="85.00",
+    )
+    monkeypatch.setattr(balance_service, "_build_draft_lines", lambda *args, **kwargs: current)
+    build_and_persist_management_balance_snapshot(
+        db_session,
+        balance_date=date.today(),
+        view="operational",
+    )
+
+    response = get_management_balance_turnover(
+        db_session,
+        month="2026-07",
+        month_from="2026-07",
+        month_to="2026-07",
+        view="operational",
+        access_context=bitrix_executive_dashboard_auth.full_executive_dashboard_context(),
+    )
+
+    lines = {line.key: line for line in response.lines}
+    assert response.date_from == date(2026, 7, 1)
+    assert response.date_to == date.today()
+    assert response.opening_balance_date == date(2026, 6, 30)
+    assert lines["cash"].opening_balance == Decimal("120.00")
+    assert lines["cash"].closing_balance == Decimal("130.00")
+    assert lines["suppliers"].opening_balance == Decimal("70.00")
+    assert lines["suppliers"].closing_balance == Decimal("65.00")
+
+
+def test_management_balance_turnover_rejects_reversed_month_range(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1126,6 +1148,23 @@ def test_management_balance_turnover_rejects_reversed_cash_month_range(
             month="2026-06",
             month_from="2026-03",
             month_to="2026-02",
+            view="closed",
+            access_context=bitrix_executive_dashboard_auth.full_executive_dashboard_context(),
+        )
+
+
+def test_management_balance_turnover_rejects_unsaved_opening_boundary(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _build_turnover_fixture(db_session, monkeypatch)
+
+    with pytest.raises(ManagementBalanceNotFoundError, match="начального остатка"):
+        get_management_balance_turnover(
+            db_session,
+            month="2026-06",
+            month_from="2026-02",
+            month_to="2026-06",
             view="closed",
             access_context=bitrix_executive_dashboard_auth.full_executive_dashboard_context(),
         )
@@ -1162,7 +1201,7 @@ def test_management_balance_turnover_api_uses_balance_permissions(
         response = client.get(
             (
                 "/api/management/executive-dashboard/management-balance-turnover"
-                "?month=2026-06&month_from=2026-02&month_to=2026-05&view=closed"
+                "?month=2026-06&month_from=2026-01&month_to=2026-06&view=closed"
             ),
             headers={"Authorization": "Bearer secret-token"},
         )
@@ -1173,6 +1212,7 @@ def test_management_balance_turnover_api_uses_balance_permissions(
     payload = response.json()
     assert payload["date_from"] == "2026-01-01"
     assert payload["date_to"] == "2026-06-30"
+    assert payload["opening_balance_date"] == "2026-01-01"
     assert payload["source_scope"] == "onec_ut_10_3_plus_bp_accrued_taxes"
-    assert payload["selected_month_from"] == "2026-02"
-    assert payload["selected_month_to"] == "2026-05"
+    assert payload["selected_month_from"] == "2026-01"
+    assert payload["selected_month_to"] == "2026-06"

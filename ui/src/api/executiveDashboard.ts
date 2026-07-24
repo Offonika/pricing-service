@@ -135,7 +135,7 @@ export interface ExecutiveManagementBalanceTurnoverLine {
   credit_turnover?: string | null;
   closing_balance?: string | null;
   reconciliation_difference?: string | null;
-  turnover_method: "net_change_from_snapshots";
+  turnover_method: "net_change_from_snapshots" | "gross_cashflow_movements";
   source_key: string;
   source_status: string;
   source_as_of?: string | null;
@@ -153,26 +153,11 @@ export interface ExecutiveManagementBalanceTurnoverTotal {
   unknown_line_count: number;
 }
 
-export interface ExecutiveManagementBalanceCashMonthlyRow {
-  month: string;
-  date_from: string;
-  date_to: string;
-  opening_balance: string;
-  gross_inflow: string;
-  gross_outflow: string;
-  calculated_closing_balance: string;
-  actual_closing_balance?: string | null;
-  actual_snapshot_date?: string | null;
-  reconciliation_difference?: string | null;
-  is_closed_month: boolean;
-  source_status: string;
-  note?: string | null;
-}
-
 export interface ExecutiveManagementBalanceTurnoverResponse {
   month: string;
   date_from: string;
   date_to: string;
+  opening_balance_date: string;
   view: ExecutiveManagementBalanceView;
   opening_version: number;
   closing_version: number;
@@ -181,7 +166,7 @@ export interface ExecutiveManagementBalanceTurnoverResponse {
   opening_validation_error_count: number;
   opening_content_sha256: string;
   closing_content_sha256: string;
-  turnover_method: "net_change_from_snapshots";
+  turnover_method: "mixed_gross_cashflow_and_net_change";
   source_scope: "onec_ut_10_3_plus_bp_accrued_taxes";
   source_status: string;
   currency: string;
@@ -194,13 +179,10 @@ export interface ExecutiveManagementBalanceTurnoverResponse {
   closing_scope_imbalance_amount: string;
   unknown_line_count: number;
   available_months?: string[];
+  available_period_starts?: string[];
+  available_period_ends?: string[];
   selected_month_from?: string;
   selected_month_to?: string;
-  cash_monthly?: ExecutiveManagementBalanceCashMonthlyRow[];
-  cash_turnover_method?: "opening_snapshot_plus_gross_cashflow";
-  cash_source_status?: string;
-  cash_source_generated_at?: string | null;
-  cash_note?: string | null;
   note: string;
 }
 

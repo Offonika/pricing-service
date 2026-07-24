@@ -136,7 +136,9 @@ class ExecutiveManagementBalanceTurnoverLine(BaseModel):
     credit_turnover: Decimal | None = None
     closing_balance: Decimal | None = None
     reconciliation_difference: Decimal | None = None
-    turnover_method: Literal["net_change_from_snapshots"] = "net_change_from_snapshots"
+    turnover_method: Literal["net_change_from_snapshots", "gross_cashflow_movements"] = (
+        "net_change_from_snapshots"
+    )
     source_key: str
     source_status: str
     source_as_of: date | None = None
@@ -154,26 +156,11 @@ class ExecutiveManagementBalanceTurnoverTotal(BaseModel):
     unknown_line_count: int = 0
 
 
-class ExecutiveManagementBalanceCashMonthlyRow(BaseModel):
-    month: str
-    date_from: date
-    date_to: date
-    opening_balance: Decimal
-    gross_inflow: Decimal
-    gross_outflow: Decimal
-    calculated_closing_balance: Decimal
-    actual_closing_balance: Decimal | None = None
-    actual_snapshot_date: date | None = None
-    reconciliation_difference: Decimal | None = None
-    is_closed_month: bool
-    source_status: str
-    note: str | None = None
-
-
 class ExecutiveManagementBalanceTurnoverResponse(BaseModel):
     month: str
     date_from: date
     date_to: date
+    opening_balance_date: date
     view: ExecutiveManagementBalanceView
     opening_version: int
     closing_version: int
@@ -182,7 +169,9 @@ class ExecutiveManagementBalanceTurnoverResponse(BaseModel):
     opening_validation_error_count: int = 0
     opening_content_sha256: str
     closing_content_sha256: str
-    turnover_method: Literal["net_change_from_snapshots"] = "net_change_from_snapshots"
+    turnover_method: Literal["mixed_gross_cashflow_and_net_change"] = (
+        "mixed_gross_cashflow_and_net_change"
+    )
     source_scope: Literal["onec_ut_10_3_plus_bp_accrued_taxes"] = (
         "onec_ut_10_3_plus_bp_accrued_taxes"
     )
@@ -197,15 +186,10 @@ class ExecutiveManagementBalanceTurnoverResponse(BaseModel):
     closing_scope_imbalance_amount: Decimal = Decimal("0")
     unknown_line_count: int = 0
     available_months: list[str] = Field(default_factory=list)
+    available_period_starts: list[str] = Field(default_factory=list)
+    available_period_ends: list[str] = Field(default_factory=list)
     selected_month_from: str
     selected_month_to: str
-    cash_monthly: list[ExecutiveManagementBalanceCashMonthlyRow] = Field(default_factory=list)
-    cash_turnover_method: Literal["opening_snapshot_plus_gross_cashflow"] = (
-        "opening_snapshot_plus_gross_cashflow"
-    )
-    cash_source_status: str = "source_missing"
-    cash_source_generated_at: datetime | None = None
-    cash_note: str | None = None
     note: str
 
 

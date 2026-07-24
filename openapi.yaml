@@ -2772,6 +2772,24 @@ paths:
             pattern: ^\d{4}-\d{2}$
           - type: 'null'
           title: Month
+      - name: month_from
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Month From
+      - name: month_to
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Month To
       - name: view
         in: query
         required: false
@@ -14137,6 +14155,76 @@ components:
       - source_freshness
       - top_actions
       title: ExecutiveDashboardResponse
+    ExecutiveManagementBalanceCashMonthlyRow:
+      properties:
+        month:
+          type: string
+          title: Month
+        date_from:
+          type: string
+          format: date
+          title: Date From
+        date_to:
+          type: string
+          format: date
+          title: Date To
+        opening_balance:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Opening Balance
+        gross_inflow:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Gross Inflow
+        gross_outflow:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Gross Outflow
+        calculated_closing_balance:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Calculated Closing Balance
+        actual_closing_balance:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Actual Closing Balance
+        actual_snapshot_date:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Actual Snapshot Date
+        reconciliation_difference:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Reconciliation Difference
+        is_closed_month:
+          type: boolean
+          title: Is Closed Month
+        source_status:
+          type: string
+          title: Source Status
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+      type: object
+      required:
+      - month
+      - date_from
+      - date_to
+      - opening_balance
+      - gross_inflow
+      - gross_outflow
+      - calculated_closing_balance
+      - is_closed_month
+      - source_status
+      title: ExecutiveManagementBalanceCashMonthlyRow
     ExecutiveManagementBalanceCloseRequest:
       properties:
         confirm:
@@ -14525,6 +14613,42 @@ components:
           type: integer
           title: Unknown Line Count
           default: 0
+        available_months:
+          items:
+            type: string
+          type: array
+          title: Available Months
+        selected_month_from:
+          type: string
+          title: Selected Month From
+        selected_month_to:
+          type: string
+          title: Selected Month To
+        cash_monthly:
+          items:
+            $ref: '#/components/schemas/ExecutiveManagementBalanceCashMonthlyRow'
+          type: array
+          title: Cash Monthly
+        cash_turnover_method:
+          type: string
+          const: opening_snapshot_plus_gross_cashflow
+          title: Cash Turnover Method
+          default: opening_snapshot_plus_gross_cashflow
+        cash_source_status:
+          type: string
+          title: Cash Source Status
+          default: source_missing
+        cash_source_generated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Cash Source Generated At
+        cash_note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Cash Note
         note:
           type: string
           title: Note
@@ -14541,6 +14665,8 @@ components:
       - opening_content_sha256
       - closing_content_sha256
       - source_status
+      - selected_month_from
+      - selected_month_to
       - note
       title: ExecutiveManagementBalanceTurnoverResponse
     ExecutiveManagementBalanceTurnoverTotal:

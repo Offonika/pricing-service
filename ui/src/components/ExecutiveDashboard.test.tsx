@@ -729,6 +729,31 @@ describe("executive management balance", () => {
       opening_scope_imbalance_amount: "90.00",
       closing_scope_imbalance_amount: "105.00",
       unknown_line_count: 0,
+      available_months: ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06"],
+      selected_month_from: "2026-01",
+      selected_month_to: "2026-06",
+      cash_turnover_method: "opening_snapshot_plus_gross_cashflow",
+      cash_source_status: "partial",
+      cash_source_generated_at: "2026-06-30T10:00:00Z",
+      cash_note:
+        "Расчёт: остаток на 01.01.2026 + валовые приходы − валовые расходы УТ 10.3.",
+      cash_monthly: [
+        {
+          month: "2026-06",
+          date_from: "2026-06-01",
+          date_to: "2026-06-30",
+          opening_balance: "100.00",
+          gross_inflow: "40.00",
+          gross_outflow: "20.00",
+          calculated_closing_balance: "120.00",
+          actual_closing_balance: "121.00",
+          actual_snapshot_date: "2026-06-30",
+          reconciliation_difference: "1.00",
+          is_closed_month: true,
+          source_status: "partial",
+          note: "Фактический снимок имеет частичный статус источника",
+        },
+      ],
       note: "Обороты рассчитаны как чистое изменение между снимками.",
     });
 
@@ -736,7 +761,33 @@ describe("executive management balance", () => {
 
     expect(await screen.findByText("Оборотно-сальдовая ведомость")).toBeVisible();
     expect(screen.getByText("УТ 10.3 · из БП только начисленные налоги")).toBeVisible();
-    const table = screen.getByRole("table");
+    expect(screen.getByLabelText("Месяц начала оборотов денежных средств")).toHaveValue(
+      "2026-01"
+    );
+    expect(screen.getByLabelText("Месяц конца оборотов денежных средств")).toHaveValue(
+      "2026-06"
+    );
+    fireEvent.change(screen.getByLabelText("Месяц начала оборотов денежных средств"), {
+      target: { value: "2026-03" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Показать" }));
+    await waitFor(() =>
+      expect(fetchExecutiveManagementBalanceTurnover).toHaveBeenLastCalledWith({
+        month: "2026-06",
+        monthFrom: "2026-03",
+        monthTo: "2026-06",
+        view: "closed",
+      })
+    );
+    const cashTable = screen.getByRole("table", {
+      name: "Обороты и остатки денежных средств по месяцам",
+    });
+    const juneCashRow = within(cashTable).getByText(/июнь 2026/).closest("tr");
+    expect(juneCashRow).toHaveTextContent(/40 ₽/);
+    expect(juneCashRow).toHaveTextContent(/121 ₽/);
+    const table = screen.getByRole("table", {
+      name: "Оборотно-сальдовая ведомость по статьям баланса",
+    });
     expect(within(table).getByText("Денежные средства").closest("tr")).toHaveTextContent(
       /100 ₽/
     );

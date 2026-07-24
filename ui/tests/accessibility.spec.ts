@@ -79,6 +79,29 @@ test("Bitrix executive dashboard renders a successful API response", async ({ pa
           opening_scope_imbalance_amount: "80.00",
           closing_scope_imbalance_amount: "100.00",
           unknown_line_count: 0,
+          available_months: ["2026-01", "2026-02", "2026-03", "2026-04", "2026-05", "2026-06", "2026-07"],
+          selected_month_from: url.searchParams.get("month_from") || "2026-01",
+          selected_month_to: url.searchParams.get("month_to") || month,
+          cash_turnover_method: "opening_snapshot_plus_gross_cashflow",
+          cash_source_status: "partial",
+          cash_note:
+            "Расчёт: остаток на 01.01.2026 + валовые приходы − валовые расходы УТ 10.3.",
+          cash_monthly: [
+            {
+              month,
+              date_from: `${month}-01`,
+              date_to: dateTo,
+              opening_balance: "80.00",
+              gross_inflow: "40.00",
+              gross_outflow: "20.00",
+              calculated_closing_balance: "100.00",
+              actual_closing_balance: "101.00",
+              actual_snapshot_date: dateTo,
+              reconciliation_difference: "1.00",
+              is_closed_month: month === "2026-06",
+              source_status: "partial",
+            },
+          ],
           note: "Обороты рассчитаны как чистое изменение между снимками.",
         }),
       });
@@ -201,6 +224,9 @@ test("Bitrix executive dashboard renders a successful API response", async ({ pa
   await expect(page.locator(".executive-management-balance-section")).toContainText("Прочие дебиторы");
   await expect(page.getByRole("heading", { name: "Мост собственного капитала" })).toBeVisible();
   await expect(page.getByText("Рассчитано автоматически на 01.01.2026")).toBeVisible();
+  await expect(page.getByLabel("Месяц начала оборотов денежных средств")).toHaveValue("2026-01");
+  await expect(page.getByLabel("Месяц конца оборотов денежных средств")).toHaveValue("2026-07");
+  await expect(page.getByRole("table", { name: "Обороты и остатки денежных средств по месяцам" })).toBeVisible();
   await page.getByRole("button", { name: "Закрытый месяц" }).click();
   await expect(page.getByText("Закрытая версия отсутствует", { exact: true })).toBeVisible();
   await expect(page.getByRole("button", { name: "Оперативный на сегодня" })).toHaveAttribute("aria-pressed", "true");

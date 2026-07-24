@@ -154,6 +154,22 @@ class ExecutiveManagementBalanceTurnoverTotal(BaseModel):
     unknown_line_count: int = 0
 
 
+class ExecutiveManagementBalanceCashMonthlyRow(BaseModel):
+    month: str
+    date_from: date
+    date_to: date
+    opening_balance: Decimal
+    gross_inflow: Decimal
+    gross_outflow: Decimal
+    calculated_closing_balance: Decimal
+    actual_closing_balance: Decimal | None = None
+    actual_snapshot_date: date | None = None
+    reconciliation_difference: Decimal | None = None
+    is_closed_month: bool
+    source_status: str
+    note: str | None = None
+
+
 class ExecutiveManagementBalanceTurnoverResponse(BaseModel):
     month: str
     date_from: date
@@ -180,6 +196,16 @@ class ExecutiveManagementBalanceTurnoverResponse(BaseModel):
     opening_scope_imbalance_amount: Decimal = Decimal("0")
     closing_scope_imbalance_amount: Decimal = Decimal("0")
     unknown_line_count: int = 0
+    available_months: list[str] = Field(default_factory=list)
+    selected_month_from: str
+    selected_month_to: str
+    cash_monthly: list[ExecutiveManagementBalanceCashMonthlyRow] = Field(default_factory=list)
+    cash_turnover_method: Literal["opening_snapshot_plus_gross_cashflow"] = (
+        "opening_snapshot_plus_gross_cashflow"
+    )
+    cash_source_status: str = "source_missing"
+    cash_source_generated_at: datetime | None = None
+    cash_note: str | None = None
     note: str
 
 

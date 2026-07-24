@@ -1032,6 +1032,105 @@ def test_management_balance_turnover_uses_ut_scope_and_bp_taxes_only(
     assert response.turnover_method == "net_change_from_snapshots"
 
 
+def test_management_balance_turnover_builds_monthly_cash_reconciliation(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _build_turnover_fixture(db_session, monkeypatch)
+    monkeypatch.setattr(
+        balance_service,
+        "_load_cashflow_period_cache",
+        lambda: (
+            {
+                "generated_at": "2026-03-01T08:30:00+00:00",
+                "source_status": "ready",
+                "period": {"date_from": "2026-01-01", "date_to": "2026-02-28"},
+                "rows": [
+                    {
+                        "business_date": "2026-01-10",
+                        "inflow_amount": "40.00",
+                        "outflow_amount": "10.00",
+                        "is_internal_transfer": False,
+                    },
+                    {
+                        "business_date": "2026-02-10",
+                        "inflow_amount": "5.00",
+                        "outflow_amount": "20.00",
+                        "is_internal_transfer": False,
+                    },
+                ],
+                "cash_position": {
+                    "rows": [
+                        {
+                            "snapshot_date": "2026-01-31",
+                            "total_balance": "131.00",
+                            "source_status": "partial",
+                        },
+                        {
+                            "snapshot_date": "2026-02-28",
+                            "total_balance": "115.00",
+                            "source_status": "ready",
+                        },
+                    ]
+                },
+            },
+            "ready",
+            "fixture",
+        ),
+    )
+
+    response = get_management_balance_turnover(
+        db_session,
+        month="2026-06",
+        month_from="2026-01",
+        month_to="2026-02",
+        view="closed",
+        access_context=bitrix_executive_dashboard_auth.full_executive_dashboard_context(),
+    )
+
+    assert response.selected_month_from == "2026-01"
+    assert response.selected_month_to == "2026-02"
+    assert response.available_months == [
+        "2026-01",
+        "2026-02",
+        "2026-03",
+        "2026-04",
+        "2026-05",
+        "2026-06",
+    ]
+    assert response.cash_source_status == "partial"
+    assert response.cash_turnover_method == "opening_snapshot_plus_gross_cashflow"
+    assert len(response.cash_monthly) == 2
+    january, february = response.cash_monthly
+    assert january.opening_balance == Decimal("100.00")
+    assert january.gross_inflow == Decimal("40.00")
+    assert january.gross_outflow == Decimal("10.00")
+    assert january.calculated_closing_balance == Decimal("130.00")
+    assert january.actual_closing_balance == Decimal("131.00")
+    assert january.reconciliation_difference == Decimal("1.00")
+    assert february.opening_balance == Decimal("130.00")
+    assert february.calculated_closing_balance == Decimal("115.00")
+    assert february.actual_closing_balance == Decimal("115.00")
+    assert february.reconciliation_difference == Decimal("0.00")
+
+
+def test_management_balance_turnover_rejects_reversed_cash_month_range(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _build_turnover_fixture(db_session, monkeypatch)
+
+    with pytest.raises(ValueError, match="раньше начального"):
+        get_management_balance_turnover(
+            db_session,
+            month="2026-06",
+            month_from="2026-03",
+            month_to="2026-02",
+            view="closed",
+            access_context=bitrix_executive_dashboard_auth.full_executive_dashboard_context(),
+        )
+
+
 def test_management_balance_turnover_accepts_confirmed_opening_draft(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -1063,7 +1162,7 @@ def test_management_balance_turnover_api_uses_balance_permissions(
         response = client.get(
             (
                 "/api/management/executive-dashboard/management-balance-turnover"
-                "?month=2026-06&view=closed"
+                "?month=2026-06&month_from=2026-02&month_to=2026-05&view=closed"
             ),
             headers={"Authorization": "Bearer secret-token"},
         )
@@ -1075,3 +1174,5 @@ def test_management_balance_turnover_api_uses_balance_permissions(
     assert payload["date_from"] == "2026-01-01"
     assert payload["date_to"] == "2026-06-30"
     assert payload["source_scope"] == "onec_ut_10_3_plus_bp_accrued_taxes"
+    assert payload["selected_month_from"] == "2026-02"
+    assert payload["selected_month_to"] == "2026-05"

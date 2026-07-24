@@ -203,6 +203,8 @@ def get_executive_management_balance(
 )
 def get_executive_management_balance_turnover(
     month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    month_from: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    month_to: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
     view: Literal["closed", "operational"] | None = Query(default=None),
     db: Session = Depends(get_db),
     access: ExecutiveDashboardAuthContext = Depends(require_executive_dashboard_access),
@@ -215,6 +217,8 @@ def get_executive_management_balance_turnover(
         return get_management_balance_turnover(
             db,
             month=month,
+            month_from=month_from,
+            month_to=month_to,
             view=view,
             access_context=access,
         )

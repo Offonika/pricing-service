@@ -153,6 +153,22 @@ export interface ExecutiveManagementBalanceTurnoverTotal {
   unknown_line_count: number;
 }
 
+export interface ExecutiveManagementBalanceCashMonthlyRow {
+  month: string;
+  date_from: string;
+  date_to: string;
+  opening_balance: string;
+  gross_inflow: string;
+  gross_outflow: string;
+  calculated_closing_balance: string;
+  actual_closing_balance?: string | null;
+  actual_snapshot_date?: string | null;
+  reconciliation_difference?: string | null;
+  is_closed_month: boolean;
+  source_status: string;
+  note?: string | null;
+}
+
 export interface ExecutiveManagementBalanceTurnoverResponse {
   month: string;
   date_from: string;
@@ -177,6 +193,14 @@ export interface ExecutiveManagementBalanceTurnoverResponse {
   opening_scope_imbalance_amount: string;
   closing_scope_imbalance_amount: string;
   unknown_line_count: number;
+  available_months?: string[];
+  selected_month_from?: string;
+  selected_month_to?: string;
+  cash_monthly?: ExecutiveManagementBalanceCashMonthlyRow[];
+  cash_turnover_method?: "opening_snapshot_plus_gross_cashflow";
+  cash_source_status?: string;
+  cash_source_generated_at?: string | null;
+  cash_note?: string | null;
   note: string;
 }
 
@@ -610,6 +634,8 @@ export async function fetchExecutiveManagementBalance(params?: {
 
 export async function fetchExecutiveManagementBalanceTurnover(params?: {
   month?: string;
+  monthFrom?: string;
+  monthTo?: string;
   view?: ExecutiveManagementBalanceView;
 }) {
   const response = await api.get<ExecutiveManagementBalanceTurnoverResponse>(
@@ -617,6 +643,8 @@ export async function fetchExecutiveManagementBalanceTurnover(params?: {
     {
       params: {
         month: params?.month || undefined,
+        month_from: params?.monthFrom || undefined,
+        month_to: params?.monthTo || undefined,
         view: params?.view || undefined,
       },
     }

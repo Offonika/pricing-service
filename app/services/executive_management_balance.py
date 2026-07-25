@@ -921,33 +921,64 @@ def _build_draft_lines(
             )
         )
 
+    inventory_item = next(
+        (
+            item
+            for item in summary.get("balance_assets") or []
+            if isinstance(item, dict) and item.get("key") == "inventory_cost"
+        ),
+        {},
+    )
+    inventory_summary = {
+        "status": next(
+            (line.source_status for line in lines if line.source_key == "onec_inventory_cost"),
+            "source_missing",
+        ),
+        "as_of": next(
+            (
+                line.source_as_of.isoformat()
+                for line in lines
+                if line.source_key == "onec_inventory_cost" and line.source_as_of is not None
+            ),
+            None,
+        ),
+        "note": next(
+            (line.note for line in lines if line.source_key == "onec_inventory_cost" and line.note),
+            None,
+        ),
+    }
+    for key in (
+        "valuation_method",
+        "reconciliation_status",
+        "stock_quantity",
+        "party_quantity",
+        "party_amount",
+        "valuation_party_quantity",
+        "valuation_party_amount",
+        "excluded_party_quantity",
+        "excluded_party_amount",
+        "quantity_difference",
+        "source_row_count",
+        "stock_source_row_count",
+        "party_source_row_count",
+        "stock_row_count",
+        "party_row_count",
+        "unmatched_stock_row_count",
+        "unmatched_stock_quantity",
+        "unmatched_stock_quantity_abs",
+        "zero_party_quantity_row_count",
+        "negative_cost_row_count",
+        "negative_cost_amount",
+    ):
+        if key in inventory_item:
+            inventory_summary[key] = inventory_item[key]
+
     source_summary = {
         "trade_detail": {
             "status": compact.source_status if compact is not None else "source_missing",
             "as_of": compact.as_of.isoformat() if compact and compact.as_of else None,
         },
-        "inventory": {
-            "status": next(
-                (line.source_status for line in lines if line.source_key == "onec_inventory_cost"),
-                "source_missing",
-            ),
-            "as_of": next(
-                (
-                    line.source_as_of.isoformat()
-                    for line in lines
-                    if line.source_key == "onec_inventory_cost" and line.source_as_of is not None
-                ),
-                None,
-            ),
-            "note": next(
-                (
-                    line.note
-                    for line in lines
-                    if line.source_key == "onec_inventory_cost" and line.note
-                ),
-                None,
-            ),
-        },
+        "inventory": inventory_summary,
         "accounting": {
             "configured": (
                 accounting_configured
@@ -1059,6 +1090,23 @@ def _validation_errors(
                 "code": "negative_inventory_cost",
                 "severity": "error",
                 "message": "Отрицательная стоимость товара блокирует закрытие месяца",
+            }
+        )
+    inventory_summary = (source_summary or {}).get("inventory") or {}
+    if (
+        inventory is not None
+        and inventory.amount is not None
+        and inventory_summary.get("reconciliation_status") not in {None, "ready"}
+    ):
+        errors.append(
+            {
+                "code": "inventory_quantity_reconciliation_mismatch",
+                "severity": "error",
+                "message": (
+                    "Количество товара в регистрах ТоварыНаСкладах и "
+                    "ПартииТоваровНаСкладах не сверено: "
+                    f"разница {inventory_summary.get('quantity_difference') or 'не определена'}"
+                ),
             }
         )
     accrual_lines = [

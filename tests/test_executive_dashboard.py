@@ -703,7 +703,7 @@ def test_dashboard_marks_missing_finance_sources_without_zero_truth(
     assert blocks["creditors_payables"].source_status == "source_missing"
     assert (
         blocks["creditors_payables"].summary["source_anchor"]
-        == "1С: деньги, взаиморасчёты и фактическая стоимость товарных партий"
+        == "1С: деньги, взаиморасчёты и смешанная складская оценка УТ 10.3"
     )
     assert blocks["debtors"].source_status == "ready"
     assert blocks["debtors"].title == "Дебиторка покупателей"
@@ -793,6 +793,10 @@ def test_management_balance_places_assets_and_liabilities_on_their_sides(
                 quantity=Decimal("25.000"),
                 as_of=as_of,
                 source_row_count=5,
+                party_quantity=Decimal("25.000"),
+                party_amount=Decimal("1000.00"),
+                valuation_party_quantity=Decimal("25.000"),
+                valuation_party_amount=Decimal("1000.00"),
             ),
             "",
         ),
@@ -826,7 +830,12 @@ def test_management_balance_places_assets_and_liabilities_on_their_sides(
     assert block.summary["balance_assets"][1]["source_status"] == "ready"
     assert (
         block.summary["balance_assets"][1]["note"]
-        == "1С УТ 10.3: ПартииТоваровНаСкладах.СтоимостьОстаток"
+        == "1С УТ 10.3: смешанный режим стандартного отчёта — количество по складам "
+        "× средняя себестоимость партий"
+    )
+    assert block.summary["balance_assets"][1]["party_quantity"] == "25.000"
+    assert block.summary["balance_assets"][1]["valuation_method"] == (
+        "ut103_mixed_stock_quantity_party_average"
     )
     assert [row["amount"] for row in block.summary["balance_liabilities"]] == [
         "20.00",

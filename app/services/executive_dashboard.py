@@ -4061,6 +4061,15 @@ def _build_management_balance_block(
         )
         or accrual_amount != 0
     )
+    inventory_line_note = inventory_note
+    if inventory_cost is not None:
+        inventory_line_note = inventory_cost.source_title
+        if inventory_cost.reconciliation_status != "ready":
+            inventory_line_note += (
+                f"; контроль количества: склад {inventory_cost.quantity}, "
+                f"партии {inventory_cost.party_quantity}, "
+                f"разница {inventory_cost.quantity_difference}"
+            )
     assets = [
         _balance_line(
             key="cash",
@@ -4077,10 +4086,68 @@ def _build_management_balance_block(
             source_status=inventory_status,
             as_of=inventory_cost.as_of if inventory_cost is not None else None,
             masked=masked,
-            note=(inventory_cost.source_title if inventory_cost is not None else inventory_note),
+            note=inventory_line_note,
             quantity=(str(inventory_cost.quantity) if inventory_cost is not None else None),
+            stock_quantity=(str(inventory_cost.quantity) if inventory_cost is not None else None),
+            party_quantity=(
+                str(inventory_cost.party_quantity) if inventory_cost is not None else None
+            ),
+            party_amount=(
+                None if masked or inventory_cost is None else str(inventory_cost.party_amount)
+            ),
+            valuation_party_quantity=(
+                str(inventory_cost.valuation_party_quantity) if inventory_cost is not None else None
+            ),
+            valuation_party_amount=(
+                None
+                if masked or inventory_cost is None
+                else str(inventory_cost.valuation_party_amount)
+            ),
+            excluded_party_quantity=(
+                str(inventory_cost.excluded_party_quantity) if inventory_cost is not None else None
+            ),
+            excluded_party_amount=(
+                None
+                if masked or inventory_cost is None
+                else str(inventory_cost.excluded_party_amount)
+            ),
+            quantity_difference=(
+                str(inventory_cost.quantity_difference) if inventory_cost is not None else None
+            ),
+            reconciliation_status=(
+                inventory_cost.reconciliation_status if inventory_cost is not None else None
+            ),
+            valuation_method=(
+                inventory_cost.valuation_method if inventory_cost is not None else None
+            ),
             source_row_count=(
                 inventory_cost.source_row_count if inventory_cost is not None else None
+            ),
+            stock_source_row_count=(
+                inventory_cost.stock_source_row_count if inventory_cost is not None else None
+            ),
+            party_source_row_count=(
+                inventory_cost.party_source_row_count if inventory_cost is not None else None
+            ),
+            stock_row_count=(
+                inventory_cost.stock_row_count if inventory_cost is not None else None
+            ),
+            party_row_count=(
+                inventory_cost.party_row_count if inventory_cost is not None else None
+            ),
+            unmatched_stock_row_count=(
+                inventory_cost.unmatched_stock_row_count if inventory_cost is not None else None
+            ),
+            unmatched_stock_quantity=(
+                str(inventory_cost.unmatched_stock_quantity) if inventory_cost is not None else None
+            ),
+            unmatched_stock_quantity_abs=(
+                str(inventory_cost.unmatched_stock_quantity_abs)
+                if inventory_cost is not None
+                else None
+            ),
+            zero_party_quantity_row_count=(
+                inventory_cost.zero_party_quantity_row_count if inventory_cost is not None else None
             ),
             negative_cost_row_count=(
                 inventory_cost.negative_cost_row_count if inventory_cost is not None else 0
@@ -4366,15 +4433,16 @@ def _build_management_balance_block(
         freshness_status=_freshness_from_status(source_status),
         as_of=as_of,
         summary={
-            "source_anchor": ("1С: деньги, взаиморасчёты и фактическая стоимость товарных партий"),
+            "source_anchor": ("1С: деньги, взаиморасчёты и смешанная складская оценка УТ 10.3"),
             "period_independent": True,
             "selected_month": payables_as_of.strftime("%Y-%m") if payables_as_of else None,
             "monthly_balance_endpoint": ("/api/management/executive-dashboard/management-balance"),
             "note": (
-                "Частичный управленческий баланс в рублях. Товарные остатки взяты "
-                "по фактической стоимости партий в 1С УТ 10.3. Чистая прибыль "
-                "текущего года взята из управленческого ОПиУ. Не включены прочие "
-                "активы и обязательства вне подключенных источников."
+                "Частичный управленческий баланс в рублях. Товарные остатки рассчитаны "
+                "как в стандартном смешанном режиме УТ 10.3: складское количество "
+                "умножено на среднюю себестоимость партий. Чистая прибыль текущего "
+                "года взята из управленческого ОПиУ. Не включены прочие активы и "
+                "обязательства вне подключенных источников."
             ),
             "amount_currency": "RUB",
             "balance_assets": assets,

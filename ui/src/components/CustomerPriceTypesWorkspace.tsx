@@ -248,6 +248,11 @@ export function CustomerPriceTypesWorkspace({
             </button>
           )}
         </div>
+        <p style={{ margin: 0, color: "var(--color-text-muted, #667085)", fontSize: 13 }}>
+          Правило расчёта: выручка одного контрагента суммируется в одну сумму по всем
+          его договорам и вариантам типа цены. Несколько договоров одного ценового
+          уровня считаются вместе; разные уровни отправляются на сверку данных.
+        </p>
 
         {casesQuery.isLoading && <p>Загрузка…</p>}
         {casesQuery.isError && <p style={{ color: "var(--color-danger, #d92d20)" }}>Не удалось загрузить кейсы.</p>}

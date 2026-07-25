@@ -219,6 +219,17 @@ class CustomerPriceTypeRulesEngine:
                 return variant.casefold()
         return None
 
+    def _canonical_price_type(self, level_key: str) -> str:
+        if level_key == "retail":
+            return self.ruleset.retail_prefixes[0]
+        if level_key == "key_account":
+            return self.ruleset.key_account_prefixes[0]
+        return next(
+            level.price_type_prefix
+            for level in self.ruleset.levels
+            if level.key == level_key
+        )
+
     def _manual_override(self, facts: CustomerPriceTypeFacts) -> ManualOverride | None:
         month = _month_key(facts.snapshot_month)
         normalized_ref = normalize_counterparty_ref(facts.counterparty_ref)
@@ -361,33 +372,46 @@ class CustomerPriceTypeRulesEngine:
             )
 
         contracts = facts.contracts
-        raw_types = tuple(
-            contract.price_type_name for contract in contracts if contract.price_type_name
-        )
-        current_price_type = raw_types[0] if len(raw_types) == 1 else None
-        current_level, variant = self._price_type(current_price_type)
-
         if not contracts:
             return self._data_check(
-                facts, "active_contract_missing", current_level, current_price_type, variant
+                facts, "active_contract_missing", None, None, None
             )
-        if len(contracts) != 1:
+        if any(contract.price_type_missing for contract in contracts):
             return self._data_check(
-                facts, "multi_contract", current_level, current_price_type, variant
+                facts, "price_type_missing", None, None, None
             )
-        contract = contracts[0]
-        if contract.price_type_missing:
+        if any(contract.price_type_marked for contract in contracts):
             return self._data_check(
-                facts, "price_type_missing", current_level, current_price_type, variant
+                facts, "price_type_marked", None, None, None
             )
-        if contract.price_type_marked:
+
+        parsed_types = tuple(
+            (contract.price_type_name, *self._price_type(contract.price_type_name))
+            for contract in contracts
+        )
+        if any(level is None for _, level, _ in parsed_types):
             return self._data_check(
-                facts, "price_type_marked", current_level, current_price_type, variant
+                facts, "unknown_price_type", None, None, None
             )
-        if current_level is None:
+
+        levels = {level for _, level, _ in parsed_types}
+        if len(levels) != 1:
             return self._data_check(
-                facts, "unknown_price_type", current_level, current_price_type, variant
+                facts, "conflicting_price_levels", None, None, None
             )
+
+        current_level = next(iter(levels))
+        normalized_types = {
+            " ".join(str(raw_type or "").split()).casefold()
+            for raw_type, _, _ in parsed_types
+        }
+        current_price_type = (
+            " ".join(str(parsed_types[0][0] or "").split())
+            if len(normalized_types) == 1
+            else self._canonical_price_type(current_level)
+        )
+        variants = {variant for _, _, variant in parsed_types}
+        variant = next(iter(variants)) if len(variants) == 1 else None
         if facts.duplicate_flag:
             return self._data_check(
                 facts, "duplicate_counterparty", current_level, current_price_type, variant

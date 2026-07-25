@@ -56,6 +56,7 @@ const FACTOR_LABELS: Record<string, string> = {
   isolation_required: "Требуется период изолятора",
   active_contract_missing: "Нет активного договора",
   multi_contract: "Найдено несколько договоров",
+  conflicting_price_levels: "В договорах указаны разные ценовые уровни",
   price_type_missing: "В договоре не задан тип цены",
   price_type_marked: "Тип цены помечен на удаление",
   unknown_price_type: "Тип цены не распознан",

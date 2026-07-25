@@ -55,6 +55,14 @@ export interface CptCaseListResponse extends CptEnvelope {
   payload: CptCaseItem[];
 }
 
+export interface CptContractCandidate {
+  contract_ref?: string | null;
+  contract_name?: string | null;
+  price_type_name?: string | null;
+  price_type_marked?: boolean;
+  price_type_missing?: boolean;
+}
+
 export interface CptSnapshot {
   id: number;
   run_id: number;
@@ -64,7 +72,7 @@ export interface CptSnapshot {
   current_price_type: string | null;
   current_level: string | null;
   price_type_variant: string | null;
-  contract_candidates: Record<string, unknown>[];
+  contract_candidates: CptContractCandidate[];
   monthly_sales: Record<string, string> | null;
   total_3m: string | null;
   last_month: string | null;
@@ -100,6 +108,13 @@ export interface CptCaseEvent {
 export interface CptCaseDetailResponse extends CptEnvelope {
   case: CptCaseItem;
   snapshot: CptSnapshot;
+  guidance: {
+    title: string;
+    rules: string;
+    recommended_action: string;
+    expected_price_type: string;
+    manager_attention: string[];
+  } | null;
   events: CptCaseEvent[];
 }
 

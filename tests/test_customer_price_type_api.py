@@ -133,6 +133,7 @@ def test_read_only_api_and_scopes(tmp_path: Path) -> None:
 
         assert detail.status_code == 200
         assert detail.json()["snapshot"]["money_visible"] is True
+        assert detail.json()["guidance"] is None
         assert detail.json()["events"][0]["event_type"] == "case_created"
         assert profile.status_code == 200
         assert profile.json()["latest_snapshot"]["total_3m"] == "300.00"
@@ -168,6 +169,62 @@ def test_read_only_api_and_scopes(tmp_path: Path) -> None:
                 )
             )
         assert client.get(f"/api/customer-price-types/profiles/{other_ref}").status_code == 404
+    finally:
+        app.dependency_overrides = {}
+        engine.dispose()
+
+
+def test_conflicting_price_levels_detail_explains_manager_action(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'conflicting-levels.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    fact = _facts(20, owner="manager-20", department="department-20")
+    fact = replace(
+        fact,
+        contracts=(
+            ContractFact(
+                contract_ref=_ref(1020),
+                contract_name="Основной",
+                price_type_name="2.Бронзовый",
+            ),
+            ContractFact(
+                contract_ref=_ref(2020),
+                contract_name="Дополнительный",
+                price_type_name="3.Серебряный",
+            ),
+        ),
+    )
+    CustomerPriceTypeRunService(factory).execute(
+        [fact],
+        source_statuses={"contracts": "ready"},
+    )
+    full = CustomerPriceTypeAccessScope(
+        actor="test",
+        role="internal",
+        can_view_money=True,
+    )
+    app.dependency_overrides = {
+        get_db: _override_db(factory),
+        require_customer_price_type_access: lambda: full,
+    }
+    try:
+        client = TestClient(app)
+        cases = client.get("/api/customer-price-types/cases").json()["payload"]
+        assert len(cases) == 1
+
+        detail = client.get(f"/api/customer-price-types/cases/{cases[0]['id']}")
+        assert detail.status_code == 200
+        payload = detail.json()
+        assert payload["case"]["case_type"] == "data_check"
+        assert payload["snapshot"]["reasons"] == ["conflicting_price_levels"]
+        assert {item["price_type_name"] for item in payload["snapshot"]["contract_candidates"]} == {
+            "2.Бронзовый",
+            "3.Серебряный",
+        }
+        assert "наши правила запрещают выбирать" in payload["guidance"]["rules"]
+        assert "согласовать единый уровень" in payload["guidance"]["recommended_action"]
+        assert "не выбирается автоматически" in payload["guidance"]["expected_price_type"]
+        assert len(payload["guidance"]["manager_attention"]) == 6
     finally:
         app.dependency_overrides = {}
         engine.dispose()

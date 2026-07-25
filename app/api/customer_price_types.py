@@ -56,6 +56,7 @@ from app.services.customer_price_types import (
     CustomerPriceTypeQualityConflict,
     CustomerPriceTypeQualityService,
     CustomerPriceTypeReadService,
+    customer_price_type_case_guidance,
     internal_customer_price_type_scope,
 )
 
@@ -400,6 +401,7 @@ def get_customer_price_type_case(
         snapshot=CustomerPriceTypeSnapshotResponse.model_validate(
             _snapshot_payload(snapshot, access)
         ),
+        guidance=customer_price_type_case_guidance(snapshot),
         events=[
             CustomerPriceTypeCaseEventResponse(
                 id=event.id,

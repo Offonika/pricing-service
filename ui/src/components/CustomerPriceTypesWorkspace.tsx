@@ -46,7 +46,7 @@ const WORKLIST_LABELS: Record<string, string> = {
   manager_work: "Удержание / дожим",
   isolate: "Изолятор",
   recovery: "Реанимация спящих",
-  data_check: "Сверка данных",
+  data_check: "Требуют проверки",
   special_review: "Спецпроверка",
   downgrade_approval: "Согласование понижения",
 };

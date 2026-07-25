@@ -111,9 +111,18 @@ class CustomerPriceTypeCaseEventResponse(BaseModel):
     idempotency_key: str
 
 
+class CustomerPriceTypeCaseGuidance(BaseModel):
+    title: str
+    rules: str
+    recommended_action: str
+    expected_price_type: str
+    manager_attention: list[str] = Field(default_factory=list)
+
+
 class CustomerPriceTypeCaseDetailResponse(CustomerPriceTypeEnvelope):
     case: CustomerPriceTypeCaseItem
     snapshot: CustomerPriceTypeSnapshotResponse
+    guidance: CustomerPriceTypeCaseGuidance | None = None
     events: list[CustomerPriceTypeCaseEventResponse] = Field(default_factory=list)
 
 

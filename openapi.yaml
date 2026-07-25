@@ -12100,6 +12100,10 @@ components:
           $ref: '#/components/schemas/CustomerPriceTypeCaseItem'
         snapshot:
           $ref: '#/components/schemas/CustomerPriceTypeSnapshotResponse'
+        guidance:
+          anyOf:
+          - $ref: '#/components/schemas/CustomerPriceTypeCaseGuidance'
+          - type: 'null'
         events:
           items:
             $ref: '#/components/schemas/CustomerPriceTypeCaseEventResponse'
@@ -12163,6 +12167,32 @@ components:
       - source
       - idempotency_key
       title: CustomerPriceTypeCaseEventResponse
+    CustomerPriceTypeCaseGuidance:
+      properties:
+        title:
+          type: string
+          title: Title
+        rules:
+          type: string
+          title: Rules
+        recommended_action:
+          type: string
+          title: Recommended Action
+        expected_price_type:
+          type: string
+          title: Expected Price Type
+        manager_attention:
+          items:
+            type: string
+          type: array
+          title: Manager Attention
+      type: object
+      required:
+      - title
+      - rules
+      - recommended_action
+      - expected_price_type
+      title: CustomerPriceTypeCaseGuidance
     CustomerPriceTypeCaseItem:
       properties:
         id:

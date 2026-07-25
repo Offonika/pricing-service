@@ -27,7 +27,7 @@ contracts:
 depends_on: []
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-23"
+updated_at: "2026-07-25"
 ---
 
 # Executive Management Dashboard In Bitrix
@@ -836,6 +836,9 @@ app/admin context или через OAuth-контекст установлен�
 - Internet store: равные периоды сравнения, дневная динамика, каналы и посадочные
   страницы читаются из Метрики; пользователю без `online_store` API возвращает
   `403`, а токен не включается в ответ.
+- Session auth: HTTP-тесты ролевого доступа создают токен от текущего времени;
+  фиксированное время используется только в парном unit-тесте
+  `create -> verify`, где обе стороны получают один тестовый clock.
 - Idempotency: повторный запуск не создает дубли actions.
 - Bitrix iframe smoke: страница, session, загрузка блоков, drill-down links.
 - Docs/OpenAPI: manifest и generated contract без drift.

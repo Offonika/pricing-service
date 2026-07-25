@@ -156,9 +156,9 @@ def test_retail_and_variants_never_create_upgrade_case() -> None:
     assert key_account.action_required is False
 
 
-def test_multi_contract_unknown_and_partial_sources_are_data_checks() -> None:
+def test_same_level_contracts_are_combined_and_conflicting_levels_need_data_check() -> None:
     base = _facts()
-    multi = ENGINE.evaluate(
+    same_level = ENGINE.evaluate(
         replace(
             base,
             contracts=base.contracts
@@ -171,14 +171,15 @@ def test_multi_contract_unknown_and_partial_sources_are_data_checks() -> None:
             ),
         )
     )
-    unknown = ENGINE.evaluate(
+    duplicate_type = ENGINE.evaluate(
         replace(
             base,
-            contracts=(
+            contracts=base.contracts
+            + (
                 ContractFact(
-                    contract_ref=_ref(100),
-                    contract_name="Основной",
-                    price_type_name="Неизвестный",
+                    contract_ref=_ref(105),
+                    contract_name="Ещё один бронзовый",
+                    price_type_name="2.Бронзовый",
                 ),
             ),
         )
@@ -192,6 +193,33 @@ def test_multi_contract_unknown_and_partial_sources_are_data_checks() -> None:
                     contract_ref=_ref(102),
                     contract_name="Другой уровень",
                     price_type_name="3.Серебряный",
+                ),
+            ),
+        )
+    )
+
+    assert same_level.current_level == "bronze"
+    assert same_level.current_price_type == "2.Бронзовый"
+    assert same_level.price_type_variant is None
+    assert same_level.total_3m == Decimal("9000")
+    assert same_level.recommendation == "isolate"
+    assert "multi_contract" not in same_level.stop_factors
+    assert duplicate_type.current_level == "bronze"
+    assert duplicate_type.current_price_type == "2.Бронзовый"
+    assert duplicate_type.total_3m == Decimal("9000")
+    assert different_levels.reasons == ("conflicting_price_levels",)
+
+
+def test_invalid_contract_price_types_and_partial_sources_are_data_checks() -> None:
+    base = _facts()
+    unknown = ENGINE.evaluate(
+        replace(
+            base,
+            contracts=(
+                ContractFact(
+                    contract_ref=_ref(100),
+                    contract_name="Основной",
+                    price_type_name="Неизвестный",
                 ),
             ),
         )
@@ -227,8 +255,6 @@ def test_multi_contract_unknown_and_partial_sources_are_data_checks() -> None:
     )
     omitted = ENGINE.evaluate(replace(base, source_statuses={"contracts": "ready"}))
 
-    assert multi.reasons == ("multi_contract",)
-    assert different_levels.reasons == ("multi_contract",)
     assert unknown.reasons == ("unknown_price_type",)
     assert missing.reasons == ("price_type_missing",)
     assert marked.reasons == ("price_type_marked",)

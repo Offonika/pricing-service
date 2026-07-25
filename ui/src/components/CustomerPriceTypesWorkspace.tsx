@@ -248,6 +248,11 @@ export function CustomerPriceTypesWorkspace({
             </button>
           )}
         </div>
+        <p style={{ margin: 0, color: "var(--color-text-muted, #667085)", fontSize: 13 }}>
+          Правило расчёта: выручка одного контрагента суммируется в одну сумму по всем
+          его договорам и вариантам типа цены. Несколько договоров одного ценового
+          уровня считаются вместе; разные уровни отправляются на сверку данных.
+        </p>
 
         {casesQuery.isLoading && <p>Загрузка…</p>}
         {casesQuery.isError && <p style={{ color: "var(--color-danger, #d92d20)" }}>Не удалось загрузить кейсы.</p>}
@@ -339,6 +344,64 @@ export function CustomerPriceTypesWorkspace({
                     </div>
                   )}
                 </div>
+                {detail.snapshot.contract_candidates.length > 0 && (
+                  <div style={card}>
+                    <div style={{ fontWeight: 700, marginBottom: 8 }}>Договоры и типы цен</div>
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                        <thead>
+                          <tr>
+                            <th style={th}>Договор</th>
+                            <th style={th}>Тип цены</th>
+                            <th style={th}>Состояние</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {detail.snapshot.contract_candidates.map((contract, index) => (
+                            <tr key={contract.contract_ref ?? `${contract.contract_name}-${index}`}>
+                              <td style={td}>{contract.contract_name ?? "Без названия"}</td>
+                              <td style={td}>{contract.price_type_name ?? "Не задан"}</td>
+                              <td style={td}>
+                                {contract.price_type_missing
+                                  ? "Тип не задан"
+                                  : contract.price_type_marked
+                                    ? "Тип помечен на удаление"
+                                    : "Активен"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+                {detail.guidance && (
+                  <div style={{ ...card, borderColor: "var(--color-warning, #f79009)", background: "var(--color-warning-subtle, #fffaeb)" }}>
+                    <div style={{ fontWeight: 800, marginBottom: 10 }}>{detail.guidance.title}</div>
+                    <div style={{ display: "grid", gap: 10, fontSize: 13 }}>
+                      <div>
+                        <strong>По нашим правилам</strong>
+                        <p style={{ margin: "4px 0 0" }}>{detail.guidance.rules}</p>
+                      </div>
+                      <div>
+                        <strong>Рекомендуемое действие</strong>
+                        <p style={{ margin: "4px 0 0" }}>{detail.guidance.recommended_action}</p>
+                      </div>
+                      <div>
+                        <strong>Какой тип цены должен остаться</strong>
+                        <p style={{ margin: "4px 0 0" }}>{detail.guidance.expected_price_type}</p>
+                      </div>
+                      <div>
+                        <strong>На что обратить внимание менеджеру</strong>
+                        <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                          {detail.guidance.manager_attention.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 <div style={card}>
                   <div style={{ fontWeight: 700, marginBottom: 6 }}>События</div>
                   <ul style={{ margin: 0, paddingLeft: 16, fontSize: 13 }}>

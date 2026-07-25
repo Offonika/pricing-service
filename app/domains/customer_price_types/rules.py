@@ -225,9 +225,7 @@ class CustomerPriceTypeRulesEngine:
         if level_key == "key_account":
             return self.ruleset.key_account_prefixes[0]
         return next(
-            level.price_type_prefix
-            for level in self.ruleset.levels
-            if level.key == level_key
+            level.price_type_prefix for level in self.ruleset.levels if level.key == level_key
         )
 
     def _manual_override(self, facts: CustomerPriceTypeFacts) -> ManualOverride | None:
@@ -373,37 +371,26 @@ class CustomerPriceTypeRulesEngine:
 
         contracts = facts.contracts
         if not contracts:
-            return self._data_check(
-                facts, "active_contract_missing", None, None, None
-            )
+            return self._data_check(facts, "active_contract_missing", None, None, None)
         if any(contract.price_type_missing for contract in contracts):
-            return self._data_check(
-                facts, "price_type_missing", None, None, None
-            )
+            return self._data_check(facts, "price_type_missing", None, None, None)
         if any(contract.price_type_marked for contract in contracts):
-            return self._data_check(
-                facts, "price_type_marked", None, None, None
-            )
+            return self._data_check(facts, "price_type_marked", None, None, None)
 
         parsed_types = tuple(
             (contract.price_type_name, *self._price_type(contract.price_type_name))
             for contract in contracts
         )
         if any(level is None for _, level, _ in parsed_types):
-            return self._data_check(
-                facts, "unknown_price_type", None, None, None
-            )
+            return self._data_check(facts, "unknown_price_type", None, None, None)
 
         levels = {level for _, level, _ in parsed_types}
         if len(levels) != 1:
-            return self._data_check(
-                facts, "conflicting_price_levels", None, None, None
-            )
+            return self._data_check(facts, "conflicting_price_levels", None, None, None)
 
         current_level = next(iter(levels))
         normalized_types = {
-            " ".join(str(raw_type or "").split()).casefold()
-            for raw_type, _, _ in parsed_types
+            " ".join(str(raw_type or "").split()).casefold() for raw_type, _, _ in parsed_types
         }
         current_price_type = (
             " ".join(str(parsed_types[0][0] or "").split())

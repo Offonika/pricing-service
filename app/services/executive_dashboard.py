@@ -3960,6 +3960,7 @@ def _build_management_balance_block(
     *,
     requested_date: date,
     money_block: ExecutiveDashboardBlock,
+    receivables_block: ExecutiveDashboardBlock,
     access_context: ExecutiveDashboardAuthContext,
 ) -> ExecutiveDashboardBlock:
     section = _finance_section(finance_payload, "creditors_payables")
@@ -3971,7 +3972,10 @@ def _build_management_balance_block(
     inventory_status = (
         inventory_cost.source_status if inventory_cost is not None else "source_missing"
     )
-    source_status = _combine_source_status_strings([cash_status, payables_status, inventory_status])
+    buyer_receivables_status = receivables_block.source_status
+    source_status = _combine_source_status_strings(
+        [cash_status, payables_status, inventory_status, buyer_receivables_status]
+    )
     masked = any(
         _mask_finance(block_key, access_context)
         for block_key in ("money_today", "creditors_payables")
@@ -3984,6 +3988,14 @@ def _build_management_balance_block(
         if cash_metric is not None and _source_available_for_metric(cash_status)
         else None
     )
+    buyer_receivables_metric = _metric_by_key(receivables_block, "total_receivable")
+    buyer_receivables_amount = (
+        _decimal(buyer_receivables_metric.value)
+        if buyer_receivables_metric is not None
+        and _source_available_for_metric(buyer_receivables_status)
+        else None
+    )
+    buyer_receivables_as_of = receivables_block.as_of
     supplier_receivable = _settlement_group_amount(
         section,
         group_key="suppliers",
@@ -4037,14 +4049,6 @@ def _build_management_balance_block(
         adjusted_legal_rows[counterparty_ref] = adjusted_legal_rows.get(
             counterparty_ref, Decimal("0")
         ) - _decimal(amount)
-    service_advances_raw = sum(
-        (max(amount, Decimal("0")) for amount in legal_entity_rows.values()),
-        Decimal("0"),
-    )
-    service_advances_adjusted = sum(
-        (max(amount, Decimal("0")) for amount in adjusted_legal_rows.values()),
-        Decimal("0"),
-    )
     accrued_service_liability = sum(
         (max(-amount, Decimal("0")) for amount in adjusted_legal_rows.values()),
         Decimal("0"),
@@ -4153,6 +4157,15 @@ def _build_management_balance_block(
             ),
         ),
         _balance_line(
+            key="receivables",
+            label="Дебиторка покупателей",
+            amount=buyer_receivables_amount,
+            source_status=buyer_receivables_status,
+            as_of=buyer_receivables_as_of,
+            masked=masked,
+            note="Положительная дебиторка buyers-сегмента УТ 10.3",
+        ),
+        _balance_line(
             key="supplier_receivables",
             label="Дебиторка поставщиков",
             amount=supplier_receivable,
@@ -4212,41 +4225,6 @@ def _build_management_balance_block(
         ),
     ]
     if has_service_settlements:
-        assets[2:2] = [
-            _balance_line(
-                key="service_supplier_advances_1c",
-                label="Авансы поставщикам услуг по данным 1С",
-                amount=service_advances_raw,
-                source_status=payables_status,
-                as_of=payables_as_of,
-                masked=masked,
-                include_in_total=False,
-            ),
-            _balance_line(
-                key="service_accruals_without_documents",
-                label="Минус: услуги, признанные без документов",
-                amount=-accrual_amount,
-                source_status=str(accrual_adjustments["source_status"]),
-                as_of=requested_date,
-                masked=masked,
-                include_in_total=False,
-                recognition_method="approved_fixed_monthly_rule",
-                estimated_count=int(accrual_adjustments["estimated_count"]),
-            ),
-            _balance_line(
-                key="service_supplier_advances",
-                label="Остаток авансов поставщикам услуг",
-                amount=service_advances_adjusted,
-                source_status=str(accrual_adjustments["source_status"]),
-                as_of=requested_date,
-                masked=masked,
-                source_amount=str(service_advances_raw),
-                adjustment_amount=str(-accrual_amount),
-                adjusted_amount=str(service_advances_adjusted),
-                recognition_method="accrual",
-                estimated_count=int(accrual_adjustments["estimated_count"]),
-            ),
-        ]
         liabilities.insert(
             0,
             _balance_line(
@@ -4266,7 +4244,7 @@ def _build_management_balance_block(
             for amount in (
                 cash_amount,
                 inventory_cost.amount if inventory_cost is not None else None,
-                service_advances_adjusted,
+                buyer_receivables_amount,
                 supplier_receivable,
                 employee_receivable,
                 other_receivable,
@@ -4294,6 +4272,7 @@ def _build_management_balance_block(
         for value in (
             cash_as_of,
             payables_as_of,
+            buyer_receivables_as_of,
             inventory_cost.as_of if inventory_cost is not None else None,
         )
         if value
@@ -5508,6 +5487,7 @@ def build_executive_dashboard(
             inventory_note,
             requested_date=requested_date,
             money_block=money_today_block,
+            receivables_block=debtors_block,
             access_context=context,
         ),
         _build_procurement_block(finance_payload, access_context=context),

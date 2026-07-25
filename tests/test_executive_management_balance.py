@@ -331,6 +331,25 @@ def test_historical_cash_is_not_backfilled_without_exact_position(
     assert summary["status"] == "source_missing"
 
 
+def test_inventory_quantity_reconciliation_mismatch_blocks_month_close() -> None:
+    lines, source_summary = _complete_lines()
+    source_summary["inventory"] = {
+        "status": "partial",
+        "reconciliation_status": "quantity_mismatch",
+        "stock_quantity": "951101.000",
+        "party_quantity": "951367.000",
+        "quantity_difference": "-266.000",
+    }
+
+    errors = balance_service._validation_errors(lines, source_summary)
+
+    mismatch = next(
+        item for item in errors if item["code"] == "inventory_quantity_reconciliation_mismatch"
+    )
+    assert mismatch["severity"] == "error"
+    assert "-266.000" in mismatch["message"]
+
+
 def test_bp_tax_snapshot_populates_taxes_payable(tmp_path: Path) -> None:
     path = tmp_path / "bp-tax.json"
     path.write_text(

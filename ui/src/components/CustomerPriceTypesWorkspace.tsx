@@ -51,6 +51,21 @@ const WORKLIST_LABELS: Record<string, string> = {
   downgrade_approval: "Согласование понижения",
 };
 
+const WORKLIST_HINTS: Record<CptWorklist, string> = {
+  manager_work:
+    "Выручка за три месяца ниже нормы, но в последнем месяце клиент достиг порога удержания. Нужно восстановить объём продаж до нормы.",
+  isolate:
+    "Выручка за три месяца и за последний месяц ниже порога. Клиент проходит полный месяц изолятора перед дальнейшим решением.",
+  recovery:
+    "Покупок нет три месяца или дольше, но история работы с клиентом есть. Нужна попытка вернуть клиента.",
+  data_check:
+    "Автоматическое решение невозможно: например, не указан тип цены, в договорах разные уровни или данные источников расходятся.",
+  special_review:
+    "Нужна отдельная проверка качества, кредита, экономики или истории клиента.",
+  downgrade_approval:
+    "Изолятор завершён и есть основания понизить ценовой уровень. Требуется решение руководителя.",
+};
+
 const QUALITY_GROUP_LABELS: Record<CptQualityGroup, string> = {
   ...WORKLIST_LABELS,
   no_action: "Действий не требуется",
@@ -207,6 +222,8 @@ export function CustomerPriceTypesWorkspace({
             <button
               key={key}
               type="button"
+              title={WORKLIST_HINTS[key]}
+              aria-label={`${WORKLIST_LABELS[key]}: ${count.toLocaleString("ru-RU")}. ${WORKLIST_HINTS[key]}`}
               onClick={() => setWorklist(active ? null : key)}
               style={{
                 ...card,

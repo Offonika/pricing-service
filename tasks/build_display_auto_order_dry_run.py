@@ -1057,7 +1057,13 @@ def build_dry_run_rows(
         sales_qty = _decimal(sales.get("sales_qty_window"))
         return_qty = _decimal(returns.get("return_qty_window"))
         latest_purchase_price = _decimal(purchase.get("latest_purchase_price"))
-        net_sales_qty = max(Decimal("0"), sales_qty - return_qty)
+        # Спрос брутто: возвраты не вычитаются из базы расчёта количества.
+        # 82.6% возвратов дисплеев — причина "Не понадобился" (качество "Новый"),
+        # не брак; вычитание всех возвратов занижало реальный спрос почти на
+        # порядок. Подтверждено диффом на 2144 SKU (2026-07-21): 130213 -> 155835
+        # (+19.7%). return_qty остаётся в выводе как отдельная информационная
+        # колонка (return_qty_window), просто больше не уменьшает net_sales_qty.
+        net_sales_qty = max(Decimal("0"), sales_qty)
         base_avg_daily_sales_qty = (
             net_sales_qty / Decimal(str(sales_window_days))
             if sales_window_days > 0

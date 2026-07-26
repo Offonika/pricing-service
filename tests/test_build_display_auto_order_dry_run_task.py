@@ -1087,6 +1087,36 @@ def test_display_auto_order_dry_run_uses_full_regular_order_horizon_and_pipeline
     assert "график 7 + сборка 7 + доставка 14 + буфер 3 + приемка 1" in rows[0]["reason_ru"]
 
 
+def test_display_auto_order_dry_run_does_not_deduct_returns_from_demand_base() -> None:
+    rows = build_dry_run_rows(
+        [
+            {
+                "nomenclature_code": "RB-GROSS",
+                "name": "Display test gross demand",
+                "status_label": "Рабочий",
+                "quality_raw": "Medium",
+                "price_segment": "middle",
+            }
+        ],
+        facts={
+            "stock": {"RB-GROSS": {"sellable_stock_qty": Decimal("0")}},
+            "reserve": {},
+            "incoming": {},
+            "sales": {"RB-GROSS": {"sales_qty_window": Decimal("90")}},
+            "returns": {"RB-GROSS": {"return_qty_window": Decimal("40")}},
+        },
+        source_errors={},
+        target_days=14,
+        sales_window_days=180,
+        max_order_qty=50,
+    )
+
+    assert rows[0]["net_sales_qty_window"] == "90"
+    assert rows[0]["return_qty_window"] == "40"
+    assert rows[0]["target_stock_qty"] == "7"
+    assert rows[0]["recommended_order_qty"] == "7"
+
+
 def test_load_auto_order_policy_reads_nested_display_policy(tmp_path) -> None:
     path = tmp_path / "policy.json"
     path.write_text(

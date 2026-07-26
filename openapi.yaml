@@ -12344,6 +12344,46 @@ components:
       - limit
       - offset
       title: CustomerPriceTypeCaseListResponse
+    CustomerPriceTypeContractCandidate:
+      properties:
+        contract_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contract Ref
+        contract_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contract Name
+        price_type_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Price Type Name
+        price_type_marked:
+          type: boolean
+          title: Price Type Marked
+          default: false
+        price_type_missing:
+          type: boolean
+          title: Price Type Missing
+          default: false
+        used_for_calculation:
+          type: boolean
+          title: Used For Calculation
+          default: false
+        price_type_change_target:
+          type: boolean
+          title: Price Type Change Target
+          default: false
+        ignored_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ignored Reason
+      type: object
+      title: CustomerPriceTypeContractCandidate
     CustomerPriceTypeProfileResponse:
       properties:
         run_id:
@@ -13077,8 +13117,7 @@ components:
           title: Price Type Variant
         contract_candidates:
           items:
-            additionalProperties: true
-            type: object
+            $ref: '#/components/schemas/CustomerPriceTypeContractCandidate'
           type: array
           title: Contract Candidates
         monthly_sales:

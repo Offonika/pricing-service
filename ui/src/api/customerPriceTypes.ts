@@ -61,6 +61,9 @@ export interface CptContractCandidate {
   price_type_name?: string | null;
   price_type_marked?: boolean;
   price_type_missing?: boolean;
+  used_for_calculation?: boolean;
+  price_type_change_target?: boolean;
+  ignored_reason?: string | null;
 }
 
 export interface CptSnapshot {

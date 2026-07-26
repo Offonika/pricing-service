@@ -264,6 +264,67 @@ def test_invalid_contract_price_types_and_partial_sources_are_data_checks() -> N
     assert "source_sales_history_missing" in omitted.stop_factors
 
 
+def test_usable_contract_has_priority_over_incomplete_contracts() -> None:
+    base = _facts()
+    usable_ref = _ref(106)
+    mixed = ENGINE.evaluate(
+        replace(
+            base,
+            contracts=(
+                ContractFact(
+                    contract_ref=_ref(103),
+                    contract_name="Пустой договор",
+                    price_type_name=None,
+                    price_type_missing=True,
+                ),
+                ContractFact(
+                    contract_ref=usable_ref,
+                    contract_name="Договор с покупателем",
+                    price_type_name="2.Бронзовый",
+                ),
+                ContractFact(
+                    contract_ref=_ref(107),
+                    contract_name="Неизвестный тип",
+                    price_type_name="Старый тип",
+                ),
+            ),
+        )
+    )
+    conflict = ENGINE.evaluate(
+        replace(
+            base,
+            contracts=(
+                ContractFact(
+                    contract_ref=_ref(103),
+                    contract_name="Пустой договор",
+                    price_type_name=None,
+                    price_type_missing=True,
+                ),
+                ContractFact(
+                    contract_ref=usable_ref,
+                    contract_name="Бронзовый",
+                    price_type_name="2.Бронзовый",
+                ),
+                ContractFact(
+                    contract_ref=_ref(108),
+                    contract_name="Серебряный",
+                    price_type_name="3.Серебряный",
+                ),
+            ),
+        )
+    )
+
+    assert mixed.current_level == "bronze"
+    assert mixed.current_price_type == "2.Бронзовый"
+    assert mixed.recommendation == "isolate"
+    assert mixed.calculation_contract_refs == (usable_ref,)
+    assert mixed.price_type_change_contract_refs == (usable_ref,)
+    assert mixed.reasons != ("price_type_missing",)
+    assert conflict.reasons == ("conflicting_price_levels",)
+    assert set(conflict.calculation_contract_refs) == {usable_ref, _ref(108)}
+    assert conflict.price_type_change_contract_refs == ()
+
+
 def test_never_purchased_card_is_excluded_before_missing_price_type() -> None:
     missing_contract = ContractFact(
         contract_ref=_ref(103),

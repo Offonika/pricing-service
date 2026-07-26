@@ -379,11 +379,15 @@ export function CustomerPriceTypesWorkspace({
                               <td style={td}>{contract.contract_name ?? "Без названия"}</td>
                               <td style={td}>{contract.price_type_name ?? "Не задан"}</td>
                               <td style={td}>
-                                {contract.price_type_missing
-                                  ? "Тип не задан"
-                                  : contract.price_type_marked
-                                    ? "Тип помечен на удаление"
-                                    : "Активен"}
+                                {contract.price_type_change_target
+                                  ? "Договор для изменения типа цены"
+                                  : contract.used_for_calculation
+                                    ? "Используется в расчёте"
+                                    : contract.price_type_missing
+                                      ? "Не участвует: тип не задан"
+                                      : contract.price_type_marked
+                                        ? "Не участвует: тип помечен на удаление"
+                                        : "Не участвует: тип не распознан"}
                               </td>
                             </tr>
                           ))}

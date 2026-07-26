@@ -111,6 +111,8 @@ class CustomerPriceTypeDecision:
     review_type: str | None
     reasons: tuple[str, ...]
     stop_factors: tuple[str, ...]
+    calculation_contract_refs: tuple[str, ...]
+    price_type_change_contract_refs: tuple[str, ...]
     total_3m: Decimal
     last_month: Decimal
     consecutive_zero_months: int

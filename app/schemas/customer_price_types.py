@@ -34,6 +34,17 @@ class CustomerPriceTypeWorklistsResponse(CustomerPriceTypeEnvelope):
     worklists: dict[str, int] = Field(default_factory=dict)
 
 
+class CustomerPriceTypeContractCandidate(BaseModel):
+    contract_ref: str | None = None
+    contract_name: str | None = None
+    price_type_name: str | None = None
+    price_type_marked: bool = False
+    price_type_missing: bool = False
+    used_for_calculation: bool = False
+    price_type_change_target: bool = False
+    ignored_reason: str | None = None
+
+
 class CustomerPriceTypeSnapshotResponse(BaseModel):
     id: int
     run_id: int
@@ -43,7 +54,7 @@ class CustomerPriceTypeSnapshotResponse(BaseModel):
     current_price_type: str | None = None
     current_level: str | None = None
     price_type_variant: str | None = None
-    contract_candidates: list[dict[str, Any]] = Field(default_factory=list)
+    contract_candidates: list[CustomerPriceTypeContractCandidate] = Field(default_factory=list)
     monthly_sales: dict[str, str] | None = None
     total_3m: Decimal | None = None
     last_month: Decimal | None = None

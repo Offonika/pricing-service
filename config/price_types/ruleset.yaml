@@ -1,7 +1,7 @@
 # Единый машинный справочник правил контура «Типы цен».
 # ИСТОЧНИК ИСТИНЫ для нормативов: скрипты, blueprint и линтер читают этот файл.
 # Изменение правила = правка здесь + пересборка (см. README ревизионного пакета).
-ruleset_version: "2026-07-26.1"
+ruleset_version: "2026-07-26.2"
 effective_date: "2026-07-26"
 
 population:
@@ -10,6 +10,8 @@ population:
   revenue_aggregation: "counterparty_all_buyer_contracts"
   same_level_multiple_contracts: "combine"
   conflicting_price_levels: "data_check"
+  usable_contract_priority: "recognized_price_type"
+  incomplete_contracts_with_usable: "ignore_for_price_type_selection"
   exclude_without_sales_history: true
   excluded_registry_classes: # классы реестра служебных карточек вне расчета
     - "служебный инструмент"

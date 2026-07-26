@@ -230,6 +230,61 @@ def test_conflicting_price_levels_detail_explains_manager_action(tmp_path: Path)
         engine.dispose()
 
 
+def test_detail_marks_usable_contract_and_price_type_change_target(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'usable-contract.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    fact = replace(
+        _facts(21, owner="manager-21", department="department-21"),
+        contracts=(
+            ContractFact(
+                contract_ref=_ref(1021),
+                contract_name="Основной договор",
+                price_type_name=None,
+                price_type_missing=True,
+            ),
+            ContractFact(
+                contract_ref=_ref(2021),
+                contract_name="Договор с покупателем",
+                price_type_name="2.Бронзовый",
+            ),
+        ),
+    )
+    CustomerPriceTypeRunService(factory).execute(
+        [fact],
+        source_statuses={"contracts": "ready"},
+    )
+    full = CustomerPriceTypeAccessScope(
+        actor="test",
+        role="internal",
+        can_view_money=True,
+    )
+    app.dependency_overrides = {
+        get_db: _override_db(factory),
+        require_customer_price_type_access: lambda: full,
+    }
+    try:
+        client = TestClient(app)
+        cases = client.get("/api/customer-price-types/cases").json()["payload"]
+        assert len(cases) == 1
+        assert cases[0]["case_type"] == "isolate"
+
+        detail = client.get(f"/api/customer-price-types/cases/{cases[0]['id']}").json()
+        contracts = {
+            item["contract_name"]: item for item in detail["snapshot"]["contract_candidates"]
+        }
+
+        assert detail["snapshot"]["current_price_type"] == "2.Бронзовый"
+        assert detail["snapshot"]["recommended_price_type"] == "Розница"
+        assert contracts["Основной договор"]["used_for_calculation"] is False
+        assert contracts["Основной договор"]["ignored_reason"] == "price_type_missing"
+        assert contracts["Договор с покупателем"]["used_for_calculation"] is True
+        assert contracts["Договор с покупателем"]["price_type_change_target"] is True
+    finally:
+        app.dependency_overrides = {}
+        engine.dispose()
+
+
 def test_role_scopes_filters_and_pagination(tmp_path: Path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'scopes.db'}")
     Base.metadata.create_all(engine)

@@ -234,6 +234,26 @@ class SqlAlchemyCustomerPriceTypeRepository:
         for index, (fact, decision) in enumerate(included, start=1):
             ref = normalize_counterparty_ref(fact.counterparty_ref)
             profile = profiles[ref]
+            calculation_refs = set(decision.calculation_contract_refs)
+            change_target_refs = set(decision.price_type_change_contract_refs)
+            contract_candidates = []
+            for contract in fact.contracts:
+                contract_ref = str(contract.contract_ref or "")
+                used_for_calculation = contract_ref in calculation_refs
+                candidate = {
+                    **asdict(contract),
+                    "used_for_calculation": used_for_calculation,
+                    "price_type_change_target": contract_ref in change_target_refs,
+                    "ignored_reason": None,
+                }
+                if not used_for_calculation:
+                    if contract.price_type_missing:
+                        candidate["ignored_reason"] = "price_type_missing"
+                    elif contract.price_type_marked:
+                        candidate["ignored_reason"] = "price_type_marked"
+                    else:
+                        candidate["ignored_reason"] = "unknown_price_type"
+                contract_candidates.append(candidate)
             snapshot = CustomerPriceTypeSnapshot(
                 run_id=run.id,
                 profile_id=profile.id,
@@ -243,7 +263,7 @@ class SqlAlchemyCustomerPriceTypeRepository:
                 current_price_type=decision.current_price_type,
                 current_level=decision.current_level,
                 price_type_variant=decision.price_type_variant,
-                contract_candidates=[asdict(item) for item in fact.contracts],
+                contract_candidates=contract_candidates,
                 monthly_sales=_money_map(fact.monthly_sales),
                 total_3m=decision.total_3m,
                 last_month=decision.last_month,

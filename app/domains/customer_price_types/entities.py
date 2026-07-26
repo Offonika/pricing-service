@@ -48,6 +48,7 @@ class PriceTypeRuleset:
     zero_months_to_recovery: int
     dead_after_months: int
     mismatch_max_pct: Decimal
+    exclude_without_sales_history: bool
     excluded_registry_classes: frozenset[str]
     hygiene_registry_classes: frozenset[str]
     required_sources: tuple[str, ...]

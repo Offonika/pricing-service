@@ -114,6 +114,7 @@ def load_price_type_ruleset(path: str | Path) -> PriceTypeRuleset:
         zero_months_to_recovery=int(payload["sleeping"]["zero_months_to_recovery"]),
         dead_after_months=int(payload["sleeping"]["dead_after_months"]),
         mismatch_max_pct=_decimal(payload["economics"]["data_mismatch_max_pct"]),
+        exclude_without_sales_history=bool(population.get("exclude_without_sales_history", False)),
         excluded_registry_classes=frozenset(population["excluded_registry_classes"]),
         hygiene_registry_classes=frozenset(population["hygiene_registry_classes"]),
         required_sources=tuple(
@@ -366,6 +367,32 @@ class CustomerPriceTypeRulesEngine:
                 case_type=None,
                 review_type=None,
                 stop_factors=("service_card",),
+                excluded=True,
+            )
+
+        has_recorded_sales = any(_decimal(value) != 0 for value in facts.monthly_sales.values())
+        if (
+            self.ruleset.exclude_without_sales_history
+            and facts.first_activity_date is None
+            and facts.history_coverage_months == 0
+            and not has_recorded_sales
+        ):
+            return self._decision(
+                facts,
+                source_status="excluded",
+                current_level=None,
+                current_price_type=None,
+                price_type_variant=None,
+                recommendation="excluded_without_sales_history",
+                recommended_price_type=None,
+                reason=(
+                    "Карточка исключена из рабочего списка: в 1С нет ни одной "
+                    "покупки и отсутствует история продаж."
+                ),
+                action_required=False,
+                case_type=None,
+                review_type=None,
+                stop_factors=("no_sales_history",),
                 excluded=True,
             )
 

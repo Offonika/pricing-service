@@ -160,7 +160,7 @@ class SqlAlchemyCustomerPriceTypeRepository:
             profile.department_name = fact.department_name
             profile.owner_ref = fact.owner_ref
             profile.owner_name = fact.owner_name
-            profile.is_service_card = decision.excluded
+            profile.is_service_card = decision.recommendation == "excluded_service_card"
             profile.is_hygiene = decision.is_hygiene
             master_data_flags = set(fact.master_data_flags)
             if decision.registry_class:

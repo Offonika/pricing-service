@@ -264,6 +264,51 @@ def test_invalid_contract_price_types_and_partial_sources_are_data_checks() -> N
     assert "source_sales_history_missing" in omitted.stop_factors
 
 
+def test_never_purchased_card_is_excluded_before_missing_price_type() -> None:
+    missing_contract = ContractFact(
+        contract_ref=_ref(103),
+        contract_name="Без типа",
+        price_type_name=None,
+        price_type_missing=True,
+    )
+    never_purchased = ENGINE.evaluate(
+        replace(
+            _facts(),
+            contracts=(missing_contract,),
+            monthly_sales={},
+            first_activity_date=None,
+            history_coverage_months=0,
+            direct_onec_total_3m=Decimal("0"),
+            ledger_total_3m=Decimal("0"),
+        )
+    )
+    sales_without_first_activity = ENGINE.evaluate(
+        replace(
+            _facts(),
+            contracts=(missing_contract,),
+            first_activity_date=None,
+        )
+    )
+    history_without_window_sales = ENGINE.evaluate(
+        replace(
+            _facts(),
+            contracts=(missing_contract,),
+            monthly_sales={},
+            first_activity_date=date(2025, 1, 15),
+            history_coverage_months=12,
+            direct_onec_total_3m=Decimal("0"),
+            ledger_total_3m=Decimal("0"),
+        )
+    )
+
+    assert never_purchased.excluded is True
+    assert never_purchased.action_required is False
+    assert never_purchased.recommendation == "excluded_without_sales_history"
+    assert never_purchased.stop_factors == ("no_sales_history",)
+    assert sales_without_first_activity.reasons == ("price_type_missing",)
+    assert history_without_window_sales.reasons == ("price_type_missing",)
+
+
 def test_history_coverage_blocks_dead_soul_and_full_history_enables_it() -> None:
     monthly = {f"2025-{month:02d}": Decimal("0") for month in range(7, 13)}
     monthly.update({f"2026-{month:02d}": Decimal("0") for month in range(1, 7)})
@@ -383,6 +428,61 @@ def func_count(model):
     from sqlalchemy import func
 
     return func.count(model.id)
+
+
+def test_never_purchased_card_is_removed_from_open_cases_on_recalculation(
+    tmp_path: Path,
+) -> None:
+    engine, factory = _session_factory(tmp_path)
+    try:
+        service = CustomerPriceTypeRunService(factory)
+        missing_contract = ContractFact(
+            contract_ref=_ref(103),
+            contract_name="Без типа",
+            price_type_name=None,
+            price_type_missing=True,
+        )
+        active = replace(_facts(), contracts=(missing_contract,))
+        statuses = {
+            "contracts": "ready",
+            "sales_history": "ready",
+            "ledger_reconciliation": "ready",
+            "master_data": "ready",
+        }
+        service.execute([active], source_statuses=statuses)
+        inactive = replace(
+            active,
+            monthly_sales={},
+            first_activity_date=None,
+            history_coverage_months=0,
+            direct_onec_total_3m=Decimal("0"),
+            ledger_total_3m=Decimal("0"),
+        )
+        excluded_run = service.execute(
+            [inactive],
+            source_statuses=statuses,
+            run_key="exclude-never-purchased",
+        )
+
+        with Session(engine) as session:
+            profile = session.scalar(select(CustomerPriceTypeProfile))
+            case = session.scalar(select(CustomerPriceTypeCase))
+            run = session.get(CustomerPriceTypeRun, excluded_run.run_id)
+            events = session.scalars(
+                select(CustomerPriceTypeCaseEvent).order_by(CustomerPriceTypeCaseEvent.id)
+            ).all()
+
+            assert profile.open_case_id is None
+            assert profile.is_service_card is False
+            assert case is not None
+            assert run.excluded_count == 1
+            assert run.actionable_count == 0
+            assert [event.event_type for event in events] == [
+                "case_created",
+                "profile_excluded",
+            ]
+    finally:
+        engine.dispose()
 
 
 def test_changed_snapshot_resets_approval_once(tmp_path: Path) -> None:

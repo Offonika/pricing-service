@@ -28,6 +28,7 @@ from app.services.receivables import (
     _build_synthetic_receivable_ref,
     _find_unpaid_origin_event,
     _resolve_counterparty_credit_terms,
+    _resolve_counterparty_credit_terms_from_values,
     build_receivable_balance_snapshots,
     build_receivable_cases,
     build_receivable_opening_import_events,
@@ -436,6 +437,24 @@ def test_credit_terms_ignore_zero_depth_and_dates_before_origin() -> None:
         events,
         origin_event=origin_event,
         snapshot_date=date(2026, 3, 20),
+    )
+
+    assert result["planned_payment_date"] is None
+    assert result["credit_depth_days"] is None
+    assert result["payment_term_source"] == "missing"
+    assert result["due_date"] is None
+    assert result["overdue_days"] is None
+    assert result["is_overdue"] is False
+
+
+def test_credit_terms_ignore_stale_dates_for_non_positive_balance() -> None:
+    result = _resolve_counterparty_credit_terms_from_values(
+        planned_payment_date=datetime(1983, 7, 6, 0, 0, 0),
+        credit_depth_days=None,
+        shipment_ban=False,
+        origin_document_date=None,
+        snapshot_date=date(2026, 7, 26),
+        current_balance=Decimal("-0.14"),
     )
 
     assert result["planned_payment_date"] is None

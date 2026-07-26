@@ -167,6 +167,12 @@ def _build_credit_profile(
 ) -> ReceivableCreditProfile:
     sales = build_sales_metrics(events, snapshot_date=snapshot_date)
     current_balance = _money(snapshot.current_balance) if snapshot else Decimal("0.00")
+    effective_overdue_days = (
+        snapshot.overdue_days if snapshot is not None and current_balance > 0 else None
+    )
+    effective_credit_depth_days = (
+        snapshot.credit_depth_days if snapshot is not None and current_balance > 0 else None
+    )
     payments = build_payment_metrics(
         events,
         snapshot_date=snapshot_date,
@@ -205,14 +211,14 @@ def _build_credit_profile(
     payment_form = payment_form or build_payment_form_metrics(events, snapshot_date=snapshot_date)
     behavior_group = classify_payment_behavior(
         current_balance=current_balance,
-        overdue_days=snapshot.overdue_days if snapshot else None,
+        overdue_days=effective_overdue_days,
         sales=sales,
         payments=payments,
     )
     credit_policy = build_credit_policy_metrics(
         behavior_group=behavior_group,
         current_balance=current_balance,
-        overdue_days=snapshot.overdue_days if snapshot else None,
+        overdue_days=effective_overdue_days,
         sales=sales,
         payments=payments,
         payment_form=payment_form,
@@ -220,7 +226,7 @@ def _build_credit_profile(
     advisor = build_advisor_recommendation(
         behavior_group=behavior_group,
         current_balance=current_balance,
-        overdue_days=snapshot.overdue_days if snapshot else None,
+        overdue_days=effective_overdue_days,
         sales=sales,
         payments=payments,
         credit_policy=credit_policy,
@@ -252,7 +258,7 @@ def _build_credit_profile(
             else latest_event.manager_name if latest_event else None
         ),
         current_balance=current_balance,
-        credit_depth_days=snapshot.credit_depth_days if snapshot else None,
+        credit_depth_days=effective_credit_depth_days,
         shipment_ban=snapshot.shipment_ban if snapshot else None,
         last_sale_at=last_sale_at,
         last_payment_at=last_payment_at,

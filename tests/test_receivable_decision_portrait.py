@@ -14,6 +14,7 @@ from app.models.receivable_ledger_event import ReceivableLedgerEvent
 from app.services.receivable_decision_portrait import (
     ProfitabilityWindowMetrics,
     build_portrait_summary,
+    build_receivable_decision_portrait,
     build_receivable_decision_portraits,
     compute_trend_coefficient,
 )
@@ -124,6 +125,33 @@ def test_build_receivable_decision_portraits_groups_payment_behavior(db_session:
         "chronic_non_payer": 1,
         "weekly_batch_payer": 1,
     }
+
+
+def test_non_positive_balance_cannot_be_credit_risk_from_stale_overdue_date(
+    db_session: Session,
+) -> None:
+    _add_snapshot(
+        db_session,
+        counterparty_ref="cp-change",
+        counterparty_name="Клиент со сдачей",
+        current_balance=Decimal("-50.00"),
+        overdue_days=18444,
+    )
+    db_session.commit()
+    snapshot = (
+        db_session.query(ReceivableBalanceSnapshot).filter_by(counterparty_ref="cp-change").one()
+    )
+
+    portrait = build_receivable_decision_portrait(snapshot, events=[])
+
+    assert portrait.current_balance == Decimal("-50.00")
+    assert portrait.overdue_days is None
+    assert portrait.due_date is None
+    assert portrait.payment_behavior_group == "no_current_debt"
+    assert portrait.credit_policy.credit_discipline_grade == "C"
+    assert portrait.credit_policy.over_limit_amount == Decimal("0.00")
+    assert portrait.credit_policy.recommended_first_payment_amount == Decimal("0.00")
+    assert portrait.advisor.recommended_decision == "soft_work"
 
 
 def test_task_exports_local_json_and_csv(tmp_path) -> None:

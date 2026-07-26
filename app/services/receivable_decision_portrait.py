@@ -325,11 +325,14 @@ def build_receivable_decision_portrait(
     payment_form: PaymentFormMetrics | None = None,
 ) -> ReceivableDecisionPortrait:
     snapshot_date = snapshot.snapshot_date
+    current_balance = _money(snapshot.current_balance)
+    effective_overdue_days = snapshot.overdue_days if current_balance > 0 else None
+    effective_due_date = _to_date(snapshot.due_date) if current_balance > 0 else None
     sales = build_sales_metrics(events, snapshot_date=snapshot_date)
     payments = build_payment_metrics(
         events,
         snapshot_date=snapshot_date,
-        current_balance=Decimal(snapshot.current_balance),
+        current_balance=current_balance,
         sales_90=sales.sales_90,
     )
     profitability = profitability or ProfitabilityWindowMetrics()
@@ -359,30 +362,28 @@ def build_receivable_decision_portrait(
             payments,
             payment_to_sales_90_pct=_percent(payments.payment_total_90, sales.sales_90),
             debt_to_sales_90_ratio=(
-                _ratio(Decimal(snapshot.current_balance) / sales.sales_90)
-                if sales.sales_90 > 0
-                else None
+                _ratio(current_balance / sales.sales_90) if sales.sales_90 > 0 else None
             ),
         )
     behavior_group = classify_payment_behavior(
-        current_balance=Decimal(snapshot.current_balance),
-        overdue_days=snapshot.overdue_days,
+        current_balance=current_balance,
+        overdue_days=effective_overdue_days,
         sales=sales,
         payments=payments,
     )
     payment_form = payment_form or build_payment_form_metrics(events, snapshot_date=snapshot_date)
     credit_policy = build_credit_policy_metrics(
         behavior_group=behavior_group,
-        current_balance=Decimal(snapshot.current_balance),
-        overdue_days=snapshot.overdue_days,
+        current_balance=current_balance,
+        overdue_days=effective_overdue_days,
         sales=sales,
         payments=payments,
         payment_form=payment_form,
     )
     advisor = build_advisor_recommendation(
         behavior_group=behavior_group,
-        current_balance=Decimal(snapshot.current_balance),
-        overdue_days=snapshot.overdue_days,
+        current_balance=current_balance,
+        overdue_days=effective_overdue_days,
         sales=sales,
         payments=payments,
         credit_policy=credit_policy,
@@ -397,9 +398,9 @@ def build_receivable_decision_portrait(
         department_name=snapshot.department_name,
         manager_ref=snapshot.current_manager_ref or snapshot.origin_manager_ref,
         manager_name=snapshot.current_manager_name or snapshot.origin_manager_name,
-        current_balance=_money(snapshot.current_balance),
-        overdue_days=snapshot.overdue_days,
-        due_date=_to_date(snapshot.due_date),
+        current_balance=current_balance,
+        overdue_days=effective_overdue_days,
+        due_date=effective_due_date,
         aged_bucket=snapshot.aged_bucket,
         activity_segment=snapshot.activity_segment,
         sales=sales,
@@ -548,15 +549,14 @@ def classify_payment_behavior(
 ) -> str:
     current_balance = _money(current_balance)
     overdue_days = overdue_days or 0
+    if current_balance <= 0:
+        return "no_current_debt"
     if has_quality_dispute:
         return "dispute_quality"
     if promise_broken:
         return "promise_breaker"
     if sales.sales_90 <= 0 and payments.payment_count_90 == 0:
         return "new_no_history" if overdue_days < 14 else "silent_no_contact"
-    if current_balance <= 0 and payments.payment_total_90 <= 0:
-        return "no_current_debt"
-
     debt_to_sales_ratio = current_balance / sales.sales_90 if sales.sales_90 > 0 else None
     if (
         sales.sales_90 > 0
@@ -605,6 +605,7 @@ def build_credit_policy_metrics(
 ) -> CreditPolicyMetrics:
     grade = _credit_discipline_grade(
         behavior_group=behavior_group,
+        current_balance=current_balance,
         overdue_days=overdue_days,
         sales=sales,
         payments=payments,
@@ -653,11 +654,14 @@ def build_credit_policy_metrics(
 def _credit_discipline_grade(
     *,
     behavior_group: str,
+    current_balance: Decimal,
     overdue_days: int | None,
     sales: SalesWindowMetrics,
     payments: PaymentWindowMetrics,
     payment_form: PaymentFormMetrics,
 ) -> str:
+    if _money(current_balance) <= 0:
+        return "B" if sales.sales_90 > 0 else "C"
     overdue_days = overdue_days or 0
     debt_ratio = payments.debt_to_sales_90_ratio
     if behavior_group == "chronic_non_payer":
@@ -719,6 +723,8 @@ def build_advisor_recommendation(
     payments: PaymentWindowMetrics,
     credit_policy: CreditPolicyMetrics,
 ) -> AdvisorRecommendation:
+    if _money(current_balance) <= 0:
+        overdue_days = None
     payment_window_days = _recommended_payment_window_days(
         behavior_group=behavior_group,
         overdue_days=overdue_days,
@@ -726,6 +732,7 @@ def build_advisor_recommendation(
     )
     recommended_decision = _recommended_decision(
         behavior_group=behavior_group,
+        current_balance=current_balance,
         overdue_days=overdue_days,
         debt_to_sales_90_ratio=payments.debt_to_sales_90_ratio,
     )
@@ -940,9 +947,12 @@ def _recommended_payment_window_days(
 def _recommended_decision(
     *,
     behavior_group: str,
+    current_balance: Decimal,
     overdue_days: int | None,
     debt_to_sales_90_ratio: Decimal | None,
 ) -> str:
+    if _money(current_balance) <= 0:
+        return "soft_work"
     overdue_days = overdue_days or 0
     if behavior_group == "dispute_quality":
         return "verify_amount"

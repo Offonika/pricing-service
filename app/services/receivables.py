@@ -2496,10 +2496,15 @@ def _resolve_counterparty_credit_terms_from_values(
     shipment_ban: bool | None,
     origin_document_date: datetime | None,
     snapshot_date: date,
+    current_balance: Decimal | None = None,
 ) -> dict[str, Any]:
     normalized_planned_payment_date = planned_payment_date
     normalized_credit_depth_days = credit_depth_days
     normalized_shipment_ban = shipment_ban
+
+    if current_balance is not None and _quantize_amount(current_balance) <= 0:
+        normalized_planned_payment_date = None
+        normalized_credit_depth_days = None
 
     if (
         normalized_planned_payment_date is not None
@@ -2743,6 +2748,7 @@ def build_receivable_balance_snapshots(
                     origin_event["external_document_date"] if origin_event else None
                 ),
                 snapshot_date=snapshot_date,
+                current_balance=current_balance,
             )
             session.add(
                 ReceivableBalanceSnapshot(
@@ -2931,6 +2937,7 @@ def build_receivable_balance_snapshots(
             shipment_ban=state["shipment_ban"],
             origin_document_date=origin_event["external_document_date"] if origin_event else None,
             snapshot_date=snapshot_date,
+            current_balance=effective_balance,
         )
         session.add(
             ReceivableBalanceSnapshot(

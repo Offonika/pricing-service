@@ -101,6 +101,8 @@ def validate_warehouse_policy(payload: Mapping[str, Any]) -> list[dict[str, Any]
         result.append(
             {
                 "warehouse_code": code,
+                "name": _clean(raw.get("name")),
+                "role": _clean(raw.get("role")),
                 "sells_systematically": _bool(raw.get("sells_systematically"), default=True),
                 "is_central": _bool(raw.get("is_central"), default=False),
                 "is_defect_warehouse": _bool(raw.get("is_defect_warehouse"), default=False),

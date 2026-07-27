@@ -1,0 +1,154 @@
+---
+spec_id: "onec-stock-effective-availability"
+title: "1C Stock Effective Availability"
+doc_type: spec
+domain: "procurement"
+status: accepted
+owner: "engineering"
+source_of_truth: true
+related_code:
+  - app/services/onec_stock_availability.py
+  - tasks/sync_onec_stock_availability.py
+  - tasks/refresh_assortment_lifecycle_classification.py
+  - infra/cron/onec_stock_availability.sh
+related_tests:
+  - tests/test_onec_stock_availability.py
+  - tests/test_assortment_lifecycle_facts.py
+contracts: []
+depends_on:
+  - docs/specs/assortment-status-contour-plan.md
+  - docs/specs/assortment-status-legacy-rule-inventory.md
+supersedes: []
+rollout_required: true
+updated_at: "2026-07-27"
+---
+
+# Назначение
+
+Получать из read-only базы `1С УТ 10.3` дневную историю фактического наличия
+товара в каждой точке. Витрина нужна для эффективных дней продажи, теневой
+проверки формулы статуса `Рабочий` и последующего расчёта автозаказа.
+
+# Scope / Out of Scope
+
+Входит:
+
+- все товары и все склады 1С;
+- backfill за `180` дней и хранение `210` дней;
+- месячные интервалы наличия и диагностические строки дней с движениями;
+- теневые показатели по физическим точкам в assortment lifecycle facts;
+- read-only cron entrypoints для nightly и weekly сверки.
+
+Не входит:
+
+- запись в 1С, Bitrix24 или Telegram;
+- автоматическое изменение статуса `Рабочий`;
+- автоматическое включение cron на production;
+- расчёт продаж и виртуального спроса — текущая волна поставляет факты наличия.
+
+# Change Summary / Spec Delta
+
+- Было: доступны месячные итоги `_AccumRgT7745`; дневное наличие заменялось
+  присутствием в месячных снимках.
+- Стало: остаток восстанавливается из итога на начало месяца и активных движений,
+  а локальная витрина хранит интервалы реального наличия.
+- Не меняется: 1С остаётся source of truth, записи во внешние системы запрещены,
+  переходы статусов проходят существующие ручные гейты.
+
+# Acceptance Criteria
+
+- [x] Дневной остаток строится из итогов и активных движений двух регистров.
+- [x] Полный sold-out день считается доступным, если утром остаток был положительным.
+- [x] В базе не создаётся полная сетка `товар × склад × день`.
+- [x] Повторный месячный расчёт атомарно заменяет прежний результат.
+- [x] Старые данные ограничены retention `210` дней.
+- [x] Сайт, онлайн, опт, центральные и транзитные склады не входят в магазинные метрики.
+- [x] При отсутствии покрытия shadow-факт помечается как missing/partial.
+- [ ] На production применена миграция и выполнен backfill `180` дней.
+- [ ] Минимум 30 товаров сверены с дневными признаками помощника 1С.
+- [ ] Семь успешных nightly-запусков подтверждают длительность менее 10 минут.
+
+# Source of Truth
+
+- 1С: торговые движения и месячные итоги.
+- PostgreSQL `pricing-service`: производная разреженная витрина и coverage.
+- `config/assortment/display-warehouse-policy.json`: роль склада для формулы.
+
+# Data Flow
+
+```text
+1C monthly totals + active movements
+-> monthly reconstruction
+-> day deltas + availability intervals + coverage
+-> effective_availability_shadow.v1
+-> assortment lifecycle source_record
+```
+
+# API / Data Contracts
+
+Публичный HTTP API не меняется. В `source_record` классификации добавляется
+необязательный теневой объект `effective_availability_shadow.v1`:
+
+- `date_from`, `date_to`, `observed_days`;
+- `coverage_status`, `missing_effective_availability_data`;
+- `points[]`: `warehouse_code`, `available_days`, `out_of_stock_days`;
+- `physical_sales_point_count`, `available_point_days`, `out_of_stock_point_days`.
+
+# Invariants
+
+- Соединение с 1С используется только для `SELECT`.
+- Учитываются только строки `_Active = 0x01`.
+- Любой остаток `> 0`, включая `1-2` штуки, считается наличием.
+- Незавершённый месяц не заменяет готовые данные вне своей транзакции.
+- Пустое покрытие не преобразуется в нулевой остаток.
+
+# Errors / Edge Cases
+
+- Ошибка чтения 1С переводит run в `failed`; существующая витрина не удаляется.
+- Перепроведённые документы ловятся nightly-пересчётом двух месяцев и weekly
+  пересчётом полного окна.
+- Движения до начала частичного месяца применяются к opening, но не сохраняются
+  вне retention.
+- Исторический `ТоварыВРознице` читается для совместимости, хотя живых движений
+  после 2022 года сейчас нет.
+
+# Implementation Checklist
+
+- [x] Добавить Alembic-миграцию четырёх таблиц.
+- [x] Реализовать SQL extractor и месячное восстановление.
+- [x] Добавить idempotent run key, coverage и retention.
+- [x] Добавить CLI для backfill/nightly/weekly.
+- [x] Добавить cron entrypoints без production activation.
+- [x] Передавать метрики в классификацию только как shadow.
+- [x] Добавить unit/integration/migration tests.
+- [ ] Выполнить controlled production rollout.
+
+# Review Notes / Risks
+
+- В текущем live-срезе около `195 тыс.` ненулевых пар товар–склад; поэтому
+  хранение полной дневной сетки запрещено.
+- В основном регистре около `16,26 млн` строк за всю историю, но суточный прирост
+  около `11,4 тыс.` строк. Начальный backfill обязательно выполнять помесячно.
+- Cron `03:15` выбран перед существующим тяжёлым контуром `04:10`.
+
+# Tests
+
+- `pytest tests/test_onec_stock_availability.py`;
+- regression assortment lifecycle facts и refresh task;
+- Ruff, Black, полный pytest, architecture boundaries и Alembic heads;
+- live reconcile 30 товаров после миграции/backfill.
+
+# Rollout
+
+1. Применить миграцию в release-кандидате.
+2. Запустить `--mode backfill` за 180 дней и проверить coverage/counts.
+3. Сверить 30 товаров и точки с 1С.
+4. Подключить cron-файл: nightly `03:15`, weekly воскресенье `02:00`.
+5. После семи успешных запусков отдельно согласовать включение формулы.
+
+Rollback: отключить cron, вернуть предыдущий release; производные таблицы можно
+оставить до отдельной подтверждённой очистки.
+
+# Changelog
+
+- 2026-07-27 — spec и read-only реализация созданы.

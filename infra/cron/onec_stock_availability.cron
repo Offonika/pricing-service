@@ -1,0 +1,9 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+CRON_TZ=Europe/Moscow
+
+# Incremental rebuild of current and previous month before other nightly 1C readers.
+15 3 * * * root /opt/MM/pricing-service/infra/cron/onec_stock_availability.sh nightly >> /var/log/pricing/onec_stock_availability.cron.log 2>&1
+
+# Weekly reconciliation catches documents reposted outside the nightly two-month window.
+0 2 * * 0 root /opt/MM/pricing-service/infra/cron/onec_stock_availability.sh weekly >> /var/log/pricing/onec_stock_availability.cron.log 2>&1

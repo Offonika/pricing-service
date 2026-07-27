@@ -3,11 +3,11 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import inspect
+from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -37,6 +37,12 @@ from app.services.exporters.ut103_nomenclature_properties import (
     NomenclaturePropertyUpdateRow,
     build_nomenclature_property_updates_xml,
     write_nomenclature_property_updates_message,
+)
+from app.services.onec_stock_availability import (
+    DEFAULT_HISTORY_DAYS as DEFAULT_AVAILABILITY_HISTORY_DAYS,
+)
+from app.services.onec_stock_availability import (
+    attach_effective_availability_shadow_to_facts,
 )
 from app.services.procurement_order_formation_workspace import (
     sync_lifecycle_transition_proposals,
@@ -379,7 +385,17 @@ def _load_or_build_fact_records(
             history_start=history_start,
         )
     fact_status_decisions = _load_fact_status_decisions(args.fact_status_decisions_json)
-    return _attach_fact_status_decisions(facts, fact_status_decisions)
+    facts = _attach_fact_status_decisions(facts, fact_status_decisions)
+    product_engine = create_engine(database_url, pool_pre_ping=True)
+    try:
+        return attach_effective_availability_shadow_to_facts(
+            product_engine,
+            facts,
+            date_to=(args.today or date.today()) - timedelta(days=1),
+            history_days=DEFAULT_AVAILABILITY_HISTORY_DAYS,
+        )
+    finally:
+        product_engine.dispose()
 
 
 def _load_fact_records(path: Path) -> list[dict[str, Any]]:

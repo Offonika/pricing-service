@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
 from pathlib import Path
+from typing import Sequence
 
 sys.dont_write_bytecode = True
 
@@ -28,7 +30,29 @@ REQUIRED_ROUTES = {
 ASSET_RE = re.compile(r"(?:src|href)=[\"'](?:\./|/)?assets/([^\"']+)[\"']")
 
 
-def main() -> None:
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--skip-database-revision",
+        action="store_true",
+        help="check database connectivity but defer revision equality until migration",
+    )
+    return parser.parse_args(argv)
+
+
+def _migration_revision_error(
+    database_head: str | None,
+    code_head: str | None,
+    *,
+    skip_database_revision: bool,
+) -> str | None:
+    if not skip_database_revision and database_head is not None and database_head != code_head:
+        return f"database revision {database_head} does not match code head {code_head}"
+    return None
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    args = _parse_args(argv)
     from alembic.config import Config
     from alembic.runtime.migration import MigrationContext
     from alembic.script import ScriptDirectory
@@ -120,8 +144,12 @@ def main() -> None:
             database_head = MigrationContext.configure(connection).get_current_revision()
     except Exception as exc:  # pragma: no cover - operational diagnostic
         errors.append(f"database migration check failed: {type(exc).__name__}: {exc}")
-    if database_head is not None and database_head != code_head:
-        errors.append(f"database revision {database_head} does not match code head {code_head}")
+    if revision_error := _migration_revision_error(
+        database_head,
+        code_head,
+        skip_database_revision=args.skip_database_revision,
+    ):
+        errors.append(revision_error)
 
     result = {
         "status": "ok" if not errors else "failed",

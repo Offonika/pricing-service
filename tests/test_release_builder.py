@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.util
 import json
 import os
 import stat
@@ -15,6 +16,25 @@ RELEASE_PYTHON_SCRIPTS = (
     REPO_ROOT / "scripts" / "validate_receivables_release.py",
     REPO_ROOT / "scripts" / "check_executive_dashboard_runtime.py",
 )
+
+
+def _load_executive_release_validator():
+    path = REPO_ROOT / "scripts" / "validate_executive_dashboard_release.py"
+    spec = importlib.util.spec_from_file_location("executive_release_validator", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def test_executive_release_validator_defers_revision_equality_only_when_requested() -> None:
+    validator = _load_executive_release_validator()
+
+    assert validator._migration_revision_error("old", "new", skip_database_revision=True) is None
+    assert (
+        validator._migration_revision_error("old", "new", skip_database_revision=False)
+        == "database revision old does not match code head new"
+    )
 
 
 def _git(source: Path, *args: str) -> None:

@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -23,6 +23,12 @@ from app.services.assortment_lifecycle_facts import (
     validate_warehouse_policy,
 )
 from app.services.exporters.ut103_exchange import load_ut103_env_file
+from app.services.onec_stock_availability import (
+    DEFAULT_HISTORY_DAYS as DEFAULT_AVAILABILITY_HISTORY_DAYS,
+)
+from app.services.onec_stock_availability import (
+    attach_effective_availability_shadow_to_facts,
+)
 
 DEFAULT_OUTPUT_PATH = Path("build/assortment/assortment-lifecycle-facts.json")
 
@@ -101,6 +107,17 @@ def main() -> int:
         manager_signals=manager_signals,
         history_start=history_start,
     )
+    if not args.input_json:
+        product_engine = create_engine(settings.database_url, pool_pre_ping=True)
+        try:
+            facts = attach_effective_availability_shadow_to_facts(
+                product_engine,
+                facts,
+                date_to=(args.today or date.today()) - timedelta(days=1),
+                history_days=DEFAULT_AVAILABILITY_HISTORY_DAYS,
+            )
+        finally:
+            product_engine.dispose()
     payload = {
         "meta": {
             "schema": "assortment_lifecycle_facts.v1",

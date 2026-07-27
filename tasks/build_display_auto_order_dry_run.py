@@ -1058,7 +1058,9 @@ def build_dry_run_rows(
         sales_qty = _decimal(sales.get("sales_qty_window"))
         return_qty = _decimal(returns.get("return_qty_window"))
         latest_purchase_price = _decimal(purchase.get("latest_purchase_price"))
-        net_sales_qty = max(Decimal("0"), sales_qty - return_qty)
+        # Спрос брутто: возвраты остаются отдельным информационным показателем,
+        # но не уменьшают базу расчёта потребности.
+        net_sales_qty = max(Decimal("0"), sales_qty)
         base_avg_daily_sales_qty = (
             net_sales_qty / Decimal(str(sales_window_days))
             if sales_window_days > 0

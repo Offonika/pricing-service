@@ -264,3 +264,46 @@ def test_full_sync_closes_only_after_two_snapshots(
     db_session.expire_all()
     assert second["work_items_closed"] == 1
     assert item is not None and item.status == STATUS_CLOSED
+
+
+def test_full_sync_does_not_create_missing_bitrix_card_while_closing(
+    monkeypatch, sqlite_engine, db_session: Session
+) -> None:
+    first_date = date(2026, 7, 15)
+    second_date = date(2026, 7, 16)
+    missing_ref = "cp-missing-in-bitrix"
+    db_session.add(
+        ReceivableWorkItem(
+            stable_key=f"receivables|buyers|{missing_ref}",
+            counterparty_ref=missing_ref,
+            counterparty_name=missing_ref,
+            status=STATUS_CALLING,
+            current_balance=Decimal("1000.00"),
+        )
+    )
+    db_session.commit()
+    client = FakeBitrixClient()
+    _configure(
+        monkeypatch,
+        sqlite_engine,
+        settings=_settings(),
+        client=client,
+        refs_by_date={first_date: (), second_date: ("cp-active",)},
+    )
+    db_session.add(_case(second_date, "cp-active"))
+    db_session.commit()
+
+    result = worker.run_receivable_workflow_sync(
+        as_of=second_date,
+        force=True,
+        bitrix_only=True,
+        all_departments=True,
+    )
+
+    db_session.expire_all()
+    item = db_session.scalar(
+        select(ReceivableWorkItem).where(ReceivableWorkItem.counterparty_ref == missing_ref)
+    )
+    assert result["work_items_closed"] == 1
+    assert item is not None and item.status == STATUS_CLOSED
+    assert f"receivables|buyers|{missing_ref}" not in client.added

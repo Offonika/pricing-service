@@ -3,7 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 from datetime import datetime
-from decimal import Decimal
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -92,9 +92,9 @@ def _command_from_mapping(item: dict[str, Any]) -> CreditTermsCommand:
         counterparty_code=str(_field(item, "counterparty_code")),
         counterparty_name=str(_field(item, "counterparty_name")),
         expected_current_limit=Decimal(str(_field(item, "expected_current_limit"))),
-        expected_current_depth=int(_field(item, "expected_current_depth")),
+        expected_current_depth=_depth_field(item, "expected_current_depth"),
         new_limit=Decimal(str(_field(item, "new_limit"))),
-        new_depth=int(_field(item, "new_depth")),
+        new_depth=_depth_field(item, "new_depth"),
         currency=str(_field(item, "currency")),
         reason=str(_field(item, "reason")),
         approved_by=str(_field(item, "approved_by")),
@@ -107,6 +107,17 @@ def _field(item: dict[str, Any], name: str) -> Any:
     if value in (None, ""):
         raise SystemExit(f"Missing required field: {name}")
     return value
+
+
+def _depth_field(item: dict[str, Any], name: str) -> int:
+    raw = _field(item, name)
+    try:
+        value = Decimal(str(raw))
+    except InvalidOperation as error:
+        raise SystemExit(f"{name} must be an integer") from error
+    if not value.is_finite() or value != value.to_integral_value():
+        raise SystemExit(f"{name} must be an integer")
+    return int(value)
 
 
 def _exchange_root_or_exit(explicit: str | Path | None) -> str:

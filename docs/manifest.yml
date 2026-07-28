@@ -428,6 +428,15 @@ documents:
       - app/services/exporters/ut103_forecast.py
       - app/services/exporters/ut103_nomenclature_properties.py
       - app/services/exporters/ut103_procurement_orders.py
+      - app/services/exporters/ut103_credit_terms.py
+      - app/services/receivable_credit_decisions.py
+      - app/models/receivable_credit_decision.py
+      - tasks/export_ut103_credit_terms.py
+      - tasks/run_receivable_credit_decision_worker.py
+      - scripts/ensure_receivable_credit_decision_process.py
+      - alembic/versions/e2b3c4d5e6f8_add_receivable_credit_decision_operation.py
+      - infra/cron/receivable_credit_decision_worker.sh
+      - infra/cron/receivable_credit_decision_worker.cron
       - tasks/build_assortment_lifecycle_facts.py
       - tasks/build_assortment_lifecycle_updates.py
       - tasks/refresh_assortment_lifecycle_classification.py
@@ -442,6 +451,11 @@ documents:
       - tests/test_build_assortment_lifecycle_updates_task.py
       - tests/test_ut103_nomenclature_properties_exporter.py
       - tests/test_ut103_procurement_orders_exporter.py
+      - tests/test_ut103_credit_terms_exporter.py
+      - tests/test_export_ut103_credit_terms_task.py
+      - tests/test_receivable_credit_decision_model.py
+      - tests/test_receivable_credit_decision_worker.py
+      - tests/test_receivable_credit_decision_process.py
       - tests/test_export_ut103_forecast_task.py
       - tests/test_export_ut103_nomenclature_properties_task.py
       - tests/test_export_ut103_procurement_supplier_orders_task.py

@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import Iterator, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Security
 from fastapi.responses import HTMLResponse
@@ -44,6 +46,9 @@ from app.services.receivable_workplace_cache import load_cached_folder_recommend
 
 router = APIRouter()
 page_router = APIRouter()
+_WORKPLACE_BUILD_MAX_CONCURRENCY = 2
+_WORKPLACE_BUILD_ACQUIRE_TIMEOUT_SECONDS = 20.0
+_WORKPLACE_BUILD_SEMAPHORE = threading.BoundedSemaphore(value=_WORKPLACE_BUILD_MAX_CONCURRENCY)
 
 _INDEX_PATHS = (
     Path(__file__).resolve().parents[2] / "ui" / "dist" / "index.html",
@@ -98,6 +103,20 @@ def _management_internal_token() -> str | None:
         or settings.counterparty_duplicate_internal_api_token
         or settings.return_scheme_internal_api_token
     )
+
+
+@contextmanager
+def _receivable_workplace_build_slot() -> Iterator[None]:
+    acquired = _WORKPLACE_BUILD_SEMAPHORE.acquire(timeout=_WORKPLACE_BUILD_ACQUIRE_TIMEOUT_SECONDS)
+    if not acquired:
+        raise HTTPException(
+            status_code=503,
+            detail="Рабочий список временно занят, повторите запрос через несколько секунд",
+        )
+    try:
+        yield
+    finally:
+        _WORKPLACE_BUILD_SEMAPHORE.release()
 
 
 def require_receivable_workplace_access(
@@ -229,16 +248,17 @@ def get_receivable_workplace(
     db: Session = Depends(get_db),
     access: ReceivableWorkplaceAuthContext = Depends(require_receivable_workplace_access),
 ) -> ReceivableWorkplaceResponse:
-    return build_receivable_workplace(
-        db,
-        snapshot_date=date_value,
-        department_ref=department_ref,
-        status=status,
-        limit=limit,
-        sort_by=sort_by,
-        sort_dir=sort_dir,
-        allowed_department_refs=access.allowed_department_refs,
-    )
+    with _receivable_workplace_build_slot():
+        return build_receivable_workplace(
+            db,
+            snapshot_date=date_value,
+            department_ref=department_ref,
+            status=status,
+            limit=limit,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            allowed_department_refs=access.allowed_department_refs,
+        )
 
 
 @router.get(

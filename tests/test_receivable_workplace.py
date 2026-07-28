@@ -5,6 +5,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -48,6 +49,56 @@ from app.services.receivable_workplace import (
 )
 from app.services.receivables import CASE_BUYERS, CASE_OVERDUE
 from tests.test_receivable_workflow import _settings
+
+
+def test_receivable_workplace_build_slot_rejects_when_busy(monkeypatch) -> None:
+    class BusySemaphore:
+        def acquire(self, *, timeout: float) -> bool:
+            assert timeout == receivable_workplace_api._WORKPLACE_BUILD_ACQUIRE_TIMEOUT_SECONDS
+            return False
+
+        def release(self) -> None:
+            raise AssertionError("busy slot must not be released")
+
+    monkeypatch.setattr(
+        receivable_workplace_api,
+        "_WORKPLACE_BUILD_SEMAPHORE",
+        BusySemaphore(),
+    )
+
+    with pytest.raises(HTTPException) as error:
+        with receivable_workplace_api._receivable_workplace_build_slot():
+            raise AssertionError("busy slot must not enter the guarded block")
+
+    assert error.value.status_code == 503
+    assert "повторите запрос" in str(error.value.detail)
+
+
+def test_receivable_workplace_build_slot_releases_after_failure(monkeypatch) -> None:
+    events: list[str] = []
+
+    class AvailableSemaphore:
+        def acquire(self, *, timeout: float) -> bool:
+            events.append(f"acquire:{timeout}")
+            return True
+
+        def release(self) -> None:
+            events.append("release")
+
+    monkeypatch.setattr(
+        receivable_workplace_api,
+        "_WORKPLACE_BUILD_SEMAPHORE",
+        AvailableSemaphore(),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with receivable_workplace_api._receivable_workplace_build_slot():
+            raise RuntimeError("boom")
+
+    assert events == [
+        f"acquire:{receivable_workplace_api._WORKPLACE_BUILD_ACQUIRE_TIMEOUT_SECONDS}",
+        "release",
+    ]
 
 
 def _ledger_event(

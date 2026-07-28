@@ -258,6 +258,25 @@ class Settings(BaseSettings):
     receivable_workplace_bitrix_full_access_user_ids: Annotated[list[str], NoDecode] = Field(
         default_factory=list
     )
+    receivable_credit_decision_enabled: bool = False
+    receivable_credit_decision_bitrix_webhook_url: str | None = None
+    receivable_credit_decision_entity_type_id: int | None = None
+    receivable_credit_decision_category_id: int | None = None
+    receivable_credit_decision_stage_map: dict[str, str] = Field(default_factory=dict)
+    receivable_credit_decision_field_map: dict[str, str] = Field(default_factory=dict)
+    receivable_credit_decision_approver_user_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    receivable_credit_decision_auto_apply_enabled: bool = False
+    receivable_credit_decision_pilot_counterparty_codes: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["РБ030337"]
+    )
+    receivable_credit_decision_poll_limit: int = 50
+    receivable_credit_decision_result_timeout_seconds: int = 900
+    receivable_credit_decision_max_dry_run_attempts: int = 3
+    receivable_credit_decision_mapping_path: str = (
+        "build/bitrix/receivable_credit_decision_mapping.json"
+    )
     receivable_workplace_bitrix_session_secret: str | None = None
     receivable_workplace_bitrix_session_ttl_seconds: int = 3600
     receivable_workplace_bitrix_rest_timeout_seconds: float = 6.0
@@ -493,6 +512,8 @@ class Settings(BaseSettings):
         "card_balance_bitrix_employee_overrides",
         "receivable_bitrix_stage_map",
         "receivable_bitrix_field_map",
+        "receivable_credit_decision_stage_map",
+        "receivable_credit_decision_field_map",
         "telephony_service_line_labels",
         mode="before",
     )
@@ -541,6 +562,8 @@ class Settings(BaseSettings):
         "receivable_workplace_bitrix_allowed_domains",
         "receivable_workplace_bitrix_allowed_member_ids",
         "receivable_workplace_bitrix_full_access_user_ids",
+        "receivable_credit_decision_approver_user_ids",
+        "receivable_credit_decision_pilot_counterparty_codes",
         "executive_dashboard_bitrix_allowed_domains",
         "executive_dashboard_bitrix_allowed_member_ids",
         "executive_dashboard_bitrix_full_access_user_ids",

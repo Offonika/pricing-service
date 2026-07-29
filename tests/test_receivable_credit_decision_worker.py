@@ -55,6 +55,7 @@ def test_credit_decision_settings_parse_deployment_lists() -> None:
         "РБ030337",
         "РБ000001",
     ]
+    assert not Settings(_env_file=None).receivable_credit_decision_auto_apply_enabled
 
 
 def _settings(**overrides: object) -> Settings:
@@ -156,6 +157,8 @@ def _write_result(
     <IdempotencyKey>receivable-decision:1200:2494:7</IdempotencyKey>
     <DecisionId>2494</DecisionId>
     <DecisionHash>{operation.decision_hash}</DecisionHash>
+    <CounterpartyRef>{operation.counterparty_ref}</CounterpartyRef>
+    <CounterpartyGuid>{operation.counterparty_guid}</CounterpartyGuid>
     <CounterpartyCode>РБ030337</CounterpartyCode>
     <Status>{status}</Status>
     <Message>ok</Message>{readback}
@@ -232,6 +235,34 @@ def test_worker_runs_dry_run_then_apply_and_recovers_bitrix_update(
     assert bitrix.item["stageId"] == MAPPING["stage_map"]["applied"]
     assert bitrix.item["readbackLimit"] == "150000.00"
     assert bitrix.item["readbackDepth"] == 14
+
+
+def test_worker_stops_after_dry_run_when_auto_apply_is_disabled(db_session, tmp_path: Path) -> None:
+    bitrix = FakeBitrix()
+    settings = _settings(receivable_credit_decision_auto_apply_enabled=False)
+    run_credit_decision_worker_once(
+        db_session,
+        exchange_root=tmp_path,
+        settings=settings,
+        mapping=MAPPING,
+        bitrix_caller=bitrix,
+        now=NOW,
+    )
+    operation = db_session.scalar(select(ReceivableCreditDecisionOperation))
+    assert operation is not None
+    _write_result(tmp_path, operation, mode="dry_run", status="validated")
+
+    run_credit_decision_worker_once(
+        db_session,
+        exchange_root=tmp_path,
+        settings=settings,
+        mapping=MAPPING,
+        bitrix_caller=bitrix,
+        now=NOW + timedelta(seconds=10),
+    )
+    db_session.refresh(operation)
+    assert operation.state == "dry_run_ok"
+    assert operation.apply_message_id is None
 
 
 def test_worker_cancels_when_card_changes_between_dry_run_and_apply(

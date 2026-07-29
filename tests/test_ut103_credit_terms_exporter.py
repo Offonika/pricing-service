@@ -70,6 +70,9 @@ def test_build_credit_terms_xml_keeps_atomic_pair_and_windows_encoding() -> None
         ({"currency": "USD"}, "RUB"),
         ({"decision_hash": "not-a-hash"}, "SHA-256"),
         ({"counterparty_guid": "00000000-0000-0000-0000-000000000000"}, "does not match"),
+        ({"new_limit": Decimal("10000000000000000")}, r"Numeric\(18,2\)"),
+        ({"new_depth": 100000}, r"Numeric\(5,0\)"),
+        ({"idempotency_key": "x" * 201}, "length limits"),
     ],
 )
 def test_credit_terms_validation_rejects_unsafe_values(
@@ -146,7 +149,7 @@ def test_write_and_parse_credit_terms_result(tmp_path: Path) -> None:
       <OldDepth>7</OldDepth>
       <RequestedLimit>150000.00</RequestedLimit>
       <RequestedDepth>14</RequestedDepth>
-      <ReadbackLimit>150000.00</ReadbackLimit>
+      <ReadbackLimit>150 000,00</ReadbackLimit>
       <ReadbackDepth>14</ReadbackDepth>
     </CommandResult>
   </CommandResults>

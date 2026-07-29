@@ -18,6 +18,8 @@ SET_CREDIT_TERMS_COMMAND = "set_credit_terms"
 DEFAULT_SOURCE = "pricing-service"
 DEFAULT_TARGET = "1c_ut_10_3"
 XML_ENCODING = "windows-1251"
+MAX_CREDIT_LIMIT = Decimal("9999999999999999.99")
+MAX_CREDIT_DEPTH = 99999
 VALID_MODES = frozenset({"dry_run", "apply"})
 VALID_RESULT_STATUSES = frozenset(
     {"validated", "applied", "already_actual", "skipped", "needs_review", "failed"}
@@ -247,6 +249,23 @@ def _validate_command(command: CreditTermsCommand, *, mode: str) -> None:
     missing = [name for name, value in required.items() if not str(value).strip()]
     if missing:
         raise ValueError(f"required command fields are empty: {', '.join(missing)}")
+    length_limits = {
+        "idempotency_key": (command.idempotency_key, 200),
+        "decision_id": (command.decision_id, 128),
+        "revision": (command.revision, 96),
+        "counterparty_ref": (command.counterparty_ref, 64),
+        "counterparty_guid": (command.counterparty_guid, 36),
+        "counterparty_code": (command.counterparty_code, 32),
+        "counterparty_name": (command.counterparty_name, 255),
+        "approved_by": (command.approved_by, 32),
+    }
+    too_long = [
+        f"{name}>{limit}"
+        for name, (value, limit) in length_limits.items()
+        if len(value.strip()) > limit
+    ]
+    if too_long:
+        raise ValueError(f"command fields exceed length limits: {', '.join(too_long)}")
     if command.command_type != SET_CREDIT_TERMS_COMMAND:
         raise ValueError(f"command_type must be {SET_CREDIT_TERMS_COMMAND}")
     if not _DECISION_HASH_RE.fullmatch(command.decision_hash):
@@ -273,6 +292,8 @@ def _validate_money(value: Decimal, field_name: str) -> None:
         raise ValueError(f"{field_name} must be finite")
     if value < 0:
         raise ValueError(f"{field_name} must not be negative")
+    if value > MAX_CREDIT_LIMIT:
+        raise ValueError(f"{field_name} exceeds Numeric(18,2)")
     if value.as_tuple().exponent < -2:
         raise ValueError(f"{field_name} must have at most 2 decimal places")
 
@@ -282,6 +303,8 @@ def _validate_depth(value: int, field_name: str) -> None:
         raise ValueError(f"{field_name} must be an integer")
     if value < 0:
         raise ValueError(f"{field_name} must not be negative")
+    if value > MAX_CREDIT_DEPTH:
+        raise ValueError(f"{field_name} exceeds Numeric(5,0)")
 
 
 def _parse_command_result(node: ET.Element) -> CreditTermsCommandResult:
@@ -343,7 +366,7 @@ def _required_node_text(root: ET.Element, tag: str) -> str:
 
 def _parse_int(value: str, field_name: str) -> int:
     try:
-        return int(value)
+        return int(value.replace(" ", "").replace("\xa0", ""))
     except ValueError as error:
         raise ValueError(f"{field_name} must be integer, got: {value}") from error
 
@@ -356,7 +379,7 @@ def _optional_decimal(value: str, field_name: str) -> Decimal | None:
     if value == "":
         return None
     try:
-        parsed = Decimal(value.replace(",", "."))
+        parsed = Decimal(value.replace(" ", "").replace("\xa0", "").replace(",", "."))
     except InvalidOperation as error:
         raise ValueError(f"{field_name} must be decimal, got: {value}") from error
     if not parsed.is_finite():

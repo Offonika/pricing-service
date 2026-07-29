@@ -19,6 +19,8 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.models.receivable_credit_decision import ReceivableCreditDecisionOperation
 from app.services.exporters.ut103_credit_terms import (
+    MAX_CREDIT_DEPTH,
+    MAX_CREDIT_LIMIT,
     CreditTermsCommand,
     CreditTermsExchangeResult,
     CreditTermsMessage,
@@ -166,6 +168,20 @@ def parse_approved_decision(
     ]
     if missing:
         raise ValueError(f"Bitrix decision fields are empty: {', '.join(missing)}")
+    length_limits = {
+        "id": (item_id, 64),
+        "decision_revision": (revision, 96),
+        "counterparty_ref": (counterparty_ref, 64),
+        "counterparty_guid": (counterparty_guid, 36),
+        "counterparty_code": (counterparty_code, 32),
+        "counterparty_name": (counterparty_name, 255),
+        "movedBy": (moved_by, 32),
+    }
+    too_long = [
+        f"{name}>{limit}" for name, (value, limit) in length_limits.items() if len(value) > limit
+    ]
+    if too_long:
+        raise ValueError(f"Bitrix decision fields exceed length limits: {', '.join(too_long)}")
     expected_guid = one_c_guid_from_counterparty_ref(counterparty_ref)
     if counterparty_guid != expected_guid:
         raise ValueError("counterparty_guid does not match counterparty_ref")
@@ -334,10 +350,18 @@ def _ingest_item(
         select(ReceivableCreditDecisionOperation).where(
             ReceivableCreditDecisionOperation.bitrix_entity_type_id == entity_type_id,
             ReceivableCreditDecisionOperation.bitrix_item_id == decision.bitrix_item_id,
-            ReceivableCreditDecisionOperation.decision_hash == decision.decision_hash,
+            ReceivableCreditDecisionOperation.bitrix_revision == decision.bitrix_revision,
         )
     )
     if existing is not None:
+        if existing.decision_hash != decision.decision_hash:
+            _update_item_error(
+                caller,
+                mapping,
+                decision.bitrix_item_id,
+                "Ревизия решения уже зарегистрирована с другим хешем; "
+                "создайте новую ревизию и повторно согласуйте карточку",
+            )
         return False
     active_same_item = db.scalar(
         select(ReceivableCreditDecisionOperation).where(
@@ -357,6 +381,22 @@ def _ingest_item(
         _update_item_error(caller, mapping, decision.bitrix_item_id, active_same_item.last_error)
         return False
 
+    counterparty_key = decision.counterparty_guid
+    active_same_counterparty = db.scalar(
+        select(ReceivableCreditDecisionOperation).where(
+            ReceivableCreditDecisionOperation.active_counterparty_key == counterparty_key,
+        )
+    )
+    if active_same_counterparty is not None:
+        _update_item_error(
+            caller,
+            mapping,
+            decision.bitrix_item_id,
+            "Для этого контрагента уже выполняется другое решение "
+            f"(Bitrix item {active_same_counterparty.bitrix_item_id})",
+        )
+        return False
+
     operation = ReceivableCreditDecisionOperation(
         bitrix_entity_type_id=entity_type_id,
         bitrix_item_id=decision.bitrix_item_id,
@@ -366,8 +406,8 @@ def _ingest_item(
         moved_by_user_id=decision.moved_by_user_id,
         decision_id=decision.bitrix_item_id,
         decision_hash=decision.decision_hash,
-        counterparty_key=decision.counterparty_code,
-        active_counterparty_key=decision.counterparty_code,
+        counterparty_key=counterparty_key,
+        active_counterparty_key=counterparty_key,
         counterparty_ref=decision.counterparty_ref,
         counterparty_guid=decision.counterparty_guid,
         counterparty_code=decision.counterparty_code,
@@ -848,6 +888,12 @@ def _verified_result_item(
         raise ValueError("result DecisionId does not match durable operation")
     if item.decision_hash != operation.decision_hash:
         raise ValueError("result DecisionHash does not match durable operation")
+    if item.counterparty_ref != operation.counterparty_ref:
+        raise ValueError("result CounterpartyRef does not match durable operation")
+    if item.counterparty_guid.lower() != operation.counterparty_guid.lower():
+        raise ValueError("result CounterpartyGuid does not match durable operation")
+    if item.counterparty_code != operation.counterparty_code:
+        raise ValueError("result CounterpartyCode does not match durable operation")
     return item
 
 
@@ -1167,7 +1213,12 @@ def _parse_money(value: Any, field_name: str) -> Decimal:
         parsed = Decimal(str(value).replace(" ", "").replace(",", "."))
     except InvalidOperation as error:
         raise ValueError(f"{field_name} must be a RUB amount") from error
-    if not parsed.is_finite() or parsed < 0 or parsed.as_tuple().exponent < -2:
+    if (
+        not parsed.is_finite()
+        or parsed < 0
+        or parsed > MAX_CREDIT_LIMIT
+        or parsed.as_tuple().exponent < -2
+    ):
         raise ValueError(f"{field_name} must be a non-negative RUB amount")
     return parsed
 
@@ -1179,7 +1230,11 @@ def _parse_depth(value: Any, field_name: str) -> int:
         parsed_decimal = Decimal(str(value))
     except InvalidOperation as error:
         raise ValueError(f"{field_name} must be an integer") from error
-    if parsed_decimal != parsed_decimal.to_integral_value() or parsed_decimal < 0:
+    if (
+        parsed_decimal != parsed_decimal.to_integral_value()
+        or parsed_decimal < 0
+        or parsed_decimal > MAX_CREDIT_DEPTH
+    ):
         raise ValueError(f"{field_name} must be a non-negative integer")
     return int(parsed_decimal)
 

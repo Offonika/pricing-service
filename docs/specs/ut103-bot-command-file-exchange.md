@@ -228,6 +228,7 @@ UT103_EXCHANGE_ROOT/
 - нулевые значения допустимы;
 - пустые/отрицательные значения, дробная глубина, сумма точнее двух знаков и
   валюта не `RUB` отклоняются;
+- сумма ограничена типом `Число(18,2)`, глубина — `Число(5,0)`;
 - `apply` возвращает старую, запрошенную и прочитанную обратно пару;
 - повтор уже примененного решения возвращает `already_actual`.
 
@@ -400,6 +401,9 @@ python -m tasks.export_ut103_procurement_supplier_orders \
 - `set_credit_terms` всегда начинает с `dry_run`.
 - `apply` требует allowlist согласующего, повторное чтение карточки, feature flag
   и pilot allowlist.
+- durable operation уникальна по `Bitrix entity + item + revision`; повторное
+  использование ревизии с другим hash отклоняется.
+- параллельные решения одного GUID контрагента блокируются nullable unique-lock.
 - Повторный `IdempotencyKey` не должен применять действие второй раз.
 - Неопределенный исход `apply` запрещает слепую повторную отправку до
   result/readback.
@@ -433,6 +437,7 @@ python -m tasks.export_ut103_procurement_supplier_orders \
 - unit: лимит+глубина находятся в одной команде;
 - unit: валидация RUB, нулевых, отрицательных и дробной глубины;
 - unit: allowlist, decision hash, дедупликация и конкурентный lock;
+- unit: уникальность `Bitrix item + revision` и границы типов `18.2 / 5.0`;
 - unit: запрет apply при изменении карточки после dry-run;
 - unit: потерянный apply-result не вызывает повторную отправку;
 - unit: запрет повторного `IdempotencyKey`;

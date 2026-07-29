@@ -25,8 +25,8 @@ def _operation(**overrides: object) -> ReceivableCreditDecisionOperation:
         "moved_by_user_id": "115204",
         "decision_id": "2494",
         "decision_hash": "a" * 64,
-        "counterparty_key": "РБ030337",
-        "active_counterparty_key": "РБ030337",
+        "counterparty_key": "a7d9b21e-222e-11ed-8fda-0025901e48ee",
+        "active_counterparty_key": "a7d9b21e-222e-11ed-8fda-0025901e48ee",
         "counterparty_ref": "0X8FDA0025901E48EE11ED222EA7D9B21E",
         "counterparty_guid": "a7d9b21e-222e-11ed-8fda-0025901e48ee",
         "counterparty_code": "РБ030337",
@@ -91,6 +91,27 @@ def test_completed_operation_releases_counterparty_lock(sqlite_engine) -> None:
         Base.metadata.drop_all(sqlite_engine)
 
 
+def test_item_revision_cannot_be_reused_with_another_hash(sqlite_engine) -> None:
+    from app.models import Base
+
+    Base.metadata.create_all(sqlite_engine)
+    try:
+        with Session(sqlite_engine) as session:
+            session.add(_operation(active_counterparty_key=None, state="failed"))
+            session.commit()
+            session.add(
+                _operation(
+                    decision_hash="b" * 64,
+                    active_counterparty_key=None,
+                    state="failed",
+                )
+            )
+            with pytest.raises(IntegrityError):
+                session.commit()
+    finally:
+        Base.metadata.drop_all(sqlite_engine)
+
+
 def test_migration_upgrade_and_downgrade(tmp_path: Path) -> None:
     path = (
         Path(__file__).resolve().parents[1]
@@ -107,6 +128,17 @@ def test_migration_upgrade_and_downgrade(tmp_path: Path) -> None:
             module.op = Operations(MigrationContext.configure(connection))
             module.upgrade()
             assert "receivable_credit_decision_operation" in inspect(connection).get_table_names()
+            constraints = {
+                item["name"]: item["column_names"]
+                for item in inspect(connection).get_unique_constraints(
+                    "receivable_credit_decision_operation"
+                )
+            }
+            assert constraints["uq_receivable_credit_decision_item_revision"] == [
+                "bitrix_entity_type_id",
+                "bitrix_item_id",
+                "bitrix_revision",
+            ]
             module.downgrade()
             assert (
                 "receivable_credit_decision_operation" not in inspect(connection).get_table_names()

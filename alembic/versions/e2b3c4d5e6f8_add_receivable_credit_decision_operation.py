@@ -87,8 +87,8 @@ def upgrade() -> None:
         sa.UniqueConstraint(
             "bitrix_entity_type_id",
             "bitrix_item_id",
-            "decision_hash",
-            name="uq_receivable_credit_decision_item_hash",
+            "bitrix_revision",
+            name="uq_receivable_credit_decision_item_revision",
         ),
         sa.UniqueConstraint(
             "active_counterparty_key",

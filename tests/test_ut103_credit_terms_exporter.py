@@ -9,9 +9,11 @@ from xml.etree import ElementTree as ET
 import pytest
 
 from app.services.exporters.ut103_credit_terms import (
+    MAX_MESSAGE_ID_LENGTH,
     CreditTermsCommand,
     CreditTermsMessage,
     build_credit_terms_xml,
+    build_receivable_credit_decision_message_id,
     list_credit_terms_results,
     parse_credit_terms_result,
     write_credit_terms_message,
@@ -20,6 +22,13 @@ from app.services.exporters.ut103_credit_terms import (
 COUNTERPARTY_REF = "0X8FDA0025901E48EE11ED222EA7D9B21E"
 COUNTERPARTY_GUID = "a7d9b21e-222e-11ed-8fda-0025901e48ee"
 DECISION_HASH = "a" * 64
+MESSAGE_ID = build_receivable_credit_decision_message_id(
+    entity_type_id=1200,
+    item_id="2494",
+    revision="7",
+    decision_hash=DECISION_HASH,
+    suffix="dry-run",
+)
 
 
 def _command(**overrides: object) -> CreditTermsCommand:
@@ -47,7 +56,7 @@ def _command(**overrides: object) -> CreditTermsCommand:
 
 def test_build_credit_terms_xml_keeps_atomic_pair_and_windows_encoding() -> None:
     payload = build_credit_terms_xml(
-        CreditTermsMessage(message_id="decision-2494-7-dry-run", commands=(_command(),))
+        CreditTermsMessage(message_id=MESSAGE_ID, commands=(_command(),))
     )
     assert b"encoding='windows-1251'" in payload
     root = ET.fromstring(payload)
@@ -69,6 +78,7 @@ def test_build_credit_terms_xml_keeps_atomic_pair_and_windows_encoding() -> None
         ({"new_depth": 1.5}, "integer"),
         ({"currency": "USD"}, "RUB"),
         ({"decision_hash": "not-a-hash"}, "SHA-256"),
+        ({"decision_id": "manual-id"}, "numeric"),
         ({"counterparty_guid": "00000000-0000-0000-0000-000000000000"}, "does not match"),
         ({"new_limit": Decimal("10000000000000000")}, r"Numeric\(18,2\)"),
         ({"new_depth": 100000}, r"Numeric\(5,0\)"),
@@ -80,14 +90,14 @@ def test_credit_terms_validation_rejects_unsafe_values(
 ) -> None:
     with pytest.raises(ValueError, match=error):
         build_credit_terms_xml(
-            CreditTermsMessage(message_id="unsafe", commands=(_command(**overrides),))
+            CreditTermsMessage(message_id=MESSAGE_ID, commands=(_command(**overrides),))
         )
 
 
 def test_zero_values_are_allowed() -> None:
     build_credit_terms_xml(
         CreditTermsMessage(
-            message_id="zero-values",
+            message_id=MESSAGE_ID,
             commands=(
                 _command(
                     expected_current_limit=Decimal("0"),
@@ -100,11 +110,26 @@ def test_zero_values_are_allowed() -> None:
     )
 
 
-def test_duplicate_counterparty_is_rejected() -> None:
-    with pytest.raises(ValueError, match="duplicate counterparty"):
+@pytest.mark.parametrize(
+    "message_id",
+    [
+        " leading-space",
+        "trailing-space ",
+        "contains/slash",
+        "кириллица",
+        "x" * (MAX_MESSAGE_ID_LENGTH + 1),
+    ],
+)
+def test_manual_message_id_is_rejected_without_sanitizing(message_id: str) -> None:
+    with pytest.raises(ValueError, match="message_id"):
+        build_credit_terms_xml(CreditTermsMessage(message_id=message_id, commands=(_command(),)))
+
+
+def test_credit_terms_message_requires_exactly_one_command() -> None:
+    with pytest.raises(ValueError, match="exactly one command"):
         build_credit_terms_xml(
             CreditTermsMessage(
-                message_id="duplicate",
+                message_id=MESSAGE_ID,
                 commands=(
                     _command(),
                     _command(
@@ -116,19 +141,27 @@ def test_duplicate_counterparty_is_rejected() -> None:
         )
 
 
+def test_manual_message_id_must_match_command_identity() -> None:
+    wrong_identity = MESSAGE_ID.replace("aaaaaaaaaaaa", "bbbbbbbbbbbb")
+    with pytest.raises(ValueError, match="command identity"):
+        build_credit_terms_xml(
+            CreditTermsMessage(message_id=wrong_identity, commands=(_command(),))
+        )
+
+
 def test_write_and_parse_credit_terms_result(tmp_path: Path) -> None:
-    message = CreditTermsMessage(message_id="decision-2494-7", commands=(_command(),))
+    message = CreditTermsMessage(message_id=MESSAGE_ID, commands=(_command(),))
     output = write_credit_terms_message(tmp_path, message)
-    assert output == (tmp_path / "to_1c" / "new" / "onec_commands_decision-2494-7.ready.xml")
+    assert output == (tmp_path / "to_1c" / "new" / f"onec_commands_{MESSAGE_ID}.ready.xml")
     assert stat.S_IMODE(output.stat().st_mode) == 0o660
 
     result_dir = tmp_path / "from_1c" / "new"
     result_dir.mkdir(parents=True)
-    result_path = result_dir / "onec_commands_decision-2494-7.result.xml"
+    result_path = result_dir / f"onec_commands_{MESSAGE_ID}.result.xml"
     result_path.write_text(
         f"""<?xml version="1.0" encoding="windows-1251"?>
 <ExchangeResult>
-  <MessageId>decision-2494-7</MessageId>
+  <MessageId>{MESSAGE_ID}</MessageId>
   <Schema>onec_commands.v1</Schema>
   <Status>success</Status>
   <ProcessedAt>2026-07-28T13:00:00+03:00</ProcessedAt>

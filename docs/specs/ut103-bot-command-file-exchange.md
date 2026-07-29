@@ -11,16 +11,27 @@ related_code:
   - app/services/exporters/ut103_forecast.py
   - app/services/exporters/ut103_nomenclature_properties.py
   - app/services/exporters/ut103_procurement_orders.py
+  - app/services/exporters/ut103_credit_terms.py
+  - app/services/receivable_credit_decisions.py
+  - app/models/receivable_credit_decision.py
   - tasks/build_assortment_lifecycle_updates.py
   - tasks/export_ut103_forecast.py
   - tasks/export_ut103_nomenclature_properties.py
   - tasks/export_ut103_procurement_supplier_orders.py
+  - tasks/export_ut103_credit_terms.py
+  - tasks/run_receivable_credit_decision_worker.py
+  - alembic/versions/e2b3c4d5e6f8_add_receivable_credit_decision_operation.py
 related_tests:
   - tests/test_ut103_exchange.py
   - tests/test_ut103_forecast_exporter.py
   - tests/test_build_assortment_lifecycle_updates_task.py
   - tests/test_ut103_nomenclature_properties_exporter.py
   - tests/test_ut103_procurement_orders_exporter.py
+  - tests/test_ut103_credit_terms_exporter.py
+  - tests/test_export_ut103_credit_terms_task.py
+  - tests/test_receivable_credit_decision_model.py
+  - tests/test_receivable_credit_decision_worker.py
+  - tests/test_receivable_credit_decision_process.py
   - tests/test_export_ut103_forecast_task.py
   - tests/test_export_ut103_nomenclature_properties_task.py
   - tests/test_export_ut103_procurement_supplier_orders_task.py
@@ -29,11 +40,12 @@ contracts:
   - app/services/exporters/ut103_forecast.py
   - app/services/exporters/ut103_nomenclature_properties.py
   - app/services/exporters/ut103_procurement_orders.py
+  - app/services/exporters/ut103_credit_terms.py
 depends_on:
   - docs/specs/counterparty-folder-recommendations.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-05"
+updated_at: "2026-07-29"
 ---
 
 # Назначение
@@ -176,7 +188,7 @@ UT103_EXCHANGE_ROOT/
 <?xml version="1.0" encoding="windows-1251"?>
 <ExchangeMessage>
   <Header>
-    <MessageId>receivable-2494-7-abcd1234-dry-run</MessageId>
+    <MessageId>rcd-1200-2494-7902699be42c-aaaaaaaaaaaa-dry-run</MessageId>
     <Schema>onec_commands.v1</Schema>
     <CreatedAt>2026-07-28T10:00:00+03:00</CreatedAt>
     <Source>pricing-service</Source>
@@ -209,7 +221,8 @@ UT103_EXCHANGE_ROOT/
 
 Обязательные поля:
 
-- `MessageId` - уникальный пакет команд;
+- `MessageId` - единый ASCII-идентификатор длиной не более 120:
+  `rcd-<entity>-<item>-<revision_hash12>-<decision_hash12>-<suffix>`;
 - `Schema=onec_commands.v1`;
 - `Mode=dry_run|apply`;
 - `IdempotencyKey` - уникальный ключ команды;
@@ -218,6 +231,12 @@ UT103_EXCHANGE_ROOT/
 - ref, GUID, код и имя контрагента;
 - ожидаемая и новая пара лимит/глубина;
 - `Currency=RUB`, основание, согласующий и время согласования.
+
+Суффиксы: `dry-run`, `apply`, `readback`. `revision_hash12` — первые 12
+hex-символов SHA-256 UTF-8 строки ревизии, `decision_hash12` — первые 12
+символов полного `DecisionHash`. Python, БД и 1С используют идентификатор
+дословно: обрезание, замена символов и дополнительная нормализация запрещены.
+Один файл кредитных условий содержит ровно одну атомарную команду.
 
 ## Типы Команд
 
@@ -361,7 +380,7 @@ python -m tasks.export_ut103_procurement_supplier_orders \
 ```xml
 <?xml version="1.0" encoding="windows-1251"?>
 <ExchangeResult>
-  <MessageId>receivable-2494-7-abcd1234-dry-run</MessageId>
+  <MessageId>rcd-1200-2494-7902699be42c-aaaaaaaaaaaa-dry-run</MessageId>
   <Schema>onec_commands.v1</Schema>
   <Status>success</Status>
   <ProcessedAt>29.05.2026 10:05:00</ProcessedAt>
@@ -390,7 +409,6 @@ python -m tasks.export_ut103_procurement_supplier_orders \
 - `validated` - dry-run прошел, изменение возможно;
 - `applied` - команда применена;
 - `already_actual` - в 1С уже стоит нужное значение;
-- `skipped` - команда пропущена без ошибки;
 - `needs_review` - нужен ручной разбор;
 - `failed` - ошибка применения или валидации.
 
@@ -407,6 +425,14 @@ python -m tasks.export_ut103_procurement_supplier_orders \
 - Повторный `IdempotencyKey` не должен применять действие второй раз.
 - Неопределенный исход `apply` запрещает слепую повторную отправку до
   result/readback.
+- Новая ревизия не отменяет `apply_sent/applying` и не освобождает lock
+  контрагента до доказанного result/readback.
+- Recovery `readback` повторяет безопасный `dry_run` с тем же `MessageId` не
+  более трех раз; `apply` всегда имеет ровно одну попытку публикации.
+- Worker читает result только из `from_1c/new` и после проверки переносит его в
+  `from_1c/archive`.
+- После успешного 1С-result карточка Bitrix читается повторно: измененная
+  карточка получает `Ошибка 1С`, а доказанный факт `applied` сохраняется в БД.
 - Для `move_counterparty_folder` автоприменение запрещено до отдельного acceptance.
 - Обработка 1С должна писать результат по каждой команде, даже если весь пакет
   завершился с ошибкой.
@@ -440,6 +466,10 @@ python -m tasks.export_ut103_procurement_supplier_orders \
 - unit: уникальность `Bitrix item + revision` и границы типов `18.2 / 5.0`;
 - unit: запрет apply при изменении карточки после dry-run;
 - unit: потерянный apply-result не вызывает повторную отправку;
+- unit: recovery readback ограничен тремя попытками с тем же MessageId;
+- unit: result после проверки архивируется и не читается повторно из archive;
+- unit: изменение карточки во время apply не дает ложную стадию `Применено`;
+- unit: pending-синхронизация Bitrix повторяется для `failed` и `applied`;
 - unit: запрет повторного `IdempotencyKey`;
 - smoke в тестовой 1С: dry-run для 1-2 контрагентов без изменений;
 - smoke в тестовой 1С: apply для `set_credit_terms` на `РБ030337`;
@@ -465,6 +495,9 @@ python -m tasks.export_ut103_procurement_supplier_orders \
 
 # Changelog
 
+- 2026-07-29 - aligned durable uniqueness with `Bitrix item + revision`, switched
+  the active counterparty lock to GUID and added strict result identity and
+  `Numeric(18,2) / Numeric(5,0)` bounds.
 - 2026-07-28 - implemented atomic `set_credit_terms`, result readback and durable
   Bitrix worker contract for task #2494; live rollout remains gated.
 - 2026-07-05 - added `procurement_onec_file_exchange.v1` exporter/CLI for

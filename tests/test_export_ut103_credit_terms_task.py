@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import subprocess
 import sys
@@ -41,8 +42,8 @@ def test_export_credit_terms_task_writes_atomic_ready_xml(tmp_path: Path) -> Non
             "tasks.export_ut103_credit_terms",
             "--exchange-root",
             str(tmp_path / "exchange"),
-            "--message-id",
-            "decision-2494-7-dry-run",
+            "--entity-type-id",
+            "1200",
             "--input-json",
             str(input_path),
             "--json",
@@ -54,7 +55,10 @@ def test_export_credit_terms_task_writes_atomic_ready_xml(tmp_path: Path) -> Non
 
     summary = json.loads(result.stdout)
     output = Path(summary["path"])
-    assert output.name == "onec_commands_decision-2494-7-dry-run.ready.xml"
+    revision_hash = hashlib.sha256(b"7").hexdigest()[:12]
+    assert output.name == (
+        f"onec_commands_rcd-1200-2494-{revision_hash}-" f"{'a' * 12}-dry-run.ready.xml"
+    )
     root = ET.fromstring(output.read_bytes())
     assert root.findtext("Commands/Command/CommandType") == "set_credit_terms"
     assert root.findtext("Commands/Command/NewLimit") == "150000.00"

@@ -44,9 +44,9 @@ def upgrade() -> None:
         sa.Column("approved_by", sa.String(length=32), nullable=False),
         sa.Column("approved_at", sa.DateTime(), nullable=False),
         sa.Column("state", sa.String(length=32), nullable=False),
-        sa.Column("dry_run_message_id", sa.String(length=160), nullable=True),
-        sa.Column("apply_message_id", sa.String(length=160), nullable=True),
-        sa.Column("readback_message_id", sa.String(length=160), nullable=True),
+        sa.Column("dry_run_message_id", sa.String(length=120), nullable=True),
+        sa.Column("apply_message_id", sa.String(length=120), nullable=True),
+        sa.Column("readback_message_id", sa.String(length=120), nullable=True),
         sa.Column("dry_run_attempts", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("apply_attempts", sa.Integer(), nullable=False, server_default="0"),
         sa.Column("readback_attempts", sa.Integer(), nullable=False, server_default="0"),
@@ -82,6 +82,10 @@ def upgrade() -> None:
         sa.CheckConstraint(
             "expected_current_depth >= 0 AND proposed_depth >= 0",
             name="ck_receivable_credit_decision_nonnegative_depths",
+        ),
+        sa.CheckConstraint(
+            "currency = 'RUB'",
+            name="ck_receivable_credit_decision_currency_rub",
         ),
         sa.PrimaryKeyConstraint("id"),
         sa.UniqueConstraint(

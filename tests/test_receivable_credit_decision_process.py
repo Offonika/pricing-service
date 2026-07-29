@@ -52,3 +52,66 @@ def test_blueprint_contains_atomic_pair_and_readback_fields() -> None:
         "readback_depth",
         "connector_error",
     } <= fields
+
+
+def test_blueprint_requires_technical_fields_reset_before_worker_enable() -> None:
+    blueprint = process.blueprint()
+    assert blueprint["automation"]["reset_on_return_to_stages"] == ["draft", "review"]
+    assert set(blueprint["automation"]["clear_logical_fields"]) == {
+        "decision_hash",
+        "approved_by",
+        "approved_at",
+        "readback_limit",
+        "readback_depth",
+        "connector_state",
+        "connector_error",
+    }
+    assert blueprint["safety"]["worker_stays_disabled_until_reset_rule_is_verified"]
+
+
+def test_live_metadata_apply_cannot_claim_reset_robot_is_ready(monkeypatch) -> None:
+    monkeypatch.setattr(process, "_configure_generic_setup", lambda: None)
+    monkeypatch.setattr(
+        process.bitrix_setup,
+        "bitrix_call",
+        lambda *_args, **_kwargs: {"result": {"ID": "115204"}},
+    )
+    monkeypatch.setattr(
+        process.bitrix_setup,
+        "ensure_type",
+        lambda *_args, **_kwargs: {"entityTypeId": 1200},
+    )
+    monkeypatch.setattr(
+        process.bitrix_setup,
+        "ensure_category",
+        lambda *_args, **_kwargs: {"id": 44},
+    )
+    monkeypatch.setattr(process.bitrix_setup, "ensure_stages", lambda *_args, **_kwargs: {})
+    monkeypatch.setattr(
+        process.bitrix_setup,
+        "ensure_custom_fields",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(
+        process.bitrix_setup,
+        "discover_field_mapping",
+        lambda *_args, **_kwargs: ({}, []),
+    )
+    monkeypatch.setattr(
+        process.bitrix_setup,
+        "build_mapping_payload",
+        lambda **_kwargs: {"process": {"entity_type_id": 1200}},
+    )
+    monkeypatch.setattr(process.bitrix_setup, "save_mapping", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(
+        process.bitrix_setup,
+        "ensure_common_details_configuration",
+        lambda *_args, **_kwargs: ([], process.DEFAULT_DETAILS_CONFIG_PATH),
+    )
+
+    payload = process.apply_blueprint(
+        process.parse_args(["--apply", "--webhook-url", "https://example.invalid/rest/"])
+    )
+
+    assert payload["reset_automation_configured"] is False
+    assert payload["worker_enable_blocked"] is True

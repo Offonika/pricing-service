@@ -12,7 +12,7 @@ from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -24,7 +24,9 @@ from app.services.exporters.ut103_credit_terms import (
     CreditTermsCommand,
     CreditTermsExchangeResult,
     CreditTermsMessage,
+    build_receivable_credit_decision_message_id,
     parse_credit_terms_result,
+    validate_credit_terms_message_id,
     write_credit_terms_message,
 )
 from app.services.exporters.ut103_customer_price_types import (
@@ -168,6 +170,8 @@ def parse_approved_decision(
     ]
     if missing:
         raise ValueError(f"Bitrix decision fields are empty: {', '.join(missing)}")
+    if not item_id.isdigit():
+        raise ValueError("Bitrix item id must be numeric")
     length_limits = {
         "id": (item_id, 64),
         "decision_revision": (revision, 96),
@@ -276,7 +280,12 @@ def run_credit_decision_worker_once(
     operations = list(
         db.scalars(
             select(ReceivableCreditDecisionOperation)
-            .where(ReceivableCreditDecisionOperation.state.in_(tuple(ACTIVE_STATES | {"applied"})))
+            .where(
+                or_(
+                    ReceivableCreditDecisionOperation.state.in_(tuple(ACTIVE_STATES)),
+                    ReceivableCreditDecisionOperation.bitrix_sync_pending.is_(True),
+                )
+            )
             .order_by(ReceivableCreditDecisionOperation.id)
         )
     )
@@ -336,6 +345,13 @@ def _ingest_item(
             f"Согласующий {decision.moved_by_user_id} не входит в allowlist",
         )
         return False
+    pilots = {
+        str(value).strip().upper()
+        for value in settings.receivable_credit_decision_pilot_counterparty_codes
+        if str(value).strip()
+    }
+    if pilots and decision.counterparty_code.upper() not in pilots:
+        return False
     if decision.card_decision_hash and (decision.card_decision_hash != decision.decision_hash):
         _update_item_error(
             caller,
@@ -371,14 +387,41 @@ def _ingest_item(
         )
     )
     if active_same_item is not None:
+        if active_same_item.state in {"apply_sent", "applying"}:
+            message = (
+                "Предыдущая ревизия уже могла быть применена в 1С; "
+                "новая ревизия заблокирована до result/readback"
+            )
+            active_same_item.last_error = message
+            try:
+                _update_item(
+                    caller,
+                    mapping,
+                    decision.bitrix_item_id,
+                    stage_key="applying",
+                    logical_fields={
+                        "connector_state": active_same_item.state,
+                        "connector_error": message,
+                    },
+                )
+            except RuntimeError:
+                active_same_item.bitrix_sync_pending = True
+            db.commit()
+            return False
         active_same_item.state = "cancelled"
         active_same_item.active_counterparty_key = None
         active_same_item.last_error = (
             "Карточка изменена после согласования; требуется повторно перевести ее "
             "в стадию «Утверждено»"
         )
+        active_same_item.bitrix_sync_pending = True
         db.commit()
-        _update_item_error(caller, mapping, decision.bitrix_item_id, active_same_item.last_error)
+        _sync_error_to_bitrix(
+            db,
+            active_same_item,
+            mapping=mapping,
+            caller=caller,
+        )
         return False
 
     counterparty_key = decision.counterparty_guid
@@ -459,6 +502,10 @@ def _advance_operation(
         if operation.bitrix_sync_pending:
             _sync_applied_to_bitrix(db, operation, mapping=mapping, caller=caller)
         return
+    if operation.state in {"failed", "cancelled"}:
+        if operation.bitrix_sync_pending:
+            _sync_error_to_bitrix(db, operation, mapping=mapping, caller=caller)
+        return
 
     if operation.state == "pending_dry_run":
         _send_dry_run(db, operation, exchange_root=exchange_root, now=now)
@@ -480,7 +527,15 @@ def _advance_operation(
             return
         result = _find_result(exchange_root, operation.dry_run_message_id)
         if result is not None:
-            _consume_dry_run_result(db, operation, result, mapping=mapping, caller=caller, now=now)
+            _consume_dry_run_result(
+                db,
+                operation,
+                result,
+                mapping=mapping,
+                caller=caller,
+                now=now,
+            )
+            _archive_result(result)
         elif _timed_out(
             operation.dry_run_sent_at,
             now,
@@ -566,13 +621,18 @@ def _advance_operation(
         approved_by=operation.approved_by,
         approved_at=_as_aware_utc(operation.approved_at),
     )
-    if current.decision_hash != operation.decision_hash:
+    if (
+        current.decision_hash != operation.decision_hash
+        or current.card_decision_hash != operation.decision_hash
+    ):
         _mark_cancelled(
             db,
             operation,
             "Карточка изменена после dry_run; требуется повторное согласование",
         )
-        _update_item_error(caller, mapping, operation.bitrix_item_id, operation.last_error)
+        operation.bitrix_sync_pending = True
+        db.commit()
+        _sync_error_to_bitrix(db, operation, mapping=mapping, caller=caller)
         return
 
     operation.apply_message_id = _message_id(operation, "apply")
@@ -599,6 +659,9 @@ def _advance_operation(
     except RuntimeError:
         operation.bitrix_sync_pending = True
         db.commit()
+        return
+    operation.bitrix_sync_pending = False
+    db.commit()
 
 
 def _send_dry_run(
@@ -611,14 +674,21 @@ def _send_dry_run(
 ) -> None:
     operation.dry_run_message_id = operation.dry_run_message_id or _message_id(operation, "dry-run")
     message = _message_for_operation(operation, mode="dry_run")
-    try:
-        write_credit_terms_message(exchange_root, message)
-    except FileExistsError:
-        if not retry:
-            raise
     operation.dry_run_attempts += 1
     operation.dry_run_sent_at = _as_naive_utc(now)
     operation.state = "dry_run_sent"
+    operation.last_error = "Публикация dry_run начата; повтор разрешен только с тем же MessageId"
+    # Состояние фиксируется до файловой публикации. Если процесс завершится между
+    # rename ready-файла и следующим commit, worker безопасно сверит тот же
+    # детерминированный MessageId и не застрянет в pending_dry_run.
+    db.commit()
+    try:
+        write_credit_terms_message(exchange_root, message)
+    except FileExistsError:
+        # Ready-файл мог сохраниться после сбоя между публикацией и commit.
+        # dry_run безопасен и повторяем, поэтому существование того же
+        # детерминированного файла эквивалентно успешной публикации.
+        pass
     operation.last_error = None
     db.commit()
 
@@ -671,6 +741,31 @@ def _consume_apply_if_available(
                 caller=caller,
                 now=now,
             )
+            _archive_result(recovery_result)
+            return
+        if operation.readback_message_id:
+            if _timed_out(
+                operation.readback_sent_at,
+                now,
+                settings.receivable_credit_decision_result_timeout_seconds,
+            ):
+                if (
+                    operation.readback_attempts
+                    < settings.receivable_credit_decision_max_readback_attempts
+                ):
+                    _ensure_recovery_readback(
+                        db,
+                        operation,
+                        exchange_root=exchange_root,
+                        now=now,
+                        retry=True,
+                    )
+                else:
+                    operation.last_error = (
+                        "Recovery readback не получен после допустимого числа повторов; "
+                        "apply не переотправлялся, требуется ручная проверка"
+                    )
+                    db.commit()
             return
         if _timed_out(
             operation.apply_sent_at,
@@ -693,7 +788,7 @@ def _consume_apply_if_available(
     item = _verified_result_item(result, operation)
     operation.last_result_status = item.status
     operation.last_result_at = _as_naive_utc(now)
-    if not result.ok or item.status not in {"applied", "already_actual"}:
+    if item.status in {"failed", "needs_review"}:
         _mark_failed(
             db,
             operation,
@@ -701,18 +796,33 @@ def _consume_apply_if_available(
             mapping=mapping,
             caller=caller,
         )
+        _archive_result(result)
+        return
+    if not result.ok or item.status not in {"applied", "already_actual"}:
+        _mark_apply_ambiguous(
+            db,
+            operation,
+            item.message
+            or result.errors
+            or "Ответ apply не доказывает атомарное применение утвержденной пары",
+            mapping=mapping,
+            caller=caller,
+        )
+        _archive_result(result)
         return
     if (
         item.readback_limit != operation.proposed_limit
         or item.readback_depth != operation.proposed_depth
     ):
-        _mark_failed(
+        _mark_apply_ambiguous(
             db,
             operation,
-            "Readback 1С не совпал с утвержденной парой лимит/глубина",
+            "Readback 1С не совпал с утвержденной парой лимит/глубина; "
+            "блокировка контрагента сохранена до recovery readback",
             mapping=mapping,
             caller=caller,
         )
+        _archive_result(result)
         return
     _mark_applied_from_readback(
         db,
@@ -723,6 +833,38 @@ def _consume_apply_if_available(
         caller=caller,
         now=now,
     )
+    _archive_result(result)
+
+
+def _mark_apply_ambiguous(
+    db: Session,
+    operation: ReceivableCreditDecisionOperation,
+    message: str,
+    *,
+    mapping: dict[str, Any],
+    caller: BitrixCaller,
+) -> None:
+    operation.state = "applying"
+    operation.last_error = str(message)[:2000]
+    # active_counterparty_key намеренно не освобождается: applied без точного
+    # readback не является доказанным результатом 1С.
+    db.commit()
+    try:
+        _update_item(
+            caller,
+            mapping,
+            operation.bitrix_item_id,
+            logical_fields={
+                "connector_state": "applying",
+                "connector_error": operation.last_error[:1000],
+            },
+        )
+    except RuntimeError:
+        operation.bitrix_sync_pending = True
+        db.commit()
+        return
+    operation.bitrix_sync_pending = False
+    db.commit()
 
 
 def _ensure_recovery_readback(
@@ -731,19 +873,21 @@ def _ensure_recovery_readback(
     *,
     exchange_root: Path,
     now: datetime,
+    retry: bool = False,
 ) -> None:
-    if operation.readback_message_id:
+    operation.readback_message_id = operation.readback_message_id or _message_id(
+        operation, "readback"
+    )
+    if not retry and operation.readback_attempts:
         return
-    operation.readback_message_id = _message_id(operation, "readback")
+    operation.readback_attempts += 1
+    operation.readback_sent_at = _as_naive_utc(now)
     db.commit()
     message = _message_for_operation(operation, mode="dry_run", recovery=True)
     try:
         write_credit_terms_message(exchange_root, message)
     except FileExistsError:
         pass
-    operation.readback_attempts = 1
-    operation.readback_sent_at = _as_naive_utc(now)
-    db.commit()
 
 
 def _consume_recovery_readback_result(
@@ -814,6 +958,49 @@ def _sync_applied_to_bitrix(
     caller: BitrixCaller,
 ) -> None:
     try:
+        bitrix_item = _get_item(caller, mapping, operation.bitrix_item_id)
+        current: ApprovedDecision | None
+        try:
+            current = parse_approved_decision(
+                bitrix_item,
+                mapping=mapping,
+                approved_by=operation.approved_by,
+                approved_at=_as_aware_utc(operation.approved_at),
+            )
+        except ValueError:
+            current = None
+        allowed_stages = {
+            mapping["stage_map"].get("approved"),
+            mapping["stage_map"].get("onec_check"),
+            mapping["stage_map"].get("applying"),
+            mapping["stage_map"].get("applied"),
+        }
+        if (
+            current is None
+            or current.decision_hash != operation.decision_hash
+            or current.card_decision_hash != operation.decision_hash
+            or str(_item_value(bitrix_item, "stageId") or "") not in allowed_stages
+        ):
+            message = (
+                "1С применила предыдущую утвержденную ревизию, но карточка Bitrix "
+                "изменилась во время apply; требуется ручная сверка"
+            )
+            _update_item(
+                caller,
+                mapping,
+                operation.bitrix_item_id,
+                stage_key="onec_error",
+                logical_fields={
+                    "connector_state": "applied_card_changed",
+                    "connector_error": message,
+                    "readback_limit": _canonical_money(operation.readback_limit),
+                    "readback_depth": operation.readback_depth,
+                },
+            )
+            operation.bitrix_sync_pending = False
+            operation.last_error = message
+            db.commit()
+            return
         _update_item(
             caller,
             mapping,
@@ -833,6 +1020,33 @@ def _sync_applied_to_bitrix(
         return
     operation.bitrix_sync_pending = False
     operation.last_error = None
+    db.commit()
+
+
+def _sync_error_to_bitrix(
+    db: Session,
+    operation: ReceivableCreditDecisionOperation,
+    *,
+    mapping: dict[str, Any],
+    caller: BitrixCaller,
+) -> None:
+    message = operation.last_error or "Операция обмена завершилась с ошибкой"
+    try:
+        _update_item(
+            caller,
+            mapping,
+            operation.bitrix_item_id,
+            stage_key="onec_error",
+            logical_fields={
+                "connector_state": operation.state,
+                "connector_error": message[:1000],
+            },
+        )
+    except RuntimeError:
+        operation.bitrix_sync_pending = True
+        db.commit()
+        return
+    operation.bitrix_sync_pending = False
     db.commit()
 
 
@@ -1031,11 +1245,23 @@ def _find_result(exchange_root: Path, message_id: str | None) -> CreditTermsExch
     if not message_id:
         return None
     filename = f"onec_commands_{_safe_message_id(message_id)}.result.xml"
-    from_1c = exchange_root / "from_1c"
-    if not from_1c.exists():
+    path = exchange_root / "from_1c" / "new" / filename
+    if not path.is_file():
         return None
-    candidates = sorted(from_1c.glob(f"**/{filename}"))
-    return parse_credit_terms_result(candidates[0]) if candidates else None
+    return parse_credit_terms_result(path)
+
+
+def _archive_result(result: CreditTermsExchangeResult) -> Path | None:
+    if result.path is None:
+        return None
+    source = result.path
+    if not source.is_file():
+        return None
+    archive_dir = source.parent.parent / "archive"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    target = archive_dir / source.name
+    source.replace(target)
+    return target
 
 
 def _ready_path(exchange_root: Path, message_id: str) -> Path:
@@ -1045,9 +1271,12 @@ def _ready_path(exchange_root: Path, message_id: str) -> Path:
 
 
 def _message_id(operation: ReceivableCreditDecisionOperation, suffix: str) -> str:
-    return (
-        f"receivable-{operation.bitrix_item_id}-{operation.bitrix_revision}-"
-        f"{operation.decision_hash[:12]}-{suffix}"
+    return build_receivable_credit_decision_message_id(
+        entity_type_id=operation.bitrix_entity_type_id,
+        item_id=operation.bitrix_item_id,
+        revision=operation.bitrix_revision,
+        decision_hash=operation.decision_hash,
+        suffix=suffix,
     )
 
 
@@ -1083,7 +1312,9 @@ def _operation_monitoring(db: Session, now: datetime) -> dict[str, Any]:
             for item in active
         ),
         "total_retries": sum(
-            max(0, item.dry_run_attempts - 1) + max(0, item.apply_attempts - 1)
+            max(0, item.dry_run_attempts - 1)
+            + max(0, item.apply_attempts - 1)
+            + max(0, item.readback_attempts - 1)
             for item in operations
         ),
         "recovery_readbacks": sum(item.readback_attempts for item in operations),
@@ -1091,7 +1322,8 @@ def _operation_monitoring(db: Session, now: datetime) -> dict[str, Any]:
             "Readback 1С не совпал" in (item.last_error or "") for item in operations
         ),
         "manual_review_queue": sum(
-            bool(item.last_error) and item.state in {"applying", "failed"} for item in operations
+            bool(item.last_error) and item.state in {"applying", "failed", "applied"}
+            for item in operations
         ),
         "last_successful_transfer_at": (
             last_success.isoformat(timespec="seconds") if last_success else None
@@ -1241,14 +1473,19 @@ def _parse_depth(value: Any, field_name: str) -> int:
 
 def _parse_datetime(value: Any) -> datetime:
     if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("approval time must include timezone")
         return _as_aware_utc(value)
     raw = str(value or "").strip()
     if not raw:
         raise ValueError("approval time is required")
     try:
-        return _as_aware_utc(datetime.fromisoformat(raw.replace("Z", "+00:00")))
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError as error:
         raise ValueError("approval time must be ISO-8601") from error
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError("approval time must include timezone")
+    return _as_aware_utc(parsed)
 
 
 def _canonical_money(value: Decimal | None) -> str:
@@ -1274,7 +1511,4 @@ def _timed_out(started_at: datetime | None, now: datetime, timeout_seconds: int)
 
 
 def _safe_message_id(value: str) -> str:
-    return "".join(
-        character if character.isascii() and (character.isalnum() or character in "_.-") else "_"
-        for character in value.strip()
-    ).strip("._")[:120]
+    return validate_credit_terms_message_id(value)

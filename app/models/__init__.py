@@ -27,6 +27,14 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.counterparty_duplicate_case import CounterpartyDuplicateCase
     from app.models.counterparty_folder_snapshot import CounterpartyFolderSnapshot
     from app.models.counterparty_manager_assignment import CounterpartyManagerAssignment
+    from app.models.customer_settlement import (
+        CustomerSettlementAssertionJti,
+        CustomerSettlementBalance,
+        CustomerSettlementMappingEntry,
+        CustomerSettlementMappingRevision,
+        CustomerSettlementPilotAccess,
+        CustomerSettlementRevision,
+    )
     from app.models.customer_price_type import (
         CustomerPriceTypeCase,
         CustomerPriceTypeCaseEvent,
@@ -159,6 +167,12 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "CardBalanceReconciliationEvent",
         "CounterpartyDuplicateCase",
         "CounterpartyFolderSnapshot",
+        "CustomerSettlementRevision",
+        "CustomerSettlementBalance",
+        "CustomerSettlementMappingRevision",
+        "CustomerSettlementMappingEntry",
+        "CustomerSettlementPilotAccess",
+        "CustomerSettlementAssertionJti",
         "CustomerPriceTypeProfile",
         "CustomerPriceTypeRun",
         "CustomerPriceTypeSnapshot",

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 import uuid
@@ -18,13 +19,19 @@ SET_CREDIT_TERMS_COMMAND = "set_credit_terms"
 DEFAULT_SOURCE = "pricing-service"
 DEFAULT_TARGET = "1c_ut_10_3"
 XML_ENCODING = "windows-1251"
+MAX_MESSAGE_ID_LENGTH = 120
 MAX_CREDIT_LIMIT = Decimal("9999999999999999.99")
 MAX_CREDIT_DEPTH = 99999
 VALID_MODES = frozenset({"dry_run", "apply"})
 VALID_RESULT_STATUSES = frozenset(
-    {"validated", "applied", "already_actual", "skipped", "needs_review", "failed"}
+    {"validated", "applied", "already_actual", "needs_review", "failed"}
 )
 _DECISION_HASH_RE = re.compile(r"^[0-9a-f]{64}$")
+_MESSAGE_ID_RE = re.compile(
+    r"^rcd-(?P<entity>[0-9]+)-(?P<item>[0-9]+)-"
+    r"(?P<revision>[0-9a-f]{12})-(?P<decision>[0-9a-f]{12})-"
+    r"(?P<suffix>dry-run|apply|readback)$"
+)
 
 
 @dataclass(frozen=True)
@@ -210,16 +217,46 @@ def result_path_for_message(exchange_root: str | Path, message_id: str) -> Path:
     )
 
 
+def build_receivable_credit_decision_message_id(
+    *,
+    entity_type_id: int,
+    item_id: str,
+    revision: str,
+    decision_hash: str,
+    suffix: str,
+) -> str:
+    entity = str(entity_type_id)
+    item = str(item_id)
+    if not entity.isascii() or not entity.isdigit() or int(entity) <= 0 or int(entity) > 2147483647:
+        raise ValueError("entity_type_id must be a positive integer")
+    if not item.isascii() or not item.isdigit() or int(item) <= 0:
+        raise ValueError("item_id must be numeric")
+    if len(item) > 64:
+        raise ValueError("item_id must not exceed 64 characters")
+    if not revision:
+        raise ValueError("revision is required")
+    if len(revision) > 96:
+        raise ValueError("revision must not exceed 96 characters")
+    if not _DECISION_HASH_RE.fullmatch(decision_hash):
+        raise ValueError("decision_hash must be a lowercase SHA-256 hex digest")
+    if suffix not in {"dry-run", "apply", "readback"}:
+        raise ValueError("message id suffix must be dry-run, apply, or readback")
+    revision_hash = hashlib.sha256(revision.encode("utf-8")).hexdigest()[:12]
+    return validate_credit_terms_message_id(
+        f"rcd-{entity}-{item}-{revision_hash}-{decision_hash[:12]}-{suffix}"
+    )
+
+
 def _validate_message(message: CreditTermsMessage) -> None:
-    if not message.message_id.strip():
-        raise ValueError("message_id is required")
+    validate_credit_terms_message_id(message.message_id)
     if message.schema != ONEC_COMMANDS_SCHEMA:
         raise ValueError(f"schema must be {ONEC_COMMANDS_SCHEMA}")
     if message.mode not in VALID_MODES:
         raise ValueError(f"mode must be one of: {', '.join(sorted(VALID_MODES))}")
     if not message.commands:
         raise ValueError("at least one credit-terms command is required")
-
+    if len(message.commands) != 1:
+        raise ValueError("credit-terms message must contain exactly one command")
     idempotency_keys: set[str] = set()
     counterparty_keys: set[str] = set()
     for command in message.commands:
@@ -232,6 +269,11 @@ def _validate_message(message: CreditTermsMessage) -> None:
             raise ValueError(f"duplicate counterparty in message: {command.counterparty_guid}")
         idempotency_keys.add(idempotency_key)
         counterparty_keys.add(counterparty_key)
+    _validate_message_id_for_command(
+        message.message_id,
+        message.commands[0],
+        mode=message.mode,
+    )
 
 
 def _validate_command(command: CreditTermsCommand, *, mode: str) -> None:
@@ -251,7 +293,7 @@ def _validate_command(command: CreditTermsCommand, *, mode: str) -> None:
         raise ValueError(f"required command fields are empty: {', '.join(missing)}")
     length_limits = {
         "idempotency_key": (command.idempotency_key, 200),
-        "decision_id": (command.decision_id, 128),
+        "decision_id": (command.decision_id, 64),
         "revision": (command.revision, 96),
         "counterparty_ref": (command.counterparty_ref, 64),
         "counterparty_guid": (command.counterparty_guid, 36),
@@ -268,6 +310,8 @@ def _validate_command(command: CreditTermsCommand, *, mode: str) -> None:
         raise ValueError(f"command fields exceed length limits: {', '.join(too_long)}")
     if command.command_type != SET_CREDIT_TERMS_COMMAND:
         raise ValueError(f"command_type must be {SET_CREDIT_TERMS_COMMAND}")
+    if not command.decision_id.isascii() or not command.decision_id.isdigit():
+        raise ValueError("decision_id must be numeric")
     if not _DECISION_HASH_RE.fullmatch(command.decision_hash):
         raise ValueError("decision_hash must be a lowercase SHA-256 hex digest")
     expected_guid = one_c_guid_from_counterparty_ref(command.counterparty_ref)
@@ -346,10 +390,43 @@ def _format_decimal(value: Decimal) -> str:
 
 
 def _safe_filename_part(value: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9_.-]+", "_", value.strip()).strip("._")
-    if not safe:
-        raise ValueError("message_id cannot be converted to a safe file name")
-    return safe[:120]
+    return validate_credit_terms_message_id(value)
+
+
+def validate_credit_terms_message_id(value: str) -> str:
+    message_id = value
+    if not message_id:
+        raise ValueError("message_id is required")
+    if message_id != message_id.strip():
+        raise ValueError("message_id must not contain leading or trailing whitespace")
+    if len(message_id) > MAX_MESSAGE_ID_LENGTH:
+        raise ValueError(f"message_id must not exceed {MAX_MESSAGE_ID_LENGTH} characters")
+    if not _MESSAGE_ID_RE.fullmatch(message_id):
+        raise ValueError(
+            "message_id must match "
+            "rcd-<entity>-<item>-<revision_hash12>-<decision_hash12>-<suffix>"
+        )
+    return message_id
+
+
+def _validate_message_id_for_command(
+    message_id: str,
+    command: CreditTermsCommand,
+    *,
+    mode: str,
+) -> None:
+    match = _MESSAGE_ID_RE.fullmatch(message_id)
+    if match is None:
+        raise ValueError("message_id does not match the credit-decision contract")
+    expected_revision = hashlib.sha256(command.revision.encode("utf-8")).hexdigest()[:12]
+    allowed_suffixes = {"apply"} if mode == "apply" else {"dry-run", "readback"}
+    if (
+        match.group("item") != command.decision_id
+        or match.group("revision") != expected_revision
+        or match.group("decision") != command.decision_hash[:12]
+        or match.group("suffix") not in allowed_suffixes
+    ):
+        raise ValueError("message_id does not match command identity or mode")
 
 
 def _node_text(root: ET.Element, tag: str) -> str:

@@ -11,6 +11,7 @@ from app.services.exporters.ut103_credit_terms import (
     CreditTermsCommand,
     CreditTermsMessage,
     build_credit_terms_xml,
+    build_receivable_credit_decision_message_id,
     list_credit_terms_results,
     write_credit_terms_message,
 )
@@ -34,7 +35,21 @@ def main() -> int:
     payload = json.loads(args.input_json.read_text(encoding="utf-8"))
     commands_payload = payload if isinstance(payload, list) else [payload]
     commands = tuple(_command_from_mapping(item) for item in commands_payload)
-    message_id = args.message_id or f"credit-terms-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    if args.message_id:
+        message_id = args.message_id
+    else:
+        if args.entity_type_id is None:
+            raise SystemExit("--message-id or --entity-type-id is required")
+        if len(commands) != 1:
+            raise SystemExit("automatic MessageId requires exactly one command")
+        command = commands[0]
+        message_id = build_receivable_credit_decision_message_id(
+            entity_type_id=args.entity_type_id,
+            item_id=command.decision_id,
+            revision=command.revision,
+            decision_hash=command.decision_hash,
+            suffix="apply" if args.mode == "apply" else "dry-run",
+        )
     message = CreditTermsMessage(message_id=message_id, mode=args.mode, commands=commands)
     xml = build_credit_terms_xml(message)
     summary: dict[str, Any] = {
@@ -68,6 +83,7 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--exchange-root")
     parser.add_argument("--message-id")
+    parser.add_argument("--entity-type-id", type=int)
     parser.add_argument("--mode", choices=("dry_run", "apply"), default="dry_run")
     parser.add_argument("--input-json", type=Path)
     parser.add_argument("--validate-only", action="store_true")

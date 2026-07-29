@@ -112,6 +112,19 @@ def test_item_revision_cannot_be_reused_with_another_hash(sqlite_engine) -> None
         Base.metadata.drop_all(sqlite_engine)
 
 
+def test_database_rejects_non_rub_operation(sqlite_engine) -> None:
+    from app.models import Base
+
+    Base.metadata.create_all(sqlite_engine)
+    try:
+        with Session(sqlite_engine) as session:
+            session.add(_operation(currency="USD"))
+            with pytest.raises(IntegrityError):
+                session.commit()
+    finally:
+        Base.metadata.drop_all(sqlite_engine)
+
+
 def test_migration_upgrade_and_downgrade(tmp_path: Path) -> None:
     path = (
         Path(__file__).resolve().parents[1]
@@ -128,6 +141,16 @@ def test_migration_upgrade_and_downgrade(tmp_path: Path) -> None:
             module.op = Operations(MigrationContext.configure(connection))
             module.upgrade()
             assert "receivable_credit_decision_operation" in inspect(connection).get_table_names()
+            columns = {
+                item["name"]: item["type"]
+                for item in inspect(connection).get_columns("receivable_credit_decision_operation")
+            }
+            for name in (
+                "dry_run_message_id",
+                "apply_message_id",
+                "readback_message_id",
+            ):
+                assert columns[name].length == 120
             constraints = {
                 item["name"]: item["column_names"]
                 for item in inspect(connection).get_unique_constraints(

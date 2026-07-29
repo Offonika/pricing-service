@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Preview or explicitly create the task #2494 Bitrix smart-process."""
+"""Preview or explicitly create task #2494 metadata without enabling its worker."""
 
 from __future__ import annotations
 
@@ -262,6 +262,17 @@ DETAIL_SECTION_SPECS = [
     },
 ]
 
+RESET_ON_RETURN_TO_STAGE_KEYS = ("draft", "review")
+RESET_LOGICAL_FIELDS = (
+    "decision_hash",
+    "approved_by",
+    "approved_at",
+    "readback_limit",
+    "readback_depth",
+    "connector_state",
+    "connector_error",
+)
+
 
 def blueprint() -> dict[str, Any]:
     return {
@@ -273,9 +284,17 @@ def blueprint() -> dict[str, Any]:
         "stages": STAGE_SPECS,
         "fields": CUSTOM_FIELD_SPECS,
         "details": DETAIL_SECTION_SPECS,
+        "automation": {
+            "reset_on_return_to_stages": list(RESET_ON_RETURN_TO_STAGE_KEYS),
+            "clear_logical_fields": list(RESET_LOGICAL_FIELDS),
+            "worker_enable_gate": (
+                "Сначала проверить робота сброса на возврате в Черновик/На согласовании"
+            ),
+        },
         "safety": {
             "live_apply_requires_flag": True,
             "existing_receivable_entity_type_id_1132_untouched": True,
+            "worker_stays_disabled_until_reset_rule_is_verified": True,
         },
     }
 
@@ -349,6 +368,9 @@ def apply_blueprint(args: argparse.Namespace) -> dict[str, Any]:
         "details_sections": len(details),
         "created_fields": created_fields,
         "current_webhook_user_id": current_user.get("ID"),
+        "automation": blueprint()["automation"],
+        "reset_automation_configured": False,
+        "worker_enable_blocked": True,
     }
 
 

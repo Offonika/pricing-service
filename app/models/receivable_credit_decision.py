@@ -48,6 +48,10 @@ class ReceivableCreditDecisionOperation(Base):
             "expected_current_depth >= 0 AND proposed_depth >= 0",
             name="ck_receivable_credit_decision_nonnegative_depths",
         ),
+        CheckConstraint(
+            "currency = 'RUB'",
+            name="ck_receivable_credit_decision_currency_rub",
+        ),
         Index(
             "ix_receivable_credit_decision_state_updated",
             "state",
@@ -86,9 +90,9 @@ class ReceivableCreditDecisionOperation(Base):
     approved_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
 
     state: Mapped[str] = mapped_column(String(32), nullable=False, default="pending_dry_run")
-    dry_run_message_id: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
-    apply_message_id: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
-    readback_message_id: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
+    dry_run_message_id: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    apply_message_id: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    readback_message_id: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
     dry_run_attempts: Mapped[int] = mapped_column(nullable=False, default=0)
     apply_attempts: Mapped[int] = mapped_column(nullable=False, default=0)
     readback_attempts: Mapped[int] = mapped_column(nullable=False, default=0)

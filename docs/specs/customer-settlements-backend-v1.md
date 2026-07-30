@@ -315,7 +315,7 @@ Extractor использует `_AccumRgT7009/_AccumRg7002` только как 
 Read-only диагностика базы `Ekama` подтвердила:
 
 - единственная организация в актуальном контуре — `MASTER MOBILE`,
-  код `РБ0000003`;
+  код `РБ0000003`, ref `0xb34a0025901e48ef11e211128227ea80`;
 - организация — `_Fld7005RRef` в opening и movements;
 - договор — `_Fld7003RRef -> _Reference37`;
 - контрагент — `_Fld7006RRef -> _Reference54`;

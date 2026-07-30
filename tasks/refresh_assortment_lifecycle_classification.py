@@ -7,7 +7,7 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, inspect
+from sqlalchemy import inspect
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -386,7 +386,7 @@ def _load_or_build_fact_records(
         )
     fact_status_decisions = _load_fact_status_decisions(args.fact_status_decisions_json)
     facts = _attach_fact_status_decisions(facts, fact_status_decisions)
-    product_engine = create_engine(database_url, pool_pre_ping=True)
+    product_engine = build_engine(database_url, pool_pre_ping=True)
     try:
         return attach_effective_availability_shadow_to_facts(
             product_engine,

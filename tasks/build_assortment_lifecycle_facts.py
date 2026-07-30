@@ -7,8 +7,6 @@ from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine
-
 from app.core.config import get_settings
 from app.infrastructure.db.engines import build_engine
 from app.services.assortment_lifecycle_facts import (
@@ -110,7 +108,7 @@ def main() -> int:
         history_start=history_start,
     )
     if not args.input_json:
-        product_engine = create_engine(settings.database_url, pool_pre_ping=True)
+        product_engine = build_engine(settings.database_url, pool_pre_ping=True)
         try:
             facts = attach_effective_availability_shadow_to_facts(
                 product_engine,

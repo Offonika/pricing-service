@@ -87,7 +87,8 @@ def fetch_customer_settlement_balances(
         isolation_level = (
             "SNAPSHOT" if int(clock.get("snapshot_isolation_state") or 0) == 1 else "READ COMMITTED"
         )
-        connection = connection.execution_options(isolation_level=isolation_level)
+        connection.exec_driver_sql(f"SET TRANSACTION ISOLATION LEVEL {isolation_level}")
+        connection.rollback()
         source_db_time = ensure_utc(clock["utc_now"])
         source_local_time = clock["local_now"]
         if isinstance(source_local_time, datetime) and source_local_time.tzinfo is not None:
@@ -110,7 +111,11 @@ def fetch_customer_settlement_balances(
                 JOIN #CustomerSettlementPilot AS pilot
                   ON pilot.counterparty_ref = t._Fld7006RRef
                 WHERE t._Period <= :opening_cutoff
-                  AND t.{opening_org_field} = CONVERT(binary(16), :organization_ref, 1)
+                  AND t.{opening_org_field} = CONVERT(
+                      binary(16),
+                      CONVERT(varchar(34), :organization_ref),
+                      1
+                  )
             ),
             opening_rows AS (
                 SELECT
@@ -121,7 +126,11 @@ def fetch_customer_settlement_balances(
                   ON pilot.counterparty_ref = t._Fld7006RRef
                 JOIN latest_opening_period AS p
                   ON t._Period = p.period
-                WHERE t.{opening_org_field} = CONVERT(binary(16), :organization_ref, 1)
+                WHERE t.{opening_org_field} = CONVERT(
+                    binary(16),
+                    CONVERT(varchar(34), :organization_ref),
+                    1
+                )
                 GROUP BY t._Fld7006RRef
             ),
             movement_rows AS (
@@ -139,7 +148,11 @@ def fetch_customer_settlement_balances(
                 JOIN #CustomerSettlementPilot AS pilot
                   ON pilot.counterparty_ref = r._Fld7006RRef
                 WHERE r._Active = 0x01
-                  AND r.{movement_org_field} = CONVERT(binary(16), :organization_ref, 1)
+                  AND r.{movement_org_field} = CONVERT(
+                      binary(16),
+                      CONVERT(varchar(34), :organization_ref),
+                      1
+                  )
                   AND r._Period >= :opening_cutoff
                   AND r._Period < :movement_end
                 GROUP BY r._Fld7006RRef
@@ -179,7 +192,14 @@ def fetch_customer_settlement_balances(
             connection.execute(
                 text("""
                     INSERT INTO #CustomerSettlementPilot (counterparty_ref, ref_text)
-                    VALUES (CONVERT(binary(16), :counterparty_ref, 1), :counterparty_ref)
+                    VALUES (
+                        CONVERT(
+                            binary(16),
+                            CONVERT(varchar(34), :counterparty_ref),
+                            1
+                        ),
+                        :counterparty_ref
+                    )
                     """),
                 [{"counterparty_ref": value} for value in normalized_refs],
             )

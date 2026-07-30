@@ -283,6 +283,34 @@ class Settings(BaseSettings):
     receivable_workplace_bitrix_session_secret: str | None = None
     receivable_workplace_bitrix_session_ttl_seconds: int = 3600
     receivable_workplace_bitrix_rest_timeout_seconds: float = 6.0
+    customer_settlements_enabled: bool = False
+    customer_settlements_shadow_enabled: bool = False
+    customer_settlements_organization_ref: str | None = None
+    customer_settlements_opening_organization_field: str | None = None
+    customer_settlements_movement_organization_field: str | None = None
+    customer_settlements_source_mode: str = "onec_canonical_mutual_statement_7002"
+    customer_settlements_source_validated: bool = False
+    customer_settlements_query_timeout_seconds: int = 30
+    customer_settlements_stale_after_seconds: int = 2 * 60 * 60
+    customer_settlements_hide_after_seconds: int = 6 * 60 * 60
+    customer_settlements_mapping_stale_after_seconds: int = 2 * 60 * 60
+    customer_settlements_success_retention_days: int = 30
+    customer_settlements_failed_retention_days: int = 7
+    customer_settlements_jti_retention_hours: int = 24
+    customer_settlements_assertion_issuer: str = "master-mobile.ru"
+    customer_settlements_assertion_audience: str = "pricing-service:customer-settlements"
+    customer_settlements_assertion_active_kid: str | None = None
+    customer_settlements_assertion_active_secret: str | None = None
+    customer_settlements_assertion_previous_kid: str | None = None
+    customer_settlements_assertion_previous_secret: str | None = None
+    customer_settlements_assertion_ttl_seconds: int = 60
+    customer_settlements_assertion_clock_skew_seconds: int = 30
+    customer_settlements_allowed_source_ips: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    customer_settlements_correlation_salt: str | None = None
+    customer_settlements_crm_webhook_url: str | None = None
+    customer_settlements_crm_timeout_seconds: float = 6.0
     executive_dashboard_finance_snapshot_path: str = (
         "/var/lib/mm-data-contracts/executive-dashboard/finance_snapshot.json"
     )
@@ -576,6 +604,7 @@ class Settings(BaseSettings):
         "receivable_workplace_bitrix_full_access_user_ids",
         "receivable_credit_decision_approver_user_ids",
         "receivable_credit_decision_pilot_counterparty_codes",
+        "customer_settlements_allowed_source_ips",
         "executive_dashboard_bitrix_allowed_domains",
         "executive_dashboard_bitrix_allowed_member_ids",
         "executive_dashboard_bitrix_full_access_user_ids",

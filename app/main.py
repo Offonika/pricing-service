@@ -26,6 +26,7 @@ from app.api.customer_price_types import (
     page_router as customer_price_types_page_router,
 )
 from app.api.customer_price_types import router as customer_price_types_router
+from app.api.customer_settlements import router as customer_settlements_router
 from app.api.expertise import router as expertise_router
 from app.api.health import router as health_router
 from app.api.internal_alerts import router as internal_alerts_router
@@ -160,6 +161,7 @@ app.include_router(staffing_router, prefix="/api/staffing")
 app.include_router(internal_alerts_router, prefix="/api/internal/alerts")
 app.include_router(counterparty_duplicates_router, prefix="/api/internal/counterparty-duplicates")
 app.include_router(customer_price_types_router)
+app.include_router(customer_settlements_router)
 app.include_router(expertise_router, prefix="/api/expertise")
 app.include_router(site_defect_archive_router, prefix="/api/site-defects")
 app.include_router(card_balance_reconciliation_router, prefix="/api/card-balance-reconciliation")

@@ -337,6 +337,7 @@ def test_cron_artifacts_bound_hung_processes_and_retry_only_financial_errors() -
         )
     }
     assert all("timeout --signal=TERM --kill-after=5s" in content for content in scripts.values())
+    assert all("CUSTOMER_SETTLEMENTS_ENV_FILE" in content for content in scripts.values())
     assert (
         scripts["customer_settlement_financial_sync.sh"].count("-m tasks.sync_customer_settlements")
         == 1

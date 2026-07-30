@@ -26,6 +26,7 @@ const RECEIVABLES_TOKEN_LEGACY_KEY = "pricing.receivables.token.v1";
 type EditState = ReceivableWorkplaceEditState;
 
 type QuickFilter = "" | "call_today" | "no_phone" | "overdue_30" | "overdue_90" | "postponed";
+type MinimumDebtFilter = "" | "500000" | "1000000";
 type ReceivablesTab = "work" | "folders";
 
 const emptySummary: ReceivableWorkplaceSummary = {
@@ -570,6 +571,7 @@ export function ReceivablesWorkplace({
   const [date, setDate] = useState(readInitialDate);
   const [departmentRef, setDepartmentRef] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [minimumDebt, setMinimumDebt] = useState<MinimumDebtFilter>("");
   const [sortBy, setSortBy] = useState<ReceivableWorkplaceSortBy>("balance");
   const [sortDir, setSortDir] = useState<ReceivableWorkplaceSortDir>("desc");
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("");
@@ -663,6 +665,7 @@ export function ReceivablesWorkplace({
       const data = await fetchReceivableWorkplace({
         date,
         department_ref: departmentRef,
+        min_debt: minimumDebt ? Number(minimumDebt) : undefined,
         sort_by: sortBy,
         sort_dir: sortDir,
         status: statusFilter,
@@ -684,7 +687,7 @@ export function ReceivablesWorkplace({
     } finally {
       setLoading(false);
     }
-  }, [date, departmentRef, hasToken, sortBy, sortDir, statusFilter]);
+  }, [date, departmentRef, hasToken, minimumDebt, sortBy, sortDir, statusFilter]);
 
   const loadFolders = useCallback(async () => {
     if (!hasToken || !date) {
@@ -770,6 +773,15 @@ export function ReceivablesWorkplace({
               {option.label}
             </option>
           ))}
+        </select>
+        <select
+          className="app__select"
+          value={minimumDebt}
+          onChange={(event) => setMinimumDebt(event.target.value as MinimumDebtFilter)}
+        >
+          <option value="">Любая сумма долга</option>
+          <option value="500000">Долг &gt; 500 тыс.</option>
+          <option value="1000000">Долг &gt; 1 млн</option>
         </select>
         <select
           className="app__select"

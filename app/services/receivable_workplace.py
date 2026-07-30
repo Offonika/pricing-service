@@ -936,6 +936,7 @@ def build_receivable_workplace(
     snapshot_date: date,
     department_ref: str | None = None,
     status: str | None = None,
+    min_debt: Decimal | None = None,
     limit: int = 500,
     sort_by: WorkplaceSortBy = "balance",
     sort_dir: WorkplaceSortDir = "desc",
@@ -985,6 +986,8 @@ def build_receivable_workplace(
             for case in cases
             if _status_for_case(case, work_items.get(case.counterparty_ref)) == status
         ]
+    if min_debt is not None:
+        cases = [case for case in cases if case.current_balance > min_debt]
     cases.sort(key=_case_sort_key, reverse=True)
     open_debt_cache = load_cached_open_debt_documents(
         session,

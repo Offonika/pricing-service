@@ -4206,6 +4206,17 @@ paths:
           - type: string
           - type: 'null'
           title: Status
+      - name: min_debt
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Min Debt
       - name: limit
         in: query
         required: false

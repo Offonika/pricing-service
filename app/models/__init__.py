@@ -35,6 +35,14 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         CustomerPriceTypeRun,
         CustomerPriceTypeSnapshot,
     )
+    from app.models.customer_settlement import (
+        CustomerSettlementAssertionJti,
+        CustomerSettlementBalance,
+        CustomerSettlementMappingEntry,
+        CustomerSettlementMappingRevision,
+        CustomerSettlementPilotAccess,
+        CustomerSettlementRevision,
+    )
     from app.models.device_brand import (
         CompatibilityMappingDecision,
         DeviceBrand,
@@ -158,6 +166,12 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "CardBalanceReconciliationEvent",
         "CounterpartyDuplicateCase",
         "CounterpartyFolderSnapshot",
+        "CustomerSettlementRevision",
+        "CustomerSettlementBalance",
+        "CustomerSettlementMappingRevision",
+        "CustomerSettlementMappingEntry",
+        "CustomerSettlementPilotAccess",
+        "CustomerSettlementAssertionJti",
         "CustomerPriceTypeProfile",
         "CustomerPriceTypeRun",
         "CustomerPriceTypeSnapshot",

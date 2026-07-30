@@ -37,7 +37,7 @@ depends_on:
   - docs/BI.Receivables.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-29"
+updated_at: "2026-07-30"
 ---
 
 # Назначение
@@ -310,6 +310,41 @@ Extractor использует `_AccumRgT7009/_AccumRg7002` только как 
 только после проверки измерения организации, `_Fld7008`, `_RecordKind`,
 начальных итогов и сверки с бухгалтерским отчётом.
 
+## Live SQL validation 2026-07-30
+
+Read-only диагностика базы `Ekama` подтвердила:
+
+- единственная организация в актуальном контуре — `MASTER MOBILE`,
+  код `РБ0000003`;
+- организация — `_Fld7005RRef` в opening и movements;
+- договор — `_Fld7003RRef -> _Reference37`;
+- контрагент — `_Fld7006RRef -> _Reference54`;
+- рублёвый ресурс — `_Fld7008`;
+- знак — `_RecordKind = 0` плюс, `_RecordKind = 1` минус;
+- SQL Server не поддерживает snapshot isolation, поэтому extractor использует
+  `READ COMMITTED`;
+- monthly opening на `2026-06-01` плюс движения строго до `2026-07-01`
+  совпал с opening на `2026-07-01` по всем `10 879` контрагентам без
+  расхождений;
+- срез на `2026-07-30 11:00:00Z` сформировал `11 130` строк, включая `1 762`
+  явных нулевых результата;
+- live smoke на трёх непомеченных контрагентах подтвердил `debt`, `advance`
+  и `zero`, включая явную нулевую строку.
+
+В полном техническом наборе обнаружены `10` ссылок без действующей записи
+контрагента и `23` помеченные ссылки. Это не допускает автоматический выбор
+пилотов из движений: каждый pilot mapping обязан пройти существующую проверку
+`exists/marked_deleted`.
+
+Live smoke также выявил две совместимости, закрытые regression-тестами:
+
+- hex-параметр сначала приводится к `varchar(34)`, затем к `binary(16)`;
+- isolation level задаётся SQL-командой, а не через несовместимый с текущим
+  `sqlalchemy-pytds` вызов `execution_options`.
+
+Readiness gate остаётся закрытым до независимой сверки 5–10 пилотов с
+`Ведомостью по взаиморасчётам с контрагентами` на одинаковый `as_of`.
+
 # Invariants
 
 - Один pilot cluster имеет ровно одного контрагента 1С.
@@ -398,7 +433,8 @@ PostgreSQL advisory lock, partial indexes, транзакции и конкур�
 
 1. Применить migration на staging PostgreSQL.
 2. Выполнить synthetic и PostgreSQL integration tests.
-3. Получить точный отчёт, организацию, поля регистров и 5–10 пилотов.
+3. Получить точный отчёт и 5–10 однозначных пилотов; организация и поля
+   регистров уже подтверждены live SQL.
 4. Однократно сверить read-only SQL с бухгалтерским отчётом.
 5. После сверки включить только `CUSTOMER_SETTLEMENTS_SOURCE_VALIDATED=true`,
    сохранив клиентский feature flag выключенным.
@@ -420,3 +456,6 @@ Rollback:
 
 - 2026-07-29 — backend V1 implemented behind disabled feature/readiness gates;
   live 1С/CRM/Bitrix rollout remains blocked pending business inputs.
+- 2026-07-30 — live SQL подтвердил организацию, физические поля, знак,
+  closed-month continuity и explicit zero; readiness gate оставлен закрытым
+  до сверки пилотов с бухгалтерской ведомостью.

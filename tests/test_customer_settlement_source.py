@@ -146,13 +146,16 @@ def test_extractor_uses_exact_as_of_snapshot_and_explicit_zero() -> None:
     assert "r._Period < :movement_end" in rendered_sql
     assert "COALESCE(balances.signed_balance, 0)" in rendered_sql
     assert "#CustomerSettlementPilot" in rendered_sql
+    assert "SET TRANSACTION ISOLATION LEVEL SNAPSHOT" in rendered_sql
+    assert "CONVERT(varchar(34), :organization_ref)" in rendered_sql
+    assert "CONVERT(varchar(34), :counterparty_ref)" in rendered_sql
     query_parameters = next(
         value
         for value in engine.connection.parameters
         if isinstance(value, dict) and "movement_end" in value
     )
     assert query_parameters["movement_end"] == datetime(2026, 7, 29, 12, 15)
-    assert engine.connection.isolation_level == "SNAPSHOT"
+    assert engine.connection.isolation_level is None
 
 
 def test_extractor_rejects_unvalidated_dimensions_future_time_and_wrong_database() -> None:

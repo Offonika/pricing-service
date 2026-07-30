@@ -19,6 +19,7 @@ related_code:
   - tasks/cleanup_customer_settlements.py
   - tasks/manage_customer_settlement_pilot.py
   - tasks/mock_customer_settlement_client.py
+  - tasks/preflight_customer_settlement_shadow.py
   - tasks/sync_customer_settlement_mapping.py
   - tasks/sync_customer_settlements.py
   - infra/cron/customer_settlements.cron
@@ -29,6 +30,7 @@ related_tests:
   - tests/test_customer_settlement_mapping.py
   - tests/test_customer_settlement_migration.py
   - tests/test_customer_settlement_postgres.py
+  - tests/test_customer_settlement_shadow_preflight.py
   - tests/test_customer_settlement_source.py
   - tests/test_customer_settlements.py
 contracts:
@@ -431,7 +433,7 @@ cluster/counterparty ref, assertion, подпись, сырой `jti` или с�
 - [x] Worker, advisory locks, retry и cron-артефакты.
 - [x] Health probe и безопасные structured events.
 - [x] Synthetic regression tests и contract vector.
-- [ ] Живая read-only сверка SQL.
+- [x] Живая read-only сверка SQL: 10/10 пилотов, максимальная разница `0,00 RUB`.
 - [ ] Shadow-run, security/cache acceptance и бухгалтерская приёмка.
 - [ ] Отдельная установка Bitrix server adapter.
 
@@ -493,3 +495,6 @@ Rollback:
 - 2026-07-30 — live SQL подтвердил организацию, физические поля, знак,
   closed-month continuity и explicit zero; readiness gate оставлен закрытым
   до сверки пилотов с бухгалтерской ведомостью.
+- 2026-07-30 — бухгалтерская сверка 10/10 завершена без расхождений, PostgreSQL
+  staging и whitelist из 10 пилотов подготовлены; клиентский feature flag выключен,
+  shadow-run ожидает отдельный read-only staging webhook CRM.

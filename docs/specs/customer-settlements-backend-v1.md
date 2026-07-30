@@ -345,6 +345,40 @@ Live smoke также выявил две совместимости, закры
 Readiness gate остаётся закрытым до независимой сверки 5–10 пилотов с
 `Ведомостью по взаиморасчётам с контрагентами` на одинаковый `as_of`.
 
+## Live CRM validation 2026-07-30
+
+Read-only проверка CRM подтвердила все пять service fields и полный объём
+`50 035` contact rows с `b_user`.
+
+Первоначальная последовательная пагинация по 50 строк не укладывалась в
+90-секундный job timeout. Importer переведён на полный cursor-read:
+
+- первый запрос фиксирует `total`;
+- Bitrix batch выполняет до 50 связанных страниц по 50 строк;
+- каждая следующая страница использует `filter[>ID]` и `start=-1`;
+- ID обязаны строго возрастать, дубли и неполные страницы запрещены;
+- после чтения повторно проверяются `total` и первая страница;
+- изменение CRM во время чтения не активирует mapping revision.
+
+`UF_CRM_MM_ONEC_COUNTERPARTY_IDS` содержит не raw ref, а существующий
+24-символьный hash `bitrix-crm-customer-audit-v1|onec-ref|<ref>`. Backend
+строит read-only hash-index из `_Reference54`; совпадение остаётся точным и не
+использует ФИО, название, email, телефон или ИНН. Отсутствующий hash либо
+коллизия дают `ambiguous`.
+
+Полный live результат после hash resolution:
+
+- `28 736` linked;
+- `21 288` not linked;
+- `11` ambiguous/invalid;
+- полный цикл CRM read + проверка занял меньше 90 секунд.
+
+Сформирован локальный review-only shortlist из 10 разных cluster/counterparty:
+4 `debt`, 3 `advance`, 3 `zero`. Все 10 контрагентов существуют, не помечены
+на удаление и успешно прошли live extractor. Файл находится только в
+игнорируемом `build/customer_settlements/pilot_candidates_review.json`, имеет
+права `0600`, не является whitelist и не входит в release.
+
 # Invariants
 
 - Один pilot cluster имеет ровно одного контрагента 1С.

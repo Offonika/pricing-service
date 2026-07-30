@@ -16,6 +16,7 @@ from app.infrastructure.db import (
 from app.services.customer_settlement_mapping import (
     build_mapping_entries,
     fetch_crm_cluster_rows,
+    resolve_crm_counterparty_hashes,
 )
 from app.services.customer_settlement_source import (
     CustomerSettlementSourceError,
@@ -64,18 +65,37 @@ def run_customer_settlement_mapping_sync(
     if not (settings.customer_settlements_shadow_enabled or settings.customer_settlements_enabled):
         return {"status": "disabled"}
     session = get_application_session_factory()()
+    onec_engine = None
     try:
         with _advisory_lock(session, _MAPPING_LOCK) as acquired:
             if not acquired:
                 return {"status": "skipped_lock"}
             if not settings.customer_settlements_crm_webhook_url:
                 return {"status": "blocked", "reason": "crm_mapping_source_not_configured"}
+            if not settings.onec_database_url:
+                return {"status": "blocked", "reason": "onec_mapping_source_not_configured"}
             try:
+                onec_engine = build_onec_engine(
+                    settings.onec_database_url,
+                    query_timeout_seconds=settings.customer_settlements_query_timeout_seconds,
+                    login_timeout_seconds=min(
+                        settings.onec_login_timeout_seconds,
+                        settings.customer_settlements_query_timeout_seconds,
+                    ),
+                    poolclass=NullPool,
+                )
                 rows = fetch_crm_cluster_rows(
                     webhook_url=settings.customer_settlements_crm_webhook_url,
                     timeout_seconds=settings.customer_settlements_crm_timeout_seconds,
                 )
+                rows = resolve_crm_counterparty_hashes(
+                    rows,
+                    onec_engine=onec_engine,
+                )
                 entries = build_mapping_entries(rows)
+                invalid_source_rows = sum(
+                    row.has_invalid_site_user_id or row.has_invalid_counterparty_ref for row in rows
+                )
                 revision, activated = activate_mapping_revision(
                     session,
                     entries=entries,
@@ -88,6 +108,7 @@ def run_customer_settlement_mapping_sync(
                     "source_rows": len(rows),
                     "mapping_entries": revision.loaded_entry_count,
                     "ambiguous_entries": revision.ambiguous_count,
+                    "invalid_source_rows": invalid_source_rows,
                 }
             except Exception as exc:
                 session.rollback()
@@ -99,6 +120,8 @@ def run_customer_settlement_mapping_sync(
                 session.commit()
                 return {"status": "error", "reason": "mapping_sync_failed"}
     finally:
+        if onec_engine is not None:
+            onec_engine.dispose()
         session.close()
 
 

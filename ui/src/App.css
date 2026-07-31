@@ -7248,7 +7248,193 @@
   background: #22b95f;
 }
 
+.executive-instruments {
+  display: grid;
+  gap: 18px;
+  padding: 20px;
+  border: 1px solid #dce4ee;
+  border-radius: 14px;
+  background: #ffffff;
+  box-shadow: 0 8px 24px rgb(46 67 92 / 7%);
+}
+
+.executive-instruments__header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.executive-instruments__header h2 {
+  margin: 0 0 4px;
+  color: #21324a;
+  font-size: 22px;
+}
+
+.executive-instruments__header span,
+.executive-instruments__table small,
+.executive-instruments__table td > span {
+  display: block;
+  color: #6a788c;
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.executive-instruments__kpis {
+  display: grid;
+  grid-template-columns: repeat(7, minmax(118px, 1fr));
+  gap: 10px;
+}
+
+.executive-instruments__kpis > div {
+  display: grid;
+  gap: 5px;
+  min-height: 72px;
+  padding: 12px 14px;
+  border: 1px solid #e1e7ef;
+  border-radius: 10px;
+  background: #f8fafc;
+}
+
+.executive-instruments__kpis span {
+  color: #68778c;
+  font-size: 11px;
+}
+
+.executive-instruments__kpis strong {
+  color: #25344a;
+  font-size: 24px;
+}
+
+.executive-instruments__kpis .is-warning {
+  border-color: #f2d39b;
+  background: #fff8ea;
+}
+
+.executive-instruments__kpis .is-critical {
+  border-color: #e9b7b7;
+  background: #fff0f0;
+}
+
+.executive-instruments__filters {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(160px, 220px) minmax(160px, 220px);
+  gap: 12px;
+}
+
+.executive-instruments__filters label {
+  display: grid;
+  gap: 5px;
+  color: #68778c;
+  font-size: 11px;
+}
+
+.executive-instruments__table-wrap {
+  overflow-x: auto;
+  border: 1px solid #e1e7ef;
+  border-radius: 10px;
+}
+
+.executive-instruments__table {
+  width: 100%;
+  min-width: 1120px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.executive-instruments__table th,
+.executive-instruments__table td {
+  padding: 12px;
+  border-bottom: 1px solid #e9edf3;
+  text-align: left;
+  vertical-align: top;
+}
+
+.executive-instruments__table th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f4f7fa;
+  color: #536279;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.executive-instruments__table td {
+  max-width: 260px;
+  color: #25344a;
+}
+
+.executive-instruments__table td strong,
+.executive-instruments__table td em {
+  display: block;
+  margin-bottom: 4px;
+}
+
+.executive-instruments__table td em {
+  margin-top: 7px;
+  color: #9a5c00;
+  font-style: normal;
+}
+
+.executive-instruments__status {
+  display: inline-flex !important;
+  width: max-content;
+  margin-bottom: 5px;
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #edf1f6;
+  color: #536279 !important;
+  font-size: 11px !important;
+  font-weight: 700;
+}
+
+.executive-instruments__status--ready {
+  background: #e9f8ef;
+  color: #287343 !important;
+}
+
+.executive-instruments__status--warning,
+.executive-instruments__status--not_monitored {
+  background: #fff3dc;
+  color: #8b5a00 !important;
+}
+
+.executive-instruments__status--critical {
+  background: #ffe5e5;
+  color: #a33232 !important;
+}
+
+.executive-instruments__status--maintenance,
+.executive-instruments__status--decommissioned {
+  background: #edf1f6;
+  color: #536279 !important;
+}
+
+.executive-instruments__row--critical td:first-child {
+  box-shadow: inset 3px 0 #c74242;
+}
+
+.executive-instruments__row--warning td:first-child {
+  box-shadow: inset 3px 0 #d99822;
+}
+
+.executive-instruments__access-note {
+  display: grid;
+  gap: 4px;
+  padding: 13px 15px;
+  border: 1px solid #cddbf0;
+  border-radius: 10px;
+  background: #f3f7fd;
+  color: #405573;
+  font-size: 12px;
+}
+
 @media (max-width: 1180px) {
+  .executive-instruments__kpis {
+    grid-template-columns: repeat(4, minmax(118px, 1fr));
+  }
+
   .order-workspace__header {
     align-items: flex-start;
     flex-wrap: wrap;
@@ -7271,6 +7457,22 @@
 }
 
 @media (max-width: 760px) {
+  .executive-instruments {
+    padding: 14px;
+  }
+
+  .executive-instruments__header {
+    display: grid;
+  }
+
+  .executive-instruments__kpis {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .executive-instruments__filters {
+    grid-template-columns: 1fr;
+  }
+
   .order-workspace__content,
   .lifecycle-queue__body {
     width: min(100% - 24px, 1500px);

@@ -4,6 +4,7 @@ import {
   closeExecutiveManagementBalance,
   fetchExecutiveDashboard,
   fetchExecutiveDashboardActions,
+  fetchExecutiveInstruments,
   fetchExecutiveManagementBalance,
   fetchExecutiveOnlineStorePeriod,
   fetchExecutiveProfitLossPeriod,
@@ -18,6 +19,8 @@ import {
   type ExecutiveManagementBalanceLineItem,
   type ExecutiveManagementBalanceResponse,
   type ExecutiveManagementBalanceView,
+  type ExecutiveInstrumentDevice,
+  type ExecutiveInstrumentsResponse,
   type ExecutiveOnlineStorePeriodResponse,
   type ExecutiveProfitLossBreakdownRow,
   type ExecutiveProfitLossExpenseBreakdownRow,
@@ -98,6 +101,7 @@ const PROFIT_LOSS_TAB_KEY = "profit_loss";
 const SALES_TAB_KEY = "sales";
 const ONLINE_STORE_TAB_KEY = "online_store";
 const ODDS_CASHFLOW_TAB_KEY = "odds_cashflow";
+const INSTRUMENTS_TAB_KEY = "infrastructure";
 const TAB_DEFINITIONS = [
   { key: "today", label: "Сегодня" },
   { key: MONEY_TAB_KEY, label: "Деньги / ДДС" },
@@ -111,6 +115,7 @@ const TAB_DEFINITIONS = [
   { key: "procurement_import", label: "Закупки" },
   { key: "warehouse_operations", label: "Склад" },
   { key: "reconciliation", label: "Сверки" },
+  { key: INSTRUMENTS_TAB_KEY, label: "Приборы" },
   { key: "tasks", label: "Задачи" },
 ];
 const TAB_LABELS = Object.fromEntries(TAB_DEFINITIONS.map((item) => [item.key, item.label]));
@@ -128,6 +133,7 @@ const DOMAIN_LABELS: Record<string, string> = {
   procurement_import: "Закупки",
   warehouse_operations: "Склад",
   reconciliation: "Сверки",
+  infrastructure: "Приборы",
   tasks: "Задачи",
   daily_focus: "Фокус",
 };
@@ -266,6 +272,11 @@ function statusLabel(status: string) {
     provided: "задан вручную",
     fallback: "резервный источник",
     missing: "нет источника",
+    active: "работает",
+    active_verified: "работает, проверено",
+    active_backup_incomplete: "работает, backup не подтверждён",
+    warning: "требует внимания",
+    not_configured: "не настроено",
     unknown: "статус не указан",
   };
   return labels[status] || status;
@@ -369,6 +380,7 @@ function isTabAllowed(data: ExecutiveDashboardResponse, tab: string) {
   if (tab === "today") return true;
   if (tab === ODDS_CASHFLOW_TAB_KEY) return Boolean(moneyBlock(data));
   if (tab === ONLINE_STORE_TAB_KEY) return data.allowed_blocks.includes(ONLINE_STORE_TAB_KEY);
+  if (tab === INSTRUMENTS_TAB_KEY) return data.allowed_blocks.includes(INSTRUMENTS_TAB_KEY);
   return data.blocks.some((block) => block.key === tab);
 }
 
@@ -376,13 +388,14 @@ function actionDomainForTab(tab: string) {
   if (tab === "today") return undefined;
   if (tab === ODDS_CASHFLOW_TAB_KEY) return MONEY_TAB_KEY;
   if (tab === ONLINE_STORE_TAB_KEY) return undefined;
+  if (tab === INSTRUMENTS_TAB_KEY) return undefined;
   return tab;
 }
 
 function visibleBlocks(data: ExecutiveDashboardResponse | null, tab: string) {
   if (!data) return [];
   if (tab === "today") return data.blocks.filter((block) => block.key !== "daily_focus");
-  if ([ODDS_CASHFLOW_TAB_KEY, PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, ONLINE_STORE_TAB_KEY].includes(tab)) return [];
+  if ([ODDS_CASHFLOW_TAB_KEY, PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, ONLINE_STORE_TAB_KEY, INSTRUMENTS_TAB_KEY].includes(tab)) return [];
   return data.blocks.filter((block) => block.key === tab);
 }
 
@@ -394,6 +407,7 @@ function tabsForData(data: ExecutiveDashboardResponse | null) {
       item.key === "today" ||
       availableKeys.has(item.key) ||
       (item.key === ONLINE_STORE_TAB_KEY && data.allowed_blocks.includes(ONLINE_STORE_TAB_KEY)) ||
+      (item.key === INSTRUMENTS_TAB_KEY && data.allowed_blocks.includes(INSTRUMENTS_TAB_KEY)) ||
       (item.key === ODDS_CASHFLOW_TAB_KEY && availableKeys.has(MONEY_TAB_KEY))
   );
 }
@@ -4166,6 +4180,234 @@ function actionPayloadText(action: ExecutiveDashboardAction, key: string) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+const INSTRUMENT_HEALTH_LABELS: Record<string, string> = {
+  ready: "Работает",
+  warning: "Предупреждение",
+  critical: "Авария",
+  not_monitored: "Не контролируется",
+  maintenance: "Обслуживание",
+  decommissioned: "Выведено",
+};
+
+const INSTRUMENT_CONNECTIVITY_LABELS: Record<string, string> = {
+  online: "В сети",
+  offline: "Не в сети",
+  channel_unavailable: "Канал недоступен",
+  not_monitored: "Нет проверки",
+  maintenance: "Обслуживание",
+  not_applicable: "Не применяется",
+};
+
+const INSTRUMENT_KIND_LABELS: Record<string, string> = {
+  server: "Сервер",
+  workstation: "Рабочее устройство",
+  network: "Сетевое устройство",
+};
+
+const INSTRUMENT_LIFECYCLE_LABELS: Record<string, string> = {
+  planned: "Планируется",
+  procurement: "Закупка",
+  inventory_pending: "Инвентаризация",
+  active: "Эксплуатируется",
+  draining: "Выводится",
+  decommissioned: "Выведено",
+  unknown: "Не определён",
+};
+
+function instrumentDuration(seconds?: number | null) {
+  if (seconds == null) return "—";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} мин`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} ч`;
+  return `${Math.floor(seconds / 86400)} д`;
+}
+
+function instrumentPercent(value?: number | null) {
+  return value == null ? "—" : `${formatPlainNumber(value)}%`;
+}
+
+function compactInstrumentMetrics(device: ExecutiveInstrumentDevice) {
+  const rows: string[] = [];
+  if (device.metrics.cpu_used_pct != null) rows.push(`CPU ${formatPlainNumber(device.metrics.cpu_used_pct)}%`);
+  if (device.metrics.memory_used_pct != null) rows.push(`RAM ${formatPlainNumber(device.metrics.memory_used_pct)}%`);
+  if (device.metrics.disk_free_pct != null) rows.push(`Диск свободен ${formatPlainNumber(device.metrics.disk_free_pct)}%`);
+  if (device.metrics.disk_free_gib != null) rows.push(`${formatPlainNumber(device.metrics.disk_free_gib)} ГиБ`);
+  if (device.metrics.latency_ms != null) rows.push(`${formatPlainNumber(device.metrics.latency_ms)} мс`);
+  if (device.metrics.uptime_seconds != null) rows.push(`Uptime ${instrumentDuration(device.metrics.uptime_seconds)}`);
+  return rows;
+}
+
+export function InstrumentsPanel({
+  data,
+  message,
+  status,
+}: {
+  data: ExecutiveInstrumentsResponse | null;
+  message: string;
+  status: "loading" | "ready" | "error";
+}) {
+  const [healthFilter, setHealthFilter] = useState("");
+  const [kindFilter, setKindFilter] = useState("");
+  const [query, setQuery] = useState("");
+  const visibleDevices = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase("ru");
+    return (data?.devices || []).filter((device) => {
+      if (healthFilter && device.health_status !== healthFilter) return false;
+      if (kindFilter && device.kind !== kindFilter) return false;
+      if (!needle) return true;
+      return [device.name, device.location, ...device.purpose, ...device.technical_owners]
+        .join(" ")
+        .toLocaleLowerCase("ru")
+        .includes(needle);
+    });
+  }, [data, healthFilter, kindFilter, query]);
+
+  return (
+    <section className="executive-instruments" aria-label="Приборы">
+      <header className="executive-instruments__header">
+        <div>
+          <h2>Серверы и устройства</h2>
+          <span>Read-only состояние инфраструктуры; адреса, порты и ключи скрыты.</span>
+        </div>
+        {data && (
+          <span>
+            Обновлено {formatDateTime(data.generated_at)} · источник {statusLabel(data.source_status)} · свежесть {statusLabel(data.freshness_status)}
+          </span>
+        )}
+      </header>
+
+      {status === "error" && <div className="executive-cashflow-period__empty">{message}</div>}
+      {status === "loading" && !data && <div className="executive-cashflow-period__empty">Загрузка приборов...</div>}
+      {data && (
+        <>
+          {data.note && <div className="executive-cashflow-period__note">{data.note}</div>}
+          {data.warnings.length > 0 && (
+            <details className="executive-cashflow-period__note">
+              <summary>Предупреждения источника: {data.warnings.length}</summary>
+              {data.warnings.map((warning) => <div key={warning}>{warning}</div>)}
+            </details>
+          )}
+          <div className="executive-instruments__kpis" aria-label="Сводка по приборам">
+            <div><span>Всего</span><strong>{data.summary.total_count}</strong></div>
+            <div><span>В сети</span><strong>{data.summary.online_count}</strong></div>
+            <div className={data.summary.critical_count ? "is-critical" : ""}><span>Авария</span><strong>{data.summary.critical_count}</strong></div>
+            <div className={data.summary.warning_count ? "is-warning" : ""}><span>Предупреждения</span><strong>{data.summary.warning_count}</strong></div>
+            <div><span>Не контролируются</span><strong>{data.summary.not_monitored_count}</strong></div>
+            <div className={data.summary.backup_gap_count ? "is-warning" : ""}><span>Пробелы backup</span><strong>{data.summary.backup_gap_count}</strong></div>
+            <div className={data.summary.access_review_count ? "is-warning" : ""}><span>Доступы на проверку</span><strong>{data.summary.access_review_count}</strong></div>
+            <div><span>Покрытие 24 ч</span><strong>{instrumentPercent(data.summary.monitoring_coverage_24h_pct)}</strong></div>
+          </div>
+
+          <div className="executive-instruments__filters">
+            <label>
+              <span>Поиск</span>
+              <input
+                aria-label="Поиск прибора"
+                className="app__select"
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Название, назначение, владелец"
+                type="search"
+                value={query}
+              />
+            </label>
+            <label>
+              <span>Состояние</span>
+              <select className="app__select" onChange={(event) => setHealthFilter(event.target.value)} value={healthFilter}>
+                <option value="">Все</option>
+                {Object.entries(INSTRUMENT_HEALTH_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+              </select>
+            </label>
+            <label>
+              <span>Тип</span>
+              <select className="app__select" onChange={(event) => setKindFilter(event.target.value)} value={kindFilter}>
+                <option value="">Все</option>
+                {Object.entries(INSTRUMENT_KIND_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+              </select>
+            </label>
+          </div>
+
+          <div className="executive-instruments__table-wrap">
+            <table className="executive-instruments__table">
+              <thead>
+                <tr>
+                  <th>Состояние</th>
+                  <th>Прибор</th>
+                  <th>Ресурсы</th>
+                  <th>Сервисы / 1С</th>
+                  <th>Резервирование</th>
+                  <th>Доступы</th>
+                  <th>Проверка</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleDevices.map((device) => {
+                  const metrics = compactInstrumentMetrics(device);
+                  const accessIssueCount = device.access.attention_grant_count + device.access.unowned_credentials;
+                  return (
+                    <tr className={`executive-instruments__row executive-instruments__row--${device.health_status}`} key={device.device_key}>
+                      <td>
+                        <span className={`executive-instruments__status executive-instruments__status--${device.health_status}`}>
+                          {INSTRUMENT_HEALTH_LABELS[device.health_status] || device.health_status}
+                        </span>
+                        <small>{INSTRUMENT_CONNECTIVITY_LABELS[device.connectivity_status] || device.connectivity_status}</small>
+                      </td>
+                      <td>
+                        <strong>{device.name}</strong>
+                        <span>{INSTRUMENT_KIND_LABELS[device.kind] || device.kind} · {device.location}</span>
+                        <small>{INSTRUMENT_LIFECYCLE_LABELS[device.lifecycle_status] || device.lifecycle_status} · {device.criticality === "critical" ? "критичный" : "обычный"}</small>
+                        <small>{device.purpose.join(" · ") || "Назначение уточняется"}</small>
+                        <small>Бизнес-владелец: {device.business_owner || "не назначен"}</small>
+                        {device.issue && <em>{device.issue}</em>}
+                        {device.recommended_action && <small>{device.recommended_action}</small>}
+                      </td>
+                      <td>
+                        {metrics.length ? metrics.map((item) => <span key={item}>{item}</span>) : <span>Нет показателей</span>}
+                      </td>
+                      <td>
+                        {device.services.length ? device.services.map((service) => (
+                          <span key={service.service_key}>{service.name}: {statusLabel(service.status)}</span>
+                        )) : <span>Не зарегистрированы</span>}
+                        {device.integrations.count > 0 && <small>Интеграции: {statusLabel(device.integrations.status)} · {formatDateTime(device.integrations.last_success_at)}</small>}
+                      </td>
+                      <td>
+                        <span>{statusLabel(device.backup.status)}</span>
+                        <small>Защищено: {device.backup.protected_datastores} · пробелов: {device.backup.unprotected_datastores}</small>
+                        <small>RPO: {device.backup.rpo_minutes != null ? `${device.backup.rpo_minutes} мин` : "—"} · отставание: {device.backup.lag_minutes != null ? `${device.backup.lag_minutes} мин` : "—"}</small>
+                        <small>Full: {formatDateTime(device.backup.last_full_backup_at)} · diff: {formatDateTime(device.backup.last_differential_backup_at)} · log: {formatDateTime(device.backup.last_log_backup_at)}</small>
+                        <small>Внешняя/readback: {device.backup.off_host_verified ? "да" : "нет"}/{device.backup.readback_verified ? "да" : "нет"}</small>
+                        <small>Restore-test: {formatDate(device.backup.last_restore_test_at)}</small>
+                      </td>
+                      <td>
+                        <span>{accessIssueCount ? `Требуют внимания: ${accessIssueCount}` : "Без замечаний"}</span>
+                        <small>Активных назначений: {device.access.active_grants}</small>
+                        <small>MFA/ревизия: {device.access.mfa_review_count + device.access.review_required_grants}</small>
+                        <small>Следующая проверка: {formatDate(device.access.next_review_at)}</small>
+                      </td>
+                      <td>
+                        <span>Попытка: {formatDateTime(device.last_attempted_at)}</span>
+                        <small>Успех: {formatDateTime(device.last_success_at)}</small>
+                        <small>Доступность 24 ч / 30 д: {instrumentPercent(device.availability_24h_pct)} / {instrumentPercent(device.availability_30d_pct)}</small>
+                        <small>Покрытие 24 ч / 30 д: {instrumentPercent(device.monitoring_coverage_24h_pct)} / {instrumentPercent(device.monitoring_coverage_30d_pct)}</small>
+                        {device.incident_started_at && <small>Сбой с {formatDateTime(device.incident_started_at)} · {instrumentDuration(device.outage_duration_seconds)}</small>}
+                        <small>{device.technical_owners.join(", ") || "Ответственный не назначен"}</small>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {!visibleDevices.length && <div className="executive-cashflow-period__empty">По выбранным фильтрам устройств нет.</div>}
+          </div>
+
+          <aside className="executive-instruments__access-note">
+            <strong>Контроль доступов — следующий этап</strong>
+            <span>Сейчас вкладка только показывает назначения, MFA, сроки ревизии и неопознанные credentials. Выдача и отзыв доступов отключены контрактом.</span>
+          </aside>
+        </>
+      )}
+    </section>
+  );
+}
+
 export function ActionTable({
   actions,
   onOpen,
@@ -4347,6 +4589,9 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
   const [actions, setActions] = useState<ExecutiveDashboardAction[]>([]);
   const [selectedAction, setSelectedAction] = useState<ExecutiveDashboardAction | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
+  const [instrumentsStatus, setInstrumentsStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [instrumentsMessage, setInstrumentsMessage] = useState("");
+  const [instrumentsData, setInstrumentsData] = useState<ExecutiveInstrumentsResponse | null>(null);
 
   const [profitLossDateFrom, setProfitLossDateFrom] = useState(() => monthStartIso(date));
   const [profitLossDateTo, setProfitLossDateTo] = useState(date);
@@ -4468,6 +4713,29 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
     };
   }, [tab, onlineStoreDateFrom, onlineStoreDateTo, refreshNonce]);
 
+  useEffect(() => {
+    if (tab !== INSTRUMENTS_TAB_KEY) return;
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (!cancelled) setInstrumentsStatus("loading");
+    });
+    fetchExecutiveInstruments()
+      .then((payload) => {
+        if (cancelled) return;
+        setInstrumentsData(payload);
+        setInstrumentsStatus("ready");
+        setInstrumentsMessage("");
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setInstrumentsStatus("error");
+        setInstrumentsMessage(errorMessage(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, refreshNonce]);
+
   const navigateDashboard = useCallback(
     (next: { date?: string; tab?: string }, mode: "push" | "replace" = "push") => {
       const nextDate = next.date || date;
@@ -4511,7 +4779,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
         const tabAllowed = isTabAllowed(dashboard, tab);
         const effectiveTab = tabAllowed ? tab : "today";
         if (!tabAllowed && !cancelled) navigateDashboard({ tab: "today" }, "replace");
-        if (effectiveTab === ONLINE_STORE_TAB_KEY) {
+        if ([ONLINE_STORE_TAB_KEY, INSTRUMENTS_TAB_KEY].includes(effectiveTab)) {
           return [
             dashboard,
             {
@@ -4555,6 +4823,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
   );
   const visibleSourceFreshness = useMemo(() => {
     if (!data) return [];
+    if (tab === INSTRUMENTS_TAB_KEY) return [];
     const relevantKey = SOURCE_FRESHNESS_KEY_BY_TAB[tab];
     if (!relevantKey) return data.source_freshness;
     return data.source_freshness.filter((source) => source.source_key === relevantKey);
@@ -4563,7 +4832,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
   const tabOverviewBlock = useMemo(() => {
     if (!data || tab === "today") return null;
     if (tab === ODDS_CASHFLOW_TAB_KEY) return moneyBlock(data);
-    if ([PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, ONLINE_STORE_TAB_KEY, "creditors_payables"].includes(tab)) return null;
+    if ([PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, ONLINE_STORE_TAB_KEY, INSTRUMENTS_TAB_KEY, "creditors_payables"].includes(tab)) return null;
     return blocks[0] || null;
   }, [blocks, data, tab]);
   const currentAccess = accessLevel || data?.access_level;
@@ -4581,7 +4850,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
           </span>
         </div>
         <div className="executive__controls">
-          {![PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, ONLINE_STORE_TAB_KEY].includes(tab) && (
+          {![PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, ONLINE_STORE_TAB_KEY, INSTRUMENTS_TAB_KEY].includes(tab) && (
             <label className="executive__date-field">
               <span>Дата</span>
               <input
@@ -4731,13 +5000,15 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
               </label>
             </div>
           )}
-          <Button
-            disabled={status === "loading"}
-            onClick={() => navigateDashboard({ date: todayIso() })}
-            variant="secondary"
-          >
-            Сегодня
-          </Button>
+          {tab !== INSTRUMENTS_TAB_KEY && (
+            <Button
+              disabled={status === "loading"}
+              onClick={() => navigateDashboard({ date: todayIso() })}
+              variant="secondary"
+            >
+              Сегодня
+            </Button>
+          )}
           <Button disabled={status === "loading"} onClick={refreshDashboard}>
             {status === "loading" ? "Обновляем..." : "Обновить"}
           </Button>
@@ -4780,7 +5051,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
 
       {data && (
         <>
-          {!["procurement_import", ONLINE_STORE_TAB_KEY].includes(tab) && <section aria-label="Состояние витрины" aria-live="polite" className="executive__topline">
+          {!["procurement_import", ONLINE_STORE_TAB_KEY, INSTRUMENTS_TAB_KEY].includes(tab) && <section aria-label="Состояние витрины" aria-live="polite" className="executive__topline">
             <div>
               <span>Данные</span>
               <strong>{statusLabel(data.source_status)}</strong>
@@ -4848,6 +5119,14 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
             />
           )}
 
+          {tab === INSTRUMENTS_TAB_KEY && (
+            <InstrumentsPanel
+              data={instrumentsData}
+              message={instrumentsMessage}
+              status={instrumentsStatus}
+            />
+          )}
+
           {tab === "procurement_import" && (
             <ProcurementImportPanel
               actions={actions}
@@ -4883,7 +5162,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
             </div>
           )}
 
-          {![SALES_TAB_KEY, ONLINE_STORE_TAB_KEY, "procurement_import"].includes(tab) && (
+          {![SALES_TAB_KEY, ONLINE_STORE_TAB_KEY, INSTRUMENTS_TAB_KEY, "procurement_import"].includes(tab) && (
             <section className="executive-actions">
               <header className="executive-actions__header">
                 <div>
@@ -4895,7 +5174,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
             </section>
           )}
 
-          <SourceFreshness sources={visibleSourceFreshness} />
+          {tab !== INSTRUMENTS_TAB_KEY && <SourceFreshness sources={visibleSourceFreshness} />}
           {selectedAction && <ActionDetail action={selectedAction} onClose={() => setSelectedAction(null)} />}
         </>
       )}

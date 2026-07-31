@@ -2716,6 +2716,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/executive-dashboard/instruments:
+    get:
+      summary: Get Executive Dashboard Instruments
+      operationId: get_executive_dashboard_instruments_api_management_executive_dashboard_instruments_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutiveInstrumentsResponse'
+      security:
+      - HTTPBearer: []
   /api/management/executive-dashboard/management-balance:
     get:
       summary: Get Executive Management Balance
@@ -14107,6 +14120,570 @@ components:
       - source_freshness
       - top_actions
       title: ExecutiveDashboardResponse
+    ExecutiveInstrumentAccess:
+      properties:
+        status:
+          type: string
+          enum:
+          - ready
+          - warning
+          - not_configured
+          title: Status
+          default: not_configured
+        active_grants:
+          type: integer
+          minimum: 0.0
+          title: Active Grants
+          default: 0
+        pending_grants:
+          type: integer
+          minimum: 0.0
+          title: Pending Grants
+          default: 0
+        review_required_grants:
+          type: integer
+          minimum: 0.0
+          title: Review Required Grants
+          default: 0
+        mfa_review_count:
+          type: integer
+          minimum: 0.0
+          title: Mfa Review Count
+          default: 0
+        unowned_credentials:
+          type: integer
+          minimum: 0.0
+          title: Unowned Credentials
+          default: 0
+        attention_grant_count:
+          type: integer
+          minimum: 0.0
+          title: Attention Grant Count
+          default: 0
+        next_review_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Next Review At
+      additionalProperties: false
+      type: object
+      title: ExecutiveInstrumentAccess
+    ExecutiveInstrumentBackup:
+      properties:
+        status:
+          type: string
+          enum:
+          - ready
+          - warning
+          - critical
+          - not_configured
+          title: Status
+          default: not_configured
+        protected_datastores:
+          type: integer
+          minimum: 0.0
+          title: Protected Datastores
+          default: 0
+        unprotected_datastores:
+          type: integer
+          minimum: 0.0
+          title: Unprotected Datastores
+          default: 0
+        rpo_minutes:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Rpo Minutes
+        lag_minutes:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Lag Minutes
+        last_backup_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Backup At
+        last_full_backup_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Full Backup At
+        last_differential_backup_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Differential Backup At
+        last_log_backup_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Log Backup At
+        last_restore_test_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Restore Test At
+        off_host_verified:
+          type: boolean
+          title: Off Host Verified
+          default: false
+        readback_verified:
+          type: boolean
+          title: Readback Verified
+          default: false
+      additionalProperties: false
+      type: object
+      title: ExecutiveInstrumentBackup
+    ExecutiveInstrumentCapabilities:
+      properties:
+        access_governance:
+          type: string
+          const: read_only
+          title: Access Governance
+          default: read_only
+        access_mutations:
+          type: boolean
+          const: false
+          title: Access Mutations
+          default: false
+        network_scanning:
+          type: boolean
+          const: false
+          title: Network Scanning
+          default: false
+      additionalProperties: false
+      type: object
+      title: ExecutiveInstrumentCapabilities
+    ExecutiveInstrumentDevice:
+      properties:
+        device_key:
+          type: string
+          title: Device Key
+        name:
+          type: string
+          title: Name
+        kind:
+          type: string
+          title: Kind
+        lifecycle_status:
+          type: string
+          enum:
+          - planned
+          - procurement
+          - inventory_pending
+          - active
+          - draining
+          - decommissioned
+          - unknown
+          title: Lifecycle Status
+        health_status:
+          type: string
+          enum:
+          - ready
+          - warning
+          - critical
+          - not_monitored
+          - maintenance
+          - decommissioned
+          title: Health Status
+        connectivity_status:
+          type: string
+          enum:
+          - online
+          - offline
+          - channel_unavailable
+          - not_monitored
+          - maintenance
+          - not_applicable
+          title: Connectivity Status
+        criticality:
+          type: string
+          enum:
+          - critical
+          - standard
+          title: Criticality
+          default: standard
+        location:
+          type: string
+          title: Location
+        purpose:
+          items:
+            type: string
+          type: array
+          title: Purpose
+        technical_owner_ids:
+          items:
+            type: string
+          type: array
+          title: Technical Owner Ids
+        technical_owners:
+          items:
+            type: string
+          type: array
+          title: Technical Owners
+        business_owner:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Business Owner
+        last_attempted_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Attempted At
+        last_success_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Success At
+        incident_started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Incident Started At
+        outage_duration_seconds:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Outage Duration Seconds
+        availability_24h_pct:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Availability 24H Pct
+        availability_30d_pct:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Availability 30D Pct
+        monitoring_coverage_24h_pct:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Monitoring Coverage 24H Pct
+        monitoring_coverage_30d_pct:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Monitoring Coverage 30D Pct
+        metrics:
+          $ref: '#/components/schemas/ExecutiveInstrumentMetrics'
+        services:
+          items:
+            $ref: '#/components/schemas/ExecutiveInstrumentService'
+          type: array
+          title: Services
+        backup:
+          $ref: '#/components/schemas/ExecutiveInstrumentBackup'
+        integrations:
+          $ref: '#/components/schemas/ExecutiveInstrumentIntegration'
+        access:
+          $ref: '#/components/schemas/ExecutiveInstrumentAccess'
+        issue:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Issue
+        recommended_action:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Action
+      additionalProperties: false
+      type: object
+      required:
+      - device_key
+      - name
+      - kind
+      - lifecycle_status
+      - health_status
+      - connectivity_status
+      - location
+      title: ExecutiveInstrumentDevice
+    ExecutiveInstrumentIntegration:
+      properties:
+        status:
+          type: string
+          enum:
+          - ready
+          - warning
+          - critical
+          - not_monitored
+          - not_configured
+          - running
+          - stopped
+          - degraded
+          - unknown
+          title: Status
+          default: not_configured
+        count:
+          type: integer
+          minimum: 0.0
+          title: Count
+          default: 0
+        last_success_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Success At
+      additionalProperties: false
+      type: object
+      title: ExecutiveInstrumentIntegration
+    ExecutiveInstrumentMetrics:
+      properties:
+        cpu_used_pct:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Cpu Used Pct
+        memory_used_pct:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Memory Used Pct
+        disk_free_pct:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Disk Free Pct
+        disk_free_gib:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Disk Free Gib
+        latency_ms:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Latency Ms
+        vcpu:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Vcpu
+        uptime_seconds:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Uptime Seconds
+      additionalProperties: false
+      type: object
+      title: ExecutiveInstrumentMetrics
+    ExecutiveInstrumentService:
+      properties:
+        service_key:
+          type: string
+          title: Service Key
+        name:
+          type: string
+          title: Name
+        component_kind:
+          type: string
+          enum:
+          - windows
+          - sql_server
+          - sql_agent
+          - onec_cluster
+          - onec_database
+          - onec_publication
+          - integration
+          - disk
+          - service
+          title: Component Kind
+          default: service
+        status:
+          type: string
+          enum:
+          - ready
+          - warning
+          - critical
+          - not_monitored
+          - not_configured
+          - running
+          - stopped
+          - degraded
+          - unknown
+          title: Status
+        criticality:
+          type: string
+          enum:
+          - critical
+          - standard
+          title: Criticality
+          default: standard
+        last_verified_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Verified At
+        last_success_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Success At
+        source_project:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Project
+      additionalProperties: false
+      type: object
+      required:
+      - service_key
+      - name
+      - status
+      title: ExecutiveInstrumentService
+    ExecutiveInstrumentsResponse:
+      properties:
+        schema_version:
+          type: integer
+          const: 2
+          title: Schema Version
+          default: 2
+        generated_at:
+          type: string
+          format: date-time
+          title: Generated At
+        source_status:
+          type: string
+          enum:
+          - ready
+          - partial
+          - stale
+          - source_missing
+          - source_error
+          title: Source Status
+        freshness_status:
+          type: string
+          enum:
+          - fresh
+          - stale
+          - missing
+          - error
+          title: Freshness Status
+        summary:
+          $ref: '#/components/schemas/ExecutiveInstrumentsSummary'
+        devices:
+          items:
+            $ref: '#/components/schemas/ExecutiveInstrumentDevice'
+          type: array
+          title: Devices
+        warnings:
+          items:
+            type: string
+          type: array
+          title: Warnings
+        capabilities:
+          $ref: '#/components/schemas/ExecutiveInstrumentCapabilities'
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+      additionalProperties: false
+      type: object
+      required:
+      - generated_at
+      - source_status
+      - freshness_status
+      title: ExecutiveInstrumentsResponse
+    ExecutiveInstrumentsSummary:
+      properties:
+        total_count:
+          type: integer
+          minimum: 0.0
+          title: Total Count
+          default: 0
+        online_count:
+          type: integer
+          minimum: 0.0
+          title: Online Count
+          default: 0
+        critical_count:
+          type: integer
+          minimum: 0.0
+          title: Critical Count
+          default: 0
+        warning_count:
+          type: integer
+          minimum: 0.0
+          title: Warning Count
+          default: 0
+        not_monitored_count:
+          type: integer
+          minimum: 0.0
+          title: Not Monitored Count
+          default: 0
+        backup_gap_count:
+          type: integer
+          minimum: 0.0
+          title: Backup Gap Count
+          default: 0
+        access_review_count:
+          type: integer
+          minimum: 0.0
+          title: Access Review Count
+          default: 0
+        monitoring_coverage_24h_pct:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Monitoring Coverage 24H Pct
+      additionalProperties: false
+      type: object
+      title: ExecutiveInstrumentsSummary
     ExecutiveManagementBalanceCloseRequest:
       properties:
         confirm:

@@ -5,7 +5,7 @@ doc_type: spec
 domain: matching
 status: accepted
 owner: engineering
-source_of_truth: true
+source_of_truth: false
 related_code:
   - app/api/matching.py
   - app/models/matching_property_mapping.py
@@ -23,10 +23,13 @@ depends_on:
   - docs/competitor_matching.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-05-06"
+updated_at: "2026-07-31"
 ---
 
 # Назначение
+
+Это расширение канонического item-level контура
+`docs/specs/competitor-matching-ui-v1.md`; при расхождении приоритет у него.
 
 Добавить в Bitrix Matching слой настройки и просмотра мапинга свойств нашего
 товара и товара конкурента. V1 помогает оператору быстрее понять, почему

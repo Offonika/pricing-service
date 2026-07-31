@@ -1286,7 +1286,8 @@ def test_safe_iphone_battery_model_capacity_suggest_accepts_battery_collection()
     product = Product(
         name=(
             "Аккумулятор для Apple iPhone 14 Plus (F5ENERGY) (усиленный) "
-            "(4850 мАч) (SPECIAL EDITION) (SYSTEM DIAGNOSABLE) + двухсторонний скотч"
+            "(4850 мАч) (SPECIAL EDITION) (SYSTEM DIAGNOSABLE) (Premium) "
+            "+ двухсторонний скотч"
         )
     )
     wrong_capacity = Product(name="Аккумулятор для Apple iPhone 14 Plus (усиленный) (5200 мАч)")
@@ -1303,7 +1304,8 @@ def test_iphone_battery_capacity_sweeper_accepts_enhanced_products_only(db_sessi
     f5_product = Product(
         name=(
             "Аккумулятор для Apple iPhone 14 Plus (F5ENERGY) (усиленный) "
-            "(4850 мАч) (SPECIAL EDITION) (SYSTEM DIAGNOSABLE) + двухсторонний скотч"
+            "(4850 мАч) (SPECIAL EDITION) (SYSTEM DIAGNOSABLE) (Premium) "
+            "+ двухсторонний скотч"
         ),
         article="070901",
         category="Аккумуляторы",
@@ -1318,8 +1320,10 @@ def test_iphone_battery_capacity_sweeper_accepts_enhanced_products_only(db_sessi
     f5_item = CompetitorItem(
         competitor="moba",
         external_id="BTT-PMI140-PLS-HC",
-        name="Аккумулятор для iPhone 14 Plus - Battery Collection - усиленная 4810 mAh",
-        normalized_title="Аккумулятор iPhone 14 Plus Battery Collection усиленная 4810 mAh",
+        name="Аккумулятор для iPhone 14 Plus - Battery Collection - усиленная 4810 mAh Premium",
+        normalized_title=(
+            "Аккумулятор iPhone 14 Plus Battery Collection усиленная 4810 mAh Premium"
+        ),
         item_type="battery",
     )
     high_item = CompetitorItem(
@@ -1439,7 +1443,7 @@ def test_battery_part_code_auto_accept_requires_matching_premium_tier():
 
 def test_battery_original_part_code_sweeper_accepts_or100_to_orig100(db_session):
     product = Product(
-        name="Аккумулятор для Xiaomi Redmi 10C (220333QNY) / Redmi 10A (220233L2G) (BN5G) (ORIG100) (SP)",
+        name="Аккумулятор для Xiaomi Redmi 10C (220333QNY) / Redmi 10A (220233L2G) (BN5G) (ORIG100) (Premium) (SP)",
         article="075326",
         category="Аккумуляторы для телефонов",
         subject="аккумулятор",
@@ -1454,7 +1458,7 @@ def test_battery_original_part_code_sweeper_accepts_or100_to_orig100(db_session)
         name=(
             "Аккумулятор для Xiaomi Redmi Note 12 Pro 4G (2209116AG) / "
             "Redmi Note 12 Pro 5G (22101316G) / Poco X5 Pro 5G (22101320G) "
-            "и др. (BP4K) (ORIG100) (SP)"
+            "и др. (BP4K) (ORIG100) (Premium) (SP)"
         ),
         article="075334",
         category="Аккумуляторы для телефонов",
@@ -1463,8 +1467,8 @@ def test_battery_original_part_code_sweeper_accepts_or100_to_orig100(db_session)
     item = CompetitorItem(
         competitor="moba",
         external_id="BTT-XMI-BN5G-OR100",
-        name="Аккумулятор для Xiaomi Redmi 10C/10A (BN5G) - OR100",
-        normalized_title="Аккумулятор Xiaomi Redmi 10C 10A BN5G OR100",
+        name="Аккумулятор для Xiaomi Redmi 10C/10A (BN5G) - OR100 Premium",
+        normalized_title="Аккумулятор Xiaomi Redmi 10C 10A BN5G OR100 Premium",
         item_type="battery",
     )
     premium_item = CompetitorItem(
@@ -1477,8 +1481,8 @@ def test_battery_original_part_code_sweeper_accepts_or100_to_orig100(db_session)
     bp4k_item = CompetitorItem(
         competitor="moba",
         external_id="BTT-XMI-BP4K-OR100",
-        name="Аккумулятор для Xiaomi Poco X5 Pro 5G/F5/Redmi Note 12 Pro 5G (BP4K) - OR100",
-        normalized_title="Аккумулятор Xiaomi Poco X5 Pro 5G F5 Redmi Note 12 Pro 5G BP4K OR100",
+        name="Аккумулятор для Xiaomi Poco X5 Pro 5G/F5/Redmi Note 12 Pro 5G (BP4K) - OR100 Premium",
+        normalized_title="Аккумулятор Xiaomi Poco X5 Pro 5G F5 Redmi Note 12 Pro 5G BP4K OR100 Premium",
         item_type="battery",
     )
     db_session.add_all([product, premium_product, bp4k_product, item, premium_item, bp4k_item])
@@ -1532,7 +1536,7 @@ def test_battery_original_part_code_sweeper_accepts_or100_to_orig100(db_session)
 
 def test_battery_part_code_sweeper_accepts_exact_code_and_skips_quality_signals(db_session):
     product = Product(
-        name="Аккумулятор для Xiaomi 17 Pro (25098PN5AC) (BM6H)",
+        name="Аккумулятор для Xiaomi 17 Pro (25098PN5AC) (BM6H) (Premium)",
         article="077001",
         category="Аккумуляторы",
         subject="аккумулятор",
@@ -1552,7 +1556,7 @@ def test_battery_part_code_sweeper_accepts_exact_code_and_skips_quality_signals(
     bl_product = Product(
         name=(
             "Аккумулятор для Infinix Hot 60 Pro (X6885) / 60 Pro+ (X6886) / "
-            "60i 4G (X6728) (BL-50FX)"
+            "60i 4G (X6728) (BL-50FX) (Premium)"
         ),
         article="073309",
         category="Аккумуляторы",
@@ -1561,7 +1565,7 @@ def test_battery_part_code_sweeper_accepts_exact_code_and_skips_quality_signals(
     no_code_product = Product(
         name=(
             "Аккумулятор для ZTE Nubia Red Magic 10 Pro (NX789J) / "
-            "Nubia Red Magic 10S Pro (NX789J)"
+            "Nubia Red Magic 10S Pro (NX789J) (Premium)"
         ),
         article="075190",
         category="Аккумуляторы",
@@ -1570,8 +1574,8 @@ def test_battery_part_code_sweeper_accepts_exact_code_and_skips_quality_signals(
     item = CompetitorItem(
         competitor="moba",
         external_id="BTT-XMI-BM6H",
-        name="Аккумулятор для Xiaomi 17 Pro (BM6H)",
-        normalized_title="Аккумулятор Xiaomi 17 Pro BM6H",
+        name="Аккумулятор для Xiaomi 17 Pro (BM6H) Premium",
+        normalized_title="Аккумулятор Xiaomi 17 Pro BM6H Premium",
         item_type="battery",
     )
     or100_item = CompetitorItem(
@@ -1591,15 +1595,15 @@ def test_battery_part_code_sweeper_accepts_exact_code_and_skips_quality_signals(
     bl_item = CompetitorItem(
         competitor="moba",
         external_id="BTT-INX-BL50FX",
-        name="Аккумулятор для Infinix Hot 60 Pro/60 Pro+/60i 4G (BL-50FX)",
-        normalized_title="Аккумулятор Infinix Hot 60 Pro 60 Pro Plus 60i 4G BL-50FX",
+        name="Аккумулятор для Infinix Hot 60 Pro/60 Pro+/60i 4G (BL-50FX) Premium",
+        normalized_title="Аккумулятор Infinix Hot 60 Pro 60 Pro Plus 60i 4G BL-50FX Premium",
         item_type="battery",
     )
     no_code_item = CompetitorItem(
         competitor="moba",
         external_id="BTT-ZT-LI3934T90P8H623486",
-        name="Аккумулятор для ZTE Nubia Red Magic 10 Pro (Li3934T90P8h623486)",
-        normalized_title="Аккумулятор ZTE Nubia Red Magic 10 Pro Li3934T90P8h623486",
+        name="Аккумулятор для ZTE Nubia Red Magic 10 Pro (Li3934T90P8h623486) Premium",
+        normalized_title="Аккумулятор ZTE Nubia Red Magic 10 Pro Li3934T90P8h623486 Premium",
         item_type="battery",
     )
     db_session.add_all(
@@ -3891,6 +3895,48 @@ def _write_embeddings(dir_path: Path, prefix: str, matrix: np.ndarray, id_order:
     (dir_path / f"{prefix}_index.json").write_text(json.dumps(index), encoding="utf-8")
 
 
+def _write_promoted_policy(
+    tmp_path: Path,
+    *,
+    categories: tuple[str, ...] = (),
+    exact_evidence: bool = False,
+) -> Path:
+    category_policy = {
+        category: {
+            "mode": "auto",
+            "min_score": 0.80,
+            "validation_examples": 50,
+            "measured_precision": 0.95,
+        }
+        for category in categories
+    }
+    category_policy["unknown"] = {"mode": "review", "min_score": 1.0}
+    path = tmp_path / (
+        "promoted-" + "-".join((*categories, "exact" if exact_evidence else "category")) + ".json"
+    )
+    path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "target_precision": 0.95,
+                "exact_code_target_precision": 0.995,
+                "minimum_validation_examples": 50,
+                "global": {"mode": "review", "min_score": 1.0},
+                "exact_evidence": {
+                    "mode": "auto" if exact_evidence else "shadow",
+                    "min_score": 0.80,
+                    "validation_examples": 50 if exact_evidence else 0,
+                    "measured_precision": 0.995 if exact_evidence else None,
+                },
+                "categories": category_policy,
+                "competitors": {},
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
 def test_match_items_suggested(db_session, tmp_path):
     prod1 = Product(name="Дисплей iPhone 12", brand="Apple", category="display", article="A1")
     prod2 = Product(name="Дисплей iPhone 13", brand="Apple", category="display", article="A2")
@@ -5138,7 +5184,8 @@ def test_match_items_accepts_battery_verification_system_diagnosable(
     best = Product(
         name=(
             "Аккумулятор для Apple iPhone 14 Pro Max (F5ENERGY) (усиленный) "
-            "(4770 мАч) (SPECIAL EDITION) (SYSTEM DIAGNOSABLE) + двухсторонний скотч"
+            "(4770 мАч) (SPECIAL EDITION) (SYSTEM DIAGNOSABLE) (Premium) "
+            "+ двухсторонний скотч"
         ),
         brand="Apple",
         category="battery",
@@ -5163,9 +5210,11 @@ def test_match_items_accepts_battery_verification_system_diagnosable(
         external_id="BTT-PMIPRM140-VRF-HC-NEW",
         name=(
             "Аккумулятор для iPhone 14 Pro Max - Battery Collection с верификацией "
-            '"Новая запчасть" - усиленная 4750 mAh'
+            '"Новая запчасть" - усиленная 4750 mAh Premium'
         ),
-        normalized_title="Аккумулятор iPhone 14 Pro Max верификация Новая запчасть усиленная 4750 mAh",
+        normalized_title=(
+            "Аккумулятор iPhone 14 Pro Max верификация Новая запчасть " "усиленная 4750 mAh Premium"
+        ),
         item_type="battery",
         parsed_device_brand="apple",
     )
@@ -5177,6 +5226,7 @@ def test_match_items_accepts_battery_verification_system_diagnosable(
     competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
     _write_embeddings(tmp_path, "our_catalog", product_matrix, [best.id, alternative.id])
     _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+    policy_path = _write_promoted_policy(tmp_path, categories=("battery",))
 
     stats = match_items(
         db_session,
@@ -5196,6 +5246,7 @@ def test_match_items_accepts_battery_verification_system_diagnosable(
         report_file=None,
         report_limit=0,
         report_csv_file=None,
+        auto_accept_policy_path=str(policy_path),
     )
 
     assert stats["matched"] == 1
@@ -5366,6 +5417,7 @@ def test_match_items_updates_product_relationship_before_color_sweeper(db_sessio
         [wrong_product.id, correct_product.id],
     )
     _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+    policy_path = _write_promoted_policy(tmp_path, categories=("housing",))
 
     stats = match_items(
         db_session,
@@ -5386,6 +5438,7 @@ def test_match_items_updates_product_relationship_before_color_sweeper(db_sessio
         report_limit=0,
         report_csv_file=None,
         competitor_item_ids=[item.id],
+        auto_accept_policy_path=str(policy_path),
     )
 
     assert stats["matched"] == 1
@@ -6792,6 +6845,7 @@ def test_match_items_prefers_display_code_overlap_over_higher_score_conflict(db_
         [correct_product.id, wrong_product.id],
     )
     _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+    policy_path = _write_promoted_policy(tmp_path, exact_evidence=True)
 
     stats = match_items(
         db_session,
@@ -6811,6 +6865,7 @@ def test_match_items_prefers_display_code_overlap_over_higher_score_conflict(db_
         report_file=None,
         report_limit=0,
         report_csv_file=None,
+        auto_accept_policy_path=str(policy_path),
     )
 
     assert stats["matched"] == 1
@@ -7021,6 +7076,7 @@ def test_match_items_allows_display_exact_text_when_phone_model_links_are_stale(
     competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
     _write_embeddings(tmp_path, "our_catalog", product_matrix, [product.id])
     _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+    policy_path = _write_promoted_policy(tmp_path, categories=("display",))
 
     stats = match_items(
         db_session,
@@ -7040,6 +7096,7 @@ def test_match_items_allows_display_exact_text_when_phone_model_links_are_stale(
         report_file=None,
         report_limit=0,
         report_csv_file=None,
+        auto_accept_policy_path=str(policy_path),
     )
 
     assert stats["needs_review"] == 1
@@ -7387,6 +7444,7 @@ def test_match_items_allows_display_model_code_overlap(db_session, tmp_path):
     competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
     _write_embeddings(tmp_path, "our_catalog", product_matrix, [product.id])
     _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+    policy_path = _write_promoted_policy(tmp_path, exact_evidence=True)
 
     stats = match_items(
         db_session,
@@ -7406,6 +7464,7 @@ def test_match_items_allows_display_model_code_overlap(db_session, tmp_path):
         report_file=None,
         report_limit=0,
         report_csv_file=None,
+        auto_accept_policy_path=str(policy_path),
     )
 
     assert stats["matched"] == 1
@@ -7595,6 +7654,7 @@ def test_match_items_allows_xiaomi_display_regional_code_overlap(db_session, tmp
     competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
     _write_embeddings(tmp_path, "our_catalog", product_matrix, [product.id])
     _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+    policy_path = _write_promoted_policy(tmp_path, exact_evidence=True)
 
     stats = match_items(
         db_session,
@@ -7614,6 +7674,7 @@ def test_match_items_allows_xiaomi_display_regional_code_overlap(db_session, tmp
         report_file=None,
         report_limit=0,
         report_csv_file=None,
+        auto_accept_policy_path=str(policy_path),
     )
 
     assert stats["matched"] == 1
@@ -8404,6 +8465,7 @@ def test_match_items_auto_accepts_touchscreen_with_shared_device_codes(db_sessio
     competitor_matrix = np.array([[1.0, 0.0]], dtype=np.float32)
     _write_embeddings(tmp_path, "our_catalog", product_matrix, [product.id])
     _write_embeddings(tmp_path, "competitor_items", competitor_matrix, [item.id])
+    policy_path = _write_promoted_policy(tmp_path, exact_evidence=True)
 
     stats = match_items(
         db_session,
@@ -8424,6 +8486,7 @@ def test_match_items_auto_accepts_touchscreen_with_shared_device_codes(db_sessio
         report_limit=0,
         report_csv_file=None,
         auto_accept_min_score=0.8,
+        auto_accept_policy_path=str(policy_path),
     )
 
     assert stats["matched"] == 1

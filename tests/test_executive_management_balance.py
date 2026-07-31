@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -1213,9 +1213,31 @@ def test_management_balance_turnover_applies_range_to_all_lines(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    current_day = date.today()
+    current_month = current_day.strftime("%Y-%m")
+    opening_day = current_day.replace(day=1) - timedelta(days=1)
     _build_turnover_fixture(db_session, monkeypatch)
+    if opening_day != date(2026, 6, 30):
+        opening = _turnover_fixture_lines(
+            as_of=opening_day,
+            cash="120.00",
+            fixed_assets="45.00",
+            suppliers="70.00",
+            taxes="15.00",
+            equity="80.00",
+        )
+        monkeypatch.setattr(
+            balance_service,
+            "_build_draft_lines",
+            lambda *args, **kwargs: opening,
+        )
+        build_and_persist_management_balance_snapshot(
+            db_session,
+            balance_date=opening_day,
+            view="closed",
+        )
     current = _turnover_fixture_lines(
-        as_of=date.today(),
+        as_of=current_day,
         cash="130.00",
         fixed_assets="45.00",
         suppliers="65.00",
@@ -1225,7 +1247,7 @@ def test_management_balance_turnover_applies_range_to_all_lines(
     monkeypatch.setattr(balance_service, "_build_draft_lines", lambda *args, **kwargs: current)
     build_and_persist_management_balance_snapshot(
         db_session,
-        balance_date=date.today(),
+        balance_date=current_day,
         view="operational",
     )
     monkeypatch.setattr(
@@ -1236,11 +1258,11 @@ def test_management_balance_turnover_applies_range_to_all_lines(
                 "source_status": "ready",
                 "period": {
                     "date_from": "2026-01-01",
-                    "date_to": date.today().isoformat(),
+                    "date_to": current_day.isoformat(),
                 },
                 "rows": [
                     {
-                        "business_date": date.today().isoformat(),
+                        "business_date": current_day.isoformat(),
                         "inflow_amount": "20.00",
                         "outflow_amount": "5.00",
                     }
@@ -1248,12 +1270,12 @@ def test_management_balance_turnover_applies_range_to_all_lines(
                 "cash_position": {
                     "rows": [
                         {
-                            "snapshot_date": "2026-06-30",
+                            "snapshot_date": opening_day.isoformat(),
                             "total_balance_rub": "125.00",
                             "source_status": "ready",
                         },
                         {
-                            "snapshot_date": date.today().isoformat(),
+                            "snapshot_date": current_day.isoformat(),
                             "total_balance_rub": "140.00",
                             "source_status": "ready",
                         },
@@ -1267,23 +1289,23 @@ def test_management_balance_turnover_applies_range_to_all_lines(
 
     response = get_management_balance_turnover(
         db_session,
-        month="2026-07",
-        month_from="2026-07",
-        month_to="2026-07",
+        month=current_month,
+        month_from=current_month,
+        month_to=current_month,
         view="operational",
         access_context=bitrix_executive_dashboard_auth.full_executive_dashboard_context(),
     )
 
     lines = {line.key: line for line in response.lines}
-    assert response.date_from == date(2026, 7, 1)
-    assert response.date_to == date.today()
-    assert response.opening_balance_date == date(2026, 6, 30)
+    assert response.date_from == current_day.replace(day=1)
+    assert response.date_to == current_day
+    assert response.opening_balance_date == opening_day
     assert lines["cash"].opening_balance == Decimal("125.00")
     assert lines["cash"].closing_balance == Decimal("140.00")
     assert lines["cash"].debit_turnover == Decimal("20.00")
     assert lines["cash"].credit_turnover == Decimal("5.00")
     assert lines["cash"].reconciliation_difference == Decimal("0.00")
-    assert lines["cash"].source_as_of == date.today()
+    assert lines["cash"].source_as_of == current_day
     assert lines["suppliers"].opening_balance == Decimal("70.00")
     assert lines["suppliers"].closing_balance == Decimal("65.00")
 

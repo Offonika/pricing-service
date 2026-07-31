@@ -1867,12 +1867,14 @@ def _turnover_period_options(session: Session) -> tuple[list[str], list[str]]:
     )
     starts = {OPENING_EQUITY_BASELINE_DATE}
     ends: set[date] = set()
+    current_month = date.today().replace(day=1)
     for snapshot in snapshots:
-        if snapshot.balance_date > snapshot.period_month:
+        if snapshot.balance_date > snapshot.period_month or (
+            snapshot.period_month == current_month and snapshot.view_mode == "operational"
+        ):
             ends.add(snapshot.period_month)
         if snapshot.balance_date == month_end(snapshot.period_month):
             starts.add(_next_month(snapshot.period_month))
-    current_month = date.today().replace(day=1)
     return (
         [
             item.strftime("%Y-%m")

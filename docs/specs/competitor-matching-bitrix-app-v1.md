@@ -5,17 +5,20 @@ doc_type: spec
 domain: matching
 status: accepted
 owner: engineering
-source_of_truth: true
+source_of_truth: false
 related_code: [app/api/bitrix_matching.py, app/services/bitrix_matching_auth.py, ui/]
 related_tests: [tests/test_matching_api.py]
 contracts: [openapi.yaml]
 depends_on: [docs/specs/competitor-matching-ui-v1.md]
 supersedes: []
 rollout_required: true
-updated_at: "2026-05-01"
+updated_at: "2026-07-31"
 ---
 
 # Назначение
+
+Это расширение канонического item-level контура
+`docs/specs/competitor-matching-ui-v1.md`; при расхождении приоритет у него.
 
 Встроить текущий ручной интерфейс сопоставления товаров в Bitrix24 как локальное
 приложение-страницу, не перенося данные и бизнес-логику в Bitrix24.

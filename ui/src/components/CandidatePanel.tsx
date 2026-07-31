@@ -11,7 +11,7 @@ import {
   rejectItemMatch,
   revokeItemMatch,
 } from "../api/matching";
-import type { Candidate } from "../api/types";
+import type { Candidate, MatchingDecisionReasonCode } from "../api/types";
 import { useSelectedProduct } from "../store/useSelectionStore";
 
 interface SearchState {
@@ -75,6 +75,26 @@ const CANDIDATE_STATUS_OPTIONS = [
   { value: "ambiguous", label: "Спорные" },
   { value: "rejected", label: "Отклоненные" },
 ];
+
+const REJECT_REASON_OPTIONS: Array<{ value: MatchingDecisionReasonCode; label: string }> = [
+  { value: "wrong_model", label: "Неверная модель" },
+  { value: "wrong_item_type", label: "Другой тип товара" },
+  { value: "wrong_quality", label: "Другое качество" },
+  { value: "wrong_color", label: "Другой цвет" },
+  { value: "wrong_frame", label: "Другая рамка/комплектация" },
+  { value: "wrong_part_number", label: "Другой партномер" },
+  { value: "wrong_capacity", label: "Другая ёмкость" },
+  { value: "duplicate_or_irrelevant", label: "Дубль или нерелевантно" },
+  { value: "auto_false_positive", label: "Ошибка автоматического сопоставления" },
+  { value: "other", label: "Другая причина" },
+];
+
+export function hasRequiredDecisionReason(
+  action: "reject" | "revoke",
+  reasonCode: MatchingDecisionReasonCode | ""
+) {
+  return action === "reject" || action === "revoke" ? Boolean(reasonCode) : true;
+}
 
 const CANDIDATE_FILTER_PREFS_KEY = "pricing.matching.candidate-filters.v1";
 
@@ -247,6 +267,7 @@ export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePane
   const [candidateStatus, setCandidateStatus] = useState(savedCandidatePrefs.candidateStatus);
   const [isWideList, setIsWideList] = useState(savedCandidatePrefs.isWideList);
   const [compareTab, setCompareTab] = useState<CompareTab>("summary");
+  const [decisionReasonCode, setDecisionReasonCode] = useState<MatchingDecisionReasonCode | "">("");
   const [bulkSelectionState, setBulkSelectionState] = useState<BulkSelectionState>(() => ({
     scope: "",
     value: new Set(),
@@ -469,9 +490,11 @@ export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePane
   };
 
   const acceptMutation = useMutation({
-    mutationFn: (candidate: Candidate) => acceptItemMatch(selectedProductId!, candidate.competitor_item_id!),
+    mutationFn: (candidate: Candidate) =>
+      acceptItemMatch(selectedProductId!, candidate.competitor_item_id!, "confirmed_attributes"),
     onSuccess: () => {
       setSelectedCandidateId(null);
+      setDecisionReasonCode("");
       invalidateMatching();
       toast.success("Сопоставление принято");
       onAfterDecision?.();
@@ -480,9 +503,11 @@ export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePane
   });
 
   const rejectMutation = useMutation({
-    mutationFn: (candidate: Candidate) => rejectItemMatch(selectedProductId!, candidate.competitor_item_id!),
+    mutationFn: (candidate: Candidate) =>
+      rejectItemMatch(selectedProductId!, candidate.competitor_item_id!, decisionReasonCode || "other"),
     onSuccess: () => {
       setSelectedCandidateId(null);
+      setDecisionReasonCode("");
       setBulkSelectionState({ scope: bulkSelectionScope, value: new Set() });
       invalidateMatching();
       toast.success("Кандидат отклонен");
@@ -492,7 +517,8 @@ export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePane
   });
 
   const bulkRejectMutation = useMutation({
-    mutationFn: (candidateIds: number[]) => bulkRejectItemMatches(selectedProductId!, candidateIds, "bulk_ui_reject"),
+    mutationFn: (candidateIds: number[]) =>
+      bulkRejectItemMatches(selectedProductId!, candidateIds, "duplicate_or_irrelevant", "bulk_ui_reject"),
     onSuccess: (response) => {
       setSelectedCandidateId(null);
       setBulkSelectionState({ scope: bulkSelectionScope, value: new Set() });
@@ -505,9 +531,11 @@ export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePane
   });
 
   const revokeMutation = useMutation({
-    mutationFn: (candidate: Candidate) => revokeItemMatch(selectedProductId!, candidate.competitor_item_id!),
+    mutationFn: (candidate: Candidate) =>
+      revokeItemMatch(selectedProductId!, candidate.competitor_item_id!, decisionReasonCode || "other"),
     onSuccess: (_response, candidate) => {
       setSelectedCandidateId(null);
+      setDecisionReasonCode("");
       setBulkSelectionState({ scope: bulkSelectionScope, value: new Set() });
       invalidateMatching();
       toast.success(candidate.status === "rejected" ? "Отклонение снято" : "Сопоставление снято");
@@ -603,6 +631,10 @@ export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePane
 
   const rejectSelected = () => {
     if (!selectedCandidate?.competitor_item_id) return;
+    if (!hasRequiredDecisionReason("reject", decisionReasonCode)) {
+      toast.error("Выберите причину отклонения");
+      return;
+    }
     rejectMutation.mutate(selectedCandidate);
   };
 
@@ -643,6 +675,10 @@ export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePane
 
   const revokeSelected = () => {
     if (!selectedCandidate?.competitor_item_id) return;
+    if (!hasRequiredDecisionReason("revoke", decisionReasonCode)) {
+      toast.error("Выберите причину снятия решения");
+      return;
+    }
     const confirmText =
       selectedCandidate.status === "rejected" ? "Снять отклонение с кандидата?" : "Снять принятое сопоставление?";
     if (window.confirm(confirmText)) {
@@ -1097,6 +1133,23 @@ export function CandidatePanel({ onNextProduct, onAfterDecision }: CandidatePane
                     </a>
                   )}
                   <div className="picker__actions">
+                    <label>
+                      <span className="sr-only">Причина решения</span>
+                      <select
+                        value={decisionReasonCode}
+                        onChange={(event) =>
+                          setDecisionReasonCode(event.target.value as MatchingDecisionReasonCode | "")
+                        }
+                        aria-label="Причина отклонения или снятия"
+                      >
+                        <option value="">Выберите причину</option>
+                        {REJECT_REASON_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
                     <button
                       className="btn"
                       onClick={acceptSelected}

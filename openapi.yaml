@@ -10079,6 +10079,25 @@ components:
           - type: string
           - type: 'null'
           title: Reason
+        reason_code:
+          anyOf:
+          - type: string
+            enum:
+            - legacy_unspecified
+            - wrong_model
+            - wrong_item_type
+            - wrong_quality
+            - wrong_color
+            - wrong_frame
+            - wrong_part_number
+            - wrong_capacity
+            - duplicate_or_irrelevant
+            - confirmed_exact_code
+            - confirmed_attributes
+            - auto_false_positive
+            - other
+          - type: 'null'
+          title: Reason Code
       type: object
       title: BulkRejectRequest
     BulkRejectResponse:
@@ -13881,6 +13900,24 @@ components:
           - type: string
           - type: 'null'
           title: Reason
+        reason_code:
+          type: string
+          enum:
+          - legacy_unspecified
+          - wrong_model
+          - wrong_item_type
+          - wrong_quality
+          - wrong_color
+          - wrong_frame
+          - wrong_part_number
+          - wrong_capacity
+          - duplicate_or_irrelevant
+          - confirmed_exact_code
+          - confirmed_attributes
+          - auto_false_positive
+          - other
+          title: Reason Code
+          default: legacy_unspecified
         created_by:
           anyOf:
           - type: string
@@ -13900,6 +13937,25 @@ components:
           - type: string
           - type: 'null'
           title: Previous Status
+        snapshot_schema_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Snapshot Schema Version
+        snapshot_score:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Snapshot Score
+        snapshot_rank:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Snapshot Rank
+        snapshot_top_k_count:
+          type: integer
+          title: Snapshot Top K Count
+          default: 0
       type: object
       required:
       - id
@@ -19775,6 +19831,25 @@ components:
           - type: string
           - type: 'null'
           title: Reason
+        reason_code:
+          anyOf:
+          - type: string
+            enum:
+            - legacy_unspecified
+            - wrong_model
+            - wrong_item_type
+            - wrong_quality
+            - wrong_color
+            - wrong_frame
+            - wrong_part_number
+            - wrong_capacity
+            - duplicate_or_irrelevant
+            - confirmed_exact_code
+            - confirmed_attributes
+            - auto_false_positive
+            - other
+          - type: 'null'
+          title: Reason Code
       type: object
       title: MatchRequest
     MatchStatus:
@@ -24103,6 +24178,25 @@ components:
           - type: string
           - type: 'null'
           title: Reason
+        reason_code:
+          anyOf:
+          - type: string
+            enum:
+            - legacy_unspecified
+            - wrong_model
+            - wrong_item_type
+            - wrong_quality
+            - wrong_color
+            - wrong_frame
+            - wrong_part_number
+            - wrong_capacity
+            - duplicate_or_irrelevant
+            - confirmed_exact_code
+            - confirmed_attributes
+            - auto_false_positive
+            - other
+          - type: 'null'
+          title: Reason Code
       type: object
       title: RejectRequest
     RetailCounterpartyZeroBalanceItem:
@@ -24699,6 +24793,25 @@ components:
           - type: string
           - type: 'null'
           title: Reason
+        reason_code:
+          anyOf:
+          - type: string
+            enum:
+            - legacy_unspecified
+            - wrong_model
+            - wrong_item_type
+            - wrong_quality
+            - wrong_color
+            - wrong_frame
+            - wrong_part_number
+            - wrong_capacity
+            - duplicate_or_irrelevant
+            - confirmed_exact_code
+            - confirmed_attributes
+            - auto_false_positive
+            - other
+          - type: 'null'
+          title: Reason Code
       type: object
       required:
       - competitor_item_id

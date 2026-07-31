@@ -18,6 +18,7 @@ import type {
   CompatibilityUnresolvedGroup,
   CompatibilityUnresolvedItem,
   BulkRejectResponse,
+  MatchingDecisionReasonCode,
   DecisionHistoryResponse,
   PaginatedCandidates,
   PaginatedProducts,
@@ -86,33 +87,57 @@ export async function acceptMatch(productId: number, competitorId: number) {
   return data;
 }
 
-export async function acceptItemMatch(productId: number, competitorItemId: number, reason?: string) {
+export async function acceptItemMatch(
+  productId: number,
+  competitorItemId: number,
+  reasonCode: MatchingDecisionReasonCode = "confirmed_attributes",
+  reason?: string,
+) {
   const { data } = await api.post(`/matching/products/${productId}/matches`, {
     competitor_item_id: competitorItemId,
+    reason_code: reasonCode,
     reason,
   });
   return data;
 }
 
-export async function rejectItemMatch(productId: number, competitorItemId: number, reason?: string) {
+export async function rejectItemMatch(
+  productId: number,
+  competitorItemId: number,
+  reasonCode: MatchingDecisionReasonCode,
+  reason?: string,
+) {
   const { data } = await api.post(`/matching/products/${productId}/reject`, {
     competitor_item_id: competitorItemId,
+    reason_code: reasonCode,
     reason,
   });
   return data;
 }
 
-export async function bulkRejectItemMatches(productId: number, competitorItemIds: number[], reason?: string) {
+export async function bulkRejectItemMatches(
+  productId: number,
+  competitorItemIds: number[],
+  reasonCode: MatchingDecisionReasonCode,
+  reason?: string,
+) {
   const { data } = await api.post<BulkRejectResponse>(`/matching/products/${productId}/reject-bulk`, {
     competitor_item_ids: competitorItemIds,
+    reason_code: reasonCode,
     reason,
   });
   return data;
 }
 
-export async function revokeItemMatch(productId: number, competitorItemId: number, reason?: string) {
+export async function revokeItemMatch(
+  productId: number,
+  competitorItemId: number,
+  reasonCode: MatchingDecisionReasonCode,
+  reason?: string,
+) {
   const { data } = await api.post(`/matching/products/${productId}/revoke`, {
     competitor_item_id: competitorItemId,
+    reason_code: reasonCode,
     reason,
   });
   return data;

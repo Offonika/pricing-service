@@ -535,6 +535,22 @@ def test_bitrix_sync_does_not_create_card_for_document_mismatch(
                 source_status="document_mismatch",
                 documents=[],
             ),
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_BUYERS,
+                counterparty_ref="cp-stale",
+                balance=Decimal("500.00"),
+                origin_date=datetime(2026, 7, 30, 12, 0),
+                due_date=datetime(2026, 8, 6),
+                overdue_days=0,
+            ),
+            ReceivableOpenDebtCache(
+                snapshot_date=as_of,
+                counterparty_ref="cp-stale",
+                department_ref="dep-1",
+                source_status="source_stale",
+                documents=[],
+            ),
         ]
     )
     bitrix = FakeBitrixClient()
@@ -674,9 +690,7 @@ def test_bitrix_sync_quarantines_existing_card_for_document_mismatch(
     assert bitrix.added == []
 
     cache_row = db_session.scalar(
-        select(ReceivableOpenDebtCache).where(
-            ReceivableOpenDebtCache.counterparty_ref == "cp-a"
-        )
+        select(ReceivableOpenDebtCache).where(ReceivableOpenDebtCache.counterparty_ref == "cp-a")
     )
     assert cache_row is not None
     cache_row.source_status = "ready"

@@ -1197,11 +1197,7 @@ def sync_receivable_workflow(
         counterparty_refs=list(grouped),
     )
     open_debt_documents_by_counterparty = open_debt_cache.documents_by_counterparty
-    document_mismatch_counterparty_refs = (
-        open_debt_cache.document_mismatch_counterparty_refs
-        if open_debt_cache.source_status != "source_stale"
-        else frozenset()
-    )
+    document_mismatch_counterparty_refs = open_debt_cache.document_mismatch_counterparty_refs
     candidates = _workflow_candidate_groups(
         grouped,
         as_of=as_of,

@@ -1043,8 +1043,7 @@ def build_receivable_workplace(
                 or _ref_key(case.counterparty_ref) in open_debt_cache.hidden_counterparty_refs
             ),
             suppress_unverified_overdue=(
-                open_debt_source_status != "source_stale"
-                and _ref_key(case.counterparty_ref)
+                _ref_key(case.counterparty_ref)
                 in open_debt_cache.document_mismatch_counterparty_refs
             ),
         )

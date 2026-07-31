@@ -1024,18 +1024,32 @@ def test_receivable_workplace_excludes_document_mismatch_from_overdue_queue(
                 source_status="document_mismatch",
                 documents=[],
             ),
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-stale",
+                counterparty_name="Клиент с устаревшим кешем",
+                balance=Decimal("5000.00"),
+                origin_date=datetime(2026, 7, 1, 12, 0),
+            ),
+            ReceivableOpenDebtCache(
+                snapshot_date=as_of,
+                counterparty_ref="cp-stale",
+                department_ref="dep-1",
+                source_status="source_stale",
+                documents=[],
+            ),
         ]
     )
 
     result = build_receivable_workplace(db_session, snapshot_date=as_of)
 
-    assert result.source_status == "cache_ready"
-    assert result.total_count == 0
-    assert result.visible_count == 0
-    assert result.summary.row_count == 0
-    assert result.summary.total_receivable == Decimal("0.00")
-    assert result.summary.total_overdue == Decimal("0.00")
-    assert result.payload == []
+    assert result.source_status == "source_stale"
+    assert result.total_count == 1
+    assert result.visible_count == 1
+    assert result.summary.row_count == 1
+    assert result.summary.total_receivable == Decimal("5000.00")
+    assert result.summary.total_overdue == Decimal("5000.00")
+    assert [item.counterparty_ref for item in result.payload] == ["cp-stale"]
     stored_case = db_session.scalar(
         select(ReceivableCase).where(ReceivableCase.counterparty_ref == "cp-1")
     )

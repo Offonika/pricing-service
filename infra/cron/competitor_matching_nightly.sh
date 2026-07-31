@@ -119,7 +119,7 @@ try:
     payload = json.loads(path.read_text(encoding="utf-8"))
 except Exception:
     raise SystemExit(1)
-if payload.get("status") not in {"success", "degraded_source_stale"}:
+if payload.get("status") != "success":
     raise SystemExit(1)
 finished_at = payload.get("finished_at")
 if not finished_at:
@@ -227,7 +227,12 @@ case "${ftp_freshness_exit}" in
     ;;
   3)
     ftp_status="stale"
-    echo "[$(date -Iseconds)] competitor data quality degraded: ftp=stale" >> "${LOG_FILE}"
+    overall_status="blocked_source_stale"
+    current_step="check_competitor_ftp_freshness"
+    echo "[$(date -Iseconds)] competitor data is stale; matching and cache refresh are blocked" >> "${LOG_FILE}"
+    write_latest_report "3"
+    finished=1
+    exit 3
     ;;
   *)
     echo "[$(date -Iseconds)] competitor FTP freshness check failed technically (status=${ftp_freshness_exit})" >> "${LOG_FILE}"
@@ -405,11 +410,7 @@ run_step "report_competitor_matching_quality" \
     --report-file "${REPORT_DIR}/competitor_matching_quality_${run_id}.json"
 
 if [[ "${overall_status}" == "running" ]]; then
-  if [[ "${ftp_status}" == "fresh" ]]; then
-    overall_status="success"
-  else
-    overall_status="degraded_source_stale"
-  fi
+  overall_status="success"
 fi
 current_step="finished"
 write_latest_report "0"

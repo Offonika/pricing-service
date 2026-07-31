@@ -17,13 +17,17 @@ def test_nightly_loads_env_before_resolving_feature_flags() -> None:
     assert env_load < embeddings_flag
 
 
-def test_nightly_marks_stale_ftp_as_degraded_without_retrying_same_day() -> None:
+def test_nightly_blocks_matching_when_source_is_stale() -> None:
     source = NIGHTLY.read_text(encoding="utf-8")
 
     assert "--ftp-only" in source
     assert 'ftp_status="stale"' in source
-    assert 'overall_status="degraded_source_stale"' in source
-    assert '{"success", "degraded_source_stale"}' in source
+    stale_branch = source.index('overall_status="blocked_source_stale"')
+    matcher = source.index('run_step "match_competitor_ftp"')
+
+    assert 'write_latest_report "3"' in source
+    assert "exit 3" in source
+    assert stale_branch < matcher
 
 
 def test_nightly_uses_https_import_without_ftp_fallback() -> None:

@@ -35,11 +35,12 @@ EXECUTIVE_DASHBOARD_BLOCK_KEYS = (
     "procurement_import",
     "warehouse_operations",
     "reconciliation",
+    "infrastructure",
     "tasks",
     "daily_focus",
 )
 EXECUTIVE_DASHBOARD_ACTION_DOMAINS = tuple(
-    key for key in EXECUTIVE_DASHBOARD_BLOCK_KEYS if key != "online_store"
+    key for key in EXECUTIVE_DASHBOARD_BLOCK_KEYS if key not in {"online_store", "infrastructure"}
 )
 EXECUTIVE_DASHBOARD_MONEY_BLOCK_KEYS = (
     "money_today",
@@ -90,6 +91,12 @@ _ROLE_DEFAULTS: dict[str, dict[str, Any]] = {
     "warehouse": {
         "allowed_blocks": ("warehouse_operations",),
         "allowed_action_domains": ("warehouse_operations",),
+        "money_blocks": (),
+        "personal_actions_only": False,
+    },
+    "infrastructure": {
+        "allowed_blocks": ("infrastructure",),
+        "allowed_action_domains": (),
         "money_blocks": (),
         "personal_actions_only": False,
     },

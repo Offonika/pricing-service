@@ -33,6 +33,7 @@ from app.schemas.executive_dashboard import (
     ExecutiveCashflowPeriodResponse,
     ExecutiveDashboardActionsResponse,
     ExecutiveDashboardResponse,
+    ExecutiveInstrumentsResponse,
     ExecutiveManagementBalanceCloseRequest,
     ExecutiveManagementBalanceResponse,
     ExecutiveManagementBalanceTurnoverResponse,
@@ -102,6 +103,7 @@ from app.services.executive_dashboard import (
     build_executive_profit_loss_period_response,
     build_executive_sales_period_response,
 )
+from app.services.executive_instruments import load_executive_instruments_snapshot
 from app.services.executive_management_balance import (
     ManagementBalanceCloseError,
     ManagementBalanceNotFoundError,
@@ -170,6 +172,18 @@ def get_executive_dashboard(
         requested_date=requested_date,
         access_context=access,
     )
+
+
+@router.get(
+    "/executive-dashboard/instruments",
+    response_model=ExecutiveInstrumentsResponse,
+)
+def get_executive_dashboard_instruments(
+    access: ExecutiveDashboardAuthContext = Depends(require_executive_dashboard_access),
+) -> ExecutiveInstrumentsResponse:
+    if not access.allows_block("infrastructure"):
+        raise HTTPException(status_code=403, detail="Нет доступа к инфраструктурной витрине")
+    return load_executive_instruments_snapshot()
 
 
 @router.get(

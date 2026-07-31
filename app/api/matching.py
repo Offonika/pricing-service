@@ -95,6 +95,11 @@ from app.schemas.matching import (
 from app.services.bitrix_matching_auth import verify_matching_session_token
 from app.services.compatibility_mapping import CompatibilityMappingService
 from app.services.competitor_url_aliases import normalize_competitor_url, parse_competitor_url
+from app.services.manual_matching_decisions import (
+    build_decision_snapshot,
+    normalize_reason_code,
+    snapshot_summary,
+)
 from app.services.matching_guardrails import (
     basic_candidate_guardrails,
     competitor_item_requires_compatibility,
@@ -387,15 +392,34 @@ def _record_decision(
     action: str,
     user: str,
     reason: str | None = None,
+    reason_code: str | None = None,
     previous_product_id: int | None = None,
     previous_status: str | None = None,
+    product: Product | None = None,
+    item: CompetitorItem | None = None,
+    match: CompetitorItemMatch | None = None,
 ) -> None:
+    product = product or db.get(Product, product_id)
+    item = item or db.get(CompetitorItem, competitor_item_id)
+    normalized_reason_code = normalize_reason_code(reason_code)
+    snapshot = (
+        build_decision_snapshot(
+            product=product,
+            item=item,
+            match=match,
+            reason_code=normalized_reason_code,
+        )
+        if product is not None and item is not None
+        else None
+    )
     db.add(
         ProductCompetitorItemDecision(
             product_id=product_id,
             competitor_item_id=competitor_item_id,
             action=action,
             reason=reason,
+            reason_code=normalized_reason_code,
+            snapshot_json=snapshot,
             created_by=user,
             previous_product_id=previous_product_id,
             previous_status=previous_status,
@@ -2794,8 +2818,12 @@ def accept_item_match(
         action="accept",
         user=user,
         reason=payload.reason,
+        reason_code=payload.reason_code,
         previous_product_id=previous_product_id,
         previous_status=previous_status,
+        product=product,
+        item=item,
+        match=match,
     )
     _invalidate_live_candidate_cache(db, product_id, previous_product_id)
     db.commit()
@@ -2843,8 +2871,12 @@ def reject_candidate(
         action="reject",
         user=user,
         reason=payload.reason,
+        reason_code=payload.reason_code,
         previous_product_id=previous_product_id,
         previous_status=previous_status,
+        product=product,
+        item=item,
+        match=existing,
     )
     _invalidate_live_candidate_cache(db, product_id, previous_product_id)
     db.commit()
@@ -2959,8 +2991,12 @@ def reject_candidates_bulk(
             action="reject",
             user=user,
             reason=payload.reason,
+            reason_code=payload.reason_code,
             previous_product_id=previous_product_id,
             previous_status=previous_status,
+            product=product,
+            item=item,
+            match=existing,
         )
         changed_product_ids.add(previous_product_id)
         rejected_ids.add(item_id)
@@ -3040,8 +3076,12 @@ def revoke_item_match(
         action="revoke",
         user=user,
         reason=payload.reason,
+        reason_code=payload.reason_code,
         previous_product_id=previous_product_id,
         previous_status=previous_status,
+        product=product,
+        item=item,
+        match=match or rejected_match,
     )
     _invalidate_live_candidate_cache(db, product_id)
     if match is not None:
@@ -3088,10 +3128,12 @@ def get_match_history(
                 name=row.competitor_item.name if row.competitor_item else None,
                 action=row.action,
                 reason=row.reason,
+                reason_code=row.reason_code,
                 created_by=row.created_by,
                 created_at=row.created_at,
                 previous_product_id=row.previous_product_id,
                 previous_status=row.previous_status,
+                **snapshot_summary(row.snapshot_json),
             )
             for row in rows
         ]

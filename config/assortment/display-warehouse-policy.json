@@ -18,8 +18,9 @@
     {
       "warehouse_code": "РБ0000045",
       "name": "Люблино 1-2",
-      "role": "physical_sales_point",
-      "sells_systematically": true
+      "role": "non_systematic",
+      "sells_systematically": false,
+      "is_non_systematic_sale": true
     },
     {
       "warehouse_code": "РБ0000026",

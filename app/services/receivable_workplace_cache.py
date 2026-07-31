@@ -38,6 +38,7 @@ class CachedOpenDebtDocuments:
     source_max_document_date: datetime | None = None
     source_lag_days: int | None = None
     hidden_counterparty_refs: frozenset[str] = frozenset()
+    document_mismatch_counterparty_refs: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -176,6 +177,9 @@ def load_cached_open_debt_documents(
         for row in rows
         if row.source_status in {"source_stale", "document_mismatch"}
     )
+    document_mismatch_counterparty_refs = frozenset(
+        _ref_key(row.counterparty_ref) for row in rows if row.source_status == "document_mismatch"
+    )
     freshness = evaluate_open_debt_source_freshness(
         session,
         snapshot_date=snapshot_date,
@@ -197,6 +201,7 @@ def load_cached_open_debt_documents(
         source_max_document_date=freshness.source_max_document_date,
         source_lag_days=freshness.source_lag_days,
         hidden_counterparty_refs=hidden_counterparty_refs,
+        document_mismatch_counterparty_refs=document_mismatch_counterparty_refs,
     )
 
 

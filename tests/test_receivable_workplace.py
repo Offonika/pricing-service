@@ -642,37 +642,51 @@ def test_receivable_workplace_min_debt_filters_before_limit_and_summary(
         [
             _case(
                 snapshot_date=as_of,
-                counterparty_ref="cp-small",
-                counterparty_name="Малый долг",
-                balance=Decimal("400000"),
+                counterparty_ref="cp-500",
+                counterparty_name="Ровно 500",
+                balance=Decimal("500.00"),
             ),
             _case(
                 snapshot_date=as_of,
-                counterparty_ref="cp-medium",
-                counterparty_name="Средний долг",
-                balance=Decimal("600000"),
+                counterparty_ref="cp-500-plus",
+                counterparty_name="Больше 500",
+                balance=Decimal("500.01"),
             ),
             _case(
                 snapshot_date=as_of,
-                counterparty_ref="cp-large",
-                counterparty_name="Крупный долг",
-                balance=Decimal("1500000"),
+                counterparty_ref="cp-1000",
+                counterparty_name="Ровно 1000",
+                balance=Decimal("1000.00"),
+            ),
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-1000-plus",
+                counterparty_name="Больше 1000",
+                balance=Decimal("1000.01"),
             ),
         ]
     )
 
-    result = build_receivable_workplace(
+    over_500 = build_receivable_workplace(
         db_session,
         snapshot_date=as_of,
-        min_debt=Decimal("500000"),
+        min_debt=Decimal("500"),
         limit=1,
     )
+    over_1000 = build_receivable_workplace(
+        db_session,
+        snapshot_date=as_of,
+        min_debt=Decimal("1000"),
+    )
 
-    assert result.total_count == 2
-    assert result.visible_count == 1
-    assert result.summary.row_count == 2
-    assert result.summary.total_receivable == Decimal("2100000.00")
-    assert [item.counterparty_ref for item in result.payload] == ["cp-large"]
+    assert over_500.total_count == 3
+    assert over_500.visible_count == 1
+    assert over_500.summary.row_count == 3
+    assert over_500.summary.total_receivable == Decimal("2500.02")
+    assert [item.counterparty_ref for item in over_500.payload] == ["cp-1000-plus"]
+    assert over_1000.total_count == 1
+    assert over_1000.summary.total_receivable == Decimal("1000.01")
+    assert [item.counterparty_ref for item in over_1000.payload] == ["cp-1000-plus"]
 
 
 def test_receivable_workplace_api_forwards_min_debt_to_service(
@@ -702,7 +716,7 @@ def test_receivable_workplace_api_forwards_min_debt_to_service(
         date_value=date(2026, 6, 23),
         department_ref="dep-1",
         status="new_debt",
-        min_debt=Decimal("500000"),
+        min_debt=Decimal("500"),
         limit=100,
         sort_by="balance",
         sort_dir="desc",
@@ -714,7 +728,7 @@ def test_receivable_workplace_api_forwards_min_debt_to_service(
     assert captured["session"] is db_session
     assert captured["department_ref"] == "dep-1"
     assert captured["status"] == "new_debt"
-    assert captured["min_debt"] == Decimal("500000")
+    assert captured["min_debt"] == Decimal("500")
     assert captured["limit"] == 100
     assert captured["sort_by"] == "balance"
     assert captured["sort_dir"] == "desc"
@@ -917,6 +931,13 @@ def test_rebuild_open_debt_cache_reports_diagnostics_and_removes_extra_rows(
     assert rows_by_ref["cp-match"].documents[0]["open_amount"] == "100.00"
     assert rows_by_ref["cp-missing"].source_status == "document_mismatch"
     assert rows_by_ref["cp-missing"].documents == []
+    cached = receivable_workplace_cache.load_cached_open_debt_documents(
+        db_session,
+        snapshot_date=as_of,
+        counterparty_refs=["cp-match", "cp-missing"],
+    )
+    assert cached.document_mismatch_counterparty_refs == frozenset({"cp-missing"})
+    assert cached.hidden_counterparty_refs == frozenset({"cp-missing"})
 
 
 def test_receivable_workplace_hides_documents_from_stale_cache(
@@ -954,17 +975,48 @@ def test_receivable_workplace_hides_documents_from_stale_cache(
     assert result.payload[0].documents == []
 
 
-def test_receivable_workplace_keeps_debt_visible_for_document_amount_mismatch(
+def test_receivable_workplace_excludes_document_mismatch_from_overdue_queue(
     db_session: Session,
 ) -> None:
-    as_of = date(2026, 7, 13)
+    as_of = date(2026, 7, 31)
+    case = _case(
+        snapshot_date=as_of,
+        balance=Decimal("11960.00"),
+        origin_date=datetime(2026, 7, 10, 12, 59, 36),
+    )
+    case.chain_documents = [
+        {
+            "event_type": "sale",
+            "document_ref": "sale-closed",
+            "document_number": "РБГУ0314426",
+            "document_date": "2026-07-10T12:59:36",
+            "amount_delta": "1390.00",
+        },
+        {
+            "event_type": "sale",
+            "document_ref": "sale-fresh-1",
+            "document_number": "РБГУ0350595",
+            "document_date": "2026-07-29T14:41:23",
+            "amount_delta": "4050.00",
+        },
+        {
+            "event_type": "sale",
+            "document_ref": "sale-fresh-2",
+            "document_number": "РБГУ0352723",
+            "document_date": "2026-07-30T15:10:30",
+            "amount_delta": "4090.00",
+        },
+        {
+            "event_type": "sale",
+            "document_ref": "sale-fresh-3",
+            "document_number": "РБГУ0352726",
+            "document_date": "2026-07-30T15:11:11",
+            "amount_delta": "3810.00",
+        },
+    ]
     db_session.add_all(
         [
-            _case(
-                snapshot_date=as_of,
-                due_date=datetime(2026, 7, 1, 12, 0),
-                overdue_days=12,
-            ),
+            case,
             ReceivableOpenDebtCache(
                 snapshot_date=as_of,
                 counterparty_ref="cp-1",
@@ -978,8 +1030,18 @@ def test_receivable_workplace_keeps_debt_visible_for_document_amount_mismatch(
     result = build_receivable_workplace(db_session, snapshot_date=as_of)
 
     assert result.source_status == "cache_ready"
-    assert result.payload[0].current_balance == Decimal("12500.00")
-    assert result.payload[0].documents == []
+    assert result.total_count == 0
+    assert result.visible_count == 0
+    assert result.summary.row_count == 0
+    assert result.summary.total_receivable == Decimal("0.00")
+    assert result.summary.total_overdue == Decimal("0.00")
+    assert result.payload == []
+    stored_case = db_session.scalar(
+        select(ReceivableCase).where(ReceivableCase.counterparty_ref == "cp-1")
+    )
+    assert stored_case is not None
+    assert stored_case.current_balance == Decimal("11960.00")
+    assert stored_case.origin_document_date == datetime(2026, 7, 10, 12, 59, 36)
 
 
 def test_receivable_workplace_current_balance_uses_cached_open_debt_documents(

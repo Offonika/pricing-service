@@ -832,6 +832,96 @@ def _mark_data_quality_issue(
     )
 
 
+def _mark_document_mismatch(
+    session: Session,
+    *,
+    item: ReceivableWorkItem | None,
+    counterparty_ref: str,
+    case: ReceivableCase,
+    as_of: date,
+    phone_by_counterparty: dict[str, str],
+    settings: Settings,
+    bitrix_client: ReceivableBitrixClient | None,
+    dry_run_bitrix: bool,
+    summary: ReceivableWorkflowSummary,
+) -> None:
+    summary.data_quality_skipped += 1
+    message = (
+        "Долг не включен в просроченную очередь: открытые документы "
+        "не совпали с текущим остатком."
+    )
+    summary.errors.append(f"{stable_key_for_counterparty(counterparty_ref)}: {message}")
+    if item is None:
+        return
+    if item.status == STATUS_CLOSED or item.closed_at is not None:
+        item.status = STATUS_CLOSED
+        item.current_balance = Decimal("0")
+        return
+
+    phone = _normalize_phone(phone_by_counterparty.get(counterparty_ref) or item.phone)
+    preserved_payload = {}
+    if isinstance(item.payload, dict):
+        preserved_payload = {
+            key: item.payload.get(key) for key in WORKPLACE_PAYLOAD_KEYS if key in item.payload
+        }
+    item.counterparty_ref = case.counterparty_ref
+    item.counterparty_name = case.counterparty_name
+    item.current_balance = case.current_balance
+    item.origin_document_ref = None
+    item.origin_document_number = None
+    item.origin_document_date = None
+    item.due_date = None
+    item.overdue_days = None
+    item.age_days = None
+    item.origin_manager_ref = None
+    item.origin_manager_name = None
+    item.current_manager_ref = case.current_manager_ref
+    item.current_manager_name = case.current_manager_name
+    item.department_ref = case.department_ref
+    item.department_name = case.department_name
+    item.phone = phone
+    item.phone_status = "present" if phone else "missing"
+    item.status = STATUS_DATA_QUALITY
+    item.needs_call_today = False
+    item.escalated_at = None
+    item.escalation_level = None
+    item.chain_documents = []
+    item.bitrix_last_error = None
+    item.payload = {
+        "snapshot_date": case.snapshot_date.isoformat(),
+        "segment": case.segment,
+        "aged_bucket": case.aged_bucket,
+        "activity_segment": case.activity_segment,
+        "payment_term_source": case.payment_term_source,
+        "shipment_ban": case.shipment_ban,
+        "data_quality_reason": "document_mismatch",
+        **preserved_payload,
+    }
+    _append_event(
+        session,
+        item=item,
+        event_type=EVENT_DATA_QUALITY,
+        comment=message,
+        payload={
+            "snapshot_date": as_of.isoformat(),
+            "counterparty_ref": counterparty_ref,
+            "current_balance": str(case.current_balance),
+            "source_status": "document_mismatch",
+        },
+        idempotency_key=f"{as_of.isoformat()}|document_mismatch",
+        summary=summary,
+    )
+    _sync_bitrix_item(
+        item=item,
+        settings=settings,
+        client=bitrix_client,
+        summary=summary,
+        dry_run_bitrix=dry_run_bitrix,
+        bitrix_documents=[],
+        create_missing=False,
+    )
+
+
 def _update_work_item_from_case(
     session: Session,
     *,
@@ -946,16 +1036,24 @@ def _workflow_candidate_groups(
     *,
     as_of: date,
     settings: Settings,
+    document_mismatch_counterparty_refs: frozenset[str] = frozenset(),
 ) -> list[tuple[str, list[ReceivableCase]]]:
     candidates: list[tuple[str, list[ReceivableCase]]] = []
     for counterparty_ref, counterparty_cases in grouped.items():
         segments = {item.segment for item in counterparty_cases}
-        if CASE_BUYERS not in segments or CASE_OVERDUE not in segments:
+        is_document_mismatch = (
+            str(counterparty_ref or "").strip().casefold() in document_mismatch_counterparty_refs
+        )
+        if CASE_BUYERS not in segments:
+            continue
+        if not is_document_mismatch and CASE_OVERDUE not in segments:
             continue
         case = _select_current_case(counterparty_cases)
         if not _case_matches_department_scope(case, settings):
             continue
-        if not _is_workflow_card_due(case, as_of=as_of):
+        if case.current_balance <= 0:
+            continue
+        if not is_document_mismatch and not _is_workflow_card_due(case, as_of=as_of):
             continue
         candidates.append((counterparty_ref, counterparty_cases))
     return sorted(
@@ -1093,12 +1191,23 @@ def sync_receivable_workflow(
     )
     allow_stale_closure = bool(cases)
     grouped = _group_cases(cases)
-    open_debt_documents_by_counterparty = load_cached_open_debt_documents(
+    open_debt_cache = load_cached_open_debt_documents(
         session,
         snapshot_date=as_of,
         counterparty_refs=list(grouped),
-    ).documents_by_counterparty
-    candidates = _workflow_candidate_groups(grouped, as_of=as_of, settings=settings)
+    )
+    open_debt_documents_by_counterparty = open_debt_cache.documents_by_counterparty
+    document_mismatch_counterparty_refs = (
+        open_debt_cache.document_mismatch_counterparty_refs
+        if open_debt_cache.source_status != "source_stale"
+        else frozenset()
+    )
+    candidates = _workflow_candidate_groups(
+        grouped,
+        as_of=as_of,
+        settings=settings,
+        document_mismatch_counterparty_refs=document_mismatch_counterparty_refs,
+    )
     if only_counterparty_refs is not None:
         ordered_refs = [str(value).strip() for value in only_counterparty_refs if value]
         candidates = []
@@ -1123,14 +1232,40 @@ def sync_receivable_workflow(
             continue
         stable_key = stable_key_for_counterparty(counterparty_ref)
         case = _select_current_case(counterparty_cases)
+        counterparty_ref_key = str(counterparty_ref or "").strip().casefold()
+        is_document_mismatch = counterparty_ref_key in document_mismatch_counterparty_refs
         if not _case_matches_department_scope(case, settings):
             continue
         if counterparty_ref not in selected_refs:
             continue
-        if only_counterparty_refs is None and not _is_workflow_card_due(case, as_of=as_of):
+        if (
+            only_counterparty_refs is None
+            and not is_document_mismatch
+            and not _is_workflow_card_due(case, as_of=as_of)
+        ):
             continue
         protected_stable_keys.add(stable_key)
         summary.processed_counterparty_refs.append(counterparty_ref)
+        if is_document_mismatch:
+            item = session.scalar(
+                select(ReceivableWorkItem).where(ReceivableWorkItem.stable_key == stable_key)
+            )
+            if item is not None and item.status != STATUS_CLOSED:
+                protected_stable_keys.add(stable_key)
+                summary.work_items_updated += 1
+            _mark_document_mismatch(
+                session,
+                item=item,
+                counterparty_ref=counterparty_ref,
+                case=case,
+                as_of=as_of,
+                phone_by_counterparty=phone_by_counterparty,
+                settings=settings,
+                bitrix_client=bitrix_client,
+                dry_run_bitrix=dry_run_bitrix,
+                summary=summary,
+            )
+            continue
         if not _is_workflow_case_eligible(case):
             item = session.scalar(
                 select(ReceivableWorkItem).where(ReceivableWorkItem.stable_key == stable_key)
@@ -1191,9 +1326,7 @@ def sync_receivable_workflow(
             client=bitrix_client,
             summary=summary,
             dry_run_bitrix=dry_run_bitrix,
-            bitrix_documents=open_debt_documents_by_counterparty.get(
-                str(counterparty_ref or "").strip().casefold()
-            ),
+            bitrix_documents=open_debt_documents_by_counterparty.get(counterparty_ref_key),
         )
         if item.bitrix_last_error:
             _append_event(

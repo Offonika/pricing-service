@@ -638,6 +638,7 @@ def _build_item(
     open_debt_documents: list[dict[str, Any]] | None = None,
     counterparty_code: str | None = None,
     hide_open_debt_documents: bool = False,
+    suppress_unverified_overdue: bool = False,
 ) -> ReceivableWorkplaceItem:
     has_open_debt_source = open_debt_documents is not None
     open_debt_documents = _sort_open_debt_documents(open_debt_documents or [])
@@ -645,7 +646,11 @@ def _build_item(
         open_debt_documents = []
     primary_open_document = open_debt_documents[0] if open_debt_documents else {}
     debt_document_date = _selected_debt_document_date(open_debt_documents)
-    if hide_open_debt_documents:
+    if suppress_unverified_overdue:
+        effective_due_date = None
+        effective_overdue_days = None
+        needs_default_credit_depth = False
+    elif hide_open_debt_documents:
         effective_due_date, needs_default_credit_depth = _effective_due_date(case)
         effective_overdue_days, _ = _effective_overdue_days(case, as_of=as_of)
     elif has_open_debt_source and not open_debt_documents:
@@ -686,10 +691,14 @@ def _build_item(
     item_payload = _payload_dict(item)
     phone = item.phone if item is not None else None
     phone_status = item.phone_status if item is not None else ("present" if phone else "missing")
-    needs_call = _needs_call_today(
-        item=item,
-        effective_overdue_days=effective_overdue_days,
-        as_of=as_of,
+    needs_call = (
+        False
+        if suppress_unverified_overdue
+        else _needs_call_today(
+            item=item,
+            effective_overdue_days=effective_overdue_days,
+            as_of=as_of,
+        )
     )
     status = item.status if item is not None else (STATUS_NO_PHONE if not phone else "new_debt")
     responsible_ref = (
@@ -1032,6 +1041,11 @@ def build_receivable_workplace(
             hide_open_debt_documents=(
                 open_debt_source_status == "source_stale"
                 or _ref_key(case.counterparty_ref) in open_debt_cache.hidden_counterparty_refs
+            ),
+            suppress_unverified_overdue=(
+                open_debt_source_status != "source_stale"
+                and _ref_key(case.counterparty_ref)
+                in open_debt_cache.document_mismatch_counterparty_refs
             ),
         )
         for case in cases

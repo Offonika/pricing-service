@@ -26,7 +26,7 @@ const RECEIVABLES_TOKEN_LEGACY_KEY = "pricing.receivables.token.v1";
 type EditState = ReceivableWorkplaceEditState;
 
 type QuickFilter = "" | "call_today" | "no_phone" | "overdue_30" | "overdue_90" | "postponed";
-type MinimumDebtFilter = "" | "500000" | "1000000";
+type MinimumDebtFilter = "" | "500" | "1000";
 type ReceivablesTab = "work" | "folders";
 
 const emptySummary: ReceivableWorkplaceSummary = {
@@ -780,8 +780,8 @@ export function ReceivablesWorkplace({
           onChange={(event) => setMinimumDebt(event.target.value as MinimumDebtFilter)}
         >
           <option value="">Любая сумма долга</option>
-          <option value="500000">Долг &gt; 500 тыс.</option>
-          <option value="1000000">Долг &gt; 1 млн</option>
+          <option value="500">Долг &gt; 500 ₽</option>
+          <option value="1000">Долг &gt; 1 000 ₽</option>
         </select>
         <select
           className="app__select"

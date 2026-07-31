@@ -1,5 +1,5 @@
 import "@testing-library/jest-dom/vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReceivableWorkplaceItem, ReceivableWorkplaceResponse } from "../api/receivables";
 import {
@@ -104,5 +104,48 @@ describe("ReceivablesWorkplace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Комментарий тест" }));
 
     expect(screen.getByRole("button", { name: "Сохранить комментарий" })).toBeVisible();
+  });
+
+  it("passes 500 and 1000 ruble debt filters with the other server filters", async () => {
+    render(<ReceivablesWorkplace bitrixMode />);
+
+    expect(await screen.findByText("Клиент Тест")).toBeVisible();
+    fireEvent.change(screen.getByDisplayValue("Все подразделения"), {
+      target: { value: "department-1" },
+    });
+    fireEvent.change(screen.getByDisplayValue("Все статусы"), {
+      target: { value: "waiting_payment" },
+    });
+    fireEvent.change(screen.getByDisplayValue("Любая сумма долга"), {
+      target: { value: "500" },
+    });
+    fireEvent.change(screen.getByDisplayValue("По сумме"), {
+      target: { value: "overdue_days" },
+    });
+    fireEvent.change(screen.getByDisplayValue("По убыванию"), {
+      target: { value: "asc" },
+    });
+
+    await waitFor(() =>
+      expect(fetchReceivableWorkplace).toHaveBeenLastCalledWith({
+        date: "2026-07-23",
+        department_ref: "department-1",
+        min_debt: 500,
+        sort_by: "overdue_days",
+        sort_dir: "asc",
+        status: "waiting_payment",
+      }),
+    );
+
+    fireEvent.change(screen.getByDisplayValue("Долг > 500 ₽"), {
+      target: { value: "1000" },
+    });
+
+    await waitFor(() =>
+      expect(fetchReceivableWorkplace).toHaveBeenLastCalledWith(
+        expect.objectContaining({ min_debt: 1000 }),
+      ),
+    );
+    expect(screen.getByDisplayValue("Долг > 1 000 ₽")).toBeVisible();
   });
 });

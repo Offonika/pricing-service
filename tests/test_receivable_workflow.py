@@ -506,6 +506,207 @@ def test_bitrix_sync_does_not_fall_back_when_open_debt_cache_row_is_empty(
     assert bitrix.added[0]["fields"]["UF_CRM_RECEIVABLE_CHAIN_DOCUMENTS"] == ""
 
 
+def test_bitrix_sync_does_not_create_card_for_document_mismatch(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 7, 31)
+    db_session.add_all(
+        [
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_BUYERS,
+                balance=Decimal("11960.00"),
+                origin_date=datetime(2026, 7, 10, 12, 59, 36),
+                due_date=datetime(2026, 7, 17),
+                overdue_days=14,
+            ),
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_OVERDUE,
+                balance=Decimal("11960.00"),
+                origin_date=datetime(2026, 7, 10, 12, 59, 36),
+                due_date=datetime(2026, 7, 17),
+                overdue_days=14,
+            ),
+            ReceivableOpenDebtCache(
+                snapshot_date=as_of,
+                counterparty_ref="cp-a",
+                department_ref="dep-1",
+                source_status="document_mismatch",
+                documents=[],
+            ),
+        ]
+    )
+    bitrix = FakeBitrixClient()
+
+    summary = sync_receivable_workflow(
+        db_session,
+        as_of=as_of,
+        settings=_settings(),
+        bitrix_client=bitrix,
+        sync_sms=False,
+    )
+
+    assert summary.data_quality_skipped == 1
+    assert summary.work_items_created == 0
+    assert bitrix.added == []
+    assert bitrix.updated == []
+    assert db_session.scalars(select(ReceivableWorkItem)).all() == []
+
+
+def test_bitrix_sync_quarantines_existing_card_for_document_mismatch(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 7, 31)
+    item = ReceivableWorkItem(
+        stable_key=stable_key_for_counterparty("cp-a"),
+        counterparty_ref="cp-a",
+        counterparty_name="Ромашка ООО",
+        status=STATUS_CALLING,
+        current_balance=Decimal("11960.00"),
+        origin_document_ref="sale-closed",
+        origin_document_number="РБГУ0314426",
+        origin_document_date=datetime(2026, 7, 10, 12, 59, 36),
+        due_date=datetime(2026, 7, 17),
+        overdue_days=14,
+        age_days=21,
+        needs_call_today=True,
+        escalation_level="retail_network_head",
+        escalated_at=datetime(2026, 7, 31, 8, 0),
+        chain_documents=[{"document_number": "РБГУ0314426"}],
+        bitrix_item_id=77,
+    )
+    db_session.add_all(
+        [
+            item,
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_BUYERS,
+                balance=Decimal("11960.00"),
+                origin_date=datetime(2026, 7, 10, 12, 59, 36),
+                due_date=datetime(2026, 7, 17),
+                overdue_days=14,
+            ),
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_OVERDUE,
+                balance=Decimal("11960.00"),
+                origin_date=datetime(2026, 7, 10, 12, 59, 36),
+                due_date=datetime(2026, 7, 17),
+                overdue_days=14,
+            ),
+            ReceivableOpenDebtCache(
+                snapshot_date=as_of,
+                counterparty_ref="cp-a",
+                department_ref="dep-1",
+                source_status="document_mismatch",
+                documents=[],
+            ),
+        ]
+    )
+    bitrix = FakeBitrixClient()
+    settings = _settings(
+        receivable_bitrix_field_map={
+            **_settings().receivable_bitrix_field_map,
+            "origin_document_number": "UF_CRM_RECEIVABLE_ORIGIN_DOCUMENT_NUMBER",
+            "origin_document_date": "UF_CRM_RECEIVABLE_ORIGIN_DOCUMENT_DATE",
+            "due_date": "UF_CRM_RECEIVABLE_DUE_DATE",
+            "overdue_days": "UF_CRM_RECEIVABLE_OVERDUE_DAYS",
+            "needs_call_today": "UF_CRM_RECEIVABLE_NEEDS_CALL_TODAY",
+            "chain_documents": "UF_CRM_RECEIVABLE_CHAIN_DOCUMENTS",
+            "status": "UF_CRM_RECEIVABLE_STATUS",
+        },
+        receivable_bitrix_stage_map={
+            **_settings().receivable_bitrix_stage_map,
+            STATUS_DATA_QUALITY: "DT187_1:DATA_QUALITY",
+        },
+    )
+
+    first = sync_receivable_workflow(
+        db_session,
+        as_of=as_of,
+        phone_by_counterparty={"cp-a": "+79990000000"},
+        settings=settings,
+        bitrix_client=bitrix,
+        sync_sms=False,
+    )
+    second = sync_receivable_workflow(
+        db_session,
+        as_of=as_of,
+        phone_by_counterparty={"cp-a": "+79990000000"},
+        settings=settings,
+        bitrix_client=bitrix,
+        sync_sms=False,
+    )
+
+    assert first.data_quality_skipped == 1
+    assert first.work_items_updated == 1
+    assert first.bitrix_updated == 1
+    assert second.data_quality_skipped == 1
+    assert item.status == STATUS_DATA_QUALITY
+    assert item.current_balance == Decimal("11960.00")
+    assert item.origin_document_ref is None
+    assert item.origin_document_number is None
+    assert item.origin_document_date is None
+    assert item.due_date is None
+    assert item.overdue_days is None
+    assert item.age_days is None
+    assert item.needs_call_today is False
+    assert item.escalation_level is None
+    assert item.escalated_at is None
+    assert item.chain_documents == []
+    assert item.closed_at is None
+    assert item.payload is not None
+    assert item.payload["data_quality_reason"] == "document_mismatch"
+    events = db_session.scalars(select(ReceivableWorkEvent)).all()
+    assert len(events) == 1
+    assert events[0].event_type == EVENT_DATA_QUALITY
+    assert len(bitrix.updated) == 2
+    fields = bitrix.updated[-1][1]["fields"]
+    assert fields["UF_CRM_RECEIVABLE_ORIGIN_DOCUMENT_NUMBER"] is None
+    assert fields["UF_CRM_RECEIVABLE_ORIGIN_DOCUMENT_DATE"] is None
+    assert fields["UF_CRM_RECEIVABLE_DUE_DATE"] is None
+    assert fields["UF_CRM_RECEIVABLE_OVERDUE_DAYS"] is None
+    assert fields["UF_CRM_RECEIVABLE_NEEDS_CALL_TODAY"] is False
+    assert fields["UF_CRM_RECEIVABLE_CHAIN_DOCUMENTS"] == ""
+    assert fields["UF_CRM_RECEIVABLE_STATUS"] == STATUS_DATA_QUALITY
+    assert fields["stageId"] == "DT187_1:DATA_QUALITY"
+    assert bitrix.added == []
+
+    cache_row = db_session.scalar(
+        select(ReceivableOpenDebtCache).where(
+            ReceivableOpenDebtCache.counterparty_ref == "cp-a"
+        )
+    )
+    assert cache_row is not None
+    cache_row.source_status = "ready"
+    cache_row.documents = [
+        {
+            "document_ref": "sale-fresh",
+            "document_number": "РБГУ0350595",
+            "document_date": "2026-07-29T14:41:23",
+            "open_amount": "11960.00",
+        }
+    ]
+
+    recovered = sync_receivable_workflow(
+        db_session,
+        as_of=as_of,
+        phone_by_counterparty={"cp-a": "+79990000000"},
+        settings=settings,
+        bitrix_client=bitrix,
+        sync_sms=False,
+    )
+
+    assert recovered.work_items_updated == 1
+    assert item.status == STATUS_CALLING
+    assert item.due_date == datetime(2026, 7, 17)
+    assert item.overdue_days == 14
+    assert item.needs_call_today is True
+    recovered_events = db_session.scalars(select(ReceivableWorkEvent)).all()
+    assert sum(event.event_type == EVENT_DATA_QUALITY for event in recovered_events) == 1
+
+
 def test_existing_bitrix_item_is_reused_by_stable_key(db_session: Session) -> None:
     as_of = date(2026, 3, 21)
     db_session.add_all(

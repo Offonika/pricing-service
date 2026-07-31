@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from urllib.parse import urlparse
 
-import requests
+import httpx
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -53,7 +53,7 @@ def _candidate_dates(limit: int, today: date | None = None) -> list[date]:
     return [current - timedelta(days=offset) for offset in range(max(0, limit))]
 
 
-def _response_mtime(response: requests.Response) -> datetime | None:
+def _response_mtime(response: httpx.Response) -> datetime | None:
     value = response.headers.get("Last-Modified")
     if not value:
         return None
@@ -86,7 +86,7 @@ def run_competitor_http_import(session: Session | None = None) -> dict:
                 url = source.url_pattern.format(date=date_text)
                 filename = urlparse(url).path.rsplit("/", 1)[-1]
                 try:
-                    response = requests.get(
+                    response = httpx.get(
                         url,
                         timeout=settings.competitor_http_timeout_sec,
                     )
@@ -109,7 +109,7 @@ def run_competitor_http_import(session: Session | None = None) -> dict:
                     rows_total += stats["rows_total"]
                     rows_valid += stats["rows_valid"]
                     rows_invalid += stats["rows_invalid"]
-                except (requests.RequestException, CompetitorFtpImportError) as exc:
+                except (httpx.HTTPError, CompetitorFtpImportError) as exc:
                     session.rollback()
                     errors += 1
                     entry["files"].append({"file": filename, "error": str(exc)})

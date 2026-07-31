@@ -57,6 +57,7 @@ from app.services.bitrix_customer_price_types_auth import (
     load_bitrix_headed_departments,
     resolve_customer_price_type_access,
     resolve_customer_price_type_department_refs,
+    resolve_customer_price_type_manager_owner_ref,
     verify_customer_price_type_session,
 )
 from app.services.customer_price_types import (
@@ -128,11 +129,16 @@ def create_customer_price_type_session(
         db,
         department_names={item.name for item in headed_departments},
     )
+    manager_owner_ref = resolve_customer_price_type_manager_owner_ref(
+        db,
+        bitrix_user_id=user.user_id,
+    )
     access = resolve_customer_price_type_access(
         bitrix_user_id=user.user_id,
         department_ids=user.department_ids,
         headed_department_ids=tuple(item.department_id for item in headed_departments),
         headed_department_refs=headed_refs,
+        manager_owner_ref=manager_owner_ref,
         settings=settings,
     )
     token, expires_at_ts = create_customer_price_type_session_token(

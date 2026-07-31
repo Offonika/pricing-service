@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 from fastapi import HTTPException
 from fastapi.testclient import TestClient
@@ -10,7 +12,7 @@ import app.api.customer_price_types as cpt_api
 from app.core.config import get_settings
 from app.domains.customer_price_types import CustomerPriceTypeAccessScope
 from app.main import app
-from app.models import Base
+from app.models import Base, CustomerPriceTypeProfile, TelephonyUserLineSnapshot
 from app.models.staff_member import StaffMember
 from app.services import bitrix_customer_price_types_auth as auth
 
@@ -174,6 +176,94 @@ def test_resolve_finance_by_department():
     assert scope.can_view_money is True
 
 
+def test_resolve_manager_by_current_onec_owner_ref():
+    settings = _settings()
+    scope = auth.resolve_customer_price_type_access(
+        bitrix_user_id="77",
+        manager_owner_ref="0xABC",
+        settings=settings,
+    )
+    assert scope.role == "manager"
+    assert scope.owner_ref == "0xabc"
+    assert scope.can_view_money is False
+
+
+def test_existing_telephony_mapping_resolves_manager_owner_ref():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine) as session:
+            session.add(
+                CustomerPriceTypeProfile(
+                    counterparty_ref="0xcustomer",
+                    counterparty_code="C-1",
+                    owner_ref="0xabc",
+                )
+            )
+            session.add_all(
+                [
+                    TelephonyUserLineSnapshot(
+                        snapshot_date=date(2026, 7, 30),
+                        mapping_source="test",
+                        user_ref_hex="0xold",
+                        user_name="Менеджер",
+                        bitrix_user_id="77",
+                        is_marked=False,
+                        has_extension=False,
+                        has_bitrix=True,
+                    ),
+                    TelephonyUserLineSnapshot(
+                        snapshot_date=date(2026, 7, 31),
+                        mapping_source="test",
+                        user_ref_hex="0xABC",
+                        user_name="Менеджер",
+                        bitrix_user_id="77",
+                        is_marked=False,
+                        has_extension=False,
+                        has_bitrix=True,
+                    ),
+                ]
+            )
+            session.commit()
+            owner_ref = auth.resolve_customer_price_type_manager_owner_ref(
+                session,
+                bitrix_user_id="77",
+            )
+        assert owner_ref == "0xabc"
+    finally:
+        engine.dispose()
+
+
+def test_ambiguous_telephony_mapping_does_not_grant_manager_scope():
+    engine = create_engine("sqlite://")
+    Base.metadata.create_all(engine)
+    try:
+        with Session(engine) as session:
+            session.add_all(
+                [
+                    TelephonyUserLineSnapshot(
+                        snapshot_date=date(2026, 7, 31),
+                        mapping_source="test",
+                        user_ref_hex=owner_ref,
+                        user_name="Неоднозначный пользователь",
+                        bitrix_user_id="77",
+                        is_marked=False,
+                        has_extension=False,
+                        has_bitrix=True,
+                    )
+                    for owner_ref in ("0xABC", "0xDEF")
+                ]
+            )
+            session.commit()
+            owner_ref = auth.resolve_customer_price_type_manager_owner_ref(
+                session,
+                bitrix_user_id="77",
+            )
+        assert owner_ref is None
+    finally:
+        engine.dispose()
+
+
 def test_resolve_department_head_by_headship():
     rules = '{"roles":[{"role":"department_head","head_department_refs":{"7":["0xDEAD"]}}]}'
     settings = _settings(customer_price_type_access_rules_json=rules)
@@ -287,6 +377,11 @@ def test_session_endpoint_issues_valid_token(monkeypatch):
         "resolve_customer_price_type_department_refs",
         lambda *_args, **_kwargs: (),
     )
+    monkeypatch.setattr(
+        cpt_api,
+        "resolve_customer_price_type_manager_owner_ref",
+        lambda *_args, **_kwargs: None,
+    )
     client = TestClient(app)
     response = client.post(
         "/api/customer-price-types/session",
@@ -299,3 +394,36 @@ def test_session_endpoint_issues_valid_token(monkeypatch):
     assert body["token_type"] == "Bearer"
     scope = auth.verify_customer_price_type_session_token(body["session_token"], settings=settings)
     assert scope.role == "network_head"
+
+
+def test_session_endpoint_issues_manager_scope_from_onec_owner(monkeypatch):
+    settings = _settings()
+    monkeypatch.setattr(cpt_api, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        cpt_api,
+        "load_bitrix_current_user",
+        lambda **_: auth.BitrixUser(user_id="77", name="Менеджер", department_ids=("99",)),
+    )
+    monkeypatch.setattr(cpt_api, "load_bitrix_headed_departments", lambda **_: ())
+    monkeypatch.setattr(
+        cpt_api,
+        "resolve_customer_price_type_department_refs",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        cpt_api,
+        "resolve_customer_price_type_manager_owner_ref",
+        lambda *_args, **_kwargs: "0xabc",
+    )
+    client = TestClient(app)
+    response = client.post(
+        "/api/customer-price-types/session",
+        json={"access_token": "abc", "domain": "portal.bitrix24.ru", "member_id": "member-1"},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["user"]["role"] == "manager"
+    assert body["user"]["can_view_money"] is False
+    scope = auth.verify_customer_price_type_session_token(body["session_token"], settings=settings)
+    assert scope.role == "manager"
+    assert scope.owner_ref == "0xabc"

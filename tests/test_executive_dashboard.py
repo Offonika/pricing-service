@@ -579,6 +579,7 @@ def _role_rules() -> str:
                 {"role": "receivables", "bitrix_user_ids": ["202"]},
                 {"role": "finance", "bitrix_user_ids": ["203"]},
                 {"role": "warehouse", "bitrix_user_ids": ["206"]},
+                {"role": "infrastructure", "bitrix_user_ids": ["207"]},
                 {"role": "personal", "bitrix_user_ids": ["204"]},
                 {"role": "procurement", "bitrix_user_ids": ["205"]},
                 {"role": "receivables", "bitrix_user_ids": ["205"]},
@@ -635,6 +636,14 @@ def test_access_policy_matrix_resolves_roles_and_blocks(tmp_path: Path) -> None:
     assert warehouse.allowed_blocks == ("warehouse_operations",)
     assert warehouse.allowed_action_domains == ("warehouse_operations",)
     assert warehouse.money_blocks == ()
+
+    infrastructure = bitrix_executive_dashboard_auth.resolve_executive_dashboard_access(
+        bitrix_user_id="207",
+        settings=settings,
+    )
+    assert infrastructure.allowed_blocks == ("infrastructure",)
+    assert infrastructure.allowed_action_domains == ()
+    assert infrastructure.money_blocks == ()
 
     personal = bitrix_executive_dashboard_auth.resolve_executive_dashboard_access(
         bitrix_user_id="204",

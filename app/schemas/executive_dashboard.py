@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 ExecutiveAccessLevel = Literal["full", "domain"]
 ExecutiveManagementBalanceView = Literal["closed", "operational"]
@@ -81,6 +81,247 @@ class ExecutiveDashboardActionsResponse(BaseModel):
     source_status: str
     total_count: int
     payload: list[ExecutiveDashboardAction]
+
+
+ExecutiveInstrumentLifecycle = Literal[
+    "planned",
+    "procurement",
+    "inventory_pending",
+    "active",
+    "draining",
+    "decommissioned",
+    "unknown",
+]
+ExecutiveInstrumentHealth = Literal[
+    "ready",
+    "warning",
+    "critical",
+    "not_monitored",
+    "maintenance",
+    "decommissioned",
+]
+ExecutiveInstrumentConnectivity = Literal[
+    "online",
+    "offline",
+    "channel_unavailable",
+    "not_monitored",
+    "maintenance",
+    "not_applicable",
+]
+ExecutiveInstrumentComponentStatus = Literal[
+    "ready",
+    "warning",
+    "critical",
+    "not_monitored",
+    "not_configured",
+    "running",
+    "stopped",
+    "degraded",
+    "unknown",
+]
+ExecutiveInstrumentSourceStatus = Literal[
+    "ready", "partial", "stale", "source_missing", "source_error"
+]
+ExecutiveInstrumentFreshnessStatus = Literal["fresh", "stale", "missing", "error"]
+
+
+class ExecutiveInstrumentStrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ExecutiveInstrumentMetrics(ExecutiveInstrumentStrictModel):
+    cpu_used_pct: float | None = Field(default=None, ge=0, le=100)
+    memory_used_pct: float | None = Field(default=None, ge=0, le=100)
+    disk_free_pct: float | None = Field(default=None, ge=0, le=100)
+    disk_free_gib: float | None = Field(default=None, ge=0)
+    latency_ms: int | None = Field(default=None, ge=0)
+    vcpu: int | None = Field(default=None, ge=0)
+    uptime_seconds: int | None = Field(default=None, ge=0)
+
+
+class ExecutiveInstrumentService(ExecutiveInstrumentStrictModel):
+    service_key: str
+    name: str
+    component_kind: Literal[
+        "windows",
+        "sql_server",
+        "sql_agent",
+        "onec_cluster",
+        "onec_database",
+        "onec_publication",
+        "integration",
+        "disk",
+        "service",
+    ] = "service"
+    status: ExecutiveInstrumentComponentStatus
+    criticality: Literal["critical", "standard"] = "standard"
+    last_verified_at: date | datetime | None = None
+    last_success_at: date | datetime | None = None
+    source_project: str | None = None
+
+
+class ExecutiveInstrumentBackup(ExecutiveInstrumentStrictModel):
+    status: Literal["ready", "warning", "critical", "not_configured"] = "not_configured"
+    protected_datastores: int = Field(default=0, ge=0)
+    unprotected_datastores: int = Field(default=0, ge=0)
+    rpo_minutes: int | None = Field(default=None, ge=1)
+    lag_minutes: int | None = Field(default=None, ge=0)
+    last_backup_at: date | datetime | None = None
+    last_full_backup_at: date | datetime | None = None
+    last_differential_backup_at: date | datetime | None = None
+    last_log_backup_at: date | datetime | None = None
+    last_restore_test_at: date | datetime | None = None
+    off_host_verified: bool = False
+    readback_verified: bool = False
+
+
+class ExecutiveInstrumentIntegration(ExecutiveInstrumentStrictModel):
+    status: ExecutiveInstrumentComponentStatus = "not_configured"
+    count: int = Field(default=0, ge=0)
+    last_success_at: date | datetime | None = None
+
+
+class ExecutiveInstrumentAccess(ExecutiveInstrumentStrictModel):
+    status: Literal["ready", "warning", "not_configured"] = "not_configured"
+    active_grants: int = Field(default=0, ge=0)
+    pending_grants: int = Field(default=0, ge=0)
+    review_required_grants: int = Field(default=0, ge=0)
+    mfa_review_count: int = Field(default=0, ge=0)
+    unowned_credentials: int = Field(default=0, ge=0)
+    attention_grant_count: int = Field(default=0, ge=0)
+    next_review_at: date | None = None
+
+
+class ExecutiveInstrumentDevice(ExecutiveInstrumentStrictModel):
+    device_key: str
+    name: str
+    kind: str
+    lifecycle_status: ExecutiveInstrumentLifecycle
+    health_status: ExecutiveInstrumentHealth
+    connectivity_status: ExecutiveInstrumentConnectivity
+    criticality: Literal["critical", "standard"] = "standard"
+    location: str
+    purpose: list[str] = Field(default_factory=list)
+    technical_owner_ids: list[str] = Field(default_factory=list)
+    technical_owners: list[str] = Field(default_factory=list)
+    business_owner: str | None = None
+    last_attempted_at: datetime | None = None
+    last_success_at: datetime | None = None
+    incident_started_at: datetime | None = None
+    outage_duration_seconds: int | None = Field(default=None, ge=0)
+    availability_24h_pct: float | None = Field(default=None, ge=0, le=100)
+    availability_30d_pct: float | None = Field(default=None, ge=0, le=100)
+    monitoring_coverage_24h_pct: float | None = Field(default=None, ge=0, le=100)
+    monitoring_coverage_30d_pct: float | None = Field(default=None, ge=0, le=100)
+    metrics: ExecutiveInstrumentMetrics = Field(default_factory=ExecutiveInstrumentMetrics)
+    services: list[ExecutiveInstrumentService] = Field(default_factory=list)
+    backup: ExecutiveInstrumentBackup = Field(default_factory=ExecutiveInstrumentBackup)
+    integrations: ExecutiveInstrumentIntegration = Field(
+        default_factory=ExecutiveInstrumentIntegration
+    )
+    access: ExecutiveInstrumentAccess = Field(default_factory=ExecutiveInstrumentAccess)
+    issue: str | None = None
+    recommended_action: str | None = None
+
+
+class ExecutiveInstrumentsSummary(ExecutiveInstrumentStrictModel):
+    total_count: int = Field(default=0, ge=0)
+    online_count: int = Field(default=0, ge=0)
+    critical_count: int = Field(default=0, ge=0)
+    warning_count: int = Field(default=0, ge=0)
+    not_monitored_count: int = Field(default=0, ge=0)
+    backup_gap_count: int = Field(default=0, ge=0)
+    access_review_count: int = Field(default=0, ge=0)
+    monitoring_coverage_24h_pct: float | None = Field(default=None, ge=0, le=100)
+
+
+class ExecutiveInstrumentCapabilities(ExecutiveInstrumentStrictModel):
+    access_governance: Literal["read_only"] = "read_only"
+    access_mutations: Literal[False] = False
+    network_scanning: Literal[False] = False
+
+
+class ExecutiveInstrumentsResponse(ExecutiveInstrumentStrictModel):
+    schema_version: Literal[2] = 2
+    generated_at: datetime
+    source_status: ExecutiveInstrumentSourceStatus
+    freshness_status: ExecutiveInstrumentFreshnessStatus
+    summary: ExecutiveInstrumentsSummary = Field(default_factory=ExecutiveInstrumentsSummary)
+    devices: list[ExecutiveInstrumentDevice] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    capabilities: ExecutiveInstrumentCapabilities = Field(
+        default_factory=ExecutiveInstrumentCapabilities
+    )
+    note: str | None = None
+
+    @model_validator(mode="after")
+    def validate_device_grain_and_summary(self) -> ExecutiveInstrumentsResponse:
+        device_keys = [device.device_key for device in self.devices]
+        if len(device_keys) != len(set(device_keys)):
+            raise ValueError("duplicate device_key in infrastructure snapshot")
+        expected = {
+            "total_count": len(self.devices),
+            "online_count": sum(device.connectivity_status == "online" for device in self.devices),
+            "critical_count": sum(device.health_status == "critical" for device in self.devices),
+            "warning_count": sum(device.health_status == "warning" for device in self.devices),
+            "not_monitored_count": sum(
+                device.health_status == "not_monitored" for device in self.devices
+            ),
+            "backup_gap_count": sum(
+                device.backup.status in {"warning", "critical"} for device in self.devices
+            ),
+            "access_review_count": sum(
+                device.access.status == "warning" for device in self.devices
+            ),
+        }
+        for field_name, expected_value in expected.items():
+            if getattr(self.summary, field_name) != expected_value:
+                raise ValueError(f"infrastructure summary mismatch: {field_name}")
+        coverage_values = [
+            device.monitoring_coverage_24h_pct
+            for device in self.devices
+            if device.monitoring_coverage_24h_pct is not None
+            and device.health_status not in {"maintenance", "decommissioned"}
+        ]
+        expected_coverage = (
+            round(sum(coverage_values) / len(coverage_values), 1) if coverage_values else None
+        )
+        if self.summary.monitoring_coverage_24h_pct != expected_coverage:
+            raise ValueError("infrastructure summary mismatch: monitoring coverage")
+
+        generated_at = self.generated_at
+        if generated_at.tzinfo is None:
+            generated_at = generated_at.replace(tzinfo=UTC)
+        latest_allowed = generated_at.astimezone(UTC) + timedelta(minutes=5)
+
+        def observed_at(value: date | datetime | None) -> datetime | None:
+            if value is None:
+                return None
+            if isinstance(value, datetime):
+                return value.replace(tzinfo=value.tzinfo or UTC).astimezone(UTC)
+            return datetime.combine(value, time.min, UTC)
+
+        for device in self.devices:
+            timestamps: list[date | datetime | None] = [
+                device.last_attempted_at,
+                device.last_success_at,
+                device.incident_started_at,
+                device.backup.last_backup_at,
+                device.backup.last_full_backup_at,
+                device.backup.last_differential_backup_at,
+                device.backup.last_log_backup_at,
+                device.backup.last_restore_test_at,
+                device.integrations.last_success_at,
+            ]
+            for service in device.services:
+                timestamps.extend([service.last_verified_at, service.last_success_at])
+            if any(
+                timestamp is not None and timestamp > latest_allowed
+                for value in timestamps
+                if (timestamp := observed_at(value)) is not None
+            ):
+                raise ValueError("future observation timestamp in infrastructure snapshot")
+        return self
 
 
 class ExecutiveManagementBalanceLineItem(BaseModel):

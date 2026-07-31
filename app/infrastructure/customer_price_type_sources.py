@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
@@ -130,6 +130,43 @@ _DIRECT_MONTHLY_SQL = text("""
         first_activity.first_activity_at
     """)
 
+_CONTRACT_ACTIVITY_SQL = text("""
+    WITH target_organization AS (
+        SELECT _IDRRef FROM _Reference66 WITH (NOLOCK)
+        WHERE _Description = N'MASTER MOBILE'
+    ),
+    sale_documents AS (
+        SELECT
+            r._Fld7559RRef AS counterparty_ref,
+            r._Fld7554RRef AS contract_ref,
+            r._RecorderRRef AS document_ref,
+            MAX(r._Period) AS last_sale_at,
+            SUM(CAST(r._Fld7562 AS decimal(18, 2))) AS sales_amount
+        FROM _AccumRg7550 AS r WITH (NOLOCK)
+        JOIN _Reference37 AS contract WITH (NOLOCK)
+          ON contract._IDRRef = r._Fld7554RRef
+        WHERE r._RecorderTRef = 0x000000CB
+          AND r._Active = 0x01
+          AND r._Fld7559RRef <> 0x00000000000000000000000000000000
+          AND r._Fld7558RRef IN (SELECT _IDRRef FROM target_organization)
+          AND master.dbo.fn_varbintohexstr(contract._Fld515RRef) = :contract_kind_ref
+          AND r._Period >= :period_start
+          AND r._Period < :period_end
+        GROUP BY
+            r._Fld7559RRef,
+            r._Fld7554RRef,
+            r._RecorderRRef
+    )
+    SELECT
+        master.dbo.fn_varbintohexstr(counterparty_ref) AS counterparty_ref,
+        master.dbo.fn_varbintohexstr(contract_ref) AS contract_ref,
+        COUNT_BIG(*) AS sale_document_count_12m,
+        SUM(sales_amount) AS sales_amount_12m,
+        MAX(last_sale_at) AS last_sale_at
+    FROM sale_documents
+    GROUP BY counterparty_ref, contract_ref
+    """)
+
 
 def _add_months(value: date, months: int) -> date:
     total = value.year * 12 + value.month - 1 + months
@@ -173,6 +210,7 @@ class CustomerPriceTypeBulkSource:
         period_end = _add_months(snapshot_month, 1)
         contracts = self._contracts()
         direct, first_activity = self._direct_monthly(period_start, period_end)
+        contract_activity = self._contract_activity(period_start, period_end)
         ledger, owners = self._ledger_monthly(period_start, period_end)
         loaded_enrichments = (
             self.enrichment_loader(snapshot_month, tuple(sorted(contracts)))
@@ -216,14 +254,45 @@ class CustomerPriceTypeBulkSource:
             payments_payload = dict(payments_by_ref.get(ref, {}))
             returns_payload = dict(returns_by_ref.get(ref, {}))
             first_activity_date = first_activity.get(ref)
+            enriched_contracts = tuple(
+                replace(
+                    contract,
+                    sale_document_count_12m=int(
+                        contract_activity.get(str(contract.contract_ref or "").lower(), {}).get(
+                            "sale_document_count_12m", 0
+                        )
+                    ),
+                    sales_amount_12m=Decimal(
+                        str(
+                            contract_activity.get(str(contract.contract_ref or "").lower(), {}).get(
+                                "sales_amount_12m", 0
+                            )
+                        )
+                    ),
+                    last_sale_at=contract_activity.get(
+                        str(contract.contract_ref or "").lower(), {}
+                    ).get("last_sale_at"),
+                    is_working=int(
+                        contract_activity.get(str(contract.contract_ref or "").lower(), {}).get(
+                            "sale_document_count_12m", 0
+                        )
+                    )
+                    > 0,
+                )
+                for contract in item["contracts"]
+            )
             master_data_flags = []
             if not department[0]:
                 master_data_flags.append("missing_department")
             if not owner[0]:
                 master_data_flags.append("missing_owner")
+            working_contracts = tuple(
+                contract for contract in enriched_contracts if contract.is_working
+            )
+            price_type_contracts = working_contracts or enriched_contracts
             contract_is_key_account = any(
                 str(contract.price_type_name or "").strip().casefold().startswith(prefix.casefold())
-                for contract in item["contracts"]
+                for contract in price_type_contracts
                 for prefix in self.key_account_price_type_prefixes
             )
             result.append(
@@ -232,7 +301,7 @@ class CustomerPriceTypeBulkSource:
                     counterparty_code=item["counterparty_code"],
                     counterparty_name=item["counterparty_name"],
                     snapshot_month=snapshot_month,
-                    contracts=tuple(item["contracts"]),
+                    contracts=enriched_contracts,
                     monthly_sales=dict(direct_months),
                     source_statuses={
                         "contracts": "ready",
@@ -270,6 +339,33 @@ class CustomerPriceTypeBulkSource:
                     master_data_flags=tuple(sorted(master_data_flags)),
                 )
             )
+        return result
+
+    def _contract_activity(self, period_start: date, period_end: date) -> dict[str, dict[str, Any]]:
+        result: dict[str, dict[str, Any]] = {}
+        with self.onec_engine.connect() as connection:
+            rows = connection.execute(
+                _CONTRACT_ACTIVITY_SQL,
+                {
+                    "contract_kind_ref": self.contract_kind_ref,
+                    "period_start": datetime.combine(period_start, datetime.min.time()),
+                    "period_end": datetime.combine(period_end, datetime.min.time()),
+                },
+            ).mappings()
+            for row in rows:
+                contract_ref = str(row.get("contract_ref") or "").strip().lower()
+                if not contract_ref:
+                    continue
+                last_sale_at = row.get("last_sale_at")
+                result[contract_ref] = {
+                    "counterparty_ref": str(row.get("counterparty_ref") or "").strip().lower()
+                    or None,
+                    "sale_document_count_12m": int(row.get("sale_document_count_12m") or 0),
+                    "sales_amount_12m": Decimal(str(row.get("sales_amount_12m") or 0)),
+                    "last_sale_at": (
+                        last_sale_at.date() if isinstance(last_sale_at, datetime) else last_sale_at
+                    ),
+                }
         return result
 
     def _contracts(self) -> dict[str, dict[str, Any]]:

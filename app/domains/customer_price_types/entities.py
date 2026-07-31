@@ -40,13 +40,16 @@ class RegistryOverride:
 class PriceTypeRuleset:
     version: str
     effective_date: date
+    buyers_root_group_ref: str
+    contract_kind_ref: str
     retail_prefixes: tuple[str, ...]
     key_account_prefixes: tuple[str, ...]
     variants: tuple[str, ...]
     levels: tuple[LevelRule, ...]
     upgrades_frozen: bool
     zero_months_to_recovery: int
-    dead_after_months: int
+    history_window_months: int
+    working_contract_min_sale_documents: int
     mismatch_max_pct: Decimal
     exclude_without_sales_history: bool
     excluded_registry_classes: frozenset[str]
@@ -67,6 +70,10 @@ class ContractFact:
     price_type_name: str | None
     price_type_marked: bool = False
     price_type_missing: bool = False
+    sale_document_count_12m: int = 0
+    sales_amount_12m: Decimal = Decimal("0")
+    last_sale_at: date | None = None
+    is_working: bool = False
 
 
 @dataclass(frozen=True, slots=True)

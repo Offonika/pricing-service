@@ -22,6 +22,8 @@ from app.models.customer_price_type import (
     CustomerPriceTypeCaseEvent,
     CustomerPriceTypeProfile,
     CustomerPriceTypeQualitySample,
+    CustomerPriceTypeReviewBatch,
+    CustomerPriceTypeReviewBatchItem,
     CustomerPriceTypeRun,
     CustomerPriceTypeSnapshot,
 )
@@ -35,6 +37,16 @@ QUALITY_GROUPS = (
     "special_review",
     "downgrade_approval",
     "no_action",
+)
+_BUSINESS_CONFLICT_REASONS = {
+    "conflicting_price_levels",
+    "conflicting_price_type_variants",
+}
+_REVIEW_REQUIRED_SOURCES = (
+    "contracts",
+    "sales_history",
+    "ledger_reconciliation",
+    "master_data",
 )
 
 
@@ -55,6 +67,49 @@ def _money_map(values: dict[str, Decimal]) -> dict[str, str]:
 
 def _utcnow() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+def _actionable_case_predicate() -> Any:
+    return func.coalesce(
+        or_(
+            CustomerPriceTypeSnapshot.action_required.is_(True),
+            CustomerPriceTypeCase.onec_export_status == "exported",
+            CustomerPriceTypeCase.onec_readback_status.in_(("pending", "mismatch", "error")),
+        ),
+        false(),
+    )
+
+
+def review_batch_snapshot_status(snapshot: CustomerPriceTypeSnapshot | None) -> str:
+    if snapshot is None:
+        return "missing_snapshot"
+    if any(
+        snapshot.source_statuses.get(source, "missing") != "ready"
+        for source in _REVIEW_REQUIRED_SOURCES
+    ):
+        return "technical_incomplete"
+    if snapshot.system_recommendation != "data_check":
+        return "ready"
+    if set(snapshot.reasons or ()) & _BUSINESS_CONFLICT_REASONS:
+        return "business_conflict"
+    return "technical_incomplete"
+
+
+def review_batch_item_matches(
+    item: CustomerPriceTypeReviewBatchItem,
+    snapshot: CustomerPriceTypeSnapshot | None,
+) -> bool:
+    if snapshot is None:
+        return False
+    actual_bucket = (
+        "working_bronze" if snapshot.current_price_type == "2.Бронзовый" else "review_queue"
+    )
+    if actual_bucket != item.expected_bucket:
+        return False
+    status = review_batch_snapshot_status(snapshot)
+    if item.expected_price_type:
+        return snapshot.current_price_type == item.expected_price_type and status == "ready"
+    return snapshot.current_price_type is None and status == "business_conflict"
 
 
 class SqlAlchemyCustomerPriceTypeRepository:
@@ -240,8 +295,15 @@ class SqlAlchemyCustomerPriceTypeRepository:
             for contract in fact.contracts:
                 contract_ref = str(contract.contract_ref or "")
                 used_for_calculation = contract_ref in calculation_refs
+                serialized_contract = asdict(contract)
+                serialized_contract["sales_amount_12m"] = format(
+                    contract.sales_amount_12m.quantize(Decimal("0.01")), "f"
+                )
+                serialized_contract["last_sale_at"] = (
+                    contract.last_sale_at.isoformat() if contract.last_sale_at else None
+                )
                 candidate = {
-                    **asdict(contract),
+                    **serialized_contract,
                     "used_for_calculation": used_for_calculation,
                     "price_type_change_target": contract_ref in change_target_refs,
                     "ignored_reason": None,
@@ -251,8 +313,10 @@ class SqlAlchemyCustomerPriceTypeRepository:
                         candidate["ignored_reason"] = "price_type_missing"
                     elif contract.price_type_marked:
                         candidate["ignored_reason"] = "price_type_marked"
+                    elif not contract.is_working and contract.sale_document_count_12m == 0:
+                        candidate["ignored_reason"] = "no_sales_in_working_window"
                     else:
-                        candidate["ignored_reason"] = "unknown_price_type"
+                        candidate["ignored_reason"] = "not_selected_for_price_type"
                 contract_candidates.append(candidate)
             snapshot = CustomerPriceTypeSnapshot(
                 run_id=run.id,
@@ -346,6 +410,8 @@ class SqlAlchemyCustomerPriceTypeRepository:
 
             previous_hash = previous_hashes.get(case.current_snapshot_id)
             changed = previous_hash != decision.snapshot_hash
+            previous_case_type = case.case_type
+            previous_stage = case.stage
             case.current_snapshot_id = snapshot.id
             case.ruleset_version = run.ruleset_version
             case.system_recommendation = decision.recommendation
@@ -354,14 +420,67 @@ class SqlAlchemyCustomerPriceTypeRepository:
             case.owner_name = fact.owner_name
             case.department_ref = fact.department_ref
             case.department_name = fact.department_name
-            if decision.action_required:
-                profile.open_case_id = case.id
-                case.case_type = decision.case_type or case.case_type
-                case.review_type = decision.review_type
-                case.reasons = list(decision.reasons)
-            if not changed:
+            external_control_active = (
+                case.onec_export_status == "exported"
+                or case.onec_readback_status in {"pending", "mismatch", "error"}
+            )
+            if not decision.action_required:
+                if external_control_active:
+                    profile.open_case_id = case.id
+                    continue
+                if profile.open_case_id == case.id:
+                    profile.open_case_id = None
+                if case.stage != "CLOSED_KEEP":
+                    before = {
+                        "case_type": case.case_type,
+                        "stage": case.stage,
+                        "approval_status": case.approval_status,
+                        "human_final_decision": case.human_final_decision,
+                        "snapshot_hash": previous_hash,
+                        "version": case.version,
+                    }
+                    case.stage = "CLOSED_KEEP"
+                    case.version += 1
+                    case.approval_status = "not_requested"
+                    case.approver_ref = None
+                    case.approver_name = None
+                    case.approved_at = None
+                    case.approved_snapshot_hash = None
+                    case.human_final_decision = None
+                    self.session.add(
+                        CustomerPriceTypeCaseEvent(
+                            case_id=case.id,
+                            event_type="case_auto_closed",
+                            actor="system",
+                            source="calculation",
+                            before_status=previous_stage,
+                            after_status="CLOSED_KEEP",
+                            comment=(
+                                "Новый расчёт не требует операционного действия; "
+                                "кейс закрыт без изменения типа цены."
+                            ),
+                            metadata_json={
+                                "before": before,
+                                "after_snapshot_hash": decision.snapshot_hash,
+                                "run_id": run.id,
+                            },
+                            idempotency_key=f"run:{run.id}:case-auto-closed:{case.id}",
+                        )
+                    )
+                continue
+
+            profile.open_case_id = case.id
+            next_case_type = decision.case_type or case.case_type
+            reclassified = previous_case_type != next_case_type
+            reopened = previous_stage in {"CLOSED_KEEP", "CLOSED_CHANGED"}
+            case.case_type = next_case_type
+            case.review_type = decision.review_type
+            case.reasons = list(decision.reasons)
+            if not changed and not reclassified and not reopened:
                 continue
             before = {
+                "case_type": previous_case_type,
+                "stage": previous_stage,
                 "approval_status": case.approval_status,
                 "human_final_decision": case.human_final_decision,
                 "snapshot_hash": previous_hash,
@@ -374,21 +493,32 @@ class SqlAlchemyCustomerPriceTypeRepository:
             case.approved_at = None
             case.approved_snapshot_hash = None
             case.human_final_decision = None
+            event_type = "snapshot_changed"
+            comment = "Исходные факты изменились; требуется повторная проверка."
+            if reclassified:
+                event_type = "case_reclassified"
+                comment = "Новый расчёт изменил операционную очередь кейса."
+                case.stage = "NEW"
+            elif reopened:
+                event_type = "case_reopened"
+                comment = "Новый расчёт снова требует операционного действия."
+                case.stage = "NEW"
             self.session.add(
                 CustomerPriceTypeCaseEvent(
                     case_id=case.id,
-                    event_type="snapshot_changed",
+                    event_type=event_type,
                     actor="system",
                     source="calculation",
-                    before_status=case.stage,
+                    before_status=previous_stage,
                     after_status=case.stage,
-                    comment="Исходные факты изменились; требуется повторная проверка.",
+                    comment=comment,
                     metadata_json={
                         "before": before,
+                        "after_case_type": case.case_type,
                         "after_snapshot_hash": decision.snapshot_hash,
                         "run_id": run.id,
                     },
-                    idempotency_key=f"run:{run.id}:snapshot:{decision.snapshot_hash}",
+                    idempotency_key=(f"run:{run.id}:{event_type}:{decision.snapshot_hash}"),
                 )
             )
 
@@ -527,7 +657,7 @@ class SqlAlchemyCustomerPriceTypeRepository:
             .where(
                 CustomerPriceTypeCase.snapshot_month == run.snapshot_month,
                 CustomerPriceTypeSnapshot.run_id == run.id,
-                CustomerPriceTypeSnapshot.action_required.is_(True),
+                _actionable_case_predicate(),
                 CustomerPriceTypeProfile.is_service_card.is_(False),
             )
             .group_by(CustomerPriceTypeCase.case_type)
@@ -567,6 +697,7 @@ class SqlAlchemyCustomerPriceTypeRepository:
     ]:
         filters: list[Any] = [
             CustomerPriceTypeSnapshot.run_id == run_id,
+            _actionable_case_predicate(),
             CustomerPriceTypeProfile.is_service_card.is_(False),
         ]
         if snapshot_month is not None:
@@ -575,7 +706,6 @@ class SqlAlchemyCustomerPriceTypeRepository:
             filters.extend(
                 [
                     CustomerPriceTypeCase.case_type == worklist,
-                    CustomerPriceTypeSnapshot.action_required.is_(True),
                 ]
             )
         if stage:
@@ -622,6 +752,144 @@ class SqlAlchemyCustomerPriceTypeRepository:
             .limit(limit)
         ).all()
         return [(row[0], row[1], row[2]) for row in rows], int(total)
+
+    def get_review_batch(self, batch_key: str) -> CustomerPriceTypeReviewBatch | None:
+        return self.session.scalar(
+            select(CustomerPriceTypeReviewBatch).where(
+                CustomerPriceTypeReviewBatch.batch_key == batch_key,
+                CustomerPriceTypeReviewBatch.status == "ready",
+            )
+        )
+
+    def list_portfolio(
+        self,
+        *,
+        batch: CustomerPriceTypeReviewBatch,
+        access: CustomerPriceTypeAccessScope,
+        run_id: int | None,
+        bucket: str,
+        current_price_type: str | None,
+        action_required: bool | None,
+        search: str | None,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[tuple[Any, ...]], int, dict[str, int], dict[str, int], int]:
+        actual_working_bronze = CustomerPriceTypeSnapshot.current_price_type == "2.Бронзовый"
+        filters: list[Any] = [CustomerPriceTypeReviewBatchItem.batch_id == batch.id]
+        if bucket == "working_bronze":
+            filters.append(actual_working_bronze)
+        elif bucket == "review_queue":
+            filters.append(
+                or_(
+                    CustomerPriceTypeSnapshot.current_price_type.is_(None),
+                    CustomerPriceTypeSnapshot.current_price_type != "2.Бронзовый",
+                )
+            )
+        if current_price_type:
+            filters.append(CustomerPriceTypeSnapshot.current_price_type == current_price_type)
+        if action_required is not None:
+            effective_action = _actionable_case_predicate()
+            filters.append(effective_action if action_required else ~effective_action)
+        if search:
+            pattern = f"%{search.strip()}%"
+            filters.append(
+                or_(
+                    CustomerPriceTypeReviewBatchItem.counterparty_code.ilike(pattern),
+                    CustomerPriceTypeProfile.counterparty_name.ilike(pattern),
+                    CustomerPriceTypeProfile.counterparty_ref.ilike(pattern),
+                )
+            )
+        filters.extend(self._scope_predicates(access))
+        base = (
+            select(
+                CustomerPriceTypeReviewBatchItem,
+                CustomerPriceTypeProfile,
+                CustomerPriceTypeSnapshot,
+                CustomerPriceTypeCase,
+            )
+            .join(
+                CustomerPriceTypeProfile,
+                CustomerPriceTypeProfile.counterparty_ref
+                == CustomerPriceTypeReviewBatchItem.counterparty_ref,
+            )
+            .outerjoin(
+                CustomerPriceTypeSnapshot,
+                (
+                    (CustomerPriceTypeSnapshot.profile_id == CustomerPriceTypeProfile.id)
+                    & (CustomerPriceTypeSnapshot.run_id == run_id)
+                ),
+            )
+            .outerjoin(
+                CustomerPriceTypeCase,
+                CustomerPriceTypeCase.current_snapshot_id == CustomerPriceTypeSnapshot.id,
+            )
+            .where(*filters)
+        )
+        total = int(
+            self.session.scalar(select(func.count()).select_from(base.order_by(None).subquery()))
+            or 0
+        )
+        rows = self.session.execute(
+            base.order_by(
+                CustomerPriceTypeReviewBatchItem.expected_bucket.asc(),
+                CustomerPriceTypeReviewBatchItem.source_row.asc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        ).all()
+
+        scope_filters: list[Any] = [CustomerPriceTypeReviewBatchItem.batch_id == batch.id]
+        scope_filters.extend(self._scope_predicates(access))
+        all_rows = self.session.execute(
+            select(
+                CustomerPriceTypeReviewBatchItem,
+                CustomerPriceTypeProfile,
+                CustomerPriceTypeSnapshot,
+                CustomerPriceTypeCase,
+            )
+            .join(
+                CustomerPriceTypeProfile,
+                CustomerPriceTypeProfile.counterparty_ref
+                == CustomerPriceTypeReviewBatchItem.counterparty_ref,
+            )
+            .outerjoin(
+                CustomerPriceTypeSnapshot,
+                (
+                    (CustomerPriceTypeSnapshot.profile_id == CustomerPriceTypeProfile.id)
+                    & (CustomerPriceTypeSnapshot.run_id == run_id)
+                ),
+            )
+            .outerjoin(
+                CustomerPriceTypeCase,
+                CustomerPriceTypeCase.current_snapshot_id == CustomerPriceTypeSnapshot.id,
+            )
+            .where(*scope_filters)
+        ).all()
+        counts = {"working_bronze": 0, "review_queue": 0, "total": len(all_rows)}
+        review_status_counts = {
+            "ready": 0,
+            "business_conflict": 0,
+            "technical_incomplete": 0,
+            "missing_snapshot": 0,
+        }
+        mismatch_count = 0
+        for item, _, snapshot, _ in all_rows:
+            actual_bucket = (
+                "working_bronze"
+                if snapshot is not None and snapshot.current_price_type == "2.Бронзовый"
+                else "review_queue"
+            )
+            counts[actual_bucket] += 1
+            review_status_counts[review_batch_snapshot_status(snapshot)] += 1
+            if not review_batch_item_matches(item, snapshot):
+                mismatch_count += 1
+        return (
+            [tuple(row) for row in rows],
+            total,
+            counts,
+            review_status_counts,
+            mismatch_count,
+        )
 
     def get_case_scoped(
         self, case_id: int, access: CustomerPriceTypeAccessScope
@@ -704,6 +972,40 @@ class SqlAlchemyCustomerPriceTypeRepository:
                 .limit(limit)
             )
         )
+
+    def profile_cases(
+        self,
+        profile_id: int,
+        *,
+        access: CustomerPriceTypeAccessScope,
+        limit: int = 24,
+    ) -> list[tuple[CustomerPriceTypeCase, CustomerPriceTypeProfile, CustomerPriceTypeSnapshot]]:
+        statement = (
+            select(
+                CustomerPriceTypeCase,
+                CustomerPriceTypeProfile,
+                CustomerPriceTypeSnapshot,
+            )
+            .join(
+                CustomerPriceTypeProfile,
+                CustomerPriceTypeProfile.id == CustomerPriceTypeCase.profile_id,
+            )
+            .join(
+                CustomerPriceTypeSnapshot,
+                CustomerPriceTypeSnapshot.id == CustomerPriceTypeCase.current_snapshot_id,
+            )
+            .where(
+                CustomerPriceTypeCase.profile_id == profile_id,
+                CustomerPriceTypeProfile.is_service_card.is_(False),
+                *self._scope_predicates(access),
+            )
+            .order_by(
+                CustomerPriceTypeCase.snapshot_month.desc(),
+                CustomerPriceTypeCase.id.desc(),
+            )
+            .limit(limit)
+        )
+        return [tuple(row) for row in self.session.execute(statement).all()]
 
     def prepare_quality_samples(
         self,

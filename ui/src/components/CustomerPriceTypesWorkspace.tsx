@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   fetchCptCaseDetail,
   fetchCptCases,
+  fetchCptPortfolio,
   fetchCptQualityMetrics,
   fetchCptQualitySampleDetail,
   fetchCptQualitySamples,
@@ -13,6 +14,7 @@ import {
   reviewCptQualitySample,
   type CptQualityGroup,
   type CptQualitySample,
+  type CptPortfolioBucket,
   type CptWorklist,
 } from "../api/customerPriceTypes";
 import {
@@ -82,6 +84,13 @@ const LEVEL_LABELS: Record<string, string> = {
   unknown: "Не распознан",
 };
 
+const REVIEW_STATUS_LABELS: Record<string, string> = {
+  ready: "Данные готовы",
+  business_conflict: "Бизнес-конфликт договоров",
+  technical_incomplete: "Неполные технические данные",
+  missing_snapshot: "Нет расчёта",
+};
+
 const shell: CSSProperties = {
   display: "grid",
   gap: 16,
@@ -131,6 +140,9 @@ export function CustomerPriceTypesWorkspace({
 }: CustomerPriceTypesWorkspaceProps) {
   const [worklist, setWorklist] = useState<CptWorklist | null>(null);
   const [search, setSearch] = useState("");
+  const [portfolioSearch, setPortfolioSearch] = useState("");
+  const [portfolioBucket, setPortfolioBucket] =
+    useState<Exclude<CptPortfolioBucket, "all">>("working_bronze");
   const [selectedCaseId, setSelectedCaseId] = useState<number | null>(null);
   const [section, setSection] = useState<"portfolio" | "quality">("portfolio");
 
@@ -141,6 +153,15 @@ export function CustomerPriceTypesWorkspace({
   const worklistsQuery = useQuery({
     queryKey: ["cpt", "worklists"],
     queryFn: () => fetchCptWorklists(),
+  });
+  const portfolioQuery = useQuery({
+    queryKey: ["cpt", "portfolio", portfolioBucket, portfolioSearch],
+    queryFn: () =>
+      fetchCptPortfolio({
+        bucket: portfolioBucket,
+        search: portfolioSearch.trim() || null,
+        limit: 100,
+      }),
   });
   const casesQuery = useQuery({
     queryKey: ["cpt", "cases", worklist, search],
@@ -211,6 +232,114 @@ export function CustomerPriceTypesWorkspace({
               <Tile key={lvl} label={levelLabel(lvl)} value={summary.levels[lvl]} />
             ) : null
           )}
+      </section>
+
+      <section style={{ ...card, display: "grid", gap: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <div>
+            <strong>Проверенный пакет 82</strong>
+            <div style={{ marginTop: 4, color: "var(--color-text-muted, #667085)", fontSize: 13 }}>
+              Рабочий тип определяется только по фактическим реализациям договоров.
+            </div>
+          </div>
+          <input
+            type="search"
+            placeholder="Поиск в пакете по коду или клиенту…"
+            value={portfolioSearch}
+            onChange={(event) => setPortfolioSearch(event.target.value)}
+            style={{ minHeight: 36, minWidth: 280, padding: "0 12px", border: "1px solid var(--color-border, #e2e2e2)", borderRadius: 8, font: "inherit" }}
+          />
+        </div>
+
+        {portfolioQuery.isError && (
+          <p style={{ margin: 0, color: "var(--color-danger, #d92d20)" }}>
+            Контрольный пакет пока не загружен или недоступен.
+          </p>
+        )}
+        {portfolioQuery.data && (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+              {([
+                ["working_bronze", "Рабочий тип 2.Бронзовый"],
+                ["review_queue", "Остальные на разбор"],
+              ] as const).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setPortfolioBucket(key)}
+                  style={{ ...card, textAlign: "left", cursor: "pointer", borderColor: portfolioBucket === key ? "var(--color-primary, #2563eb)" : "var(--color-border, #e2e2e2)", boxShadow: portfolioBucket === key ? "0 0 0 2px var(--color-primary, #2563eb)" : "none" }}
+                >
+                  <div style={{ fontSize: 22, fontWeight: 800 }}>
+                    {(portfolioQuery.data.counts[key] ?? 0).toLocaleString("ru-RU")}
+                  </div>
+                  <div style={{ color: "var(--color-text-muted, #667085)", fontSize: 13 }}>{label}</div>
+                </button>
+              ))}
+            </div>
+
+            {portfolioQuery.data.mismatch_count > 0 && (
+              <div role="alert" style={{ border: "1px solid #f0b429", background: "#fff8e1", borderRadius: 8, padding: 12 }}>
+                Расчёт расходится с эталонным распределением: {portfolioQuery.data.mismatch_count}. Автоматической подмены результата нет.
+                {(portfolioQuery.data.review_status_counts.technical_incomplete ?? 0) > 0 && (
+                  <> Неполных технических данных: {portfolioQuery.data.review_status_counts.technical_incomplete}.</>
+                )}
+              </div>
+            )}
+
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+                <thead>
+                  <tr>
+                    <th style={th}>Код 1С</th>
+                    <th style={th}>Клиент</th>
+                    <th style={th}>Вычисленный тип</th>
+                    <th style={th}>Рабочий договор</th>
+                    <th style={th}>Операционная очередь</th>
+                    <th style={th}>Сверка</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {portfolioQuery.data.payload.map((row) => (
+                    <tr
+                      key={row.counterparty_ref}
+                      onClick={() => row.case_id != null && setSelectedCaseId(row.case_id)}
+                      style={{ cursor: row.case_id != null ? "pointer" : "default" }}
+                    >
+                      <td style={td}>{row.counterparty_code}</td>
+                      <td style={td}>
+                        <div>{row.counterparty_name ?? "—"}</div>
+                        <small style={{ color: "var(--color-text-muted, #667085)" }}>{row.department_name ?? "—"}</small>
+                      </td>
+                      <td style={td}>{row.current_price_type ?? "Ручная проверка"}</td>
+                      <td style={td}>
+                        {row.working_contracts.length > 0
+                          ? row.working_contracts.map((contract) => (
+                              <div key={contract.contract_ref ?? contract.contract_name}>
+                                {contract.contract_name ?? "Без названия"} · {contract.price_type_name ?? "без типа"}
+                                <small style={{ display: "block", color: "var(--color-text-muted, #667085)" }}>
+                                  {contract.sale_document_count_12m ?? 0} реализаций · последняя {contract.last_sale_at ?? "—"}
+                                </small>
+                              </div>
+                            ))
+                          : "Нет однозначного рабочего договора"}
+                      </td>
+                      <td style={td}>{row.action_required && row.case_type ? WORKLIST_LABELS[row.case_type] ?? row.case_type : "Действий не требуется"}</td>
+                      <td style={td}>
+                        {row.reconciliation_status === "match" ? "Совпадает" : row.reconciliation_status === "missing_snapshot" ? "Нет расчёта" : "Расхождение"}
+                        <small style={{ display: "block", color: "var(--color-text-muted, #667085)" }}>
+                          {REVIEW_STATUS_LABELS[row.review_status] ?? row.review_status}
+                        </small>
+                      </td>
+                    </tr>
+                  ))}
+                  {portfolioQuery.data.payload.length === 0 && (
+                    <tr><td style={td} colSpan={6}>Карточек не найдено.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
       </section>
 
       {/* Worklist queues */}

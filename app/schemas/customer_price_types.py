@@ -40,6 +40,10 @@ class CustomerPriceTypeContractCandidate(BaseModel):
     price_type_name: str | None = None
     price_type_marked: bool = False
     price_type_missing: bool = False
+    sale_document_count_12m: int = 0
+    sales_amount_12m: Decimal | None = None
+    last_sale_at: date | None = None
+    is_working: bool = False
     used_for_calculation: bool = False
     price_type_change_target: bool = False
     ignored_reason: str | None = None
@@ -109,6 +113,46 @@ class CustomerPriceTypeCaseListResponse(CustomerPriceTypeEnvelope):
     payload: list[CustomerPriceTypeCaseItem] = Field(default_factory=list)
 
 
+CustomerPriceTypePortfolioBucket = Literal["working_bronze", "review_queue", "all"]
+
+
+class CustomerPriceTypePortfolioItem(BaseModel):
+    counterparty_ref: str
+    counterparty_code: str
+    counterparty_name: str | None = None
+    department_name: str | None = None
+    owner_name: str | None = None
+    bucket: Literal["working_bronze", "review_queue"]
+    expected_bucket: Literal["working_bronze", "review_queue"]
+    expected_price_type: str | None = None
+    current_price_type: str | None = None
+    price_type_variant: str | None = None
+    working_contracts: list[CustomerPriceTypeContractCandidate] = Field(default_factory=list)
+    action_required: bool = False
+    system_recommendation: str | None = None
+    recommended_price_type: str | None = None
+    source_status: str
+    stop_factors: list[str] = Field(default_factory=list)
+    review_status: Literal["ready", "business_conflict", "technical_incomplete", "missing_snapshot"]
+    case_id: int | None = None
+    case_type: str | None = None
+    case_stage: str | None = None
+    reconciliation_status: Literal["match", "mismatch", "missing_snapshot"]
+
+
+class CustomerPriceTypePortfolioResponse(CustomerPriceTypeEnvelope):
+    batch_key: str
+    batch_label: str
+    expected_counts: dict[str, int] = Field(default_factory=dict)
+    counts: dict[str, int] = Field(default_factory=dict)
+    review_status_counts: dict[str, int] = Field(default_factory=dict)
+    mismatch_count: int = 0
+    total: int
+    limit: int
+    offset: int
+    payload: list[CustomerPriceTypePortfolioItem] = Field(default_factory=list)
+
+
 class CustomerPriceTypeCaseEventResponse(BaseModel):
     id: int
     event_type: str
@@ -151,6 +195,7 @@ class CustomerPriceTypeProfileResponse(CustomerPriceTypeEnvelope):
     master_data_flags: list[str] = Field(default_factory=list)
     latest_snapshot: CustomerPriceTypeSnapshotResponse | None = None
     open_case: CustomerPriceTypeCaseItem | None = None
+    case_history: list[CustomerPriceTypeCaseItem] = Field(default_factory=list)
     history: list[CustomerPriceTypeSnapshotResponse] = Field(default_factory=list)
 
 

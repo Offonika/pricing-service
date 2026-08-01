@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from datetime import date
+
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, Response
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db
@@ -49,6 +51,7 @@ from app.services.procurement_order_formation import (
 from app.services.procurement_order_formation_workspace import (
     approve_lifecycle_transitions,
     build_dashboard,
+    build_order_calculation_excel,
     list_classification_proposals,
     list_events,
     list_lifecycle_transitions,
@@ -218,6 +221,47 @@ def read_orders(
                 page=page,
                 page_size=page_size,
             )
+        )
+    except Exception as exc:
+        raise _service_error(exc) from exc
+
+
+@router.get(
+    "/orders/export.xlsx",
+    response_class=Response,
+    responses={
+        200: {
+            "content": {"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": {}},
+            "description": "Расчёт заказов в Excel",
+        }
+    },
+)
+def export_orders_excel(
+    search: str = "",
+    status: str = "",
+    supplier: str = "",
+    blockers: str = "all",
+    db: Session = Depends(get_db),
+    _session: ProcurementOrderFormationSession = Depends(
+        verify_procurement_order_formation_session
+    ),
+) -> Response:
+    try:
+        content = build_order_calculation_excel(
+            db,
+            search=search,
+            status=status,
+            supplier=supplier,
+            blockers=blockers,
+        )
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={
+                "Content-Disposition": (
+                    f'attachment; filename="procurement-orders-{date.today().isoformat()}.xlsx"'
+                )
+            },
         )
     except Exception as exc:
         raise _service_error(exc) from exc

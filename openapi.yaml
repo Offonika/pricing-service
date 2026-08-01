@@ -8154,6 +8154,52 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/orders/export.xlsx:
+    get:
+      summary: Export Orders Excel
+      operationId: export_orders_excel_api_procurement_order_formation_orders_export_xlsx_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: search
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Search
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Status
+      - name: supplier
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Supplier
+      - name: blockers
+        in: query
+        required: false
+        schema:
+          type: string
+          default: all
+          title: Blockers
+      responses:
+        '200':
+          description: Расчёт заказов в Excel
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/procurement-order-formation/classification-proposals:
     get:
       summary: Read Classification Proposals

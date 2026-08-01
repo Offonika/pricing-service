@@ -9,6 +9,7 @@ import {
   fetchProcurementLifecycleTransitions,
   fetchProcurementOrder,
   fetchProcurementOrders,
+  exportProcurementOrdersExcel,
   type ProcurementClassificationQueue,
   type ProcurementDashboard,
   type ProcurementEventList,
@@ -751,6 +752,7 @@ function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number) => voi
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [blockers, setBlockers] = useState<"all" | "with" | "without">("all");
+  const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -769,6 +771,30 @@ function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number) => voi
       .catch((requestError) => { if (!cancelled) setError(errorText(requestError)); });
     return () => { cancelled = true; };
   }, [blockers, search, status]);
+
+  const downloadExcel = async () => {
+    setDownloading(true);
+    try {
+      const { blob, filename } = await exportProcurementOrdersExcel({
+        search,
+        status,
+        blockers,
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      toast.success("Расчёт заказа скачан");
+    } catch (requestError) {
+      toast.error(errorText(requestError));
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   if (error) return <ErrorState message={error} onRetry={() => void load()} />;
   if (!data) return <LoadingState message="Загрузка заказов..." />;
@@ -791,6 +817,9 @@ function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number) => voi
           <option value="without">Без блокеров</option>
           <option value="with">С блокерами</option>
         </select>
+        <button className="btn btn--ghost" disabled={downloading || data.total === 0} onClick={() => void downloadExcel()} type="button">
+          {downloading ? "Скачивание..." : "Скачать Excel"}
+        </button>
       </section>
       {data.items.length === 0 ? <div className="order-workspace__empty">Заказы не сформированы.</div> : (
         <div className="order-workspace__table-wrap">

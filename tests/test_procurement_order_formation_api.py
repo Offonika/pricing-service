@@ -82,6 +82,15 @@ def test_send_to_onec_endpoint_has_no_browser_apply_field() -> None:
     assert "requestBody" not in operation
 
 
+def test_order_excel_export_is_exposed_as_xlsx() -> None:
+    operation = app.openapi()["paths"]["/api/procurement-order-formation/orders/export.xlsx"]["get"]
+
+    assert (
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        in operation["responses"]["200"]["content"]
+    )
+
+
 def test_lifecycle_approval_schema_limits_batch_to_100() -> None:
     item = {
         "proposal_id": 1,

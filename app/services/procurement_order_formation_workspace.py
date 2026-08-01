@@ -5,9 +5,13 @@ import uuid
 from collections import Counter
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -82,6 +86,32 @@ MANUAL_STATUS_LABELS = {
     "do_not_order": "Не закупать",
     "review": "Review / разбор",
 }
+ORDER_STATUS_LABELS = {
+    "draft": "На подтверждении",
+    "review": "На проверке",
+    "approved": "Проверен",
+    "transmitting": "Передача в 1С",
+    "transmitted": "Передан в 1С",
+    "deferred": "Отложен",
+    "superseded": "Заменён новым расчётом",
+}
+ORDER_CALCULATION_EXPORT_HEADERS = (
+    "Предмет",
+    "Категория",
+    "Группа",
+    "Номенклатура",
+    "Артикул",
+    "Поставщик",
+    "Договор",
+    "Склад",
+    "Количество",
+    "Закупочная цена",
+    "Сумма",
+    "Валюта",
+    "Статус",
+    "Партия",
+    "Дата заказа",
+)
 MANUAL_STATUS_RECOMMENDATIONS = {
     "matrix": "Проверить матрицу и минимальный запас",
     "on_demand": "Проверить явную клиентскую потребность",
@@ -596,6 +626,120 @@ def list_orders(
     page: int = 1,
     page_size: int = 50,
 ) -> dict[str, Any]:
+    filtered = _filtered_orders(
+        db,
+        search=search,
+        status=status,
+        supplier=supplier,
+        blockers=blockers,
+    )
+    summary = _orders_summary(filtered)
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 100)
+    start = (page - 1) * page_size
+    return {
+        "total": len(filtered),
+        "page": page,
+        "page_size": page_size,
+        "summary": summary,
+        "items": [serialize_order_list_item(item) for item in filtered[start : start + page_size]],
+    }
+
+
+def build_order_calculation_excel(
+    db: Session,
+    *,
+    search: str = "",
+    status: str = "",
+    supplier: str = "",
+    blockers: str = "all",
+) -> bytes:
+    orders = _filtered_orders(
+        db,
+        search=search,
+        status=status,
+        supplier=supplier,
+        blockers=blockers,
+    )
+    active_lines = [line for order in orders for line in order.lines if not line.removed]
+    nomenclature_codes = {line.nomenclature_code for line in active_lines if line.nomenclature_code}
+    classification_by_code: dict[str, Mapping[str, Any]] = {}
+    if nomenclature_codes:
+        rows = db.execute(
+            select(
+                ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.nomenclature_code,
+                ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.subject_1c,
+                ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.category_1c,
+                ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.folder,
+                ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.article,
+            ).where(
+                ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.nomenclature_code.in_(
+                    nomenclature_codes
+                )
+            )
+        ).mappings()
+        classification_by_code = {str(row["nomenclature_code"]): row for row in rows}
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Расчёт заказа"
+    worksheet.freeze_panes = "A2"
+    worksheet.append(ORDER_CALCULATION_EXPORT_HEADERS)
+
+    for order in orders:
+        for line in order.lines:
+            if line.removed:
+                continue
+            classification = classification_by_code.get(str(line.nomenclature_code or ""), {})
+            worksheet.append(
+                (
+                    classification.get("subject_1c") or "",
+                    classification.get("category_1c") or "",
+                    classification.get("folder") or "",
+                    line.nomenclature_name,
+                    classification.get("article") or "",
+                    order.supplier_name,
+                    order.contract_name,
+                    order.warehouse_name,
+                    line.final_quantity,
+                    line.purchase_price,
+                    line.amount,
+                    line.currency,
+                    ORDER_STATUS_LABELS.get(order.status, order.status),
+                    order.batch_id,
+                    order.order_date,
+                )
+            )
+
+    header_fill = PatternFill(fill_type="solid", fgColor="D9EAF7")
+    for cell in worksheet[1]:
+        cell.font = Font(bold=True)
+        cell.fill = header_fill
+    worksheet.auto_filter.ref = worksheet.dimensions
+    for row in worksheet.iter_rows(min_row=2):
+        row[8].number_format = "0.000"
+        row[9].number_format = "#,##0.0000"
+        row[10].number_format = "#,##0.00"
+        row[14].number_format = "DD.MM.YYYY"
+    for column_number, column_cells in enumerate(worksheet.columns, start=1):
+        width = max(len(str(cell.value or "")) for cell in column_cells)
+        worksheet.column_dimensions[get_column_letter(column_number)].width = min(
+            max(width + 2, 12), 45
+        )
+
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def _filtered_orders(
+    db: Session,
+    *,
+    search: str = "",
+    status: str = "",
+    supplier: str = "",
+    blockers: str = "all",
+) -> list[ProcurementOrderFormation]:
     statement = _order_list_statement()
     orders = list(db.scalars(statement).unique().all())
     search_key = search.strip().casefold()
@@ -626,17 +770,7 @@ def list_orders(
                 continue
         filtered.append(order)
     filtered.sort(key=lambda item: (item.order_date, item.updated_at), reverse=True)
-    summary = _orders_summary(filtered)
-    page = max(page, 1)
-    page_size = min(max(page_size, 1), 100)
-    start = (page - 1) * page_size
-    return {
-        "total": len(filtered),
-        "page": page,
-        "page_size": page_size,
-        "summary": summary,
-        "items": [serialize_order_list_item(item) for item in filtered[start : start + page_size]],
-    }
+    return filtered
 
 
 def list_classification_proposals(

@@ -98,6 +98,12 @@ updated_at: "2026-08-01"
 - Режим dry-run/apply задаётся только серверным флагом; браузер не отправляет `apply`.
 - Повторная отправка той же версии возвращает тот же `message_id` и не создаёт дубликат.
 - После успешной передачи заказ доступен только для просмотра.
+- Реестр выгружает все строки, соответствующие текущим фильтрам, в Excel по кнопке
+  `Скачать Excel`; пагинация интерфейса выгрузку не ограничивает.
+- Первые колонки выгрузки фиксированы: `Предмет`, `Категория`, `Группа`,
+  `Номенклатура`, `Артикул`. Классификация и артикул читаются из актуальной
+  витрины `assortment_lifecycle_classification` по коду номенклатуры; отсутствие
+  классификации не блокирует скачивание и даёт пустые значения.
 
 ### Автоматическое формирование из расчёта дисплеев
 
@@ -143,6 +149,7 @@ updated_at: "2026-08-01"
 - `GET /api/procurement-order-formation/lifecycle/transitions`
 - `POST /api/procurement-order-formation/lifecycle/transitions/approve`
 - `GET /api/procurement-order-formation/orders`
+- `GET /api/procurement-order-formation/orders/export.xlsx`
 - `GET /api/procurement-order-formation/orders/{id}`
 - `PATCH /api/procurement-order-formation/orders/{id}`
 - `PATCH /api/procurement-order-formation/orders/{id}/lines/{line_id}`
@@ -216,6 +223,7 @@ cd ui && npm run lint && npm run build
 - [x] Устаревшие версии и изменённые строки блокируются до повторного подтверждения.
 - [x] 1С получает только `draft_only` payload; браузер не может включить apply.
 - [x] Действующие API, workspace и dry-run сценарии покрыты тестами.
+- [x] Расчёт заказов скачивается в Excel с классификацией и текущими фильтрами.
 
 # Source of Truth
 

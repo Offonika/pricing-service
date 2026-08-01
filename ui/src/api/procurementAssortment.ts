@@ -396,11 +396,14 @@ export async function approveProcurementLifecycleTransitions(
   return data;
 }
 
-export async function fetchProcurementOrders(params: {
+export interface ProcurementOrderFilters {
   search?: string;
   status?: string;
   supplier?: string;
   blockers?: "all" | "with" | "without";
+}
+
+export async function fetchProcurementOrders(params: ProcurementOrderFilters & {
   page?: number;
   page_size?: number;
 } = {}) {
@@ -409,6 +412,21 @@ export async function fetchProcurementOrders(params: {
     { params }
   );
   return data;
+}
+
+export async function exportProcurementOrdersExcel(
+  params: ProcurementOrderFilters = {}
+) {
+  const response = await api.get<Blob>(
+    "/procurement-order-formation/orders/export.xlsx",
+    { params, responseType: "blob" }
+  );
+  const disposition = String(response.headers["content-disposition"] || "");
+  const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
+  return {
+    blob: response.data,
+    filename: filenameMatch?.[1] || "procurement-orders.xlsx",
+  };
 }
 
 export async function fetchProcurementClassifications(params: {

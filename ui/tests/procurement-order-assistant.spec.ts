@@ -30,8 +30,15 @@ const readyLine = {
   profitability_pct: "34.6",
   supplier_defect_pct: "0.8",
   supplier_defect_history_units: 1842,
+  supplier_defect_attribution: "supplier_exact",
+  supplier_defect_confidence: "reliable",
   price_change_pct: "-2.1",
   delivery_days: 12,
+  supplier_prepare_days: 5,
+  logistics_days: 7,
+  lead_time_days: 12,
+  lead_time_source_level: "sku",
+  lead_time_confidence: "high",
 };
 
 const readyOrder = {
@@ -151,7 +158,7 @@ test("assistant buttons, disabled states, supplier CSV and accessibility work", 
     readyLine.product_card_url,
   );
   await expect(page.getByRole("checkbox", { name: /Строка без подтверждённой/ })).toBeDisabled();
-  await expect(page.getByText("Недоступно: нет карточки или оригинала фото")).toBeVisible();
+  await expect(page.getByText("Недоступно: не найдена точная карточка товара")).toBeVisible();
 
   const decision = page.getByRole("button", { name: "Включено" });
   await expect(decision).toBeInViewport();

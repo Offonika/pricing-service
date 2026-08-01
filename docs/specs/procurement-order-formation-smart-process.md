@@ -169,10 +169,32 @@ URL исходного изображения без повторного сжа
 Повтор apply с тем же committed `--output-json` возвращает сохранённый результат без
 обращения к БД и не может перезаписать rollback-manifest.
 
-Правая панель использует только факты карточки поставщика: класс `A/B/C`,
-историческую рентабельность, брак, своевременность, число заказов, оплату,
-отсрочку, кредитный лимит и преимущества. При неполной истории API возвращает
-`data_status=partial|missing`; UI не подставляет вымышленные показатели.
+Правая панель использует версионируемый профиль по точному `supplier_ref` 1С.
+Класс `A/B/C`, преимущества и внутренний комментарий вводятся согласующим вручную;
+число заказов, сроки, история цен и подтверждённый брак обновляются read-only из
+1С. Официальные условия оплаты относятся только к точному договору поставщика.
+Если реквизит договора не заполнен, API возвращает `terms_status=missing`, а UI
+показывает «Не заполнено в 1С» без использования клиентских кредитных полей.
+При обогащении дополнительно подтверждаются точный `contract_ref` и его владелец
+`supplier_ref`; реквизиты контроля клиентской задолженности не считаются условиями
+поставщика и намеренно не читаются как отсрочка или кредитный лимит.
+
+Метрики строки считаются за 180 дней. Рентабельность равна
+`(чистая выручка − себестоимость) / себестоимость × 100`; при нулевой
+себестоимости значение пустое и сопровождается причиной. Изменение цены берётся
+по двум последним проведённым заказам одинаковых `поставщик + SKU + валюта`.
+Срок разделён на сборку у поставщика, логистику и общий срок, с уровнем источника
+`sku|display_group` и уверенностью; legacy `delivery_days` остаётся в контракте,
+но UI его не использует. Если последние закупки есть только в другой валюте,
+процент не рассчитывается: API возвращает `price_change_status=currency_mismatch`,
+ожидаемую и доступные валюты, а UI показывает эту причину без ложного блокера.
+
+Брак товара считается только по возвратам с причиной брак/качество/дефект.
+`supplier_defect_pct` появляется только при доказанной связи с поставкой или
+партией конкретного поставщика; иначе UI показывает отдельный брак товара с
+пометкой «поставщик не подтверждён». База `<30` — `weak`, `30–99` — `warning`,
+`>=100` — `reliable`. Сборку блокируют только изменение цены более 10% по модулю
+и подтверждённый брак поставщика более 10% на базе не менее 100 штук.
 
 ## Ручные свойства
 
@@ -194,6 +216,8 @@ URL исходного изображения без повторного сжа
 - `GET /api/procurement-order-formation/orders`
 - `GET /api/procurement-order-formation/assistant`
 - `POST /api/procurement-order-formation/assistant/assemble`
+- `GET|PATCH /api/procurement-order-formation/suppliers/{supplier_ref}/profile`
+- `POST /api/procurement-order-formation/orders/{id}/lines/{line_id}/classification/{proposal_id}/reject`
 - `GET /api/procurement-order-formation/orders/export.xlsx`
 - `GET /api/procurement-order-formation/orders/{id}`
 - `PATCH /api/procurement-order-formation/orders/{id}`
@@ -209,10 +233,12 @@ Legacy-маршрут `/bitrix/procurement-assortment` и чтение по `bit
 - `procurement_order_formation` — шапка и версия заказа.
 - `procurement_order_formation_line` — товарные строки.
 - `procurement_classification_proposal` — ручные изменения свойств.
+- `procurement_supplier_profile` — ручной класс и read-only факты поставщика.
 - `procurement_lifecycle_transition_proposal` — очередь жизненных переходов и readback.
 - `procurement_order_formation_event` — единый журнал действий и обмена.
 
-Миграции: `7a8b9c0d1e23`, затем `8b9c0d1e2f34`.
+Миграции: `7a8b9c0d1e23`, `8b9c0d1e2f34`, затем
+`f3a4b5c6d7e9` для профиля поставщика и аудита отклонения классификации.
 
 ## Безопасный запуск
 
@@ -246,6 +272,9 @@ PROCUREMENT_ORDER_FORMATION_ONEC_APPLY_ENABLED=false
   tests/test_procurement_order_formation_workspace.py \
   tests/test_procurement_order_formation_api.py \
   tests/test_procurement_order_formation_dry_run.py \
+  tests/test_procurement_order_metrics.py \
+  tests/test_procurement_order_metrics_backfill.py \
+  tests/test_procurement_supplier_profiles.py \
   tests/test_ut103_procurement_orders_exporter.py -q
 cd ui && npm run lint && npm run build
 ```
@@ -269,6 +298,10 @@ cd ui && npm run lint && npm run build
 - [x] 1С получает только `draft_only` payload; браузер не может включить apply.
 - [x] Действующие API, workspace и dry-run сценарии покрыты тестами.
 - [x] Расчёт заказов скачивается в Excel с классификацией и текущими фильтрами.
+- [x] Метрики содержат период, источник, надёжность и честное разделение брака.
+- [x] Профиль поставщика защищён optimistic version и правами согласующего.
+- [x] Автор не может принять или отклонить своё предложение; причина отклонения обязательна.
+- [x] Backfill метрик поддерживает dry-run, apply, повторный запуск и rollback-manifest.
 
 # Source of Truth
 
@@ -300,6 +333,9 @@ cd ui && npm run lint && npm run build
 - `tests/test_procurement_order_formation_workspace.py` — workspace read model.
 - `tests/test_procurement_order_formation_api.py` — HTTP и права.
 - `tests/test_procurement_order_formation_dry_run.py` — dry-run и payload.
+- `tests/test_procurement_order_metrics.py` — формулы и атрибуция брака.
+- `tests/test_procurement_order_metrics_backfill.py` — безопасный backfill/rollback.
+- `tests/test_procurement_supplier_profiles.py` — версии и права профиля.
 
 # Rollout
 

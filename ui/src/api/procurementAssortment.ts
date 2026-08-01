@@ -74,6 +74,12 @@ export interface ProcurementClassificationProposal {
   approved_at?: string | null;
   approved_by_bitrix_user_id?: string | null;
   approved_by_name?: string | null;
+  rejected_at?: string | null;
+  rejected_by_bitrix_user_id?: string | null;
+  rejected_by_name?: string | null;
+  rejection_reason?: string | null;
+  can_approve?: boolean;
+  can_reject?: boolean;
   onec_status: string;
   onec_message_id?: string | null;
 }
@@ -136,26 +142,67 @@ export interface ProcurementOrderFormationLine {
   photo_source?: string | null;
   photo_count?: number;
   profitability_pct?: string | null;
+  profitability_status?: string | null;
+  profitability_source?: string | null;
+  profitability_explanation?: string | null;
+  metrics_as_of?: string | null;
+  metrics_window_days?: number | null;
+  product_defect_pct?: string | null;
+  product_defect_history_units?: number | null;
+  product_defect_confidence?: string | null;
+  product_defect_source?: string | null;
   supplier_defect_pct?: string | null;
   supplier_defect_history_units?: number | null;
+  supplier_defect_confidence?: string | null;
+  supplier_defect_attribution?: string | null;
+  supplier_defect_source_status?: string | null;
   price_change_pct?: string | null;
+  price_change_status?: string | null;
+  price_history_count?: number | null;
+  price_history_currency_ref?: string | null;
+  price_history_expected_currency?: string | null;
+  price_history_available_currencies?: string[];
+  supplier_prepare_days?: number | null;
+  logistics_days?: number | null;
+  lead_time_days?: number | null;
+  lead_time_source_level?: string | null;
+  lead_time_confidence?: string | null;
   delivery_days?: number | null;
 }
 
 export interface ProcurementSupplierProfile {
+  supplier_ref?: string | null;
+  supplier_code?: string | null;
+  supplier_name?: string | null;
+  version?: number;
   qualification_class?: string | null;
   qualification_label?: string | null;
+  class_description?: string | null;
   profitability_pct?: string | null;
   defect_pct?: string | null;
   defect_history_units?: number | null;
+  defect_confidence?: string | null;
+  defect_attribution?: string | null;
   on_time_pct?: string | null;
   payment_terms?: string | null;
   credit_days?: number | null;
   credit_limit?: string | null;
+  terms_source?: string | null;
+  terms_status?: string | null;
   advantages: string[];
+  internal_note?: string | null;
   history_order_count?: number | null;
+  supplier_prepare_days?: number | null;
+  logistics_days?: number | null;
+  lead_time_days?: number | null;
+  lead_time_confidence?: string | null;
+  price_history_count?: number | null;
+  facts_updated_at?: string | null;
+  manual_updated_at?: string | null;
+  manual_updated_by_name?: string | null;
   updated_at?: string | null;
   data_status: "ready" | "partial" | "missing" | string;
+  can_edit?: boolean;
 }
 
 export interface ProcurementOrderFormation {
@@ -582,6 +629,43 @@ export async function approveProcurementClassification(
   }>(
     `/procurement-order-formation/orders/${orderId}/lines/${lineId}/classification/${proposalId}/approve`,
     {}
+  );
+  return data;
+}
+
+export async function rejectProcurementClassification(
+  orderId: number,
+  lineId: number,
+  proposalId: number,
+  payload: {
+    expected_order_version: number;
+    expected_line_version: number;
+    reason: string;
+  }
+) {
+  const { data } = await api.post<{
+    order: ProcurementOrderFormation;
+    proposal: ProcurementClassificationProposal;
+  }>(
+    `/procurement-order-formation/orders/${orderId}/lines/${lineId}/classification/${proposalId}/reject`,
+    payload
+  );
+  return data;
+}
+
+export async function updateProcurementSupplierProfile(
+  supplierRef: string,
+  payload: {
+    expected_version: number;
+    qualification_class?: string | null;
+    qualification_label?: string | null;
+    advantages: string[];
+    internal_note?: string | null;
+  }
+) {
+  const { data } = await api.patch<ProcurementSupplierProfile>(
+    `/procurement-order-formation/suppliers/${encodeURIComponent(supplierRef)}/profile`,
+    payload
   );
   return data;
 }

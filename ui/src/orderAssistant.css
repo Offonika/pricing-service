@@ -58,7 +58,8 @@
 
 .order-assistant button,
 .order-assistant input,
-.order-assistant select {
+.order-assistant select,
+.order-assistant textarea {
   font: inherit;
 }
 
@@ -241,7 +242,7 @@
 .order-assistant__table td:last-child {
   position: sticky;
   right: 0;
-  min-width: 112px;
+  min-width: 260px;
   border-left: 1px solid #e1e6ed;
   background: #ffffff;
 }
@@ -435,6 +436,44 @@
   line-height: 1.25;
 }
 
+.order-assistant__classification {
+  display: grid;
+  gap: 5px;
+  margin-top: 5px;
+  padding-top: 7px;
+  border-top: 1px solid #ead5d2;
+  color: #2d394d;
+}
+
+.order-assistant__classification p {
+  margin: 0;
+  color: #4f5c70;
+  font-size: 10px;
+  line-height: 1.35;
+}
+
+.order-assistant__classification-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 5px;
+}
+
+.order-assistant__classification-actions label {
+  display: grid;
+  grid-column: 1 / -1;
+  gap: 4px;
+  color: #4f5c70;
+  font-size: 10px;
+}
+
+.order-assistant__classification-actions textarea {
+  min-height: 54px;
+  padding: 6px;
+  border: 1px solid #b9c4d3;
+  border-radius: 4px;
+  resize: vertical;
+}
+
 .order-assistant__table-footer {
   display: flex;
   align-items: center;
@@ -617,6 +656,59 @@
   font-weight: 700;
 }
 
+.order-assistant__profile-form {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+  padding: 10px;
+  border: 1px solid #cbd9eb;
+  border-radius: 6px;
+  background: #f5f9ff;
+}
+
+.order-assistant__profile-form label {
+  display: grid;
+  gap: 4px;
+  color: #344157;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.order-assistant__profile-form input,
+.order-assistant__profile-form select,
+.order-assistant__profile-form textarea {
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid #b9c4d3;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #1f2a3d;
+}
+
+.order-assistant__profile-form textarea {
+  min-height: 58px;
+  resize: vertical;
+}
+
+.order-assistant__profile-form > button {
+  padding: 8px;
+  border: 1px solid #1268e8;
+  border-radius: 4px;
+  background: #1268e8;
+  color: #ffffff;
+  cursor: pointer;
+}
+
+.order-assistant__internal-note {
+  margin: 10px 0 0;
+  padding: 8px;
+  border-radius: 4px;
+  background: #fff8e8;
+  color: #4b3b16;
+  font-size: 10px;
+  line-height: 1.4;
+}
+
 .order-assistant__supplier-metrics {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -649,7 +741,7 @@
 }
 
 .order-assistant__supplier-metrics dd.is-missing {
-  color: #7a8698;
+  color: #5d6879;
   font-size: 11px;
 }
 
@@ -668,7 +760,7 @@
 
 .order-assistant__terms {
   display: grid;
-  grid-template-columns: 0.75fr 1.25fr;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 10px;
   margin: 12px 0 0;
   padding: 10px 0 0;
@@ -703,7 +795,7 @@
 }
 
 .order-assistant__advantages > span {
-  color: #7a8698;
+  color: #5d6879;
 }
 
 .order-assistant__supplier-footer {

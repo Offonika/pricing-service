@@ -225,6 +225,30 @@ def test_backfill_apply_is_idempotent_and_preserves_commercial_fields(db_session
     assert line.version == 2
 
 
+def test_backfill_keeps_verified_card_when_gallery_photo_is_missing(db_session) -> None:
+    order = _open_order(db_session)
+    resolution = ProductMediaResolution(
+        article="044702",
+        status="photo_missing",
+        product_id="51770",
+        product_card_url="https://master-mobile.ru/catalog/zapchasti/51770/",
+    )
+
+    plan = build_product_media_backfill_plan(
+        db_session,
+        StubResolver({"044702": resolution}),
+        run_id="media-card-without-photo",
+    )
+    manifest = apply_product_media_backfill(db_session, plan)
+    db_session.commit()
+    db_session.refresh(order)
+
+    assert manifest["summary"]["photo_missing"] == 1
+    assert order.lines[0].payload["product_card_url"].endswith("/51770/")
+    assert "photos" not in order.lines[0].payload
+    assert "photo_source" not in order.lines[0].payload
+
+
 def test_backfill_rollback_restores_payload_with_monotonic_versions(db_session) -> None:
     order = _open_order(db_session)
     resolver = StubResolver({"044702": _resolution()})

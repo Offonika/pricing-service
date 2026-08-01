@@ -13,6 +13,8 @@ from app.schemas.procurement_order_formation import (
     ProcurementClassificationApprovalResponse,
     ProcurementClassificationCreateRequest,
     ProcurementClassificationQueueResponse,
+    ProcurementClassificationRejectRequest,
+    ProcurementClassificationRejectResponse,
     ProcurementDashboardResponse,
     ProcurementLifecycleTransitionApprovalRequest,
     ProcurementLifecycleTransitionApprovalResponse,
@@ -29,6 +31,8 @@ from app.schemas.procurement_order_formation import (
     ProcurementOrderLineUpdateRequest,
     ProcurementOrderListResponse,
     ProcurementOrderTransmissionResponse,
+    ProcurementSupplierProfileRead,
+    ProcurementSupplierProfileUpdateRequest,
 )
 from app.services.bitrix_procurement_order_formation_auth import (
     ProcurementOrderFormationSession,
@@ -45,6 +49,7 @@ from app.services.procurement_order_formation import (
     create_classification_proposal,
     get_order,
     get_order_by_bitrix_item,
+    reject_classification_proposal,
     serialize_order,
     serialize_proposal,
     transmit_order,
@@ -62,6 +67,12 @@ from app.services.procurement_order_formation_workspace import (
     list_lifecycle_transitions,
     list_orders,
     record_event,
+)
+from app.services.procurement_supplier_profiles import (
+    empty_supplier_profile,
+    get_supplier_profile,
+    serialize_supplier_profile,
+    update_supplier_profile,
 )
 
 router = APIRouter(prefix="/procurement-order-formation")
@@ -234,13 +245,64 @@ def read_orders(
 @router.get("/assistant", response_model=ProcurementOrderAssistantResponse)
 def read_order_assistant(
     db: Session = Depends(get_db),
-    _session: ProcurementOrderFormationSession = Depends(
-        verify_procurement_order_formation_session
-    ),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
 ) -> ProcurementOrderAssistantResponse:
     try:
-        return ProcurementOrderAssistantResponse.model_validate(build_order_assistant(db))
+        return ProcurementOrderAssistantResponse.model_validate(
+            build_order_assistant(db, session=session)
+        )
     except Exception as exc:
+        raise _service_error(exc) from exc
+
+
+@router.get(
+    "/suppliers/{supplier_ref}/profile",
+    response_model=ProcurementSupplierProfileRead,
+)
+def read_supplier_profile(
+    supplier_ref: str,
+    db: Session = Depends(get_db),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
+) -> ProcurementSupplierProfileRead:
+    try:
+        profile = get_supplier_profile(db, supplier_ref)
+        payload = (
+            serialize_supplier_profile(profile)
+            if profile is not None
+            else empty_supplier_profile(supplier_ref=supplier_ref.strip().lower() or None)
+        )
+        payload["can_edit"] = str(session.user_id) in {
+            str(value).strip()
+            for value in get_settings().procurement_order_formation_classification_approver_user_ids
+        }
+        return ProcurementSupplierProfileRead.model_validate(payload)
+    except Exception as exc:
+        raise _service_error(exc) from exc
+
+
+@router.patch(
+    "/suppliers/{supplier_ref}/profile",
+    response_model=ProcurementSupplierProfileRead,
+)
+def change_supplier_profile(
+    supplier_ref: str,
+    payload: ProcurementSupplierProfileUpdateRequest,
+    db: Session = Depends(get_db),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
+) -> ProcurementSupplierProfileRead:
+    try:
+        profile = update_supplier_profile(
+            db,
+            supplier_ref=supplier_ref,
+            values=payload.model_dump(),
+            session=session,
+        )
+        db.commit()
+        response = serialize_supplier_profile(profile)
+        response["can_edit"] = True
+        return ProcurementSupplierProfileRead.model_validate(response)
+    except Exception as exc:
+        db.rollback()
         raise _service_error(exc) from exc
 
 
@@ -509,6 +571,7 @@ def approve_line_classification(
             line_id,
             proposal_id,
             session,
+            commit=False,
         )
         record_event(
             db,
@@ -532,6 +595,48 @@ def approve_line_classification(
             }
         )
     except Exception as exc:
+        db.rollback()
+        raise _service_error(exc) from exc
+
+
+@router.post(
+    "/orders/{order_id}/lines/{line_id}/classification/{proposal_id}/reject",
+    response_model=ProcurementClassificationRejectResponse,
+)
+def reject_line_classification(
+    order_id: int,
+    line_id: int,
+    proposal_id: int,
+    payload: ProcurementClassificationRejectRequest,
+    db: Session = Depends(get_db),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
+) -> ProcurementClassificationRejectResponse:
+    try:
+        order, proposal = reject_classification_proposal(
+            db,
+            order_id,
+            line_id,
+            proposal_id,
+            payload.model_dump(),
+            session,
+            commit=False,
+        )
+        record_event(
+            db,
+            order_id=order_id,
+            entity_type="classification",
+            entity_id=proposal_id,
+            event_type="classification_rejected",
+            session=session,
+            after=serialize_proposal(proposal),
+            payload={"reason": proposal.rejection_reason, "onec_write": False},
+        )
+        db.commit()
+        return ProcurementClassificationRejectResponse.model_validate(
+            {"order": serialize_order(order), "proposal": serialize_proposal(proposal)}
+        )
+    except Exception as exc:
+        db.rollback()
         raise _service_error(exc) from exc
 
 

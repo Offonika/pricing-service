@@ -293,9 +293,10 @@ def _enriched_payload(
     resolution: ProductMediaResolution,
 ) -> dict[str, Any]:
     enriched = _json_copy(payload)
+    if resolution.product_card_url:
+        enriched["product_card_url"] = resolution.product_card_url
     if not resolution.found:
         return enriched
-    enriched["product_card_url"] = resolution.product_card_url
     existing_photos = enriched.get("photos")
     photos = list(existing_photos) if isinstance(existing_photos, list) else []
     first = dict(photos[0]) if photos and isinstance(photos[0], dict) else {}

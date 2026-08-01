@@ -181,6 +181,19 @@ def serialize_line(line: ProcurementOrderFormationLine) -> dict[str, Any]:
             "gross_margin_pct",
             "margin_pct",
         ),
+        "profitability_status": _payload_text(payload, "profitability_status"),
+        "profitability_source": _payload_text(payload, "profitability_source"),
+        "profitability_explanation": (
+            "Себестоимость за период отсутствует или равна нулю"
+            if _payload_text(payload, "profitability_status") == "cost_missing"
+            else None
+        ),
+        "metrics_as_of": _payload_text(payload, "metrics_as_of"),
+        "metrics_window_days": _payload_int(payload, "metrics_window_days"),
+        "product_defect_pct": _payload_decimal(payload, "product_defect_pct"),
+        "product_defect_history_units": _payload_int(payload, "product_defect_history_units"),
+        "product_defect_confidence": _payload_text(payload, "product_defect_confidence"),
+        "product_defect_source": _payload_text(payload, "product_defect_source"),
         "supplier_defect_pct": _payload_decimal(
             payload,
             "supplier_defect_pct",
@@ -191,7 +204,36 @@ def serialize_line(line: ProcurementOrderFormationLine) -> dict[str, Any]:
             "supplier_defect_history_units",
             "defect_history_units",
         ),
+        "supplier_defect_confidence": _payload_text(payload, "supplier_defect_confidence"),
+        "supplier_defect_attribution": _payload_text(payload, "supplier_defect_attribution"),
+        "supplier_defect_source_status": _payload_text(payload, "supplier_defect_source_status"),
         "price_change_pct": _payload_decimal(payload, "price_change_pct"),
+        "price_change_status": _payload_text(payload, "price_change_status"),
+        "price_history_count": _payload_int(payload, "price_history_count"),
+        "price_history_currency_ref": _payload_text(payload, "price_history_currency_ref"),
+        "price_history_expected_currency": _payload_text(
+            payload, "price_history_expected_currency"
+        ),
+        "price_history_available_currencies": _payload_list(
+            payload, "price_history_available_currencies"
+        ),
+        "supplier_prepare_days": _payload_int(
+            payload,
+            "supplier_prepare_days",
+            "recommended_supplier_prepare_days",
+        ),
+        "logistics_days": _payload_int(
+            payload,
+            "logistics_days",
+            "recommended_logistics_days",
+        ),
+        "lead_time_days": _payload_int(payload, "lead_time_days"),
+        "lead_time_source_level": _payload_text(
+            payload,
+            "lead_time_source_level",
+            "lead_time_match_level",
+        ),
+        "lead_time_confidence": _payload_text(payload, "lead_time_confidence"),
         "delivery_days": _payload_int(
             payload,
             "delivery_days",
@@ -263,6 +305,10 @@ def serialize_proposal(proposal: ProcurementClassificationProposal) -> dict[str,
         "approved_at": proposal.approved_at,
         "approved_by_bitrix_user_id": proposal.approved_by_bitrix_user_id,
         "approved_by_name": proposal.approved_by_name,
+        "rejected_at": proposal.rejected_at,
+        "rejected_by_bitrix_user_id": proposal.rejected_by_bitrix_user_id,
+        "rejected_by_name": proposal.rejected_by_name,
+        "rejection_reason": proposal.rejection_reason,
         "onec_status": proposal.onec_status,
         "onec_message_id": proposal.onec_message_id,
         "onec_error": proposal.onec_error,
@@ -415,6 +461,7 @@ def approve_classification_proposal(
     session: ProcurementOrderFormationSession,
     *,
     settings: Settings | None = None,
+    commit: bool = True,
 ) -> tuple[ProcurementOrderFormation, ProcurementClassificationProposal, str, str, Path | None]:
     settings = settings or get_settings()
     ensure_classification_approver(session.user_id, settings=settings)
@@ -449,14 +496,80 @@ def approve_classification_proposal(
         written_path = write_nomenclature_property_updates_message(exchange_root, message)
         proposal.onec_status = "pending"
         proposal.status = "sent_to_1c"
+    line.version += 1
     invalidate_order_approval(order)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     refreshed_order = get_order(db, order_id)
     refreshed_line = _line_from_order(refreshed_order, line_id)
     refreshed_proposal = next(
         item for item in refreshed_line.classification_proposals if item.id == proposal_id
     )
     return refreshed_order, refreshed_proposal, mode, xml_preview, written_path
+
+
+def reject_classification_proposal(
+    db: Session,
+    order_id: int,
+    line_id: int,
+    proposal_id: int,
+    values: dict[str, Any],
+    session: ProcurementOrderFormationSession,
+    *,
+    settings: Settings | None = None,
+    commit: bool = True,
+) -> tuple[ProcurementOrderFormation, ProcurementClassificationProposal]:
+    settings = settings or get_settings()
+    ensure_classification_approver(session.user_id, settings=settings)
+    order = get_order(db, order_id)
+    ensure_order_editable(order)
+    line = _line_from_order(order, line_id)
+    expected_order_version = int(values.get("expected_order_version") or 0)
+    expected_line_version = int(values.get("expected_line_version") or 0)
+    if order.version != expected_order_version:
+        raise VersionConflictError("order version changed; refresh the order")
+    if line.version != expected_line_version:
+        raise VersionConflictError("order line version changed; refresh the order")
+    proposal = next(
+        (item for item in line.classification_proposals if item.id == proposal_id),
+        None,
+    )
+    if proposal is None:
+        raise LookupError("classification proposal was not found")
+    if proposal.status != "proposed":
+        raise ValueError("only proposed classification can be rejected")
+    if str(proposal.requested_by_bitrix_user_id) == str(session.user_id):
+        raise PermissionError("classification proposal cannot be self-rejected")
+    reason = str(values.get("reason") or "").strip()
+    if not reason:
+        raise ValueError("classification rejection reason is required")
+    proposal.status = "rejected"
+    proposal.rejected_at = datetime.now(UTC).replace(tzinfo=None)
+    proposal.rejected_by_actor = session.actor
+    proposal.rejected_by_bitrix_user_id = session.user_id
+    proposal.rejected_by_name = session.user_name or session.actor
+    proposal.rejection_reason = reason
+    proposal.onec_status = "not_sent"
+    proposal.onec_message_id = None
+    proposal.onec_error = None
+    proposal.payload = {
+        **(proposal.payload or {}),
+        "rejection": {"reason": reason, "onec_write": False},
+    }
+    line.version += 1
+    invalidate_order_approval(order)
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+    refreshed_order = get_order(db, order_id)
+    refreshed_line = _line_from_order(refreshed_order, line_id)
+    refreshed_proposal = next(
+        item for item in refreshed_line.classification_proposals if item.id == proposal_id
+    )
+    return refreshed_order, refreshed_proposal
 
 
 def approve_order(
@@ -778,6 +891,19 @@ def line_blockers(line: ProcurementOrderFormationLine) -> list[str]:
         blockers.append("quantity_must_be_positive")
     if line.purchase_price <= 0:
         blockers.append("purchase_price_must_be_positive")
+    price_change = _payload_decimal(line.payload or {}, "price_change_pct")
+    if price_change is not None and abs(price_change) > Decimal("10"):
+        blockers.append("purchase_price_change_over_10_pct")
+    supplier_defect = _payload_decimal(line.payload or {}, "supplier_defect_pct")
+    supplier_defect_basis = _payload_int(line.payload or {}, "supplier_defect_history_units")
+    supplier_defect_attribution = _payload_text(line.payload or {}, "supplier_defect_attribution")
+    if (
+        supplier_defect_attribution == "supplier_exact"
+        and supplier_defect is not None
+        and supplier_defect > Decimal("10")
+        and (supplier_defect_basis or 0) >= 100
+    ):
+        blockers.append("supplier_defect_over_10_pct_reliable")
     latest = latest_classification_proposal(line)
     if latest and latest.status == "proposed":
         blockers.append("classification_approval_pending")
@@ -977,6 +1103,13 @@ def _payload_text(payload: dict[str, Any], *keys: str) -> str | None:
         if value not in (None, ""):
             return str(value).strip() or None
     return None
+
+
+def _payload_list(payload: dict[str, Any], key: str) -> list[str]:
+    value = payload.get(key)
+    if not isinstance(value, list):
+        return []
+    return [text for item in value if (text := str(item or "").strip())]
 
 
 def _payload_decimal(payload: dict[str, Any], *keys: str) -> Decimal | None:

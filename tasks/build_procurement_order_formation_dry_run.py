@@ -369,6 +369,7 @@ def build_grouped_orders(
             row,
             public_media=public_media,
             lead_candidate=lead_candidate or {},
+            lead_source_level=_source_level,
         )
         if b2b_customer_demand:
             line_payload["b2b_customer_demand"] = b2b_customer_demand
@@ -928,8 +929,11 @@ def procurement_assistant_line_payload(
     *,
     public_media: ProductMediaResolution | None,
     lead_candidate: Mapping[str, Any],
+    lead_source_level: str = "fallback_default",
 ) -> dict[str, Any]:
     payload: dict[str, Any] = {}
+    if public_media and public_media.product_card_url:
+        payload["product_card_url"] = public_media.product_card_url
     if public_media and public_media.found:
         payload["photos"] = [
             {
@@ -937,8 +941,20 @@ def procurement_assistant_line_payload(
                 "original": public_media.photo_original_url,
             }
         ]
-        payload["product_card_url"] = public_media.product_card_url
         payload["photo_source"] = PHOTO_SOURCE
+    supplier_prepare_days = _integer(
+        lead_candidate.get("recommended_supplier_prepare_days")
+        or row.get("supplier_prepare_days")
+        or row.get("supplier_assembly_days")
+    )
+    logistics_days = _integer(
+        lead_candidate.get("recommended_logistics_days") or row.get("logistics_days")
+    )
+    lead_time_days = (
+        supplier_prepare_days + logistics_days
+        if supplier_prepare_days is not None and logistics_days is not None
+        else _integer(row.get("lead_time_days"))
+    )
     optional_values = {
         "profitability_pct": _clean(
             row.get("profitability_pct") or row.get("gross_margin_pct") or row.get("margin_pct")
@@ -948,9 +964,12 @@ def procurement_assistant_line_payload(
             row.get("supplier_defect_history_units") or row.get("defect_history_units")
         ),
         "price_change_pct": _clean(row.get("price_change_pct")),
-        "delivery_days": _clean(
-            lead_candidate.get("recommended_supplier_prepare_days") or row.get("delivery_days")
-        ),
+        "delivery_days": _clean(row.get("delivery_days") or supplier_prepare_days),
+        "supplier_prepare_days": supplier_prepare_days,
+        "logistics_days": logistics_days,
+        "lead_time_days": lead_time_days,
+        "lead_time_confidence": _clean(lead_candidate.get("lead_time_confidence")),
+        "lead_time_source_level": lead_source_level,
     }
     payload.update({key: value for key, value in optional_values.items() if value})
     return payload

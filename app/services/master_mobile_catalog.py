@@ -367,7 +367,9 @@ def _is_product_card_path(value: str) -> bool:
 
 
 def _is_webp_asset_url(value: str) -> bool:
-    return urllib.parse.urlsplit(value).path.casefold().endswith(".webp")
+    path = urllib.parse.urlsplit(value).path.casefold()
+    filename = path.rsplit("/", 1)[-1]
+    return path.endswith(".webp") and "noimage" not in filename
 
 
 def _safe_error_detail(exc: BaseException) -> str:

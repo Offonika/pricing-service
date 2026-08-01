@@ -8167,6 +8167,63 @@ paths:
                 $ref: '#/components/schemas/ProcurementOrderAssistantResponse'
       security:
       - HTTPBearer: []
+  /api/procurement-order-formation/suppliers/{supplier_ref}/profile:
+    get:
+      summary: Read Supplier Profile
+      operationId: read_supplier_profile_api_procurement_order_formation_suppliers__supplier_ref__profile_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: supplier_ref
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Supplier Ref
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementSupplierProfileRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      summary: Change Supplier Profile
+      operationId: change_supplier_profile_api_procurement_order_formation_suppliers__supplier_ref__profile_patch
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: supplier_ref
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Supplier Ref
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementSupplierProfileUpdateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementSupplierProfileRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/procurement-order-formation/assistant/assemble:
     post:
       summary: Assemble Order Assistant Projects
@@ -8493,6 +8550,50 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProcurementClassificationApprovalResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/orders/{order_id}/lines/{line_id}/classification/{proposal_id}/reject:
+    post:
+      summary: Reject Line Classification
+      operationId: reject_line_classification_api_procurement_order_formation_orders__order_id__lines__line_id__classification__proposal_id__reject_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Order Id
+      - name: line_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Line Id
+      - name: proposal_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Proposal Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementClassificationRejectRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementClassificationRejectResponse'
         '422':
           description: Validation Error
           content:
@@ -20380,6 +20481,35 @@ components:
           - type: string
           - type: 'null'
           title: Approved By Name
+        rejected_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Rejected At
+        rejected_by_bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Rejected By Bitrix User Id
+        rejected_by_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Rejected By Name
+        rejection_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Rejection Reason
+        can_approve:
+          type: boolean
+          title: Can Approve
+          default: false
+        can_reject:
+          type: boolean
+          title: Can Reject
+          default: false
         onec_status:
           type: string
           title: Onec Status
@@ -20496,6 +20626,38 @@ components:
       - approved_today
       - readback_conflicts
       title: ProcurementClassificationQueueResponse
+    ProcurementClassificationRejectRequest:
+      properties:
+        expected_order_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Order Version
+        expected_line_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Line Version
+        reason:
+          type: string
+          maxLength: 4000
+          minLength: 1
+          title: Reason
+      type: object
+      required:
+      - expected_order_version
+      - expected_line_version
+      - reason
+      title: ProcurementClassificationRejectRequest
+    ProcurementClassificationRejectResponse:
+      properties:
+        order:
+          $ref: '#/components/schemas/ProcurementOrderFormationRead'
+        proposal:
+          $ref: '#/components/schemas/ProcurementClassificationProposalRead'
+      type: object
+      required:
+      - order
+      - proposal
+      title: ProcurementClassificationRejectResponse
     ProcurementDashboardAttentionItem:
       properties:
         proposal_id:
@@ -21721,6 +21883,53 @@ components:
             pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Profitability Pct
+        profitability_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Profitability Status
+        profitability_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Profitability Source
+        profitability_explanation:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Profitability Explanation
+        metrics_as_of:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Metrics As Of
+        metrics_window_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Metrics Window Days
+        product_defect_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Product Defect Pct
+        product_defect_history_units:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Product Defect History Units
+        product_defect_confidence:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Product Defect Confidence
+        product_defect_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Product Defect Source
         supplier_defect_pct:
           anyOf:
           - type: string
@@ -21732,12 +21941,77 @@ components:
           - type: integer
           - type: 'null'
           title: Supplier Defect History Units
+        supplier_defect_confidence:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Defect Confidence
+        supplier_defect_attribution:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Defect Attribution
+        supplier_defect_source_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Defect Source Status
         price_change_pct:
           anyOf:
           - type: string
             pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Price Change Pct
+        price_change_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Price Change Status
+        price_history_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Price History Count
+        price_history_currency_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Price History Currency Ref
+        price_history_expected_currency:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Price History Expected Currency
+        price_history_available_currencies:
+          items:
+            type: string
+          type: array
+          title: Price History Available Currencies
+        supplier_prepare_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Supplier Prepare Days
+        logistics_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Logistics Days
+        lead_time_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Lead Time Days
+        lead_time_source_level:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lead Time Source Level
+        lead_time_confidence:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lead Time Confidence
         delivery_days:
           anyOf:
           - type: integer
@@ -22233,6 +22507,25 @@ components:
       title: ProcurementOrderTransmissionResponse
     ProcurementSupplierProfileRead:
       properties:
+        supplier_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Ref
+        supplier_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Code
+        supplier_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Name
+        version:
+          type: integer
+          title: Version
+          default: 0
         qualification_class:
           anyOf:
           - type: string
@@ -22243,6 +22536,11 @@ components:
           - type: string
           - type: 'null'
           title: Qualification Label
+        class_description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Class Description
         profitability_pct:
           anyOf:
           - type: string
@@ -22260,6 +22558,15 @@ components:
           - type: integer
           - type: 'null'
           title: Defect History Units
+        defect_confidence:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Defect Confidence
+        defect_attribution:
+          type: string
+          title: Defect Attribution
+          default: unconfirmed
         on_time_pct:
           anyOf:
           - type: string
@@ -22282,27 +22589,121 @@ components:
             pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
           - type: 'null'
           title: Credit Limit
+        terms_source:
+          type: string
+          title: Terms Source
+          default: onec_contract
+        terms_status:
+          type: string
+          title: Terms Status
+          default: missing
         advantages:
           items:
             type: string
           type: array
           title: Advantages
+        internal_note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Internal Note
         history_order_count:
           anyOf:
           - type: integer
           - type: 'null'
           title: History Order Count
+        supplier_prepare_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Supplier Prepare Days
+        logistics_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Logistics Days
+        lead_time_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Lead Time Days
+        lead_time_confidence:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lead Time Confidence
+        price_history_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Price History Count
+        facts_updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Facts Updated At
+        manual_updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Manual Updated At
+        manual_updated_by_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Manual Updated By Name
         updated_at:
           anyOf:
           - type: string
+            format: date-time
           - type: 'null'
           title: Updated At
         data_status:
           type: string
           title: Data Status
           default: missing
+        can_edit:
+          type: boolean
+          title: Can Edit
+          default: false
       type: object
       title: ProcurementSupplierProfileRead
+    ProcurementSupplierProfileUpdateRequest:
+      properties:
+        expected_version:
+          type: integer
+          minimum: 0.0
+          title: Expected Version
+        qualification_class:
+          anyOf:
+          - type: string
+            pattern: ^[ABCabc]$
+          - type: 'null'
+          title: Qualification Class
+        qualification_label:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Qualification Label
+        advantages:
+          items:
+            type: string
+          type: array
+          maxItems: 20
+          title: Advantages
+        internal_note:
+          anyOf:
+          - type: string
+            maxLength: 4000
+          - type: 'null'
+          title: Internal Note
+      type: object
+      required:
+      - expected_version
+      title: ProcurementSupplierProfileUpdateRequest
     ProductFacets:
       properties:
         subjects:

@@ -246,6 +246,11 @@ def test_grouped_dry_run_uses_only_exact_public_catalog_media() -> None:
         "product_card_url": "https://master-mobile.ru/catalog/displei/40699/",
         "photo_source": "master_mobile_site",
         "delivery_days": "10",
+        "supplier_prepare_days": 10,
+        "logistics_days": 20,
+        "lead_time_days": 30,
+        "lead_time_confidence": "high",
+        "lead_time_source_level": "sku",
     }
 
 

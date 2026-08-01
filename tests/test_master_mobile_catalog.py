@@ -65,6 +65,24 @@ def test_resolver_rechecks_article_inside_product_card() -> None:
     assert result.status == "article_mismatch"
 
 
+def test_resolver_does_not_accept_noimage_webp_as_original() -> None:
+    search = _fixture("search_exact.html")
+    card = _fixture("card_exact.html").replace(
+        "/upload/original/40699.webp",
+        "/upload/noimage-big.webp",
+    )
+    resolver = MasterMobileCatalogResolver(
+        fetch_html=lambda url: search if "/catalog/?" in url else card,
+        retry_sleep=lambda _seconds: None,
+    )
+
+    result = resolver.resolve("044702")
+
+    assert result.status == "photo_missing"
+    assert result.product_card_url == CARD_URL
+    assert result.photo_original_url is None
+
+
 def test_resolver_rejects_original_photo_outside_trusted_https_host() -> None:
     resolver, _calls = _resolver("search_exact.html", "card_unsafe.html")
 

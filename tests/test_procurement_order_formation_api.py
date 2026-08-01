@@ -111,3 +111,49 @@ def test_order_assistant_line_schema_exposes_catalog_card_and_photo_source() -> 
 
     assert "product_card_url" in schema["properties"]
     assert "photo_source" in schema["properties"]
+
+
+def test_order_assistant_openapi_exposes_metric_evidence_and_supplier_profile_version() -> None:
+    schema = app.openapi()["components"]["schemas"]["ProcurementOrderFormationLineRead"]
+    properties = schema["properties"]
+    for field_name in (
+        "metrics_as_of",
+        "metrics_window_days",
+        "profitability_status",
+        "product_defect_pct",
+        "supplier_defect_pct",
+        "supplier_defect_attribution",
+        "price_history_expected_currency",
+        "price_history_available_currencies",
+        "supplier_prepare_days",
+        "logistics_days",
+        "lead_time_days",
+        "lead_time_source_level",
+        "lead_time_confidence",
+    ):
+        assert field_name in properties
+
+    profile = app.openapi()["components"]["schemas"]["ProcurementSupplierProfileRead"]
+    assert "version" in profile["properties"]
+    assert "terms_status" in profile["properties"]
+    assert "can_edit" in profile["properties"]
+
+
+def test_supplier_profile_and_classification_rejection_endpoints_are_versioned() -> None:
+    paths = app.openapi()["paths"]
+    profile_path = "/api/procurement-order-formation/suppliers/{supplier_ref}/profile"
+    reject_path = (
+        "/api/procurement-order-formation/orders/{order_id}/lines/{line_id}/"
+        "classification/{proposal_id}/reject"
+    )
+    assert {"get", "patch"}.issubset(paths[profile_path])
+    assert "post" in paths[reject_path]
+
+    update_schema = app.openapi()["components"]["schemas"][
+        "ProcurementSupplierProfileUpdateRequest"
+    ]
+    reject_schema = app.openapi()["components"]["schemas"]["ProcurementClassificationRejectRequest"]
+    assert "expected_version" in update_schema["required"]
+    assert {"expected_order_version", "expected_line_version", "reason"}.issubset(
+        reject_schema["required"]
+    )

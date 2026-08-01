@@ -59,6 +59,11 @@ from app.services.procurement_order_formation import (
     serialize_proposal,
     status_label,
 )
+from app.services.procurement_supplier_profiles import (
+    empty_supplier_profile,
+    serialize_supplier_profile,
+    supplier_profiles_by_ref,
+)
 
 DISPLAY_FOLDER = "дисплеи"
 DISPLAY_RESPONSIBLE_NAME = "Омар"
@@ -649,7 +654,12 @@ def list_orders(
     }
 
 
-def build_order_assistant(db: Session) -> dict[str, Any]:
+def build_order_assistant(
+    db: Session,
+    *,
+    session: ProcurementOrderFormationSession | None = None,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
     orders = list(db.scalars(_order_list_statement()).unique().all())
     orders = [
         order
@@ -658,7 +668,52 @@ def build_order_assistant(db: Session) -> dict[str, Any]:
         and order.onec_status not in {"pending", "transmitted"}
     ]
     orders.sort(key=lambda item: (item.order_date, item.updated_at), reverse=True)
-    serialized_orders = [serialize_order(order) for order in orders]
+    profiles = supplier_profiles_by_ref(db, (order.supplier_ref for order in orders))
+    serialized_orders = []
+    approver_ids = {
+        str(value).strip()
+        for value in (
+            settings or get_settings()
+        ).procurement_order_formation_classification_approver_user_ids
+        if str(value).strip()
+    }
+    for order in orders:
+        serialized = serialize_order(order)
+        normalized_ref = str(order.supplier_ref or "").strip().lower()
+        profile = profiles.get(normalized_ref)
+        if profile is not None:
+            serialized["supplier_profile"] = serialize_supplier_profile(profile)
+        elif serialized.get("supplier_profile", {}).get("data_status") != "missing":
+            serialized["supplier_profile"] = {
+                **empty_supplier_profile(
+                    supplier_ref=normalized_ref or None,
+                    supplier_code=order.supplier_code,
+                    supplier_name=order.supplier_name,
+                ),
+                **serialized["supplier_profile"],
+            }
+        else:
+            serialized["supplier_profile"] = empty_supplier_profile(
+                supplier_ref=normalized_ref or None,
+                supplier_code=order.supplier_code,
+                supplier_name=order.supplier_name,
+            )
+        serialized["supplier_profile"]["can_edit"] = bool(
+            session and str(session.user_id) in approver_ids
+        )
+        for line in serialized["lines"]:
+            proposal = line.get("latest_classification")
+            if not isinstance(proposal, dict):
+                continue
+            can_decide = bool(
+                session
+                and proposal.get("status") == "proposed"
+                and str(session.user_id) in approver_ids
+                and str(proposal.get("requested_by_bitrix_user_id") or "") != str(session.user_id)
+            )
+            proposal["can_approve"] = can_decide
+            proposal["can_reject"] = can_decide
+        serialized_orders.append(serialized)
     lines = [line for order in serialized_orders for line in order["lines"] if not line["removed"]]
     ready_order_ids = {
         int(order["id"])
@@ -698,7 +753,9 @@ def build_order_assistant(db: Session) -> dict[str, Any]:
             ),
             "high_defect_lines": sum(
                 (value := _assistant_decimal(line.get("supplier_defect_pct"))) is not None
-                and value > Decimal("2")
+                and value > Decimal("10")
+                and (line.get("supplier_defect_attribution") == "supplier_exact")
+                and int(line.get("supplier_defect_history_units") or 0) >= 100
                 for line in lines
             ),
             "photo_missing_lines": sum(not line.get("photo_original_url") for line in lines),

@@ -4,14 +4,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import toast from "react-hot-toast";
 import type { ProcurementOrderAssistant } from "../api/procurementAssortment";
 import {
+  approveProcurementClassification,
   assembleProcurementOrderProjects,
   fetchProcurementOrderAssistant,
+  rejectProcurementClassification,
+  updateProcurementSupplierProfile,
 } from "../api/procurementAssortment";
 import { ProcurementOrderAssistant as ProcurementOrderAssistantView } from "./ProcurementOrderAssistant";
 
 vi.mock("../api/procurementAssortment", () => ({
   assembleProcurementOrderProjects: vi.fn(),
+  approveProcurementClassification: vi.fn(),
   fetchProcurementOrderAssistant: vi.fn(),
+  rejectProcurementClassification: vi.fn(),
+  updateProcurementSupplierProfile: vi.fn(),
 }));
 
 vi.mock("react-hot-toast", () => ({
@@ -104,6 +110,9 @@ describe("ProcurementOrderAssistant", () => {
   beforeEach(() => {
     vi.mocked(fetchProcurementOrderAssistant).mockReset();
     vi.mocked(assembleProcurementOrderProjects).mockReset();
+    vi.mocked(approveProcurementClassification).mockReset();
+    vi.mocked(rejectProcurementClassification).mockReset();
+    vi.mocked(updateProcurementSupplierProfile).mockReset();
     vi.mocked(toast.success).mockReset();
     vi.mocked(toast.error).mockReset();
   });
@@ -159,7 +168,7 @@ describe("ProcurementOrderAssistant", () => {
     expect(screen.getByRole("button", { name: /Собрать 0/ })).toBeDisabled();
     expect(screen.getByRole("checkbox", { name: /Выбрать Дисплей/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Включить" })).toBeDisabled();
-    expect(screen.getByText("Недоступно: нет карточки или оригинала фото")).toBeInTheDocument();
+    expect(screen.getByText("Недоступно: не найдена точная карточка товара")).toBeInTheDocument();
     expect(assembleProcurementOrderProjects).not.toHaveBeenCalled();
   });
 
@@ -187,7 +196,7 @@ describe("ProcurementOrderAssistant", () => {
     render(<ProcurementOrderAssistantView />);
     expect(await screen.findByText("Дисплей iPhone 15 Pro OLED")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: /Брак выше 2%/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Подтверждённый брак >10%/ }));
     expect(screen.queryByText("Дисплей iPhone 15 Pro OLED")).not.toBeInTheDocument();
     expect(screen.getByText("По выбранным фильтрам строк нет.")).toBeInTheDocument();
 
@@ -197,5 +206,81 @@ describe("ProcurementOrderAssistant", () => {
     expect(screen.getByText("Пакет поставщику")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Список + фото" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Фото отдельно" })).toBeInTheDocument();
+  });
+
+  it("показывает полное предложение и требует причину для inline-отклонения", async () => {
+    const data = assistantData();
+    const order = data.orders[0];
+    const line = order.lines[0];
+    line.blockers = ["classification_approval_pending"];
+    order.blockers = ["line_1:classification_approval_pending"];
+    line.latest_classification = {
+      id: 77,
+      status: "proposed",
+      previous_status: "working",
+      proposed_status: "matrix",
+      proposed_status_label: "Матричный",
+      reason: "Товар нужен в постоянной матрице",
+      blocks_order_line: false,
+      requested_at: "2026-08-01T10:00:00",
+      requested_by_bitrix_user_id: "77",
+      requested_by_name: "Автор предложения",
+      onec_status: "not_sent",
+      can_approve: true,
+      can_reject: true,
+    };
+    vi.mocked(fetchProcurementOrderAssistant).mockResolvedValue(data);
+    vi.mocked(rejectProcurementClassification).mockResolvedValue({
+      order,
+      proposal: { ...line.latest_classification, status: "rejected" },
+    });
+
+    render(<ProcurementOrderAssistantView />);
+    expect(await screen.findByText("working → Матричный")).toBeInTheDocument();
+    expect(screen.getByText("Автор: Автор предложения")).toBeInTheDocument();
+    expect(screen.getByText("Товар нужен в постоянной матрице")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Принять" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Отклонить" }));
+    const confirm = screen.getByRole("button", { name: "Подтвердить отклонение" });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("Причина отклонения"), {
+      target: { value: "Недостаточно подтверждённых продаж" },
+    });
+    fireEvent.click(confirm);
+
+    await waitFor(() => expect(rejectProcurementClassification).toHaveBeenCalledWith(
+      order.id,
+      line.id,
+      77,
+      {
+        expected_order_version: order.version,
+        expected_line_version: line.version,
+        reason: "Недостаточно подтверждённых продаж",
+      }
+    ));
+  });
+
+  it("сохраняет ручной класс поставщика с ожидаемой версией", async () => {
+    const data = assistantData();
+    const profile = data.orders[0].supplier_profile!;
+    profile.version = 2;
+    profile.can_edit = true;
+    vi.mocked(fetchProcurementOrderAssistant).mockResolvedValue(data);
+    vi.mocked(updateProcurementSupplierProfile).mockResolvedValue({
+      ...profile,
+      version: 3,
+      qualification_class: "B",
+    });
+
+    render(<ProcurementOrderAssistantView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Изменить профиль" }));
+    fireEvent.change(screen.getByLabelText("Класс"), { target: { value: "B" } });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить профиль" }));
+
+    await waitFor(() => expect(updateProcurementSupplierProfile).toHaveBeenCalledWith(
+      "supplier-ref",
+      expect.objectContaining({ expected_version: 2, qualification_class: "B" })
+    ));
   });
 });

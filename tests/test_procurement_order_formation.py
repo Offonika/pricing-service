@@ -42,6 +42,7 @@ from app.services.procurement_order_formation import (
     order_blockers,
     record_order_exchange_result,
     record_property_update_exchange_result,
+    reject_classification_proposal,
     transmit_order,
     update_order_line,
 )
@@ -313,7 +314,7 @@ def test_order_assistant_exposes_original_photos_and_real_supplier_history(db_se
     assert validated.summary.photo_missing_lines == 0
     assert validated.orders[0].supplier_profile.qualification_class == "A"
     assert validated.orders[0].supplier_profile.defect_pct == Decimal("0.8")
-    assert validated.orders[0].supplier_profile.updated_at == "2026-08-01"
+    assert validated.orders[0].supplier_profile.updated_at.date() == date(2026, 8, 1)
     assert validated.orders[0].lines[0].photo_original_url.endswith("/1.jpg")
     assert validated.orders[0].lines[0].product_card_url == (
         "https://master-mobile.ru/catalog/displei/1/"
@@ -502,6 +503,156 @@ def test_classification_approval_checks_permission_and_builds_property_contract(
         item.findtext("PropertyName") == "Ручной минимальный остаток"
         for item in root.findall("Items/Item")
     )
+
+
+def test_classification_rejection_requires_other_approver_reason_and_versions(
+    db_session,
+) -> None:
+    order = _order(db_session)
+    order = create_classification_proposal(
+        db_session,
+        order.id,
+        order.lines[0].id,
+        {
+            "proposed_status": "matrix",
+            "reason": "Предложение автора",
+        },
+        _session("77"),
+    )
+    line = order.lines[0]
+    proposal = line.classification_proposals[0]
+    settings = Settings(procurement_order_formation_classification_approver_user_ids=["42", "77"])
+    with pytest.raises(PermissionError):
+        reject_classification_proposal(
+            db_session,
+            order.id,
+            line.id,
+            proposal.id,
+            {
+                "expected_order_version": order.version,
+                "expected_line_version": line.version,
+                "reason": "Самосогласование",
+            },
+            _session("77"),
+            settings=settings,
+        )
+    with pytest.raises(ValueError, match="reason"):
+        reject_classification_proposal(
+            db_session,
+            order.id,
+            line.id,
+            proposal.id,
+            {
+                "expected_order_version": order.version,
+                "expected_line_version": line.version,
+                "reason": "",
+            },
+            _session("42"),
+            settings=settings,
+        )
+
+    previous_order_version = order.version
+    previous_line_version = line.version
+    refreshed, rejected = reject_classification_proposal(
+        db_session,
+        order.id,
+        line.id,
+        proposal.id,
+        {
+            "expected_order_version": order.version,
+            "expected_line_version": line.version,
+            "reason": "Недостаточно оснований",
+        },
+        _session("42"),
+        settings=settings,
+    )
+
+    assert rejected.status == "rejected"
+    assert rejected.rejection_reason == "Недостаточно оснований"
+    assert rejected.onec_status == "not_sent"
+    assert refreshed.version == previous_order_version + 1
+    assert refreshed.lines[0].version == previous_line_version + 1
+    assert "classification_approval_pending" not in line_blockers(refreshed.lines[0])
+
+
+def test_classification_decisions_can_share_transaction_with_audit_event(db_session) -> None:
+    order = _order(db_session)
+    order = create_classification_proposal(
+        db_session,
+        order.id,
+        order.lines[0].id,
+        {
+            "proposed_status": "matrix",
+            "reason": "Проверка атомарного решения",
+        },
+        _session("77"),
+    )
+    line = order.lines[0]
+    proposal = line.classification_proposals[0]
+    order_version = order.version
+    line_version = line.version
+    settings = Settings(procurement_order_formation_classification_approver_user_ids=["42"])
+
+    approve_classification_proposal(
+        db_session,
+        order.id,
+        line.id,
+        proposal.id,
+        _session("42"),
+        settings=settings,
+        commit=False,
+    )
+    db_session.rollback()
+    db_session.expire_all()
+    rolled_back = db_session.get(ProcurementOrderFormation, order.id)
+    assert rolled_back is not None
+    assert rolled_back.version == order_version
+    assert rolled_back.lines[0].version == line_version
+    assert rolled_back.lines[0].classification_proposals[0].status == "proposed"
+
+    reject_classification_proposal(
+        db_session,
+        order.id,
+        line.id,
+        proposal.id,
+        {
+            "expected_order_version": order_version,
+            "expected_line_version": line_version,
+            "reason": "Проверка отклонения",
+        },
+        _session("42"),
+        settings=settings,
+        commit=False,
+    )
+    db_session.rollback()
+    db_session.expire_all()
+    rolled_back = db_session.get(ProcurementOrderFormation, order.id)
+    assert rolled_back is not None
+    assert rolled_back.version == order_version
+    assert rolled_back.lines[0].version == line_version
+    assert rolled_back.lines[0].classification_proposals[0].status == "proposed"
+
+
+def test_metric_blockers_use_only_agreed_thresholds(db_session) -> None:
+    order = _order(db_session)
+    line = order.lines[0]
+    line.payload = {
+        "profitability_pct": "-20",
+        "product_defect_pct": "40",
+        "supplier_defect_attribution": "unconfirmed",
+        "price_change_pct": "10",
+    }
+    assert "purchase_price_change_over_10_pct" not in line_blockers(line)
+    assert "supplier_defect_over_10_pct_reliable" not in line_blockers(line)
+
+    line.payload = {"price_change_pct": "10.01"}
+    assert "purchase_price_change_over_10_pct" in line_blockers(line)
+    line.payload = {
+        "supplier_defect_attribution": "supplier_exact",
+        "supplier_defect_pct": "10.01",
+        "supplier_defect_history_units": 100,
+    }
+    assert "supplier_defect_over_10_pct_reliable" in line_blockers(line)
 
 
 def test_supplier_order_contract_has_one_header_and_multiple_draft_lines(db_session) -> None:

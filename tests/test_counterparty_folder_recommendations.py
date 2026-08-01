@@ -36,6 +36,7 @@ from app.services.counterparty_folder_recommendations import (
     _build_item,
     build_counterparty_folder_recommendations,
     classify_open_debt_documents,
+    enrich_folder_recommendation_item,
     open_debt_documents_match_balance,
 )
 from app.services.counterparty_folder_snapshots import (
@@ -488,6 +489,109 @@ def test_folder_alias_treats_site_and_online_store_as_equivalent() -> None:
     assert item["status"] == STATUS_OK
     assert item["current_folder_display_name"] == "Онлайн-магазин"
     assert item["recommended_folder_display_name"] == "Онлайн-магазин"
+
+
+def test_confirmed_supplier_context_stays_excluded_after_review_reason_changes() -> None:
+    item = enrich_folder_recommendation_item(
+        {
+            "counterparty_ref": "cp-supplier",
+            "current_balance": Decimal("1500.00"),
+            "current_folder_name": "Поставщики Москва",
+            "recommended_folder_name": "Центральный склад",
+            "debt_document_ref": "doc-supplier",
+            "status": STATUS_NEEDS_REVIEW,
+            "review_reason": "origin_document_structure_confirmed_manual_review",
+            "exclusion_reason": "excluded_supplier_folder",
+            "is_overdue": True,
+        }
+    )
+
+    assert item["queue"] == QUEUE_EXCLUDED
+    assert item["action_required"] is False
+
+
+def test_confirmed_site_context_stays_excluded_after_review_reason_changes() -> None:
+    item = enrich_folder_recommendation_item(
+        {
+            "counterparty_ref": "cp-site-mismatch",
+            "current_balance": Decimal("1500.00"),
+            "current_folder_name": "02. Савеловский",
+            "recommended_folder_name": "Онлайн-магазин",
+            "debt_document_ref": "doc-site",
+            "status": STATUS_NEEDS_REVIEW,
+            "review_reason": "origin_document_structure_confirmed_manual_review",
+            "exclusion_reason": "origin_document_needs_order_payment_check",
+            "is_overdue": True,
+        }
+    )
+
+    assert item["queue"] == QUEUE_EXCLUDED
+    assert item["action_required"] is False
+
+
+def test_build_item_persists_site_exclusion_separately_from_review_reason() -> None:
+    item = _build_item(
+        _snapshot(
+            "cp-site-mismatch",
+            counterparty_name="Клиент сайта",
+            balance="1500.00",
+            document_ref="doc-site-mismatch",
+            document_number="РТУ-С",
+            document_date=datetime(2026, 5, 1, 10, 0),
+            credit_depth_days=7,
+            is_overdue=True,
+            overdue_days=20,
+        ),
+        folder_row=CounterpartyFolderRow(
+            counterparty_ref="cp-site-mismatch",
+            counterparty_code="РБ000003",
+            counterparty_name="Клиент сайта",
+            current_folder_ref="folder-retail",
+            current_folder_name="02. Савеловский",
+        ),
+        document_row=SaleDocumentDepartmentRow(
+            document_ref="doc-site-mismatch",
+            document_department_ref="dep-online",
+            document_department_name="Онлайн-магазин",
+            recommended_folder_ref="folder-online",
+            recommended_folder_name="Онлайн-магазин",
+            document_responsible_ref=None,
+            document_responsible_name=None,
+            document_author_ref=None,
+            document_author_name=None,
+        ),
+        open_debt_documents=[
+            {
+                "document_ref": "doc-site-mismatch",
+                "document_number": "РТУ-С",
+                "document_date": datetime(2026, 5, 1, 10, 0),
+                "open_amount": Decimal("1500.00"),
+                "recommended_folder_name": "Онлайн-магазин",
+            }
+        ],
+    )
+
+    assert item["exclusion_reason"] == "origin_document_needs_order_payment_check"
+    assert enrich_folder_recommendation_item(item)["queue"] == QUEUE_EXCLUDED
+
+
+def test_spb_aliases_route_cross_folder_conflict_to_business_review() -> None:
+    item = enrich_folder_recommendation_item(
+        {
+            "counterparty_ref": "cp-spb-alias",
+            "current_balance": Decimal("1500.00"),
+            "current_folder_name": "10. СПБ Просвещения",
+            "recommended_folder_name": "Садовая",
+            "debt_document_ref": "doc-spb",
+            "status": STATUS_NEEDS_REVIEW,
+            "review_reason": "origin_document_structure_confirmed_manual_review",
+            "business_review_reason": "spb_cross_folder_manual_review",
+            "is_overdue": True,
+        }
+    )
+
+    assert item["queue"] == QUEUE_BUSINESS_REVIEW
+    assert item["action_required"] is False
 
 
 def test_folder_alias_treats_teply_stan_and_elektromir_as_equivalent() -> None:

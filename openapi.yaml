@@ -12223,6 +12223,16 @@ components:
           - type: string
           - type: 'null'
           title: Review Reason
+        exclusion_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Exclusion Reason
+        business_review_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Business Review Reason
         document_structure_status:
           anyOf:
           - type: string

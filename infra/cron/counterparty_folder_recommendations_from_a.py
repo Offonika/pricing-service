@@ -72,6 +72,7 @@ REVIEW_REASON_LABELS = {
     "spb_cross_folder_manual_review": "межпапочный СПБ-кейс, нужна ручная проверка",
     "excluded_employee_folder": "исключено: контрагент или папка сотрудников",
     "excluded_wholesale_counterparty": "исключено: оптовый клиент или оптовый отдел",
+    "excluded_supplier_folder": "исключено: контрагент находится в папке поставщиков",
     "excluded_site_payment_on_pickup": "исключено: выдача без оплаты, отвечает сайт",
     "excluded_maklab_spb_prosvet": "исключено: Маклаб СПБ ПРОСВЕТ, не трогаем",
     "below_min_balance_threshold": "скрыто из ежедневного списка: сумма долга ниже порога",

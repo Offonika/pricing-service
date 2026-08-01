@@ -72,6 +72,7 @@ REVIEW_REASON_FOLDER_MISMATCH_PAYMENT_TERM_MISSING = "folder_mismatch_payment_te
 REVIEW_REASON_SPB_CROSS_FOLDER = "spb_cross_folder_manual_review"
 REVIEW_REASON_EXCLUDED_EMPLOYEE_FOLDER = "excluded_employee_folder"
 REVIEW_REASON_EXCLUDED_WHOLESALE = "excluded_wholesale_counterparty"
+REVIEW_REASON_EXCLUDED_SUPPLIER_FOLDER = "excluded_supplier_folder"
 REVIEW_REASON_EXCLUDED_SITE_PAYMENT_ON_PICKUP = "excluded_site_payment_on_pickup"
 REVIEW_REASON_EXCLUDED_MAKLAB_SPB_PROSVET = "excluded_maklab_spb_prosvet"
 REVIEW_REASON_BELOW_MIN_BALANCE = "below_min_balance_threshold"
@@ -824,6 +825,16 @@ def _is_site_folder(current_folder_name: str | None) -> bool:
     return _folder_alias_key(current_folder_name) == "online_store"
 
 
+def _is_supplier_context(
+    *,
+    current_folder_name: str | None,
+    recommended_folder_name: str | None,
+) -> bool:
+    return any(
+        "поставщик" in _text_key(value) for value in (current_folder_name, recommended_folder_name)
+    )
+
+
 def _counterparty_exception_reason(
     *,
     snapshot: ReceivableBalanceSnapshot,
@@ -842,6 +853,19 @@ def _counterparty_exception_reason(
         recommended_folder_name=recommended_folder_name,
     ):
         return REVIEW_REASON_EXCLUDED_WHOLESALE
+    if _is_supplier_context(
+        current_folder_name=folder_row.current_folder_name if folder_row else None,
+        recommended_folder_name=recommended_folder_name,
+    ):
+        return REVIEW_REASON_EXCLUDED_SUPPLIER_FOLDER
+    current_folder_name = folder_row.current_folder_name if folder_row else None
+    if (
+        current_folder_name
+        and recommended_folder_name
+        and (_is_site_folder(current_folder_name) or _is_site_folder(recommended_folder_name))
+        and not _folder_names_equivalent(current_folder_name, recommended_folder_name)
+    ):
+        return REVIEW_REASON_ORIGIN_DOCUMENT_NEEDS_ORDER_PAYMENT_CHECK
     if _is_site_payment_on_pickup(snapshot.counterparty_name):
         return REVIEW_REASON_EXCLUDED_SITE_PAYMENT_ON_PICKUP
     if _is_maklab_spb_prosvet(
@@ -861,12 +885,12 @@ def _is_spb_cross_folder(
     recommended = _text_key(recommended_folder_name)
     if _folder_names_equivalent(current_folder_name, recommended_folder_name):
         return False
+    current_alias = _folder_alias_key(current_folder_name) or ""
+    recommended_alias = _folder_alias_key(recommended_folder_name) or ""
+    current_is_spb = "спб" in current or current_alias.startswith("spb_")
+    recommended_is_spb = "спб" in recommended or recommended_alias.startswith("spb_")
     return bool(
-        current
-        and recommended
-        and current != recommended
-        and "спб" in current
-        and "спб" in recommended
+        current and recommended and current != recommended and current_is_spb and recommended_is_spb
     )
 
 
@@ -886,6 +910,7 @@ def _is_excluded_reason(reason: str | None) -> bool:
         REVIEW_REASON_EXCLUDED_CHINA_SUPPLIER_GROUP,
         REVIEW_REASON_EXCLUDED_EMPLOYEE_FOLDER,
         REVIEW_REASON_EXCLUDED_WHOLESALE,
+        REVIEW_REASON_EXCLUDED_SUPPLIER_FOLDER,
         REVIEW_REASON_EXCLUDED_SITE_PAYMENT_ON_PICKUP,
         REVIEW_REASON_EXCLUDED_MAKLAB_SPB_PROSVET,
         REVIEW_REASON_ORIGIN_DOCUMENT_NEEDS_ORDER_PAYMENT_CHECK,
@@ -919,7 +944,7 @@ def _folder_mismatch_exception_reason(
     )
     if counterparty_exception:
         return counterparty_exception
-    if _is_site_folder(folder_row.current_folder_name):
+    if _is_site_folder(folder_row.current_folder_name) or _is_site_folder(recommended_folder_name):
         return REVIEW_REASON_ORIGIN_DOCUMENT_NEEDS_ORDER_PAYMENT_CHECK
     if _is_spb_cross_folder(
         current_folder_name=folder_row.current_folder_name,
@@ -1322,6 +1347,20 @@ def _build_item(
         folder_row=folder_row,
         recommended_folder_name=recommended_folder_name,
     )
+    exclusion_reason = (
+        REVIEW_REASON_EXCLUDED_CHINA_SUPPLIER_GROUP
+        if is_excluded_china_supplier
+        else counterparty_exception
+    )
+    business_review_reason = (
+        REVIEW_REASON_SPB_CROSS_FOLDER
+        if folder_row
+        and _is_spb_cross_folder(
+            current_folder_name=folder_row.current_folder_name,
+            recommended_folder_name=recommended_folder_name,
+        )
+        else None
+    )
     if is_excluded_china_supplier:
         review_reason = REVIEW_REASON_EXCLUDED_CHINA_SUPPLIER_GROUP
     elif counterparty_exception:
@@ -1451,6 +1490,8 @@ def _build_item(
         "effective_overdue_days": term.overdue_days,
         "status": status,
         "review_reason": review_reason,
+        "exclusion_reason": exclusion_reason,
+        "business_review_reason": business_review_reason,
         "document_structure_status": structure_check.status if structure_check else None,
         "document_structure_open_amount": structure_check.open_amount if structure_check else None,
         "document_structure_sale_amount": structure_check.sale_amount if structure_check else None,
@@ -1484,15 +1525,18 @@ def classify_folder_recommendation_queue(
     item: dict[str, Any], *, source_status: str = "cache_ready"
 ) -> str:
     reason = str(item.get("review_reason") or "")
+    exclusion_reason = str(item.get("exclusion_reason") or "")
+    business_review_reason = str(item.get("business_review_reason") or "")
     if (
-        _is_excluded_reason(reason)
+        _is_excluded_reason(exclusion_reason)
+        or _is_excluded_reason(reason)
         or reason == REVIEW_REASON_BELOW_MIN_BALANCE
         or str(item.get("status") or "") in {STATUS_OK, STATUS_NO_OVERDUE}
     ):
         return QUEUE_EXCLUDED
     if source_status != "cache_ready" or reason == REVIEW_REASON_OPEN_DEBT_SOURCE_STALE:
         return QUEUE_DATA_QUALITY
-    if reason in {
+    if business_review_reason or reason in {
         REVIEW_REASON_SPB_CROSS_FOLDER,
         REVIEW_REASON_DOCUMENT_COMMENT_HISTORY_REQUIRED,
     }:
@@ -1626,6 +1670,9 @@ def _build_report_revision(snapshot_date: date, items: Sequence[dict[str, Any]])
             "recommended_folder_ref": item.get("recommended_folder_ref"),
             "debt_document_ref": item.get("debt_document_ref"),
             "status": item.get("status"),
+            "queue": item.get("queue"),
+            "exclusion_reason": item.get("exclusion_reason"),
+            "business_review_reason": item.get("business_review_reason"),
         }
         for item in items
     ]

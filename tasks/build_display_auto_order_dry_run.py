@@ -160,6 +160,9 @@ CSV_COLUMNS = [
     "pipeline_cargo_handoff_qty",
     "pipeline_supplier_processing_qty",
     "dry_run_decision",
+    "stockout_guard_triggered",
+    "stockout_guard_days_remaining",
+    "stockout_guard_required_days",
     "reason_ru",
     "blockers",
     "warnings",
@@ -1021,6 +1024,23 @@ STRUCTURAL_FLOOR_QTY = Decimal("13")
 # закреплён строгим анализом, при необходимости можно скорректировать.
 PENSION_CANDIDATE_MIN_DAYS_IN_SALE = Decimal("15")
 
+# off_schedule_signal_policy.stockout_guard, display-auto-order-policy.json:
+# "дней свободного остатка меньше ожидаемого оставшегося срока поставки плюс
+# 10 дней запаса -> создать внеплановую Потребность на заказ или ручную
+# задачу до обычного дня графика". Раньше это было только в JSON, в коде не
+# читалось вообще (0 упоминаний off_schedule_signal_policy в этом файле до
+# 2026-07-31). Реализовано КАК СИГНАЛ (v1): помечает карточки, где текущий
+# расчёт решил "заказ не нужен", а честный остаток запаса времени
+# (свободный остаток / скорость) меньше срока полного цикла довоза + буфер -
+# то есть решение "не заказывать" рискует обернуться пустой полкой раньше,
+# чем придёт следующий заказ. Сознательно НЕ меняет recommended_order_qty
+# в этой версии - только явный флаг и текст тревоги, чтобы не повторить
+# сценарий двух утечек этой же сессии (правило molча меняющее количество в
+# ещё одном месте конвейера). Вопрос "должен ли сигнал ещё и создавать заказ
+# сам" - открытый, требует отдельного qty-diff гейта на реальных данных
+# перед включением.
+STOCKOUT_GUARD_BUFFER_DAYS = 10
+
 
 # Раздел 1 assortment-status-legacy-rule-inventory.md ("Дни эффективного
 # наличия") - методология (честное среднее по реальным точкам продаж,
@@ -1707,6 +1727,38 @@ def build_dry_run_rows(
             row["recommended_order_qty_raw"] = "0"
             row["recommended_order_qty"] = "0"
             row["dry_run_decision"] = "manual_review"
+
+    # stockout_guard (off_schedule_signal_policy) - см. константу выше.
+    # Считается здесь, в самом конце, на уже окончательно устоявшемся
+    # решении - только для строк, где итог "заказ не нужен" и блокеров нет
+    # (блокер уже сам по себе объясняет заказ=0, тревога здесь не добавляет
+    # смысла).
+    for row in rows:
+        if _clean(row.get("blockers")) or _clean(row.get("dry_run_decision")) != "do_not_order":
+            continue
+        avg_daily_sales_qty = _decimal(row.get("avg_daily_sales_qty"))
+        if avg_daily_sales_qty <= 0:
+            continue
+        free_stock_qty = _decimal(row.get("free_stock_qty"))
+        days_of_stock_remaining = free_stock_qty / avg_daily_sales_qty
+        required_days = (
+            _decimal(row.get("lead_time_days"))
+            + _decimal(row.get("distribution_to_shelf_days"))
+            + Decimal(str(STOCKOUT_GUARD_BUFFER_DAYS))
+        )
+        if days_of_stock_remaining >= required_days:
+            continue
+        row["stockout_guard_triggered"] = "true"
+        row["stockout_guard_days_remaining"] = _out_decimal(days_of_stock_remaining, places=1)
+        row["stockout_guard_required_days"] = _out_decimal(required_days)
+        _append_warning(row, "stockout_guard_triggered")
+        row["reason_ru"] = (
+            "ТРЕВОГА (stockout_guard): расчёт решил, что заказ сейчас не нужен, но при "
+            f"текущей скорости остатка хватит на {_out_decimal(days_of_stock_remaining, places=1)} "
+            f"дней, а полный цикл довоза (путь + буфер) занимает {_out_decimal(required_days)} "
+            "дней - есть риск пустой полки раньше следующего планового пересмотра. "
+            f"{row.get('reason_ru', '')}"
+        ).strip()
     return rows
 
 

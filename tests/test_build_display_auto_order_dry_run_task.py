@@ -709,6 +709,59 @@ def test_display_auto_order_dry_run_slow_group_flat_despite_availability_is_pens
     assert "Пенсию" in rows[0]["reason_ru"]
 
 
+def test_display_auto_order_dry_run_stockout_guard_flags_do_not_order_with_short_runway() -> None:
+    # off_schedule_signal_policy.stockout_guard (2026-07-31): тир "fast" с
+    # коротким горизонтом (20 дней покрытия + 5 страховки) решает "заказ не
+    # нужен" (свободно 50 >= цель 27), но честного остатка времени (50 дней
+    # при скорости 1/день) меньше полного цикла довоза (48 путь + 7 полка +
+    # 10 буфер = 65 дней) - должна загореться тревога, без изменения самого
+    # recommended_order_qty (v1 - сигнал, не автозаказ).
+    rows = build_dry_run_rows(
+        [
+            {
+                "nomenclature_code": "RB-FAST-SHORT-RUNWAY",
+                "name": "Дисплей ходовой, но горизонт короче пути поставки",
+                "status": "working",
+                "status_label": "Рабочий",
+                "auto_order_allowed": True,
+                "quality_raw": "Medium",
+            }
+        ],
+        facts={
+            "stock": {"RB-FAST-SHORT-RUNWAY": {"sellable_stock_qty": Decimal("50")}},
+            "reserve": {},
+            "incoming": {},
+            "sales": {"RB-FAST-SHORT-RUNWAY": {"sales_qty_window": Decimal("180")}},
+            "returns": {},
+        },
+        source_errors={},
+        target_days=14,
+        sales_window_days=180,
+        supplier_prepare_days=30,
+        logistics_days=18,
+        distribution_to_shelf_days=7,
+        speed_horizon_rules=(
+            SpeedHorizonRule(
+                tier="fast",
+                min_group_avg_daily_sales_qty=Decimal("0.8"),
+                max_effective_target_days=20,
+                safety_stock_days=5,
+                label_ru="ходовая группа",
+            ),
+        ),
+    )
+
+    assert rows[0]["speed_tier"] == "fast"
+    assert rows[0]["dry_run_decision"] == "do_not_order"
+    assert rows[0]["recommended_order_qty"] == "0"
+    assert rows[0]["stockout_guard_triggered"] == "true"
+    assert Decimal(rows[0]["stockout_guard_days_remaining"]) < Decimal(
+        rows[0]["stockout_guard_required_days"]
+    )
+    assert "stockout_guard_triggered" in rows[0]["warnings"]
+    assert "ТРЕВОГА (stockout_guard)" in rows[0]["reason_ru"]
+
+
 def test_display_auto_order_dry_run_slow_group_accelerating_gets_starter_order() -> None:
     # Решение 2026-07-31: медленная карточка с растущей скоростью
     # (sales_speed_trend="accelerating") тоже не зануляется, даже если

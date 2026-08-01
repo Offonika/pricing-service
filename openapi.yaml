@@ -8154,6 +8154,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/assistant:
+    get:
+      summary: Read Order Assistant
+      operationId: read_order_assistant_api_procurement_order_formation_assistant_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrderAssistantResponse'
+      security:
+      - HTTPBearer: []
+  /api/procurement-order-formation/assistant/assemble:
+    post:
+      summary: Assemble Order Assistant Projects
+      operationId: assemble_order_assistant_projects_api_procurement_order_formation_assistant_assemble_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementOrderAssistantAssembleRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrderAssistantAssembleResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/procurement-order-formation/orders/export.xlsx:
     get:
       summary: Export Orders Excel
@@ -21235,6 +21273,132 @@ components:
       - run_key
       - facts_hash
       title: ProcurementLifecycleTransitionRead
+    ProcurementOrderAssistantAssembleItem:
+      properties:
+        order_id:
+          type: integer
+          title: Order Id
+        expected_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Version
+      type: object
+      required:
+      - order_id
+      - expected_version
+      title: ProcurementOrderAssistantAssembleItem
+    ProcurementOrderAssistantAssembleRequest:
+      properties:
+        idempotency_key:
+          type: string
+          maxLength: 255
+          minLength: 8
+          title: Idempotency Key
+        items:
+          items:
+            $ref: '#/components/schemas/ProcurementOrderAssistantAssembleItem'
+          type: array
+          maxItems: 100
+          minItems: 1
+          title: Items
+      type: object
+      required:
+      - idempotency_key
+      - items
+      title: ProcurementOrderAssistantAssembleRequest
+    ProcurementOrderAssistantAssembleResponse:
+      properties:
+        approved:
+          type: integer
+          title: Approved
+          default: 0
+        blocked:
+          type: integer
+          title: Blocked
+          default: 0
+        stale:
+          type: integer
+          title: Stale
+          default: 0
+        items:
+          items:
+            $ref: '#/components/schemas/ProcurementOrderAssistantAssembleResult'
+          type: array
+          title: Items
+      type: object
+      title: ProcurementOrderAssistantAssembleResponse
+    ProcurementOrderAssistantAssembleResult:
+      properties:
+        order_id:
+          type: integer
+          title: Order Id
+        status:
+          type: string
+          title: Status
+        message:
+          type: string
+          title: Message
+      type: object
+      required:
+      - order_id
+      - status
+      - message
+      title: ProcurementOrderAssistantAssembleResult
+    ProcurementOrderAssistantResponse:
+      properties:
+        updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Updated At
+        summary:
+          $ref: '#/components/schemas/ProcurementOrderAssistantSummary'
+        orders:
+          items:
+            $ref: '#/components/schemas/ProcurementOrderFormationRead'
+          type: array
+          title: Orders
+      type: object
+      required:
+      - summary
+      title: ProcurementOrderAssistantResponse
+    ProcurementOrderAssistantSummary:
+      properties:
+        lines:
+          type: integer
+          title: Lines
+          default: 0
+        ready_lines:
+          type: integer
+          title: Ready Lines
+          default: 0
+        supplier_missing_lines:
+          type: integer
+          title: Supplier Missing Lines
+          default: 0
+        price_changed_lines:
+          type: integer
+          title: Price Changed Lines
+          default: 0
+        low_profitability_lines:
+          type: integer
+          title: Low Profitability Lines
+          default: 0
+        high_defect_lines:
+          type: integer
+          title: High Defect Lines
+          default: 0
+        photo_missing_lines:
+          type: integer
+          title: Photo Missing Lines
+          default: 0
+        orders:
+          type: integer
+          title: Orders
+          default: 0
+      type: object
+      title: ProcurementOrderAssistantSummary
     ProcurementOrderConditionsUpdateRequest:
       properties:
         expected_order_version:
@@ -21527,6 +21691,48 @@ components:
           anyOf:
           - $ref: '#/components/schemas/ProcurementClassificationProposalRead'
           - type: 'null'
+        photo_thumbnail_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Photo Thumbnail Url
+        photo_original_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Photo Original Url
+        photo_count:
+          type: integer
+          title: Photo Count
+          default: 0
+        profitability_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Profitability Pct
+        supplier_defect_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Supplier Defect Pct
+        supplier_defect_history_units:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Supplier Defect History Units
+        price_change_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Price Change Pct
+        delivery_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Delivery Days
       type: object
       required:
       - id
@@ -21726,6 +21932,8 @@ components:
             type: string
           type: object
           title: Manual Status Options
+        supplier_profile:
+          $ref: '#/components/schemas/ProcurementSupplierProfileRead'
       type: object
       required:
       - id
@@ -22013,6 +22221,78 @@ components:
       - message_id
       - xml_preview
       title: ProcurementOrderTransmissionResponse
+    ProcurementSupplierProfileRead:
+      properties:
+        qualification_class:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Qualification Class
+        qualification_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Qualification Label
+        profitability_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Profitability Pct
+        defect_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Defect Pct
+        defect_history_units:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Defect History Units
+        on_time_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: On Time Pct
+        payment_terms:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Payment Terms
+        credit_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Credit Days
+        credit_limit:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Credit Limit
+        advantages:
+          items:
+            type: string
+          type: array
+          title: Advantages
+        history_order_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: History Order Count
+        updated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated At
+        data_status:
+          type: string
+          title: Data Status
+          default: missing
+      type: object
+      title: ProcurementSupplierProfileRead
     ProductFacets:
       properties:
         subjects:

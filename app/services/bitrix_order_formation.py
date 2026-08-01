@@ -39,6 +39,8 @@ class BitrixCatalogProduct:
     quality: str = ""
     procurement_profile: str = ""
     manual_minimum: Decimal | None = None
+    photo_thumbnail_url: str = ""
+    photo_original_url: str = ""
     raw: dict[str, Any] | None = None
 
 
@@ -69,9 +71,15 @@ def resolve_catalog_product_by_xml_id(
     catalog = mapping.get("catalog") or {}
     selected = list(
         dict.fromkeys(
-            str(value)
-            for key, value in catalog.items()
-            if key != "catalog_id" and str(value).strip()
+            [
+                *(
+                    str(value)
+                    for key, value in catalog.items()
+                    if key != "catalog_id" and str(value).strip()
+                ),
+                "PREVIEW_PICTURE",
+                "DETAIL_PICTURE",
+            ]
         )
     )
     result = bitrix_call(
@@ -117,9 +125,15 @@ def resolve_catalog_products_by_xml_ids(
     catalog = mapping.get("catalog") or {}
     selected = list(
         dict.fromkeys(
-            str(value)
-            for key, value in catalog.items()
-            if key != "catalog_id" and str(value).strip()
+            [
+                *(
+                    str(value)
+                    for key, value in catalog.items()
+                    if key != "catalog_id" and str(value).strip()
+                ),
+                "PREVIEW_PICTURE",
+                "DETAIL_PICTURE",
+            ]
         )
     )
     xml_field = str(catalog.get("xml_id") or "XML_ID")
@@ -190,6 +204,8 @@ def _catalog_product_from_row(
         manual_minimum=_decimal_or_none(
             _scalar(_value(row, str(catalog.get("manual_minimum") or "")))
         ),
+        photo_thumbnail_url=_file_url(_value(row, "PREVIEW_PICTURE")),
+        photo_original_url=_file_url(_value(row, "DETAIL_PICTURE")),
         raw=row,
     )
 
@@ -580,6 +596,29 @@ def _decimal_or_none(value: Any) -> Decimal | None:
         return Decimal(str(value).replace(" ", "").replace(",", "."))
     except (InvalidOperation, ValueError):
         return None
+
+
+def _file_url(value: Any) -> str:
+    if isinstance(value, list):
+        for item in value:
+            if url := _file_url(item):
+                return url
+        return ""
+    if isinstance(value, dict):
+        for key in (
+            "downloadUrl",
+            "download_url",
+            "showUrl",
+            "show_url",
+            "src",
+            "url",
+            "URL",
+        ):
+            if url := _file_url(value.get(key)):
+                return url
+        return ""
+    text = str(value or "").strip()
+    return text if text.startswith(("https://", "http://", "/")) else ""
 
 
 def _decoded_property_value(row: dict[str, Any], *, field_name: str, values: dict[str, str]) -> str:

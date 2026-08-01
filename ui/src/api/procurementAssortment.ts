@@ -130,6 +130,30 @@ export interface ProcurementOrderFormationLine {
   effective_assortment_status?: string | null;
   effective_assortment_status_label?: string | null;
   latest_classification?: ProcurementClassificationProposal | null;
+  photo_thumbnail_url?: string | null;
+  photo_original_url?: string | null;
+  photo_count?: number;
+  profitability_pct?: string | null;
+  supplier_defect_pct?: string | null;
+  supplier_defect_history_units?: number | null;
+  price_change_pct?: string | null;
+  delivery_days?: number | null;
+}
+
+export interface ProcurementSupplierProfile {
+  qualification_class?: string | null;
+  qualification_label?: string | null;
+  profitability_pct?: string | null;
+  defect_pct?: string | null;
+  defect_history_units?: number | null;
+  on_time_pct?: string | null;
+  payment_terms?: string | null;
+  credit_days?: number | null;
+  credit_limit?: string | null;
+  advantages: string[];
+  history_order_count?: number | null;
+  updated_at?: string | null;
+  data_status: "ready" | "partial" | "missing" | string;
 }
 
 export interface ProcurementOrderFormation {
@@ -138,7 +162,11 @@ export interface ProcurementOrderFormation {
   status: string;
   version: number;
   bitrix_item_id?: string | null;
+  supplier_ref?: string | null;
+  supplier_code?: string | null;
   supplier_name: string;
+  contract_ref?: string | null;
+  contract_code?: string | null;
   contract_name: string;
   currency: string;
   warehouse_name: string;
@@ -158,6 +186,29 @@ export interface ProcurementOrderFormation {
   total_amount: string;
   lines: ProcurementOrderFormationLine[];
   manual_status_options: Record<string, string>;
+  supplier_profile?: ProcurementSupplierProfile;
+}
+
+export interface ProcurementOrderAssistant {
+  updated_at?: string | null;
+  summary: {
+    lines: number;
+    ready_lines: number;
+    supplier_missing_lines: number;
+    price_changed_lines: number;
+    low_profitability_lines: number;
+    high_defect_lines: number;
+    photo_missing_lines: number;
+    orders: number;
+  };
+  orders: ProcurementOrderFormation[];
+}
+
+export interface ProcurementOrderAssistantAssembleResponse {
+  approved: number;
+  blocked: number;
+  stale: number;
+  items: Array<{ order_id: number; status: string; message: string }>;
 }
 
 export interface ProcurementDashboardCard {
@@ -410,6 +461,29 @@ export async function fetchProcurementOrders(params: ProcurementOrderFilters & {
   const { data } = await api.get<ProcurementOrderList>(
     "/procurement-order-formation/orders",
     { params }
+  );
+  return data;
+}
+
+export async function fetchProcurementOrderAssistant() {
+  const { data } = await api.get<ProcurementOrderAssistant>(
+    "/procurement-order-formation/assistant"
+  );
+  return data;
+}
+
+export async function assembleProcurementOrderProjects(
+  orders: ProcurementOrderFormation[]
+) {
+  const { data } = await api.post<ProcurementOrderAssistantAssembleResponse>(
+    "/procurement-order-formation/assistant/assemble",
+    {
+      idempotency_key: `ui-${crypto.randomUUID()}`,
+      items: orders.map((order) => ({
+        order_id: order.id,
+        expected_version: order.version,
+      })),
+    }
   );
   return data;
 }

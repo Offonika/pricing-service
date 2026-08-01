@@ -83,6 +83,30 @@ class ProcurementOrderFormationLineRead(BaseModel):
     effective_assortment_status: str | None = None
     effective_assortment_status_label: str | None = None
     latest_classification: ProcurementClassificationProposalRead | None = None
+    photo_thumbnail_url: str | None = None
+    photo_original_url: str | None = None
+    photo_count: int = 0
+    profitability_pct: Decimal | None = None
+    supplier_defect_pct: Decimal | None = None
+    supplier_defect_history_units: int | None = None
+    price_change_pct: Decimal | None = None
+    delivery_days: int | None = None
+
+
+class ProcurementSupplierProfileRead(BaseModel):
+    qualification_class: str | None = None
+    qualification_label: str | None = None
+    profitability_pct: Decimal | None = None
+    defect_pct: Decimal | None = None
+    defect_history_units: int | None = None
+    on_time_pct: Decimal | None = None
+    payment_terms: str | None = None
+    credit_days: int | None = None
+    credit_limit: Decimal | None = None
+    advantages: list[str] = Field(default_factory=list)
+    history_order_count: int | None = None
+    updated_at: str | None = None
+    data_status: str = "missing"
 
 
 class ProcurementOrderFormationRead(BaseModel):
@@ -129,6 +153,49 @@ class ProcurementOrderFormationRead(BaseModel):
     total_amount: Decimal = Decimal("0")
     lines: list[ProcurementOrderFormationLineRead] = Field(default_factory=list)
     manual_status_options: dict[str, str] = Field(default_factory=dict)
+    supplier_profile: ProcurementSupplierProfileRead = Field(
+        default_factory=ProcurementSupplierProfileRead
+    )
+
+
+class ProcurementOrderAssistantSummary(BaseModel):
+    lines: int = 0
+    ready_lines: int = 0
+    supplier_missing_lines: int = 0
+    price_changed_lines: int = 0
+    low_profitability_lines: int = 0
+    high_defect_lines: int = 0
+    photo_missing_lines: int = 0
+    orders: int = 0
+
+
+class ProcurementOrderAssistantResponse(BaseModel):
+    updated_at: datetime | None = None
+    summary: ProcurementOrderAssistantSummary
+    orders: list[ProcurementOrderFormationRead] = Field(default_factory=list)
+
+
+class ProcurementOrderAssistantAssembleItem(BaseModel):
+    order_id: int
+    expected_version: int = Field(ge=1)
+
+
+class ProcurementOrderAssistantAssembleRequest(BaseModel):
+    idempotency_key: str = Field(min_length=8, max_length=255)
+    items: list[ProcurementOrderAssistantAssembleItem] = Field(min_length=1, max_length=100)
+
+
+class ProcurementOrderAssistantAssembleResult(BaseModel):
+    order_id: int
+    status: str
+    message: str
+
+
+class ProcurementOrderAssistantAssembleResponse(BaseModel):
+    approved: int = 0
+    blocked: int = 0
+    stale: int = 0
+    items: list[ProcurementOrderAssistantAssembleResult] = Field(default_factory=list)
 
 
 class ProcurementOrderLineUpdateRequest(BaseModel):

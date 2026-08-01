@@ -303,6 +303,9 @@ def build_grouped_orders(
             "calculation_id": calculation_id,
             "source_run_id": source_run_id,
             "responsible_bitrix_user_id": responsible_bitrix_user_id,
+            "payload": {
+                "supplier_profile": supplier_profile_payload(lead_candidate or {}),
+            },
         }
         product = catalog_resolver(xml_id) if xml_id else None
         blockers = _split_codes(row.get("blockers"))
@@ -325,6 +328,13 @@ def build_grouped_orders(
         quantity = _decimal(row.get("recommended_order_qty")) or Decimal("0")
         price = _decimal(row.get("latest_purchase_price")) or Decimal("0")
         b2b_customer_demand = _b2b_customer_demand_payload(row)
+        line_payload = procurement_assistant_line_payload(
+            row,
+            product=product,
+            lead_candidate=lead_candidate or {},
+        )
+        if b2b_customer_demand:
+            line_payload["b2b_customer_demand"] = b2b_customer_demand
         if price <= 0:
             blockers.append("purchase_price_missing")
         groups[key].append(
@@ -356,9 +366,7 @@ def build_grouped_orders(
                     if product and product.manual_minimum is not None
                     else None
                 ),
-                "payload": (
-                    {"b2b_customer_demand": b2b_customer_demand} if b2b_customer_demand else {}
-                ),
+                "payload": line_payload,
             }
         )
 
@@ -621,6 +629,7 @@ def persist_grouped_orders(
                 payload={
                     "dry_run_source": True,
                     "sync_source": "display_auto_order",
+                    **dict(payload.get("payload") or {}),
                 },
             )
             db.add(order)
@@ -642,6 +651,7 @@ def persist_grouped_orders(
                 **(order.payload or {}),
                 "dry_run_source": True,
                 "sync_source": "display_auto_order",
+                **dict(payload.get("payload") or {}),
             }
             if order.payload != expected_payload:
                 order.payload = expected_payload
@@ -858,6 +868,72 @@ def _decimal(value: Any) -> Decimal | None:
 
 def _split_codes(value: Any) -> list[str]:
     return [item.strip() for item in _clean(value).replace(",", ";").split(";") if item.strip()]
+
+
+def procurement_assistant_line_payload(
+    row: Mapping[str, Any],
+    *,
+    product: BitrixCatalogProduct | None,
+    lead_candidate: Mapping[str, Any],
+) -> dict[str, Any]:
+    thumbnail = _clean(row.get("photo_thumbnail_url")) or _clean(
+        product.photo_thumbnail_url if product else ""
+    )
+    original = (
+        _clean(row.get("photo_original_url"))
+        or _clean(row.get("photo_url"))
+        or _clean(product.photo_original_url if product else "")
+    )
+    payload: dict[str, Any] = {}
+    if thumbnail or original:
+        payload["photos"] = [
+            {
+                "thumbnail": thumbnail or original,
+                "original": original,
+            }
+        ]
+    optional_values = {
+        "profitability_pct": _clean(
+            row.get("profitability_pct") or row.get("gross_margin_pct") or row.get("margin_pct")
+        ),
+        "supplier_defect_pct": _clean(row.get("supplier_defect_pct") or row.get("defect_pct")),
+        "supplier_defect_history_units": _clean(
+            row.get("supplier_defect_history_units") or row.get("defect_history_units")
+        ),
+        "price_change_pct": _clean(row.get("price_change_pct")),
+        "delivery_days": _clean(
+            lead_candidate.get("recommended_supplier_prepare_days") or row.get("delivery_days")
+        ),
+    }
+    payload.update({key: value for key, value in optional_values.items() if value})
+    return payload
+
+
+def supplier_profile_payload(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    advantages = [
+        item.strip() for item in _clean(candidate.get("advantages")).split(";") if item.strip()
+    ]
+    values: dict[str, Any] = {
+        "qualification_class": _clean(
+            candidate.get("qualification_class") or candidate.get("supplier_class")
+        ),
+        "qualification_label": _clean(candidate.get("qualification_label")),
+        "profitability_pct": _clean(candidate.get("profitability_pct")),
+        "defect_pct": _clean(candidate.get("defect_pct") or candidate.get("supplier_defect_pct")),
+        "defect_history_units": _integer(
+            candidate.get("defect_history_units") or candidate.get("supplier_defect_history_units")
+        ),
+        "on_time_pct": _clean(candidate.get("on_time_pct")),
+        "payment_terms": _clean(candidate.get("payment_terms")),
+        "credit_days": _integer(candidate.get("credit_days")),
+        "credit_limit": _clean(candidate.get("credit_limit")),
+        "advantages": advantages,
+        "history_order_count": _integer(candidate.get("history_order_count")),
+        "updated_at": _clean(
+            candidate.get("updated_at") or candidate.get("latest_supplier_order_at")
+        ),
+    }
+    return {key: value for key, value in values.items() if value not in (None, "", [])}
 
 
 def _b2b_customer_demand_payload(row: Mapping[str, Any]) -> dict[str, Any]:

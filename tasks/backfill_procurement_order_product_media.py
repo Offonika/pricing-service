@@ -48,6 +48,14 @@ def main() -> int:
     args = parse_args()
     if args.apply and args.output_json is None:
         raise SystemExit("--output-json is required with --apply")
+    if args.apply:
+        existing_result = load_existing_committed_apply_result(
+            args.output_json,
+            run_id=args.run_id,
+        )
+        if existing_result is not None:
+            _print_result(existing_result, compact=args.json)
+            return 0
     settings = get_settings()
     engine = build_engine(settings.database_url)
     if args.rollback_manifest:
@@ -112,6 +120,33 @@ def write_json_atomic(path: Path, payload: Mapping[str, Any]) -> None:
     finally:
         if temporary_path.exists():
             temporary_path.unlink()
+
+
+def load_existing_committed_apply_result(
+    path: Path,
+    *,
+    run_id: str,
+) -> dict[str, Any] | None:
+    path = path.expanduser().resolve()
+    if not path.exists():
+        return None
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"existing --output-json cannot be read safely: {path}") from exc
+    if not isinstance(payload, dict):
+        raise SystemExit(f"existing --output-json is not a manifest object: {path}")
+    if payload.get("mode") != "apply" or payload.get("database_commit") is not True:
+        raise SystemExit(
+            "existing --output-json is not a committed apply manifest; "
+            "inspect it and use a new path"
+        )
+    existing_run_id = str(payload.get("run_id") or "").strip()
+    if run_id and existing_run_id != run_id:
+        raise SystemExit(
+            "existing committed apply manifest belongs to another run-id; use a new path"
+        )
+    return payload
 
 
 def _print_result(payload: Mapping[str, Any], *, compact: bool) -> None:

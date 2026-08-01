@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import select
 
 from app.models.procurement_order_formation import (
@@ -19,6 +21,9 @@ from app.services.procurement_order_product_media import (
     apply_product_media_backfill,
     build_product_media_backfill_plan,
     rollback_product_media_backfill,
+)
+from tasks.backfill_procurement_order_product_media import (
+    load_existing_committed_apply_result,
 )
 
 
@@ -255,3 +260,50 @@ def test_backfill_skips_orders_that_are_already_immutable(db_session) -> None:
 
     assert plan["summary"]["orders_scanned"] == 0
     assert plan["summary"]["lines_scanned"] == 0
+
+
+def test_committed_apply_manifest_is_reused_without_overwrite(tmp_path) -> None:
+    path = tmp_path / "rollback.json"
+    payload = {
+        "mode": "apply",
+        "run_id": "media-apply",
+        "database_commit": True,
+        "summary": {"applied_lines": 45},
+    }
+    original = json.dumps(payload, sort_keys=True)
+    path.write_text(original, encoding="utf-8")
+
+    result = load_existing_committed_apply_result(path, run_id="media-apply")
+
+    assert result == payload
+    assert path.read_text(encoding="utf-8") == original
+
+
+def test_existing_apply_manifest_requires_matching_committed_run(tmp_path) -> None:
+    path = tmp_path / "rollback.json"
+    path.write_text(
+        json.dumps(
+            {
+                "mode": "apply",
+                "run_id": "media-apply",
+                "database_commit": True,
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(SystemExit, match="another run-id"):
+        load_existing_committed_apply_result(path, run_id="different-run")
+
+    path.write_text(
+        json.dumps(
+            {
+                "mode": "apply",
+                "run_id": "media-apply",
+                "database_commit": False,
+            }
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(SystemExit, match="not a committed apply manifest"):
+        load_existing_committed_apply_result(path, run_id="media-apply")

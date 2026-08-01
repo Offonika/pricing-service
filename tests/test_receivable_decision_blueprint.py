@@ -14,7 +14,7 @@ def test_blueprint_is_local_dry_run_for_decision_process() -> None:
 
     assert result["mode"] == "dry-run"
     assert result["safety"]["bitrix_writes"] is False
-    assert result["process"]["title"] == "Дебиторка Решение"
+    assert result["process"]["title"] == "Кредитное решение"
     assert result["process"]["code"] == "receivable_decision"
     assert result["process"]["current_process_kept_as_history"] == "Дебиторка покупателей"
     assert "Рабочий список" not in stage_names
@@ -141,6 +141,6 @@ def test_main_writes_blueprint_without_bitrix_by_default(tmp_path, capsys) -> No
 
     assert exit_code == 0
     payload = output_path.read_text(encoding="utf-8")
-    assert "Дебиторка Решение" in payload
+    assert "Кредитное решение" in payload
     assert '"status": "not_requested"' in payload
-    assert "Дебиторка Решение" in capsys.readouterr().out
+    assert "Кредитное решение" in capsys.readouterr().out

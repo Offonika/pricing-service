@@ -82,6 +82,7 @@ from app.services.bitrix_executive_dashboard_auth import (
     require_executive_dashboard_access,
 )
 from app.services.counterparty_folder_recommendations import (
+    QUEUE_ALL,
     STATUS_MOVE_RECOMMENDED,
     STATUS_NEEDS_REVIEW,
     STATUS_NO_OVERDUE,
@@ -694,6 +695,9 @@ def get_counterparty_folder_recommendations(
             f"^({STATUS_MOVE_RECOMMENDED}|{STATUS_OK}|{STATUS_NO_OVERDUE}|{STATUS_NEEDS_REVIEW})$"
         ),
     ),
+    queue: Literal["actionable", "business_review", "data_quality", "excluded", "all"] = Query(
+        default=QUEUE_ALL
+    ),
     limit: int | None = Query(default=None, ge=1, le=10000),
     db: Session = Depends(get_db),
     _: str = Depends(require_management_internal_token),
@@ -706,6 +710,7 @@ def get_counterparty_folder_recommendations(
             snapshot_date=date_value,
             limit=limit,
             status=status,
+            queue=queue,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -721,7 +726,9 @@ def get_counterparty_folder_recommendations(
     return CounterpartyFolderRecommendationResponse(
         as_of=report["snapshot_date"],
         freshness_status="fresh" if source_snapshot_count else "missing",
-        source_status="ready" if source_snapshot_count else "empty",
+        source_status=(
+            str(report.get("source_status") or "cache_ready") if source_snapshot_count else "empty"
+        ),
         report_revision=report["report_revision"],
         summary=report["summary"],
         payload=payload,

@@ -23,6 +23,10 @@ from app.services.counterparty_folder_recommendations import (
     OPEN_DEBT_DIAGNOSTIC_STRUCTURE_UNCONFIRMED,
     OPEN_DEBT_DIAGNOSTIC_TOTAL_ABOVE_BALANCE,
     OPEN_DEBT_DIAGNOSTIC_TOTAL_BELOW_BALANCE,
+    QUEUE_ACTIONABLE,
+    QUEUE_BUSINESS_REVIEW,
+    QUEUE_DATA_QUALITY,
+    QUEUE_EXCLUDED,
     STATUS_MOVE_RECOMMENDED,
     STATUS_NEEDS_REVIEW,
     STATUS_NO_OVERDUE,
@@ -1329,6 +1333,9 @@ def test_counterparty_folder_recommendations_builds_statuses(tmp_path) -> None:
     assert by_ref["cp-missing-term-mismatch"]["review_reason"] == (
         "origin_document_structure_confirmed_manual_review"
     )
+    assert by_ref["cp-missing-term-mismatch"]["queue"] == QUEUE_ACTIONABLE
+    assert by_ref["cp-missing-term-mismatch"]["action_required"] is True
+    assert len(by_ref["cp-missing-term-mismatch"]["signal_key"]) == 64
     assert by_ref["cp-missing-term-mismatch"]["document_structure_status"] == "confirmed_open"
     assert by_ref["cp-missing-term-mismatch"]["document_structure_open_amount"] == Decimal(
         "12900.00"
@@ -1341,6 +1348,7 @@ def test_counterparty_folder_recommendations_builds_statuses(tmp_path) -> None:
     assert by_ref["cp-missing-term-mismatch"]["effective_overdue_days"] == 2
     assert by_ref["cp-below-min"]["status"] == STATUS_NO_OVERDUE
     assert by_ref["cp-below-min"]["review_reason"] == "below_min_balance_threshold"
+    assert by_ref["cp-below-min"]["queue"] == QUEUE_EXCLUDED
     assert by_ref["cp-min-threshold"]["status"] == STATUS_NEEDS_REVIEW
     assert by_ref["cp-min-threshold"]["review_reason"] == (
         "origin_document_structure_confirmed_manual_review"
@@ -1372,12 +1380,14 @@ def test_counterparty_folder_recommendations_builds_statuses(tmp_path) -> None:
     assert by_ref["cp-maklab"]["review_reason"] == "excluded_maklab_spb_prosvet"
     assert by_ref["cp-spb-cross"]["status"] == STATUS_NEEDS_REVIEW
     assert by_ref["cp-spb-cross"]["review_reason"] == "spb_cross_folder_manual_review"
+    assert by_ref["cp-spb-cross"]["queue"] == QUEUE_BUSINESS_REVIEW
     assert by_ref["cp-spb-cross"]["debt_department_name"] == "СПБ Садовая"
     assert by_ref["cp-same-folder-missing-term"]["status"] == STATUS_OK
     assert by_ref["cp-review-folder"]["status"] == STATUS_NEEDS_REVIEW
     assert by_ref["cp-review-folder"]["review_reason"] == "department_folder_missing"
     assert by_ref["cp-review-document"]["status"] == STATUS_NEEDS_REVIEW
     assert by_ref["cp-review-document"]["review_reason"] == ("origin_document_not_found")
+    assert by_ref["cp-review-document"]["queue"] == QUEUE_DATA_QUALITY
     assert report["summary"]["source_snapshot_count"] == 19
     assert report["summary"]["move_recommended_count"] == 0
     assert report["summary"]["ok_count"] == 3
@@ -1390,6 +1400,12 @@ def test_counterparty_folder_recommendations_builds_statuses(tmp_path) -> None:
         "origin_document_not_found": 1,
         "origin_document_structure_confirmed_manual_review": 2,
         "spb_cross_folder_manual_review": 1,
+    }
+    assert report["summary"]["queue_counts"] == {
+        QUEUE_ACTIONABLE: 2,
+        QUEUE_BUSINESS_REVIEW: 1,
+        QUEUE_DATA_QUALITY: 2,
+        QUEUE_EXCLUDED: 14,
     }
 
     app_engine.dispose()
@@ -1415,6 +1431,30 @@ def test_counterparty_folder_recommendations_can_filter_move_recommended(tmp_pat
     assert report["summary"]["total_count"] == 0
     assert report["summary"]["move_recommended_count"] == 0
     assert report["payload"] == []
+
+    app_engine.dispose()
+    onec_engine.dispose()
+
+
+def test_counterparty_folder_recommendations_filters_queue_before_limit(tmp_path) -> None:
+    app_db_path = tmp_path / "app.db"
+    app_engine = _make_sqlite_engine(str(app_db_path))
+    onec_engine = _seed_onec_engine()
+    _seed_app_db(app_engine)
+
+    with Session(app_engine) as session:
+        report = build_counterparty_folder_recommendations(
+            session,
+            onec_engine=onec_engine,
+            snapshot_date=SNAPSHOT_DATE,
+            queue=QUEUE_ACTIONABLE,
+            limit=1,
+        )
+
+    assert report["summary"]["total_count"] == 1
+    assert report["summary"]["actionable_count"] == 1
+    assert report["payload"][0]["queue"] == QUEUE_ACTIONABLE
+    assert report["payload"][0]["action_required"] is True
 
     app_engine.dispose()
     onec_engine.dispose()

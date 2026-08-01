@@ -189,7 +189,7 @@ def build_payload(
         "status": "ready",
         "mode": "dry-run",
         "bitrix_writes": False,
-        "process_title": "Дебиторка Решение",
+        "process_title": "Кредитное решение",
         "snapshot_date": snapshot_date.isoformat(),
         "folder_filter": (
             folder_filter.to_dict()
@@ -334,7 +334,7 @@ def _parse_date(value: str) -> date:
 
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Build local dry-run portraits for `Дебиторка Решение`."
+        description="Build local dry-run portraits for `Кредитное решение`."
     )
     parser.add_argument("--snapshot-date", type=_parse_date, help="Дата снимка YYYY-MM-DD")
     parser.add_argument("--limit", type=int, help="Ограничить число строк для проверки")

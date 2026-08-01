@@ -256,8 +256,18 @@ export interface CounterpartyFolderRecommendation {
   origin_document_date?: string | null;
   effective_overdue_days?: number | null;
   status: string;
+  signal_key: string;
+  queue: CounterpartyFolderQueue;
+  action_required: boolean;
   review_reason?: string | null;
 }
+
+export type CounterpartyFolderQueue =
+  | "actionable"
+  | "business_review"
+  | "data_quality"
+  | "excluded"
+  | "all";
 
 export interface CounterpartyFolderRecommendationResponse {
   as_of: string;
@@ -316,11 +326,14 @@ export async function updateReceivableWorkplaceItem(
   return response.data;
 }
 
-export async function fetchCounterpartyFolderRecommendations(date: string) {
+export async function fetchCounterpartyFolderRecommendations(
+  date: string,
+  queue: CounterpartyFolderQueue = "actionable"
+) {
   const response = await withReceivablesAuthRetry(() =>
     api.get<CounterpartyFolderRecommendationResponse>(
       "/receivables/workplace/folder-recommendations",
-      { params: { date, limit: 100 } }
+      { params: { date, queue, limit: 100 } }
     )
   );
   return response.data;

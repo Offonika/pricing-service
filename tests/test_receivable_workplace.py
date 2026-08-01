@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
@@ -19,6 +20,7 @@ from app.models import (
     ReceivableBalanceSnapshot,
     ReceivableBitrixUserAccess,
     ReceivableCase,
+    ReceivableFolderChangeOperation,
     ReceivableFolderRecommendationCache,
     ReceivableLedgerEvent,
     ReceivableOpenDebtCache,
@@ -27,6 +29,7 @@ from app.models import (
     StaffMember,
     TelephonyUserLineSnapshot,
 )
+from app.schemas.management import ReceivableFolderChangeOperationCreate
 from app.schemas.receivable_workplace import ReceivableWorkplaceActionRequest
 from app.services import bitrix_receivables_auth, receivable_workplace_cache
 from app.services import receivable_workplace as receivable_workplace_service
@@ -293,6 +296,49 @@ def _bitrix_token(
         settings=settings,
     )
     return token
+
+
+def _folder_signal_cache(
+    *,
+    snapshot_date: date,
+    queue: str = "actionable",
+    department_ref: str = "dep-1",
+) -> ReceivableFolderRecommendationCache:
+    reason = (
+        "origin_document_structure_confirmed_manual_review"
+        if queue == "actionable"
+        else "spb_cross_folder_manual_review"
+    )
+    return ReceivableFolderRecommendationCache(
+        snapshot_date=snapshot_date,
+        status_scope="all",
+        report_revision="folder-report-1",
+        summary={"source_snapshot_count": 1, "total_count": 1},
+        payload=[
+            {
+                "snapshot_date": snapshot_date.isoformat(),
+                "signal_key": "a" * 64,
+                "queue": queue,
+                "action_required": queue == "actionable",
+                "counterparty_ref": "0X8FDA0025901E48EE11ED222EA7D9B21E",
+                "counterparty_code": "РБ000001",
+                "counterparty_name": "Клиент",
+                "current_balance": "12000.00",
+                "current_folder_ref": "0X8FDA0025901E48EE11ED222EA7D9B231",
+                "current_folder_name": "Старая",
+                "recommended_folder_ref": "0X8FDA0025901E48EE11ED222EA7D9B232",
+                "recommended_folder_name": "Новая",
+                "snapshot_department_ref": department_ref,
+                "debt_department_ref": department_ref,
+                "is_overdue": True,
+                "effective_overdue_days": 10,
+                "review_reason": reason,
+                "document_structure_status": "confirmed_open",
+                "status": "needs_review",
+            }
+        ],
+        source_status="cached",
+    )
 
 
 def test_receivable_workplace_uses_default_credit_depth_without_onec_write(
@@ -2632,3 +2678,136 @@ def test_receivables_folder_recommendations_use_cache_without_onec(
     assert body["source_status"] == "cache_ready"
     assert body["report_revision"] == "cached-1"
     assert body["payload"][0]["counterparty_ref"] == "cp-1"
+
+
+def test_folder_change_api_create_get_and_reject_apply_before_dry_run(
+    monkeypatch: pytest.MonkeyPatch,
+    db_session: Session,
+    tmp_path: Path,
+) -> None:
+    as_of = date(2026, 8, 1)
+    settings = _bitrix_settings()
+    _override_receivables_settings(monkeypatch, settings)
+    cache = _folder_signal_cache(snapshot_date=as_of)
+    db_session.add(cache)
+    db_session.commit()
+    signal_key = receivable_workplace_cache.enrich_folder_recommendation_item(
+        cache.payload[0], source_status="cache_ready"
+    )["signal_key"]
+    monkeypatch.setattr(
+        receivable_workplace_api, "resolve_ut103_exchange_root", lambda _value: tmp_path
+    )
+
+    internal_access = receivable_workplace_api.ReceivableWorkplaceAuthContext(
+        actor="internal:management",
+        source="internal",
+        access_level="full",
+        department_refs=None,
+    )
+    created = receivable_workplace_api.create_receivable_folder_change_operation(
+        ReceivableFolderChangeOperationCreate(
+            snapshot_date=as_of,
+            signal_key=signal_key,
+        ),
+        db_session,
+        internal_access,
+    )
+    operation_id = created.id
+    readback = receivable_workplace_api.get_receivable_folder_change_operation(
+        operation_id,
+        db_session,
+        internal_access,
+    )
+    assert readback.state == "draft"
+    wrong_department_access = receivable_workplace_api.ReceivableWorkplaceAuthContext(
+        actor="bitrix:member-1:77",
+        source="bitrix",
+        access_level="department",
+        department_refs=frozenset({"dep-2"}),
+    )
+    with pytest.raises(HTTPException) as hidden_error:
+        receivable_workplace_api.get_receivable_folder_change_operation(
+            operation_id,
+            db_session,
+            wrong_department_access,
+        )
+    assert hidden_error.value.status_code == 404
+
+    with pytest.raises(HTTPException) as internal_error:
+        receivable_workplace_api.approve_receivable_folder_change_operation(
+            operation_id,
+            db_session,
+            internal_access,
+        )
+    assert internal_error.value.status_code == 403
+
+    bitrix_full_access = receivable_workplace_api.ReceivableWorkplaceAuthContext(
+        actor="bitrix:member-1:42",
+        source="bitrix",
+        access_level="full",
+        department_refs=None,
+    )
+    with pytest.raises(HTTPException) as early_error:
+        receivable_workplace_api.approve_receivable_folder_change_operation(
+            operation_id,
+            db_session,
+            bitrix_full_access,
+        )
+    assert early_error.value.status_code == 409
+    assert "dry-run" in str(early_error.value.detail)
+
+    operation = db_session.get(ReceivableFolderChangeOperation, operation_id)
+    operation.state = "dry_run_ok"
+    db_session.commit()
+    approved = receivable_workplace_api.approve_receivable_folder_change_operation(
+        operation_id,
+        db_session,
+        bitrix_full_access,
+    )
+    assert approved.state == "apply_sent"
+    assert approved.approved_by_bitrix_user_id == "42"
+
+
+@pytest.mark.parametrize(
+    ("queue", "cache_department", "access_departments"),
+    [
+        ("business_review", "dep-1", frozenset({"dep-1"})),
+        ("actionable", "dep-2", frozenset({"dep-1"})),
+    ],
+)
+def test_folder_change_api_rejects_non_actionable_or_out_of_scope_signal(
+    monkeypatch: pytest.MonkeyPatch,
+    db_session: Session,
+    queue: str,
+    cache_department: str,
+    access_departments: frozenset[str],
+) -> None:
+    as_of = date(2026, 8, 1)
+    settings = _bitrix_settings()
+    _override_receivables_settings(monkeypatch, settings)
+    cache = _folder_signal_cache(
+        snapshot_date=as_of,
+        queue=queue,
+        department_ref=cache_department,
+    )
+    db_session.add(cache)
+    db_session.commit()
+    signal_key = receivable_workplace_cache.enrich_folder_recommendation_item(
+        cache.payload[0], source_status="cache_ready"
+    )["signal_key"]
+    access = receivable_workplace_api.ReceivableWorkplaceAuthContext(
+        actor="bitrix:member-1:77",
+        source="bitrix",
+        access_level="department",
+        department_refs=access_departments,
+    )
+    with pytest.raises(HTTPException) as error:
+        receivable_workplace_api.create_receivable_folder_change_operation(
+            ReceivableFolderChangeOperationCreate(
+                snapshot_date=as_of,
+                signal_key=signal_key,
+            ),
+            db_session,
+            access,
+        )
+    assert error.value.status_code == 409

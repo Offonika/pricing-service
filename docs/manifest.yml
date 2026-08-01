@@ -1,6 +1,16 @@
 version: 1
 project: pricing-service
 documents:
+  - path: docs/specs/receivables-unified-contour-2026-08-01.md
+    title: Receivables Unified Operating Contour
+    doc_type: spec
+    domain: receivables
+    status: accepted
+    owner: operations-and-engineering
+    source_of_truth: true
+    related_code: [app/api/receivable_workplace.py, app/services/counterparty_folder_recommendations.py, app/services/receivable_folder_changes.py, app/services/receivable_credit_decisions.py, app/models/receivable_bitrix_link.py, app/models/receivable_folder_change_operation.py, scripts/build_receivable_work_blueprint.py, scripts/build_receivable_decision_blueprint.py]
+    related_tests: [tests/test_counterparty_folder_recommendations.py, tests/test_receivable_folder_changes.py, tests/test_receivable_credit_decision_worker.py, tests/test_receivable_work_blueprint.py]
+    keywords: [receivables, task-756, task-43, task-2494, bitrix, onec, folder, credit-decision]
   - path: README.md
     title: Pricing Service README
     doc_type: readme

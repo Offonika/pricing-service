@@ -10,7 +10,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
-from app.models import ReceivableCase, ReceivableSmsLog, ReceivableWorkEvent, ReceivableWorkItem
+from app.models import (
+    ReceivableBitrixLink,
+    ReceivableCase,
+    ReceivableSmsLog,
+    ReceivableWorkEvent,
+    ReceivableWorkItem,
+)
 from app.services.expertise_bitrix import BitrixRestClient
 from app.services.receivable_workplace_cache import load_cached_open_debt_documents
 from app.services.receivables import CASE_BUYERS, CASE_OVERDUE
@@ -729,6 +735,7 @@ def _sync_bitrix_item(
         settings=settings,
         bitrix_documents=bitrix_documents,
     )
+    sync_error: str | None = None
     try:
         if item.bitrix_item_id:
             if not item.bitrix_detail_url:
@@ -791,9 +798,30 @@ def _sync_bitrix_item(
         item.bitrix_last_error = None
     except Exception as exc:  # noqa: BLE001
         error = str(exc)[:1000]
+        sync_error = error
         item.bitrix_last_error = error
         summary.bitrix_errors += 1
         summary.errors.append(f"{item.stable_key}: {error}")
+    finally:
+        if item.bitrix_item_id is not None:
+            contour_code = settings.receivable_bitrix_contour_code
+            link = next(
+                (value for value in item.bitrix_links if value.contour_code == contour_code),
+                None,
+            )
+            if link is None:
+                link = ReceivableBitrixLink(
+                    contour_code=contour_code,
+                    entity_type_id=settings.receivable_bitrix_entity_type_id,
+                    item_id=str(item.bitrix_item_id),
+                )
+                item.bitrix_links.append(link)
+            link.entity_type_id = settings.receivable_bitrix_entity_type_id
+            link.item_id = str(item.bitrix_item_id)
+            link.detail_url = item.bitrix_detail_url
+            link.stage_id = item.bitrix_stage_id
+            link.last_sync_at = item.bitrix_last_sync_at
+            link.last_error = sync_error
 
 
 def _mark_data_quality_issue(

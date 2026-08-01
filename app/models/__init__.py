@@ -104,7 +104,10 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.product_sku_plan import ProductSkuPlan
     from app.models.product_stock import ProductStock
     from app.models.receivable_balance_snapshot import ReceivableBalanceSnapshot
+    from app.models.receivable_bitrix_link import ReceivableBitrixLink
     from app.models.receivable_case import ReceivableCase
+    from app.models.receivable_credit_decision import ReceivableCreditDecisionOperation
+    from app.models.receivable_folder_change_operation import ReceivableFolderChangeOperation
     from app.models.receivable_ledger_event import ReceivableLedgerEvent
     from app.models.receivable_reconciliation_snapshot import ReceivableReconciliationSnapshot
     from app.models.receivable_work import (
@@ -255,7 +258,10 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "ReceivableBalanceSnapshot",
         "ReceivableReconciliationSnapshot",
         "ReceivableCase",
+        "ReceivableCreditDecisionOperation",
+        "ReceivableFolderChangeOperation",
         "ReceivableWorkItem",
+        "ReceivableBitrixLink",
         "ReceivableWorkEvent",
         "ReceivableSmsLog",
         "ReceivableOpenDebtCache",

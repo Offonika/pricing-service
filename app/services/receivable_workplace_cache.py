@@ -17,13 +17,12 @@ from app.models import (
 )
 from app.services.counterparty_folder_recommendations import (
     OPEN_DEBT_DIAGNOSTIC_MATCHED,
-    STATUS_MOVE_RECOMMENDED,
-    STATUS_NEEDS_REVIEW,
-    STATUS_NO_OVERDUE,
-    STATUS_OK,
+    QUEUE_ALL,
     build_open_debt_documents_by_counterparty,
     classify_open_debt_documents,
+    enrich_folder_recommendation_item,
     evaluate_open_debt_source_freshness,
+    folder_recommendation_summary,
 )
 from app.services.receivables import CASE_BUYERS
 
@@ -328,27 +327,7 @@ def _filter_folder_payload_for_access(
 def _folder_summary(
     payload: list[dict[str, Any]], *, source_snapshot_count: int = 0
 ) -> dict[str, Any]:
-    status_counts = Counter(str(item.get("status") or "") for item in payload)
-    return {
-        "total_count": len(payload),
-        "source_snapshot_count": source_snapshot_count,
-        "move_recommended_count": status_counts[STATUS_MOVE_RECOMMENDED],
-        "ok_count": status_counts[STATUS_OK],
-        "no_overdue_count": status_counts[STATUS_NO_OVERDUE],
-        "needs_review_count": status_counts[STATUS_NEEDS_REVIEW],
-        "total_open_debt": sum(
-            (_money(item.get("current_balance")) for item in payload),
-            Decimal("0.00"),
-        ),
-        "move_recommended_amount": sum(
-            (
-                _money(item.get("current_balance"))
-                for item in payload
-                if item.get("status") == STATUS_MOVE_RECOMMENDED
-            ),
-            Decimal("0.00"),
-        ),
-    }
+    return folder_recommendation_summary(payload, source_snapshot_count=source_snapshot_count)
 
 
 def cache_folder_recommendation_report(
@@ -386,6 +365,7 @@ def load_cached_folder_recommendation_report(
     *,
     snapshot_date: date,
     status: str | None = None,
+    queue: str = QUEUE_ALL,
     limit: int | None = None,
     allowed_department_refs: set[str] | frozenset[str] | None = None,
 ) -> dict[str, Any] | None:
@@ -397,12 +377,18 @@ def load_cached_folder_recommendation_report(
     )
     if row is None:
         return None
+    source_status = "source_stale" if row.source_status == "source_stale" else "cache_ready"
     payload = _filter_folder_payload_for_access(
-        list(row.payload or []),
+        [
+            enrich_folder_recommendation_item(item, source_status=source_status)
+            for item in list(row.payload or [])
+        ],
         allowed_department_refs=allowed_department_refs,
     )
     if status:
         payload = [item for item in payload if item.get("status") == status]
+    if queue != QUEUE_ALL:
+        payload = [item for item in payload if item.get("queue") == queue]
     if limit is not None:
         payload = payload[:limit]
     source_snapshot_count = int((row.summary or {}).get("source_snapshot_count") or len(payload))
@@ -414,7 +400,7 @@ def load_cached_folder_recommendation_report(
         ),
         "payload": payload,
         "computed_at": row.computed_at,
-        "source_status": ("source_stale" if row.source_status == "source_stale" else "cache_ready"),
+        "source_status": source_status,
     }
 
 

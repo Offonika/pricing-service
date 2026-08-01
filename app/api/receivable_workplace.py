@@ -11,15 +11,19 @@ from typing import Iterator, Literal
 from fastapi import APIRouter, Depends, HTTPException, Query, Security
 from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPAuthorizationCredentials
+from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import get_db, security
 from app.core.config import get_settings
 from app.infrastructure.db.engines import DatabaseNotConfiguredError, get_onec_engine
+from app.models import ReceivableFolderChangeOperation
 from app.schemas.management import (
     CounterpartyFolderRecommendationItem,
     CounterpartyFolderRecommendationResponse,
+    ReceivableFolderChangeOperationCreate,
+    ReceivableFolderChangeOperationResponse,
 )
 from app.schemas.receivable_workplace import (
     ReceivableWorkplaceActionRequest,
@@ -29,11 +33,20 @@ from app.schemas.receivable_workplace import (
 )
 from app.services.bitrix_receivables_auth import verify_receivables_session_token
 from app.services.counterparty_folder_recommendations import (
+    QUEUE_ALL,
     STATUS_MOVE_RECOMMENDED,
     STATUS_NEEDS_REVIEW,
     STATUS_NO_OVERDUE,
     STATUS_OK,
     build_counterparty_folder_recommendations,
+    enrich_folder_recommendation_item,
+    folder_recommendation_summary,
+)
+from app.services.exporters.ut103_exchange import resolve_ut103_exchange_root
+from app.services.receivable_folder_changes import (
+    approve_folder_change_operation,
+    create_folder_change_operation,
+    operation_payload,
 )
 from app.services.receivable_workplace import (
     WorkplaceSortBy,
@@ -176,8 +189,9 @@ def _filter_folder_report_for_access(
 ) -> dict:
     if allowed_department_refs is None:
         return report
+    source_status = str(report.get("source_status") or "cache_ready")
     payload = [
-        item
+        enrich_folder_recommendation_item(item, source_status=source_status)
         for item in report["payload"]
         if _department_allowed(
             item.get("debt_department_ref"),
@@ -190,38 +204,12 @@ def _filter_folder_report_for_access(
     ]
     summary = dict(report["summary"])
     summary.update(
-        {
-            "total_count": len(payload),
-            "move_recommended_count": sum(
-                1 for item in payload if item.get("status") == STATUS_MOVE_RECOMMENDED
-            ),
-            "ok_count": sum(1 for item in payload if item.get("status") == STATUS_OK),
-            "no_overdue_count": sum(
-                1 for item in payload if item.get("status") == STATUS_NO_OVERDUE
-            ),
-            "needs_review_count": sum(
-                1 for item in payload if item.get("status") == STATUS_NEEDS_REVIEW
-            ),
-            "total_open_debt": sum(
-                (Decimal(str(item.get("current_balance") or "0")) for item in payload),
-                Decimal("0"),
-            ),
-            "move_recommended_amount": sum(
-                (
-                    Decimal(str(item.get("current_balance") or "0"))
-                    for item in payload
-                    if item.get("status") == STATUS_MOVE_RECOMMENDED
-                ),
-                Decimal("0"),
-            ),
-        }
+        folder_recommendation_summary(
+            payload,
+            source_snapshot_count=int(summary.get("source_snapshot_count") or len(payload)),
+        )
     )
     return {**report, "summary": summary, "payload": payload}
-
-
-def _folder_candidate_limit(limit: int | None) -> int:
-    requested_limit = limit or 100
-    return min(max(requested_limit * 3, 100), 500)
 
 
 @router.get("/workplace/meta", response_model=ReceivableWorkplaceMetaResponse)
@@ -276,6 +264,9 @@ def get_receivable_workplace_folder_recommendations(
             f"{STATUS_NO_OVERDUE}|{STATUS_NEEDS_REVIEW})$"
         ),
     ),
+    queue: Literal["actionable", "business_review", "data_quality", "excluded", "all"] = Query(
+        default=QUEUE_ALL
+    ),
     limit: int | None = Query(default=None, ge=1, le=10000),
     db: Session = Depends(get_db),
     access: ReceivableWorkplaceAuthContext = Depends(require_receivable_workplace_access),
@@ -284,6 +275,7 @@ def get_receivable_workplace_folder_recommendations(
         db,
         snapshot_date=date_value,
         status=status,
+        queue=queue,
         limit=limit,
         allowed_department_refs=access.allowed_department_refs,
     )
@@ -296,7 +288,8 @@ def get_receivable_workplace_folder_recommendations(
                 snapshot_date=date_value,
                 limit=limit,
                 status=status,
-                candidate_limit=_folder_candidate_limit(limit),
+                queue=queue,
+                candidate_limit=None,
                 snapshot_department_refs=access.allowed_department_refs,
             )
         except ValueError as error:
@@ -330,6 +323,102 @@ def get_receivable_workplace_folder_recommendations(
         summary=summary,
         payload=payload,
     )
+
+
+@router.post(
+    "/workplace/folder-change-operations",
+    response_model=ReceivableFolderChangeOperationResponse,
+)
+def create_receivable_folder_change_operation(
+    request: ReceivableFolderChangeOperationCreate,
+    db: Session = Depends(get_db),
+    access: ReceivableWorkplaceAuthContext = Depends(require_receivable_workplace_access),
+) -> ReceivableFolderChangeOperationResponse:
+    report = load_cached_folder_recommendation_report(
+        db,
+        snapshot_date=request.snapshot_date,
+        queue="actionable",
+        allowed_department_refs=access.allowed_department_refs,
+    )
+    if report is None:
+        raise HTTPException(status_code=409, detail="folder recommendation cache is missing")
+    signal = next(
+        (item for item in report["payload"] if item.get("signal_key") == request.signal_key),
+        None,
+    )
+    if signal is None:
+        raise HTTPException(status_code=409, detail="actionable signal is missing or changed")
+    try:
+        operation = create_folder_change_operation(
+            db,
+            signal=signal,
+            data_version=str(report["report_revision"]),
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return ReceivableFolderChangeOperationResponse.model_validate(operation_payload(operation))
+
+
+@router.post(
+    "/workplace/folder-change-operations/{operation_id}/approve",
+    response_model=ReceivableFolderChangeOperationResponse,
+)
+def approve_receivable_folder_change_operation(
+    operation_id: int,
+    db: Session = Depends(get_db),
+    access: ReceivableWorkplaceAuthContext = Depends(require_receivable_workplace_access),
+) -> ReceivableFolderChangeOperationResponse:
+    if access.access_level != "full" or not access.actor.startswith("bitrix:"):
+        raise HTTPException(status_code=403, detail="Bitrix full-access approver is required")
+    operation = db.scalar(
+        select(ReceivableFolderChangeOperation).where(
+            ReceivableFolderChangeOperation.id == operation_id
+        )
+    )
+    if operation is None:
+        raise HTTPException(status_code=404, detail="folder change operation not found")
+    try:
+        exchange_root = resolve_ut103_exchange_root(None)
+        operation = approve_folder_change_operation(
+            db,
+            operation,
+            approved_by_bitrix_user_id=access.actor.rsplit(":", 1)[-1],
+            exchange_root=exchange_root,
+        )
+    except (RuntimeError, ValueError) as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return ReceivableFolderChangeOperationResponse.model_validate(operation_payload(operation))
+
+
+@router.get(
+    "/workplace/folder-change-operations/{operation_id}",
+    response_model=ReceivableFolderChangeOperationResponse,
+)
+def get_receivable_folder_change_operation(
+    operation_id: int,
+    db: Session = Depends(get_db),
+    access: ReceivableWorkplaceAuthContext = Depends(require_receivable_workplace_access),
+) -> ReceivableFolderChangeOperationResponse:
+    operation = db.scalar(
+        select(ReceivableFolderChangeOperation).where(
+            ReceivableFolderChangeOperation.id == operation_id
+        )
+    )
+    if operation is None:
+        raise HTTPException(status_code=404, detail="folder change operation not found")
+    signal = operation.signal_snapshot if isinstance(operation.signal_snapshot, dict) else {}
+    if access.allowed_department_refs is not None and not (
+        _department_allowed(
+            signal.get("debt_department_ref"),
+            allowed_department_refs=access.allowed_department_refs,
+        )
+        or _department_allowed(
+            signal.get("snapshot_department_ref"),
+            allowed_department_refs=access.allowed_department_refs,
+        )
+    ):
+        raise HTTPException(status_code=404, detail="folder change operation not found")
+    return ReceivableFolderChangeOperationResponse.model_validate(operation_payload(operation))
 
 
 @router.patch(

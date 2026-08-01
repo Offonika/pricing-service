@@ -196,7 +196,7 @@ def test_task_exports_local_json_and_csv(tmp_path) -> None:
     assert json_path.exists()
     assert csv_path.exists()
     payload = json_path.read_text(encoding="utf-8")
-    assert "Дебиторка Решение" in payload
+    assert "Кредитное решение" in payload
     assert "Клиент для выгрузки" in payload
     assert '"bitrix_writes": false' in payload
     assert '"folder_name": "Покупатели"' in payload

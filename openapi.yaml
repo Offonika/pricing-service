@@ -3351,6 +3351,19 @@ paths:
             pattern: ^(move_recommended|ok|no_overdue|needs_review)$
           - type: 'null'
           title: Status
+      - name: queue
+        in: query
+        required: false
+        schema:
+          enum:
+          - actionable
+          - business_review
+          - data_quality
+          - excluded
+          - all
+          type: string
+          default: all
+          title: Queue
       - name: limit
         in: query
         required: false
@@ -4295,6 +4308,19 @@ paths:
             pattern: ^(move_recommended|ok|no_overdue|needs_review)$
           - type: 'null'
           title: Status
+      - name: queue
+        in: query
+        required: false
+        schema:
+          enum:
+          - actionable
+          - business_review
+          - data_quality
+          - excluded
+          - all
+          type: string
+          default: all
+          title: Queue
       - name: limit
         in: query
         required: false
@@ -4312,6 +4338,83 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CounterpartyFolderRecommendationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/receivables/workplace/folder-change-operations:
+    post:
+      summary: Create Receivable Folder Change Operation
+      operationId: create_receivable_folder_change_operation_api_receivables_workplace_folder_change_operations_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReceivableFolderChangeOperationCreate'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReceivableFolderChangeOperationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/receivables/workplace/folder-change-operations/{operation_id}/approve:
+    post:
+      summary: Approve Receivable Folder Change Operation
+      operationId: approve_receivable_folder_change_operation_api_receivables_workplace_folder_change_operations__operation_id__approve_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: operation_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Operation Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReceivableFolderChangeOperationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/receivables/workplace/folder-change-operations/{operation_id}:
+    get:
+      summary: Get Receivable Folder Change Operation
+      operationId: get_receivable_folder_change_operation_api_receivables_workplace_folder_change_operations__operation_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: operation_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Operation Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReceivableFolderChangeOperationResponse'
         '422':
           description: Validation Error
           content:
@@ -12103,6 +12206,18 @@ components:
         status:
           type: string
           title: Status
+        signal_key:
+          type: string
+          title: Signal Key
+          default: ''
+        queue:
+          type: string
+          title: Queue
+          default: data_quality
+        action_required:
+          type: boolean
+          title: Action Required
+          default: false
         review_reason:
           anyOf:
           - type: string
@@ -23024,6 +23139,108 @@ components:
       - aged_bucket
       - activity_segment
       title: ReceivableCaseItem
+    ReceivableFolderChangeOperationCreate:
+      properties:
+        signal_key:
+          type: string
+          title: Signal Key
+        snapshot_date:
+          type: string
+          format: date
+          title: Snapshot Date
+      type: object
+      required:
+      - signal_key
+      - snapshot_date
+      title: ReceivableFolderChangeOperationCreate
+    ReceivableFolderChangeOperationResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        signal_key:
+          type: string
+          title: Signal Key
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        counterparty_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Code
+        counterparty_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Name
+        expected_old_folder_ref:
+          type: string
+          title: Expected Old Folder Ref
+        expected_old_folder_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Expected Old Folder Name
+        proposed_new_folder_ref:
+          type: string
+          title: Proposed New Folder Ref
+        proposed_new_folder_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Proposed New Folder Name
+        data_version:
+          type: string
+          title: Data Version
+        decision_hash:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Decision Hash
+        approved_by_bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Approved By Bitrix User Id
+        state:
+          type: string
+          title: State
+        readback_folder_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Readback Folder Ref
+        readback_folder_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Readback Folder Name
+        last_error:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Last Error
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - id
+      - signal_key
+      - counterparty_ref
+      - expected_old_folder_ref
+      - proposed_new_folder_ref
+      - data_version
+      - state
+      - created_at
+      - updated_at
+      title: ReceivableFolderChangeOperationResponse
     ReceivableWorkplaceActionRequest:
       properties:
         action_id:

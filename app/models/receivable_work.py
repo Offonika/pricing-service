@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from sqlalchemy import (
     JSON,
@@ -19,6 +19,9 @@ from sqlalchemy import (
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
+
+if TYPE_CHECKING:
+    from app.models.receivable_bitrix_link import ReceivableBitrixLink
 
 
 class ReceivableWorkItem(Base):
@@ -95,6 +98,10 @@ class ReceivableWorkItem(Base):
         cascade="all, delete-orphan",
     )
     sms_logs: Mapped[list[ReceivableSmsLog]] = relationship(back_populates="work_item")
+    bitrix_links: Mapped[list[ReceivableBitrixLink]] = relationship(
+        back_populates="work_item",
+        cascade="all, delete-orphan",
+    )
 
 
 class ReceivableWorkEvent(Base):

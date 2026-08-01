@@ -10,6 +10,7 @@ import {
   receivablesErrorMessage,
   updateReceivableWorkplaceItem,
   type CounterpartyFolderRecommendation,
+  type CounterpartyFolderQueue,
   type ReceivableCacheComponent,
   type ReceivableDepartmentOption,
   type ReceivableStatusOption,
@@ -422,7 +423,7 @@ function ReceivableRow({
                 <span>
                   Всего: {item.invoice_count}, просроченных: {item.overdue_invoice_count}
                 </span>
-                {item.needs_credit_depth_default && <mark>глубина кредита расчетно 7 дней</mark>}
+                {item.needs_credit_depth_default && <mark>7 дней расчётно</mark>}
               </div>
               <table>
                 <thead>
@@ -481,25 +482,38 @@ function FolderRecommendations({
   loading,
   summary,
   sourceStatus,
+  queue,
+  onQueueChange,
 }: {
   items: CounterpartyFolderRecommendation[];
   loading: boolean;
   summary: Record<string, unknown>;
   sourceStatus: string;
+  queue: CounterpartyFolderQueue;
+  onQueueChange: (queue: CounterpartyFolderQueue) => void;
 }) {
   if (loading) return <div className="receivables__state">Загрузка вкладки контроля папок...</div>;
   const sourceStale = sourceStatus === "source_stale";
   const computedAt = typeof summary.computed_at === "string" ? summary.computed_at : "";
-  if (!items.length) {
-    return (
-      <div className="receivables__state">
-        По текущей дате рекомендаций нет.
-        {sourceStatus && <span> Источник: {sourceStatus}.</span>}
-      </div>
-    );
-  }
   return (
     <section className="receivables__folder-tab">
+      <div className="receivables__quick-filters">
+        {[
+          ["actionable", "Требует действия"],
+          ["business_review", "Бизнес-проверка"],
+          ["data_quality", "Ошибки данных"],
+          ["excluded", "Исключено"],
+        ].map(([value, label]) => (
+          <button
+            className={queue === value ? "btn btn--compact" : "btn btn--compact btn--ghost"}
+            key={value}
+            onClick={() => onQueueChange(value as CounterpartyFolderQueue)}
+            type="button"
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       {sourceStale && (
         <div className="receivables__state">
           Источник накладных устарел. Номера накладных скрыты, автоматические переносы отключены.
@@ -507,10 +521,15 @@ function FolderRecommendations({
       )}
       <div className="receivables__folder-summary">
         <span>Строк: {String(summary.total_count ?? items.length)}</span>
-        <span>К пересмотру: {String(summary.needs_review_count ?? 0)}</span>
+        <span>Требует действия: {String(summary.actionable_count ?? 0)}</span>
+        <span>Бизнес-проверка: {String(summary.business_review_count ?? 0)}</span>
+        <span>Ошибки данных: {String(summary.data_quality_count ?? 0)}</span>
         <span>Источник: {sourceStatus || "ready"}</span>
         {computedAt && <span>Расчет: {formatDateTime(computedAt)}</span>}
       </div>
+      {!items.length ? (
+        <div className="receivables__state">В выбранной очереди строк нет.</div>
+      ) : (
       <table>
         <thead>
           <tr>
@@ -558,6 +577,7 @@ function FolderRecommendations({
           })}
         </tbody>
       </table>
+      )}
     </section>
   );
 }
@@ -593,6 +613,7 @@ export function ReceivablesWorkplace({
   const [folderItems, setFolderItems] = useState<CounterpartyFolderRecommendation[]>([]);
   const [folderSummary, setFolderSummary] = useState<Record<string, unknown>>({});
   const [folderSourceStatus, setFolderSourceStatus] = useState("");
+  const [folderQueue, setFolderQueue] = useState<CounterpartyFolderQueue>("actionable");
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [metaLoaded, setMetaLoaded] = useState(false);
   const dashboardReturnUrl = useMemo(readDashboardReturnUrl, []);
@@ -696,7 +717,7 @@ export function ReceivablesWorkplace({
     }
     setFoldersLoading(true);
     try {
-      const data = await fetchCounterpartyFolderRecommendations(date);
+      const data = await fetchCounterpartyFolderRecommendations(date, folderQueue);
       setFolderItems(data.payload);
       setFolderSummary(data.summary || {});
       setFolderSourceStatus(data.source_status);
@@ -705,7 +726,7 @@ export function ReceivablesWorkplace({
     } finally {
       setFoldersLoading(false);
     }
-  }, [date, hasToken]);
+  }, [date, folderQueue, hasToken]);
 
   useEffect(() => {
     void loadWorkplace();
@@ -852,7 +873,7 @@ export function ReceivablesWorkplace({
           Рабочий список
         </button>
         <button className={tab === "folders" ? "btn" : "btn btn--ghost"} onClick={() => setTab("folders")} type="button">
-          Контроль папок
+          Закрепление клиентов
         </button>
       </nav>
       {message && <div className="products-table__state products-table__state--error">{message}</div>}
@@ -931,11 +952,13 @@ export function ReceivablesWorkplace({
           loading={foldersLoading}
           sourceStatus={folderSourceStatus}
           summary={folderSummary}
+          queue={folderQueue}
+          onQueueChange={setFolderQueue}
         />
       )}
       <footer className="receivables__legend">
         <span>Красное "нет" в телефоне: номера нет.</span>
-        <span>Желтая метка: расчетный срок 7 дней или просрочка 30+.</span>
+        <span>Желтая метка: 7 дней расчётно или просрочка 30+.</span>
         <span>Кнопка + раскрывает накладные клиента.</span>
       </footer>
     </div>

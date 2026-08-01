@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import Settings, get_settings
 from app.models import (
+    ReceivableBitrixLink,
     ReceivableCase,
     ReceivableOpenDebtCache,
     ReceivableSmsLog,
@@ -382,6 +383,12 @@ def test_overdue_buyer_gets_one_work_item_and_bitrix_item(db_session: Session) -
     assert item.department_name == "Продажи"
     assert len(item.chain_documents or []) == 2
     assert item.bitrix_item_id == 101
+    link = db_session.scalar(select(ReceivableBitrixLink))
+    assert link is not None
+    assert link.work_item_id == item.id
+    assert link.contour_code == "legacy_receivable_buyers"
+    assert link.entity_type_id == 187
+    assert link.item_id == "101"
     assert summary.work_items_created == 1
     assert summary.bitrix_created == 1
     assert len(bitrix.added) == 1

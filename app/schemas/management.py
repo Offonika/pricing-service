@@ -125,6 +125,9 @@ class CounterpartyFolderRecommendationItem(BaseModel):
     effective_due_date: datetime | None = None
     effective_overdue_days: int | None = None
     status: str
+    signal_key: str = ""
+    queue: str = "data_quality"
+    action_required: bool = False
     review_reason: str | None = None
     document_structure_status: str | None = None
     document_structure_open_amount: Decimal | None = None
@@ -140,6 +143,32 @@ class CounterpartyFolderRecommendationResponse(ManagementEnvelope):
     report_revision: str
     summary: dict[str, Any]
     payload: list[CounterpartyFolderRecommendationItem]
+
+
+class ReceivableFolderChangeOperationCreate(BaseModel):
+    signal_key: str
+    snapshot_date: date
+
+
+class ReceivableFolderChangeOperationResponse(BaseModel):
+    id: int
+    signal_key: str
+    counterparty_ref: str
+    counterparty_code: str | None = None
+    counterparty_name: str | None = None
+    expected_old_folder_ref: str
+    expected_old_folder_name: str | None = None
+    proposed_new_folder_ref: str
+    proposed_new_folder_name: str | None = None
+    data_version: str
+    decision_hash: str | None = None
+    approved_by_bitrix_user_id: str | None = None
+    state: str
+    readback_folder_ref: str | None = None
+    readback_folder_name: str | None = None
+    last_error: str | None = None
+    created_at: datetime
+    updated_at: datetime
 
 
 class CounterpartyFolderSnapshotSyncResponse(ManagementEnvelope):

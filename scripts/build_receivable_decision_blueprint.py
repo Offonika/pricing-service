@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build a local dry-run blueprint for the `Дебиторка Решение` smart-process.
+"""Build a local dry-run blueprint for the `Кредитное решение` smart-process.
 
 The script is intentionally read-only for Bitrix24. It may read current process
 metadata for comparison, but it never calls add/update/delete REST methods.
@@ -25,7 +25,7 @@ DEFAULT_ENV_FILE = REPO_ROOT / ".env"
 DEFAULT_OUTPUT_PATH = REPO_ROOT / "build/bitrix/receivable_decision_blueprint.json"
 DEFAULT_CURRENT_ENTITY_TYPE_ID = 1132
 DEFAULT_CURRENT_PROCESS_TITLE = "Дебиторка покупателей"
-DEFAULT_PROCESS_TITLE = "Дебиторка Решение"
+DEFAULT_PROCESS_TITLE = "Кредитное решение"
 DEFAULT_PROCESS_CODE = "receivable_decision"
 DEFAULT_CATEGORY_NAME = "Работа с дебиторкой"
 ARSEN_LAST_NAME = "Сагиян"

@@ -1,0 +1,9 @@
+# Не устанавливать автоматически. Шаблон активируется отдельным rollout-шагом
+# только после трёх успешных shadow-дней и readback задачи №756.
+#
+# Shadow без внешней публикации (запускать вручную три дня):
+# /home/deploy/.openclaw/workspace/scripts/counterparty_folder_recommendations_from_a.sh --delivery-mode daily_delta --json
+#
+# После утверждения расписания:
+35 10 * * * /home/deploy/.openclaw/workspace/scripts/counterparty_folder_recommendations_from_a.sh --delivery-mode daily_delta --notify-bitrix-task-id 756 --json
+45 10 * * 1 /home/deploy/.openclaw/workspace/scripts/counterparty_folder_recommendations_from_a.sh --delivery-mode weekly_summary --notify-bitrix-task-id 756 --json

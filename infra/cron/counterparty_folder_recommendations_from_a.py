@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import base64
 import csv
+import hashlib
 import json
 import os
 import urllib.error
@@ -53,6 +54,11 @@ STATUS_VALUES = (
     STATUS_NO_OVERDUE,
     STATUS_NEEDS_REVIEW,
 )
+QUEUE_ACTIONABLE = "actionable"
+QUEUE_ALL = "all"
+DELIVERY_LEGACY = "legacy"
+DELIVERY_DAILY_DELTA = "daily_delta"
+DELIVERY_WEEKLY_SUMMARY = "weekly_summary"
 PAYMENT_TERM_SOURCE_FALLBACK = "fallback_7_days_read_only"
 REVIEW_REASON_LABELS = {
     "missing_origin_document": "не найден исходный документ долга",
@@ -121,6 +127,12 @@ def _parse_args() -> argparse.Namespace:
         help="Receivables snapshot date in YYYY-MM-DD format; default is today.",
     )
     parser.add_argument(
+        "--delivery-mode",
+        choices=(DELIVERY_LEGACY, DELIVERY_DAILY_DELTA, DELIVERY_WEEKLY_SUMMARY),
+        default=DELIVERY_LEGACY,
+        help="Legacy report, actionable delta, or weekly aggregate.",
+    )
+    parser.add_argument(
         "--status",
         choices=STATUS_VALUES,
         default=STATUS_MOVE_RECOMMENDED,
@@ -157,12 +169,99 @@ def _utcnow() -> datetime:
 
 def _load_state(path: Path) -> dict[str, Any]:
     if not path.exists():
-        return {"reports": {}}
+        return {"version": 2, "reports": {}, "active_signals": {}}
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
-        return {"reports": {}}
+        return {"version": 2, "reports": {}, "active_signals": {}}
     payload.setdefault("reports", {})
+    payload.setdefault("active_signals", {})
+    payload.setdefault("weekly_window", {})
+    payload["version"] = 2
     return payload
+
+
+def _signal_content_hash(row: dict[str, Any]) -> str:
+    relevant = {
+        key: row.get(key)
+        for key in (
+            "signal_key",
+            "counterparty_ref",
+            "current_folder_ref",
+            "recommended_folder_ref",
+            "debt_document_ref",
+            "current_balance",
+            "review_reason",
+            "effective_overdue_days",
+        )
+    }
+    raw = json.dumps(relevant, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _daily_delta_report(
+    report: dict[str, Any], state: dict[str, Any], *, snapshot_date: date
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    rows = [row for row in report.get("payload", []) if isinstance(row, dict)]
+    current = {
+        str(row.get("signal_key")): {
+            "hash": _signal_content_hash(row),
+            "last_seen": snapshot_date.isoformat(),
+            "row": row,
+        }
+        for row in rows
+        if row.get("signal_key")
+    }
+    previous = state.get("active_signals")
+    if not isinstance(previous, dict):
+        previous = {}
+    changed_keys = [
+        key
+        for key, value in current.items()
+        if key not in previous or (previous.get(key) or {}).get("hash") != value["hash"]
+    ]
+    closed_keys = sorted(set(previous) - set(current))
+    delta_rows = [current[key]["row"] for key in changed_keys]
+    delta = dict(report)
+    delta["payload"] = delta_rows
+    delta["report_revision"] = hashlib.sha256(
+        json.dumps(
+            {"date": snapshot_date.isoformat(), "changed": changed_keys, "closed": closed_keys},
+            sort_keys=True,
+        ).encode("utf-8")
+    ).hexdigest()[:12]
+    delta["summary"] = {
+        **dict(report.get("summary") or {}),
+        "total_count": len(delta_rows),
+        "new_or_changed_count": len(delta_rows),
+        "closed_count": len(closed_keys),
+        "remaining_actionable_count": len(current),
+    }
+    weekly = state.get("weekly_window")
+    if not isinstance(weekly, dict):
+        weekly = {}
+    weekly.setdefault("start", snapshot_date.isoformat())
+    weekly["new_or_changed"] = int(weekly.get("new_or_changed") or 0) + len(delta_rows)
+    weekly["closed"] = int(weekly.get("closed") or 0) + len(closed_keys)
+    weekly["last_date"] = snapshot_date.isoformat()
+    updates = {"active_signals": current, "weekly_window": weekly}
+    metrics = {
+        "new_or_changed_count": len(delta_rows),
+        "closed_count": len(closed_keys),
+        "remaining_actionable_count": len(current),
+    }
+    return delta, updates, metrics
+
+
+def _publication_suppression_reason(report: dict[str, Any], state: dict[str, Any]) -> str | None:
+    source_status = _safe(report.get("source_status"))
+    if source_status != "cache_ready":
+        return f"source_not_cache_ready:{source_status or 'missing'}"
+    current = _summary_int(report, "source_snapshot_count")
+    previous = int(state.get("last_source_snapshot_count") or 0)
+    difference = abs(current - previous)
+    if previous and difference >= 100 and difference / previous > 0.5:
+        return f"row_count_anomaly:{previous}->{current}"
+    return None
 
 
 def _save_state(path: Path, state: dict[str, Any]) -> None:
@@ -214,6 +313,41 @@ def _summary_int(report: dict[str, Any], key: str) -> int:
 
 def _state_key(snapshot_date: date, *, status: str, report_revision: str) -> str:
     return f"{snapshot_date.isoformat()}|{status}|{report_revision}"
+
+
+def _report_state_key(
+    snapshot_date: date,
+    *,
+    status: str,
+    report_revision: str,
+    delivery_mode: str,
+) -> str:
+    scope = status if delivery_mode == DELIVERY_LEGACY else delivery_mode
+    return _state_key(snapshot_date, status=scope, report_revision=report_revision)
+
+
+def _finish_delivery(
+    action: dict[str, Any],
+    *,
+    state: dict[str, Any],
+    state_path: Path,
+    snapshot_date: date,
+    delivery_mode: str,
+    dry_run: bool,
+) -> dict[str, Any]:
+    if (
+        delivery_mode == DELIVERY_WEEKLY_SUMMARY
+        and not dry_run
+        and action.get("delivery_action") == "deliver"
+    ):
+        state["weekly_window"] = {
+            "start": snapshot_date.isoformat(),
+            "new_or_changed": 0,
+            "closed": 0,
+            "last_date": snapshot_date.isoformat(),
+        }
+        _save_state(state_path, state)
+    return action
 
 
 def _delivery_state_key(
@@ -865,21 +999,52 @@ def render_bitrix_comment(
     below_min_count = _summary_int(report, "below_min_balance_count")
     min_balance = summary.get("min_recommendation_balance")
 
-    lines = [
-        "Добрый день.",
-        "",
-        f"📌 Отчет по контролю папок контрагентов за {as_of}",
-        f"Тип отчета: {_status_label(status)}",
-        "",
-        "📊 Сводка",
-        f"• Всего строк: {total_count}",
-        f"• ⏸️ Готовых рекомендаций к переносу: {move_count}",
-        f"• 🔎 На ручную проверку: {review_count}",
-        f"• 🧹 Скрыто мелких долгов ниже {min_balance or 500} ₽: {below_min_count}",
-        f"• Ревизия: {report_revision}",
-        f"• 📎 Excel: {'прикреплен к задаче' if xlsx_attached else 'не прикреплен'}",
-        f"• CSV fallback: {artifact_path}",
-    ]
+    if status == DELIVERY_WEEKLY_SUMMARY:
+        reasons = summary.get("review_reason_counts") or {}
+        lines = [
+            "Добрый день.",
+            "",
+            f"📊 Недельная сводка по закреплению клиентов за {as_of}",
+            f"• Новые/изменённые: {summary.get('weekly_new_or_changed', 0)}",
+            f"• Закрытые: {summary.get('weekly_closed', 0)}",
+            f"• Осталось actionable: {summary.get('actionable_count', 0)}",
+            f"• Бизнес-проверка: {summary.get('business_review_count', 0)}",
+            f"• Ошибки данных: {summary.get('data_quality_count', 0)}",
+        ]
+        if isinstance(reasons, dict) and reasons:
+            lines.extend(["", "Основные причины качества данных:"])
+            for reason, count in sorted(reasons.items(), key=lambda item: -int(item[1]))[:5]:
+                lines.append(f"• {_review_reason_label(reason)}: {count}")
+        return "\n".join(lines)
+
+    if status == DELIVERY_DAILY_DELTA:
+        lines = [
+            "Добрый день.",
+            "",
+            f"📌 Новые и изменённые подтверждённые сигналы за {as_of}",
+            f"• Новые/изменённые: {summary.get('new_or_changed_count', total_count)}",
+            f"• Закрытые: {summary.get('closed_count', 0)}",
+            f"• Осталось actionable: {summary.get('remaining_actionable_count', 0)}",
+            "• Автоматический перенос папок не выполнялся.",
+            f"• 📎 Excel: {'прикреплен к задаче' if xlsx_attached else 'не требуется'}",
+            f"• CSV audit: {artifact_path}",
+        ]
+    else:
+        lines = [
+            "Добрый день.",
+            "",
+            f"📌 Отчет по контролю папок контрагентов за {as_of}",
+            f"Тип отчета: {_status_label(status)}",
+            "",
+            "📊 Сводка",
+            f"• Всего строк: {total_count}",
+            f"• ⏸️ Готовых рекомендаций к переносу: {move_count}",
+            f"• 🔎 На ручную проверку: {review_count}",
+            f"• 🧹 Скрыто мелких долгов ниже {min_balance or 500} ₽: {below_min_count}",
+            f"• Ревизия: {report_revision}",
+            f"• 📎 Excel: {'прикреплен к задаче' if xlsx_attached else 'не прикреплен'}",
+            f"• CSV fallback: {artifact_path}",
+        ]
     if xlsx_path:
         lines.append(f"• XLSX fallback: {xlsx_path}")
     lines.append("")
@@ -903,10 +1068,11 @@ def render_bitrix_comment(
             lines.extend(["", "⚠️ Причины ручной проверки"])
             for reason, count in sorted(review_reason_counts.items()):
                 lines.append(f"• {_review_reason_label(reason)}: {count}")
-    else:
+    elif status != DELIVERY_DAILY_DELTA:
         lines.append("ℹ️ Отчет служебный, без автоматических изменений в 1С.")
 
-    preview_rows = [row for row in rows if isinstance(row, dict)][:10]
+    preview_limit = 20 if status == DELIVERY_DAILY_DELTA else 10
+    preview_rows = [row for row in rows if isinstance(row, dict)][:preview_limit]
     if preview_rows:
         lines.extend(["", "🧾 Первые строки"])
         for index, row in enumerate(preview_rows, start=1):
@@ -1106,8 +1272,13 @@ def sync_counterparty_folder_recommendations(
     notify_empty: bool = False,
     deliver_comment: Callable[[int, str], int] | None = None,
     deliver_attachment: Callable[[int, Path], dict[str, int]] | None = None,
+    delivery_mode: str = DELIVERY_LEGACY,
 ) -> dict[str, Any]:
-    params = {"date": snapshot_date.isoformat(), "status": status}
+    params = {"date": snapshot_date.isoformat()}
+    if delivery_mode == DELIVERY_LEGACY:
+        params["status"] = status
+    else:
+        params["queue"] = QUEUE_ACTIONABLE if delivery_mode == DELIVERY_DAILY_DELTA else QUEUE_ALL
     if limit is not None:
         params["limit"] = str(limit)
 
@@ -1122,6 +1293,8 @@ def sync_counterparty_folder_recommendations(
             "exported": 0,
             "noop": 0,
             "failed": 1,
+            "publication_suppressed": True,
+            "suppression_reason": "source_timeout_or_error",
         }
 
     if not isinstance(report, dict):
@@ -1148,7 +1321,39 @@ def sync_counterparty_folder_recommendations(
         }
 
     state = _load_state(state_path)
-    key = _state_key(snapshot_date, status=status, report_revision=report_revision)
+    delivery_report = report
+    state_updates: dict[str, Any] = {}
+    delta_metrics: dict[str, Any] = {}
+    delivery_status = status
+    if delivery_mode == DELIVERY_DAILY_DELTA:
+        delivery_report, state_updates, delta_metrics = _daily_delta_report(
+            report, state, snapshot_date=snapshot_date
+        )
+        delivery_status = DELIVERY_DAILY_DELTA
+    elif delivery_mode == DELIVERY_WEEKLY_SUMMARY:
+        weekly = state.get("weekly_window") if isinstance(state.get("weekly_window"), dict) else {}
+        delivery_report = {
+            **report,
+            "payload": [],
+            "report_revision": f"week-{snapshot_date.isoformat()}",
+            "summary": {
+                **dict(report.get("summary") or {}),
+                "total_count": 1,
+                "weekly_new_or_changed": int((weekly or {}).get("new_or_changed") or 0),
+                "weekly_closed": int((weekly or {}).get("closed") or 0),
+            },
+        }
+        delivery_status = DELIVERY_WEEKLY_SUMMARY
+        notify_empty = True
+    suppression_reason = (
+        _publication_suppression_reason(report, state) if delivery_mode != DELIVERY_LEGACY else None
+    )
+    key = _report_state_key(
+        snapshot_date,
+        status=status,
+        report_revision=report_revision,
+        delivery_mode=delivery_mode,
+    )
     current = (state.get("reports") or {}).get(key)
     if isinstance(current, dict) and current.get("export_status") == "exported" and not force:
         current_xlsx_path = _safe(current.get("xlsx_path")) or None
@@ -1169,16 +1374,30 @@ def sync_counterparty_folder_recommendations(
             "noop": 1,
             "failed": 0,
         }
-        return _maybe_deliver_bitrix(
+        if suppression_reason:
+            action.update(
+                {
+                    "delivery_action": "suppressed",
+                    "publication_suppressed": True,
+                    "suppression_reason": suppression_reason,
+                }
+            )
+            return action
+        delivered_action = _maybe_deliver_bitrix(
             action=action,
-            report=report,
+            report=delivery_report,
             state=state,
             state_path=state_path,
             snapshot_date=snapshot_date,
-            status=status,
-            report_revision=report_revision,
+            status=delivery_status,
+            report_revision=str(delivery_report.get("report_revision") or report_revision),
             artifact_path=str(current.get("artifact_path") or ""),
-            xlsx_path=current_xlsx_path,
+            xlsx_path=(
+                current_xlsx_path
+                if delivery_mode != DELIVERY_DAILY_DELTA
+                or _summary_int(delivery_report, "total_count") > 20
+                else None
+            ),
             task_id=bitrix_task_id,
             notify_empty=notify_empty,
             dry_run=dry_run,
@@ -1186,11 +1405,20 @@ def sync_counterparty_folder_recommendations(
             deliver_comment=deliver_comment,
             deliver_attachment=deliver_attachment,
         )
+        return _finish_delivery(
+            delivered_action,
+            state=state,
+            state_path=state_path,
+            snapshot_date=snapshot_date,
+            delivery_mode=delivery_mode,
+            dry_run=dry_run,
+        )
 
+    artifact_scope = status if delivery_mode == DELIVERY_LEGACY else delivery_mode
     artifact_path = (
         artifact_dir
         / snapshot_date.isoformat()
-        / f"counterparty-folder-{_safe_path_chunk(status)}-{report_revision}.csv"
+        / f"counterparty-folder-{_safe_path_chunk(artifact_scope)}-{report_revision}.csv"
     )
     xlsx_path = artifact_path.with_suffix(".xlsx")
     action = {
@@ -1212,22 +1440,44 @@ def sync_counterparty_folder_recommendations(
         "failed": 0,
     }
     if dry_run:
-        return _maybe_deliver_bitrix(
+        if suppression_reason:
+            action.update(
+                {
+                    "delivery_action": "suppressed",
+                    "publication_suppressed": True,
+                    "suppression_reason": suppression_reason,
+                }
+            )
+            return action
+        delivered_action = _maybe_deliver_bitrix(
             action=action,
-            report=report,
+            report=delivery_report,
             state=state,
             state_path=state_path,
             snapshot_date=snapshot_date,
-            status=status,
-            report_revision=report_revision,
+            status=delivery_status,
+            report_revision=str(delivery_report.get("report_revision") or report_revision),
             artifact_path=str(artifact_path),
-            xlsx_path=str(xlsx_path),
+            xlsx_path=(
+                str(xlsx_path)
+                if delivery_mode != DELIVERY_DAILY_DELTA
+                or _summary_int(delivery_report, "total_count") > 20
+                else None
+            ),
             task_id=bitrix_task_id,
             notify_empty=notify_empty,
             dry_run=dry_run,
             force=force,
             deliver_comment=deliver_comment,
             deliver_attachment=deliver_attachment,
+        )
+        return _finish_delivery(
+            delivered_action,
+            state=state,
+            state_path=state_path,
+            snapshot_date=snapshot_date,
+            delivery_mode=delivery_mode,
+            dry_run=dry_run,
         )
 
     export_recommendations_csv(report, artifact_path)
@@ -1242,23 +1492,49 @@ def sync_counterparty_folder_recommendations(
         "xlsx_path": str(xlsx_path),
         "exported_at": _utcnow().isoformat(),
     }
+    if not suppression_reason:
+        state.update(state_updates)
+        state["last_source_snapshot_count"] = _summary_int(report, "source_snapshot_count")
     _save_state(state_path, state)
-    return _maybe_deliver_bitrix(
+    action.update(delta_metrics)
+    if suppression_reason:
+        action.update(
+            {
+                "delivery_action": "suppressed",
+                "publication_suppressed": True,
+                "suppression_reason": suppression_reason,
+            }
+        )
+        return action
+    delivered_action = _maybe_deliver_bitrix(
         action=action,
-        report=report,
+        report=delivery_report,
         state=state,
         state_path=state_path,
         snapshot_date=snapshot_date,
-        status=status,
-        report_revision=report_revision,
+        status=delivery_status,
+        report_revision=str(delivery_report.get("report_revision") or report_revision),
         artifact_path=str(artifact_path),
-        xlsx_path=str(xlsx_path),
+        xlsx_path=(
+            str(xlsx_path)
+            if delivery_mode != DELIVERY_DAILY_DELTA
+            or _summary_int(delivery_report, "total_count") > 20
+            else None
+        ),
         task_id=bitrix_task_id,
         notify_empty=notify_empty,
         dry_run=dry_run,
         force=force,
         deliver_comment=deliver_comment,
         deliver_attachment=deliver_attachment,
+    )
+    return _finish_delivery(
+        delivered_action,
+        state=state,
+        state_path=state_path,
+        snapshot_date=snapshot_date,
+        delivery_mode=delivery_mode,
+        dry_run=dry_run,
     )
 
 
@@ -1291,6 +1567,8 @@ def render_summary(summary: dict[str, Any]) -> str:
         lines.append(f"Причина: {summary['reason']}")
     if summary.get("delivery_action"):
         lines.append(f"Доставка: {summary['delivery_action']}")
+    if summary.get("suppression_reason"):
+        lines.append(f"Публикация подавлена: {summary['suppression_reason']}")
     if summary.get("delivery_attachment_action"):
         lines.append(f"Вложение: {summary['delivery_attachment_action']}")
     if summary.get("bitrix_comment_id"):
@@ -1389,6 +1667,7 @@ def main() -> None:
             if args.notify_bitrix_task_id and disk_folder_id is not None and not args.dry_run
             else None
         ),
+        delivery_mode=args.delivery_mode,
     )
 
     if args.json:

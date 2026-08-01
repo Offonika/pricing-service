@@ -8,6 +8,8 @@ from typing import Any
 from openpyxl import load_workbook
 
 from infra.cron.counterparty_folder_recommendations_from_a import (
+    DELIVERY_DAILY_DELTA,
+    DELIVERY_WEEKLY_SUMMARY,
     REPORT_ENDPOINT,
     STATUS_MOVE_RECOMMENDED,
     STATUS_NEEDS_REVIEW,
@@ -82,6 +84,30 @@ def _report() -> dict[str, Any]:
             }
         ],
     }
+
+
+def _actionable_report(*, count: int = 1, source_count: int | None = None) -> dict[str, Any]:
+    report = _report()
+    report["source_status"] = "cache_ready"
+    row = report["payload"][0]
+    rows = []
+    for index in range(count):
+        current = dict(row)
+        current["signal_key"] = f"signal-{index}"
+        current["counterparty_ref"] = f"cp-{index}"
+        current["counterparty_name"] = f"Контрагент {index}"
+        current["queue"] = "actionable"
+        rows.append(current)
+    report["payload"] = rows
+    report["summary"] = {
+        **report["summary"],
+        "total_count": count,
+        "source_snapshot_count": source_count if source_count is not None else count,
+        "actionable_count": count,
+        "business_review_count": 0,
+        "data_quality_count": 0,
+    }
+    return report
 
 
 def test_counterparty_folder_wrapper_exports_csv_and_dedupes(tmp_path: Path) -> None:
@@ -337,3 +363,198 @@ def test_counterparty_folder_wrapper_skips_empty_bitrix_delivery(tmp_path: Path)
     assert summary["action"] == "export"
     assert summary["delivery_action"] == "skip_no_rows"
     assert summary["delivered"] == 0
+
+
+def test_daily_delta_delivers_only_new_or_changed_without_small_attachment(
+    tmp_path: Path,
+) -> None:
+    comments: list[str] = []
+    attachments: list[str] = []
+    report = _actionable_report()
+
+    def fetch_json(path: str, params: dict[str, str]) -> dict[str, Any]:
+        assert path == REPORT_ENDPOINT
+        assert params == {"date": params["date"], "queue": "actionable"}
+        return report
+
+    first = sync_counterparty_folder_recommendations(
+        fetch_json=fetch_json,
+        snapshot_date=date(2026, 8, 1),
+        state_path=tmp_path / "state.json",
+        artifact_dir=tmp_path / "artifacts",
+        bitrix_task_id=756,
+        deliver_comment=lambda _task_id, message: comments.append(message) or 801,
+        deliver_attachment=lambda _task_id, path: attachments.append(path.name) or {},
+        delivery_mode=DELIVERY_DAILY_DELTA,
+    )
+
+    assert first["delivery_action"] == "deliver"
+    assert first["new_or_changed_count"] == 1
+    assert attachments == []
+    assert "Новые/изменённые: 1" in comments[0]
+
+    second = sync_counterparty_folder_recommendations(
+        fetch_json=fetch_json,
+        snapshot_date=date(2026, 8, 2),
+        state_path=tmp_path / "state.json",
+        artifact_dir=tmp_path / "artifacts",
+        bitrix_task_id=756,
+        deliver_comment=lambda _task_id, message: comments.append(message) or 802,
+        delivery_mode=DELIVERY_DAILY_DELTA,
+    )
+
+    assert second["delivery_action"] == "skip_no_rows"
+    assert len(comments) == 1
+
+    report["payload"][0]["current_balance"] = "13000.00"
+    report["report_revision"] = "changed"
+    third = sync_counterparty_folder_recommendations(
+        fetch_json=fetch_json,
+        snapshot_date=date(2026, 8, 3),
+        state_path=tmp_path / "state.json",
+        artifact_dir=tmp_path / "artifacts",
+        bitrix_task_id=756,
+        deliver_comment=lambda _task_id, message: comments.append(message) or 803,
+        delivery_mode=DELIVERY_DAILY_DELTA,
+    )
+
+    assert third["delivery_action"] == "deliver"
+    assert third["new_or_changed_count"] == 1
+    assert len(comments) == 2
+
+
+def test_daily_delta_attaches_xlsx_only_above_twenty_rows(tmp_path: Path) -> None:
+    attachments: list[str] = []
+    report = _actionable_report(count=21)
+
+    summary = sync_counterparty_folder_recommendations(
+        fetch_json=lambda _path, _params: report,
+        snapshot_date=date(2026, 8, 1),
+        state_path=tmp_path / "state.json",
+        artifact_dir=tmp_path / "artifacts",
+        bitrix_task_id=756,
+        deliver_comment=lambda _task_id, _message: 804,
+        deliver_attachment=lambda _task_id, path: attachments.append(path.name)
+        or {"bitrix_file_object_id": 1, "bitrix_attachment_id": 2},
+        delivery_mode=DELIVERY_DAILY_DELTA,
+    )
+
+    assert summary["delivery_attachment_action"] == "attach"
+    assert attachments == ["counterparty-folder-daily_delta-abc123.xlsx"]
+
+
+def test_daily_delta_tracks_closed_for_weekly_window(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    report = _actionable_report()
+    sync_counterparty_folder_recommendations(
+        fetch_json=lambda _path, _params: report,
+        snapshot_date=date(2026, 8, 1),
+        state_path=state_path,
+        artifact_dir=tmp_path / "artifacts",
+        delivery_mode=DELIVERY_DAILY_DELTA,
+    )
+    empty = _actionable_report(count=0)
+    empty["report_revision"] = "empty"
+
+    summary = sync_counterparty_folder_recommendations(
+        fetch_json=lambda _path, _params: empty,
+        snapshot_date=date(2026, 8, 2),
+        state_path=state_path,
+        artifact_dir=tmp_path / "artifacts",
+        delivery_mode=DELIVERY_DAILY_DELTA,
+    )
+
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert summary["closed_count"] == 1
+    assert state["weekly_window"]["closed"] == 1
+
+
+def test_new_delivery_suppresses_stale_anomaly_and_timeout(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "reports": {},
+                "active_signals": {"old": {"hash": "kept"}},
+                "last_source_snapshot_count": 100,
+            }
+        ),
+        encoding="utf-8",
+    )
+    stale = _actionable_report(source_count=100)
+    stale["source_status"] = "cache_stale"
+    stale_summary = sync_counterparty_folder_recommendations(
+        fetch_json=lambda _path, _params: stale,
+        snapshot_date=date(2026, 8, 1),
+        state_path=state_path,
+        artifact_dir=tmp_path / "artifacts",
+        bitrix_task_id=756,
+        deliver_comment=lambda _task_id, _message: (_ for _ in ()).throw(
+            AssertionError("suppressed report must not publish")
+        ),
+        delivery_mode=DELIVERY_DAILY_DELTA,
+    )
+    assert stale_summary["delivery_action"] == "suppressed"
+    assert stale_summary["suppression_reason"].startswith("source_not_cache_ready")
+
+    anomaly = _actionable_report(source_count=201)
+    anomaly["report_revision"] = "anomaly"
+    anomaly_summary = sync_counterparty_folder_recommendations(
+        fetch_json=lambda _path, _params: anomaly,
+        snapshot_date=date(2026, 8, 2),
+        state_path=state_path,
+        artifact_dir=tmp_path / "artifacts",
+        delivery_mode=DELIVERY_DAILY_DELTA,
+    )
+    assert anomaly_summary["suppression_reason"] == "row_count_anomaly:100->201"
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["active_signals"] == {"old": {"hash": "kept"}}
+    assert state["last_source_snapshot_count"] == 100
+
+    timeout_summary = sync_counterparty_folder_recommendations(
+        fetch_json=lambda _path, _params: (_ for _ in ()).throw(TimeoutError("timeout")),
+        snapshot_date=date(2026, 8, 3),
+        state_path=state_path,
+        artifact_dir=tmp_path / "artifacts",
+        delivery_mode=DELIVERY_DAILY_DELTA,
+    )
+    assert timeout_summary["publication_suppressed"] is True
+    assert timeout_summary["suppression_reason"] == "source_timeout_or_error"
+
+
+def test_old_state_is_upgraded_and_weekly_window_resets_after_delivery(tmp_path: Path) -> None:
+    state_path = tmp_path / "state.json"
+    state_path.write_text(
+        json.dumps(
+            {
+                "reports": {},
+                "weekly_window": {"new_or_changed": 4, "closed": 2},
+            }
+        ),
+        encoding="utf-8",
+    )
+    report = _actionable_report()
+    report["summary"].update({"business_review_count": 3, "data_quality_count": 5})
+    comments: list[str] = []
+
+    summary = sync_counterparty_folder_recommendations(
+        fetch_json=lambda _path, params: (
+            report
+            if params["queue"] == "all"
+            else (_ for _ in ()).throw(AssertionError("weekly must request all queues"))
+        ),
+        snapshot_date=date(2026, 8, 3),
+        state_path=state_path,
+        artifact_dir=tmp_path / "artifacts",
+        bitrix_task_id=756,
+        deliver_comment=lambda _task_id, message: comments.append(message) or 805,
+        delivery_mode=DELIVERY_WEEKLY_SUMMARY,
+    )
+
+    assert summary["delivery_action"] == "deliver"
+    assert "Новые/изменённые: 4" in comments[0]
+    assert "Закрытые: 2" in comments[0]
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    assert state["version"] == 2
+    assert state["weekly_window"]["new_or_changed"] == 0
+    assert state["weekly_window"]["closed"] == 0

@@ -35,6 +35,11 @@ STATUS_MOVE_RECOMMENDED = "move_recommended"
 STATUS_OK = "ok"
 STATUS_NO_OVERDUE = "no_overdue"
 STATUS_NEEDS_REVIEW = "needs_review"
+QUEUE_ACTIONABLE = "actionable"
+QUEUE_BUSINESS_REVIEW = "business_review"
+QUEUE_DATA_QUALITY = "data_quality"
+QUEUE_EXCLUDED = "excluded"
+QUEUE_ALL = "all"
 DEFAULT_PAYMENT_TERM_DAYS = 7
 MIN_RECOMMENDATION_BALANCE = Decimal("500.00")
 PAYMENT_TERM_SOURCE_FALLBACK = "fallback_7_days_read_only"
@@ -49,6 +54,13 @@ STATUS_SORT_ORDER = {
     STATUS_NEEDS_REVIEW: 1,
     STATUS_OK: 2,
     STATUS_NO_OVERDUE: 3,
+}
+
+QUEUE_SORT_ORDER = {
+    QUEUE_ACTIONABLE: 0,
+    QUEUE_BUSINESS_REVIEW: 1,
+    QUEUE_DATA_QUALITY: 2,
+    QUEUE_EXCLUDED: 3,
 }
 
 REVIEW_REASON_MISSING_DOCUMENT = "missing_origin_document"
@@ -1460,6 +1472,113 @@ def _is_actionable_status(status: str | None) -> bool:
     return status in {STATUS_MOVE_RECOMMENDED, STATUS_NEEDS_REVIEW}
 
 
+def _folder_identity(item: dict[str, Any], prefix: str) -> str:
+    return _ref_key(
+        item.get(f"{prefix}_folder_ref")
+        or item.get(f"{prefix}_folder_name")
+        or item.get(f"{prefix}_folder_display_name")
+    )
+
+
+def classify_folder_recommendation_queue(
+    item: dict[str, Any], *, source_status: str = "cache_ready"
+) -> str:
+    reason = str(item.get("review_reason") or "")
+    if (
+        _is_excluded_reason(reason)
+        or reason == REVIEW_REASON_BELOW_MIN_BALANCE
+        or str(item.get("status") or "") in {STATUS_OK, STATUS_NO_OVERDUE}
+    ):
+        return QUEUE_EXCLUDED
+    if source_status != "cache_ready" or reason == REVIEW_REASON_OPEN_DEBT_SOURCE_STALE:
+        return QUEUE_DATA_QUALITY
+    if reason in {
+        REVIEW_REASON_SPB_CROSS_FOLDER,
+        REVIEW_REASON_DOCUMENT_COMMENT_HISTORY_REQUIRED,
+    }:
+        return QUEUE_BUSINESS_REVIEW
+    current_folder = _folder_identity(item, "current")
+    recommended_folder = _folder_identity(item, "recommended")
+    if (
+        reason == REVIEW_REASON_ORIGIN_DOCUMENT_STRUCTURE_CONFIRMED
+        and bool(item.get("is_overdue"))
+        and Decimal(str(item.get("current_balance") or "0")) >= MIN_RECOMMENDATION_BALANCE
+        and current_folder
+        and recommended_folder
+        and current_folder != recommended_folder
+    ):
+        return QUEUE_ACTIONABLE
+    return QUEUE_DATA_QUALITY
+
+
+def folder_recommendation_signal_key(item: dict[str, Any]) -> str:
+    raw = json.dumps(
+        {
+            "counterparty_ref": _ref_key(item.get("counterparty_ref")),
+            "current_folder": _folder_identity(item, "current"),
+            "recommended_folder": _folder_identity(item, "recommended"),
+            "document_ref": _ref_key(
+                item.get("debt_document_ref") or item.get("origin_document_ref")
+            ),
+            "review_reason": str(item.get("review_reason") or ""),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def enrich_folder_recommendation_item(
+    item: dict[str, Any], *, source_status: str = "cache_ready"
+) -> dict[str, Any]:
+    enriched = dict(item)
+    queue = classify_folder_recommendation_queue(enriched, source_status=source_status)
+    enriched["signal_key"] = folder_recommendation_signal_key(enriched)
+    enriched["queue"] = queue
+    enriched["action_required"] = queue == QUEUE_ACTIONABLE
+    return enriched
+
+
+def folder_recommendation_summary(
+    items: Sequence[dict[str, Any]], *, source_snapshot_count: int = 0
+) -> dict[str, Any]:
+    status_counts = Counter(str(item.get("status") or "") for item in items)
+    queue_counts = Counter(str(item.get("queue") or "") for item in items)
+    return {
+        "total_count": len(items),
+        "source_snapshot_count": source_snapshot_count,
+        "move_recommended_count": status_counts[STATUS_MOVE_RECOMMENDED],
+        "ok_count": status_counts[STATUS_OK],
+        "no_overdue_count": status_counts[STATUS_NO_OVERDUE],
+        "needs_review_count": status_counts[STATUS_NEEDS_REVIEW],
+        "actionable_count": queue_counts[QUEUE_ACTIONABLE],
+        "business_review_count": queue_counts[QUEUE_BUSINESS_REVIEW],
+        "data_quality_count": queue_counts[QUEUE_DATA_QUALITY],
+        "excluded_count": queue_counts[QUEUE_EXCLUDED],
+        "queue_counts": {
+            queue: queue_counts[queue]
+            for queue in (
+                QUEUE_ACTIONABLE,
+                QUEUE_BUSINESS_REVIEW,
+                QUEUE_DATA_QUALITY,
+                QUEUE_EXCLUDED,
+            )
+        },
+        "total_open_debt": sum(
+            (Decimal(str(item.get("current_balance") or "0")) for item in items),
+            Decimal("0"),
+        ),
+        "move_recommended_amount": sum(
+            (
+                Decimal(str(item.get("current_balance") or "0"))
+                for item in items
+                if item.get("status") == STATUS_MOVE_RECOMMENDED
+            ),
+            Decimal("0"),
+        ),
+    }
+
+
 def _apply_report_suppression(item: dict[str, Any]) -> dict[str, Any]:
     if (
         _is_actionable_status(str(item.get("status")))
@@ -1526,6 +1645,7 @@ def build_counterparty_folder_recommendations(
     snapshot_date: date,
     limit: int | None = None,
     status: str | None = None,
+    queue: str = QUEUE_ALL,
     candidate_limit: int | None = None,
     snapshot_department_refs: set[str] | frozenset[str] | None = None,
 ) -> dict[str, Any]:
@@ -1537,6 +1657,15 @@ def build_counterparty_folder_recommendations(
     }
     if status is not None and status not in allowed_statuses:
         raise ValueError(f"unsupported status: {status}")
+    allowed_queues = {
+        QUEUE_ACTIONABLE,
+        QUEUE_BUSINESS_REVIEW,
+        QUEUE_DATA_QUALITY,
+        QUEUE_EXCLUDED,
+        QUEUE_ALL,
+    }
+    if queue not in allowed_queues:
+        raise ValueError(f"unsupported queue: {queue}")
 
     snapshots = (
         session.execute(
@@ -1672,15 +1801,23 @@ def build_counterparty_folder_recommendations(
                     "open_debt_documents": [],
                 }
             )
-        items.append(_apply_report_suppression(item))
+        items.append(
+            enrich_folder_recommendation_item(
+                _apply_report_suppression(item),
+                source_status=source_freshness.source_status,
+            )
+        )
     below_min_balance_count = sum(
         1 for item in items if item.get("suppression_reason") == REVIEW_REASON_BELOW_MIN_BALANCE
     )
     if status is not None:
         items = [item for item in items if item["status"] == status]
+    if queue != QUEUE_ALL:
+        items = [item for item in items if item["queue"] == queue]
 
     items.sort(
         key=lambda item: (
+            QUEUE_SORT_ORDER.get(str(item.get("queue")), 99),
             STATUS_SORT_ORDER.get(str(item["status"]), 99),
             -(int(item.get("overdue_days") or 0)),
             -(item.get("current_balance") or Decimal("0")),
@@ -1690,16 +1827,19 @@ def build_counterparty_folder_recommendations(
     if limit is not None:
         items = items[:limit]
 
-    status_counts = Counter(item["status"] for item in items)
     review_reason_counts = Counter(
         item["review_reason"]
         for item in items
         if item["status"] == STATUS_NEEDS_REVIEW and item.get("review_reason")
     )
-    total_open_debt = sum((item["current_balance"] for item in items), Decimal("0"))
-    move_amount = sum(
-        (item["current_balance"] for item in items if item["status"] == STATUS_MOVE_RECOMMENDED),
-        Decimal("0"),
+    summary = folder_recommendation_summary(items, source_snapshot_count=source_snapshot_count)
+    summary.update(
+        {
+            "candidate_snapshot_count": len(snapshots),
+            "below_min_balance_count": below_min_balance_count,
+            "min_recommendation_balance": MIN_RECOMMENDATION_BALANCE,
+            "review_reason_counts": dict(sorted(review_reason_counts.items())),
+        }
     )
 
     return {
@@ -1708,19 +1848,6 @@ def build_counterparty_folder_recommendations(
         "source_max_document_date": source_freshness.source_max_document_date,
         "source_lag_days": source_freshness.source_lag_days,
         "report_revision": _build_report_revision(snapshot_date, items),
-        "summary": {
-            "total_count": len(items),
-            "source_snapshot_count": source_snapshot_count,
-            "move_recommended_count": status_counts[STATUS_MOVE_RECOMMENDED],
-            "ok_count": status_counts[STATUS_OK],
-            "no_overdue_count": status_counts[STATUS_NO_OVERDUE],
-            "needs_review_count": status_counts[STATUS_NEEDS_REVIEW],
-            "candidate_snapshot_count": len(snapshots),
-            "below_min_balance_count": below_min_balance_count,
-            "min_recommendation_balance": MIN_RECOMMENDATION_BALANCE,
-            "review_reason_counts": dict(sorted(review_reason_counts.items())),
-            "total_open_debt": total_open_debt,
-            "move_recommended_amount": move_amount,
-        },
+        "summary": summary,
         "payload": items,
     }

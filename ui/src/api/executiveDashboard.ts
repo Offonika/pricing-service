@@ -531,6 +531,108 @@ export interface ExecutiveOnlineStorePeriodResponse {
   landing_pages: ExecutiveOnlineStoreLandingPageRow[];
 }
 
+export interface ExecutiveInstrumentMetrics {
+  cpu_used_pct?: number | null;
+  memory_used_pct?: number | null;
+  disk_free_pct?: number | null;
+  disk_free_gib?: number | null;
+  latency_ms?: number | null;
+  vcpu?: number | null;
+  uptime_seconds?: number | null;
+}
+
+export interface ExecutiveInstrumentService {
+  service_key: string;
+  name: string;
+  component_kind: string;
+  status: string;
+  criticality: string;
+  last_verified_at?: string | null;
+  last_success_at?: string | null;
+  source_project?: string | null;
+}
+
+export interface ExecutiveInstrumentDevice {
+  device_key: string;
+  name: string;
+  kind: string;
+  lifecycle_status: string;
+  health_status: string;
+  connectivity_status: string;
+  criticality: string;
+  location: string;
+  purpose: string[];
+  technical_owner_ids: string[];
+  technical_owners: string[];
+  business_owner?: string | null;
+  last_attempted_at?: string | null;
+  last_success_at?: string | null;
+  incident_started_at?: string | null;
+  outage_duration_seconds?: number | null;
+  availability_24h_pct?: number | null;
+  availability_30d_pct?: number | null;
+  monitoring_coverage_24h_pct?: number | null;
+  monitoring_coverage_30d_pct?: number | null;
+  metrics: ExecutiveInstrumentMetrics;
+  services: ExecutiveInstrumentService[];
+  backup: {
+    status: string;
+    protected_datastores: number;
+    unprotected_datastores: number;
+    rpo_minutes?: number | null;
+    lag_minutes?: number | null;
+    last_backup_at?: string | null;
+    last_full_backup_at?: string | null;
+    last_differential_backup_at?: string | null;
+    last_log_backup_at?: string | null;
+    last_restore_test_at?: string | null;
+    off_host_verified: boolean;
+    readback_verified: boolean;
+  };
+  integrations: {
+    status: string;
+    count: number;
+    last_success_at?: string | null;
+  };
+  access: {
+    status: string;
+    active_grants: number;
+    pending_grants: number;
+    review_required_grants: number;
+    mfa_review_count: number;
+    unowned_credentials: number;
+    attention_grant_count: number;
+    next_review_at?: string | null;
+  };
+  issue?: string | null;
+  recommended_action?: string | null;
+}
+
+export interface ExecutiveInstrumentsResponse {
+  schema_version: 2;
+  generated_at: string;
+  source_status: string;
+  freshness_status: string;
+  summary: {
+    total_count: number;
+    online_count: number;
+    critical_count: number;
+    warning_count: number;
+    not_monitored_count: number;
+    backup_gap_count: number;
+    access_review_count: number;
+    monitoring_coverage_24h_pct?: number | null;
+  };
+  devices: ExecutiveInstrumentDevice[];
+  warnings: string[];
+  capabilities: {
+    access_governance: "read_only";
+    access_mutations: false;
+    network_scanning: false;
+  };
+  note?: string | null;
+}
+
 export async function fetchExecutiveDashboard(date?: string) {
   const response = await api.get<ExecutiveDashboardResponse>("/management/executive-dashboard", {
     params: { date: date || undefined },
@@ -628,6 +730,13 @@ export async function fetchExecutiveOnlineStorePeriod(params: {
         date_to: params.date_to || undefined,
       },
     }
+  );
+  return response.data;
+}
+
+export async function fetchExecutiveInstruments() {
+  const response = await api.get<ExecutiveInstrumentsResponse>(
+    "/management/executive-dashboard/instruments"
   );
   return response.data;
 }

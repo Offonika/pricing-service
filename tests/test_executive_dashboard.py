@@ -579,6 +579,7 @@ def _role_rules() -> str:
                 {"role": "receivables", "bitrix_user_ids": ["202"]},
                 {"role": "finance", "bitrix_user_ids": ["203"]},
                 {"role": "warehouse", "bitrix_user_ids": ["206"]},
+                {"role": "infrastructure", "bitrix_user_ids": ["207"]},
                 {"role": "personal", "bitrix_user_ids": ["204"]},
                 {"role": "procurement", "bitrix_user_ids": ["205"]},
                 {"role": "receivables", "bitrix_user_ids": ["205"]},
@@ -635,6 +636,14 @@ def test_access_policy_matrix_resolves_roles_and_blocks(tmp_path: Path) -> None:
     assert warehouse.allowed_blocks == ("warehouse_operations",)
     assert warehouse.allowed_action_domains == ("warehouse_operations",)
     assert warehouse.money_blocks == ()
+
+    infrastructure = bitrix_executive_dashboard_auth.resolve_executive_dashboard_access(
+        bitrix_user_id="207",
+        settings=settings,
+    )
+    assert infrastructure.allowed_blocks == ("infrastructure",)
+    assert infrastructure.allowed_action_domains == ()
+    assert infrastructure.money_blocks == ()
 
     personal = bitrix_executive_dashboard_auth.resolve_executive_dashboard_access(
         bitrix_user_id="204",
@@ -3038,7 +3047,6 @@ def test_profit_loss_period_api_forbids_user_without_money_access(
         user_name="Дебиторка",
         access=access,
         settings=settings,
-        now=1_785_000_000,
     )
     app.dependency_overrides[get_db] = lambda: db_session
     try:
@@ -3081,7 +3089,6 @@ def test_profit_loss_period_api_returns_sales_for_finance_role(
         user_name="Финансы",
         access=access,
         settings=settings,
-        now=1_785_000_000,
     )
     app.dependency_overrides[get_db] = lambda: db_session
     try:
@@ -3141,7 +3148,6 @@ def test_sales_period_api_is_available_to_full_access_and_forbidden_to_finance(
         user_name="Финансы",
         access=finance_access,
         settings=settings,
-        now=1_785_000_000,
     )
     app.dependency_overrides[get_db] = lambda: db_session
     try:
@@ -3176,7 +3182,6 @@ def test_cashflow_period_api_forbids_user_without_money_access(
         user_name="Дебиторка",
         access=access,
         settings=settings,
-        now=1_785_000_000,
     )
     app.dependency_overrides[get_db] = lambda: db_session
     try:
@@ -3210,7 +3215,6 @@ def test_cashflow_period_api_returns_money_for_finance_role(
         user_name="Финансы",
         access=access,
         settings=settings,
-        now=1_785_000_000,
     )
     app.dependency_overrides[get_db] = lambda: db_session
     try:
@@ -3285,7 +3289,6 @@ def test_actions_api_forbids_foreign_domain_for_role_policy(
         user_name="Закупщик",
         access=access,
         settings=settings,
-        now=1_785_000_000,
     )
     app.dependency_overrides[get_db] = lambda: db_session
     try:

@@ -265,6 +265,10 @@ class Settings(BaseSettings):
     executive_dashboard_warehouse_snapshot_path: str = (
         "/var/lib/mm-data-contracts/executive-dashboard/warehouse_snapshot.json"
     )
+    executive_dashboard_instruments_snapshot_path: str = (
+        "/var/lib/mm-data-contracts/executive-dashboard/infrastructure_snapshot.json"
+    )
+    executive_dashboard_instruments_max_lag_minutes: int = 30
     executive_dashboard_owner_cash_control_snapshot_path: str = (
         "/var/lib/mm-data-contracts/executive-dashboard/owner_cash_transit_snapshot.json"
     )

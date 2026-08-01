@@ -3047,7 +3047,6 @@ def test_profit_loss_period_api_forbids_user_without_money_access(
         user_name="Дебиторка",
         access=access,
         settings=settings,
-        now=1_785_000_000,
     )
     app.dependency_overrides[get_db] = lambda: db_session
     try:
@@ -3090,7 +3089,6 @@ def test_profit_loss_period_api_returns_sales_for_finance_role(
         user_name="Финансы",
         access=access,
         settings=settings,
-        now=1_785_000_000,
     )
     app.dependency_overrides[get_db] = lambda: db_session
     try:
@@ -3150,7 +3148,6 @@ def test_sales_period_api_is_available_to_full_access_and_forbidden_to_finance(
         user_name="Финансы",
         access=finance_access,
         settings=settings,
-        now=1_785_000_000,
     )
     app.dependency_overrides[get_db] = lambda: db_session
     try:
@@ -3185,7 +3182,6 @@ def test_cashflow_period_api_forbids_user_without_money_access(
         user_name="Дебиторка",
         access=access,
         settings=settings,
-        now=1_785_000_000,
     )
     app.dependency_overrides[get_db] = lambda: db_session
     try:
@@ -3219,7 +3215,6 @@ def test_cashflow_period_api_returns_money_for_finance_role(
         user_name="Финансы",
         access=access,
         settings=settings,
-        now=1_785_000_000,
     )
     app.dependency_overrides[get_db] = lambda: db_session
     try:
@@ -3294,7 +3289,6 @@ def test_actions_api_forbids_foreign_domain_for_role_policy(
         user_name="Закупщик",
         access=access,
         settings=settings,
-        now=1_785_000_000,
     )
     app.dependency_overrides[get_db] = lambda: db_session
     try:

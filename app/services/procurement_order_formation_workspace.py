@@ -603,6 +603,8 @@ def list_orders(
     filtered: list[ProcurementOrderFormation] = []
     for order in orders:
         order_blocker_list = order_blockers(order)
+        if not status and order.status == "superseded":
+            continue
         if status and order.status != status:
             continue
         if supplier_key and supplier_key not in order.supplier_name.casefold():

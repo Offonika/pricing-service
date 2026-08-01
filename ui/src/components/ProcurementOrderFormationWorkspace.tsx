@@ -63,6 +63,7 @@ const ORDER_STATUS_LABELS: Record<string, string> = {
   transmitting: "Передача в 1С",
   transmitted: "Передан в 1С",
   deferred: "Отложен",
+  superseded: "Заменён новым расчётом",
   error: "Ошибка",
 };
 

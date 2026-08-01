@@ -149,6 +149,46 @@ def test_catalog_lookup_uses_normalized_guid_only(monkeypatch) -> None:
     assert calls[0]["filter"] == {"XML_ID": PRODUCT_GUID}
 
 
+def test_catalog_batch_lookup_resolves_products_in_one_call(monkeypatch) -> None:
+    second_guid = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    def fake_call(method, params, **_kwargs):
+        calls.append((method, params))
+        return {
+            "result": {
+                "result": {
+                    "catalog_0": [{"ID": "1646", "NAME": "Дисплей тест", "XML_ID": PRODUCT_GUID}],
+                    "catalog_1": [{"ID": "1647", "NAME": "Дисплей два", "XML_ID": second_guid}],
+                },
+                "result_error": {},
+            }
+        }
+
+    monkeypatch.setattr(bitrix_order_service, "bitrix_call", fake_call)
+    products = bitrix_order_service.resolve_catalog_products_by_xml_ids(
+        [ONEC_REF, second_guid, PRODUCT_GUID],
+        settings=Settings(),
+        mapping={
+            "catalog": {
+                "product_id": "ID",
+                "name": "NAME",
+                "xml_id": "XML_ID",
+            }
+        },
+    )
+
+    assert set(products) == {PRODUCT_GUID, second_guid}
+    assert products[PRODUCT_GUID].product_id == "1646"
+    assert len(calls) == 1
+    assert calls[0][0] == "batch"
+    assert calls[0][1]["halt"] == 1
+    commands = calls[0][1]["cmd"]
+    assert set(commands) == {"catalog_0", "catalog_1"}
+    assert f"filter%5BXML_ID%5D={PRODUCT_GUID}" in commands["catalog_0"]
+    assert f"filter%5BXML_ID%5D={second_guid}" in commands["catalog_1"]
+
+
 def test_line_blockers_require_exact_guid_and_catalog_product(db_session) -> None:
     order = _order(db_session)
     line = order.lines[0]

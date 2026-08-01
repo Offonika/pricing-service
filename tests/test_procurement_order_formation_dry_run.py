@@ -194,23 +194,34 @@ def test_missing_catalog_product_is_a_hard_blocker() -> None:
 
 def test_grouped_dry_run_uses_only_exact_public_catalog_media() -> None:
     media = ProductMediaResolution(
-        article="A",
+        article="044702",
         status="found",
         product_card_url="https://master-mobile.ru/catalog/displei/40699/",
         photo_thumbnail_url="https://master-mobile.ru/upload/thumb/40699.webp",
         photo_original_url="https://master-mobile.ru/upload/original/40699.webp",
     )
+    resolved_articles: list[str] = []
+
+    def resolve_media(article: str) -> ProductMediaResolution:
+        resolved_articles.append(article)
+        return media
+
     orders = build_grouped_orders(
         [_source("A", "5", "A")],
         [_lead("A", "S1", "0xs1")],
-        nomenclature_by_code={"A": {"nomenclature_ref": "0x00010025901E48EF11E1967C11111111"}},
+        nomenclature_by_code={
+            "A": {
+                "nomenclature_ref": "0x00010025901E48EF11E1967C11111111",
+                "article": "044702",
+            }
+        },
         catalog_resolver=lambda guid: BitrixCatalogProduct(
             product_id="10",
             name="Каталожный товар",
             xml_id=guid,
             photo_original_url="https://untrusted.example/bitrix-photo.jpg",
         ),
-        product_media_resolver=lambda _article: media,
+        product_media_resolver=resolve_media,
         skip_catalog=False,
         contracts={"default": {"code": "C1", "name": "Договор"}},
         warehouse={"code": "MAIN", "name": "Склад"},
@@ -223,6 +234,7 @@ def test_grouped_dry_run_uses_only_exact_public_catalog_media() -> None:
     )
 
     line = orders[0]["lines"][0]
+    assert resolved_articles == ["044702"]
     assert line["product_media_status"] == "found"
     assert line["payload"] == {
         "photos": [

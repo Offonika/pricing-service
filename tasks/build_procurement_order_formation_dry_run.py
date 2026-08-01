@@ -164,7 +164,15 @@ def main() -> int:
             timeout_seconds=settings.master_mobile_catalog_timeout_seconds,
             max_attempts=settings.master_mobile_catalog_max_attempts,
             max_workers=settings.master_mobile_catalog_max_workers,
-        ).resolve_many([str(row.get("nomenclature_code") or "").strip() for row in selected_rows])
+        ).resolve_many(
+            [
+                _clean(
+                    (nomenclature.get(_clean(row.get("nomenclature_code"))) or {}).get("article")
+                )
+                or _clean(row.get("nomenclature_code"))
+                for row in selected_rows
+            ]
+        )
     )
 
     def product_media_resolver(article: str) -> ProductMediaResolution | None:
@@ -355,7 +363,8 @@ def build_grouped_orders(
         quantity = _decimal(row.get("recommended_order_qty")) or Decimal("0")
         price = _decimal(row.get("latest_purchase_price")) or Decimal("0")
         b2b_customer_demand = _b2b_customer_demand_payload(row)
-        public_media = product_media_resolver(code) if product_media_resolver else None
+        public_article = _clean(nomenclature.get("article")) or code
+        public_media = product_media_resolver(public_article) if product_media_resolver else None
         line_payload = procurement_assistant_line_payload(
             row,
             public_media=public_media,
@@ -576,7 +585,8 @@ def fetch_nomenclature_by_codes(
         SELECT
             CONVERT(varchar(34), item._IDRRef, 1) AS nomenclature_ref,
             NULLIF(LTRIM(RTRIM(item._Code)), N'') AS nomenclature_code,
-            NULLIF(LTRIM(RTRIM(item._Description)), N'') AS nomenclature_name
+            NULLIF(LTRIM(RTRIM(item._Description)), N'') AS nomenclature_name,
+            NULLIF(LTRIM(RTRIM(CAST(item._Fld836 AS nvarchar(max)))), N'') AS article
         FROM dbo._Reference62 AS item WITH (NOLOCK)
         WHERE item._Marked = 0x00
           AND LTRIM(RTRIM(item._Code)) IN :codes

@@ -10,6 +10,10 @@ from app.models.procurement_order_formation import (
     ProcurementOrderFormationEvent,
     ProcurementOrderFormationLine,
 )
+from app.models.product import Product
+from app.services.assortment_lifecycle_classification_store import (
+    ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
+)
 from app.services.master_mobile_catalog import ProductMediaResolution
 from app.services.procurement_order_product_media import (
     apply_product_media_backfill,
@@ -43,7 +47,15 @@ def _resolution(article: str = "044702") -> ProductMediaResolution:
     )
 
 
-def _open_order(db_session) -> ProcurementOrderFormation:
+def _open_order(
+    db_session,
+    *,
+    nomenclature_code: str = "044702",
+) -> ProcurementOrderFormation:
+    ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.create(
+        bind=db_session.get_bind(),
+        checkfirst=True,
+    )
     order = ProcurementOrderFormation(
         stable_key="media-backfill-order",
         status="draft",
@@ -74,7 +86,7 @@ def _open_order(db_session) -> ProcurementOrderFormation:
             bitrix_product_id="40699",
             bitrix_product_xml_id="11111111-2222-3333-4444-555555555555",
             nomenclature_ref="11111111-2222-3333-4444-555555555555",
-            nomenclature_code="044702",
+            nomenclature_code=nomenclature_code,
             nomenclature_name="Аккумулятор",
             recommended_quantity=Decimal("5"),
             final_quantity=Decimal("5"),
@@ -120,6 +132,31 @@ def test_backfill_dry_run_reports_exact_match_without_writing(db_session) -> Non
     assert order.version == 1
     assert order.lines[0].version == 1
     assert resolver.calls == [["044702"]]
+
+
+def test_backfill_resolves_public_article_from_exact_1c_code(db_session) -> None:
+    _open_order(db_session, nomenclature_code="РБ000053199")
+    db_session.add(
+        Product(
+            article="044702",
+            code_1c="РБ000053199",
+            name="Аккумулятор",
+            is_active=True,
+        )
+    )
+    db_session.commit()
+    resolver = StubResolver({"044702": _resolution()})
+
+    plan = build_product_media_backfill_plan(
+        db_session,
+        resolver,
+        run_id="media-article-map",
+    )
+
+    assert resolver.calls == [["044702"]]
+    assert plan["summary"]["found"] == 1
+    assert plan["items"][0]["nomenclature_code"] == "РБ000053199"
+    assert plan["items"][0]["article"] == "044702"
 
 
 def test_backfill_apply_is_idempotent_and_preserves_commercial_fields(db_session) -> None:

@@ -15,6 +15,10 @@ from app.models.procurement_order_formation import (
     ProcurementOrderFormationEvent,
     ProcurementOrderFormationLine,
 )
+from app.models.product import Product
+from app.services.assortment_lifecycle_classification_store import (
+    ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
+)
 from app.services.master_mobile_catalog import (
     PHOTO_SOURCE,
     MasterMobileCatalogResolver,
@@ -50,17 +54,32 @@ def build_product_media_backfill_plan(
         for line in sorted(order.lines, key=lambda item: item.line_number)
         if not line.removed
     ]
-    articles = [str(line.nomenclature_code or "").strip() for line in lines]
+    codes = [str(line.nomenclature_code or "").strip() for line in lines]
+    article_candidates = _product_articles_by_code(db, codes)
+    articles = [
+        _single_public_article(article_candidates.get(code))
+        or (code if not article_candidates.get(code) else "")
+        for code in codes
+    ]
     resolutions = resolver.resolve_many(articles)
     items: list[dict[str, Any]] = []
     status_counts: Counter[str] = Counter()
     changed_count = 0
     for line in lines:
-        article = str(line.nomenclature_code or "").strip()
-        resolution = resolutions.get(article) or ProductMediaResolution(
-            article=article,
-            status="not_found",
-        )
+        nomenclature_code = str(line.nomenclature_code or "").strip()
+        candidates = article_candidates.get(nomenclature_code) or set()
+        article = _single_public_article(candidates) or nomenclature_code
+        if len(candidates) > 1:
+            resolution = ProductMediaResolution(
+                article=article,
+                status="ambiguous",
+                detail="multiple public articles mapped to exact 1C code",
+            )
+        else:
+            resolution = resolutions.get(article) or ProductMediaResolution(
+                article=article,
+                status="not_found",
+            )
         status_counts[resolution.status] += 1
         before_payload = _json_copy(line.payload or {})
         after_payload = _enriched_payload(before_payload, resolution)
@@ -71,6 +90,7 @@ def build_product_media_backfill_plan(
                 "order_id": int(line.order_id),
                 "line_id": int(line.id),
                 "line_number": line.line_number,
+                "nomenclature_code": nomenclature_code,
                 "article": article,
                 "resolution_status": resolution.status,
                 "product_card_url": resolution.product_card_url,
@@ -317,6 +337,37 @@ def _order_is_open(order: ProcurementOrderFormation) -> bool:
     return (
         order.status in OPEN_ASSISTANT_STATUSES and order.onec_status not in IMMUTABLE_ONEC_STATUSES
     )
+
+
+def _product_articles_by_code(db: Session, codes: list[str]) -> dict[str, set[str]]:
+    clean_codes = sorted({code for code in codes if code})
+    if not clean_codes:
+        return {}
+    rows = db.execute(
+        select(Product.code_1c, Product.article).where(
+            Product.code_1c.in_(clean_codes),
+            Product.is_active.is_(True),
+        )
+    ).all()
+    classification_rows = db.execute(
+        select(
+            ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.nomenclature_code,
+            ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.article,
+        ).where(ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.nomenclature_code.in_(clean_codes))
+    ).all()
+    result: dict[str, set[str]] = defaultdict(set)
+    for code, article in [*rows, *classification_rows]:
+        clean_code = str(code or "").strip()
+        clean_article = str(article or "").strip()
+        if clean_code and clean_article:
+            result[clean_code].add(clean_article)
+    return dict(result)
+
+
+def _single_public_article(candidates: set[str] | None) -> str | None:
+    if not candidates or len(candidates) != 1:
+        return None
+    return next(iter(candidates))
 
 
 def _validate_manifest(manifest: Mapping[str, Any], *, expected_mode: str) -> None:

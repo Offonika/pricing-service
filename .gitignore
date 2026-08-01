@@ -49,6 +49,11 @@ data/
 embeddings/
 reports/
 
+# Browser diagnostics may contain session cookies or customer-visible data.
+/playwright_diag_mobile/
+/playwright_dump/
+/samples/moba.har
+
 # Generated or imported office/business exports
 docs/**/*.docx
 docs/**/*.xls

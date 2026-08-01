@@ -121,6 +121,16 @@
       "spec": "docs/specs/pricing-service-architecture-hardening.md",
       "remove_after": "2026-10-31"
     },
+    "backfill_procurement_order_product_media.py": {
+      "owner": "procurement",
+      "kind": "backfill",
+      "dry_run": "supported",
+      "idempotency": "verified_by_payload_and_version",
+      "side_effect_level": "db_write",
+      "db_access": "application_write",
+      "spec": "docs/specs/procurement-order-formation-smart-process.md",
+      "remove_after": "2026-11-30"
+    },
     "backfill_product_classification_sources.py": {
       "owner": "catalog",
       "kind": "backfill",

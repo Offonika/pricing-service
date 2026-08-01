@@ -87,6 +87,8 @@ function assistantData(photoOriginal: string | null = "https://cdn.example.test/
         removed: false,
         photo_thumbnail_url: photoOriginal ? "https://cdn.example.test/thumb/display.jpg" : null,
         photo_original_url: photoOriginal,
+        product_card_url: photoOriginal ? "https://master-mobile.ru/catalog/displei/40699/" : null,
+        photo_source: photoOriginal ? "master_mobile_site" : null,
         photo_count: photoOriginal ? 1 : 0,
         profitability_pct: "34.6",
         supplier_defect_pct: "0.8",
@@ -124,6 +126,10 @@ describe("ProcurementOrderAssistant", () => {
       "href",
       "https://cdn.example.test/original/display.jpg"
     );
+    expect(screen.getByRole("link", { name: "Карточка товара" })).toHaveAttribute(
+      "href",
+      "https://master-mobile.ru/catalog/displei/40699/"
+    );
   });
 
   it("собирает только готовую полностью выбранную группу и не отправляет её в 1С", async () => {
@@ -151,7 +157,28 @@ describe("ProcurementOrderAssistant", () => {
 
     expect(await screen.findByText("Нет фото")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Собрать 0/ })).toBeDisabled();
+    expect(screen.getByRole("checkbox", { name: /Выбрать Дисплей/ })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Включить" })).toBeDisabled();
+    expect(screen.getByText("Недоступно: нет карточки или оригинала фото")).toBeInTheDocument();
     expect(assembleProcurementOrderProjects).not.toHaveBeenCalled();
+  });
+
+  it("использует один переключатель решения, который можно включать повторно", async () => {
+    vi.mocked(fetchProcurementOrderAssistant).mockResolvedValue(assistantData());
+
+    render(<ProcurementOrderAssistantView />);
+
+    const included = await screen.findByRole("button", { name: "Включено" });
+    expect(included).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(included);
+    const excluded = screen.getByRole("button", { name: "Включить" });
+    expect(excluded).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: /Собрать 0/ })).toBeDisabled();
+    fireEvent.click(excluded);
+    expect(screen.getByRole("button", { name: "Включено" })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
   });
 
   it("фильтрует очередь быстрыми кнопками и показывает оба варианта пакета", async () => {

@@ -4,7 +4,7 @@ import argparse
 import csv
 import hashlib
 import json
-from collections import defaultdict
+from collections import Counter, defaultdict
 from datetime import date
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -24,6 +24,11 @@ from app.services.bitrix_order_formation import (
     BitrixCatalogProduct,
     load_order_formation_mapping,
     resolve_catalog_products_by_xml_ids,
+)
+from app.services.master_mobile_catalog import (
+    PHOTO_SOURCE,
+    MasterMobileCatalogResolver,
+    ProductMediaResolution,
 )
 from app.services.procurement_order_formation import (
     ensure_order_editable,
@@ -71,6 +76,11 @@ def parse_args() -> argparse.Namespace:
         "--skip-bitrix-catalog",
         action="store_true",
         help="Do not call Bitrix; every line gets catalog_not_checked blocker.",
+    )
+    parser.add_argument(
+        "--skip-public-catalog",
+        action="store_true",
+        help="Do not resolve product cards and original photos at master-mobile.ru.",
     )
     parser.add_argument(
         "--persist-db",
@@ -146,11 +156,26 @@ def main() -> int:
     def catalog_resolver(xml_id: str) -> BitrixCatalogProduct | None:
         return catalog_products.get(_normalize_guid(xml_id))
 
+    product_media = (
+        {}
+        if args.skip_public_catalog
+        else MasterMobileCatalogResolver(
+            base_url=settings.master_mobile_catalog_base_url,
+            timeout_seconds=settings.master_mobile_catalog_timeout_seconds,
+            max_attempts=settings.master_mobile_catalog_max_attempts,
+            max_workers=settings.master_mobile_catalog_max_workers,
+        ).resolve_many([str(row.get("nomenclature_code") or "").strip() for row in selected_rows])
+    )
+
+    def product_media_resolver(article: str) -> ProductMediaResolution | None:
+        return product_media.get(str(article).strip())
+
     orders = build_grouped_orders(
         selected_rows,
         lead_time_rows,
         nomenclature_by_code=nomenclature,
         catalog_resolver=catalog_resolver,
+        product_media_resolver=product_media_resolver,
         skip_catalog=args.skip_bitrix_catalog,
         contracts=contracts,
         order_dimensions=order_dimensions,
@@ -177,6 +202,7 @@ def main() -> int:
             "bitrix_write": False,
             "onec_write": False,
             "onec_document_posting": False,
+            "public_catalog_write": False,
             "pricing_service_db_write": bool(args.persist_db and not blocked_by_gate),
         },
     }
@@ -239,6 +265,7 @@ def build_grouped_orders(
     calculation_id: str,
     source_run_id: str = "",
     responsible_bitrix_user_id: str = "",
+    product_media_resolver: Callable[[str], ProductMediaResolution | None] | None = None,
 ) -> list[dict[str, Any]]:
     code_index, group_index = build_lead_time_indexes(lead_time_rows)
     groups: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
@@ -328,9 +355,10 @@ def build_grouped_orders(
         quantity = _decimal(row.get("recommended_order_qty")) or Decimal("0")
         price = _decimal(row.get("latest_purchase_price")) or Decimal("0")
         b2b_customer_demand = _b2b_customer_demand_payload(row)
+        public_media = product_media_resolver(code) if product_media_resolver else None
         line_payload = procurement_assistant_line_payload(
             row,
-            product=product,
+            public_media=public_media,
             lead_candidate=lead_candidate or {},
         )
         if b2b_customer_demand:
@@ -366,6 +394,7 @@ def build_grouped_orders(
                     if product and product.manual_minimum is not None
                     else None
                 ),
+                "product_media_status": public_media.status if public_media else "not_checked",
                 "payload": line_payload,
             }
         )
@@ -570,6 +599,20 @@ def build_summary(
         "selected_order_line_count": len(selected_rows),
         "grouped_order_count": len(orders),
         "catalog_matched_line_count": sum(bool(line.get("bitrix_product_id")) for line in lines),
+        "product_card_matched_line_count": sum(
+            bool((line.get("payload") or {}).get("product_card_url")) for line in lines
+        ),
+        "original_photo_matched_line_count": sum(
+            bool(((line.get("payload") or {}).get("photos") or [{}])[0].get("original"))
+            for line in lines
+        ),
+        "product_media_status_counts": dict(
+            sorted(
+                Counter(
+                    str(line.get("product_media_status") or "not_checked") for line in lines
+                ).items()
+            )
+        ),
         "blocking_line_count": sum(bool(line.get("blockers")) for line in lines),
         "total_quantity": str(
             sum((_decimal(line.get("final_quantity")) or Decimal("0")) for line in lines)
@@ -873,25 +916,19 @@ def _split_codes(value: Any) -> list[str]:
 def procurement_assistant_line_payload(
     row: Mapping[str, Any],
     *,
-    product: BitrixCatalogProduct | None,
+    public_media: ProductMediaResolution | None,
     lead_candidate: Mapping[str, Any],
 ) -> dict[str, Any]:
-    thumbnail = _clean(row.get("photo_thumbnail_url")) or _clean(
-        product.photo_thumbnail_url if product else ""
-    )
-    original = (
-        _clean(row.get("photo_original_url"))
-        or _clean(row.get("photo_url"))
-        or _clean(product.photo_original_url if product else "")
-    )
     payload: dict[str, Any] = {}
-    if thumbnail or original:
+    if public_media and public_media.found:
         payload["photos"] = [
             {
-                "thumbnail": thumbnail or original,
-                "original": original,
+                "thumbnail": public_media.photo_thumbnail_url or public_media.photo_original_url,
+                "original": public_media.photo_original_url,
             }
         ]
+        payload["product_card_url"] = public_media.product_card_url
+        payload["photo_source"] = PHOTO_SOURCE
     optional_values = {
         "profitability_pct": _clean(
             row.get("profitability_pct") or row.get("gross_margin_pct") or row.get("margin_pct")

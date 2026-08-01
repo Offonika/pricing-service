@@ -660,11 +660,19 @@ def build_order_assistant(db: Session) -> dict[str, Any]:
     orders.sort(key=lambda item: (item.order_date, item.updated_at), reverse=True)
     serialized_orders = [serialize_order(order) for order in orders]
     lines = [line for order in serialized_orders for line in order["lines"] if not line["removed"]]
+    ready_order_ids = {
+        int(order["id"])
+        for order in serialized_orders
+        if not order["blockers"]
+        and (active_lines := [line for line in order["lines"] if not line["removed"]])
+        and all(_assistant_line_ready(line) for line in active_lines)
+    }
     ready_lines = [
         line
         for order in serialized_orders
+        if int(order["id"]) in ready_order_ids
         for line in order["lines"]
-        if not order["blockers"] and _assistant_line_ready(line)
+        if not line["removed"]
     ]
     updated_values = [order.updated_at for order in orders if order.updated_at is not None]
     return {
@@ -758,10 +766,21 @@ def assemble_assistant_orders(
             if not line.removed
             and not serialized_lines.get(int(line.id or 0), {}).get("photo_original_url")
         ]
+        missing_card_lines = [
+            line.line_number
+            for line in order.lines
+            if not line.removed
+            and not serialized_lines.get(int(line.id or 0), {}).get("product_card_url")
+        ]
         blockers = order_blockers(order)
         if missing_photo_lines:
             blockers.append(
                 "Нет исходного фото: строки " + ", ".join(map(str, missing_photo_lines))
+            )
+        if missing_card_lines:
+            blockers.append(
+                "Нет подтверждённой карточки товара: строки "
+                + ", ".join(map(str, missing_card_lines))
             )
         if blockers:
             results.append(
@@ -1690,7 +1709,10 @@ def _jsonable(value: Any) -> Any:
 
 def _assistant_line_ready(line: Mapping[str, Any]) -> bool:
     return bool(
-        not line.get("removed") and not line.get("blockers") and line.get("photo_original_url")
+        not line.get("removed")
+        and not line.get("blockers")
+        and line.get("product_card_url")
+        and line.get("photo_original_url")
     )
 
 

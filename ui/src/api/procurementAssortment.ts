@@ -132,6 +132,8 @@ export interface ProcurementOrderFormationLine {
   latest_classification?: ProcurementClassificationProposal | null;
   photo_thumbnail_url?: string | null;
   photo_original_url?: string | null;
+  product_card_url?: string | null;
+  photo_source?: string | null;
   photo_count?: number;
   profitability_pct?: string | null;
   supplier_defect_pct?: string | null;

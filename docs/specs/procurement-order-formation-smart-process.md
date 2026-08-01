@@ -13,6 +13,9 @@ related_code:
   - app/services/procurement_order_formation_workspace.py
   - app/services/bitrix_procurement_order_formation_auth.py
   - app/services/bitrix_order_formation.py
+  - app/services/master_mobile_catalog.py
+  - app/services/procurement_order_product_media.py
+  - tasks/backfill_procurement_order_product_media.py
   - tasks/build_procurement_order_formation_dry_run.py
   - tasks/sync_procurement_order_formation_results.py
   - ui/src/components/ProcurementOrderFormationApp.tsx
@@ -22,6 +25,8 @@ related_tests:
   - tests/test_procurement_order_formation_workspace.py
   - tests/test_procurement_order_formation_api.py
   - tests/test_procurement_order_formation_dry_run.py
+  - tests/test_master_mobile_catalog.py
+  - tests/test_procurement_order_product_media.py
 contracts:
   - openapi.yaml
 depends_on:
@@ -148,6 +153,16 @@ updated_at: "2026-08-01"
 Оригинальное фото обязательно для серверной сборки проекта. Миниатюра используется
 только для быстрого просмотра; пакеты `Список + фото` и `Фото отдельно` содержат
 URL исходного изображения без повторного сжатия.
+
+Карточка и исходное фото разрешаются read-only через публичный каталог
+`https://master-mobile.ru/catalog/?q=<артикул>`. Автоматически принимается только
+единственное точное совпадение артикула с повторной проверкой на canonical-карточке;
+сопоставление по названию запрещено. В `payload` строки сохраняются
+`product_card_url`, `photos[0].thumbnail`, `photos[0].original` и
+`photo_source=master_mobile_site`, а API отдельно отдаёт ссылку карточки и источник
+фото. Backfill по умолчанию работает как dry-run, затрагивает только открытые строки
+помощника и при apply создаёт rollback-manifest, повышает версии и пишет событие,
+не меняя количество, цену, поставщика, статус, Bitrix24 или 1С.
 
 Правая панель использует только факты карточки поставщика: класс `A/B/C`,
 историческую рентабельность, брак, своевременность, число заказов, оплату,

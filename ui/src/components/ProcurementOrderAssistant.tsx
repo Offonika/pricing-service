@@ -89,15 +89,52 @@ function rowReady(row: AssistantRow) {
       !supplierMissing(row.order) &&
       row.order.blockers.length === 0 &&
       row.line.blockers.length === 0 &&
+      row.line.product_card_url &&
       row.line.photo_original_url
   );
+}
+
+function activeOrderRows(order: ProcurementOrderFormation): AssistantRow[] {
+  return order.lines
+    .filter((line) => !line.removed)
+    .map((line) => ({ key: `${order.id}:${line.id}`, order, line }));
+}
+
+function orderReady(order: ProcurementOrderFormation) {
+  const rows = activeOrderRows(order);
+  return rows.length > 0 && rows.every(rowReady);
+}
+
+function rowSelectable(row: AssistantRow) {
+  return orderReady(row.order);
+}
+
+function rowUnavailableReason(row: AssistantRow) {
+  if (supplierMissing(row.order)) return "Недоступно: не определён поставщик";
+  if (!row.line.product_card_url || !row.line.photo_original_url) {
+    return "Недоступно: нет карточки или оригинала фото";
+  }
+  if (row.order.blockers.length || row.line.blockers.length) {
+    return "Недоступно: проект содержит блокирующие условия";
+  }
+  if (!orderReady(row.order)) return "Недоступно: другая строка проекта ещё не готова";
+  return "";
+}
+
+function projectLabel(count: number) {
+  const lastTwo = count % 100;
+  const last = count % 10;
+  if (lastTwo >= 11 && lastTwo <= 14) return "проектов заказов";
+  if (last === 1) return "проект заказа";
+  if (last >= 2 && last <= 4) return "проекта заказов";
+  return "проектов заказов";
 }
 
 function filterMatches(row: AssistantRow, filter: QuickFilter) {
   const profitability = numeric(row.line.profitability_pct);
   const defect = numeric(row.line.supplier_defect_pct);
   const priceChange = numeric(row.line.price_change_pct);
-  if (filter === "ready") return rowReady(row);
+  if (filter === "ready") return rowSelectable(row);
   if (filter === "supplier-missing") return supplierMissing(row.order);
   if (filter === "price-changed") return priceChange !== null && priceChange !== 0;
   if (filter === "low-profitability") return profitability !== null && profitability < 20;
@@ -130,13 +167,15 @@ function downloadSupplierPackage(rows: AssistantRow[], mode: "list" | "photos") 
   if (rows.length === 0) return;
   const supplier = safeFilePart(rows[0].order.supplier_name);
   if (mode === "photos") {
-    const header = ["Имя файла", "Код товара", "Оригинал фото"].map(csvCell).join(";");
+    const header = ["Имя файла", "Код товара", "Карточка товара", "Оригинал фото"].map(csvCell).join(";");
     const body = rows.map(({ line }, index) => [
       `${safeFilePart(line.nomenclature_code || `item-${index + 1}`)}.original`,
       line.nomenclature_code || "",
+      line.product_card_url || "",
       line.photo_original_url || "",
     ].map(csvCell).join(";"));
     saveTextFile(`${supplier}-photos.csv`, [header, ...body].join("\r\n"), "text/csv;charset=utf-8");
+    toast.success("Файл со ссылками на фотографии подготовлен");
     return;
   }
   const header = [
@@ -146,6 +185,7 @@ function downloadSupplierPackage(rows: AssistantRow[], mode: "list" | "photos") 
     "Количество",
     "Цена",
     "Валюта",
+    "Карточка товара",
     "Оригинал фото",
   ].map(csvCell).join(";");
   const body = rows.map(({ order, line }) => [
@@ -155,9 +195,11 @@ function downloadSupplierPackage(rows: AssistantRow[], mode: "list" | "photos") 
     line.final_quantity,
     line.purchase_price,
     line.currency,
+    line.product_card_url || "",
     line.photo_original_url || "",
   ].map(csvCell).join(";"));
   saveTextFile(`${supplier}-order-with-photos.csv`, [header, ...body].join("\r\n"), "text/csv;charset=utf-8");
+  toast.success("Файл заказа поставщику подготовлен");
 }
 
 function ProductPhoto({ line }: { line: ProcurementOrderFormationLine }) {
@@ -302,13 +344,9 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
     try {
       const response = await fetchProcurementOrderAssistant();
       setData(response);
-      const readyKeys = response.orders.flatMap((order) =>
-        order.lines
-          .filter((line) => !line.removed)
-          .map((line) => ({ key: `${order.id}:${line.id}`, order, line }))
-          .filter(rowReady)
-          .map((row) => row.key)
-      );
+      const readyKeys = response.orders
+        .filter(orderReady)
+        .flatMap((order) => activeOrderRows(order).map((row) => row.key));
       setSelected(new Set(readyKeys));
     } catch (requestError) {
       setError(errorText(requestError));
@@ -344,9 +382,9 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
 
   const selectedRows = useMemo(() => rows.filter((row) => selected.has(row.key)), [rows, selected]);
   const selectedOrders = useMemo(() => (data?.orders || []).filter((order) => {
-    const orderRows = rows.filter((row) => row.order.id === order.id);
-    return order.status !== "approved" && orderRows.length > 0 && orderRows.every((row) => selected.has(row.key) && rowReady(row));
-  }), [data, rows, selected]);
+    const orderRows = activeOrderRows(order);
+    return orderReady(order) && orderRows.every((row) => selected.has(row.key));
+  }), [data, selected]);
   const partialOrderCount = useMemo(() => new Set(selectedRows
     .map((row) => row.order.id)
     .filter((orderId) => !selectedOrders.some((order) => order.id === orderId))).size, [selectedOrders, selectedRows]);
@@ -370,18 +408,31 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
     }[key];
   };
 
-  const toggleRow = (key: string) => setSelected((current) => {
+  const toggleRow = (row: AssistantRow) => setSelected((current) => {
+    if (!rowSelectable(row)) return current;
     const next = new Set(current);
-    if (next.has(key)) next.delete(key); else next.add(key);
+    if (next.has(row.key)) next.delete(row.key); else next.add(row.key);
     return next;
   });
 
   const toggleVisible = () => setSelected((current) => {
     const next = new Set(current);
-    const allVisibleSelected = visibleRows.length > 0 && visibleRows.every((row) => next.has(row.key));
-    visibleRows.forEach((row) => allVisibleSelected ? next.delete(row.key) : next.add(row.key));
+    const selectableRows = visibleRows.filter(rowSelectable);
+    const allVisibleSelected = selectableRows.length > 0 && selectableRows.every((row) => next.has(row.key));
+    selectableRows.forEach((row) => allVisibleSelected ? next.delete(row.key) : next.add(row.key));
     return next;
   });
+
+  const selectableVisibleRows = visibleRows.filter(rowSelectable);
+  const assemblyHint = busy
+    ? "Идёт сборка выбранных проектов."
+    : selectedRows.length === 0
+      ? "Выберите хотя бы один полностью готовый проект заказа."
+      : partialOrderCount > 0
+        ? "Для сборки включите все строки каждого выбранного проекта."
+        : selectedOrders.length === 0
+          ? "Выбранные строки пока нельзя собрать в готовый проект."
+          : `Готово к сборке: ${selectedOrders.length} ${projectLabel(selectedOrders.length)}.`;
 
   const assemble = async () => {
     if (selectedOrders.length === 0) return;
@@ -439,7 +490,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
           <div className="order-assistant__table-scroll">
             <table className="order-assistant__table">
               <thead><tr>
-                <th><input aria-label="Выбрать все строки в фильтре" checked={visibleRows.length > 0 && visibleRows.every((row) => selected.has(row.key))} onChange={toggleVisible} type="checkbox" /></th>
+                <th><input aria-label="Выбрать все готовые проекты в фильтре" checked={selectableVisibleRows.length > 0 && selectableVisibleRows.every((row) => selected.has(row.key))} disabled={selectableVisibleRows.length === 0} onChange={toggleVisible} type="checkbox" /></th>
                 <th>Фото / товар</th><th>Потребность</th><th>Поставщик</th><th>Цена / изменение</th><th>Рентабельность</th><th>Брак</th><th>Срок</th><th>Решение</th>
               </tr></thead>
               <tbody>
@@ -448,17 +499,19 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                   const defect = numeric(row.line.supplier_defect_pct);
                   const priceChange = numeric(row.line.price_change_pct);
                   const isSelected = selected.has(row.key);
+                  const selectable = rowSelectable(row);
+                  const unavailableReason = rowUnavailableReason(row);
                   return (
-                    <tr className={!row.line.photo_original_url ? "is-photo-missing" : row.line.blockers.length || row.order.blockers.length ? "is-blocked" : ""} key={row.key}>
-                      <td><input aria-label={`Выбрать ${row.line.nomenclature_name}`} checked={isSelected} onChange={() => toggleRow(row.key)} type="checkbox" /></td>
-                      <td><div className="order-assistant__product"><ProductPhoto line={row.line} /><div><strong>{row.line.nomenclature_name}</strong><small>{row.line.nomenclature_code || "Код не указан"}</small></div></div></td>
+                    <tr className={selectable ? "" : "is-unavailable"} key={row.key}>
+                      <td><input aria-label={`Выбрать ${row.line.nomenclature_name}`} checked={isSelected} disabled={!selectable} onChange={() => toggleRow(row)} type="checkbox" /></td>
+                      <td><div className="order-assistant__product"><ProductPhoto line={row.line} /><div><strong>{row.line.nomenclature_name}</strong><small>{row.line.nomenclature_code || "Код не указан"}</small>{row.line.product_card_url ? <a className="order-assistant__product-card-link" href={row.line.product_card_url} rel="noreferrer" target="_blank">Карточка товара</a> : <small>Карточка не найдена</small>}</div></div></td>
                       <td><strong>{quantity(row.line.final_quantity)} шт.</strong><small>к {dateLabel(row.order.order_date)}</small></td>
                       <td><button className="order-assistant__link-button" onClick={() => onOpenOrder?.(row.order.id)} type="button">{row.order.supplier_name || "Нет поставщика"}</button><small>{row.order.contract_ref || row.order.contract_code ? "Контракт" : "Без контракта"}</small></td>
                       <td><strong>{money(row.line.purchase_price, row.line.currency)}</strong><small className={priceChange !== null && priceChange > 0 ? "is-danger" : priceChange !== null && priceChange < 0 ? "is-good" : ""}>{priceChange === null ? "Нет истории" : `${priceChange > 0 ? "+" : ""}${percent(priceChange)}`}</small></td>
                       <td><strong className={profitability !== null && profitability < 20 ? "is-warning" : profitability !== null ? "is-good" : ""}>{percent(profitability)}</strong></td>
                       <td><strong className={defect !== null && defect > 2 ? "is-danger" : defect !== null ? "is-good" : ""}>{percent(defect)}</strong><small>{row.line.supplier_defect_history_units ? `${row.line.supplier_defect_history_units.toLocaleString("ru-RU")} шт. в истории` : "Нет истории"}</small></td>
                       <td><strong>{row.line.delivery_days != null ? `${row.line.delivery_days} дн.` : "Нет данных"}</strong></td>
-                      <td><div className="order-assistant__decision"><button className={isSelected ? "is-accepted" : ""} onClick={() => { if (!isSelected) toggleRow(row.key); }} type="button">{isSelected ? "Принято" : "Принять"}</button><button onClick={() => { if (isSelected) toggleRow(row.key); }} type="button">Убрать</button></div></td>
+                      <td><div className="order-assistant__decision"><button aria-pressed={isSelected} className={isSelected ? "is-accepted" : ""} disabled={!selectable} onClick={() => toggleRow(row)} type="button">{isSelected ? "Включено" : "Включить"}</button>{unavailableReason && <small>{unavailableReason}</small>}</div></td>
                     </tr>
                   );
                 })}
@@ -475,7 +528,8 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
           </div>
           {partialOrderCount > 0 && <p className="order-assistant__partial-note">Неполных групп: {partialOrderCount}. Чтобы собрать проект, выберите все строки этого заказа.</p>}
           <p className="order-assistant__photo-note">В пакет попадают ссылки на исходные фото без сжатия. Миниатюры используются только на экране.</p>
-          <button className="order-assistant__assemble" disabled={busy || selectedOrders.length === 0} onClick={() => void assemble()} type="button">{busy ? "Собираем проекты..." : `Собрать ${selectedOrders.length} ${selectedOrders.length === 1 ? "проект заказа" : "проекта заказов"}`}</button>
+          <button aria-describedby="order-assistant-assembly-hint" className="order-assistant__assemble" disabled={busy || selectedOrders.length === 0 || partialOrderCount > 0} onClick={() => void assemble()} type="button">{busy ? "Собираем проекты..." : `Собрать ${selectedOrders.length} ${projectLabel(selectedOrders.length)}`}</button>
+          <p className="order-assistant__assembly-hint" id="order-assistant-assembly-hint">{assemblyHint}</p>
           <p className="order-assistant__onec-note">Проекты не будут отправлены в 1С автоматически. Передача остаётся отдельным действием в разделе «Заказы».</p>
         </aside>
       </section>

@@ -85,6 +85,8 @@ class ProcurementOrderFormationLineRead(BaseModel):
     latest_classification: ProcurementClassificationProposalRead | None = None
     photo_thumbnail_url: str | None = None
     photo_original_url: str | None = None
+    product_card_url: str | None = None
+    photo_source: str | None = None
     photo_count: int = 0
     profitability_pct: Decimal | None = None
     supplier_defect_pct: Decimal | None = None

@@ -462,6 +462,10 @@ class Settings(BaseSettings):
     procurement_order_formation_display_responsible_user_id: str = "130757"
     procurement_order_formation_property_apply_enabled: bool = False
     procurement_order_formation_onec_apply_enabled: bool = False
+    master_mobile_catalog_base_url: str = "https://master-mobile.ru"
+    master_mobile_catalog_timeout_seconds: float = 15.0
+    master_mobile_catalog_max_attempts: int = 3
+    master_mobile_catalog_max_workers: int = 4
 
     model_config = SettingsConfigDict(
         env_file=".env", env_prefix="", env_nested_delimiter="__", extra="ignore"

@@ -237,13 +237,35 @@
   vertical-align: middle;
 }
 
+.order-assistant__table th:last-child,
+.order-assistant__table td:last-child {
+  position: sticky;
+  right: 0;
+  min-width: 112px;
+  border-left: 1px solid #e1e6ed;
+  background: #ffffff;
+}
+
+.order-assistant__table th:last-child {
+  z-index: 2;
+}
+
+.order-assistant__table tr.is-unavailable td:last-child {
+  background: #fff5f4;
+}
+
 .order-assistant__table tr:hover {
   background: #f8faff;
 }
 
 .order-assistant__table tr.is-blocked,
-.order-assistant__table tr.is-photo-missing {
+.order-assistant__table tr.is-photo-missing,
+.order-assistant__table tr.is-unavailable {
   background: #fff5f4;
+}
+
+.order-assistant__table tr.is-unavailable {
+  color: #5f6877;
 }
 
 .order-assistant__table th:first-child,
@@ -258,6 +280,11 @@
   height: 17px;
   accent-color: #1268e8;
   cursor: pointer;
+}
+
+.order-assistant__table input[type="checkbox"]:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
 }
 
 .order-assistant__table td > strong,
@@ -348,8 +375,21 @@
   text-decoration: underline;
 }
 
+.order-assistant__product-card-link {
+  display: inline-block;
+  margin-top: 5px;
+  color: #075fcb;
+  font-size: 10px;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.order-assistant__product-card-link:hover {
+  text-decoration: underline;
+}
+
 .order-assistant .is-good {
-  color: #07854d;
+  color: #067344;
 }
 
 .order-assistant .is-warning {
@@ -361,8 +401,9 @@
 }
 
 .order-assistant__decision {
-  display: flex;
-  gap: 4px;
+  display: grid;
+  gap: 5px;
+  min-width: 92px;
 }
 
 .order-assistant__decision button {
@@ -377,7 +418,21 @@
 
 .order-assistant__decision button.is-accepted {
   border-color: #27a36a;
-  color: #07854d;
+  background: #edf9f3;
+  color: #067344;
+}
+
+.order-assistant__decision button:disabled {
+  border-color: #c7cfda;
+  background: #eef1f5;
+  color: #697587;
+  cursor: not-allowed;
+}
+
+.order-assistant__decision small {
+  color: #8f261f;
+  font-size: 9px;
+  line-height: 1.25;
 }
 
 .order-assistant__table-footer {
@@ -707,6 +762,7 @@
 
 .order-assistant__partial-note,
 .order-assistant__photo-note,
+.order-assistant__assembly-hint,
 .order-assistant__onec-note {
   margin: 10px 0 0;
   color: #5d6879;
@@ -719,6 +775,12 @@
   border-radius: 4px;
   background: #fff6e9;
   color: #955000;
+}
+
+.order-assistant__assembly-hint {
+  min-height: 15px;
+  color: #465469;
+  text-align: center;
 }
 
 .order-assistant__assemble {
@@ -766,7 +828,7 @@
   }
 }
 
-@media (max-width: 980px) {
+@media (max-width: 1320px) {
   .order-assistant__layout {
     grid-template-columns: 1fr;
   }

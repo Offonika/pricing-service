@@ -104,3 +104,10 @@ def test_lifecycle_approval_schema_limits_batch_to_100() -> None:
             idempotency_key="batch-too-large",
             items=[item] * 101,
         )
+
+
+def test_order_assistant_line_schema_exposes_catalog_card_and_photo_source() -> None:
+    schema = app.openapi()["components"]["schemas"]["ProcurementOrderFormationLineRead"]
+
+    assert "product_card_url" in schema["properties"]
+    assert "photo_source" in schema["properties"]

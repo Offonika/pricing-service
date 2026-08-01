@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from app.models.procurement_order_formation import ProcurementOrderFormation
 from app.services.bitrix_order_formation import BitrixCatalogProduct
+from app.services.master_mobile_catalog import ProductMediaResolution
 from app.services.procurement_order_formation import serialize_line
 from app.services.procurement_order_formation_workspace import list_orders
 from tasks.build_procurement_order_formation_dry_run import (
@@ -189,6 +190,51 @@ def test_missing_catalog_product_is_a_hard_blocker() -> None:
         calculation_id="calc",
     )
     assert orders[0]["lines"][0]["blockers"] == ["catalog_product_missing"]
+
+
+def test_grouped_dry_run_uses_only_exact_public_catalog_media() -> None:
+    media = ProductMediaResolution(
+        article="A",
+        status="found",
+        product_card_url="https://master-mobile.ru/catalog/displei/40699/",
+        photo_thumbnail_url="https://master-mobile.ru/upload/thumb/40699.webp",
+        photo_original_url="https://master-mobile.ru/upload/original/40699.webp",
+    )
+    orders = build_grouped_orders(
+        [_source("A", "5", "A")],
+        [_lead("A", "S1", "0xs1")],
+        nomenclature_by_code={"A": {"nomenclature_ref": "0x00010025901E48EF11E1967C11111111"}},
+        catalog_resolver=lambda guid: BitrixCatalogProduct(
+            product_id="10",
+            name="Каталожный товар",
+            xml_id=guid,
+            photo_original_url="https://untrusted.example/bitrix-photo.jpg",
+        ),
+        product_media_resolver=lambda _article: media,
+        skip_catalog=False,
+        contracts={"default": {"code": "C1", "name": "Договор"}},
+        warehouse={"code": "MAIN", "name": "Склад"},
+        currency="RUB",
+        procurement_contour="ordinary",
+        route="ordinary",
+        batch_id="batch",
+        order_date=date(2026, 7, 10),
+        calculation_id="calc",
+    )
+
+    line = orders[0]["lines"][0]
+    assert line["product_media_status"] == "found"
+    assert line["payload"] == {
+        "photos": [
+            {
+                "thumbnail": "https://master-mobile.ru/upload/thumb/40699.webp",
+                "original": "https://master-mobile.ru/upload/original/40699.webp",
+            }
+        ],
+        "product_card_url": "https://master-mobile.ru/catalog/displei/40699/",
+        "photo_source": "master_mobile_site",
+        "delivery_days": "10",
+    }
 
 
 def _grouped_orders_for_persist(*, batch_id: str, calculation_id: str) -> list[dict[str, object]]:

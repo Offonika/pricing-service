@@ -21701,6 +21701,16 @@ components:
           - type: string
           - type: 'null'
           title: Photo Original Url
+        product_card_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Product Card Url
+        photo_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Photo Source
         photo_count:
           type: integer
           title: Photo Count

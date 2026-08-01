@@ -291,12 +291,14 @@ def test_order_assistant_exposes_original_photos_and_real_supplier_history(db_se
     }
     for index, line in enumerate(order.lines, start=1):
         line.payload = {
+            "product_card_url": f"https://master-mobile.ru/catalog/displei/{index}/",
             "photos": [
                 {
                     "thumbnail": f"https://cdn.example.test/thumb/{index}.jpg",
                     "original": f"https://cdn.example.test/original/{index}.jpg",
                 }
             ],
+            "photo_source": "master_mobile_site",
             "profitability_pct": "34.6",
             "supplier_defect_pct": "0.8",
             "supplier_defect_history_units": 1842,
@@ -313,12 +315,36 @@ def test_order_assistant_exposes_original_photos_and_real_supplier_history(db_se
     assert validated.orders[0].supplier_profile.defect_pct == Decimal("0.8")
     assert validated.orders[0].supplier_profile.updated_at == "2026-08-01"
     assert validated.orders[0].lines[0].photo_original_url.endswith("/1.jpg")
+    assert validated.orders[0].lines[0].product_card_url == (
+        "https://master-mobile.ru/catalog/displei/1/"
+    )
+    assert validated.orders[0].lines[0].photo_source == "master_mobile_site"
+
+
+def test_order_assistant_marks_lines_ready_only_when_the_whole_project_is_ready(
+    db_session,
+) -> None:
+    order = _order(db_session)
+    order.lines[0].payload = {
+        "product_card_url": "https://master-mobile.ru/catalog/displei/1/",
+        "photos": [{"original": "https://master-mobile.ru/upload/ready.webp"}],
+    }
+    order.lines[1].payload = {}
+    db_session.commit()
+
+    payload = build_order_assistant(db_session)
+
+    assert payload["summary"]["lines"] == 2
+    assert payload["summary"]["ready_lines"] == 0
 
 
 def test_order_assistant_blocks_assembly_when_original_photo_is_missing(db_session) -> None:
     order = _order(db_session)
     for index, line in enumerate(order.lines, start=1):
-        line.payload = {"photos": [{"thumbnail": f"https://cdn.example.test/thumb/{index}.jpg"}]}
+        line.payload = {
+            "product_card_url": f"https://master-mobile.ru/catalog/displei/{index}/",
+            "photos": [{"thumbnail": f"https://cdn.example.test/thumb/{index}.jpg"}],
+        }
     db_session.commit()
 
     result = assemble_assistant_orders(
@@ -334,10 +360,32 @@ def test_order_assistant_blocks_assembly_when_original_photo_is_missing(db_sessi
     assert db_session.get(ProcurementOrderFormation, order.id).status == "draft"
 
 
-def test_order_assistant_assembles_project_without_sending_to_onec(db_session) -> None:
+def test_order_assistant_blocks_assembly_when_product_card_is_missing(db_session) -> None:
     order = _order(db_session)
     for index, line in enumerate(order.lines, start=1):
         line.payload = {"photos": [{"original": f"https://cdn.example.test/original/{index}.jpg"}]}
+    db_session.commit()
+
+    result = assemble_assistant_orders(
+        db_session,
+        items=[{"order_id": order.id, "expected_version": order.version}],
+        idempotency_key="assistant-test-missing-card",
+        session=_session(),
+    )
+
+    assert result["approved"] == 0
+    assert result["blocked"] == 1
+    assert "Нет подтверждённой карточки товара" in result["items"][0]["message"]
+    assert db_session.get(ProcurementOrderFormation, order.id).status == "draft"
+
+
+def test_order_assistant_assembles_project_without_sending_to_onec(db_session) -> None:
+    order = _order(db_session)
+    for index, line in enumerate(order.lines, start=1):
+        line.payload = {
+            "product_card_url": f"https://master-mobile.ru/catalog/displei/{index}/",
+            "photos": [{"original": f"https://cdn.example.test/original/{index}.jpg"}],
+        }
     db_session.commit()
 
     result = assemble_assistant_orders(

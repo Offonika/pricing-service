@@ -172,6 +172,8 @@ def serialize_line(line: ProcurementOrderFormationLine) -> dict[str, Any]:
         "latest_classification": serialize_proposal(latest) if latest else None,
         "photo_thumbnail_url": _photo_url(photos, "thumbnail") or _photo_url(photos, "original"),
         "photo_original_url": _photo_url(photos, "original"),
+        "product_card_url": _safe_media_url(payload.get("product_card_url")) or None,
+        "photo_source": _payload_text(payload, "photo_source"),
         "photo_count": len(photos),
         "profitability_pct": _payload_decimal(
             payload,

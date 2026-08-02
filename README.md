@@ -1,5 +1,8 @@
 # Умное ценообразование Master Mobile
 
+[![CI](https://github.com/mastermobile-inc/pricing-service/actions/workflows/ci.yml/badge.svg)](https://github.com/mastermobile-inc/pricing-service/actions/workflows/ci.yml)
+[![Docs manifest](https://github.com/mastermobile-inc/pricing-service/actions/workflows/docs-manifest.yml/badge.svg)](https://github.com/mastermobile-inc/pricing-service/actions/workflows/docs-manifest.yml)
+
 Сервис для расчёта рекомендованных цен на основе данных 1С, парсера конкурентов и правил из PRD. Проектный контекст:
 - Бизнес-требования и сценарии: `docs/PRD.md`
 - High-level архитектура: `docs/architecture.md`

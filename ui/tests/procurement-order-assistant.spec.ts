@@ -39,6 +39,21 @@ const readyLine = {
   lead_time_days: 12,
   lead_time_source_level: "sku",
   lead_time_confidence: "high",
+  latest_classification: {
+    id: 77,
+    status: "proposed",
+    previous_status: "working",
+    proposed_status: "matrix",
+    proposed_status_label: "Матричный",
+    reason: "Лучшие условия и стабильные сроки",
+    blocks_order_line: false,
+    requested_at: "2026-08-01T10:00:00Z",
+    requested_by_bitrix_user_id: "77",
+    requested_by_name: "Иван Петров",
+    can_approve: true,
+    can_reject: true,
+    onec_status: "not_sent",
+  },
 };
 
 const readyOrder = {
@@ -113,6 +128,14 @@ const assistantResponse = {
 };
 
 test("assistant buttons, disabled states, supplier CSV and accessibility work", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 1024 });
+  const browserErrors: string[] = [];
+  const requestErrors: string[] = [];
+  page.on("console", (message) => {
+    if (message.type() === "error") browserErrors.push(message.text());
+  });
+  page.on("pageerror", (error) => browserErrors.push(error.message));
+  page.on("requestfailed", (request) => requestErrors.push(`${request.method()} ${request.url()}`));
   await page.addInitScript(() => {
     window.sessionStorage.setItem("mm_procurement_order_formation_bitrix_session", JSON.stringify({
       session_token: "test-session-placeholder",
@@ -124,6 +147,7 @@ test("assistant buttons, disabled states, supplier CSV and accessibility work", 
     window.sessionStorage.setItem("mm_procurement_order_formation_left_menu_v3_bound", "1");
   });
   let assembleBody: Record<string, unknown> | null = null;
+  let rejectionBody: Record<string, unknown> | null = null;
   await page.route("**/api/procurement-order-formation/assistant**", async (route) => {
     if (new URL(route.request().url()).pathname.endsWith("/assistant/assemble")) {
       assembleBody = route.request().postDataJSON();
@@ -150,6 +174,14 @@ test("assistant buttons, disabled states, supplier CSV and accessibility work", 
     contentType: "image/gif",
     body: Buffer.from("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==", "base64"),
   }));
+  await page.route("**/api/procurement-order-formation/orders/12/lines/40/classification/77/reject", async (route) => {
+    rejectionBody = route.request().postDataJSON();
+    await route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ order: readyOrder, proposal: { ...readyLine.latest_classification, status: "rejected" } }),
+    });
+  });
 
   await page.goto("/bitrix/procurement-order-formation/assistant");
   await expect(page.getByRole("heading", { name: "Помощник заказов" })).toBeVisible();
@@ -158,7 +190,24 @@ test("assistant buttons, disabled states, supplier CSV and accessibility work", 
     readyLine.product_card_url,
   );
   await expect(page.getByRole("checkbox", { name: /Строка без подтверждённой/ })).toBeDisabled();
-  await expect(page.getByText("Недоступно: не найдена точная карточка товара")).toBeVisible();
+  await expect(page.getByText("Недоступно: не найдена точная карточка товара").first()).toBeVisible();
+  await expect(page.getByRole("complementary", { name: "Профиль поставщика Tianma" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Предложение классификации" })).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("implementation-pending-1440x1024.png"),
+    fullPage: false,
+  });
+
+  await page.getByRole("button", { name: "Отклонить" }).click();
+  await expect(page.getByText("Выберите причину, чтобы отклонить предложение.")).toBeVisible();
+  await page.getByRole("combobox", { name: /Причина отклонения/ }).selectOption("Недостаточно подтверждённых данных");
+  await page.getByRole("button", { name: "Отклонить" }).click();
+  await expect.poll(() => rejectionBody).toMatchObject({ reason: "Недостаточно подтверждённых данных" });
+
+  await page.getByRole("button", { name: "Закрыть панель поставщика" }).click();
+  await expect(page.getByRole("complementary", { name: "Профиль поставщика Tianma" })).toBeHidden();
+  await page.getByRole("button", { name: "Tianma" }).click();
+  await expect(page.getByRole("complementary", { name: "Профиль поставщика Tianma" })).toBeVisible();
 
   const decision = page.getByRole("button", { name: "Включено" });
   await expect(decision).toBeInViewport();
@@ -190,5 +239,14 @@ test("assistant buttons, disabled states, supplier CSV and accessibility work", 
     .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
     .analyze();
   expect(results.violations).toEqual([]);
+  expect(browserErrors).toEqual([]);
+  expect(requestErrors).toEqual([]);
+  await page.waitForTimeout(3500);
+  await page.setViewportSize({ width: 1024, height: 900 });
+  await expect(page.getByRole("complementary", { name: "Профиль поставщика Tianma" })).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("implementation-responsive-1024x900.png"),
+    fullPage: false,
+  });
   await page.screenshot({ path: testInfo.outputPath("procurement-order-assistant.png"), fullPage: true });
 });

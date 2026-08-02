@@ -128,9 +128,9 @@ describe("ProcurementOrderAssistant", () => {
     expect(screen.getByRole("columnheader", { name: "Рентабельность" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: "Брак" })).toBeInTheDocument();
     expect(screen.queryByText("Что мешает")).not.toBeInTheDocument();
-    expect(screen.getByText("Класс A")).toBeInTheDocument();
-    expect(screen.getByText("Лучшие условия")).toBeInTheDocument();
-    expect(screen.getByText("30/70")).toBeInTheDocument();
+    expect(screen.getAllByText("Класс A").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Лучшие условия").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("30/70").length).toBeGreaterThan(0);
     expect(screen.getByRole("link", { name: /Открыть исходное фото/ })).toHaveAttribute(
       "href",
       "https://cdn.example.test/original/display.jpg"
@@ -168,7 +168,7 @@ describe("ProcurementOrderAssistant", () => {
     expect(screen.getByRole("button", { name: /Собрать 0/ })).toBeDisabled();
     expect(screen.getByRole("checkbox", { name: /Выбрать Дисплей/ })).toBeDisabled();
     expect(screen.getByRole("button", { name: "Включить" })).toBeDisabled();
-    expect(screen.getByText("Недоступно: не найдена точная карточка товара")).toBeInTheDocument();
+    expect(screen.getAllByText("Недоступно: не найдена точная карточка товара").length).toBeGreaterThan(0);
     expect(assembleProcurementOrderProjects).not.toHaveBeenCalled();
   });
 
@@ -208,7 +208,7 @@ describe("ProcurementOrderAssistant", () => {
     expect(screen.getByRole("button", { name: "Фото отдельно" })).toBeInTheDocument();
   });
 
-  it("показывает полное предложение и требует причину для inline-отклонения", async () => {
+  it("показывает полное предложение в панели и требует причину отклонения", async () => {
     const data = assistantData();
     const order = data.orders[0];
     const line = order.lines[0];
@@ -237,17 +237,16 @@ describe("ProcurementOrderAssistant", () => {
 
     render(<ProcurementOrderAssistantView />);
     expect(await screen.findByText("working → Матричный")).toBeInTheDocument();
-    expect(screen.getByText("Автор: Автор предложения")).toBeInTheDocument();
+    expect(screen.getByText("Автор предложения")).toBeInTheDocument();
     expect(screen.getByText("Товар нужен в постоянной матрице")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Принять" })).toBeEnabled();
 
     fireEvent.click(screen.getByRole("button", { name: "Отклонить" }));
-    const confirm = screen.getByRole("button", { name: "Подтвердить отклонение" });
-    expect(confirm).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("Причина отклонения"), {
-      target: { value: "Недостаточно подтверждённых продаж" },
+    expect(screen.getByText("Выберите причину, чтобы отклонить предложение.")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("combobox", { name: /Причина отклонения/ }), {
+      target: { value: "Недостаточно подтверждённых данных" },
     });
-    fireEvent.click(confirm);
+    fireEvent.click(screen.getByRole("button", { name: "Отклонить" }));
 
     await waitFor(() => expect(rejectProcurementClassification).toHaveBeenCalledWith(
       order.id,
@@ -256,9 +255,20 @@ describe("ProcurementOrderAssistant", () => {
       {
         expected_order_version: order.version,
         expected_line_version: line.version,
-        reason: "Недостаточно подтверждённых продаж",
+        reason: "Недостаточно подтверждённых данных",
       }
     ));
+  });
+
+  it("открывает профиль по поставщику и позволяет закрыть правую панель", async () => {
+    vi.mocked(fetchProcurementOrderAssistant).mockResolvedValue(assistantData());
+
+    render(<ProcurementOrderAssistantView />);
+    expect(await screen.findByRole("complementary", { name: "Профиль поставщика Tianma" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Закрыть панель поставщика" }));
+    expect(screen.queryByRole("complementary", { name: "Профиль поставщика Tianma" })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Tianma" }));
+    expect(screen.getByRole("complementary", { name: "Профиль поставщика Tianma" })).toBeInTheDocument();
   });
 
   it("сохраняет ручной класс поставщика с ожидаемой версией", async () => {

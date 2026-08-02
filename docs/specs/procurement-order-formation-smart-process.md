@@ -14,7 +14,11 @@ related_code:
   - app/services/bitrix_procurement_order_formation_auth.py
   - app/services/bitrix_order_formation.py
   - app/services/master_mobile_catalog.py
+  - app/services/procurement_order_metrics.py
+  - app/services/procurement_order_metrics_backfill.py
   - app/services/procurement_order_product_media.py
+  - app/services/procurement_supplier_profiles.py
+  - tasks/backfill_procurement_order_metrics.py
   - tasks/backfill_procurement_order_product_media.py
   - tasks/build_procurement_order_formation_dry_run.py
   - tasks/sync_procurement_order_formation_results.py
@@ -26,25 +30,48 @@ related_tests:
   - tests/test_procurement_order_formation_api.py
   - tests/test_procurement_order_formation_dry_run.py
   - tests/test_master_mobile_catalog.py
+  - tests/test_procurement_order_metrics.py
+  - tests/test_procurement_order_metrics_backfill.py
   - tests/test_procurement_order_product_media.py
+  - tests/test_procurement_supplier_profiles.py
 contracts:
   - openapi.yaml
 depends_on:
   - docs/specs/assortment-status-contour-plan.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-01"
+updated_at: "2026-08-02"
 ---
 
 # Приложение Bitrix24 «Формирование заказа»
 
-Статус: implemented locally, pilot disabled.
+Статус: production-интерфейс активен, пилотная сборка внутри сервиса выполнена,
+запись заказов и свойств в 1С выключена.
 
 Это главный технический источник по рабочей поверхности, API, правам и обмену
 приложения. Канонический порядок дальнейших работ находится в
 `docs/specs/assortment-status-contour-plan.md`.
 
 Файл сохраняет старое имя только для совместимости ссылок. Рабочий интерфейс больше не использует смарт-процесс.
+
+## Production rollout 2026-08-02
+
+- Активный release-controller релиз:
+  `procurement-order-assistant-panel-option2-20260802-1186af8`, source commit
+  `1186af82a3c4f9a826c79d2e706b1d4c4217489b`.
+- Production readback после публикации: `46` активных строк, `8` открытых
+  проектов, `5` полностью готовых проектов и `2` строки без исходного фото.
+- Пилотный проект `#14` собран внутри `pricing-service`: одна строка,
+  `10` штук по `61` RUB, сумма `610` RUB. Статус проекта `approved`, статус 1С
+  `not_sent`; событие `assistant_order_assembled` записано в журнал.
+- Пакет поставщику для проекта `#14` проверен: CSV содержит поставщика, артикул,
+  название, количество, цену, валюту, карточку товара и прямой URL оригинального
+  фото. Внутренний класс, рентабельность и статистика брака в пакет не входят.
+- Обе production-настройки записи остаются выключены:
+  `PROCUREMENT_ORDER_FORMATION_PROPERTY_APPLY_ENABLED=false` и
+  `PROCUREMENT_ORDER_FORMATION_ONEC_APPLY_ENABLED=false`.
+- Следующий риск-гейт — отдельное явное подтверждение пользователя перед любой
+  передачей проекта в 1С. Повторно собирать проект `#14` не требуется.
 
 ## Итоговая архитектура
 

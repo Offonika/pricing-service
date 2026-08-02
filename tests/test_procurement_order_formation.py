@@ -274,6 +274,19 @@ def test_order_does_not_require_legacy_bitrix_card_url(db_session) -> None:
 
     assert "bitrix_item_url_missing" not in order_blockers(order)
 
+    transmitted, mode, message_id, xml_preview, path = transmit_order(
+        db_session,
+        order.id,
+        _session(),
+        settings=Settings(procurement_order_formation_onec_apply_enabled=False),
+    )
+
+    assert transmitted.onec_status == "dry_run"
+    assert mode == "dry_run"
+    assert message_id == f"proc-order-{order.id}-v1"
+    assert path is None
+    assert "<BitrixItemUrl" in xml_preview
+
 
 def test_order_assistant_exposes_original_photos_and_real_supplier_history(db_session) -> None:
     order = _order(db_session)

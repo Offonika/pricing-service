@@ -13,6 +13,7 @@ import {
 } from "../api/matching";
 import type { Candidate, MatchingDecisionReasonCode } from "../api/types";
 import { useSelectedProduct } from "../store/useSelectionStore";
+import { hasRequiredDecisionReason } from "./matchingDecisionReason";
 
 interface SearchState {
   productId: number | null;
@@ -88,13 +89,6 @@ const REJECT_REASON_OPTIONS: Array<{ value: MatchingDecisionReasonCode; label: s
   { value: "auto_false_positive", label: "Ошибка автоматического сопоставления" },
   { value: "other", label: "Другая причина" },
 ];
-
-export function hasRequiredDecisionReason(
-  action: "reject" | "revoke",
-  reasonCode: MatchingDecisionReasonCode | ""
-) {
-  return action === "reject" || action === "revoke" ? Boolean(reasonCode) : true;
-}
 
 const CANDIDATE_FILTER_PREFS_KEY = "pricing.matching.candidate-filters.v1";
 

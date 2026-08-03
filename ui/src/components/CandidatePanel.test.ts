@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { hasRequiredDecisionReason } from "./CandidatePanel";
+import { hasRequiredDecisionReason } from "./matchingDecisionReason";
 
 describe("matching decision reason", () => {
   it("requires a structured reason for reject and revoke", () => {

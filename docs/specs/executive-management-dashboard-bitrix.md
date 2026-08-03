@@ -185,7 +185,11 @@ Snapshot формируется управляющим контуром `/opt/MM
   и неопознанные credentials только количественно;
 - `capabilities.access_mutations=false` и `network_scanning=false`.
 
-Начиная с `schema_version=2`, consumer не принимает v1. На устройстве раздельно
+Consumer принимает `schema_version=2` и `schema_version=3`, но не принимает v1.
+Для v2 поля `issue` и `recommended_action` преобразуются в одну fallback-проблему.
+В v3 `devices[].problems[]` содержит все одновременные проблемы с категорией,
+severity, безопасными доказательствами, временем начала и рекомендацией; первая по
+приоритету проблема также заполняет legacy-поля. На устройстве раздельно
 передаются `last_attempted_at`, `last_success_at`, `incident_started_at`, длительность
 сбоя, availability и monitoring coverage за 24 часа/30 дней. При coverage ниже
 90% availability не публикуется. Windows, SQL Server, SQL Agent, кластер и базы 1С,
@@ -197,7 +201,10 @@ connection strings запрещены на стороне producer и повто
 consumer-валидацией. Отсутствующий snapshot возвращается как `source_missing`,
 просроченный — как `stale`; отсутствие данных нельзя подменять нулями.
 
-Текущий этап не создаёт CRM-сущности, задачи и назначения доступов. Следующий
+UI по умолчанию показывает critical, warning и not monitored, использует KPI как
+фильтры и открывает полную диагностику устройства в панели, связанной с query-параметром
+`device`. На ширине до 760 px список отображается карточками без горизонтальной
+прокрутки. Текущий этап не создаёт CRM-сущности, задачи и назначения доступов. Следующий
 этап управления доступами расширяет этот же контракт отдельными action API с
 approval, revision guard, audit и readback; до отдельного утверждения любые
 мутации остаются заблокированы.
@@ -884,5 +891,6 @@ app/admin context или через OAuth-контекст установлен�
 - Bitrix iframe smoke: страница, session, загрузка блоков, drill-down links.
 - Приборы: один элемент на каждый зарегистрированный `device_key`, статусы
   online/not monitored не смешиваются, v1/небезопасные/неизвестные поля отклоняются,
-  stale, missing, freshness и coverage показываются явно, доступы остаются read-only.
+  v2 получает fallback-проблему, v3 сохраняет одновременные `problems[]`, stale,
+  missing, freshness и coverage показываются явно, доступы остаются read-only.
 - Docs/OpenAPI: manifest и generated contract без drift.

@@ -1603,7 +1603,7 @@ describe("executive online store tab", () => {
 
 function instrumentsResponse(): ExecutiveInstrumentsResponse {
   return {
-    schema_version: 2,
+    schema_version: 3,
     generated_at: "2026-07-31T09:00:00Z",
     source_status: "partial",
     freshness_status: "fresh",
@@ -1668,6 +1668,25 @@ function instrumentsResponse(): ExecutiveInstrumentsResponse {
           attention_grant_count: 1,
           next_review_at: "2026-08-31",
         },
+        problems: [
+          {
+            problem_key: "backup:unprotected-datastores",
+            category: "backup",
+            severity: "warning",
+            title: "Резервирование требует настройки или проверки",
+            evidence: ["Не защищено хранилищ: 1"],
+            started_at: "2026-07-30T09:00:00Z",
+            recommended_action: "Проверить копию и выполнить restore-test",
+          },
+          {
+            problem_key: "access:review-required",
+            category: "access",
+            severity: "warning",
+            title: "Требуется ревизия доступов",
+            evidence: ["Назначений на ревизию: 1"],
+            recommended_action: "Проверить владельца и актуальность доступа",
+          },
+        ],
         issue: "Резервирование требует настройки или проверки",
         recommended_action: "Проверить копию и выполнить restore-test",
       },
@@ -1702,6 +1721,16 @@ function instrumentsResponse(): ExecutiveInstrumentsResponse {
           unowned_credentials: 0,
           attention_grant_count: 0,
         },
+        problems: [
+          {
+            problem_key: "monitoring:not-configured",
+            category: "monitoring",
+            severity: "warning",
+            title: "Мониторинг не настроен",
+            evidence: ["Нет успешных автоматических проверок"],
+            recommended_action: "Подключить устройство к безопасному мониторингу",
+          },
+        ],
       },
     ],
     warnings: [],
@@ -1722,17 +1751,34 @@ describe("executive instruments tab", () => {
 
   afterEach(cleanup);
 
-  it("renders infrastructure, 1C, backup and read-only access control", () => {
+  it("shows attention by default and opens detailed read-only diagnostics", () => {
     render(<InstrumentsPanel data={instrumentsResponse()} message="" status="ready" />);
 
-    expect(screen.getByLabelText("Сводка по приборам")).toHaveTextContent("Пробелы backup1");
-    expect(screen.getByText("Офисный Windows-сервер новой 1С КА/БП/ЗУП")).toBeVisible();
-    expect(screen.getAllByText(/Restore-test/)[0]).toBeVisible();
-    expect(screen.getAllByText(/Покрытие 24 ч/)[0]).toBeVisible();
-    expect(screen.getByText("Требуют внимания: 1")).toBeVisible();
+    expect(screen.getByRole("button", { name: /Требуют внимания\s*2/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /Проблемы backup\s*1/ })).toBeVisible();
+    expect(within(screen.getByLabelText("Список приборов")).getByText("Офисный Windows-сервер новой 1С КА/БП/ЗУП")).toBeVisible();
     expect(screen.getByText(/источник частично|источник partial/i)).toBeVisible();
-    expect(screen.getByText("Контроль доступов — следующий этап")).toBeVisible();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Подробнее: Офисный Windows-сервер новой 1С КА/БП/ЗУП" })[0]);
+
+    expect(screen.getByRole("dialog", { name: "Офисный Windows-сервер новой 1С КА/БП/ЗУП" })).toBeVisible();
+    expect(screen.getByText("Что сейчас не так")).toBeVisible();
+    expect(screen.getByText("Restore-test")).toBeVisible();
+    expect(screen.getByText("Мониторинг и проверки")).toBeVisible();
     expect(screen.getByText(/Выдача и отзыв доступов отключены/)).toBeVisible();
+    expect(new URLSearchParams(window.location.search).get("device")).toBe("onec-ka-bp-zup-win");
+  });
+
+  it("combines KPI, search and kind filters", () => {
+    render(<InstrumentsPanel data={instrumentsResponse()} message="" status="ready" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Все\s*2/ }));
+    fireEvent.change(screen.getByLabelText("Поиск прибора"), { target: { value: "мониторинг" } });
+
+    const list = within(screen.getByLabelText("Список приборов"));
+    expect(list.getByText("Устройство без мониторинга")).toBeVisible();
+    expect(list.queryByText("Офисный Windows-сервер новой 1С КА/БП/ЗУП")).not.toBeInTheDocument();
+    expect(screen.getByText("Показано 1 из 2")).toBeVisible();
   });
 
   it("shows missing source and snapshot freshness explicitly", () => {

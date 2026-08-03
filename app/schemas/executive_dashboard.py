@@ -192,6 +192,24 @@ class ExecutiveInstrumentAccess(ExecutiveInstrumentStrictModel):
     next_review_at: date | None = None
 
 
+class ExecutiveInstrumentProblem(ExecutiveInstrumentStrictModel):
+    problem_key: str
+    category: Literal[
+        "connectivity",
+        "resources",
+        "service",
+        "backup",
+        "access",
+        "monitoring",
+        "configuration",
+    ]
+    severity: Literal["critical", "warning", "info"]
+    title: str
+    evidence: list[str] = Field(default_factory=list)
+    started_at: datetime | None = None
+    recommended_action: str
+
+
 class ExecutiveInstrumentDevice(ExecutiveInstrumentStrictModel):
     device_key: str
     name: str
@@ -220,6 +238,7 @@ class ExecutiveInstrumentDevice(ExecutiveInstrumentStrictModel):
         default_factory=ExecutiveInstrumentIntegration
     )
     access: ExecutiveInstrumentAccess = Field(default_factory=ExecutiveInstrumentAccess)
+    problems: list[ExecutiveInstrumentProblem] = Field(default_factory=list)
     issue: str | None = None
     recommended_action: str | None = None
 
@@ -242,7 +261,7 @@ class ExecutiveInstrumentCapabilities(ExecutiveInstrumentStrictModel):
 
 
 class ExecutiveInstrumentsResponse(ExecutiveInstrumentStrictModel):
-    schema_version: Literal[2] = 2
+    schema_version: Literal[2, 3] = 2
     generated_at: datetime
     source_status: ExecutiveInstrumentSourceStatus
     freshness_status: ExecutiveInstrumentFreshnessStatus
@@ -259,6 +278,28 @@ class ExecutiveInstrumentsResponse(ExecutiveInstrumentStrictModel):
         device_keys = [device.device_key for device in self.devices]
         if len(device_keys) != len(set(device_keys)):
             raise ValueError("duplicate device_key in infrastructure snapshot")
+        for device in self.devices:
+            problem_keys = [problem.problem_key for problem in device.problems]
+            if len(problem_keys) != len(set(problem_keys)):
+                raise ValueError(f"duplicate infrastructure problem_key: {device.device_key}")
+            if not device.problems and device.issue:
+                device.problems.append(
+                    ExecutiveInstrumentProblem(
+                        problem_key="configuration:legacy-issue",
+                        category=(
+                            "monitoring"
+                            if device.health_status == "not_monitored"
+                            else "configuration"
+                        ),
+                        severity=("critical" if device.health_status == "critical" else "warning"),
+                        title=device.issue,
+                        started_at=device.incident_started_at,
+                        recommended_action=(
+                            device.recommended_action
+                            or "Проверить техническую диагностику в управляющем контуре"
+                        ),
+                    )
+                )
         expected = {
             "total_count": len(self.devices),
             "online_count": sum(device.connectivity_status == "online" for device in self.devices),

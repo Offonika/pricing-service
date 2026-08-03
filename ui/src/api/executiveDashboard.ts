@@ -612,6 +612,25 @@ export interface ExecutiveInstrumentService {
   source_project?: string | null;
 }
 
+export type ExecutiveInstrumentProblemCategory =
+  | "connectivity"
+  | "resources"
+  | "service"
+  | "backup"
+  | "access"
+  | "monitoring"
+  | "configuration";
+
+export interface ExecutiveInstrumentProblem {
+  problem_key: string;
+  category: ExecutiveInstrumentProblemCategory;
+  severity: "critical" | "warning" | "info";
+  title: string;
+  evidence: string[];
+  started_at?: string | null;
+  recommended_action: string;
+}
+
 export interface ExecutiveInstrumentDevice {
   device_key: string;
   name: string;
@@ -664,12 +683,13 @@ export interface ExecutiveInstrumentDevice {
     attention_grant_count: number;
     next_review_at?: string | null;
   };
+  problems: ExecutiveInstrumentProblem[];
   issue?: string | null;
   recommended_action?: string | null;
 }
 
 export interface ExecutiveInstrumentsResponse {
-  schema_version: 2;
+  schema_version: 2 | 3;
   generated_at: string;
   source_status: string;
   freshness_status: string;

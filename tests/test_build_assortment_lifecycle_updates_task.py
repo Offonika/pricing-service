@@ -135,7 +135,7 @@ def test_build_assortment_lifecycle_updates_applies_fact_status_decision_without
     assert summary["rows"] == 0
     item = summary["items"][0]
     assert item["status"] == "sales_start"
-    assert item["status_label"] == "СП / Старт продаж"
+    assert item["status_label"] == "Пошли продажи"
     assert item["reason_codes"] == ["fact_status_decision", "cargo_handoff_confirmed"]
     assert item["export_blockers"] == [
         "ut103_export_blocked",

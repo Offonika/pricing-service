@@ -128,7 +128,7 @@ def test_refresh_assortment_lifecycle_classification_task_upserts_current_rows(
     )
 
     assert first["written_items"] == 2
-    assert first["summary"]["statuses"] == {"fruit": 1, "sale": 1}
+    assert first["summary"]["statuses"] == {"fruit": 1, "working": 1}
     assert first["summary"]["commercial_marks"] == {"exclusive": 1}
     assert first["summary"]["feature_snapshot_ready"] == 1
     assert second["written_items"] == 2
@@ -149,9 +149,9 @@ def test_refresh_assortment_lifecycle_classification_task_upserts_current_rows(
 
     assert len(rows) == 2
     assert len(runs) == 2
-    assert rows[0]["status"] == "sale"
-    assert rows[0]["recommended_status"] == "working"
-    assert rows[0]["manual_review_required"] is True
+    assert rows[0]["status"] == "working"
+    assert rows[0]["recommended_status"] is None
+    assert rows[0]["manual_review_required"] is False
     assert rows[0]["feature_snapshot_schema"] == "procurement_feature_snapshot.v1"
     assert rows[0]["subject_1c"] == "Дисплей"
     assert rows[0]["item_tags"] == ["iPhone", "рамка"]
@@ -277,7 +277,7 @@ def test_refresh_assortment_lifecycle_classification_applies_fact_status_decisio
     engine.dispose()
 
     assert row["status"] == "sales_start"
-    assert row["status_label"] == "СП / Старт продаж"
+    assert row["status_label"] == "Пошли продажи"
     assert row["export_blockers"] == [
         "ut103_export_blocked",
         "fact_status_decision_requires_1c_approval",

@@ -169,6 +169,8 @@ def build_assortment_lifecycle_fact_records(
     manual_overrides: Mapping[str, Mapping[str, Any]] | None = None,
     manager_signals: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     history_start: date | None = None,
+    first_sale_dates: Mapping[str, tuple[date, date]] | None = None,
+    as_of: date | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     items_by_key: dict[str, Mapping[str, Any]] = {}
     code_by_key: dict[str, str] = {}
@@ -259,6 +261,16 @@ def build_assortment_lifecycle_fact_records(
             "receipt_dates": [
                 _json_date(value) for value in sorted(set(receipt_dates.get(key, ())))
             ],
+            # Дата первой реализации покупателю — вход в СП / Старт продаж
+            # (решение 2026-08-02). None означает "продаж не было".
+            "first_sale_at": _json_date(((first_sale_dates or {}).get(code) or (None, None))[0]),
+            # Последняя продажа — вход в «Пенсию» (решение 2026-08-02).
+            "last_sale_at": _json_date(((first_sale_dates or {}).get(code) or (None, None))[1]),
+            # Дата, на которую собран факт: нужна правилу «Родился мёртвым»,
+            # чтобы измерить, сколько карточка молчит. Берём конец окна
+            # наблюдения, а не системные часы — иначе повторный расчёт того же
+            # снимка дал бы другой результат.
+            "as_of": _json_date(as_of),
             "has_need_signal": bool(manager_signals.get(code)),
             "warehouses": [dict(row) for row in warehouse_policy],
             "manager_need_signals": [dict(row) for row in manager_signals.get(code, ())],
@@ -410,6 +422,46 @@ def validate_document_line_mapping(engine: Engine, mapping: DocumentLineMapping)
     for column in sorted(line_required - table_columns[mapping.line_table]):
         issues.append(f"column_missing:{mapping.line_table}.{column}")
     return tuple(issues)
+
+
+def fetch_first_sale_dates(
+    engine: Engine,
+    *,
+    nomenclature_codes: Sequence[str],
+) -> dict[str, tuple[date, date]]:
+    """Дата первой реализации покупателю по каждому коду номенклатуры.
+
+    Окно истории намеренно НЕ применяется: факт «продажи начались» не должен
+    исчезать оттого, что первая продажа вышла за горизонт сбора остальных
+    фактов. Запрос агрегатный (MIN по коду), поэтому дешёвый даже без окна.
+    """
+    codes = tuple(code for code in {_clean(value) for value in nomenclature_codes} if code)
+    if not codes:
+        return {}
+    query = text("""
+        SELECT NULLIF(LTRIM(RTRIM(product._Code)), N'') AS nomenclature_code,
+               MIN(sale._Date_Time) AS first_sale_at,
+               MAX(sale._Date_Time) AS last_sale_at
+        FROM dbo._Document203 AS sale WITH (NOLOCK)
+        JOIN dbo._Document203_VT4966 AS sale_line WITH (NOLOCK)
+            ON sale_line._Document203_IDRRef = sale._IDRRef
+        JOIN dbo._Reference62 AS product WITH (NOLOCK)
+            ON product._IDRRef = sale_line._Fld4974RRef
+        WHERE sale._Marked = 0x00 AND sale._Posted = 0x01
+          AND sale_line._Fld4971 > 0
+          AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
+        GROUP BY NULLIF(LTRIM(RTRIM(product._Code)), N'')
+        """).bindparams(bindparam("codes", expanding=True))
+    result: dict[str, tuple[date, date]] = {}
+    with engine.connect() as conn:
+        for chunk in _chunks(list(codes), MAX_SQLSERVER_EXPANDING_REFS):
+            for row in conn.execute(query, {"codes": chunk}).mappings():
+                code = _clean(row.get("nomenclature_code"))
+                first = _date(row.get("first_sale_at"))
+                last = _date(row.get("last_sale_at"))
+                if code and first is not None and last is not None:
+                    result[code] = (first, last)
+    return result
 
 
 def fetch_onec_lifecycle_source_rows(

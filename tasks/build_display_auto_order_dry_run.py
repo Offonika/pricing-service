@@ -84,6 +84,9 @@ CSV_COLUMNS = [
     "batch_error_return_qty",
     "batch_error_share_pct",
     "batch_error_suspected",
+    "defect_return_qty",
+    "defect_share_pct",
+    "defect_rate_suspected",
     "net_sales_qty_window",
     "non_marketplace_net_sales_qty",
     "marketplace_net_sales_qty",
@@ -993,6 +996,30 @@ BATCH_ERROR_WINDOW_DAYS = TREND_WINDOW_MEDIUM_DAYS
 BATCH_ERROR_MIN_RETURN_QTY = Decimal("5")
 BATCH_ERROR_MIN_SHARE_PCT = Decimal("40")
 
+# Настоящий брак - отдельный показатель от раннего триггера пересорта выше.
+# Правило 5.1 сознательно смотрит на качество "Новый" (возврат "не подошло" ->
+# признак пересорта/неверной ревизии детали). Возвраты качества "Брак" до
+# 2026-08-01 не считались нигде вообще: карточка с 11 бракованными из 51
+# проданной (РБ000059304) показывала batch_error_share_pct = 0%, то есть
+# "претензий нет". Здесь считается именно доля возвратов качества "Брак".
+#
+# Окно намеренно объявлено отдельной константой, а не ссылкой на
+# TREND_WINDOW_MEDIUM_DAYS: окно тренда скорости и окно контроля качества -
+# разные по смыслу величины, их изменение не должно тянуть друг друга.
+#
+# Пороги откалиброваны на реальных данных 2026-08-01 по ВСЕМУ каталогу
+# дисплеев (1313 карточек прогона, окно 90 дней): средний уровень брака ~3.6%.
+# Матрица срабатываний считалась по сетке порогов, выбран вариант 5% + 5 шт
+# (29 карточек из 1313). Связка не произвольная: чем ниже порог доли, тем
+# больше должен быть минимум штук, иначе процент считается на слишком малой
+# базе. При 5% минимум 5 шт означает базу от 100 продаж - 5 возвратов против
+# ожидаемых 3.6 уже осмысленная разница. Вариант 5% + 3 шт отклонён: давал 66
+# карточек, из них заметная часть - шум на 60 продажах.
+DEFECT_RETURN_QUALITY_NAME = "Брак"
+DEFECT_RATE_WINDOW_DAYS = 90
+DEFECT_RATE_MIN_RETURN_QTY = Decimal("5")
+DEFECT_RATE_MIN_SHARE_PCT = Decimal("5")
+
 # Решение 2026-07-31 (карточки РБ000064721/РБ000057817, раздел 9 assortment-
 # status-legacy-rule-inventory.md): у тира "slow" (review_only) заказ
 # зануляется БЕЗУСЛОВНО для всей группы, даже если у карточки остаток по
@@ -1111,11 +1138,15 @@ def fetch_return_totals(
     date_from: date,
     date_to: date,
     batch_error_window_days: int = BATCH_ERROR_WINDOW_DAYS,
+    defect_rate_window_days: int = DEFECT_RATE_WINDOW_DAYS,
 ) -> dict[str, dict[str, Any]]:
     if not codes:
         return {}
     batch_error_window_from = datetime.combine(date_to, time.min) - timedelta(
         days=batch_error_window_days
+    )
+    defect_rate_window_from = datetime.combine(date_to, time.min) - timedelta(
+        days=defect_rate_window_days
     )
     sql = _expanding_text(
         """
@@ -1125,7 +1156,11 @@ def fetch_return_totals(
             SUM(CASE WHEN customer_return._Date_Time >= :batch_error_window_from
                     AND NULLIF(LTRIM(RTRIM(quality._Description)), N'') = :batch_error_return_quality_name
                 THEN CAST(return_line._Fld1701 AS decimal(18, 3)) ELSE 0 END)
-                AS batch_error_return_qty
+                AS batch_error_return_qty,
+            SUM(CASE WHEN customer_return._Date_Time >= :defect_rate_window_from
+                    AND NULLIF(LTRIM(RTRIM(quality._Description)), N'') = :defect_return_quality_name
+                THEN CAST(return_line._Fld1701 AS decimal(18, 3)) ELSE 0 END)
+                AS defect_return_qty
         FROM dbo._Document109 AS customer_return WITH (NOLOCK)
         JOIN dbo._Document109_VT1698 AS return_line WITH (NOLOCK)
             ON return_line._Document109_IDRRef = customer_return._IDRRef
@@ -1151,6 +1186,8 @@ def fetch_return_totals(
         bindparam("date_to", value=datetime.combine(date_to, time.min)),
         bindparam("batch_error_window_from", value=batch_error_window_from),
         bindparam("batch_error_return_quality_name", value=BATCH_ERROR_RETURN_QUALITY_NAME),
+        bindparam("defect_rate_window_from", value=defect_rate_window_from),
+        bindparam("defect_return_quality_name", value=DEFECT_RETURN_QUALITY_NAME),
     )
     with engine.connect() as conn:
         return {_clean(row["code"]): dict(row) for row in conn.execute(sql).mappings()}
@@ -1324,6 +1361,7 @@ def build_dry_run_rows(
         sales_doc_count_marketplace = int(sales.get("sales_doc_count_marketplace") or 0)
         return_qty = _decimal(returns.get("return_qty_window"))
         batch_error_return_qty = _decimal(returns.get("batch_error_return_qty"))
+        defect_return_qty = _decimal(returns.get("defect_return_qty"))
         latest_purchase_price = _decimal(purchase.get("latest_purchase_price"))
         # Спрос брутто: возвраты не вычитаются из базы расчёта количества.
         # 82.6% возвратов дисплеев — причина "Не понадобился" (качество "Новый"),
@@ -1346,6 +1384,21 @@ def build_dry_run_rows(
         batch_error_suspected = (
             batch_error_return_qty >= BATCH_ERROR_MIN_RETURN_QTY
             and batch_error_share_pct >= BATCH_ERROR_MIN_SHARE_PCT
+        )
+        # Доля возвратов качества "Брак" от продаж за то же окно. Отдельно от
+        # batch_error выше: тот считает "Новый" (пересорт), этот - настоящие
+        # претензии к качеству товара. Раздел 5.1 спеки требует, чтобы
+        # статистически значимый брак уводил строку в Review, а не изображал
+        # отсутствие проблемы - с 2026-08-01 сигнал блокирует автозаказ
+        # (порог утверждён пользователем на матрице по всему каталогу).
+        defect_share_pct = (
+            (defect_return_qty / net_sales_qty_medium * Decimal("100"))
+            if net_sales_qty_medium > 0
+            else Decimal("0")
+        )
+        defect_rate_suspected = (
+            defect_return_qty >= DEFECT_RATE_MIN_RETURN_QTY
+            and defect_share_pct >= DEFECT_RATE_MIN_SHARE_PCT
         )
         # Раздел 2 + procurement-order-auto-order-unified-contour.md
         # ("Разрезы спроса по типу покупателя"): маркетплейс-спрос не должен
@@ -1497,6 +1550,14 @@ def build_dry_run_rows(
             blockers.append("batch_error_suspected")
             recommended_order_qty_raw = Decimal("0")
             recommended_order_qty = Decimal("0")
+        if defect_rate_suspected:
+            # Раздел 5.1: подтверждённый брак выше порога снимает карточку с
+            # автозаказа и уводит в ручную проверку - как и пересорт выше.
+            # Отдельный блокер, не сливать с batch_error: причины разные
+            # (качество товара против неверной ревизии), решения тоже.
+            blockers.append("defect_rate_suspected")
+            recommended_order_qty_raw = Decimal("0")
+            recommended_order_qty = Decimal("0")
         decision = (
             "manual_review"
             if blockers
@@ -1544,6 +1605,16 @@ def build_dry_run_rows(
                 f"{_out_decimal(batch_error_share_pct, places=1)}% от продаж за то "
                 f"же окно. Автозаказ остановлен, нужна срочная проверка поставщика."
             )
+        if defect_rate_suspected:
+            warnings.append("defect_rate_above_threshold")
+            reason = (
+                f"ТРЕВОГА (качество): {_out_decimal(defect_return_qty)} шт возвратов "
+                f"качества «Брак» за {DEFECT_RATE_WINDOW_DAYS} дней, "
+                f"{_out_decimal(defect_share_pct, places=1)}% от продаж за то же окно "
+                f"(порог {_out_decimal(DEFECT_RATE_MIN_SHARE_PCT)}% и "
+                f"{_out_decimal(DEFECT_RATE_MIN_RETURN_QTY)} шт). Автозаказ остановлен, "
+                f"нужна проверка партии и поставщика."
+            )
         rows.append(
             {
                 "nomenclature_code": code,
@@ -1588,6 +1659,9 @@ def build_dry_run_rows(
                 "batch_error_return_qty": _out_decimal(batch_error_return_qty),
                 "batch_error_share_pct": _out_decimal(batch_error_share_pct, places=1),
                 "batch_error_suspected": "yes" if batch_error_suspected else "",
+                "defect_return_qty": _out_decimal(defect_return_qty),
+                "defect_share_pct": _out_decimal(defect_share_pct, places=1),
+                "defect_rate_suspected": "yes" if defect_rate_suspected else "",
                 "net_sales_qty_window": _out_decimal(net_sales_qty),
                 "non_marketplace_net_sales_qty": _out_decimal(non_marketplace_net_sales_qty),
                 "marketplace_net_sales_qty": _out_decimal(marketplace_net_sales_qty),

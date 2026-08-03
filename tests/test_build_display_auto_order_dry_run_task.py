@@ -1514,6 +1514,97 @@ def test_display_auto_order_dry_run_batch_error_needs_both_qty_and_share_thresho
     assert below_share_floor["batch_error_suspected"] == ""
 
 
+def _defect_rate_row(
+    *,
+    defect_qty: str,
+    sales_medium: str,
+    batch_error_qty: str = "0",
+) -> dict:
+    rows = build_dry_run_rows(
+        [
+            {
+                "nomenclature_code": "RB-DEFECT",
+                "name": "Display defect rate",
+                "status_label": "Рабочий",
+                "quality_raw": "Medium",
+            }
+        ],
+        facts={
+            "stock": {
+                "RB-DEFECT": {
+                    "sellable_stock_qty": Decimal("2"),
+                    "total_stock_qty": Decimal("2"),
+                }
+            },
+            "reserve": {},
+            "incoming": {},
+            "sales": {
+                "RB-DEFECT": {
+                    "sales_qty_window": Decimal("300"),
+                    "sales_qty_window_medium": Decimal(sales_medium),
+                    "sales_qty_window_short": Decimal("20"),
+                }
+            },
+            "returns": {
+                "RB-DEFECT": {
+                    "defect_return_qty": Decimal(defect_qty),
+                    "batch_error_return_qty": Decimal(batch_error_qty),
+                }
+            },
+        },
+        source_errors={},
+        target_days=14,
+        sales_window_days=180,
+    )
+    return rows[0]
+
+
+def test_display_auto_order_dry_run_high_defect_rate_stops_auto_order() -> None:
+    # Возвраты качества "Брак" до 2026-08-01 не считались нигде: карточка
+    # РБ000059304 с 11 бракованными из 51 проданной показывала
+    # batch_error_share_pct = 0%. Раздел 5.1: подтверждённый брак выше порога
+    # снимает карточку с автозаказа и уводит в ручную проверку.
+    row = _defect_rate_row(defect_qty="6", sales_medium="50")
+
+    assert row["defect_return_qty"] == "6"
+    assert row["defect_share_pct"] == "12"
+    assert row["defect_rate_suspected"] == "yes"
+    assert "defect_rate_above_threshold" in row["warnings"]
+    assert "ТРЕВОГА (качество)" in row["reason_ru"]
+    assert "defect_rate_suspected" in row["blockers"]
+    assert row["recommended_order_qty"] == "0"
+    assert row["dry_run_decision"] == "manual_review"
+
+
+def test_display_auto_order_dry_run_defect_rate_needs_both_thresholds() -> None:
+    # Доля высокая (40%), но штук меньше порога (2 < 5) - не срабатывает.
+    below_qty_floor = _defect_rate_row(defect_qty="2", sales_medium="5")
+    assert below_qty_floor["defect_rate_suspected"] == ""
+    assert "defect_rate_suspected" not in below_qty_floor["blockers"]
+
+    # Штук достаточно (5 >= 5), но доля ниже порога (2.5% < 5%) - не срабатывает.
+    below_share_floor = _defect_rate_row(defect_qty="5", sales_medium="200")
+    assert below_share_floor["defect_rate_suspected"] == ""
+    assert "defect_rate_suspected" not in below_share_floor["blockers"]
+
+
+def test_display_auto_order_dry_run_defect_rate_is_independent_from_batch_error() -> None:
+    # Два разных показателя на разном качестве возврата: "Брак" - претензия к
+    # товару, "Новый" - признак пересорта. Они не должны перетекать друг в друга.
+    defect_only = _defect_rate_row(defect_qty="6", sales_medium="50", batch_error_qty="0")
+    assert defect_only["defect_rate_suspected"] == "yes"
+    assert defect_only["batch_error_suspected"] == ""
+    assert "defect_rate_suspected" in defect_only["blockers"]
+    assert "batch_error_suspected" not in defect_only["blockers"]
+
+    batch_error_only = _defect_rate_row(defect_qty="0", sales_medium="50", batch_error_qty="25")
+    assert batch_error_only["batch_error_suspected"] == "yes"
+    assert batch_error_only["defect_rate_suspected"] == ""
+    assert batch_error_only["defect_share_pct"] == "0"
+    assert "batch_error_suspected" in batch_error_only["blockers"]
+    assert "defect_rate_suspected" not in batch_error_only["blockers"]
+
+
 def test_display_auto_order_dry_run_speed_tier_does_not_undo_blocker_zeroed_order() -> None:
     # Найдено на реальном прогоне по всему каталогу 2026-07-31:
     # _apply_speed_horizon_rule безусловно пересчитывал recommended_order_qty

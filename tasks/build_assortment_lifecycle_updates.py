@@ -246,6 +246,11 @@ def _lifecycle_input_from_record(record: dict[str, Any]) -> AssortmentLifecycleI
         receipt_dates=_date_tuple(
             _optional_field(record, "receipt_dates", "ReceiptDates", default=[])
         ),
+        first_sale_at=_optional_date_field(record, "first_sale_at", "FirstSaleAt"),
+        last_sale_at=_optional_date_field(record, "last_sale_at", "LastSaleAt"),
+        # Дата расчёта приходит из факта (сборщик проставляет as_of при выгрузке).
+        # Без неё правило «Родился мёртвым» просто не сработает — статус не поедет.
+        as_of=_optional_date_field(record, "as_of", "AsOf"),
         has_need_signal=_bool_field(record, "has_need_signal", "HasNeedSignal", default=False),
         working_confirmed_by_folder_responsible=_bool_field(
             record,

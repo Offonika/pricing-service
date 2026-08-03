@@ -38,24 +38,42 @@ def test_assortment_lifecycle_status_ladder() -> None:
         _decision(first_supplier_order_at=date(2026, 1, 10), has_need_signal=True).status
         == AssortmentStatus.NEWBORN_NEED
     )
-    assert (
-        _decision(supplier_order_cargo_handoff_dates=(date(2026, 1, 20),)).status
-        == AssortmentStatus.NEW_ITEM
+    new_item = _decision(supplier_order_cargo_handoff_dates=(date(2026, 1, 20),))
+    assert new_item.status == AssortmentStatus.NEW_ITEM
+    assert not new_item.auto_order_allowed
+
+    # Второе карго само по себе больше НЕ даёт СП: статус называется "стартанули
+    # продажи" и с 2026-08-02 требует факта первой продажи. Без неё карточка
+    # остаётся Новинкой (товар едет или лежит, но не продавался).
+    second_cargo_no_sale = _decision(
+        supplier_order_cargo_handoff_dates=(date(2026, 1, 20), date(2026, 2, 20))
     )
-    assert (
-        _decision(supplier_order_cargo_handoff_dates=(date(2026, 1, 20), date(2026, 2, 20))).status
-        == AssortmentStatus.SALES_START
+    assert second_cargo_no_sale.status == AssortmentStatus.NEW_ITEM
+
+    sales_start = _decision(
+        supplier_order_cargo_handoff_dates=(date(2026, 1, 20), date(2026, 2, 20)),
+        first_sale_at=date(2026, 2, 22),
     )
-    assert (
-        _decision(
-            supplier_order_cargo_handoff_dates=(date(2026, 1, 20), date(2026, 2, 20)),
-            receipt_dates=(date(2026, 2, 25),),
-        ).status
-        == AssortmentStatus.SALE
+    assert sales_start.status == AssortmentStatus.SALES_START
+    assert not sales_start.auto_order_allowed
+
+    sale = _decision(
+        supplier_order_cargo_handoff_dates=(date(2026, 1, 20), date(2026, 2, 20)),
+        receipt_dates=(date(2026, 2, 25),),
     )
+    assert sale.status == AssortmentStatus.SALE
+    # Регрессия: до фикса 2026-07-30 эта ветка молча возвращала
+    # auto_order_allowed=False (значение по умолчанию в _decision) без единого
+    # блокера в reason/blockers — карточки статуса ПРОДАЖА без 5 поступлений
+    # выпадали из автозаказа без объяснимой причины.
+    assert sale.auto_order_allowed
+    assert sale.blockers == ()
 
 
-def test_working_requires_five_receipts_in_180_days_and_folder_confirmation() -> None:
+def test_working_reached_by_five_receipts_without_manual_confirmation() -> None:
+    # Решение 2026-07-20: вход в Рабочий определяют только 5 поступлений за 180
+    # дней, ручное подтверждение ответственного снято. Раньше формула сама в
+    # Рабочий не пускала никого — карточка уходила в ПРОДАЖА с блокером.
     receipt_dates = (
         date(2026, 1, 25),
         date(2026, 2, 25),
@@ -64,30 +82,68 @@ def test_working_requires_five_receipts_in_180_days_and_folder_confirmation() ->
         date(2026, 5, 25),
     )
 
-    without_confirmation = _decision(
+    decision = _decision(
         supplier_order_cargo_handoff_dates=(date(2026, 1, 20), date(2026, 2, 20)),
         receipt_dates=receipt_dates,
     )
 
-    assert without_confirmation.status == AssortmentStatus.SALE
-    assert without_confirmation.recommended_status == AssortmentStatus.WORKING
-    assert without_confirmation.blockers == ("working_confirmation_required",)
+    assert decision.status == AssortmentStatus.WORKING
+    assert decision.reason_codes == ("working_receipts_reached",)
+    assert decision.auto_order_allowed
+    assert decision.blockers == ()
+    assert not decision.manual_review_required
 
-    confirmed = _decision(
+
+def test_four_receipts_do_not_reach_working() -> None:
+    decision = _decision(
         supplier_order_cargo_handoff_dates=(date(2026, 1, 20), date(2026, 2, 20)),
-        receipt_dates=receipt_dates,
-        working_confirmed_by_folder_responsible=True,
-        manual_approved_by="Омар",
-        manual_changed_at=date(2026, 7, 4),
+        receipt_dates=(
+            date(2026, 1, 25),
+            date(2026, 2, 25),
+            date(2026, 3, 25),
+            date(2026, 4, 25),
+        ),
     )
 
-    assert confirmed.status == AssortmentStatus.WORKING
-    assert confirmed.auto_order_allowed
-    assert confirmed.approved_by == "Омар"
-    assert confirmed.changed_at == date(2026, 7, 4)
+    assert decision.status != AssortmentStatus.WORKING
 
 
-def test_analog_winner_confirmation_promotes_to_working_without_five_receipts() -> None:
+def test_sales_start_requires_first_sale_not_second_cargo() -> None:
+    # На 2026-08-02 в статусе СП стояли 20 карточек из 112, не продав ни штуки:
+    # старое условие давало "Старт продаж" по второму заказу, сданному в cargo.
+    cargo = (date(2026, 1, 20), date(2026, 2, 20))
+
+    without_sale = _decision(supplier_order_cargo_handoff_dates=cargo)
+    assert without_sale.status == AssortmentStatus.NEW_ITEM
+    assert without_sale.reason_codes == ("first_supplier_order_handed_to_cargo",)
+
+    with_sale = _decision(
+        supplier_order_cargo_handoff_dates=cargo,
+        first_sale_at=date(2026, 2, 22),
+    )
+    assert with_sale.status == AssortmentStatus.SALES_START
+    assert with_sale.reason_codes == ("first_sale_registered",)
+
+    # Одного карго и продажи достаточно: второй заказ для СП больше не нужен.
+    single_cargo_with_sale = _decision(
+        supplier_order_cargo_handoff_dates=(date(2026, 1, 20),),
+        first_sale_at=date(2026, 2, 1),
+    )
+    assert single_cargo_with_sale.status == AssortmentStatus.SALES_START
+
+    # Поступление после второго карго по-прежнему переводит в ПРОДАЖА.
+    moved_on = _decision(
+        supplier_order_cargo_handoff_dates=cargo,
+        receipt_dates=(date(2026, 2, 25),),
+        first_sale_at=date(2026, 2, 22),
+    )
+    assert moved_on.status == AssortmentStatus.SALE
+
+
+def test_analog_winner_flag_no_longer_promotes_to_working() -> None:
+    # Консолидация по аналогам отменена 2026-07-26; флаг остался в конфиге, но
+    # на статус влиять не должен — иначе карточка получает Рабочий в обход
+    # правила 5 поступлений (так держались 93 из 132 карточек).
     decision = _decision(
         supplier_order_cargo_handoff_dates=(date(2026, 1, 20), date(2026, 2, 20)),
         receipt_dates=(date(2026, 2, 25),),
@@ -97,11 +153,8 @@ def test_analog_winner_confirmation_promotes_to_working_without_five_receipts() 
         manual_changed_at=date(2026, 7, 4),
     )
 
-    assert decision.status == AssortmentStatus.WORKING
-    assert decision.reason_codes == ("analog_winner_confirmed",)
-    assert decision.auto_order_allowed
-    assert decision.approved_by == "Омар"
-    assert decision.changed_at == date(2026, 7, 4)
+    assert decision.status != AssortmentStatus.WORKING
+    assert "analog_winner_confirmed" not in decision.reason_codes
 
 
 def test_manual_nonliquid_blocks_auto_order() -> None:
@@ -297,7 +350,165 @@ def test_working_reason_text_derives_thresholds_from_constants() -> None:
         supplier_order_cargo_handoff_dates=(date(2026, 1, 20), date(2026, 2, 20)),
         receipt_dates=receipt_dates,
     )
-    assert decision.recommended_status == AssortmentStatus.WORKING
+    assert decision.status == AssortmentStatus.WORKING
     assert str(WORKING_RECEIPT_WINDOW_DAYS) in decision.reason_text
     assert str(len(receipt_dates)) in decision.reason_text
     assert len(receipt_dates) >= WORKING_MIN_RECEIPTS
+
+
+def test_dead_born_candidate_after_twelve_silent_months() -> None:
+    # Порог 12 месяцев выбран на данных 2026-08-02: 95.2% дисплеев дают первое
+    # движение в первые 365 дней. Формула только помечает кандидата — статус
+    # остаётся "Плод", присваивает РМ человек.
+    decision = _decision(
+        created_at=date(2025, 1, 10),
+        as_of=date(2026, 8, 2),
+    )
+
+    assert decision.status == AssortmentStatus.FRUIT
+    assert "dead_born_candidate" in decision.reason_codes
+    assert decision.recommended_status == AssortmentStatus.DO_NOT_ORDER
+    assert decision.manual_review_required
+    assert decision.requires_human_approval
+    assert not decision.auto_order_allowed
+
+
+def test_young_silent_card_is_not_dead_born() -> None:
+    decision = _decision(
+        created_at=date(2026, 3, 1),
+        as_of=date(2026, 8, 2),
+    )
+
+    assert decision.status == AssortmentStatus.FRUIT
+    assert "dead_born_candidate" not in decision.reason_codes
+    assert not decision.manual_review_required
+
+
+def test_any_movement_cancels_dead_born_candidate() -> None:
+    common = {"created_at": date(2024, 1, 10), "as_of": date(2026, 8, 2)}
+
+    # Заказ поставщику уводит карточку в Новорожденный — молчания больше нет.
+    with_order = _decision(first_supplier_order_at=date(2024, 6, 1), **common)
+    assert "dead_born_candidate" not in with_order.reason_codes
+
+    # Сигнал спроса тоже отменяет: карточку ждут, а не забыли.
+    with_signal = _decision(has_need_signal=True, **common)
+    assert "dead_born_candidate" not in with_signal.reason_codes
+
+
+def test_dead_born_needs_as_of_date() -> None:
+    # Без даты расчёта правило молчит: формула не смотрит на системные часы,
+    # иначе один и тот же снимок давал бы разный результат в разные дни.
+    decision = _decision(created_at=date(2020, 1, 1))
+
+    assert decision.status == AssortmentStatus.FRUIT
+    assert "dead_born_candidate" not in decision.reason_codes
+
+
+def test_pension_candidate_after_eighteen_months_without_sales() -> None:
+    # Решение 2026-08-02: товар продавался и заглох — кандидат в «Пенсию».
+    # Статус НЕ меняется: присваивает и снимает менеджер, автовозврата нет.
+    decision = _decision(
+        supplier_order_cargo_handoff_dates=(date(2023, 1, 20), date(2023, 3, 20)),
+        receipt_dates=(date(2023, 2, 1),),
+        first_sale_at=date(2023, 2, 10),
+        last_sale_at=date(2024, 6, 1),
+        as_of=date(2026, 8, 2),
+    )
+
+    assert "pension_candidate" in decision.reason_codes
+    assert decision.recommended_status == AssortmentStatus.PENSION
+    assert decision.manual_review_required
+    assert decision.requires_human_approval
+    assert not decision.auto_order_allowed
+
+
+def test_recent_sale_is_not_pension_candidate() -> None:
+    decision = _decision(
+        supplier_order_cargo_handoff_dates=(date(2026, 1, 20),),
+        receipt_dates=(date(2026, 2, 1),),
+        first_sale_at=date(2026, 2, 10),
+        last_sale_at=date(2026, 6, 1),
+        as_of=date(2026, 8, 2),
+    )
+
+    assert "pension_candidate" not in decision.reason_codes
+
+
+def test_fresh_receipt_cancels_pension_candidate() -> None:
+    # Товар давно не продавался, но его только что завезли — значит закупка
+    # считает его живым, и выводить рано.
+    decision = _decision(
+        supplier_order_cargo_handoff_dates=(date(2023, 1, 20),),
+        receipt_dates=(date(2023, 2, 1), date(2026, 5, 1)),
+        first_sale_at=date(2023, 2, 10),
+        last_sale_at=date(2024, 6, 1),
+        as_of=date(2026, 8, 2),
+    )
+
+    assert "pension_candidate" not in decision.reason_codes
+
+
+def test_never_sold_card_is_not_pension() -> None:
+    # Без единой продажи это «Родился мёртвым», а не «Пенсия».
+    decision = _decision(created_at=date(2024, 1, 1), as_of=date(2026, 8, 2))
+
+    assert "pension_candidate" not in decision.reason_codes
+    assert "dead_born_candidate" in decision.reason_codes
+
+
+def test_pension_manual_status_blocks_auto_order() -> None:
+    decision = _decision(
+        manual_status="pension",
+        manual_reason="Продавался, заглох на два года. Остаток допродаём.",
+        manual_approved_by="Омар",
+        manual_changed_at=date(2026, 8, 2),
+    )
+
+    assert decision.status == AssortmentStatus.PENSION
+    assert decision.status_label == "Допродаём"
+    assert not decision.auto_order_allowed
+    assert decision.blockers == ()
+
+
+def test_old_sales_history_is_not_sales_start() -> None:
+    # РБ000016562 (дисплей iPhone 4): 15703 продажи с 2014 года, вся история
+    # заказов и поступлений вне окна наблюдения. Формула видела только продажи
+    # и ставила ветерану «Старт продаж».
+    veteran = _decision(
+        first_sale_at=date(2014, 1, 21),
+        last_sale_at=date(2026, 7, 27),
+        supplier_order_cargo_handoff_dates=(date(2016, 4, 13),),
+        as_of=date(2026, 8, 2),
+    )
+
+    assert veteran.status == AssortmentStatus.SALE
+    assert "sales_history_beyond_start" in veteran.reason_codes
+
+
+def test_recent_first_sale_still_gives_sales_start() -> None:
+    fresh = _decision(
+        first_sale_at=date(2026, 5, 1),
+        last_sale_at=date(2026, 7, 27),
+        supplier_order_cargo_handoff_dates=(date(2026, 3, 1),),
+        as_of=date(2026, 8, 2),
+    )
+
+    assert fresh.status == AssortmentStatus.SALES_START
+    assert "first_sale_registered" in fresh.reason_codes
+
+
+def test_onec_status_values_stay_stable_when_labels_change() -> None:
+    # Человеческие названия статусов переименованы 2026-08-02 под действие
+    # закупщика («Растим», «Поддерживаем»). В 1С при этом должны уезжать
+    # ПРЕЖНИЕ значения свойства: их справочник мы не меняем, незнакомая строка
+    # сломает обмен. Страж следит, что два словаря не срослись обратно.
+    from app.services.assortment_lifecycle import ONEC_STATUS_VALUE_NAMES
+
+    assert ASSORTMENT_STATUS_LABELS[AssortmentStatus.SALE] == "Растим"
+    assert ONEC_STATUS_VALUE_NAMES[AssortmentStatus.SALE] == "ПРОДАЖА"
+    assert ASSORTMENT_STATUS_LABELS[AssortmentStatus.WORKING] == "Поддерживаем"
+    assert ONEC_STATUS_VALUE_NAMES[AssortmentStatus.WORKING] == "Рабочий"
+    # Оба словаря обязаны покрывать все статусы целиком.
+    assert set(ASSORTMENT_STATUS_LABELS) == set(AssortmentStatus)
+    assert set(ONEC_STATUS_VALUE_NAMES) == set(AssortmentStatus)

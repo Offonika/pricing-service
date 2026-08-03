@@ -17,6 +17,7 @@ from app.services.assortment_lifecycle_facts import (
     build_assortment_lifecycle_fact_records,
     default_history_start,
     enrich_nomenclature_rows_with_product_snapshot,
+    fetch_first_sale_dates,
     fetch_onec_lifecycle_source_rows,
     normalize_manager_signals,
     normalize_manual_overrides,
@@ -41,6 +42,9 @@ def main() -> int:
     manual_overrides = normalize_manual_overrides(_load_optional_json(args.manual_overrides_json))
     manager_signals = normalize_manager_signals(_load_optional_json(args.manager_signals_json))
     history_start = default_history_start(args.today, history_months=args.history_months)
+    # Заполняется только при чтении из 1С; для готового --input-json даты первой
+    # продажи берутся из самих записей, если они там уже есть.
+    first_sale_dates: dict[str, date] = {}
 
     try:
         if args.input_json:
@@ -77,6 +81,16 @@ def main() -> int:
                         limit=args.limit,
                     )
                 )
+                # Первая продажа определяет вход в СП / Старт продаж
+                # (решение 2026-08-02). Собирается тем же соединением, что и
+                # остальные факты, отдельным агрегатным запросом без окна.
+                first_sale_dates = fetch_first_sale_dates(
+                    engine,
+                    nomenclature_codes=[
+                        str(row.get("nomenclature_code") or row.get("code") or "")
+                        for row in nomenclature_rows
+                    ],
+                )
             finally:
                 engine.dispose()
             product_engine = build_engine(settings.database_url, pool_pre_ping=True)
@@ -106,6 +120,8 @@ def main() -> int:
         manual_overrides=manual_overrides,
         manager_signals=manager_signals,
         history_start=history_start,
+        first_sale_dates=first_sale_dates,
+        as_of=args.today or date.today(),
     )
     if not args.input_json:
         product_engine = create_engine(settings.database_url, pool_pre_ping=True)

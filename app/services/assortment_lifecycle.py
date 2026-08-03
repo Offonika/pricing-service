@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
@@ -29,6 +29,20 @@ DEFAULT_STATUS_SOURCE = "assortment_lifecycle_v1"
 DEFAULT_EXCLUSIVE_REVIEW_PERIOD_DAYS = 30
 WORKING_RECEIPT_WINDOW_DAYS = 180
 WORKING_MIN_RECEIPTS = 5
+# «Родился мёртвым»: сколько дней карточка может молчать без единого движения,
+# прежде чем попасть к человеку на разбор. 12 месяцев — решение пользователя
+# 2026-08-02 на распределении реальных данных (см. _is_dead_born_candidate).
+DEAD_BORN_SILENCE_DAYS = 365
+# «Пенсия»: сколько дней товар может не продаваться, прежде чем попасть к
+# менеджеру на вывод из активного оборота. 18 месяцев — решение пользователя
+# 2026-08-02, тот же срок, что и у правила 2c из инвентаризации legacy-правил.
+PENSION_SILENCE_DAYS = 548
+# «Старт продаж» — статус про НАЧАЛО продаж. Если первая продажа была давно,
+# карточка уже не стартует, что бы ни говорило окно наблюдения. Найдено
+# 2026-08-02 на РБ000016562 (дисплей iPhone 4): 15703 продажи с 2014 года, вся
+# история заказов и поступлений вне окна 24 месяцев — формула видела только
+# продажи и ставила «Старт продаж» ветерану с 26 тысячами проданных штук.
+SALES_START_MAX_AGE_DAYS = 365
 FAST_EXPENSIVE_MAX_ROUTE_DAYS = 7
 EXPENSIVE_TOP_QUARTILE = Decimal("0.75")
 
@@ -49,6 +63,11 @@ class AssortmentStatus(StrEnum):
     REPLACE_CANDIDATE = "replace_candidate"
     NONLIQUID = "nonliquid"
     DO_NOT_ORDER = "do_not_order"
+    # "Пенсия" — товар продавался и заглох. Ручной статус по решению
+    # пользователя 2026-08-02: формула только предлагает кандидата, присваивает
+    # и снимает человек. Автовозврата нет намеренно — иначе одна случайная
+    # продажа вернула бы в оборот то, что вывели осознанно.
+    PENSION = "pension"
 
 
 class ProcurementBehaviorProfile(StrEnum):
@@ -63,7 +82,33 @@ class CommercialMark(StrEnum):
     FLAGSHIP = "flagship"
 
 
+# Человеческие названия статусов. Решение пользователя 2026-08-02: название
+# должно говорить закупщику, ЧТО ДЕЛАТЬ, а не описывать состояние — прежние
+# «ПРОДАЖА» и «Рабочий» не подсказывали действие и путались местами.
+# ВАЖНО: эти названия свободно меняются, потому что они только для наших
+# экранов и отчётов. Значение, уезжающее в 1С, живёт отдельно —
+# ONEC_STATUS_VALUE_NAMES ниже.
 ASSORTMENT_STATUS_LABELS = {
+    AssortmentStatus.FRUIT: "Рассматриваем",
+    AssortmentStatus.NEWBORN: "Заказали",
+    AssortmentStatus.NEWBORN_NEED: "Добираем",
+    AssortmentStatus.NEW_ITEM: "Завезли",
+    AssortmentStatus.SALES_START: "Пошли продажи",
+    AssortmentStatus.SALE: "Растим",
+    AssortmentStatus.WORKING: "Поддерживаем",
+    AssortmentStatus.MATRIX: "Держим всегда",
+    AssortmentStatus.ON_DEMAND: "Только под заказ",
+    AssortmentStatus.REPLACE_CANDIDATE: "Меняем на аналог",
+    AssortmentStatus.NONLIQUID: "Выводим",
+    AssortmentStatus.DO_NOT_ORDER: "Не закупаем",
+    AssortmentStatus.PENSION: "Допродаём",
+}
+
+# Значения свойства «Статус ассортимента» для обмена с 1С. Держим отдельно от
+# человеческих названий: в справочнике 1С заведены свои значения, и обмен
+# сломается, если отправить туда незнакомую строку. Переименование статусов у
+# нас не должно трогать учётную систему.
+ONEC_STATUS_VALUE_NAMES = {
     AssortmentStatus.FRUIT: "Плод",
     AssortmentStatus.NEWBORN: "Новорожденный",
     AssortmentStatus.NEWBORN_NEED: "ДН / Добор новорожденного",
@@ -76,6 +121,7 @@ ASSORTMENT_STATUS_LABELS = {
     AssortmentStatus.REPLACE_CANDIDATE: "Кандидат на замену",
     AssortmentStatus.NONLIQUID: "Кандидат на неликвид",
     AssortmentStatus.DO_NOT_ORDER: "Не закупать",
+    AssortmentStatus.PENSION: "Пенсия",
 }
 
 PROCUREMENT_PROFILE_LABELS = {
@@ -107,6 +153,7 @@ MANUAL_ASSORTMENT_STATUSES = frozenset(
         AssortmentStatus.REPLACE_CANDIDATE,
         AssortmentStatus.NONLIQUID,
         AssortmentStatus.DO_NOT_ORDER,
+        AssortmentStatus.PENSION,
     }
 )
 
@@ -118,6 +165,19 @@ class AssortmentLifecycleInput:
     first_supplier_order_at: date | None = None
     supplier_order_cargo_handoff_dates: tuple[date, ...] = ()
     receipt_dates: tuple[date, ...] = ()
+    # Дата первой реализации покупателю. Определяет вход в СП / Старт продаж:
+    # решение 2026-08-02 — статус называется "стартанули продажи" и должен
+    # означать факт продажи, а не второй заказ поставщику. Пусто = продаж не
+    # было (не путать с "нет данных": сборщик фактов всегда заполняет поле).
+    first_sale_at: date | None = None
+    # Дата последней реализации покупателю. Нужна правилу «Пенсия»: товар
+    # продавался и заглох. Пусто = продаж не было вообще (тогда это не Пенсия,
+    # а «Родился мёртвым» или обычный Плод — см. решение 2026-08-02).
+    last_sale_at: date | None = None
+    # Дата расчёта. Нужна правилу «Родился мёртвым»: без неё формула не может
+    # сказать, сколько карточка уже молчит. Пусто — правило не применяется
+    # (детерминированность важнее: функция не смотрит на системные часы).
+    as_of: date | None = None
     has_need_signal: bool = False
     working_confirmed_by_folder_responsible: bool = False
     analog_winner_confirmed_by_folder_responsible: bool = False
@@ -241,20 +301,38 @@ def decide_assortment_status(item: AssortmentLifecycleInput) -> AssortmentLifecy
     if manual_status is not None:
         return _manual_status_decision(item, manual_status)
 
-    if item.analog_winner_confirmed_by_folder_responsible:
-        reason = (
-            item.manual_reason.strip()
-            or "Лучший аналог группы подтвержден ответственным за папку как рабочий товар."
+    decision = _decide_by_events(item)
+    # «Пенсия» не меняет вычисленный статус, а вешает на него рекомендацию:
+    # присваивает и снимает статус человек (решение 2026-08-02). Проверка идёт
+    # поверх готового решения, потому что кандидат может оказаться в любом
+    # рабочем статусе — от Новинки до Рабочего.
+    if _is_pension_candidate(item):
+        silent_days = (item.as_of - item.last_sale_at).days
+        return replace(
+            decision,
+            reason_codes=(*decision.reason_codes, "pension_candidate"),
+            reason_text=(
+                f"Товар продавался, но последней продаже {silent_days} дней "
+                f"(порог {PENSION_SILENCE_DAYS}), новых поставок за этот срок не было. "
+                "Кандидат в «Пенсию»: автозаказ выключить, остаток допродать до нуля. "
+                "Статус присваивает менеджер."
+            ),
+            recommended_status=AssortmentStatus.PENSION,
+            requires_human_approval=True,
+            manual_review_required=True,
+            auto_order_allowed=False,
         )
-        return _decision(
-            item,
-            AssortmentStatus.WORKING,
-            "analog_winner_confirmed",
-            reason_text=reason,
-            auto_order_allowed=True,
-            changed_at=item.manual_changed_at,
-            approved_by=item.manual_approved_by.strip(),
-        )
+    return decision
+
+
+def _decide_by_events(item: AssortmentLifecycleInput) -> AssortmentLifecycleDecision:
+
+    # Ветка "победитель группы аналогов -> сразу Рабочий" снята 2026-08-02.
+    # Консолидация по аналогам отменена целиком 2026-07-26 (каждый SKU считается
+    # независимо), но этот флаг продолжал раздавать статус Рабочий в обход
+    # формулы: из 132 карточек в Рабочем 93 держались только на нём, без
+    # необходимых 5 поступлений. Поле входа сохранено для совместимости с
+    # конфигом ручных решений, но на статус больше не влияет.
 
     cargo_dates = tuple(sorted(item.supplier_order_cargo_handoff_dates))
     receipt_dates = tuple(sorted(item.receipt_dates))
@@ -264,40 +342,37 @@ def decide_assortment_status(item: AssortmentLifecycleInput) -> AssortmentLifecy
     if first_cargo_at is not None:
         working_receipts = _receipt_dates_in_working_window(receipt_dates, first_cargo_at)
         reached_working = len(working_receipts) >= WORKING_MIN_RECEIPTS
-        if reached_working and item.working_confirmed_by_folder_responsible:
+        if reached_working:
+            # Решение 2026-07-20: вход в Рабочий определяют только 5 поступлений
+            # за 180 дней, ручное подтверждение ответственного снято. Код догнал
+            # это решение 2026-08-02: раньше формула сама в Рабочий не пускала
+            # никого — без подтверждения карточка уходила в ПРОДАЖА с блокером
+            # working_confirmation_required, и 150 заслуживших карточек висели
+            # там впустую.
             return _decision(
                 item,
                 AssortmentStatus.WORKING,
-                "working_confirmed",
+                "working_receipts_reached",
                 reason_text=(
                     f"За {WORKING_RECEIPT_WINDOW_DAYS} дней от Новинки есть "
-                    f"{len(working_receipts)} поступлений, ответственный за папку подтвердил Рабочий."
+                    f"{len(working_receipts)} поступлений — товар подтвердил повторяемость."
                 ),
                 auto_order_allowed=True,
                 changed_at=item.manual_changed_at,
                 approved_by=item.manual_approved_by.strip(),
             )
-        if reached_working:
-            fallback_status = _post_cargo_status(second_cargo_at, receipt_dates)
-            return _decision(
-                item,
-                fallback_status,
-                "working_confirmation_required",
-                reason_text=(
-                    f"Товар набрал {len(working_receipts)} поступлений за "
-                    f"{WORKING_RECEIPT_WINDOW_DAYS} дней от Новинки, нужен ответственный за папку."
-                ),
-                recommended_status=AssortmentStatus.WORKING,
-                requires_human_approval=True,
-                manual_review_required=True,
-                blockers=("working_confirmation_required",),
-            )
-        reason_code, reason_text = _post_cargo_reason(second_cargo_at, receipt_dates)
+        reason_code, reason_text = _post_cargo_reason(
+            second_cargo_at, receipt_dates, item.first_sale_at, item.as_of
+        )
+        post_cargo_status = _post_cargo_status(
+            second_cargo_at, receipt_dates, item.first_sale_at, item.as_of
+        )
         return _decision(
             item,
-            _post_cargo_status(second_cargo_at, receipt_dates),
+            post_cargo_status,
             reason_code,
             reason_text=reason_text,
+            auto_order_allowed=post_cargo_status is AssortmentStatus.SALE,
         )
 
     if item.has_need_signal and item.first_supplier_order_at is not None:
@@ -318,6 +393,24 @@ def decide_assortment_status(item: AssortmentLifecycleInput) -> AssortmentLifecy
             manual_review_required=True,
         )
 
+    if _is_dead_born_candidate(item):
+        silent_days = (item.as_of - item.created_at).days
+        return _decision(
+            item,
+            AssortmentStatus.FRUIT,
+            "product_created",
+            "dead_born_candidate",
+            reason_text=(
+                f"Карточка заведена {silent_days} дней назад и не дала ни одного движения: "
+                f"нет заказа поставщику, поступления и продажи. Порог "
+                f"{DEAD_BORN_SILENCE_DAYS} дней пройден — кандидат «Родился мёртвым», "
+                "нужна ручная проверка нового спроса."
+            ),
+            recommended_status=AssortmentStatus.DO_NOT_ORDER,
+            requires_human_approval=True,
+            manual_review_required=True,
+        )
+
     reason_codes = ("product_created",)
     reason_text = "Номенклатура создана, первого заказа поставщику еще нет."
     if item.has_need_signal:
@@ -332,6 +425,57 @@ def decide_assortment_status(item: AssortmentLifecycleInput) -> AssortmentLifecy
         reason_text=reason_text,
         manual_review_required=item.has_need_signal,
     )
+
+
+def _is_pension_candidate(item: AssortmentLifecycleInput) -> bool:
+    """Товар продавался, но заглох: последней продаже больше порога.
+
+    Условия по решению пользователя 2026-08-02:
+      * продажи БЫЛИ (иначе это «Родился мёртвым», не «Пенсия»);
+      * последней продаже больше PENSION_SILENCE_DAYS;
+      * новых поставок за тот же срок не было — иначе товар только что завезли
+        и он ещё не успел продаться, это не пенсия.
+
+    Формула только помечает кандидата: статус «Пенсия» ручной, присваивает и
+    снимает его менеджер. Автовозврата нет намеренно — одна случайная продажа
+    не должна возвращать в оборот то, что вывели осознанно.
+    """
+    if item.as_of is None or item.last_sale_at is None:
+        return False
+    if (item.as_of - item.last_sale_at).days < PENSION_SILENCE_DAYS:
+        return False
+    threshold = item.as_of - timedelta(days=PENSION_SILENCE_DAYS)
+    if any(receipt_at >= threshold for receipt_at in item.receipt_dates):
+        return False
+    return True
+
+
+def _is_dead_born_candidate(item: AssortmentLifecycleInput) -> bool:
+    """Карточка молчит дольше порога и не дала ни одного движения.
+
+    Порог 12 месяцев выбран на реальных данных 2026-08-02: из 2097 дисплеев,
+    у которых движение было, 95.2% дали его в первые 365 дней. Оставшиеся 4.8%
+    (100 карточек) оживали позже, рекорд — 580 дней; дольше 730 дней не ожил
+    никто. То есть 12 месяцев отсекают небольшой живой хвост, и решение
+    намеренно оставлено человеку: формула только помечает кандидата.
+
+    Статус при этом НЕ меняется — карточка остаётся «Плодом», как и записано в
+    procurement-order-auto-order-unified-contour.md: программа открывает
+    РМ-кандидата и ставит в очередь, присваивает статус человек.
+    """
+    if item.as_of is None or item.created_at is None:
+        return False
+    if item.has_need_signal:
+        return False
+    moved = (
+        item.first_supplier_order_at is not None
+        or item.supplier_order_cargo_handoff_dates
+        or item.receipt_dates
+        or item.first_sale_at is not None
+    )
+    if moved:
+        return False
+    return (item.as_of - item.created_at).days >= DEAD_BORN_SILENCE_DAYS
 
 
 def classify_expensive_profile(item: ExpensiveProfileInput) -> ExpensiveProfileDecision:
@@ -517,7 +661,7 @@ def build_status_property_update_rows(
             nomenclature_code=decision.nomenclature_code,
             property_name=STATUS_PROPERTY_NAME,
             value_type="property_value",
-            new_value_name=decision.status_label,
+            new_value_name=ONEC_STATUS_VALUE_NAMES[decision.status],
             new_value_tag=decision.status.value,
             reason=reason,
             approved_by=approved_by,
@@ -772,6 +916,7 @@ def _manual_status_decision(
             AssortmentStatus.REPLACE_CANDIDATE,
             AssortmentStatus.NONLIQUID,
             AssortmentStatus.DO_NOT_ORDER,
+            AssortmentStatus.PENSION,
         },
         blockers=tuple(blockers),
         changed_at=item.manual_changed_at,
@@ -780,27 +925,54 @@ def _manual_status_decision(
 
 
 def _post_cargo_status(
-    second_cargo_at: date | None, receipt_dates: tuple[date, ...]
+    second_cargo_at: date | None,
+    receipt_dates: tuple[date, ...],
+    first_sale_at: date | None = None,
+    as_of: date | None = None,
 ) -> AssortmentStatus:
-    if second_cargo_at is not None:
-        if any(receipt_at >= second_cargo_at for receipt_at in receipt_dates):
+    # Решение 2026-08-02: вход в СП определяет ФАКТ ПЕРВОЙ ПРОДАЖИ, а не второй
+    # заказ поставщику, сданный в cargo. Раньше карточка получала статус
+    # "Старт продаж", ничего не продав: на 2026-08-02 таких было 20 из 112.
+    if second_cargo_at is not None and any(
+        receipt_at >= second_cargo_at for receipt_at in receipt_dates
+    ):
+        return AssortmentStatus.SALE
+    if first_sale_at is not None:
+        if _sales_start_expired(first_sale_at, as_of):
             return AssortmentStatus.SALE
         return AssortmentStatus.SALES_START
     return AssortmentStatus.NEW_ITEM
 
 
+def _sales_start_expired(first_sale_at: date, as_of: date | None) -> bool:
+    """Старт продаж давно позади — карточка не может «стартовать» повторно."""
+    if as_of is None:
+        return False
+    return (as_of - first_sale_at).days > SALES_START_MAX_AGE_DAYS
+
+
 def _post_cargo_reason(
-    second_cargo_at: date | None, receipt_dates: tuple[date, ...]
+    second_cargo_at: date | None,
+    receipt_dates: tuple[date, ...],
+    first_sale_at: date | None = None,
+    as_of: date | None = None,
 ) -> tuple[str, str]:
-    if second_cargo_at is not None:
-        if any(receipt_at >= second_cargo_at for receipt_at in receipt_dates):
+    if second_cargo_at is not None and any(
+        receipt_at >= second_cargo_at for receipt_at in receipt_dates
+    ):
+        return (
+            "receipt_after_sales_start",
+            "Товар поступил после этапа СП, запускаем режим ПРОДАЖА с недельным анализом.",
+        )
+    if first_sale_at is not None:
+        if _sales_start_expired(first_sale_at, as_of):
             return (
-                "receipt_after_sales_start",
-                "Товар поступил после этапа СП, запускаем режим ПРОДАЖА с недельным анализом.",
+                "sales_history_beyond_start",
+                "Первая продажа была давно: карточка уже не стартует, режим ПРОДАЖА.",
             )
         return (
-            "second_supplier_order_handed_to_cargo",
-            "Второй заказ поставщику сдан в cargo, запускаем СП / Старт продаж.",
+            "first_sale_registered",
+            "Есть первая продажа покупателю, запускаем СП / Старт продаж.",
         )
     return (
         "first_supplier_order_handed_to_cargo",

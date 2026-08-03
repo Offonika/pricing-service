@@ -161,6 +161,34 @@ Legacy endpoints `/api/matching/products/{product_id}` и
 Каждый этап выпускается отдельным clean release через штатный release-контроллер.
 При rollback additive-колонки журнала остаются в БД; legacy ценовой контур от них не зависит.
 
+# Change Summary / Spec Delta
+
+- Спецификация стала единственным source of truth для item-level сопоставления;
+  прежний tech design помечен как superseded.
+- Ручные решения дополнены структурированными причинами и воспроизводимыми snapshots.
+- Общий unique-auto-accept заменён версионируемой категорийной policy с обязательным
+  validation gate и offline replay.
+- Разведены legacy SKU→цена и item-level товар конкурента→товар 1С; production transport
+  зафиксирован как HTTPS при сохранении совместимых имён `competitor_ftp_*`.
+
+# Acceptance Criteria
+
+- Reject/revoke в новом UI невозможны без структурированной причины; старые API-клиенты
+  без `reason_code` продолжают работать как `legacy_unspecified`.
+- История отдаёт код причины и краткую диагностику snapshot, но не полный снимок.
+- Ни одно категорийное правило не переходит из shadow в auto без 50 проверенных примеров
+  и требуемой precision; hard blockers не обходятся.
+- Replay использует только хронологическое разделение и формирует воспроизводимый
+  JSON-артефакт без новой тяжёлой runtime-зависимости.
+
+# Implementation Checklist
+
+- [x] Добавлены `reason_code`, `snapshot_json`, API/UI и regression-тесты.
+- [x] Добавлены category policy, hard gates, replay и audit sample в shadow-режиме.
+- [x] Исправлены противоречия по `CompetitorItem`, HTTPS/FTP и двум независимым связям.
+- [ ] Переводить отдельные категории в реальный auto только после заполнения и проверки
+  production snapshot-выборки.
+
 # Changelog
 
 - 2026-05-01 — accepted draft created.

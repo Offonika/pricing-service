@@ -1,7 +1,7 @@
 """add structured competitor matching decision feedback
 
 Revision ID: c8d9e0f1a2b3
-Revises: d1a2b3c4e5f7
+Revises: f3a4b5c6d7e9
 Create Date: 2026-07-31
 """
 
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 from alembic import op
 
 revision = "c8d9e0f1a2b3"
-down_revision = "d1a2b3c4e5f7"
+down_revision = "f3a4b5c6d7e9"
 branch_labels = None
 depends_on = None
 

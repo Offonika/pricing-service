@@ -119,7 +119,11 @@ def collect_runtime_checks(
     *,
     requested_date: date,
     headers: dict[str, str],
+    mode: str = "release",
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], list[str]]:
+    if mode not in {"release", "monitor"}:
+        raise ValueError(f"unsupported runtime check mode: {mode}")
+
     errors: list[str] = []
     checks: list[dict[str, Any]] = []
     payloads: dict[str, dict[str, Any]] = {}
@@ -166,6 +170,9 @@ def collect_runtime_checks(
             "/api/management/executive-dashboard/service-accruals" f"?month={month_start[:7]}"
         ),
     }
+    if mode == "monitor":
+        endpoints.pop("cashflow")
+        endpoints.pop("profit_loss")
     for name, path in endpoints.items():
         response = _request(client, "GET", path, headers=headers)
         item: dict[str, Any] = {"name": name, "status_code": response.status_code}
@@ -199,14 +206,14 @@ def evaluate_data_health(
     degraded_checks: list[dict[str, Any]] = []
     errors: list[str] = []
 
-    cashflow = payloads.get("cashflow", {})
-    if _is_unhealthy(cashflow):
+    cashflow = payloads.get("cashflow")
+    if cashflow is not None and _is_unhealthy(cashflow):
         source_status, freshness_status = _status_pair(cashflow)
         errors.append(
             "cashflow data is unhealthy: "
             f"source_status={source_status}, freshness_status={freshness_status}"
         )
-    elif _is_partial(cashflow):
+    elif cashflow is not None and _is_partial(cashflow):
         degraded_checks.append(
             {
                 "name": "cashflow",
@@ -221,8 +228,8 @@ def evaluate_data_health(
             }
         )
 
-    profit_loss = payloads.get("profit_loss", {})
-    if _is_unhealthy(profit_loss):
+    profit_loss = payloads.get("profit_loss")
+    if profit_loss is not None and _is_unhealthy(profit_loss):
         source_status, freshness_status = _status_pair(profit_loss)
         local_now = now.astimezone(MOSCOW_TZ)
         if local_now.time() < profit_loss_ready_after:
@@ -239,7 +246,7 @@ def evaluate_data_health(
                 "profit_loss data is unhealthy after the refresh grace period: "
                 f"source_status={source_status}, freshness_status={freshness_status}"
             )
-    elif _is_partial(profit_loss):
+    elif profit_loss is not None and _is_partial(profit_loss):
         degraded_checks.append(
             {
                 "name": "profit_loss",
@@ -419,6 +426,7 @@ def main() -> None:
             client,
             requested_date=requested,
             headers=headers,
+            mode=args.mode,
         )
 
     availability_status = "available" if not availability_errors else "failed"

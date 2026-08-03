@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import threading
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -12,7 +15,11 @@ from sqlalchemy import Select, false, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.infrastructure.contracts import ContractIntegrityError, read_json_contract
+from app.infrastructure.contracts import (
+    ContractIntegrityError,
+    read_json_contract,
+    validate_json_contract_manifest,
+)
 from app.infrastructure.db.engines import DatabaseNotConfiguredError, get_onec_engine
 from app.models import (
     ExecutiveActionItem,
@@ -93,6 +100,24 @@ _SEVERITY_RANK = {
     "medium": 3,
     "low": 4,
 }
+
+
+@dataclass(frozen=True)
+class _CashflowPeriodCacheRevision:
+    path: str
+    artifact_inode: int
+    artifact_size: int
+    artifact_mtime_ns: int
+    artifact_ctime_ns: int
+    manifest_sha256: str | None
+    manifest_size: int | None
+    manifest_mtime_ns: int | None
+    content_sha256: str | None
+
+
+_cashflow_period_cache_lock = threading.Lock()
+_cashflow_period_cache_revision: _CashflowPeriodCacheRevision | None = None
+_cashflow_period_cache_result: tuple[dict[str, Any], str, str] | None = None
 
 
 def _decimal(value: Any) -> Decimal:
@@ -356,17 +381,78 @@ def _resolve_cashflow_period_cache_path() -> Path:
     return _resolve_shared_path(get_settings().executive_dashboard_cashflow_period_cache_path)
 
 
+def _cashflow_period_cache_file_revision(path: Path) -> _CashflowPeriodCacheRevision:
+    artifact_stat = path.stat()
+    manifest_path = path.with_suffix(path.suffix + ".manifest.json")
+    manifest_sha256: str | None = None
+    manifest_size: int | None = None
+    manifest_mtime_ns: int | None = None
+    content_sha256: str | None = None
+    if manifest_path.exists():
+        manifest_content = manifest_path.read_bytes()
+        manifest_stat = manifest_path.stat()
+        manifest_sha256 = hashlib.sha256(manifest_content).hexdigest()
+        manifest_size = manifest_stat.st_size
+        manifest_mtime_ns = manifest_stat.st_mtime_ns
+        manifest = json.loads(manifest_content.decode("utf-8"))
+        if isinstance(manifest, dict):
+            content_sha256 = str(manifest.get("content_sha256") or "") or None
+    return _CashflowPeriodCacheRevision(
+        path=str(path.resolve()),
+        artifact_inode=artifact_stat.st_ino,
+        artifact_size=artifact_stat.st_size,
+        artifact_mtime_ns=artifact_stat.st_mtime_ns,
+        artifact_ctime_ns=artifact_stat.st_ctime_ns,
+        manifest_sha256=manifest_sha256,
+        manifest_size=manifest_size,
+        manifest_mtime_ns=manifest_mtime_ns,
+        content_sha256=content_sha256,
+    )
+
+
 def _load_cashflow_period_cache() -> tuple[dict[str, Any] | None, str, str]:
+    global _cashflow_period_cache_result, _cashflow_period_cache_revision
+
     path = _resolve_cashflow_period_cache_path()
     if not path.exists():
         return None, "source_missing", f"cashflow period cache is not found: {path}"
     try:
-        payload = read_json_contract(path)
+        revision = _cashflow_period_cache_file_revision(path)
     except (OSError, json.JSONDecodeError, ContractIntegrityError) as exc:
         return None, "source_error", f"cashflow period cache is not readable: {exc}"
-    if not isinstance(payload, dict):
-        return None, "source_error", "cashflow period cache root must be an object"
-    return payload, str(payload.get("source_status") or "ready"), str(path)
+
+    with _cashflow_period_cache_lock:
+        if (
+            _cashflow_period_cache_revision == revision
+            and _cashflow_period_cache_result is not None
+        ):
+            cached_result = _cashflow_period_cache_result
+        else:
+            _cashflow_period_cache_revision = None
+            _cashflow_period_cache_result = None
+            try:
+                payload = read_json_contract(path)
+            except (OSError, json.JSONDecodeError, ContractIntegrityError) as exc:
+                return None, "source_error", f"cashflow period cache is not readable: {exc}"
+            if not isinstance(payload, dict):
+                return None, "source_error", "cashflow period cache root must be an object"
+            cached_result = (
+                payload,
+                str(payload.get("source_status") or "ready"),
+                str(path),
+            )
+            _cashflow_period_cache_revision = revision
+            _cashflow_period_cache_result = cached_result
+
+    if revision.content_sha256 is not None:
+        try:
+            validate_json_contract_manifest(
+                path,
+                actual_content_sha256=revision.content_sha256,
+            )
+        except (OSError, json.JSONDecodeError, ContractIntegrityError) as exc:
+            return None, "source_error", f"cashflow period cache is not readable: {exc}"
+    return cached_result
 
 
 def _resolve_warehouse_snapshot_path() -> Path:

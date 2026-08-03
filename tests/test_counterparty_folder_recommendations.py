@@ -29,6 +29,8 @@ from app.services.counterparty_folder_recommendations import (
     STATUS_OK,
     CounterpartyFolderRow,
     SaleDocumentDepartmentRow,
+    _apply_document_mismatch_guard,
+    _apply_report_suppression,
     _build_item,
     build_counterparty_folder_recommendations,
     classify_open_debt_documents,
@@ -437,6 +439,65 @@ def test_open_debt_diagnostics_do_not_accept_missing_or_mismatched_documents() -
         )
         == OPEN_DEBT_DIAGNOSTIC_TOTAL_ABOVE_BALANCE
     )
+
+
+def test_document_mismatch_guard_clears_unverified_terms_and_preserves_diagnostics() -> None:
+    snapshot = _snapshot(
+        "cp-mismatch",
+        counterparty_name="Свежий долг после закрытой накладной",
+        balance="11960.00",
+        document_ref="doc-closed",
+        document_number="РТУ-СТАРАЯ",
+        document_date=datetime(2026, 7, 10, 10, 0),
+        credit_depth_days=7,
+        is_overdue=True,
+        overdue_days=14,
+    )
+    item = _build_item(
+        snapshot,
+        folder_row=None,
+        document_row=None,
+        open_debt_documents=[],
+    )
+
+    guarded = _apply_document_mismatch_guard(
+        item,
+        diagnostic=OPEN_DEBT_DIAGNOSTIC_TOTAL_BELOW_BALANCE,
+    )
+
+    assert guarded["current_balance"] == Decimal("11960.00")
+    assert guarded["open_debt_source_status"] == "document_mismatch"
+    assert guarded["document_mismatch_reason"] == "open_debt_document_total_below_balance"
+    assert guarded["review_reason"] == "open_debt_document_total_below_balance"
+    assert guarded["status"] == STATUS_NEEDS_REVIEW
+    assert guarded["origin_document_ref"] is None
+    assert guarded["origin_document_number"] is None
+    assert guarded["origin_document_date"] is None
+    assert guarded["due_date"] is None
+    assert guarded["overdue_days"] is None
+    assert guarded["effective_due_date"] is None
+    assert guarded["effective_overdue_days"] is None
+    assert guarded["is_overdue"] is False
+    assert guarded["open_debt_documents"] == []
+    assert guarded["recommended_folder_ref"] is None
+
+
+def test_below_minimum_suppression_keeps_document_mismatch_reason() -> None:
+    item = _apply_document_mismatch_guard(
+        {
+            "current_balance": Decimal("10.00"),
+            "status": STATUS_NEEDS_REVIEW,
+            "review_reason": "open_structure_document_not_found",
+        },
+        diagnostic=OPEN_DEBT_DIAGNOSTIC_STATEMENT_MISSING,
+    )
+
+    suppressed = _apply_report_suppression(item)
+
+    assert suppressed["status"] == STATUS_NO_OVERDUE
+    assert suppressed["review_reason"] == "open_debt_statement_missing"
+    assert suppressed["suppressed_from_daily_report"] is True
+    assert suppressed["suppression_reason"] == "below_min_balance_threshold"
 
 
 def test_folder_alias_treats_site_and_online_store_as_equivalent() -> None:
@@ -1358,7 +1419,16 @@ def test_counterparty_folder_recommendations_builds_statuses(tmp_path) -> None:
     assert by_ref["cp-employee"]["status"] == STATUS_NO_OVERDUE
     assert by_ref["cp-employee"]["review_reason"] == "excluded_employee_folder"
     assert by_ref["cp-employee-missing-document"]["status"] == STATUS_NO_OVERDUE
-    assert by_ref["cp-employee-missing-document"]["review_reason"] == "excluded_employee_folder"
+    assert by_ref["cp-employee-missing-document"]["review_reason"] == (
+        "open_debt_statement_missing"
+    )
+    assert by_ref["cp-employee-missing-document"]["open_debt_source_status"] == (
+        "document_mismatch"
+    )
+    assert by_ref["cp-employee-missing-document"]["origin_document_number"] is None
+    assert by_ref["cp-employee-missing-document"]["effective_due_date"] is None
+    assert by_ref["cp-employee-missing-document"]["effective_overdue_days"] is None
+    assert by_ref["cp-employee-missing-document"]["is_overdue"] is False
     assert by_ref["cp-wholesale"]["status"] == STATUS_NO_OVERDUE
     assert by_ref["cp-wholesale"]["review_reason"] == "excluded_wholesale_counterparty"
     assert by_ref["cp-pickup-without-payment"]["status"] == STATUS_NO_OVERDUE
@@ -1384,6 +1454,7 @@ def test_counterparty_folder_recommendations_builds_statuses(tmp_path) -> None:
     assert report["summary"]["no_overdue_count"] == 11
     assert report["summary"]["needs_review_count"] == 5
     assert report["summary"]["below_min_balance_count"] == 1
+    assert report["summary"]["document_mismatch_count"] == 1
     assert report["summary"]["min_recommendation_balance"] == Decimal("500.00")
     assert report["summary"]["review_reason_counts"] == {
         "department_folder_missing": 1,

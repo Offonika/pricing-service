@@ -336,6 +336,9 @@ def _folder_summary(
         "ok_count": status_counts[STATUS_OK],
         "no_overdue_count": status_counts[STATUS_NO_OVERDUE],
         "needs_review_count": status_counts[STATUS_NEEDS_REVIEW],
+        "document_mismatch_count": sum(
+            item.get("open_debt_source_status") == "document_mismatch" for item in payload
+        ),
         "total_open_debt": sum(
             (_money(item.get("current_balance")) for item in payload),
             Decimal("0.00"),

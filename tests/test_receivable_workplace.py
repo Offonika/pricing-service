@@ -2594,7 +2594,9 @@ def test_receivables_folder_recommendations_use_cache_without_onec(
                     "current_balance": "1000.00",
                     "snapshot_department_ref": "dep-1",
                     "debt_department_ref": "dep-1",
-                    "is_overdue": True,
+                    "open_debt_source_status": "document_mismatch",
+                    "review_reason": "open_debt_statement_missing",
+                    "is_overdue": False,
                     "status": "needs_review",
                 }
             ],
@@ -2631,4 +2633,9 @@ def test_receivables_folder_recommendations_use_cache_without_onec(
     body = response.json()
     assert body["source_status"] == "cache_ready"
     assert body["report_revision"] == "cached-1"
+    assert body["summary"]["document_mismatch_count"] == 1
     assert body["payload"][0]["counterparty_ref"] == "cp-1"
+    assert body["payload"][0]["origin_document_date"] is None
+    assert body["payload"][0]["effective_due_date"] is None
+    assert body["payload"][0]["effective_overdue_days"] is None
+    assert body["payload"][0]["is_overdue"] is False

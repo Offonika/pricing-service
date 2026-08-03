@@ -1460,6 +1460,51 @@ def _is_actionable_status(status: str | None) -> bool:
     return status in {STATUS_MOVE_RECOMMENDED, STATUS_NEEDS_REVIEW}
 
 
+def _apply_document_mismatch_guard(
+    item: dict[str, Any],
+    *,
+    diagnostic: str,
+) -> dict[str, Any]:
+    guarded = dict(item)
+    excluded = _is_excluded_reason(guarded.get("review_reason"))
+    mismatch_reason = open_debt_review_reason(diagnostic)
+    guarded.update(
+        {
+            "open_debt_source_status": "document_mismatch",
+            "document_mismatch_reason": mismatch_reason,
+            "status": STATUS_NO_OVERDUE if excluded else STATUS_NEEDS_REVIEW,
+            "review_reason": mismatch_reason,
+            "recommended_folder_ref": None,
+            "recommended_folder_name": None,
+            "recommended_folder_display_name": None,
+            "recommended_folder_source": None,
+            "debt_document_ref": None,
+            "debt_document_number": None,
+            "debt_document_date": None,
+            "debt_document_responsible_ref": None,
+            "debt_document_responsible_name": None,
+            "debt_document_author_ref": None,
+            "debt_document_author_name": None,
+            "open_debt_documents": [],
+            "statement_balance_after": None,
+            "statement_segment_start_row": None,
+            "statement_segment_end_row": None,
+            "statement_selection_rule": None,
+            "origin_document_ref": None,
+            "origin_document_number": None,
+            "origin_document_date": None,
+            "due_date": None,
+            "overdue_days": None,
+            "is_overdue": False,
+            "effective_credit_depth_days": None,
+            "effective_payment_term_source": None,
+            "effective_due_date": None,
+            "effective_overdue_days": None,
+        }
+    )
+    return guarded
+
+
 def _apply_report_suppression(item: dict[str, Any]) -> dict[str, Any]:
     if (
         _is_actionable_status(str(item.get("status")))
@@ -1467,7 +1512,8 @@ def _apply_report_suppression(item: dict[str, Any]) -> dict[str, Any]:
     ):
         item = dict(item)
         item["status"] = STATUS_NO_OVERDUE
-        item["review_reason"] = REVIEW_REASON_BELOW_MIN_BALANCE
+        if item.get("open_debt_source_status") != "document_mismatch":
+            item["review_reason"] = REVIEW_REASON_BELOW_MIN_BALANCE
         item["suppressed_from_daily_report"] = True
         item["suppression_reason"] = REVIEW_REASON_BELOW_MIN_BALANCE
     return item
@@ -1507,6 +1553,8 @@ def _build_report_revision(snapshot_date: date, items: Sequence[dict[str, Any]])
             "recommended_folder_ref": item.get("recommended_folder_ref"),
             "debt_document_ref": item.get("debt_document_ref"),
             "status": item.get("status"),
+            "review_reason": item.get("review_reason"),
+            "open_debt_source_status": item.get("open_debt_source_status"),
         }
         for item in items
     ]
@@ -1628,7 +1676,10 @@ def build_counterparty_folder_recommendations(
             current_balance=snapshot.current_balance,
             statement_sale_count=int(statement_sale_counts.get(counterparty_key) or 0),
         )
-        document_amount_mismatch = document_diagnostic != OPEN_DEBT_DIAGNOSTIC_MATCHED
+        document_amount_mismatch = (
+            source_freshness.source_status == "cache_ready"
+            and document_diagnostic != OPEN_DEBT_DIAGNOSTIC_MATCHED
+        )
         if document_amount_mismatch:
             open_debt_documents = []
         primary_document_ref = (
@@ -1644,17 +1695,10 @@ def build_counterparty_folder_recommendations(
             open_debt_documents=open_debt_documents,
             is_excluded_china_supplier=counterparty_key in china_supplier_refs,
         )
-        if document_amount_mismatch and not _is_excluded_reason(item.get("review_reason")):
-            item = dict(item)
-            item.update(
-                {
-                    "status": STATUS_NEEDS_REVIEW,
-                    "review_reason": open_debt_review_reason(document_diagnostic),
-                    "recommended_folder_ref": None,
-                    "recommended_folder_name": None,
-                    "recommended_folder_display_name": None,
-                    "recommended_folder_source": None,
-                }
+        if document_amount_mismatch:
+            item = _apply_document_mismatch_guard(
+                item,
+                diagnostic=document_diagnostic,
             )
         if source_freshness.source_status == "source_stale":
             item = dict(item)
@@ -1691,6 +1735,9 @@ def build_counterparty_folder_recommendations(
         items = items[:limit]
 
     status_counts = Counter(item["status"] for item in items)
+    document_mismatch_count = sum(
+        item.get("open_debt_source_status") == "document_mismatch" for item in items
+    )
     review_reason_counts = Counter(
         item["review_reason"]
         for item in items
@@ -1717,6 +1764,7 @@ def build_counterparty_folder_recommendations(
             "needs_review_count": status_counts[STATUS_NEEDS_REVIEW],
             "candidate_snapshot_count": len(snapshots),
             "below_min_balance_count": below_min_balance_count,
+            "document_mismatch_count": document_mismatch_count,
             "min_recommendation_balance": MIN_RECOMMENDATION_BALANCE,
             "review_reason_counts": dict(sorted(review_reason_counts.items())),
             "total_open_debt": total_open_debt,

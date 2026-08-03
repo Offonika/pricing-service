@@ -126,6 +126,26 @@ updated_at: "2026-07-31"
 5. Rollback UI безопасен: таблицы правил можно оставить в БД, авто-матчер от них
    не зависит.
 
+# Change Summary / Spec Delta
+
+- Документ закреплён как расширение канонического item-level контура, а не как
+  отдельный source of truth.
+- Property mapping остаётся диагностическим слоем ручного UI и сам не принимает
+  решения auto-accept.
+
+# Acceptance Criteria
+
+- Сравнение свойств не меняет текущие связи и журнал решений.
+- API без `include_property_summary` сохраняет обратную совместимость.
+- Конфликты свойств видны оператору, но применяются в auto-accept только через
+  каноническую категорийную policy.
+
+# Implementation Checklist
+
+- [x] Канонический item-level spec указан зависимостью и приоритетом.
+- [x] `source_of_truth=false` зафиксирован во frontmatter.
+- [x] Граница между диагностикой свойств и решением матчера описана явно.
+
 # Changelog
 
 - 2026-05-06 — accepted draft created.

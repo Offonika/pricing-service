@@ -56,3 +56,21 @@ updated_at: "2026-07-31"
 
 - Smoke: `/` требует Basic, `/bitrix/matching/` открывается без Basic, matching API без auth
   возвращает 401, с Bitrix Bearer возвращает товары.
+
+# Change Summary / Spec Delta
+
+- Документ больше не объявляет себя самостоятельным source of truth: он описывает
+  только Bitrix24-вход в канонический item-level контур.
+- Контракты сессии, авторизации и аудита решений не меняются.
+
+# Acceptance Criteria
+
+- Bitrix24 iframe использует те же matching endpoints и данные, что standalone UI.
+- Решения сохраняют идентичность Bitrix-пользователя в `created_by`.
+- При расхождении требований применяется `competitor-matching-ui-v1.md`.
+
+# Implementation Checklist
+
+- [x] Канонический item-level spec указан единственной зависимостью.
+- [x] `source_of_truth=false` зафиксирован во frontmatter.
+- [x] Security, API и smoke-контракты Bitrix24 сохранены без изменений.

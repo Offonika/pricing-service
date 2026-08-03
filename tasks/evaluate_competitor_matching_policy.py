@@ -48,17 +48,17 @@ def main() -> int:
                 .where(CompetitorItemMatch.status == CompetitorItemMatchStatus.ACCEPTED)
             ).scalars()
         )
-    report = evaluate_snapshot_decisions(
-        decisions,
-        target_precision=policy.target_precision,
-        minimum_examples=policy.minimum_validation_examples,
-        audit_sample_rate=policy.audit_sample_rate,
-        rollback_error_rate=policy.rollback_error_rate,
-    )
-    report["auto_accept_audit_sample"] = build_auto_accept_audit_sample(
-        accepted_matches,
-        sample_rate=policy.audit_sample_rate,
-    )
+        report = evaluate_snapshot_decisions(
+            decisions,
+            target_precision=policy.target_precision,
+            minimum_examples=policy.minimum_validation_examples,
+            audit_sample_rate=policy.audit_sample_rate,
+            rollback_error_rate=policy.rollback_error_rate,
+        )
+        report["auto_accept_audit_sample"] = build_auto_accept_audit_sample(
+            accepted_matches,
+            sample_rate=policy.audit_sample_rate,
+        )
     output = json.dumps(report, ensure_ascii=False, indent=2)
     if args.artifact_file:
         args.artifact_file.parent.mkdir(parents=True, exist_ok=True)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
@@ -7,6 +8,7 @@ from app.services.competitor_matching_replay import (
     build_auto_accept_audit_sample,
     evaluate_snapshot_decisions,
 )
+from tasks import evaluate_competitor_matching_policy as replay_task
 
 
 def _decision(
@@ -128,3 +130,51 @@ def test_auto_accept_audit_sample_is_deterministic():
             "score": 0.94,
         }
     ]
+
+
+def test_replay_task_evaluates_orm_rows_before_read_only_session_closes(monkeypatch):
+    state = {"active": False}
+
+    class Decision:
+        reason_code = "legacy_unspecified"
+        created_at = datetime(2026, 1, 1, tzinfo=UTC)
+        snapshot_json = None
+
+        @property
+        def action(self):
+            assert state["active"] is True
+            return "reject"
+
+    class Session:
+        calls = 0
+
+        def execute(self, _statement):
+            self.calls += 1
+            rows = [Decision()] if self.calls == 1 else []
+            return SimpleNamespace(scalars=lambda: rows)
+
+    @contextmanager
+    def fake_session_scope(*, read_only):
+        assert read_only is True
+        state["active"] = True
+        try:
+            yield Session()
+        finally:
+            state["active"] = False
+
+    policy = SimpleNamespace(
+        target_precision=0.95,
+        minimum_validation_examples=50,
+        audit_sample_rate=0.10,
+        rollback_error_rate=0.05,
+    )
+    monkeypatch.setattr(replay_task, "session_scope", fake_session_scope)
+    monkeypatch.setattr(replay_task, "load_auto_accept_policy", lambda _path: policy)
+    monkeypatch.setattr(
+        replay_task,
+        "parse_args",
+        lambda: SimpleNamespace(policy=None, artifact_file=None),
+    )
+
+    assert replay_task.main() == 0
+    assert state["active"] is False

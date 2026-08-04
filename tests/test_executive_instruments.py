@@ -74,6 +74,7 @@ def _snapshot(*, generated_at: datetime) -> dict[str, object]:
                     "active_grants": 1,
                     "pending_grants": 0,
                     "review_required_grants": 1,
+                    "overdue_review_grants": 0,
                     "mfa_review_count": 0,
                     "unowned_credentials": 0,
                     "attention_grant_count": 1,
@@ -104,6 +105,7 @@ def test_loads_sanitized_read_only_snapshot(monkeypatch, tmp_path: Path) -> None
     assert result.summary.total_count == 1
     assert result.devices[0].connectivity_status == "online"
     assert result.devices[0].access.review_required_grants == 1
+    assert result.devices[0].access.overdue_review_grants == 0
     assert result.devices[0].problems[0].problem_key == "configuration:legacy-issue"
     assert result.devices[0].problems[0].title == result.devices[0].issue
     assert result.capabilities.access_mutations is False

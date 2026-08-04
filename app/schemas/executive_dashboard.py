@@ -186,6 +186,7 @@ class ExecutiveInstrumentAccess(ExecutiveInstrumentStrictModel):
     active_grants: int = Field(default=0, ge=0)
     pending_grants: int = Field(default=0, ge=0)
     review_required_grants: int = Field(default=0, ge=0)
+    overdue_review_grants: int = Field(default=0, ge=0)
     mfa_review_count: int = Field(default=0, ge=0)
     unowned_credentials: int = Field(default=0, ge=0)
     attention_grant_count: int = Field(default=0, ge=0)

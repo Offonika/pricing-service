@@ -227,6 +227,7 @@ class Settings(BaseSettings):
     bank_payments_own_bank_bic: str = ""
     bank_payments_own_bank_correspondent_account: str = ""
     receivable_ledger_window_chunk_days: int = 1
+    receivable_canonical_opening_max_lag_days: int = Field(default=45, ge=0)
     receivable_workflow_enabled: bool = False
     receivable_bitrix_webhook_url: str | None = None
     receivable_bitrix_entity_type_id: int | None = None

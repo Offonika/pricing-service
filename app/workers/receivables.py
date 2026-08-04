@@ -1030,17 +1030,6 @@ def run_receivable_read_model_rebuild(
             app_engine=resolved_app_engine,
             staff_rows=staff_rows,
         )
-        print(
-            (
-                "[receivables] read-model rebuild phase=staff_upsert "
-                f"employee_refs={len(resolved_employee_refs)} "
-                f"buyer_refs={len(resolved_buyer_refs)} "
-                f"buyer_departments={len(resolved_buyer_departments)} "
-                f"staff_rows={len(resolved_staff_rows)}"
-            ),
-            flush=True,
-        )
-        staff_result = _upsert_staff_rows(resolved_app_engine, resolved_staff_rows)
         ledger_ready_meta = (
             _validate_seeded_receivable_ledger_ready(resolved_app_engine)
             if require_seeded_ledger
@@ -1061,6 +1050,18 @@ def run_receivable_read_model_rebuild(
             employee_current_import_path=employee_current_import_path,
             employee_current_import_counterparty_group=employee_current_import_counterparty_group,
         )
+
+        print(
+            (
+                "[receivables] read-model rebuild phase=staff_upsert "
+                f"employee_refs={len(resolved_employee_refs)} "
+                f"buyer_refs={len(resolved_buyer_refs)} "
+                f"buyer_departments={len(resolved_buyer_departments)} "
+                f"staff_rows={len(resolved_staff_rows)}"
+            ),
+            flush=True,
+        )
+        staff_result = _upsert_staff_rows(resolved_app_engine, resolved_staff_rows)
 
         print(
             (

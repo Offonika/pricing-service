@@ -5673,6 +5673,16 @@
   background: #ffffff;
 }
 
+.receivables__stale-warning {
+  padding: 12px 14px;
+  border: 1px solid #f79009;
+  border-radius: 8px;
+  background: #fffaeb;
+  color: #7a2e0e;
+  font-size: 13px;
+  font-weight: 800;
+}
+
 .receivables__auth-state {
   padding: 14px 16px;
   border: 1px solid #c8d0da;
@@ -5704,6 +5714,12 @@
   color: #18202a;
   font-size: 18px;
   line-height: 1.1;
+}
+
+.receivables__summary-hint {
+  margin: -4px 0 0;
+  color: #667085;
+  font-size: 12px;
 }
 
 .receivables__tabs {

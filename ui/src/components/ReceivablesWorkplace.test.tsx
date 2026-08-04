@@ -148,4 +148,24 @@ describe("ReceivablesWorkplace", () => {
     );
     expect(screen.getByDisplayValue("Долг > 1 000 ₽")).toBeVisible();
   });
+
+  it("explains filtered overdue total and warns about stale verified data", async () => {
+    vi.mocked(fetchReceivableWorkplaceMeta).mockResolvedValueOnce({
+      latest_snapshot_date: "2000-01-01",
+      department_options: response.department_options,
+      cache_status: {},
+    });
+
+    render(<ReceivablesWorkplace bitrixMode />);
+
+    expect(await screen.findByText("Просроченная дебиторка в выборке")).toBeVisible();
+    expect(
+      screen.getByText(
+        "Сумма учитывает доступы, подразделение, статус и порог долга и рассчитывается до применения limit.",
+      ),
+    ).toBeVisible();
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "Показаны последние проверенные данные за 2000-01-01",
+    );
+  });
 });

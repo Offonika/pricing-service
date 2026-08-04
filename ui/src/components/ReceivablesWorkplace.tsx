@@ -47,8 +47,19 @@ type ReceivablesWorkplaceProps = {
   departmentRefs?: string[];
 };
 
+function moscowDateIso(value = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Europe/Moscow",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${byType.year}-${byType.month}-${byType.day}`;
+}
+
 function todayIso() {
-  return new Date().toISOString().slice(0, 10);
+  return moscowDateIso();
 }
 
 function readInitialDate() {
@@ -215,7 +226,7 @@ function ReceivableSummary({
 }) {
   const metrics = [
     ["Общая дебиторка", formatMoney(summary.total_receivable)],
-    ["Общая просрочка", formatMoney(summary.total_overdue)],
+    ["Просроченная дебиторка в выборке", formatMoney(summary.total_overdue)],
     ["> 30 дней", formatMoney(summary.overdue_over_30_amount)],
     ["> 90 дней", formatMoney(summary.overdue_over_90_amount)],
     ["Позвонить сегодня", formatMoney(summary.need_call_today_amount)],
@@ -224,14 +235,19 @@ function ReceivableSummary({
     ["Показано", `${visibleCount} из ${totalCount}`],
   ];
   return (
-    <section className="receivables__summary">
-      {metrics.map(([label, value]) => (
-        <div className="receivables__metric" key={label}>
-          <span>{label}</span>
-          <strong>{value}</strong>
-        </div>
-      ))}
-    </section>
+    <>
+      <section className="receivables__summary">
+        {metrics.map(([label, value]) => (
+          <div className="receivables__metric" key={label}>
+            <span>{label}</span>
+            <strong>{value}</strong>
+          </div>
+        ))}
+      </section>
+      <p className="receivables__summary-hint">
+        Сумма учитывает доступы, подразделение, статус и порог долга и рассчитывается до применения limit.
+      </p>
+    </>
   );
 }
 
@@ -595,6 +611,7 @@ export function ReceivablesWorkplace({
   const [folderSourceStatus, setFolderSourceStatus] = useState("");
   const [foldersLoading, setFoldersLoading] = useState(false);
   const [metaLoaded, setMetaLoaded] = useState(false);
+  const [latestSnapshotDate, setLatestSnapshotDate] = useState<string | null>(null);
   const dashboardReturnUrl = useMemo(readDashboardReturnUrl, []);
   const normalizedToken = token.trim();
   const hasToken = bitrixMode || normalizedToken.length > 0;
@@ -622,7 +639,10 @@ export function ReceivablesWorkplace({
         setMetaLoaded(true);
         setDepartmentOptions(data.department_options);
         setCacheStatus(data.cache_status || {});
-        if (!metaLoaded && data.latest_snapshot_date) setDate(data.latest_snapshot_date);
+        if (!metaLoaded) {
+          setLatestSnapshotDate(data.latest_snapshot_date || null);
+          if (data.latest_snapshot_date) setDate(data.latest_snapshot_date);
+        }
       })
       .catch((error: unknown) => {
         if (cancelled) return;
@@ -746,6 +766,9 @@ export function ReceivablesWorkplace({
   };
 
   const openDebtComputedAt = cacheStatus.open_debt?.computed_at;
+  const latestSnapshotIsStale = Boolean(
+    latestSnapshotDate && latestSnapshotDate.slice(0, 10) < moscowDateIso(),
+  );
 
   return (
     <div className="app receivables">
@@ -817,6 +840,11 @@ export function ReceivablesWorkplace({
           <span>Дата витрины: {date || "не выбрана"}</span>
           <span>Источник: {sourceStatus || cacheStatus.open_debt?.source_status || "ожидает загрузки"}</span>
           {openDebtComputedAt && <span>Долг рассчитан: {formatDateTime(openDebtComputedAt)}</span>}
+        </div>
+      )}
+      {hasToken && latestSnapshotIsStale && (
+        <div className="receivables__stale-warning" role="alert">
+          Показаны последние проверенные данные за {latestSnapshotDate}. Снимок за текущий московский день ещё не подтверждён.
         </div>
       )}
       {hasToken && cacheStatus.open_debt?.source_status === "source_stale" && (

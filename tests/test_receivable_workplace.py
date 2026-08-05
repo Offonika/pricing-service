@@ -43,7 +43,11 @@ from app.services.receivable_department_aliases import (
     TEPLY_STAN_STAFF_DEPARTMENT_REF,
     TEPLY_STAN_TELEPHONY_STORE_REF,
 )
-from app.services.receivable_workflow import stable_key_for_counterparty, sync_receivable_workflow
+from app.services.receivable_workflow import (
+    debt_key_for_case,
+    stable_key_for_counterparty,
+    sync_receivable_workflow,
+)
 from app.services.receivable_workplace import (
     apply_receivable_workplace_action,
     build_receivable_workplace,
@@ -579,6 +583,103 @@ def test_payment_postponed_action_id_is_idempotent(db_session: Session) -> None:
     assert item is not None
     assert item.payload["payment_postponed_count"] == 1
     assert len(events) == 1
+
+
+def test_paid_action_clears_manager_comment_but_keeps_audit_and_supervisor_notes(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 6, 23)
+    case = _case(snapshot_date=as_of)
+    item = ReceivableWorkItem(
+        stable_key=stable_key_for_counterparty(case.counterparty_ref),
+        counterparty_ref=case.counterparty_ref,
+        counterparty_name=case.counterparty_name,
+        status="waiting_payment",
+        current_debt_key=debt_key_for_case(case),
+        current_balance=case.current_balance,
+        last_contact_comment="Ожидаем перевод до вечера.",
+    )
+    db_session.add_all([case, item, _staff_member()])
+    db_session.flush()
+    note = ReceivableSupervisorNote(
+        work_item=item,
+        author_bitrix_user_id="42",
+        author_name="Руководитель",
+        visibility="shared",
+        comment="Проверить крупный платёж.",
+    )
+    db_session.add(note)
+    payload = ReceivableWorkplaceActionRequest(action_id="paid-once", status="paid")
+
+    first = apply_receivable_workplace_action(
+        db_session,
+        snapshot_date=as_of,
+        counterparty_ref=case.counterparty_ref,
+        payload=payload,
+        viewer_user_id="42",
+        viewer_can_edit_supervisor_notes=True,
+    )
+    second = apply_receivable_workplace_action(
+        db_session,
+        snapshot_date=as_of,
+        counterparty_ref=case.counterparty_ref,
+        payload=payload,
+        viewer_user_id="42",
+        viewer_can_edit_supervisor_notes=True,
+    )
+    db_session.flush()
+
+    manager_events = db_session.scalars(
+        select(ReceivableWorkEvent).where(ReceivableWorkEvent.event_type == "manager_update")
+    ).all()
+    assert first is not None
+    assert second is not None
+    assert first.item.comment is None
+    assert first.item.supervisor_notes[0].comment == "Проверить крупный платёж."
+    assert second.event["idempotent"] is True
+    assert item.last_contact_comment is None
+    assert note.deleted_at is None
+    assert note.comment == "Проверить крупный платёж."
+    assert len(manager_events) == 1
+    assert manager_events[0].comment == "Ожидаем перевод до вечера."
+    assert manager_events[0].payload["manager_comment_cleared"] is True
+
+
+def test_paid_action_keeps_newly_submitted_comment_only_in_audit(db_session: Session) -> None:
+    as_of = date(2026, 6, 23)
+    case = _case(snapshot_date=as_of)
+    item = ReceivableWorkItem(
+        stable_key=stable_key_for_counterparty(case.counterparty_ref),
+        counterparty_ref=case.counterparty_ref,
+        counterparty_name=case.counterparty_name,
+        status="waiting_payment",
+        current_debt_key=debt_key_for_case(case),
+        current_balance=case.current_balance,
+        last_contact_comment="Старый комментарий.",
+    )
+    db_session.add_all([case, item])
+
+    response = apply_receivable_workplace_action(
+        db_session,
+        snapshot_date=as_of,
+        counterparty_ref=case.counterparty_ref,
+        payload=ReceivableWorkplaceActionRequest(
+            action_id="paid-with-comment",
+            status="paid",
+            comment="Платёж подтверждён.",
+        ),
+    )
+    db_session.flush()
+
+    event = db_session.scalar(
+        select(ReceivableWorkEvent).where(ReceivableWorkEvent.event_type == "manager_update")
+    )
+    assert response is not None
+    assert response.item.comment is None
+    assert item.last_contact_comment is None
+    assert event is not None
+    assert event.comment == "Платёж подтверждён."
+    assert event.payload["manager_comment_cleared"] is True
 
 
 def test_last_contact_at_is_separate_from_any_manager_save(db_session: Session) -> None:

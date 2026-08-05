@@ -5997,6 +5997,66 @@
   resize: vertical;
 }
 
+.receivables__status-select {
+  font-weight: 700;
+}
+
+.receivables__status-select--blue {
+  border-color: #93c5fd;
+  background: #dbeafe;
+  color: #1e3a8a;
+}
+
+.receivables__status-select--light-green {
+  border-color: #86efac;
+  background: #dcfce7;
+  color: #166534;
+}
+
+.receivables__status-select--yellow {
+  border-color: #facc15;
+  background: #fef3c7;
+  color: #854d0e;
+}
+
+.receivables__status-select--red {
+  border-color: #fca5a5;
+  background: #fee2e2;
+  color: #991b1b;
+}
+
+.receivables__status-select--green {
+  border-color: #4ade80;
+  background: #bbf7d0;
+  color: #14532d;
+}
+
+.receivables__status-select--purple {
+  border-color: #c4b5fd;
+  background: #ede9fe;
+  color: #5b21b6;
+}
+
+.receivables__status-select--graphite {
+  border-color: #334155;
+  background: #475569;
+  color: #ffffff;
+}
+
+.receivables__status-select--gray {
+  border-color: #cbd5e1;
+  background: #f1f5f9;
+  color: #475569;
+}
+
+.receivables__paid-warning {
+  display: block;
+  margin-top: 4px;
+  color: #854d0e;
+  font-size: 11px;
+  line-height: 1.25;
+}
+
 .receivables__comment-preview {
   width: 100%;
   max-width: 190px;

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import { resolveBitrixPortalUrl } from "../api/bitrix";
 import { clearApiAuthToken, setApiAuthToken } from "../api/client";
+import { receivableStatusTone } from "../receivableStatusTone";
 import {
   deleteReceivableSupervisorNote,
   fetchCounterpartyFolderRecommendations,
@@ -508,7 +509,7 @@ function ReceivableRow({
         </td>
         <td>
           <select
-            className="receivables__select"
+            className={`receivables__select receivables__status-select receivables__status-select--${receivableStatusTone(edit.status)}`}
             value={edit.status}
             onChange={(event) => onEdit({ status: event.target.value })}
           >
@@ -518,6 +519,11 @@ function ReceivableRow({
               </option>
             ))}
           </select>
+          {edit.status === "paid" && (
+            <small className="receivables__paid-warning" role="alert">
+              Комментарий менеджера очистится после успешного сохранения.
+            </small>
+          )}
         </td>
         <td>
           <input

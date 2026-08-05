@@ -7,6 +7,7 @@ import {
   fetchCounterpartyFolderRecommendations,
   fetchReceivableWorkplace,
   fetchReceivableWorkplaceMeta,
+  updateReceivableWorkplaceItem,
   upsertReceivableSupervisorNote,
 } from "../api/receivables";
 
@@ -23,6 +24,7 @@ vi.mock("../api/receivables", async (importOriginal) => {
   };
 });
 
+import { receivableStatusTone } from "../receivableStatusTone";
 import { ReceivablesWorkplace } from "./ReceivablesWorkplace";
 
 const item: ReceivableWorkplaceItem = {
@@ -109,6 +111,97 @@ describe("ReceivablesWorkplace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Комментарий тест" }));
 
     expect(screen.getByRole("button", { name: "Сохранить комментарий" })).toBeVisible();
+  });
+
+  it("maps every receivable status to the approved color tone with a neutral fallback", () => {
+    expect(
+      Object.fromEntries(
+        [
+          "new_debt",
+          "no_answer",
+          "calling",
+          "sms_sent",
+          "waiting_payment",
+          "promised_payment",
+          "call_back",
+          "remind",
+          "data_quality_error",
+          "intervention_required",
+          "escalated",
+          "dispute",
+          "dispute_check",
+          "paid",
+          "closed",
+          "transfer",
+          "not_ours_transfer",
+          "on_card_route",
+          "no_phone",
+          "legacy_unknown",
+        ].map((status) => [status, receivableStatusTone(status)]),
+      ),
+    ).toEqual({
+      new_debt: "blue",
+      no_answer: "blue",
+      calling: "blue",
+      sms_sent: "blue",
+      waiting_payment: "light-green",
+      promised_payment: "light-green",
+      call_back: "yellow",
+      remind: "yellow",
+      data_quality_error: "yellow",
+      intervention_required: "red",
+      escalated: "red",
+      dispute: "red",
+      dispute_check: "red",
+      paid: "green",
+      closed: "green",
+      transfer: "purple",
+      not_ours_transfer: "purple",
+      on_card_route: "graphite",
+      no_phone: "gray",
+      legacy_unknown: "gray",
+    });
+  });
+
+  it("warns about paid and clears the visible comment only after a successful response", async () => {
+    let resolveSave: ((value: Awaited<ReturnType<typeof updateReceivableWorkplaceItem>>) => void) | undefined;
+    const pendingSave = new Promise<Awaited<ReturnType<typeof updateReceivableWorkplaceItem>>>((resolve) => {
+      resolveSave = resolve;
+    });
+    vi.mocked(fetchReceivableWorkplace).mockResolvedValue({
+      ...response,
+      status_options: [
+        { value: "waiting_payment", label: "Ждем оплату", scope: "common" },
+        { value: "paid", label: "Оплачено", scope: "common" },
+      ],
+    });
+    vi.mocked(updateReceivableWorkplaceItem).mockReturnValueOnce(pendingSave);
+
+    render(<ReceivablesWorkplace bitrixMode />);
+
+    expect(await screen.findByText("Клиент Тест")).toBeVisible();
+    const statusSelect = screen.getByDisplayValue("Ждем оплату");
+    expect(statusSelect).toHaveClass("receivables__status-select--light-green");
+    fireEvent.change(statusSelect, { target: { value: "paid" } });
+    expect(statusSelect).toHaveClass("receivables__status-select--green");
+    expect(
+      screen.getByText("Комментарий менеджера очистится после успешного сохранения."),
+    ).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "Комментарий тест" }));
+    const comment = screen.getByRole("textbox", { name: /Комментарий менеджера/ });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить комментарий" }));
+    expect(comment).toHaveValue("Комментарий тест");
+
+    resolveSave?.({
+      item: { ...item, status: "paid", comment: null },
+      event: {
+        event_type: "manager_update",
+        event_at: "2026-07-23T12:00:00",
+        source: "web_workplace",
+      },
+    });
+    await waitFor(() => expect(comment).toHaveValue(""));
   });
 
   it("passes 500 and 1000 ruble debt filters with the other server filters", async () => {

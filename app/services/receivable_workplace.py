@@ -53,6 +53,7 @@ from app.services.receivable_workflow import (
     debt_age_days,
     debt_key_for_case,
     needs_call_on_date,
+    reset_receivable_debt_cycle,
     stable_key_for_counterparty,
     utcnow,
 )
@@ -1222,15 +1223,26 @@ def _find_staff(
 
 def _refresh_work_item_from_case(
     *,
+    session: Session,
     item: ReceivableWorkItem,
     case: ReceivableCase,
     as_of: date,
 ) -> None:
+    debt_key = debt_key_for_case(case)
+    reset_receivable_debt_cycle(
+        session,
+        item=item,
+        new_debt_key=debt_key,
+        current_balance=case.current_balance,
+        phone=item.phone,
+        as_of=as_of,
+        source="web_workplace_refresh",
+    )
     payload = _payload_dict(item)
     preserved = {key: payload.get(key) for key in WORKPLACE_PAYLOAD_KEYS if key in payload}
     item.counterparty_ref = case.counterparty_ref
     item.counterparty_name = case.counterparty_name
-    item.current_debt_key = debt_key_for_case(case)
+    item.current_debt_key = debt_key
     item.current_balance = case.current_balance
     item.origin_document_ref = case.origin_document_ref
     item.origin_document_number = case.origin_document_number
@@ -1277,7 +1289,7 @@ def _get_or_create_work_item(
         )
         session.add(item)
         session.flush()
-    _refresh_work_item_from_case(item=item, case=case, as_of=as_of)
+    _refresh_work_item_from_case(session=session, item=item, case=case, as_of=as_of)
     return item
 
 
@@ -1376,6 +1388,7 @@ def apply_receivable_workplace_action(
     previous_promised_payment_date = item.promised_payment_date
     previous_last_contact_at = item.last_contact_at
     previous_comment = item.last_contact_comment
+    payload_comment: str | None = None
 
     if payload.status is not None:
         item.status = payload.status
@@ -1397,7 +1410,8 @@ def apply_receivable_workplace_action(
         payload_dict["payment_postponed"] = False
     if "comment" in fields_set:
         comment = payload.comment.strip() if payload.comment else ""
-        item.last_contact_comment = comment or None
+        payload_comment = comment or None
+        item.last_contact_comment = payload_comment
     if "contacted_staff_ref" in fields_set or "contacted_staff_name" in fields_set:
         payload_dict["contacted_staff_ref"] = payload.contacted_staff_ref
         payload_dict["contacted_staff_name"] = (
@@ -1409,6 +1423,12 @@ def apply_receivable_workplace_action(
                 else payload.contacted_staff_name
             )
         )
+
+    manager_comment_cleared = payload.status == "paid" and previous_status != "paid"
+    event_comment = item.last_contact_comment
+    if manager_comment_cleared:
+        event_comment = payload_comment or previous_comment
+        item.last_contact_comment = None
 
     now = utcnow()
     contact_changed = any(
@@ -1437,7 +1457,7 @@ def apply_receivable_workplace_action(
         event_type=WORKPLACE_EVENT_MANAGER_UPDATE,
         event_at=now,
         source="web_workplace",
-        comment=item.last_contact_comment,
+        comment=event_comment,
         payload={
             "status": item.status,
             "contacted_staff_ref": payload_dict.get("contacted_staff_ref"),
@@ -1456,6 +1476,7 @@ def apply_receivable_workplace_action(
             "payment_postponed": False,
             "payment_postponed_added": bool(payload.payment_postponed),
             "payment_postponed_count": payload_dict.get("payment_postponed_count", 0),
+            "manager_comment_cleared": manager_comment_cleared,
             "action_id": payload.action_id,
         },
         idempotency_key=action_key,

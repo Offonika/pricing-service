@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta, timezone
@@ -68,6 +69,24 @@ EVENT_ESCALATED = "escalated"
 EVENT_CLOSED = "closed_by_onec"
 EVENT_BITRIX_SYNC_ERROR = "bitrix_sync_error"
 EVENT_DATA_QUALITY = "skipped_data_quality"
+EVENT_DEBT_CYCLE_RESET = "debt_cycle_reset"
+
+CYCLE_RESET_NULL_FIELDS = (
+    "last_contact_comment",
+    "promised_payment_date",
+    "next_action_date",
+    "last_contact_at",
+    "last_manager_update_at",
+    "last_sms_at",
+    "last_sms_status",
+    "last_sms_error",
+    "escalated_at",
+    "escalation_level",
+    "closed_at",
+    "assigned_bitrix_user_id",
+    "assigned_source",
+    "bitrix_last_error",
+)
 
 
 class ReceivableBitrixClient(Protocol):
@@ -356,6 +375,70 @@ def _append_event(
     return event
 
 
+def reset_receivable_debt_cycle(
+    session: Session,
+    *,
+    item: ReceivableWorkItem,
+    new_debt_key: str,
+    current_balance: Decimal,
+    phone: str | None,
+    as_of: date,
+    source: str,
+    summary: ReceivableWorkflowSummary | None = None,
+) -> bool:
+    """Reset manager state when 1C data proves that a new debt cycle started."""
+
+    if current_balance <= 0:
+        return False
+    previous_status = item.status
+    previous_debt_key = item.current_debt_key
+    starts_after_paid = previous_status == STATUS_PAID and previous_debt_key != new_debt_key
+    starts_after_close = previous_status != STATUS_PAID and (
+        previous_status == STATUS_CLOSED or item.closed_at is not None
+    )
+    if not starts_after_close and not starts_after_paid:
+        return False
+
+    reset_fields: list[str] = []
+    new_status = STATUS_NEW_DEBT if phone else STATUS_NO_PHONE
+    if item.status != new_status:
+        reset_fields.append("status")
+    item.status = new_status
+
+    for field_name in CYCLE_RESET_NULL_FIELDS:
+        if getattr(item, field_name) is not None:
+            reset_fields.append(field_name)
+        setattr(item, field_name, None)
+
+    payload = dict(item.payload) if isinstance(item.payload, dict) else {}
+    for key in WORKPLACE_PAYLOAD_KEYS:
+        if key in payload:
+            reset_fields.append(f"payload.{key}")
+            payload.pop(key, None)
+    item.payload = payload
+
+    cycle_identity = hashlib.sha256(
+        f"{previous_debt_key or 'none'}|{new_debt_key}".encode()
+    ).hexdigest()[:20]
+    _append_event(
+        session,
+        item=item,
+        event_type=EVENT_DEBT_CYCLE_RESET,
+        comment="Начат новый рабочий цикл долга.",
+        payload={
+            "previous_status": previous_status,
+            "new_status": new_status,
+            "previous_debt_key": previous_debt_key,
+            "new_debt_key": new_debt_key,
+            "reset_fields": reset_fields,
+        },
+        idempotency_key=f"{as_of.isoformat()}|{cycle_identity}",
+        source=source,
+        summary=summary,
+    )
+    return True
+
+
 def _latest_sms_for_item(
     session: Session,
     *,
@@ -363,7 +446,10 @@ def _latest_sms_for_item(
 ) -> ReceivableSmsLog | None:
     return session.scalar(
         select(ReceivableSmsLog)
-        .where(ReceivableSmsLog.stable_key == item.stable_key)
+        .where(
+            ReceivableSmsLog.stable_key == item.stable_key,
+            ReceivableSmsLog.debt_key == item.current_debt_key,
+        )
         .order_by(ReceivableSmsLog.business_date.desc(), ReceivableSmsLog.id.desc())
     )
 
@@ -937,6 +1023,16 @@ def _update_work_item_from_case(
     old_debt_key = item.current_debt_key
     debt_key = debt_key_for_case(case)
     phone = _normalize_phone(phone_by_counterparty.get(case.counterparty_ref) or item.phone)
+    cycle_reset = reset_receivable_debt_cycle(
+        session,
+        item=item,
+        new_debt_key=debt_key,
+        current_balance=case.current_balance,
+        phone=phone,
+        as_of=as_of,
+        source="onec_workflow",
+        summary=summary,
+    )
 
     item.counterparty_ref = case.counterparty_ref
     item.counterparty_name = case.counterparty_name
@@ -976,7 +1072,8 @@ def _update_work_item_from_case(
         **preserved_payload,
     }
     _sync_item_sms_state(session, item=item)
-    item.status = _resolve_status(item=item, case=case, as_of=as_of)
+    if not cycle_reset:
+        item.status = _resolve_status(item=item, case=case, as_of=as_of)
     assigned_user_id, assigned_source = _resolve_assignment(
         case=case, settings=settings, status=item.status
     )
@@ -1305,8 +1402,6 @@ def sync_receivable_workflow(
             )
         else:
             summary.work_items_updated += 1
-        if item.status == STATUS_CLOSED:
-            item.closed_at = None
         _update_work_item_from_case(
             session,
             item=item,

@@ -43,6 +43,12 @@ from app.services.counterparty_folder_snapshots import (
     build_counterparty_folder_changes,
     sync_counterparty_folder_snapshot,
 )
+from app.services.receivable_canonical_debt_origin import (
+    CANONICAL_DEBT_STATUS_BALANCE_MISMATCH,
+    CANONICAL_DEBT_STATUS_MATCHED,
+    CanonicalDebtSaleCandidate,
+    resolve_canonical_debt_origin,
+)
 from app.services.receivable_statement_debt import (
     ReceivableStatementEvent,
     resolve_open_debt_documents_by_statement,
@@ -588,6 +594,21 @@ def test_below_minimum_suppression_keeps_document_mismatch_reason() -> None:
     assert suppressed["suppression_reason"] == "below_min_balance_threshold"
 
 
+def test_below_minimum_suppression_marks_non_actionable_item_for_daily_filter() -> None:
+    suppressed = _apply_report_suppression(
+        {
+            "current_balance": Decimal("90.00"),
+            "status": STATUS_OK,
+            "review_reason": None,
+        }
+    )
+
+    assert suppressed["status"] == STATUS_OK
+    assert suppressed["review_reason"] is None
+    assert suppressed["suppressed_from_daily_report"] is True
+    assert suppressed["suppression_reason"] == "below_min_balance_threshold"
+
+
 def test_exclusion_reason_survives_document_diagnostics() -> None:
     snapshot = _snapshot(
         "cp-service",
@@ -688,6 +709,112 @@ def test_supplier_folder_is_excluded_for_current_or_recommended_folder() -> None
     assert guarded["recommended_folder_ref"] is None
     assert guarded["business_review_reason"] is None
     assert enrich_folder_recommendation_item(guarded)["queue"] == QUEUE_EXCLUDED
+
+
+def test_canonical_continuous_balance_resolves_maxim_control_documents() -> None:
+    cases = [
+        {
+            "code": "РБ008670",
+            "opening_balance": "2940.00",
+            "daily_movements": {
+                date(2025, 9, 25): Decimal("-5670.00"),
+                date(2025, 9, 27): Decimal("-460.00"),
+                date(2025, 10, 1): Decimal("7210.00"),
+                date(2026, 8, 5): Decimal("-3000.00"),
+            },
+            "current_balance": "1020.00",
+            "expected_number": "РБГУ0477610",
+            "expected_date": datetime(2025, 10, 1, 13, 20, 52),
+            "gross_amount": "2200.00",
+        },
+        {
+            "code": "РБ028014",
+            "opening_balance": "0.00",
+            "daily_movements": {
+                date(2026, 2, 14): Decimal("9850.00"),
+                date(2026, 2, 16): Decimal("-9850.00"),
+                date(2026, 3, 8): Decimal("3150.00"),
+            },
+            "current_balance": "3150.00",
+            "expected_number": "РБГУ0106586",
+            "expected_date": datetime(2026, 3, 8, 18, 37, 28),
+            "gross_amount": "3150.00",
+        },
+        {
+            "code": "РБ008206",
+            "opening_balance": "690.00",
+            "daily_movements": {
+                date(2026, 3, 22): Decimal("-700.00"),
+                date(2026, 3, 23): Decimal("1020.00"),
+                date(2026, 3, 24): Decimal("-920.00"),
+            },
+            "current_balance": "90.00",
+            "expected_number": "РБГУ0132302",
+            "expected_date": datetime(2026, 3, 23, 12, 33, 46),
+            "gross_amount": "1020.00",
+        },
+        {
+            "code": "РБ006368",
+            "opening_balance": "390.00",
+            "daily_movements": {
+                date(2026, 4, 25): Decimal("-420.00"),
+                date(2026, 5, 3): Decimal("1700.00"),
+                date(2026, 5, 4): Decimal("-10.00"),
+            },
+            "current_balance": "1660.00",
+            "expected_number": "РБГУ0198680",
+            "expected_date": datetime(2026, 5, 3, 9, 52, 48),
+            "gross_amount": "1700.00",
+        },
+    ]
+
+    for case in cases:
+        expected_date = case["expected_date"]
+        resolution = resolve_canonical_debt_origin(
+            opening_period=date(2025, 1, 1),
+            opening_balance=Decimal(case["opening_balance"]),
+            daily_movements=case["daily_movements"],
+            sale_candidates=[
+                CanonicalDebtSaleCandidate(
+                    document_ref=f"{case['code']}-expected",
+                    document_number=case["expected_number"],
+                    document_date=expected_date,
+                    gross_amount=Decimal(case["gross_amount"]),
+                ),
+                CanonicalDebtSaleCandidate(
+                    document_ref=f"{case['code']}-newer",
+                    document_number="РТУ-НОВЕЕ",
+                    document_date=datetime(2026, 7, 1, 12, 0),
+                    gross_amount=Decimal("9999.00"),
+                ),
+            ],
+            current_balance=Decimal(case["current_balance"]),
+        )
+
+        assert resolution.status == CANONICAL_DEBT_STATUS_MATCHED, case["code"]
+        assert [item.document_number for item in resolution.documents] == [case["expected_number"]]
+        assert resolution.documents[0].document_date == expected_date
+        assert resolution.documents[0].open_amount == Decimal(case["current_balance"])
+
+
+def test_canonical_continuous_balance_does_not_guess_on_amount_mismatch() -> None:
+    resolution = resolve_canonical_debt_origin(
+        opening_period=date(2025, 1, 1),
+        opening_balance=Decimal("0.00"),
+        daily_movements={date(2026, 5, 1): Decimal("1000.00")},
+        sale_candidates=[
+            CanonicalDebtSaleCandidate(
+                document_ref="sale-1",
+                document_number="РТУ-1",
+                document_date=datetime(2026, 5, 1, 10, 0),
+                gross_amount=Decimal("1000.00"),
+            )
+        ],
+        current_balance=Decimal("999.98"),
+    )
+
+    assert resolution.status == CANONICAL_DEBT_STATUS_BALANCE_MISMATCH
+    assert resolution.documents == ()
 
 
 def test_multiple_confirmed_open_folders_are_sent_to_business_review() -> None:

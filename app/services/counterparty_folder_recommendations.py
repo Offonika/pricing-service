@@ -13,6 +13,12 @@ from sqlalchemy.orm import Session
 
 from app.models.receivable_balance_snapshot import ReceivableBalanceSnapshot
 from app.models.receivable_ledger_event import ReceivableLedgerEvent
+from app.services.receivable_canonical_debt_origin import (
+    CANONICAL_DEBT_SELECTION_RULE,
+    CANONICAL_DEBT_STATUS_MATCHED,
+    CanonicalOpenDebtDocument,
+    fetch_canonical_open_debt_documents,
+)
 from app.services.receivable_department_aliases import (
     receivable_department_alias_key,
     receivable_department_display_name,
@@ -1147,6 +1153,87 @@ def _open_debt_documents_from_statement(
     return documents
 
 
+def _open_debt_documents_from_canonical_origin(
+    documents: Sequence[CanonicalOpenDebtDocument],
+    *,
+    document_departments: dict[str, SaleDocumentDepartmentRow],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for document in documents:
+        document_key = _ref_key(document.document_ref)
+        document_row = document_departments.get(document_key)
+        recommended_folder_ref, recommended_folder_name, recommended_folder_source = (
+            _effective_recommended_folder(document_row)
+        )
+        result.append(
+            {
+                "document_ref": document.document_ref,
+                "document_number": document.document_number,
+                "document_date": document.document_date,
+                "open_amount": document.open_amount,
+                "sale_amount": document.gross_amount,
+                "closing_amount": document.closing_amount,
+                "return_amount": Decimal("0.00"),
+                "manager_ref": None,
+                "manager_name": None,
+                "document_responsible_ref": (
+                    document_row.document_responsible_ref if document_row else None
+                ),
+                "document_responsible_name": (
+                    document_row.document_responsible_name if document_row else None
+                ),
+                "document_author_ref": (document_row.document_author_ref if document_row else None),
+                "document_author_name": (
+                    document_row.document_author_name if document_row else None
+                ),
+                "debt_department_ref": (
+                    document_row.document_department_ref if document_row else None
+                ),
+                "debt_department_name": (
+                    document_row.document_department_name if document_row else None
+                ),
+                "document_department_recommended_folder_ref": (
+                    document_row.recommended_folder_ref if document_row else None
+                ),
+                "document_department_recommended_folder_name": (
+                    document_row.recommended_folder_name if document_row else None
+                ),
+                "document_responsible_department_ref": (
+                    document_row.responsible_department_ref if document_row else None
+                ),
+                "document_responsible_department_name": (
+                    document_row.responsible_department_name if document_row else None
+                ),
+                "document_responsible_folder_ref": (
+                    document_row.responsible_folder_ref if document_row else None
+                ),
+                "document_responsible_folder_name": (
+                    document_row.responsible_folder_name if document_row else None
+                ),
+                "recommended_folder_ref": recommended_folder_ref,
+                "recommended_folder_name": recommended_folder_name,
+                "recommended_folder_source": recommended_folder_source,
+                "document_structure_status": DOCUMENT_STRUCTURE_CONFIRMED_OPEN,
+                "document_structure_order_ref": None,
+                "document_structure_order_number": None,
+                "document_structure_order_date": None,
+                "document_structure_linked_documents": [],
+                "statement_selection_rule": CANONICAL_DEBT_SELECTION_RULE,
+                "statement_balance_after": document.open_amount,
+                "statement_segment_start_row": None,
+                "statement_segment_end_row": None,
+                "statement_match_details": [
+                    {
+                        "rule": CANONICAL_DEBT_SELECTION_RULE,
+                        "gross_amount": document.gross_amount,
+                        "open_amount": document.open_amount,
+                    }
+                ],
+            }
+        )
+    return result
+
+
 def _candidate_sale_events_for_structure(
     snapshot: ReceivableBalanceSnapshot,
     sale_events: Sequence[ReceivableStatementEvent],
@@ -1212,6 +1299,54 @@ def build_open_debt_documents_by_counterparty(
             )
             for key, events in statement_events_by_counterparty.items()
         }
+    should_enrich_from_onec = include_onec_enrichment and onec_engine is not None
+    if should_enrich_from_onec and onec_engine.dialect.name == "mssql":
+        canonical_batch = fetch_canonical_open_debt_documents(
+            onec_engine,
+            counterparty_balances={
+                snapshot.counterparty_ref: snapshot.current_balance
+                for snapshot in snapshots
+                if _needs_structure_lookup_for_status(snapshot, status=status)
+            },
+            snapshot_date=snapshot_date,
+        )
+        if canonical_batch.supported:
+            selected_document_refs = sorted(
+                {
+                    document.document_ref
+                    for documents in canonical_batch.documents_by_counterparty.values()
+                    for document in documents
+                }
+            )
+            canonical_document_departments = (
+                fetch_sale_document_departments(
+                    onec_engine,
+                    document_refs=selected_document_refs,
+                )
+                if selected_document_refs
+                else {}
+            )
+            if diagnostics is not None:
+                diagnostics["canonical_opening_period"] = canonical_batch.opening_period
+                diagnostics["canonical_origin_statuses"] = {
+                    key: resolution.status
+                    for key, resolution in canonical_batch.resolutions_by_counterparty.items()
+                }
+                diagnostics["canonical_matched_count"] = sum(
+                    resolution.status == CANONICAL_DEBT_STATUS_MATCHED
+                    for resolution in canonical_batch.resolutions_by_counterparty.values()
+                )
+            return {
+                _ref_key(snapshot.counterparty_ref): _open_debt_documents_from_canonical_origin(
+                    canonical_batch.documents_by_counterparty.get(
+                        _ref_key(snapshot.counterparty_ref),
+                        (),
+                    ),
+                    document_departments=canonical_document_departments,
+                )
+                for snapshot in snapshots
+                if _needs_structure_lookup_for_status(snapshot, status=status)
+            }
     document_departments: dict[str, SaleDocumentDepartmentRow] = {}
     document_structure_checks: dict[str, ReceivableDocumentStructureCheck] = {}
     structure_document_refs: set[str] = set()
@@ -1230,7 +1365,6 @@ def build_open_debt_documents_by_counterparty(
             )
         )
     initial_structure_refs = sorted(structure_document_refs)
-    should_enrich_from_onec = include_onec_enrichment and onec_engine is not None
     if should_enrich_from_onec and initial_structure_refs:
         document_departments.update(
             fetch_sale_document_departments(
@@ -1661,16 +1795,14 @@ def _apply_document_mismatch_guard(
 
 
 def _apply_report_suppression(item: dict[str, Any]) -> dict[str, Any]:
-    if (
-        _is_actionable_status(str(item.get("status")))
-        and Decimal(item.get("current_balance") or 0) < MIN_RECOMMENDATION_BALANCE
-    ):
+    if Decimal(item.get("current_balance") or 0) < MIN_RECOMMENDATION_BALANCE:
         item = dict(item)
-        item["status"] = STATUS_NO_OVERDUE
-        if item.get("open_debt_source_status") != "document_mismatch":
-            item["review_reason"] = REVIEW_REASON_BELOW_MIN_BALANCE
         item["suppressed_from_daily_report"] = True
         item["suppression_reason"] = REVIEW_REASON_BELOW_MIN_BALANCE
+        if _is_actionable_status(str(item.get("status"))):
+            item["status"] = STATUS_NO_OVERDUE
+            if item.get("open_debt_source_status") != "document_mismatch":
+                item["review_reason"] = REVIEW_REASON_BELOW_MIN_BALANCE
     return item
 
 

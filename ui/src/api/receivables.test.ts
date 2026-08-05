@@ -33,6 +33,7 @@ function item(overrides: Partial<ReceivableWorkplaceItem> = {}): ReceivableWorkp
         staff_name: "Менеджер 1",
       },
     ],
+    supervisor_notes: [],
     ...overrides,
   };
 }

@@ -5997,6 +5997,90 @@
   resize: vertical;
 }
 
+.receivables__comment-preview {
+  width: 100%;
+  max-width: 190px;
+  overflow: hidden;
+  border: 0;
+  background: transparent;
+  color: #184e77;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.receivables__comment-editor-row td {
+  position: static;
+  background: #f8fafc;
+}
+
+.receivables__comment-editor {
+  display: grid;
+  gap: 12px;
+  padding: 8px;
+}
+
+.receivables__comment--expanded {
+  min-height: 88px;
+}
+
+.receivables__comment-editor-actions,
+.receivables__supervisor-notes-head,
+.receivables__note-switch,
+.receivables__folder-queues {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.receivables__comment-editor-actions {
+  justify-content: flex-end;
+}
+
+.receivables__supervisor-notes {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid #c7d7fe;
+  border-radius: 10px;
+  background: #eef4ff;
+}
+
+.receivables__supervisor-notes-head {
+  justify-content: space-between;
+  color: #194185;
+}
+
+.receivables__note-list,
+.receivables__note-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.receivables__note-card {
+  padding: 9px 11px;
+  border: 1px solid #d6e4ff;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.receivables__note-card p {
+  margin: 0 0 5px;
+  white-space: pre-wrap;
+}
+
+.receivables__note-card small,
+.receivables__supervisor-notes > small {
+  color: #475467;
+}
+
+.receivables__folder-queues {
+  margin-bottom: 10px;
+}
+
 .receivables__center {
   text-align: center;
 }

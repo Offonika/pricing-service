@@ -23,6 +23,8 @@ from app.services.counterparty_folder_recommendations import (
     OPEN_DEBT_DIAGNOSTIC_STRUCTURE_UNCONFIRMED,
     OPEN_DEBT_DIAGNOSTIC_TOTAL_ABOVE_BALANCE,
     OPEN_DEBT_DIAGNOSTIC_TOTAL_BELOW_BALANCE,
+    QUEUE_BUSINESS_REVIEW,
+    QUEUE_EXCLUDED,
     STATUS_MOVE_RECOMMENDED,
     STATUS_NEEDS_REVIEW,
     STATUS_NO_OVERDUE,
@@ -34,6 +36,7 @@ from app.services.counterparty_folder_recommendations import (
     _build_item,
     build_counterparty_folder_recommendations,
     classify_open_debt_documents,
+    enrich_folder_recommendation_item,
     open_debt_documents_match_balance,
 )
 from app.services.counterparty_folder_snapshots import (
@@ -403,6 +406,75 @@ def test_statement_debt_resolver_caps_single_large_bottom_up_sale_to_balance() -
     assert docs[0].open_amount == Decimal("3000.00")
 
 
+def test_statement_debt_resolver_prefers_old_structure_confirmed_debt() -> None:
+    docs = resolve_open_debt_documents_by_statement(
+        [
+            _statement_event("sale", "sale-2025", "РТУ-2025", datetime(2025, 8, 1), "1000"),
+            _statement_event("sale", "sale-2026", "РТУ-2026", datetime(2026, 7, 1), "1000"),
+        ],
+        current_balance=Decimal("1000.00"),
+        structure_checks={
+            "sale-2025": SimpleNamespace(
+                status="confirmed_open",
+                open_amount=Decimal("1000.00"),
+                closing_amount=Decimal("0.00"),
+                linked_documents=(),
+            )
+        },
+    )
+
+    assert [item.document_number for item in docs] == ["РТУ-2025"]
+    assert docs[0].statement_selection_rule == "statement_structure_confirmed_open"
+
+
+def test_statement_debt_resolver_keeps_confirmed_debt_before_later_zero_balance() -> None:
+    docs = resolve_open_debt_documents_by_statement(
+        [
+            _statement_event("sale", "sale-2025", "РТУ-2025", datetime(2025, 8, 1), "1000"),
+            _statement_event("payment", "payment-2025", "ПКО-2025", datetime(2025, 8, 2), "-1000"),
+            _statement_event("sale", "sale-2026", "РТУ-2026", datetime(2026, 7, 1), "1000"),
+        ],
+        current_balance=Decimal("1000.00"),
+        structure_checks={
+            "sale-2025": SimpleNamespace(
+                status="confirmed_open",
+                open_amount=Decimal("1000.00"),
+                closing_amount=Decimal("0.00"),
+                linked_documents=(),
+            )
+        },
+    )
+
+    assert [item.document_number for item in docs] == ["РТУ-2025"]
+    assert docs[0].open_amount == Decimal("1000.00")
+    assert docs[0].statement_selection_rule == "statement_structure_confirmed_open"
+
+
+def test_statement_debt_resolver_sorts_confirmed_open_documents_oldest_first() -> None:
+    docs = resolve_open_debt_documents_by_statement(
+        [
+            _statement_event("sale", "sale-new", "РТУ-НОВАЯ", datetime(2026, 7, 1), "600"),
+            _statement_event("sale", "sale-old", "РТУ-СТАРАЯ", datetime(2025, 8, 1), "400"),
+        ],
+        current_balance=Decimal("1000.00"),
+        structure_checks={
+            ref: SimpleNamespace(
+                status="confirmed_open",
+                open_amount=amount,
+                closing_amount=Decimal("0.00"),
+                linked_documents=(),
+            )
+            for ref, amount in {
+                "sale-new": Decimal("600.00"),
+                "sale-old": Decimal("400.00"),
+            }.items()
+        },
+    )
+
+    assert [item.document_number for item in docs] == ["РТУ-СТАРАЯ", "РТУ-НОВАЯ"]
+    assert [item.open_amount for item in docs] == [Decimal("400.00"), Decimal("600.00")]
+
+
 def test_open_debt_diagnostics_do_not_accept_missing_or_mismatched_documents() -> None:
     assert not open_debt_documents_match_balance([], current_balance=Decimal("100.00"))
     assert (
@@ -434,6 +506,22 @@ def test_open_debt_diagnostics_do_not_accept_missing_or_mismatched_documents() -
     assert (
         classify_open_debt_documents(
             [{**confirmed, "open_amount": "110.00"}],
+            current_balance=Decimal("100.00"),
+            statement_sale_count=1,
+        )
+        == OPEN_DEBT_DIAGNOSTIC_TOTAL_ABOVE_BALANCE
+    )
+    assert (
+        classify_open_debt_documents(
+            [{**confirmed, "open_amount": "100.01"}],
+            current_balance=Decimal("100.00"),
+            statement_sale_count=1,
+        )
+        == OPEN_DEBT_DIAGNOSTIC_MATCHED
+    )
+    assert (
+        classify_open_debt_documents(
+            [{**confirmed, "open_amount": "100.02"}],
             current_balance=Decimal("100.00"),
             statement_sale_count=1,
         )
@@ -498,6 +586,171 @@ def test_below_minimum_suppression_keeps_document_mismatch_reason() -> None:
     assert suppressed["review_reason"] == "open_debt_statement_missing"
     assert suppressed["suppressed_from_daily_report"] is True
     assert suppressed["suppression_reason"] == "below_min_balance_threshold"
+
+
+def test_exclusion_reason_survives_document_diagnostics() -> None:
+    snapshot = _snapshot(
+        "cp-service",
+        counterparty_name="Служебный контрагент",
+        balance="1000.00",
+        document_ref="doc-service",
+        document_number="РТУ-СЛУЖЕБНАЯ",
+        document_date=datetime(2026, 5, 1),
+        credit_depth_days=7,
+        is_overdue=True,
+        overdue_days=20,
+    )
+    item = _build_item(
+        snapshot,
+        folder_row=CounterpartyFolderRow(
+            counterparty_ref="cp-service",
+            counterparty_code="РБ034645",
+            counterparty_name="Служебный контрагент",
+            current_folder_ref="folder-main",
+            current_folder_name="01. Горбушка",
+        ),
+        document_row=None,
+        open_debt_documents=[],
+    )
+    guarded = _apply_document_mismatch_guard(
+        item,
+        diagnostic=OPEN_DEBT_DIAGNOSTIC_TOTAL_BELOW_BALANCE,
+    )
+    enriched = enrich_folder_recommendation_item(guarded)
+
+    assert enriched["exclusion_reason"] == "excluded_service_counterparty"
+    assert enriched["review_reason"] == "open_debt_document_total_below_balance"
+    assert enriched["queue"] == QUEUE_EXCLUDED
+
+
+def test_supplier_folder_is_excluded_for_current_or_recommended_folder() -> None:
+    snapshot = _snapshot(
+        "cp-supplier",
+        counterparty_name="Поставщик",
+        balance="1000.00",
+        document_ref="doc-supplier",
+        document_number="РТУ-ПОСТАВЩИК",
+        document_date=datetime(2026, 5, 1),
+        credit_depth_days=7,
+        is_overdue=True,
+        overdue_days=20,
+    )
+    current_supplier = _build_item(
+        snapshot,
+        folder_row=CounterpartyFolderRow(
+            counterparty_ref="cp-supplier",
+            counterparty_code="РБ048956",
+            counterparty_name="Поставщик",
+            current_folder_ref="folder-suppliers",
+            current_folder_name="  ПОСТАВЩИКИ  ",
+        ),
+        document_row=None,
+        open_debt_documents=[],
+    )
+    recommended_supplier = _build_item(
+        snapshot,
+        folder_row=CounterpartyFolderRow(
+            counterparty_ref="cp-supplier",
+            counterparty_code="РБ048956",
+            counterparty_name="Поставщик",
+            current_folder_ref="folder-main",
+            current_folder_name="01. Горбушка",
+        ),
+        document_row=SaleDocumentDepartmentRow(
+            document_ref="doc-supplier",
+            document_department_ref="dep-supplier",
+            document_department_name="Поставщики",
+            recommended_folder_ref="folder-suppliers",
+            recommended_folder_name="Поставщики",
+            document_responsible_ref=None,
+            document_responsible_name=None,
+            document_author_ref=None,
+            document_author_name=None,
+        ),
+        open_debt_documents=[
+            {
+                "document_ref": "doc-supplier",
+                "document_number": "РТУ-ПОСТАВЩИК",
+                "document_date": datetime(2026, 5, 1),
+                "open_amount": Decimal("1000.00"),
+                "recommended_folder_ref": "folder-suppliers",
+                "recommended_folder_name": "Поставщики",
+            }
+        ],
+    )
+
+    assert current_supplier["exclusion_reason"] == "excluded_supplier_folder"
+    assert recommended_supplier["exclusion_reason"] == "excluded_supplier_folder"
+    guarded = _apply_document_mismatch_guard(
+        recommended_supplier,
+        diagnostic=OPEN_DEBT_DIAGNOSTIC_TOTAL_ABOVE_BALANCE,
+    )
+    assert guarded["recommended_folder_ref"] is None
+    assert guarded["business_review_reason"] is None
+    assert enrich_folder_recommendation_item(guarded)["queue"] == QUEUE_EXCLUDED
+
+
+def test_multiple_confirmed_open_folders_are_sent_to_business_review() -> None:
+    snapshot = _snapshot(
+        "cp-multiple-folders",
+        counterparty_name="Клиент с двумя папками",
+        balance="1000.00",
+        document_ref="doc-old",
+        document_number="РТУ-СТАРАЯ",
+        document_date=datetime(2025, 5, 1),
+        credit_depth_days=7,
+        is_overdue=True,
+        overdue_days=300,
+    )
+    item = _build_item(
+        snapshot,
+        folder_row=CounterpartyFolderRow(
+            counterparty_ref="cp-multiple-folders",
+            counterparty_code="РБ000100",
+            counterparty_name="Клиент с двумя папками",
+            current_folder_ref="folder-main",
+            current_folder_name="01. Горбушка",
+        ),
+        document_row=SaleDocumentDepartmentRow(
+            document_ref="doc-old",
+            document_department_ref="dep-a",
+            document_department_name="Просвещение",
+            recommended_folder_ref="folder-a",
+            recommended_folder_name="Просвещение",
+            document_responsible_ref="staff-a",
+            document_responsible_name="Сотрудник А",
+            document_author_ref=None,
+            document_author_name=None,
+        ),
+        open_debt_documents=[
+            {
+                "document_ref": "doc-old",
+                "document_number": "РТУ-СТАРАЯ",
+                "document_date": datetime(2025, 5, 1),
+                "open_amount": Decimal("400.00"),
+                "recommended_folder_ref": "folder-a",
+                "recommended_folder_name": "Просвещение",
+            },
+            {
+                "document_ref": "doc-new",
+                "document_number": "РТУ-НОВАЯ",
+                "document_date": datetime(2026, 5, 1),
+                "open_amount": Decimal("600.00"),
+                "recommended_folder_ref": "folder-b",
+                "recommended_folder_name": "Горбушка",
+            },
+        ],
+    )
+    enriched = enrich_folder_recommendation_item(item)
+
+    assert enriched["business_review_reason"] == "multiple_open_debt_folders"
+    assert enriched["recommended_folder_ref"] is None
+    assert enriched["recommended_folder_name"] is None
+    assert enriched["queue"] == QUEUE_BUSINESS_REVIEW
+    assert (
+        enrich_folder_recommendation_item({**item, "status": STATUS_NO_OVERDUE})["queue"]
+        == QUEUE_BUSINESS_REVIEW
+    )
 
 
 def test_folder_alias_treats_site_and_online_store_as_equivalent() -> None:

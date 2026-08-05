@@ -13,6 +13,7 @@ related_code:
   - app/api/management.py
   - app/models/receivable_case.py
   - app/models/receivable_work.py
+  - alembic/versions/a0b1c2d3e4f6_add_receivable_supervisor_notes.py
   - app/schemas/bitrix_receivables.py
   - app/schemas/receivable_workplace.py
   - app/services/bitrix_receivables_auth.py
@@ -54,7 +55,7 @@ contracts:
 depends_on: []
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-16"
+updated_at: "2026-08-05"
 ---
 
 # Назначение
@@ -223,6 +224,24 @@ SMS и любыми write-back действиями в `1С`:
   строк без данных клиентов;
 - отрицательный остаток сохраняется в reconciliation, но не создаёт
   покупательский кейс, просрочку, звонок или строку рабочего списка.
+
+# Decision 2026-08-05 / Заметки руководителя
+
+Для задачи Bitrix `#43` менеджерский `comment` и существующий PATCH-контракт
+остаются без изменений. Рядом добавлен отдельный контур заметок руководителя:
+
+- `personal` видит только автор, включая ограничение от других пользователей с
+  полным доступом;
+- `shared` видят все сотрудники, которым доступен клиент;
+- писать и удалять заметки могут только Bitrix-пользователи с текущим
+  `full access`; internal token и подразделенческий доступ остаются read-only;
+- каждый руководитель имеет не более одной личной и одной общей заметки на
+  клиента; пользователь не может перезаписать заметку другого автора;
+- удаление выполняется через `deleted_at`, повторный `action_id` идемпотентен;
+- каждое сохранение и удаление создаёт append-only событие. Текст личной заметки
+  не помещается в `ReceivableWorkEvent.comment` или общий audit payload;
+- миграция аддитивная: при rollback приложения таблица сохраняется и не мешает
+  предыдущему релизу.
 
 # Decision 2026-07-16 / Безопасная синхронизация карточек и проверяемые накладные
 
@@ -648,7 +667,15 @@ Workplace API:
   необязательный `action_id` делает действие идемпотентным;
 - `GET /api/receivables/workplace/folder-recommendations?date=YYYY-MM-DD` -
   данные вкладки контроля папок по задаче `#756` с тем же контуром доступа, что
-  у рабочего места;
+  у рабочего места; `queue` поддерживает `actionable`, `business_review`,
+  `data_quality`, `excluded`, `all`, API по умолчанию использует `all`;
+- `ReceivableWorkplaceItem.supervisor_notes[]` возвращает `id`, `visibility`,
+  `comment`, автора, даты и `can_edit`; personal-фильтрация выполняется на
+  backend до формирования ответа;
+- `PUT /api/receivables/workplace/{counterparty_ref}/supervisor-notes/{visibility}?date=YYYY-MM-DD`
+  создаёт или обновляет собственную `personal|shared` заметку пользователя;
+- `DELETE` по тому же адресу выполняет soft-delete собственной заметки и
+  сохраняет аудит;
 - internal management token остается full-access для cron/локальной проверки;
 - Bitrix session token ограничивается подразделениями пользователя, backend не
   доверяет `department_ref` из UI и сам применяет фильтр.
@@ -1085,6 +1112,10 @@ Pilot safety valve:
 - открытые карточки других подразделений не закрываются пилотным sync-ом.
 
 # Changelog
+
+- 2026-08-05 - добавлены личные и общие заметки руководителя с full-access
+  записью, backend-приватностью, soft-delete, идемпотентностью и аудитом без
+  текста личной заметки; менеджерский комментарий не изменён.
 
 - 2026-08-04 - канонический расчёт переведён на фактический период итогов и
   непрерывное окно движений с fail-closed лимитом `45` дней; отрицательные

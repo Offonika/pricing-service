@@ -3351,6 +3351,14 @@ paths:
             pattern: ^(move_recommended|ok|no_overdue|needs_review)$
           - type: 'null'
           title: Status
+      - name: queue
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^(actionable|business_review|data_quality|excluded|all)$
+          default: all
+          title: Queue
       - name: limit
         in: query
         required: false
@@ -4295,6 +4303,14 @@ paths:
             pattern: ^(move_recommended|ok|no_overdue|needs_review)$
           - type: 'null'
           title: Status
+      - name: queue
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^(actionable|business_review|data_quality|excluded|all)$
+          default: all
+          title: Queue
       - name: limit
         in: query
         required: false
@@ -4351,6 +4367,104 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReceivableWorkplaceActionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/receivables/workplace/{counterparty_ref}/supervisor-notes/{visibility}:
+    put:
+      summary: Put Receivable Supervisor Note
+      operationId: put_receivable_supervisor_note_api_receivables_workplace__counterparty_ref__supervisor_notes__visibility__put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: counterparty_ref
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Counterparty Ref
+      - name: visibility
+        in: path
+        required: true
+        schema:
+          enum:
+          - personal
+          - shared
+          type: string
+          title: Visibility
+      - name: date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: Date
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReceivableSupervisorNoteUpsertRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReceivableSupervisorNoteMutationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      summary: Remove Receivable Supervisor Note
+      operationId: remove_receivable_supervisor_note_api_receivables_workplace__counterparty_ref__supervisor_notes__visibility__delete
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: counterparty_ref
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Counterparty Ref
+      - name: visibility
+        in: path
+        required: true
+        schema:
+          enum:
+          - personal
+          - shared
+          type: string
+          title: Visibility
+      - name: date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: Date
+      - name: action_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 160
+          - type: 'null'
+          title: Action Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReceivableSupervisorNoteMutationResponse'
         '422':
           description: Validation Error
           content:
@@ -12253,6 +12367,29 @@ components:
           - type: string
           - type: 'null'
           title: Review Reason
+        exclusion_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Exclusion Reason
+        business_review_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Business Review Reason
+        signal_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Signal Key
+        queue:
+          type: string
+          title: Queue
+          default: data_quality
+        action_required:
+          type: boolean
+          title: Action Required
+          default: false
         document_structure_status:
           anyOf:
           - type: string
@@ -23698,6 +23835,79 @@ components:
       - aged_bucket
       - activity_segment
       title: ReceivableCaseItem
+    ReceivableSupervisorNoteItem:
+      properties:
+        id:
+          type: integer
+          title: Id
+        visibility:
+          type: string
+          enum:
+          - personal
+          - shared
+          title: Visibility
+        comment:
+          type: string
+          title: Comment
+        author_user_id:
+          type: string
+          title: Author User Id
+        author_name:
+          type: string
+          title: Author Name
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        can_edit:
+          type: boolean
+          title: Can Edit
+          default: false
+      type: object
+      required:
+      - id
+      - visibility
+      - comment
+      - author_user_id
+      - author_name
+      - created_at
+      - updated_at
+      title: ReceivableSupervisorNoteItem
+    ReceivableSupervisorNoteMutationResponse:
+      properties:
+        note:
+          anyOf:
+          - $ref: '#/components/schemas/ReceivableSupervisorNoteItem'
+          - type: 'null'
+        event:
+          additionalProperties: true
+          type: object
+          title: Event
+      type: object
+      required:
+      - event
+      title: ReceivableSupervisorNoteMutationResponse
+    ReceivableSupervisorNoteUpsertRequest:
+      properties:
+        comment:
+          type: string
+          maxLength: 5000
+          minLength: 1
+          title: Comment
+        action_id:
+          anyOf:
+          - type: string
+            maxLength: 160
+          - type: 'null'
+          title: Action Id
+      type: object
+      required:
+      - comment
+      title: ReceivableSupervisorNoteUpsertRequest
     ReceivableWorkplaceActionRequest:
       properties:
         action_id:
@@ -24055,6 +24265,11 @@ components:
             $ref: '#/components/schemas/ReceivableWorkplaceStaffOption'
           type: array
           title: Staff Options
+        supervisor_notes:
+          items:
+            $ref: '#/components/schemas/ReceivableSupervisorNoteItem'
+          type: array
+          title: Supervisor Notes
       type: object
       required:
       - snapshot_date

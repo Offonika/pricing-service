@@ -17,12 +17,18 @@ from app.models import (
 )
 from app.services.counterparty_folder_recommendations import (
     OPEN_DEBT_DIAGNOSTIC_MATCHED,
+    QUEUE_ACTIONABLE,
+    QUEUE_ALL,
+    QUEUE_BUSINESS_REVIEW,
+    QUEUE_DATA_QUALITY,
+    QUEUE_EXCLUDED,
     STATUS_MOVE_RECOMMENDED,
     STATUS_NEEDS_REVIEW,
     STATUS_NO_OVERDUE,
     STATUS_OK,
     build_open_debt_documents_by_counterparty,
     classify_open_debt_documents,
+    enrich_folder_recommendation_item,
     evaluate_open_debt_source_freshness,
 )
 from app.services.receivables import CASE_BUYERS
@@ -326,9 +332,13 @@ def _filter_folder_payload_for_access(
 
 
 def _folder_summary(
-    payload: list[dict[str, Any]], *, source_snapshot_count: int = 0
+    payload: list[dict[str, Any]],
+    *,
+    source_snapshot_count: int = 0,
+    queue_population: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     status_counts = Counter(str(item.get("status") or "") for item in payload)
+    queue_counts = Counter(str(item.get("queue") or "") for item in (queue_population or payload))
     return {
         "total_count": len(payload),
         "source_snapshot_count": source_snapshot_count,
@@ -336,6 +346,11 @@ def _folder_summary(
         "ok_count": status_counts[STATUS_OK],
         "no_overdue_count": status_counts[STATUS_NO_OVERDUE],
         "needs_review_count": status_counts[STATUS_NEEDS_REVIEW],
+        "queue_counts": dict(sorted(queue_counts.items())),
+        "actionable_count": queue_counts[QUEUE_ACTIONABLE],
+        "business_review_count": queue_counts[QUEUE_BUSINESS_REVIEW],
+        "data_quality_count": queue_counts[QUEUE_DATA_QUALITY],
+        "excluded_count": queue_counts[QUEUE_EXCLUDED],
         "document_mismatch_count": sum(
             item.get("open_debt_source_status") == "document_mismatch" for item in payload
         ),
@@ -389,6 +404,7 @@ def load_cached_folder_recommendation_report(
     *,
     snapshot_date: date,
     status: str | None = None,
+    queue: str = QUEUE_ALL,
     limit: int | None = None,
     allowed_department_refs: set[str] | frozenset[str] | None = None,
 ) -> dict[str, Any] | None:
@@ -400,12 +416,28 @@ def load_cached_folder_recommendation_report(
     )
     if row is None:
         return None
+    allowed_queues = {
+        QUEUE_ACTIONABLE,
+        QUEUE_BUSINESS_REVIEW,
+        QUEUE_DATA_QUALITY,
+        QUEUE_EXCLUDED,
+        QUEUE_ALL,
+    }
+    if queue not in allowed_queues:
+        raise ValueError(f"unsupported queue: {queue}")
+    source_status = "source_stale" if row.source_status == "source_stale" else "cache_ready"
     payload = _filter_folder_payload_for_access(
-        list(row.payload or []),
+        [
+            enrich_folder_recommendation_item(item, source_status=source_status)
+            for item in list(row.payload or [])
+        ],
         allowed_department_refs=allowed_department_refs,
     )
     if status:
         payload = [item for item in payload if item.get("status") == status]
+    queue_population = list(payload)
+    if queue != QUEUE_ALL:
+        payload = [item for item in payload if item.get("queue") == queue]
     if limit is not None:
         payload = payload[:limit]
     source_snapshot_count = int((row.summary or {}).get("source_snapshot_count") or len(payload))
@@ -413,11 +445,15 @@ def load_cached_folder_recommendation_report(
         "snapshot_date": row.snapshot_date,
         "report_revision": row.report_revision,
         "summary": _json_safe(
-            _folder_summary(payload, source_snapshot_count=source_snapshot_count)
+            _folder_summary(
+                payload,
+                source_snapshot_count=source_snapshot_count,
+                queue_population=queue_population,
+            )
         ),
         "payload": payload,
         "computed_at": row.computed_at,
-        "source_status": ("source_stale" if row.source_status == "source_stale" else "cache_ready"),
+        "source_status": source_status,
     }
 
 

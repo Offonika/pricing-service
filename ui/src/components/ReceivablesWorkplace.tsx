@@ -3,13 +3,16 @@ import toast from "react-hot-toast";
 import { resolveBitrixPortalUrl } from "../api/bitrix";
 import { clearApiAuthToken, setApiAuthToken } from "../api/client";
 import {
+  deleteReceivableSupervisorNote,
   fetchCounterpartyFolderRecommendations,
   fetchReceivableWorkplace,
   fetchReceivableWorkplaceMeta,
   buildReceivableWorkplaceActionPayload,
   receivablesErrorMessage,
+  upsertReceivableSupervisorNote,
   updateReceivableWorkplaceItem,
   type CounterpartyFolderRecommendation,
+  type CounterpartyFolderQueue,
   type ReceivableCacheComponent,
   type ReceivableDepartmentOption,
   type ReceivableStatusOption,
@@ -18,6 +21,7 @@ import {
   type ReceivableWorkplaceEditState,
   type ReceivableWorkplaceItem,
   type ReceivableWorkplaceSummary,
+  type SupervisorNoteVisibility,
 } from "../api/receivables";
 
 const RECEIVABLES_TOKEN_SESSION_KEY = "pricing.receivables.session_token.v1";
@@ -251,6 +255,141 @@ function ReceivableSummary({
   );
 }
 
+function SupervisorNotesPanel({
+  canWrite,
+  date,
+  item,
+  onChange,
+}: {
+  canWrite: boolean;
+  date: string;
+  item: ReceivableWorkplaceItem;
+  onChange: (notes: ReceivableWorkplaceItem["supervisor_notes"]) => void;
+}) {
+  const [visibility, setVisibility] = useState<SupervisorNoteVisibility>(
+    canWrite ? "personal" : "shared"
+  );
+  const notes = item.supervisor_notes || [];
+  const visibleNotes = notes.filter((note) => note.visibility === visibility);
+  const editableNote = visibleNotes.find((note) => note.can_edit);
+  const [draft, setDraft] = useState(editableNote?.comment || "");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setDraft(editableNote?.comment || "");
+  }, [editableNote?.comment, editableNote?.id, visibility]);
+
+  async function saveNote() {
+    const comment = draft.trim();
+    if (!comment) {
+      toast.error("Введите текст заметки");
+      return;
+    }
+    setBusy(true);
+    try {
+      const response = await upsertReceivableSupervisorNote(
+        date,
+        item.counterparty_ref,
+        visibility,
+        comment,
+        newActionId()
+      );
+      const savedNote = response.note;
+      if (savedNote) {
+        onChange([...notes.filter((note) => note.id !== savedNote.id), savedNote]);
+      }
+      toast.success(visibility === "personal" ? "Личная заметка сохранена" : "Общая заметка сохранена");
+    } catch (error: unknown) {
+      toast.error(receivablesErrorMessage(error, "Не удалось сохранить заметку"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteNote() {
+    if (!editableNote) return;
+    setBusy(true);
+    try {
+      await deleteReceivableSupervisorNote(
+        date,
+        item.counterparty_ref,
+        visibility,
+        newActionId()
+      );
+      onChange(notes.filter((note) => note.id !== editableNote.id));
+      setDraft("");
+      toast.success("Заметка удалена");
+    } catch (error: unknown) {
+      toast.error(receivablesErrorMessage(error, "Не удалось удалить заметку"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="receivables__supervisor-notes">
+      <div className="receivables__supervisor-notes-head">
+        <strong>Заметки руководителя</strong>
+        <div className="receivables__note-switch" role="group" aria-label="Видимость заметки">
+          {canWrite && (
+            <button
+              className={visibility === "personal" ? "btn btn--compact" : "btn btn--compact btn--ghost"}
+              onClick={() => setVisibility("personal")}
+              type="button"
+            >
+              Личная
+            </button>
+          )}
+          <button
+            className={visibility === "shared" ? "btn btn--compact" : "btn btn--compact btn--ghost"}
+            onClick={() => setVisibility("shared")}
+            type="button"
+          >
+            Коллегам
+          </button>
+        </div>
+      </div>
+      <div className="receivables__note-list">
+        {visibleNotes.map((note) => (
+          <article className="receivables__note-card" key={note.id}>
+            <p>{note.comment}</p>
+            <small>
+              {note.author_name} · {formatDateTime(note.updated_at)}
+              {note.can_edit ? " · ваша заметка" : ""}
+            </small>
+          </article>
+        ))}
+        {!visibleNotes.length && (
+          <small>{visibility === "personal" ? "Личной заметки пока нет." : "Общих заметок пока нет."}</small>
+        )}
+      </div>
+      {canWrite && (
+        <div className="receivables__note-editor">
+          <textarea
+            aria-label={visibility === "personal" ? "Личная заметка руководителя" : "Заметка коллегам"}
+            className="receivables__comment receivables__comment--expanded"
+            maxLength={5000}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder={visibility === "personal" ? "Видна только вам" : "Видна коллегам с доступом к клиенту"}
+            value={draft}
+          />
+          <div className="receivables__comment-editor-actions">
+            {editableNote && (
+              <button className="btn btn--ghost" disabled={busy} onClick={() => void deleteNote()} type="button">
+                Удалить заметку
+              </button>
+            )}
+            <button className="btn" disabled={busy} onClick={() => void saveNote()} type="button">
+              {busy ? "Сохраняем..." : "Сохранить заметку"}
+            </button>
+          </div>
+        </div>
+      )}
+      {!canWrite && <small>Общие заметки доступны только для чтения.</small>}
+    </section>
+  );
+}
+
 function ReceivableRow({
   item,
   index,
@@ -263,6 +402,9 @@ function ReceivableRow({
   onToggleComment,
   onEdit,
   onSave,
+  canWriteSupervisorNotes,
+  date,
+  onSupervisorNotesChange,
 }: {
   item: ReceivableWorkplaceItem;
   index: number;
@@ -275,6 +417,9 @@ function ReceivableRow({
   onToggleComment: () => void;
   onEdit: (patch: Partial<EditState>) => void;
   onSave: () => void;
+  canWriteSupervisorNotes: boolean;
+  date: string;
+  onSupervisorNotesChange: (notes: ReceivableWorkplaceItem["supervisor_notes"]) => void;
 }) {
   const isPyatigorsk = (item.department_name || "").toLocaleLowerCase("ru-RU").includes("пятигор");
   const rowStatusOptions = statusOptions.filter(
@@ -409,7 +554,7 @@ function ReceivableRow({
           <td colSpan={14}>
             <div className="receivables__comment-editor">
               <label>
-                <strong>Комментарий по {item.counterparty_name || item.counterparty_ref}</strong>
+                <strong>Комментарий менеджера по {item.counterparty_name || item.counterparty_ref}</strong>
                 <textarea
                   autoFocus
                   className="receivables__comment receivables__comment--expanded"
@@ -425,6 +570,12 @@ function ReceivableRow({
                   {saving ? "Сохраняем..." : "Сохранить комментарий"}
                 </button>
               </div>
+              <SupervisorNotesPanel
+                canWrite={canWriteSupervisorNotes}
+                date={date}
+                item={item}
+                onChange={onSupervisorNotesChange}
+              />
             </div>
           </td>
         </tr>
@@ -497,23 +648,26 @@ function FolderRecommendations({
   loading,
   summary,
   sourceStatus,
+  queue,
+  onQueueChange,
 }: {
   items: CounterpartyFolderRecommendation[];
   loading: boolean;
   summary: Record<string, unknown>;
   sourceStatus: string;
+  queue: CounterpartyFolderQueue;
+  onQueueChange: (queue: CounterpartyFolderQueue) => void;
 }) {
   if (loading) return <div className="receivables__state">Загрузка вкладки контроля папок...</div>;
   const sourceStale = sourceStatus === "source_stale";
   const computedAt = typeof summary.computed_at === "string" ? summary.computed_at : "";
-  if (!items.length) {
-    return (
-      <div className="receivables__state">
-        По текущей дате рекомендаций нет.
-        {sourceStatus && <span> Источник: {sourceStatus}.</span>}
-      </div>
-    );
-  }
+  const queueOptions: Array<[CounterpartyFolderQueue, string]> = [
+    ["actionable", "Требует действия"],
+    ["business_review", "Бизнес-проверка"],
+    ["data_quality", "Проверка данных"],
+    ["excluded", "Исключённые"],
+    ["all", "Все"],
+  ];
   return (
     <section className="receivables__folder-tab">
       {sourceStale && (
@@ -521,12 +675,31 @@ function FolderRecommendations({
           Источник накладных устарел. Номера накладных скрыты, автоматические переносы отключены.
         </div>
       )}
+      <div className="receivables__folder-queues" role="group" aria-label="Очередь контроля папок">
+        {queueOptions.map(([value, label]) => (
+          <button
+            className={queue === value ? "btn btn--compact" : "btn btn--compact btn--ghost"}
+            key={value}
+            onClick={() => onQueueChange(value)}
+            type="button"
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       <div className="receivables__folder-summary">
         <span>Строк: {String(summary.total_count ?? items.length)}</span>
         <span>К пересмотру: {String(summary.needs_review_count ?? 0)}</span>
         <span>Источник: {sourceStatus || "ready"}</span>
         {computedAt && <span>Расчет: {formatDateTime(computedAt)}</span>}
       </div>
+      {!items.length && (
+        <div className="receivables__state">
+          В выбранной очереди строк нет.
+          {sourceStatus && <span> Источник: {sourceStatus}.</span>}
+        </div>
+      )}
+      {items.length > 0 && (
       <table>
         <thead>
           <tr>
@@ -549,7 +722,9 @@ function FolderRecommendations({
             const debtInvoiceDate = sourceStale
               ? ""
               : item.debt_document_date || item.origin_document_date || "";
-            const reviewReason = folderReviewReasonLabel(item.review_reason);
+            const reviewReason = folderReviewReasonLabel(
+              item.exclusion_reason || item.business_review_reason || item.review_reason
+            );
             return (
               <tr key={item.counterparty_ref}>
                 <td className="mono">{item.counterparty_code || ""}</td>
@@ -574,6 +749,7 @@ function FolderRecommendations({
           })}
         </tbody>
       </table>
+      )}
     </section>
   );
 }
@@ -610,6 +786,7 @@ export function ReceivablesWorkplace({
   const [folderSummary, setFolderSummary] = useState<Record<string, unknown>>({});
   const [folderSourceStatus, setFolderSourceStatus] = useState("");
   const [foldersLoading, setFoldersLoading] = useState(false);
+  const [folderQueue, setFolderQueue] = useState<CounterpartyFolderQueue>("actionable");
   const [metaLoaded, setMetaLoaded] = useState(false);
   const [latestSnapshotDate, setLatestSnapshotDate] = useState<string | null>(null);
   const dashboardReturnUrl = useMemo(readDashboardReturnUrl, []);
@@ -716,7 +893,7 @@ export function ReceivablesWorkplace({
     }
     setFoldersLoading(true);
     try {
-      const data = await fetchCounterpartyFolderRecommendations(date);
+      const data = await fetchCounterpartyFolderRecommendations(date, folderQueue);
       setFolderItems(data.payload);
       setFolderSummary(data.summary || {});
       setFolderSourceStatus(data.source_status);
@@ -725,7 +902,7 @@ export function ReceivablesWorkplace({
     } finally {
       setFoldersLoading(false);
     }
-  }, [date, hasToken]);
+  }, [date, folderQueue, hasToken]);
 
   useEffect(() => {
     void loadWorkplace();
@@ -911,6 +1088,8 @@ export function ReceivablesWorkplace({
               <tbody>
                 {displayedItems.map((item, index) => (
                   <ReceivableRow
+                    canWriteSupervisorNotes={bitrixMode && accessLevel === "full"}
+                    date={date}
                     key={item.counterparty_ref}
                     edit={edits[item.counterparty_ref] || initialEdit(item)}
                     expanded={expanded.has(item.counterparty_ref)}
@@ -927,6 +1106,15 @@ export function ReceivablesWorkplace({
                       }))
                     }
                     onSave={() => void saveItem(item)}
+                    onSupervisorNotesChange={(supervisorNotes) =>
+                      setItems((prev) =>
+                        prev.map((row) =>
+                          row.counterparty_ref === item.counterparty_ref
+                            ? { ...row, supervisor_notes: supervisorNotes }
+                            : row
+                        )
+                      )
+                    }
                     onToggleComment={() =>
                       setCommentsExpanded((prev) => {
                         const next = new Set(prev);
@@ -959,6 +1147,8 @@ export function ReceivablesWorkplace({
           loading={foldersLoading}
           sourceStatus={folderSourceStatus}
           summary={folderSummary}
+          queue={folderQueue}
+          onQueueChange={setFolderQueue}
         />
       )}
       <footer className="receivables__legend">

@@ -3,9 +3,11 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ReceivableWorkplaceItem, ReceivableWorkplaceResponse } from "../api/receivables";
 import {
+  deleteReceivableSupervisorNote,
   fetchCounterpartyFolderRecommendations,
   fetchReceivableWorkplace,
   fetchReceivableWorkplaceMeta,
+  upsertReceivableSupervisorNote,
 } from "../api/receivables";
 
 vi.mock("../api/receivables", async (importOriginal) => {
@@ -16,6 +18,8 @@ vi.mock("../api/receivables", async (importOriginal) => {
     fetchReceivableWorkplace: vi.fn(),
     fetchReceivableWorkplaceMeta: vi.fn(),
     updateReceivableWorkplaceItem: vi.fn(),
+    upsertReceivableSupervisorNote: vi.fn(),
+    deleteReceivableSupervisorNote: vi.fn(),
   };
 });
 
@@ -47,6 +51,7 @@ const item: ReceivableWorkplaceItem = {
   criticality: "normal",
   documents: [],
   staff_options: [],
+  supervisor_notes: [],
 };
 
 const response: ReceivableWorkplaceResponse = {
@@ -167,5 +172,116 @@ describe("ReceivablesWorkplace", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Показаны последние проверенные данные за 2000-01-01",
     );
+  });
+
+  it("loads actionable folder queue by default and switches to data quality", async () => {
+    render(<ReceivablesWorkplace bitrixMode />);
+
+    expect(await screen.findByText("Клиент Тест")).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Контроль папок" }));
+
+    await waitFor(() =>
+      expect(fetchCounterpartyFolderRecommendations).toHaveBeenCalledWith(
+        "2026-07-23",
+        "actionable",
+      ),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Проверка данных" }));
+    await waitFor(() =>
+      expect(fetchCounterpartyFolderRecommendations).toHaveBeenLastCalledWith(
+        "2026-07-23",
+        "data_quality",
+      ),
+    );
+  });
+
+  it("shows and saves personal and shared supervisor notes for full access", async () => {
+    const sharedNote = {
+      id: 10,
+      visibility: "shared" as const,
+      comment: "Заметка коллеги",
+      author_user_id: "43",
+      author_name: "Мария Руководитель",
+      created_at: "2026-07-23T10:00:00",
+      updated_at: "2026-07-23T11:00:00",
+      can_edit: false,
+    };
+    vi.mocked(fetchReceivableWorkplace).mockResolvedValue({
+      ...response,
+      payload: [{ ...item, supervisor_notes: [sharedNote] }],
+    });
+    vi.mocked(upsertReceivableSupervisorNote).mockResolvedValueOnce({
+      note: {
+        id: 11,
+        visibility: "shared",
+        comment: "Моя общая заметка",
+        author_user_id: "42",
+        author_name: "Иван Петров",
+        created_at: "2026-07-23T12:00:00",
+        updated_at: "2026-07-23T12:00:00",
+        can_edit: true,
+      },
+      event: {
+        event_type: "supervisor_note_upserted",
+        event_at: "2026-07-23T12:00:00",
+        source: "web_workplace",
+      },
+    });
+
+    render(<ReceivablesWorkplace bitrixMode accessLevel="full" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Комментарий тест" }));
+    expect(screen.getByText("Заметки руководителя")).toBeVisible();
+    expect(screen.getByRole("button", { name: "Личная" })).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Коллегам" }));
+    expect(screen.getByText("Заметка коллеги")).toBeVisible();
+    expect(screen.getByText(/Мария Руководитель/)).toBeVisible();
+    fireEvent.change(screen.getByRole("textbox", { name: "Заметка коллегам" }), {
+      target: { value: "Моя общая заметка" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Сохранить заметку" }));
+
+    await waitFor(() =>
+      expect(upsertReceivableSupervisorNote).toHaveBeenCalledWith(
+        "2026-07-23",
+        "test-client",
+        "shared",
+        "Моя общая заметка",
+        expect.any(String),
+      ),
+    );
+    expect(screen.getAllByText("Моя общая заметка")[0]).toBeVisible();
+  });
+
+  it("keeps supervisor notes read-only for department access", async () => {
+    vi.mocked(fetchReceivableWorkplace).mockResolvedValue({
+      ...response,
+      payload: [
+        {
+          ...item,
+          supervisor_notes: [
+            {
+              id: 10,
+              visibility: "shared",
+              comment: "Общая заметка для отдела",
+              author_user_id: "42",
+              author_name: "Иван Петров",
+              created_at: "2026-07-23T10:00:00",
+              updated_at: "2026-07-23T11:00:00",
+              can_edit: false,
+            },
+          ],
+        },
+      ],
+    });
+
+    render(<ReceivablesWorkplace bitrixMode accessLevel="department" />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Комментарий тест" }));
+    expect(screen.getByText("Общая заметка для отдела")).toBeVisible();
+    expect(screen.getByText("Общие заметки доступны только для чтения.")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "Личная" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Сохранить заметку" })).not.toBeInTheDocument();
+    expect(deleteReceivableSupervisorNote).not.toHaveBeenCalled();
   });
 });

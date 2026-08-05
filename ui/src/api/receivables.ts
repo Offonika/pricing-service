@@ -90,6 +90,30 @@ export interface ReceivableWorkplaceItem {
   criticality: string;
   documents: ReceivableDocument[];
   staff_options: ReceivableStaffOption[];
+  supervisor_notes: ReceivableSupervisorNote[];
+}
+
+export type SupervisorNoteVisibility = "personal" | "shared";
+
+export interface ReceivableSupervisorNote {
+  id: number;
+  visibility: SupervisorNoteVisibility;
+  comment: string;
+  author_user_id: string;
+  author_name: string;
+  created_at: string;
+  updated_at: string;
+  can_edit: boolean;
+}
+
+export interface ReceivableSupervisorNoteMutationResponse {
+  note?: ReceivableSupervisorNote | null;
+  event: {
+    event_type: string;
+    event_at: string;
+    source: string;
+    idempotent?: boolean;
+  };
 }
 
 export interface ReceivableWorkplaceSummary {
@@ -257,7 +281,19 @@ export interface CounterpartyFolderRecommendation {
   effective_overdue_days?: number | null;
   status: string;
   review_reason?: string | null;
+  exclusion_reason?: string | null;
+  business_review_reason?: string | null;
+  signal_key?: string | null;
+  queue: CounterpartyFolderQueue;
+  action_required: boolean;
 }
+
+export type CounterpartyFolderQueue =
+  | "actionable"
+  | "business_review"
+  | "data_quality"
+  | "excluded"
+  | "all";
 
 export interface CounterpartyFolderRecommendationResponse {
   as_of: string;
@@ -316,11 +352,46 @@ export async function updateReceivableWorkplaceItem(
   return response.data;
 }
 
-export async function fetchCounterpartyFolderRecommendations(date: string) {
+export async function fetchCounterpartyFolderRecommendations(
+  date: string,
+  queue: CounterpartyFolderQueue = "actionable"
+) {
   const response = await withReceivablesAuthRetry(() =>
     api.get<CounterpartyFolderRecommendationResponse>(
       "/receivables/workplace/folder-recommendations",
-      { params: { date, limit: 100 } }
+      { params: { date, queue, limit: 100 } }
+    )
+  );
+  return response.data;
+}
+
+export async function upsertReceivableSupervisorNote(
+  date: string,
+  counterpartyRef: string,
+  visibility: SupervisorNoteVisibility,
+  comment: string,
+  actionId: string
+) {
+  const response = await withReceivablesAuthRetry(() =>
+    api.put<ReceivableSupervisorNoteMutationResponse>(
+      `/receivables/workplace/${encodeURIComponent(counterpartyRef)}/supervisor-notes/${visibility}`,
+      { comment, action_id: actionId },
+      { params: { date } }
+    )
+  );
+  return response.data;
+}
+
+export async function deleteReceivableSupervisorNote(
+  date: string,
+  counterpartyRef: string,
+  visibility: SupervisorNoteVisibility,
+  actionId: string
+) {
+  const response = await withReceivablesAuthRetry(() =>
+    api.delete<ReceivableSupervisorNoteMutationResponse>(
+      `/receivables/workplace/${encodeURIComponent(counterpartyRef)}/supervisor-notes/${visibility}`,
+      { params: { date, action_id: actionId } }
     )
   );
   return response.data;

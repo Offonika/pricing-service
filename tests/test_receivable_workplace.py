@@ -22,6 +22,7 @@ from app.models import (
     ReceivableFolderRecommendationCache,
     ReceivableLedgerEvent,
     ReceivableOpenDebtCache,
+    ReceivableSupervisorNote,
     ReceivableWorkEvent,
     ReceivableWorkItem,
     StaffMember,
@@ -2639,3 +2640,197 @@ def test_receivables_folder_recommendations_use_cache_without_onec(
     assert body["payload"][0]["effective_due_date"] is None
     assert body["payload"][0]["effective_overdue_days"] is None
     assert body["payload"][0]["is_overdue"] is False
+
+
+def test_cached_folder_queue_is_enriched_and_filtered_before_limit(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 8, 5)
+    db_session.add(
+        ReceivableFolderRecommendationCache(
+            snapshot_date=as_of,
+            status_scope="all",
+            report_revision="queue-test",
+            summary={"source_snapshot_count": 2},
+            payload=[
+                {
+                    "counterparty_ref": "cp-excluded",
+                    "current_balance": "1000.00",
+                    "status": "no_overdue",
+                    "review_reason": "excluded_supplier_folder",
+                },
+                {
+                    "counterparty_ref": "cp-actionable",
+                    "current_balance": "1000.00",
+                    "current_folder_ref": "folder-old",
+                    "recommended_folder_ref": "folder-new",
+                    "debt_document_ref": "sale-1",
+                    "is_overdue": True,
+                    "status": "needs_review",
+                    "review_reason": "origin_document_structure_confirmed_manual_review",
+                },
+            ],
+        )
+    )
+    db_session.commit()
+
+    report = receivable_workplace_cache.load_cached_folder_recommendation_report(
+        db_session,
+        snapshot_date=as_of,
+        queue="actionable",
+        limit=1,
+    )
+
+    assert report is not None
+    assert [item["counterparty_ref"] for item in report["payload"]] == ["cp-actionable"]
+    assert report["summary"]["actionable_count"] == 1
+    assert report["summary"]["excluded_count"] == 1
+
+
+def test_supervisor_notes_enforce_privacy_permissions_idempotency_and_audit(
+    monkeypatch: pytest.MonkeyPatch,
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 8, 5)
+    db_session.add(_case(snapshot_date=as_of, counterparty_ref="cp-notes"))
+    db_session.commit()
+    settings = _bitrix_settings()
+    _override_receivables_settings(monkeypatch, settings)
+    full_42 = _bitrix_token(
+        settings,
+        user_id="42",
+        access=ReceivablesAccess(access_level="full", department_refs=frozenset()),
+    )
+    full_43 = _bitrix_token(
+        settings,
+        user_id="43",
+        access=ReceivablesAccess(access_level="full", department_refs=frozenset()),
+    )
+    department_42 = _bitrix_token(
+        settings,
+        user_id="42",
+        access=ReceivablesAccess(
+            access_level="department",
+            department_refs=frozenset({"dep-1"}),
+        ),
+    )
+
+    def override_db():
+        yield db_session
+
+    app.dependency_overrides = {get_db: override_db}
+    client = TestClient(app)
+    try:
+        personal = client.put(
+            "/api/receivables/workplace/cp-notes/supervisor-notes/personal",
+            params={"date": as_of.isoformat()},
+            json={"comment": "Личная заметка 42", "action_id": "personal-1"},
+            headers={"Authorization": f"Bearer {full_42}"},
+        )
+        shared = client.put(
+            "/api/receivables/workplace/cp-notes/supervisor-notes/shared",
+            params={"date": as_of.isoformat()},
+            json={"comment": "Общая заметка 42", "action_id": "shared-1"},
+            headers={"Authorization": f"Bearer {full_42}"},
+        )
+        retry = client.put(
+            "/api/receivables/workplace/cp-notes/supervisor-notes/shared",
+            params={"date": as_of.isoformat()},
+            json={"comment": "Не должна заменить", "action_id": "shared-1"},
+            headers={"Authorization": f"Bearer {full_42}"},
+        )
+        department_write = client.put(
+            "/api/receivables/workplace/cp-notes/supervisor-notes/shared",
+            params={"date": as_of.isoformat()},
+            json={"comment": "Запрещено", "action_id": "department-write"},
+            headers={"Authorization": f"Bearer {department_42}"},
+        )
+        internal_write = client.put(
+            "/api/receivables/workplace/cp-notes/supervisor-notes/shared",
+            params={"date": as_of.isoformat()},
+            json={"comment": "Запрещено", "action_id": "internal-write"},
+            headers={"Authorization": "Bearer secret-token"},
+        )
+        author_view = client.get(
+            "/api/receivables/workplace",
+            params={"date": as_of.isoformat()},
+            headers={"Authorization": f"Bearer {full_42}"},
+        )
+        other_full_view = client.get(
+            "/api/receivables/workplace",
+            params={"date": as_of.isoformat()},
+            headers={"Authorization": f"Bearer {full_43}"},
+        )
+        department_view = client.get(
+            "/api/receivables/workplace",
+            params={"date": as_of.isoformat()},
+            headers={"Authorization": f"Bearer {department_42}"},
+        )
+        other_shared = client.put(
+            "/api/receivables/workplace/cp-notes/supervisor-notes/shared",
+            params={"date": as_of.isoformat()},
+            json={"comment": "Общая заметка 43", "action_id": "shared-43"},
+            headers={"Authorization": f"Bearer {full_43}"},
+        )
+        manager_update = client.patch(
+            "/api/receivables/workplace/cp-notes",
+            params={"date": as_of.isoformat()},
+            json={"comment": "Комментарий менеджера", "action_id": "manager-comment"},
+            headers={"Authorization": f"Bearer {full_42}"},
+        )
+        deleted = client.delete(
+            "/api/receivables/workplace/cp-notes/supervisor-notes/personal",
+            params={"date": as_of.isoformat(), "action_id": "personal-delete"},
+            headers={"Authorization": f"Bearer {full_42}"},
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert personal.status_code == 200
+    assert personal.json()["note"]["can_edit"] is True
+    assert shared.status_code == 200
+    assert retry.status_code == 200
+    assert retry.json()["event"]["idempotent"] is True
+    assert retry.json()["note"]["comment"] == "Общая заметка 42"
+    assert department_write.status_code == 403
+    assert internal_write.status_code == 403
+
+    author_notes = author_view.json()["payload"][0]["supervisor_notes"]
+    assert {(note["visibility"], note["comment"]) for note in author_notes} == {
+        ("personal", "Личная заметка 42"),
+        ("shared", "Общая заметка 42"),
+    }
+    assert all(note["can_edit"] for note in author_notes)
+    other_notes = other_full_view.json()["payload"][0]["supervisor_notes"]
+    assert [(note["visibility"], note["comment"], note["can_edit"]) for note in other_notes] == [
+        ("shared", "Общая заметка 42", False)
+    ]
+    department_notes = department_view.json()["payload"][0]["supervisor_notes"]
+    assert [(note["visibility"], note["can_edit"]) for note in department_notes] == [
+        ("shared", False)
+    ]
+    assert other_shared.status_code == 200
+    assert manager_update.status_code == 200
+    assert manager_update.json()["item"]["comment"] == "Комментарий менеджера"
+    assert len(manager_update.json()["item"]["supervisor_notes"]) == 3
+    assert deleted.status_code == 200
+
+    notes = db_session.execute(select(ReceivableSupervisorNote)).scalars().all()
+    assert len(notes) == 3
+    assert sum(note.deleted_at is None for note in notes) == 2
+    note_events = (
+        db_session.execute(
+            select(ReceivableWorkEvent).where(
+                ReceivableWorkEvent.event_type.in_(
+                    {"supervisor_note_upserted", "supervisor_note_deleted"}
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(note_events) == 4
+    assert all(event.comment is None for event in note_events)
+    assert all("Личная заметка 42" not in json.dumps(event.payload) for event in note_events)
+    assert all("action_id" not in (event.payload or {}) for event in note_events)
+    assert all("Личная заметка 42" not in str(event.idempotency_key or "") for event in note_events)

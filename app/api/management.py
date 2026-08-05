@@ -82,6 +82,11 @@ from app.services.bitrix_executive_dashboard_auth import (
     require_executive_dashboard_access,
 )
 from app.services.counterparty_folder_recommendations import (
+    QUEUE_ACTIONABLE,
+    QUEUE_ALL,
+    QUEUE_BUSINESS_REVIEW,
+    QUEUE_DATA_QUALITY,
+    QUEUE_EXCLUDED,
     STATUS_MOVE_RECOMMENDED,
     STATUS_NEEDS_REVIEW,
     STATUS_NO_OVERDUE,
@@ -694,6 +699,13 @@ def get_counterparty_folder_recommendations(
             f"^({STATUS_MOVE_RECOMMENDED}|{STATUS_OK}|{STATUS_NO_OVERDUE}|{STATUS_NEEDS_REVIEW})$"
         ),
     ),
+    queue: str = Query(
+        default=QUEUE_ALL,
+        pattern=(
+            f"^({QUEUE_ACTIONABLE}|{QUEUE_BUSINESS_REVIEW}|{QUEUE_DATA_QUALITY}|"
+            f"{QUEUE_EXCLUDED}|{QUEUE_ALL})$"
+        ),
+    ),
     limit: int | None = Query(default=None, ge=1, le=10000),
     db: Session = Depends(get_db),
     _: str = Depends(require_management_internal_token),
@@ -706,6 +718,7 @@ def get_counterparty_folder_recommendations(
             snapshot_date=date_value,
             limit=limit,
             status=status,
+            queue=queue,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error

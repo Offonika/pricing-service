@@ -111,6 +111,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.receivable_reconciliation_snapshot import ReceivableReconciliationSnapshot
     from app.models.receivable_work import (
         ReceivableSmsLog,
+        ReceivableSupervisorNote,
         ReceivableWorkEvent,
         ReceivableWorkItem,
     )
@@ -262,6 +263,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "ReceivableWorkItem",
         "ReceivableWorkEvent",
         "ReceivableSmsLog",
+        "ReceivableSupervisorNote",
         "ReceivableOpenDebtCache",
         "ReceivableFolderRecommendationCache",
         "ReceivableBitrixUserAccess",

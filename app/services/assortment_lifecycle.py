@@ -29,6 +29,30 @@ DEFAULT_STATUS_SOURCE = "assortment_lifecycle_v1"
 DEFAULT_EXCLUSIVE_REVIEW_PERIOD_DAYS = 30
 WORKING_RECEIPT_WINDOW_DAYS = 180
 WORKING_MIN_RECEIPTS = 5
+# Окна наблюдения спроса. Те же три, что уже считает автозаказ
+# (TREND_WINDOW_* в tasks/build_display_auto_order_dry_run.py): держим числа
+# одинаковыми, иначе статус и объём заказа начнут спорить о том, что такое
+# «последний месяц».
+DEMAND_WINDOW_SHORT_DAYS = 30
+DEMAND_WINDOW_MEDIUM_DAYS = 90
+DEMAND_WINDOW_LONG_DAYS = 180
+# Вход в «Растим»: 12 продаж за 180 дней = две продажи в месяц. Решение
+# пользователя 2026-08-02 на реальном распределении дисплеев (порог отсекает
+# нижние 19%, 246 карточек из 1294). Условие «30 дней на полке» намеренно
+# отвергнуто: оно меряет работу закупщика, а не товар, и бьёт по дефицитным
+# ходовым позициям (РБ000051864 — 63 продажи за 23 дня на полке).
+SALE_MIN_SALES_QTY = Decimal("12")
+# Насколько окно должно отличаться от соседнего, чтобы это считалось трендом,
+# а не шумом. Тот же множитель, что в автозаказе
+# (ACCELERATING_MIN_GROWTH_MULTIPLIER): строгое «чуть больше» ловило шум на
+# маленьких числах — реальный пример РБ000064147 (0.1485/0.1341/0.1161,
+# формально рост, по факту его нет).
+DEMAND_TREND_MIN_CHANGE_MULTIPLIER = Decimal("1.2")
+# Обязательное условие вывода в угасание: товар РЕАЛЬНО был на полке. Иначе
+# падение продаж означает дефицит, а не спад спроса. Порог тот же, что у гейта
+# «Пенсия» в автозаказе (PENSION_CANDIDATE_MIN_DAYS_IN_SALE): 15 дней наличия
+# из 90 — решение пользователя, отдельного числа для статусов не заводим.
+DECLINE_MIN_DAYS_IN_SALE = Decimal("15")
 # «Родился мёртвым»: сколько дней карточка может молчать без единого движения,
 # прежде чем попасть к человеку на разбор. 12 месяцев — решение пользователя
 # 2026-08-02 на распределении реальных данных (см. _is_dead_born_candidate).
@@ -178,6 +202,22 @@ class AssortmentLifecycleInput:
     # сказать, сколько карточка уже молчит. Пусто — правило не применяется
     # (детерминированность важнее: функция не смотрит на системные часы).
     as_of: date | None = None
+    # Продано штук за окна 30/90/180 дней, брутто (возвраты не вычитаем — тот
+    # же «спрос брутто», что уже принят для расчёта количества заказа).
+    # None = данных нет (старый факт/фикстура), не путать с «продаж не было».
+    sales_qty_short: Decimal | int | str | None = None
+    sales_qty_medium: Decimal | int | str | None = None
+    sales_qty_long: Decimal | int | str | None = None
+    # Дни, когда товар реально лежал на полке, за те же три окна (среднее по
+    # физическим точкам продаж). Нужны, чтобы отличить угасание спроса от
+    # дефицита: пустая полка занижает продажи, но это не спад.
+    days_in_sale_short: Decimal | int | str | None = None
+    days_in_sale_medium: Decimal | int | str | None = None
+    days_in_sale_long: Decimal | int | str | None = None
+    # Статус, присвоенный на прошлом расчёте. Нужен гистерезису: для входа в
+    # рост достаточно двух окон, для вывода в угасание нужны три, а плоская
+    # карточка остаётся там, где стояла, и не дёргается от прогона к прогону.
+    previous_status: AssortmentStatus | str | None = None
     has_need_signal: bool = False
     working_confirmed_by_folder_responsible: bool = False
     analog_winner_confirmed_by_folder_responsible: bool = False
@@ -340,22 +380,33 @@ def _decide_by_events(item: AssortmentLifecycleInput) -> AssortmentLifecycleDeci
     second_cargo_at = cargo_dates[1] if len(cargo_dates) >= 2 else None
 
     if first_cargo_at is not None:
+        if _demand_data_available(item):
+            status, reason_code, reason_text = _demand_stage(item)
+            return _decision(
+                item,
+                status,
+                reason_code,
+                reason_text=reason_text,
+                auto_order_allowed=status in (AssortmentStatus.SALE, AssortmentStatus.WORKING),
+                changed_at=item.manual_changed_at,
+                approved_by=item.manual_approved_by.strip(),
+            )
+        # Данных о спросе нет (старый факт, фикстура, вызов из витрины
+        # «Формирование заказа») — работаем по прежней, поставочной логике.
+        # Отдельная ветка нужна, чтобы «нет цифр продаж» не читалось как
+        # «продаж не было»: иначе карточка молча съехала бы с «Растим» на
+        # «Завезли».
         working_receipts = _receipt_dates_in_working_window(receipt_dates, first_cargo_at)
-        reached_working = len(working_receipts) >= WORKING_MIN_RECEIPTS
-        if reached_working:
-            # Решение 2026-07-20: вход в Рабочий определяют только 5 поступлений
-            # за 180 дней, ручное подтверждение ответственного снято. Код догнал
-            # это решение 2026-08-02: раньше формула сама в Рабочий не пускала
-            # никого — без подтверждения карточка уходила в ПРОДАЖА с блокером
-            # working_confirmation_required, и 150 заслуживших карточек висели
-            # там впустую.
+        if len(working_receipts) >= WORKING_MIN_RECEIPTS:
             return _decision(
                 item,
                 AssortmentStatus.WORKING,
                 "working_receipts_reached",
+                "demand_data_missing",
                 reason_text=(
                     f"За {WORKING_RECEIPT_WINDOW_DAYS} дней от Новинки есть "
-                    f"{len(working_receipts)} поступлений — товар подтвердил повторяемость."
+                    f"{len(working_receipts)} поступлений — товар подтвердил повторяемость. "
+                    "Цифры продаж по окнам не переданы, статус определён по поставкам."
                 ),
                 auto_order_allowed=True,
                 changed_at=item.manual_changed_at,
@@ -371,6 +422,7 @@ def _decide_by_events(item: AssortmentLifecycleInput) -> AssortmentLifecycleDeci
             item,
             post_cargo_status,
             reason_code,
+            "demand_data_missing",
             reason_text=reason_text,
             auto_order_allowed=post_cargo_status is AssortmentStatus.SALE,
         )
@@ -425,6 +477,230 @@ def _decide_by_events(item: AssortmentLifecycleInput) -> AssortmentLifecycleDeci
         reason_text=reason_text,
         manual_review_required=item.has_need_signal,
     )
+
+
+def _demand_data_available(item: AssortmentLifecycleInput) -> bool:
+    """Переданы ли цифры продаж по всем трём окнам.
+
+    Проверяем именно наличие поля, а не «больше нуля»: 0 продаж за окно — это
+    факт спроса, а отсутствие поля — отсутствие данных. Путать их нельзя, на
+    этом уже обжигались в автозаказе (trend_data_available).
+    """
+    return all(
+        _to_optional_decimal(value) is not None
+        for value in (item.sales_qty_short, item.sales_qty_medium, item.sales_qty_long)
+    )
+
+
+def _demand_stage(item: AssortmentLifecycleInput) -> tuple[AssortmentStatus, str, str]:
+    """Ступень лестницы после первого карго — по динамике спроса, не по поставкам.
+
+    Решение пользователя 2026-08-02: «Растим» и «Поддерживаем» описывают товар,
+    а не работу закупщика, поэтому определять их числом поступлений неверно.
+      * «Пошли продажи» -> «Растим»: 12 продаж за 180 дней;
+      * «Растим» -> «Поддерживаем»: спад по трём окнам И товар был на полке;
+      * «Поддерживаем» -> «Растим»: рост по двум окнам;
+      * ни рост, ни спад — статус не меняется (гистерезис по прошлому статусу).
+    Асимметрия «два окна на рост, три на спад» намеренная: ошибочно объявить
+    товар угасающим дороже, чем ошибочно дать ему вырасти.
+    """
+    previous_status = _previous_status(item.previous_status)
+    sales_long = _to_optional_decimal(item.sales_qty_long) or Decimal("0")
+    trend, trend_text = _demand_trend(item)
+    already_grown = previous_status in (AssortmentStatus.SALE, AssortmentStatus.WORKING)
+    proven_demand = sales_long >= SALE_MIN_SALES_QTY or already_grown
+
+    if proven_demand:
+        if trend == "declining":
+            if _was_really_on_shelf(item):
+                return (
+                    AssortmentStatus.WORKING,
+                    "demand_declining",
+                    (
+                        f"Спрос падает три окна подряд ({trend_text}), и товар при этом "
+                        "был на полке — это угасание, а не дефицит. Поддерживаем без "
+                        "запаса: закрываем спрос и не больше."
+                    ),
+                )
+            return (
+                previous_status or AssortmentStatus.SALE,
+                "demand_declining_without_shelf_presence",
+                (
+                    f"Продажи падают ({trend_text}), но товара почти не было на полке "
+                    f"(меньше {DECLINE_MIN_DAYS_IN_SALE} дней наличия за "
+                    f"{DEMAND_WINDOW_MEDIUM_DAYS} дней). Это дефицит, а не спад спроса — "
+                    "статус не понижаем."
+                ),
+            )
+        if trend == "growing":
+            return (
+                AssortmentStatus.SALE,
+                "demand_growing",
+                (
+                    f"Спрос растёт ({trend_text}). Растим: заправляем магазин полностью, "
+                    "при необходимости с излишком."
+                ),
+            )
+        if already_grown and previous_status is not None:
+            return (
+                previous_status,
+                "demand_stable",
+                (
+                    f"Спрос держится ровно ({trend_text}) — ни роста, ни спада по окнам "
+                    f"{DEMAND_WINDOW_SHORT_DAYS}/{DEMAND_WINDOW_MEDIUM_DAYS}/"
+                    f"{DEMAND_WINDOW_LONG_DAYS} дней. Статус оставляем прежним."
+                ),
+            )
+        return (
+            AssortmentStatus.SALE,
+            "sales_threshold_reached",
+            (
+                f"Продано {_format_qty(sales_long)} шт за {DEMAND_WINDOW_LONG_DAYS} дней "
+                f"(порог {_format_qty(SALE_MIN_SALES_QTY)}) — спрос подтверждён. Растим."
+            ),
+        )
+
+    if item.first_sale_at is not None:
+        if _sales_start_expired(item.first_sale_at, item.as_of):
+            return (
+                AssortmentStatus.WORKING,
+                "sales_history_beyond_start",
+                (
+                    "Первая продажа была давно, а за последние полгода спрос ниже порога "
+                    f"({_format_qty(sales_long)} шт из {_format_qty(SALE_MIN_SALES_QTY)}): "
+                    "карточка не стартует заново. Поддерживаем без запаса."
+                ),
+            )
+        return (
+            AssortmentStatus.SALES_START,
+            "first_sale_registered",
+            (
+                f"Продажи пошли ({_format_qty(sales_long)} шт за "
+                f"{DEMAND_WINDOW_LONG_DAYS} дней), но порога "
+                f"{_format_qty(SALE_MIN_SALES_QTY)} шт для «Растим» ещё нет."
+            ),
+        )
+    return (
+        AssortmentStatus.NEW_ITEM,
+        "first_supplier_order_handed_to_cargo",
+        "Первый заказ поставщику сдан в cargo, продаж ещё не было.",
+    )
+
+
+def _demand_trend(item: AssortmentLifecycleInput) -> tuple[str, str]:
+    """Куда идёт спрос: ``growing`` / ``declining`` / ``flat``.
+
+    Сравниваем скорость продаж на трёх окнах. Скорость восстанавливаем мягкой
+    формулой (см. ``_soft_availability_rate``), чтобы дни без товара не выдавали
+    голодание за падение спроса.
+    """
+    rate_short = _soft_availability_rate(
+        item.sales_qty_short, DEMAND_WINDOW_SHORT_DAYS, item.days_in_sale_short
+    )
+    rate_medium = _soft_availability_rate(
+        item.sales_qty_medium, DEMAND_WINDOW_MEDIUM_DAYS, item.days_in_sale_medium
+    )
+    rate_long = _soft_availability_rate(
+        item.sales_qty_long, DEMAND_WINDOW_LONG_DAYS, item.days_in_sale_long
+    )
+    trend_text = (
+        f"{_format_rate(rate_short)}/{_format_rate(rate_medium)}/{_format_rate(rate_long)} "
+        f"шт в день за {DEMAND_WINDOW_SHORT_DAYS}/{DEMAND_WINDOW_MEDIUM_DAYS}/"
+        f"{DEMAND_WINDOW_LONG_DAYS} дней"
+    )
+    # Рост — две ступени: последний месяц заметно быстрее квартала. Условие
+    # rate_short > 0 обязательно: без него карточка без единой продажи прошла бы
+    # проверку 0 >= 0 и объявилась растущей.
+    if rate_short > 0 and rate_short >= rate_medium * DEMAND_TREND_MIN_CHANGE_MULTIPLIER:
+        return "growing", trend_text
+    # Спад — три ступени подряд: месяц медленнее квартала, квартал медленнее
+    # полугода. Одного окна мало: короткое окно шумит, а объявить товар
+    # угасающим по ошибке дороже, чем передержать его в «Растим».
+    if (
+        rate_short * DEMAND_TREND_MIN_CHANGE_MULTIPLIER <= rate_medium
+        and rate_medium * DEMAND_TREND_MIN_CHANGE_MULTIPLIER <= rate_long
+    ):
+        return "declining", trend_text
+    return "flat", trend_text
+
+
+def _soft_availability_rate(
+    sales_qty: Decimal | int | str | None,
+    calendar_days: int,
+    days_in_sale: Decimal | int | str | None,
+) -> Decimal:
+    """Скорость продаж с мягким восстановлением дней без товара.
+
+    Утверждённая методология (спека `assortment-status-legacy-rule-inventory.md`,
+    раздел 1, решение 2026-07-20): дни без остатка не выбрасываются из
+    знаменателя, а достраиваются виртуальными продажами по фактической скорости
+    окна::
+
+        виртуальные = дни_без_остатка × (продажи / календарные_дни)
+        скорость    = (продажи + виртуальные) / календарные_дни
+
+    Жёсткий вариант (``продажи / дни_наличия``) намеренно не используется: на
+    реальных данных он расходится с мягким в 29 раз и уже приводил к росту
+    ежедневного заказа в 18 раз. Нет данных о днях наличия — считаем по
+    календарю, то есть просто не применяем поправку.
+    """
+    if calendar_days <= 0:
+        return Decimal("0")
+    qty = _to_optional_decimal(sales_qty)
+    if qty is None or qty <= 0:
+        return Decimal("0")
+    window = Decimal(str(calendar_days))
+    base_rate = qty / window
+    available_days = _to_optional_decimal(days_in_sale)
+    if available_days is None or available_days <= 0:
+        return base_rate
+    days_without_stock = max(Decimal("0"), window - min(available_days, window))
+    virtual_qty = days_without_stock * base_rate
+    return (qty + virtual_qty) / window
+
+
+def _was_really_on_shelf(item: AssortmentLifecycleInput) -> bool:
+    """Был ли товар на полке достаточно, чтобы спаду можно было верить.
+
+    Нет данных о днях наличия — считаем, что был: иначе отсутствие витрины
+    наличия молча заморозило бы все переходы в «Поддерживаем».
+    """
+    days_in_sale = _to_optional_decimal(item.days_in_sale_medium)
+    if days_in_sale is None:
+        return True
+    return days_in_sale >= DECLINE_MIN_DAYS_IN_SALE
+
+
+def _previous_status(value: AssortmentStatus | str | None) -> AssortmentStatus | None:
+    """Прошлый статус из базы, терпимо к неизвестным значениям.
+
+    В таблице классификации могут лежать статусы прежних версий формулы —
+    падать из-за них нельзя: гистерезис не настолько важен, чтобы ронять весь
+    расчёт. Неизвестное значение читаем как «прошлого статуса нет».
+    """
+    try:
+        return _normalize_status(value)
+    except ValueError:
+        return None
+
+
+def _to_optional_decimal(value: Decimal | int | str | None) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _format_qty(value: Decimal) -> str:
+    return str(value.quantize(Decimal("1")))
+
+
+def _format_rate(value: Decimal) -> str:
+    return str(value.quantize(Decimal("0.001")))
 
 
 def _is_pension_candidate(item: AssortmentLifecycleInput) -> bool:

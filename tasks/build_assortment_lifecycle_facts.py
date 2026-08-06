@@ -4,13 +4,16 @@ import argparse
 import json
 import os
 from datetime import date, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 from app.core.config import get_settings
 from app.infrastructure.db.engines import build_engine
+from app.services.assortment_lifecycle_classification_store import fetch_previous_statuses
 from app.services.assortment_lifecycle_facts import (
     DEFAULT_HISTORY_MONTHS,
+    DEMAND_WINDOWS_DAYS,
     RECEIPT_MAPPING_UNRESOLVED,
     SUPPLIER_ORDER_MAPPING_UNRESOLVED,
     DocumentLineMapping,
@@ -19,6 +22,7 @@ from app.services.assortment_lifecycle_facts import (
     enrich_nomenclature_rows_with_product_snapshot,
     fetch_first_sale_dates,
     fetch_onec_lifecycle_source_rows,
+    fetch_sales_window_totals,
     normalize_manager_signals,
     normalize_manual_overrides,
     validate_warehouse_policy,
@@ -29,6 +33,8 @@ from app.services.onec_stock_availability import (
 )
 from app.services.onec_stock_availability import (
     attach_effective_availability_shadow_to_facts,
+    fetch_days_in_sale_by_code,
+    physical_sales_point_codes,
 )
 
 DEFAULT_OUTPUT_PATH = Path("build/assortment/assortment-lifecycle-facts.json")
@@ -45,6 +51,12 @@ def main() -> int:
     # Заполняется только при чтении из 1С; для готового --input-json даты первой
     # продажи берутся из самих записей, если они там уже есть.
     first_sale_dates: dict[str, date] = {}
+    sales_window_totals: dict[str, dict[int, Decimal]] = {}
+    days_in_sale_totals: dict[str, dict[int, Decimal]] = {}
+    previous_statuses: dict[str, str] = {}
+    # Витрина наличия закрыта по вчерашний день — спрос меряем на ту же дату,
+    # иначе последнее окно у продаж и у дней на полке разъедется.
+    demand_date_to = (args.today or date.today()) - timedelta(days=1)
 
     try:
         if args.input_json:
@@ -84,12 +96,20 @@ def main() -> int:
                 # Первая продажа определяет вход в СП / Старт продаж
                 # (решение 2026-08-02). Собирается тем же соединением, что и
                 # остальные факты, отдельным агрегатным запросом без окна.
+                codes = [
+                    str(row.get("nomenclature_code") or row.get("code") or "")
+                    for row in nomenclature_rows
+                ]
                 first_sale_dates = fetch_first_sale_dates(
                     engine,
-                    nomenclature_codes=[
-                        str(row.get("nomenclature_code") or row.get("code") or "")
-                        for row in nomenclature_rows
-                    ],
+                    nomenclature_codes=codes,
+                )
+                # Продажи за 30/90/180 дней — вход переходов «Пошли продажи ->
+                # Растим -> Поддерживаем» по динамике спроса.
+                sales_window_totals = fetch_sales_window_totals(
+                    engine,
+                    nomenclature_codes=codes,
+                    date_to=demand_date_to,
                 )
             finally:
                 engine.dispose()
@@ -99,6 +119,16 @@ def main() -> int:
                     product_engine,
                     nomenclature_rows,
                 )
+                # Дни на полке отличают угасание спроса от дефицита, прошлый
+                # статус нужен гистерезису.
+                days_in_sale_totals = fetch_days_in_sale_by_code(
+                    product_engine,
+                    codes=codes,
+                    physical_sales_point_codes=physical_sales_point_codes(warehouse_policy),
+                    date_to=demand_date_to,
+                    windows_days=DEMAND_WINDOWS_DAYS,
+                )
+                previous_statuses = fetch_previous_statuses(product_engine)
             finally:
                 product_engine.dispose()
     except ValueError as exc:
@@ -122,9 +152,12 @@ def main() -> int:
         history_start=history_start,
         first_sale_dates=first_sale_dates,
         as_of=args.today or date.today(),
+        sales_window_totals=sales_window_totals,
+        days_in_sale_totals=days_in_sale_totals,
+        previous_statuses=previous_statuses,
     )
     if not args.input_json:
-        product_engine = create_engine(settings.database_url, pool_pre_ping=True)
+        product_engine = build_engine(settings.database_url, pool_pre_ping=True)
         try:
             facts = attach_effective_availability_shadow_to_facts(
                 product_engine,

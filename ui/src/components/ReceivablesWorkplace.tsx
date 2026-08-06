@@ -1,4 +1,13 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import toast from "react-hot-toast";
 import { resolveBitrixPortalUrl } from "../api/bitrix";
 import { clearApiAuthToken, setApiAuthToken } from "../api/client";
@@ -106,6 +115,92 @@ function dateInput(value?: string | null) {
   return value ? value.slice(0, 10) : "";
 }
 
+function ScrollableTableRegion({
+  ariaLabel,
+  children,
+  className = "",
+}: {
+  ariaLabel: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  const regionRef = useRef<HTMLDivElement>(null);
+  const instructionsId = useId();
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const updateScrollState = useCallback(() => {
+    const region = regionRef.current;
+    if (!region) return;
+    const remaining = region.scrollWidth - region.clientWidth - region.scrollLeft;
+    const scrollbarAllowance = Math.max(1, region.offsetWidth - region.clientWidth + 1);
+    setCanScrollRight(
+      region.scrollWidth > region.clientWidth + scrollbarAllowance &&
+        remaining > scrollbarAllowance,
+    );
+  }, []);
+
+  useEffect(() => {
+    const initialFrame = window.requestAnimationFrame(updateScrollState);
+    const region = regionRef.current;
+    if (!region) {
+      return () => window.cancelAnimationFrame(initialFrame);
+    }
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(updateScrollState);
+    resizeObserver?.observe(region);
+    window.addEventListener("resize", updateScrollState);
+    return () => {
+      window.cancelAnimationFrame(initialFrame);
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updateScrollState);
+    };
+  }, [children, updateScrollState]);
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    const region = regionRef.current;
+    if (!region) return;
+    event.preventDefault();
+    const direction = event.key === "ArrowRight" ? 1 : -1;
+    const step = Math.max(80, Math.round(region.clientWidth * 0.2));
+    region.scrollLeft = Math.max(
+      0,
+      Math.min(region.scrollWidth - region.clientWidth, region.scrollLeft + direction * step),
+    );
+    updateScrollState();
+  };
+
+  return (
+    <section
+      className={`receivables__scroll-shell${canScrollRight ? " receivables__scroll-shell--more-right" : ""}${className ? ` ${className}` : ""}`}
+      data-can-scroll-right={canScrollRight ? "true" : "false"}
+    >
+      <div
+        aria-describedby={instructionsId}
+        aria-label={ariaLabel}
+        className="receivables__scroll-region"
+        onKeyDown={handleKeyDown}
+        onScroll={updateScrollState}
+        ref={regionRef}
+        role="region"
+        tabIndex={0}
+      >
+        {children}
+      </div>
+      <span className="visually-hidden" id={instructionsId}>
+        Используйте горизонтальную полосу прокрутки или стрелки влево и вправо, чтобы увидеть остальные столбцы.
+      </span>
+      <span aria-hidden="true" className="receivables__scroll-hint" hidden={!canScrollRight}>
+        Прокрутите вправо →
+      </span>
+    </section>
+  );
+}
+
 function formatMoney(value: string | number | null | undefined) {
   const numberValue = Number(value || 0);
   return new Intl.NumberFormat("ru-RU", {
@@ -156,6 +251,7 @@ function initialEdit(item: ReceivableWorkplaceItem): EditState {
 
 function debtRuleLabel(value?: string | null) {
   const labels: Record<string, string> = {
+    onec_canonical_continuous_balance_origin: "Подтверждено непрерывным балансом 1С",
     statement_direct_payment_match: "закрыто ближайшей оплатой",
     statement_multi_sale_payment_match: "группа закрыта одной оплатой",
     statement_bottom_up_balance_cutoff: "подбор от текущего остатка",
@@ -163,7 +259,7 @@ function debtRuleLabel(value?: string | null) {
     statement_structure_confirmed_open: "подтверждено структурой 1С",
     confirmed_open: "подтверждено структурой 1С",
   };
-  return value ? labels[value] || value : "расчет по открытым документам";
+  return value ? labels[value] || "Неизвестное правило" : "расчет по открытым документам";
 }
 
 function folderStatusLabel(value?: string | null) {
@@ -475,8 +571,8 @@ function ReceivableRow({
         <td className={item.no_phone_marker ? "receivables__phone receivables__phone--missing" : "receivables__phone"}>
           {item.phone || "нет"}
         </td>
-        <td>{formatMoney(item.current_balance)}</td>
-        <td>{item.effective_overdue_days || 0} дн.</td>
+        <td className="receivables__nowrap">{formatMoney(item.current_balance)}</td>
+        <td className="receivables__nowrap">{item.effective_overdue_days || 0} дн.</td>
         <td>
           <input
             className="receivables__input"
@@ -611,34 +707,39 @@ function ReceivableRow({
                   </tr>
                 </thead>
                 <tbody>
-                  {item.documents.map((document) => (
-                    <tr key={`${document.document_ref || document.document_number}-${document.document_date || ""}`}>
-                      <td>{document.document_number || ""}</td>
-                      <td>{formatDate(document.document_date)}</td>
-                      <td>{formatMoney(document.amount)}</td>
-                      <td>{formatMoney(document.open_amount || document.amount)}</td>
-                      <td>
-                        <span className="receivables__debt-rule">
-                          {debtRuleLabel(document.selection_rule || document.document_structure_status)}
-                        </span>
-                        {document.closing_amount && (
-                          <small>Закрыто: {formatMoney(document.closing_amount)}</small>
-                        )}
-                        {document.return_amount && (
-                          <small>Возврат: {formatMoney(document.return_amount)}</small>
-                        )}
-                        {document.statement_balance_after && (
-                          <small>Баланс: {formatMoney(document.statement_balance_after)}</small>
-                        )}
-                        {document.match_details?.length > 0 && (
-                          <small>{matchDetailsText(document.match_details)}</small>
-                        )}
-                      </td>
-                      <td>{formatDate(document.due_date)}</td>
-                      <td>{document.overdue_days || 0} дн.</td>
-                      <td>{document.manager_name || ""}</td>
-                    </tr>
-                  ))}
+                  {item.documents.map((document) => {
+                    const ruleValue = document.selection_rule || document.document_structure_status;
+                    return (
+                      <tr key={`${document.document_ref || document.document_number}-${document.document_date || ""}`}>
+                        <td>{document.document_number || ""}</td>
+                        <td className="receivables__nowrap">{formatDate(document.document_date)}</td>
+                        <td className="receivables__nowrap">{formatMoney(document.amount)}</td>
+                        <td className="receivables__nowrap">
+                          {formatMoney(document.open_amount || document.amount)}
+                        </td>
+                        <td>
+                          <span className="receivables__debt-rule" title={ruleValue || undefined}>
+                            {debtRuleLabel(ruleValue)}
+                          </span>
+                          {document.closing_amount && (
+                            <small>Закрыто: {formatMoney(document.closing_amount)}</small>
+                          )}
+                          {document.return_amount && (
+                            <small>Возврат: {formatMoney(document.return_amount)}</small>
+                          )}
+                          {document.statement_balance_after && (
+                            <small>Баланс: {formatMoney(document.statement_balance_after)}</small>
+                          )}
+                          {document.match_details?.length > 0 && (
+                            <small>{matchDetailsText(document.match_details)}</small>
+                          )}
+                        </td>
+                        <td className="receivables__nowrap">{formatDate(document.due_date)}</td>
+                        <td className="receivables__nowrap">{document.overdue_days || 0} дн.</td>
+                        <td>{document.manager_name || ""}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -706,55 +807,60 @@ function FolderRecommendations({
         </div>
       )}
       {items.length > 0 && (
-      <table>
-        <thead>
-          <tr>
-            <th>Код 1С</th>
-            <th>Клиент</th>
-            <th>Текущая папка</th>
-            <th>Рекомендованная папка</th>
-            <th>Долгообразующая накладная</th>
-            <th>Долг</th>
-            <th>Статус</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((item) => {
-            const recommendedFolder =
-              item.recommended_folder_display_name || item.recommended_folder_name || "";
-            const debtInvoiceNumber = sourceStale
-              ? ""
-              : item.debt_document_number || item.origin_document_number || "";
-            const debtInvoiceDate = sourceStale
-              ? ""
-              : item.debt_document_date || item.origin_document_date || "";
-            const reviewReason = folderReviewReasonLabel(
-              item.exclusion_reason || item.business_review_reason || item.review_reason
-            );
-            return (
-              <tr key={item.counterparty_ref}>
-                <td className="mono">{item.counterparty_code || ""}</td>
-                <td>{item.counterparty_name || item.counterparty_ref}</td>
-                <td title={item.current_folder_name || ""}>
-                  {item.current_folder_display_name || item.current_folder_name || ""}
-                </td>
-                <td title={item.recommended_folder_name || ""}>
-                  {recommendedFolder || "—"}
-                </td>
-                <td title={debtInvoiceNumber}>
-                  {debtInvoiceNumber || "—"}
-                  {debtInvoiceDate && <small>{formatDate(debtInvoiceDate)}</small>}
-                </td>
-                <td>{formatMoney(item.current_balance)}</td>
-                <td>
-                  {folderStatusLabel(item.status)}
-                  {reviewReason && <small>{reviewReason}</small>}
-                </td>
+        <ScrollableTableRegion
+          ariaLabel="Таблица контроля папок контрагентов"
+          className="receivables__folder-table-wrap"
+        >
+          <table>
+            <thead>
+              <tr>
+                <th>Код 1С</th>
+                <th>Клиент</th>
+                <th>Текущая папка</th>
+                <th>Рекомендованная папка</th>
+                <th>Долгообразующая накладная</th>
+                <th>Долг</th>
+                <th>Статус</th>
               </tr>
-            );
-          })}
-        </tbody>
-      </table>
+            </thead>
+            <tbody>
+              {items.map((item) => {
+                const recommendedFolder =
+                  item.recommended_folder_display_name || item.recommended_folder_name || "";
+                const debtInvoiceNumber = sourceStale
+                  ? ""
+                  : item.debt_document_number || item.origin_document_number || "";
+                const debtInvoiceDate = sourceStale
+                  ? ""
+                  : item.debt_document_date || item.origin_document_date || "";
+                const reviewReason = folderReviewReasonLabel(
+                  item.exclusion_reason || item.business_review_reason || item.review_reason
+                );
+                return (
+                  <tr key={item.counterparty_ref}>
+                    <td className="mono">{item.counterparty_code || ""}</td>
+                    <td>{item.counterparty_name || item.counterparty_ref}</td>
+                    <td title={item.current_folder_name || ""}>
+                      {item.current_folder_display_name || item.current_folder_name || ""}
+                    </td>
+                    <td title={item.recommended_folder_name || ""}>
+                      {recommendedFolder || "—"}
+                    </td>
+                    <td title={debtInvoiceNumber}>
+                      {debtInvoiceNumber || "—"}
+                      {debtInvoiceDate && <small>{formatDate(debtInvoiceDate)}</small>}
+                    </td>
+                    <td className="receivables__nowrap">{formatMoney(item.current_balance)}</td>
+                    <td>
+                      {folderStatusLabel(item.status)}
+                      {reviewReason && <small>{reviewReason}</small>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </ScrollableTableRegion>
       )}
     </section>
   );
@@ -1068,7 +1174,10 @@ export function ReceivablesWorkplace({
       </nav>
       {message && <div className="products-table__state products-table__state--error">{message}</div>}
       {hasToken && tab === "work" && (
-        <section className="receivables__table-wrap">
+        <ScrollableTableRegion
+          ariaLabel="Рабочий список дебиторской задолженности"
+          className="receivables__table-wrap"
+        >
           {loading ? (
             <div className="receivables__state">Загрузка рабочего списка...</div>
           ) : (
@@ -1145,7 +1254,7 @@ export function ReceivablesWorkplace({
             </table>
           )}
           {!loading && !displayedItems.length && <div className="receivables__state">На выбранную дату строк нет.</div>}
-        </section>
+        </ScrollableTableRegion>
       )}
       {hasToken && tab === "folders" && (
         <FolderRecommendations

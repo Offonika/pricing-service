@@ -113,6 +113,112 @@ describe("ReceivablesWorkplace", () => {
     expect(screen.getByRole("button", { name: "Сохранить комментарий" })).toBeVisible();
   });
 
+  it("exposes the workplace table as a keyboard-scrollable region", async () => {
+    render(<ReceivablesWorkplace bitrixMode />);
+
+    const region = await screen.findByRole("region", {
+      name: "Рабочий список дебиторской задолженности",
+    });
+    expect(region).toHaveAttribute("tabindex", "0");
+    expect(region).toHaveAccessibleDescription(
+      "Используйте горизонтальную полосу прокрутки или стрелки влево и вправо, чтобы увидеть остальные столбцы.",
+    );
+
+    Object.defineProperties(region, {
+      clientWidth: { configurable: true, value: 600 },
+      scrollLeft: { configurable: true, value: 0, writable: true },
+      scrollWidth: { configurable: true, value: 1460 },
+    });
+    fireEvent(window, new Event("resize"));
+    await waitFor(() =>
+      expect(region.parentElement).toHaveAttribute("data-can-scroll-right", "true"),
+    );
+    expect(screen.getByText("Прокрутите вправо →")).toBeVisible();
+
+    fireEvent.keyDown(region, { key: "ArrowRight" });
+    expect(region.scrollLeft).toBe(120);
+
+    region.scrollLeft = 860;
+    fireEvent.scroll(region);
+    await waitFor(() =>
+      expect(region.parentElement).toHaveAttribute("data-can-scroll-right", "false"),
+    );
+    expect(screen.getByText("Прокрутите вправо →")).not.toBeVisible();
+  });
+
+  it("shows human debt rules and keeps technical values in titles", async () => {
+    vi.mocked(fetchReceivableWorkplace).mockResolvedValue({
+      ...response,
+      payload: [
+        {
+          ...item,
+          documents: [
+            {
+              amount: "4746.00",
+              document_number: "РБГУ0052636",
+              is_overdue: true,
+              match_details: [],
+              open_amount: "4746.00",
+              selection_rule: "onec_canonical_continuous_balance_origin",
+            },
+            {
+              amount: "100.00",
+              document_number: "РБГУ0052637",
+              is_overdue: true,
+              match_details: [],
+              open_amount: "100.00",
+              selection_rule: "legacy_rule_without_label",
+            },
+          ],
+        },
+      ],
+    });
+
+    render(<ReceivablesWorkplace bitrixMode />);
+
+    fireEvent.click(await screen.findByTitle("Накладные"));
+    expect(screen.getByText("Подтверждено непрерывным балансом 1С")).toHaveAttribute(
+      "title",
+      "onec_canonical_continuous_balance_origin",
+    );
+    expect(screen.getByText("Неизвестное правило")).toHaveAttribute(
+      "title",
+      "legacy_rule_without_label",
+    );
+    expect(screen.queryByText("onec_canonical_continuous_balance_origin")).not.toBeInTheDocument();
+  });
+
+  it("keeps folder controls outside an accessible table scroll region", async () => {
+    vi.mocked(fetchCounterpartyFolderRecommendations).mockResolvedValue({
+      as_of: "2026-07-23",
+      freshness_status: "fresh",
+      source_status: "cache_ready",
+      report_revision: "test",
+      summary: { total_count: 1 },
+      payload: [
+        {
+          action_required: true,
+          counterparty_name: "Клиент с очень длинным непрерывным названием",
+          counterparty_ref: "folder-client",
+          current_balance: "10000.00",
+          current_folder_name: "ТекущаяПапкаБезПробелов",
+          queue: "actionable",
+          recommended_folder_name: "РекомендованнаяПапкаБезПробелов",
+          status: "move_recommended",
+        },
+      ],
+    });
+
+    render(<ReceivablesWorkplace bitrixMode />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Контроль папок" }));
+    const region = await screen.findByRole("region", {
+      name: "Таблица контроля папок контрагентов",
+    });
+    expect(region).toHaveAttribute("tabindex", "0");
+    expect(region).not.toContainElement(screen.getByRole("button", { name: "Проверка данных" }));
+  });
+
   it("maps every receivable status to the approved color tone with a neutral fallback", () => {
     expect(
       Object.fromEntries(

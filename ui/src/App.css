@@ -5642,6 +5642,7 @@
 .receivables {
   display: grid;
   gap: 12px;
+  min-width: 0;
 }
 
 .receivables__header .receivables__token {
@@ -5732,21 +5733,83 @@
   flex: 0 0 auto;
 }
 
-.receivables__table-wrap,
+.receivables__scroll-shell,
 .receivables__folder-tab {
-  overflow: auto;
+  min-width: 0;
+  max-width: 100%;
   border: 1px solid #d9e0e8;
   border-radius: 8px;
   background: #ffffff;
+}
+
+.receivables__scroll-shell {
+  position: relative;
+  overflow: hidden;
+}
+
+.receivables__scroll-region {
+  max-block-size: clamp(320px, 65dvh, 760px);
+  min-width: 0;
+  overflow: auto;
+  border-radius: inherit;
+  outline: none;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+
+.receivables__scroll-region:focus-visible {
+  outline: 2px solid #1665d8;
+  outline-offset: -2px;
+}
+
+.receivables__scroll-shell--more-right::after {
+  position: absolute;
+  z-index: 6;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 34px;
+  background: linear-gradient(90deg, rgb(255 255 255 / 0%), rgb(24 32 42 / 16%));
+  content: "";
+  pointer-events: none;
+}
+
+.receivables__scroll-hint {
+  position: absolute;
+  z-index: 7;
+  right: 12px;
+  bottom: 18px;
+  padding: 4px 8px;
+  border: 1px solid #9cc8e8;
+  border-radius: 999px;
+  background: #eef7ff;
+  box-shadow: 0 2px 8px rgb(16 24 40 / 14%);
+  color: #184e77;
+  font-size: 11px;
+  font-weight: 800;
+  pointer-events: none;
+}
+
+.receivables__folder-tab {
+  display: grid;
+  gap: 10px;
+  padding: 10px;
+}
+
+.receivables__folder-table-wrap {
+  border-radius: 6px;
 }
 
 .receivables__table,
 .receivables__folder-tab table,
 .receivables__documents table {
   width: 100%;
-  min-width: 1230px;
   border-collapse: collapse;
   table-layout: fixed;
+}
+
+.receivables__table {
+  min-width: 1460px;
 }
 
 .receivables__folder-tab table {
@@ -5780,6 +5843,41 @@
   background: #eef2f6;
   color: #344054;
   font-weight: 800;
+}
+
+.receivables__documents th {
+  position: static;
+}
+
+.receivables__documents th:nth-child(1),
+.receivables__documents td:nth-child(1) {
+  width: 130px;
+}
+
+.receivables__documents th:nth-child(2),
+.receivables__documents td:nth-child(2),
+.receivables__documents th:nth-child(6),
+.receivables__documents td:nth-child(6),
+.receivables__documents th:nth-child(7),
+.receivables__documents td:nth-child(7) {
+  width: 90px;
+}
+
+.receivables__documents th:nth-child(3),
+.receivables__documents td:nth-child(3),
+.receivables__documents th:nth-child(4),
+.receivables__documents td:nth-child(4) {
+  width: 100px;
+}
+
+.receivables__documents th:nth-child(5),
+.receivables__documents td:nth-child(5) {
+  width: 280px;
+}
+
+.receivables__documents th:nth-child(8),
+.receivables__documents td:nth-child(8) {
+  width: 160px;
 }
 
 .receivables__table th:nth-child(1),
@@ -5840,12 +5938,7 @@
 
 .receivables__table th:nth-child(14),
 .receivables__table tbody tr:not(.receivables__details) td:nth-child(14) {
-  width: 132px;
-}
-
-.receivables__table th:nth-child(15),
-.receivables__table tbody tr:not(.receivables__details) td:nth-child(15) {
-  width: 58px;
+  width: 190px;
 }
 
 .receivables__table th:nth-child(-n + 3),
@@ -6129,7 +6222,9 @@
 
 .receivables__note-card p {
   margin: 0 0 5px;
+  overflow-wrap: anywhere;
   white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .receivables__note-card small,
@@ -6138,7 +6233,7 @@
 }
 
 .receivables__folder-queues {
-  margin-bottom: 10px;
+  margin-bottom: 0;
 }
 
 .receivables__center {
@@ -6191,11 +6286,28 @@
 .receivables__folder-tab small {
   display: block;
   line-height: 1.25;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .receivables__debt-rule {
   color: #184e77;
   font-weight: 800;
+}
+
+.receivables__documents td,
+.receivables__folder-tab td,
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(3),
+.receivables__table tbody tr:not(.receivables__details) td:nth-child(4) {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.receivables__nowrap {
+  overflow-wrap: normal !important;
+  white-space: nowrap;
+  word-break: normal !important;
 }
 
 .receivables__documents small,

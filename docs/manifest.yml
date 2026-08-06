@@ -163,9 +163,9 @@ documents:
     title: Procurement Decision Contract And Roadmap
     doc_type: spec
     domain: procurement
-    status: draft
+    status: superseded
     owner: operations
-    source_of_truth: true
+    source_of_truth: false
     related_code:
       - scripts/ensure_procurement_bitrix_process.py
       - scripts/import_onec_supplier_order_to_procurement.py
@@ -363,7 +363,7 @@ documents:
     title: Display Auto Order Project Brief
     doc_type: spec
     domain: procurement
-    status: draft
+    status: superseded
     owner: operations
     source_of_truth: false
     related_code:

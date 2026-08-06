@@ -1,6 +1,6 @@
 # Design QA: «Помощник заказов»
 
-- Source visual truth: `docs/design-qa/order-assistant/exec-1b219381-2473-4820-91c8-b37e4f49df2a.png`.
+- Source visual truth: `docs/design-qa/order-assistant/reference-assistant-1486x1059.png`.
 - Source pixels: `1486 × 1059`, RGB PNG.
 - Implementation: `/bitrix/procurement-order-formation/assistant`, компонент `ui/src/components/ProcurementOrderAssistant.tsx`.
 - Implementation screenshot: `docs/design-qa/order-assistant/implementation-1486x1059-final.png`.
@@ -68,10 +68,10 @@ final result: passed
 
 # Архив: Design QA вкладки «Закупки»
 
-- Source visual truth: `docs/design-qa/order-assistant/codex-clipboard-ddb0514d-fabc-4ff1-82cd-b16b19a61930.png`
-- Implementation screenshot: `docs/design-qa/order-assistant/desktop-1366.png`
-- Combined comparison: `docs/design-qa/order-assistant/comparison-desktop.png`
-- Additional evidence: `tablet-1024.png`, `zoom-200-equivalent-683.png`, `mobile-390.png`, `mobile-390-full.png` in the same directory.
+- Source visual truth: `docs/design-qa/procurement-dashboard/reference-dashboard-1366x768.png`
+- Implementation screenshot: `docs/design-qa/procurement-dashboard/implementation-desktop-1366x768.png`
+- Combined comparison: `docs/design-qa/procurement-dashboard/comparison-desktop-1366x768.png`
+- Additional evidence: раздельные снимки tablet 1024×900, эффективной ширины 200% (683×768) и mobile 390×844 в этот архив не сохранены; ниже описаны только фактически приложенные desktop-доказательства.
 - Viewports: 1366×768, 1024×900, 683×768 as the 200% effective-width check, 390×844.
 - State: procurement snapshot v2, 124 open orders, 43 risk actions, full-access amounts.
 
@@ -90,7 +90,7 @@ No actionable P0/P1/P2 findings remain.
 
 The combined desktop image was inspected for overall hierarchy, density, typography, spacing, colors and above-the-fold content. The original screen spends the first viewport on duplicate status and analytical lists; the new screen intentionally exposes two action rows in the same area while preserving the established visual language.
 
-The mobile full-page screenshot was used as the focused comparison for filters, order-card conversion, distribution blocks and disclosure controls. No separate crop was required because the original-resolution full-page capture keeps these elements readable.
+The mobile full-page state was reviewed live during the run for filters, order-card conversion, distribution blocks and disclosure controls; that capture was not retained in this archive, so only the desktop comparison above is attached as a saved artifact.
 
 ## Interaction and runtime checks
 

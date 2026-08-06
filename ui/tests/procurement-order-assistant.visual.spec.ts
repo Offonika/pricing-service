@@ -2,10 +2,11 @@ import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
-const artifactRoot =
-  "/root/.codex/visualizations/2026/08/01/019fbd4c-7110-7461-9a9f-e21a5eac5cac/procurement-order-assistant-design-qa";
-const assetRoot = path.join(artifactRoot, "assets");
+// Product image fixtures live in the repo next to this spec so the test is
+// self-contained on any checkout; temporary artifacts go to testInfo.outputPath.
+const assetRoot = fileURLToPath(new URL("./fixtures", import.meta.url));
 
 const products = {
   tianma: [
@@ -158,7 +159,7 @@ const assistantPayload = {
 
 test.use({ viewport: { width: 1486, height: 1059 }, deviceScaleFactor: 1 });
 
-test("captures and verifies the procurement order assistant", async ({ page }) => {
+test("captures and verifies the procurement order assistant", async ({ page }, testInfo) => {
   const consoleErrors: string[] = [];
   const pageErrors: string[] = [];
   page.on("console", (message) => {
@@ -217,7 +218,7 @@ test("captures and verifies the procurement order assistant", async ({ page }) =
   await expect(firstPackage.getByRole("button", { name: "Список + фото" })).toBeVisible();
 
   await page.screenshot({
-    path: path.join(artifactRoot, "implementation-1486x1059-final.png"),
+    path: testInfo.outputPath("implementation-1486x1059-final.png"),
     animations: "disabled",
   });
 
@@ -237,7 +238,7 @@ test("captures and verifies the procurement order assistant", async ({ page }) =
     page.waitForEvent("download"),
     firstPackage.getByRole("button", { name: "Список + фото" }).click(),
   ]);
-  const listPath = path.join(artifactRoot, "tianma-order-with-photos.csv");
+  const listPath = testInfo.outputPath("tianma-order-with-photos.csv");
   await listDownload.saveAs(listPath);
   expect(await readFile(listPath, "utf-8")).toContain("https://qa-assets.local/product-1.png");
 
@@ -245,7 +246,7 @@ test("captures and verifies the procurement order assistant", async ({ page }) =
     page.waitForEvent("download"),
     firstPackage.getByRole("button", { name: "Фото отдельно" }).click(),
   ]);
-  const photoPath = path.join(artifactRoot, "tianma-photos.csv");
+  const photoPath = testInfo.outputPath("tianma-photos.csv");
   await photoDownload.saveAs(photoPath);
   expect(await readFile(photoPath, "utf-8")).toContain("Оригинал фото");
 
@@ -253,7 +254,7 @@ test("captures and verifies the procurement order assistant", async ({ page }) =
     .withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"])
     .analyze();
   await writeFile(
-    path.join(artifactRoot, "axe-desktop.json"),
+    testInfo.outputPath("axe-desktop.json"),
     JSON.stringify(desktopA11y, null, 2),
     "utf-8",
   );
@@ -261,7 +262,7 @@ test("captures and verifies the procurement order assistant", async ({ page }) =
   await page.setViewportSize({ width: 1024, height: 900 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({
-    path: path.join(artifactRoot, "implementation-tablet-1024x900.png"),
+    path: testInfo.outputPath("implementation-tablet-1024x900.png"),
     fullPage: true,
     animations: "disabled",
   });
@@ -269,7 +270,7 @@ test("captures and verifies the procurement order assistant", async ({ page }) =
   await page.setViewportSize({ width: 390, height: 844 });
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({
-    path: path.join(artifactRoot, "implementation-mobile-390x844.png"),
+    path: testInfo.outputPath("implementation-mobile-390x844.png"),
     fullPage: true,
     animations: "disabled",
   });

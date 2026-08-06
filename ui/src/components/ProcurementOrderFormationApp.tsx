@@ -3,6 +3,7 @@ import toast from "react-hot-toast";
 import {
   approveProcurementClassification,
   createProcurementClassification,
+  fetchProcurementOrder,
   submitProcurementOrder,
   updateProcurementOrderLine,
   type ProcurementOrderFormation,
@@ -48,10 +49,35 @@ function money(value: string, currency: string) {
   }).format(number);
 }
 
+const ERROR_MESSAGES: Record<string, string> = {
+  "order version changed; refresh the order":
+    "Заказ уже изменили в другом окне. Карточка обновлена — проверьте данные и повторите.",
+  "order line version changed; refresh the order":
+    "Строку уже изменили в другом окне. Карточка обновлена — проверьте данные и повторите.",
+  "transmitted order is read-only; create a new version":
+    "Заказ уже передан в 1С, его нельзя менять. Создайте новую версию заказа.",
+  "classification proposal cannot be self-approved":
+    "Своё предложение согласовать нельзя — нужен второй сотрудник.",
+  "user cannot approve product classification":
+    "У вас нет прав согласовывать классификацию товара.",
+  "classification reason is required": "Укажите причину изменения классификации.",
+  "review date is required when manual minimum is set":
+    "При ручном минимуме обязательно укажите дату пересмотра.",
+  "manual minimum cannot be negative": "Ручной минимум не может быть отрицательным.",
+};
+
+const LINE_CHANGED_MESSAGE =
+  "Строку уже изменили в другом окне. Карточка обновлена — проверьте данные и повторите.";
+
+function errorStatus(error: unknown) {
+  return (error as { response?: { status?: number } })?.response?.status;
+}
+
 function errorText(error: unknown) {
   const detail = (error as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-  if (detail) return detail;
-  return error instanceof Error ? error.message : "Операция не выполнена";
+  if (detail) return ERROR_MESSAGES[detail] || detail;
+  if (error instanceof Error) return ERROR_MESSAGES[error.message] || error.message;
+  return "Операция не выполнена";
 }
 
 export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onBack }: Props) {
@@ -86,16 +112,42 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
       reviewDate: "",
     };
 
+  // Версия заказа растёт от любой правки, в том числе в соседней вкладке или у другого
+  // закупщика. Поэтому на 409 перезагружаем карточку и повторяем действие, если сама
+  // строка не менялась; иначе просим проверить обновлённые данные вручную.
+  const runVersioned = async (
+    line: ProcurementOrderFormationLine,
+    action: (versions: {
+      orderVersion: number;
+      lineVersion: number;
+    }) => Promise<ProcurementOrderFormation>
+  ): Promise<ProcurementOrderFormation> => {
+    try {
+      return await action({ orderVersion: order.version, lineVersion: line.version });
+    } catch (error: unknown) {
+      if (errorStatus(error) !== 409) throw error;
+      const fresh = await fetchProcurementOrder(order.id);
+      setOrder(fresh);
+      const freshLine = fresh.lines.find((item) => item.id === line.id);
+      if (!freshLine || freshLine.version !== line.version) {
+        throw new Error(LINE_CHANGED_MESSAGE);
+      }
+      return action({ orderVersion: fresh.version, lineVersion: freshLine.version });
+    }
+  };
+
   const saveLine = async (line: ProcurementOrderFormationLine) => {
     const edit = lineEdit(line);
     setLoadingKey(`line-${line.id}`);
     try {
-      const updated = await updateProcurementOrderLine(order.id, line.id, {
-        expected_order_version: order.version,
-        expected_line_version: line.version,
-        final_quantity: edit.quantity,
-        purchase_price: edit.price,
-      });
+      const updated = await runVersioned(line, ({ orderVersion, lineVersion }) =>
+        updateProcurementOrderLine(order.id, line.id, {
+          expected_order_version: orderVersion,
+          expected_line_version: lineVersion,
+          final_quantity: edit.quantity,
+          purchase_price: edit.price,
+        })
+      );
       setOrder(updated);
       setLineEdits((current) => {
         const next = { ...current };
@@ -114,14 +166,16 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
     const edit = classificationEdit(line);
     setLoadingKey(`class-${line.id}`);
     try {
-      const updated = await createProcurementClassification(order.id, line.id, {
-        expected_order_version: order.version,
-        expected_line_version: line.version,
-        proposed_status: edit.status,
-        reason: edit.reason,
-        manual_minimum: edit.manualMinimum || null,
-        review_date: edit.reviewDate || null,
-      });
+      const updated = await runVersioned(line, ({ orderVersion, lineVersion }) =>
+        createProcurementClassification(order.id, line.id, {
+          expected_order_version: orderVersion,
+          expected_line_version: lineVersion,
+          proposed_status: edit.status,
+          reason: edit.reason,
+          manual_minimum: edit.manualMinimum || null,
+          review_date: edit.reviewDate || null,
+        })
+      );
       setOrder(updated);
       setOpenedClassification(null);
       toast.success("Классификация отправлена на отдельное согласование");

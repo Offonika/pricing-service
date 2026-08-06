@@ -3,11 +3,18 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from app.models.procurement_order_formation import ProcurementOrderFormation
+import pytest
+from sqlalchemy import select
+
+from app.models.procurement_order_formation import (
+    ProcurementOrderFormation,
+    ProcurementOrderFormationLine,
+)
 from app.services.bitrix_order_formation import BitrixCatalogProduct
 from app.services.procurement_order_formation import serialize_line
 from app.services.procurement_order_formation_workspace import list_orders
 from tasks.build_procurement_order_formation_dry_run import (
+    build_calculation_id,
     build_grouped_orders,
     build_summary,
     persist_grouped_orders,
@@ -286,3 +293,209 @@ def test_persist_never_mutates_transmitted_order(db_session) -> None:
     assert replacement is not None
     assert replacement.status == "draft"
     assert ":revision:" in replacement.stable_key
+    assert replacement.lines[0].stable_key.startswith("revline:")
+    assert len(replacement.lines[0].stable_key) <= 255
+
+
+def test_persist_repeated_transmitted_order_same_calculation_is_noop(db_session) -> None:
+    original_ids = persist_grouped_orders(
+        db_session,
+        _grouped_orders_for_persist(batch_id="2026-07-31", calculation_id="887"),
+    )
+    original = db_session.get(ProcurementOrderFormation, original_ids[0])
+    assert original is not None
+    original.status = "transmitted"
+    original.onec_status = "transmitted"
+    db_session.commit()
+    original_version = original.version
+    original_line_id = original.lines[0].id
+
+    # Re-run with the SAME non-empty calculation_id: this must be a strict no-op
+    # returning the original id, without creating a revision or a second line.
+    repeat_ids = persist_grouped_orders(
+        db_session,
+        _grouped_orders_for_persist(batch_id="2026-07-31", calculation_id="887"),
+    )
+
+    assert repeat_ids == original_ids
+    db_session.refresh(original)
+    assert original.status == "transmitted"
+    assert original.onec_status == "transmitted"
+    assert original.version == original_version
+    assert len(original.lines) == 1
+    assert original.lines[0].id == original_line_id
+    assert original.lines[0].stable_key == "887:A"
+    assert original.lines[0].final_quantity == Decimal("5")
+
+    # Exactly one order and one line remain in the database.
+    assert len(db_session.scalars(select(ProcurementOrderFormation)).all()) == 1
+    assert len(db_session.scalars(select(ProcurementOrderFormationLine)).all()) == 1
+
+
+def test_persist_rejects_empty_calculation_id(db_session) -> None:
+    orders = _grouped_orders_for_persist(batch_id="2026-07-31", calculation_id="887")
+    orders[0]["calculation_id"] = "   "
+    with pytest.raises(ValueError):
+        persist_grouped_orders(db_session, orders)
+
+
+def test_build_calculation_id_includes_order_date_for_source_run() -> None:
+    day_one = build_calculation_id(
+        explicit="", source_run_id="run-42", order_date=date(2026, 7, 31)
+    )
+    day_two = build_calculation_id(explicit="", source_run_id="run-42", order_date=date(2026, 8, 1))
+    # The same classification run on different days yields distinct ids.
+    assert day_one != day_two
+    assert date(2026, 7, 31).isoformat() in day_one
+    assert date(2026, 8, 1).isoformat() in day_two
+    # An explicit calculation-id always takes priority.
+    assert (
+        build_calculation_id(
+            explicit="  explicit-1  ", source_run_id="run-42", order_date=date(2026, 7, 31)
+        )
+        == "explicit-1"
+    )
+
+
+def _foreign_order(
+    *, stable_key: str, calculation_id: str, payload: dict[str, object]
+) -> ProcurementOrderFormation:
+    return ProcurementOrderFormation(
+        stable_key=stable_key,
+        status="draft",
+        version=1,
+        supplier_name="Чужой поставщик",
+        contract_name="Договор",
+        warehouse_name="Склад",
+        currency="RUB",
+        batch_id="2026-07-20",
+        order_date=date(2026, 7, 20),
+        calculation_id=calculation_id,
+        payload=payload,
+    )
+
+
+def test_supersede_ignores_foreign_dry_run_orders(db_session) -> None:
+    # Foreign order from another contour that carries a different sync_source.
+    other_contour = _foreign_order(
+        stable_key="foreign-receivables-1",
+        calculation_id="receivable-recalc-42",
+        payload={"dry_run_source": True, "sync_source": "receivables"},
+    )
+    # Foreign order with a generic dry_run_source flag and no sync_source, but a
+    # calculation_id that is not part of the display auto-order pipeline.
+    generic_dry_run = _foreign_order(
+        stable_key="foreign-generic-1",
+        calculation_id="ad-hoc-analysis-7",
+        payload={"dry_run_source": True},
+    )
+    db_session.add_all([other_contour, generic_dry_run])
+    db_session.commit()
+
+    persist_grouped_orders(
+        db_session,
+        _grouped_orders_for_persist(batch_id="2026-07-31", calculation_id="887"),
+        supersede_open_batches=True,
+    )
+
+    db_session.refresh(other_contour)
+    db_session.refresh(generic_dry_run)
+    assert other_contour.status == "draft"
+    assert generic_dry_run.status == "draft"
+
+
+def test_supersede_still_hides_legacy_display_orders(db_session) -> None:
+    # Legacy display auto-order: only dry_run_source, no sync_source marker.
+    legacy = _foreign_order(
+        stable_key="legacy-display-1",
+        calculation_id="display-auto-order-2026-07-20",
+        payload={"dry_run_source": True},
+    )
+    db_session.add(legacy)
+    db_session.commit()
+
+    persist_grouped_orders(
+        db_session,
+        _grouped_orders_for_persist(batch_id="2026-07-31", calculation_id="887"),
+        supersede_open_batches=True,
+    )
+
+    db_session.refresh(legacy)
+    assert legacy.status == "superseded"
+
+
+def test_supersede_bumps_draft_version_exactly_once(db_session) -> None:
+    old_ids = persist_grouped_orders(
+        db_session,
+        _grouped_orders_for_persist(batch_id="2026-07-30", calculation_id="886"),
+    )
+    old = db_session.get(ProcurementOrderFormation, old_ids[0])
+    assert old is not None
+    assert old.status == "draft"
+    old_version = old.version
+
+    persist_grouped_orders(
+        db_session,
+        _grouped_orders_for_persist(batch_id="2026-07-31", calculation_id="887"),
+        supersede_open_batches=True,
+    )
+
+    db_session.refresh(old)
+    assert old.status == "superseded"
+    assert old.version == old_version + 1
+
+
+def _grouped_orders_for_two_suppliers(
+    *, batch_id: str, calculation_id: str
+) -> list[dict[str, object]]:
+    return build_grouped_orders(
+        [_source("A", "5", "A"), _source("B", "3", "B")],
+        [_lead("A", "S1", "0xs1"), _lead("B", "S2", "0xs2")],
+        nomenclature_by_code={
+            "A": {"nomenclature_ref": "0x00010025901E48EF11E1967C11111111"},
+            "B": {"nomenclature_ref": "0x00020025901E48EF11E1967C22222222"},
+        },
+        catalog_resolver=lambda guid: BitrixCatalogProduct(
+            product_id="10",
+            name="Каталожный товар",
+            xml_id=guid,
+            assortment_status="Продажа",
+        ),
+        skip_catalog=False,
+        contracts={"default": {"code": "C1", "name": "Договор"}},
+        warehouse={"code": "MAIN", "name": "Склад"},
+        currency="RUB",
+        procurement_contour="ordinary",
+        route="ordinary",
+        batch_id=batch_id,
+        order_date=date(2026, 7, 31),
+        calculation_id=calculation_id,
+        source_run_id=calculation_id,
+        responsible_bitrix_user_id="130757",
+    )
+
+
+def test_supersede_hides_vanished_group_of_same_calculation(db_session) -> None:
+    first_ids = persist_grouped_orders(
+        db_session,
+        _grouped_orders_for_two_suppliers(batch_id="2026-07-31", calculation_id="887"),
+    )
+    assert len(first_ids) == 2
+
+    # Next run of the SAME calculation keeps only the first supplier group; the
+    # vanished group of that calculation must still become superseded.
+    remaining = _grouped_orders_for_two_suppliers(batch_id="2026-07-31", calculation_id="887")[:1]
+    second_ids = persist_grouped_orders(
+        db_session,
+        remaining,
+        supersede_open_batches=True,
+    )
+    assert len(second_ids) == 1
+
+    vanished_id = next(order_id for order_id in first_ids if order_id not in second_ids)
+    vanished = db_session.get(ProcurementOrderFormation, vanished_id)
+    assert vanished is not None
+    assert vanished.status == "superseded"
+    kept = db_session.get(ProcurementOrderFormation, second_ids[0])
+    assert kept is not None
+    assert kept.status == "draft"

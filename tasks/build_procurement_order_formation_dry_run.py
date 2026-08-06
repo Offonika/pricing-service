@@ -87,6 +87,24 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def build_calculation_id(*, explicit: str, source_run_id: str, order_date: date) -> str:
+    """Build a deterministic calculation_id for a display auto-order run.
+
+    An explicit ``--calculation-id`` always wins. Otherwise the order_date is
+    always part of the id, so the same classification run replayed on another
+    day produces a different id. Without the date, a new day yields new order
+    stable keys but the old global line stable keys, which collide.
+    """
+
+    explicit_value = str(explicit or "").strip()
+    source_run_value = str(source_run_id or "").strip()
+    if explicit_value:
+        return explicit_value
+    if source_run_value:
+        return f"display-auto-order-{order_date.isoformat()}-{source_run_value}"
+    return f"display-auto-order-{order_date.isoformat()}"
+
+
 def main() -> int:
     args = parse_args()
     settings = get_settings()
@@ -102,10 +120,10 @@ def main() -> int:
         or (source_summary.get("classification_run_id") if isinstance(source_summary, dict) else "")
         or ""
     )
-    calculation_id = (
-        args.calculation_id
-        or (f"display-auto-order-{source_run_id}" if source_run_id else "")
-        or f"display-auto-order-{args.order_date.isoformat()}"
+    calculation_id = build_calculation_id(
+        explicit=args.calculation_id,
+        source_run_id=source_run_id,
+        order_date=args.order_date,
     )
     selected_rows = select_order_rows(source_rows)
     nomenclature = fetch_nomenclature_by_codes(
@@ -586,14 +604,29 @@ def persist_grouped_orders(
 ) -> list[int]:
     persisted_ids: list[int] = []
     for payload in orders:
+        calculation_id = str(payload.get("calculation_id") or "").strip()
+        if not calculation_id:
+            raise ValueError("calculation_id is required to persist a procurement order")
         requested_stable_key = str(payload["stable_key"])
+        line_key_namespace = ""
         order = db.scalar(
             select(ProcurementOrderFormation).where(
                 ProcurementOrderFormation.stable_key == requested_stable_key
             )
         )
         if order is not None and _order_is_immutable(order):
-            requested_stable_key = _immutable_revision_stable_key(payload)
+            if order.calculation_id == calculation_id:
+                # Same calculation replayed against an immutable order: strict
+                # no-op, keep the original order untouched and return its id.
+                persisted_ids.append(order.id)
+                continue
+            # A different calculation must not mutate the immutable order, so it
+            # is routed into a fresh revision order with namespaced line keys.
+            requested_stable_key = _immutable_revision_stable_key(
+                payload,
+                calculation_id=calculation_id,
+            )
+            line_key_namespace = requested_stable_key
             order = db.scalar(
                 select(ProcurementOrderFormation).where(
                     ProcurementOrderFormation.stable_key == requested_stable_key
@@ -624,7 +657,7 @@ def persist_grouped_orders(
                 order_date=date.fromisoformat(str(payload["order_date"])),
                 responsible_name=payload.get("responsible_name") or None,
                 responsible_bitrix_user_id=(payload.get("responsible_bitrix_user_id") or None),
-                calculation_id=str(payload["calculation_id"]),
+                calculation_id=calculation_id,
                 source_run_id=payload.get("source_run_id") or None,
                 payload={
                     "dry_run_source": True,
@@ -638,7 +671,7 @@ def persist_grouped_orders(
         if not created:
             ensure_order_editable(order)
             header_values = {
-                "calculation_id": str(payload["calculation_id"]),
+                "calculation_id": calculation_id,
                 "source_run_id": payload.get("source_run_id") or None,
                 "responsible_bitrix_user_id": (payload.get("responsible_bitrix_user_id") or None),
                 "responsible_name": payload.get("responsible_name") or None,
@@ -659,7 +692,7 @@ def persist_grouped_orders(
         existing = {line.stable_key: line for line in order.lines}
         seen: set[str] = set()
         for line_payload in payload.get("lines", []):
-            stable_key = str(line_payload["stable_key"])
+            stable_key = _line_stable_key(line_key_namespace, line_payload["stable_key"])
             seen.add(stable_key)
             line = existing.get(stable_key)
             if line is None:
@@ -724,11 +757,10 @@ def persist_grouped_orders(
                     actor="display-auto-order-sync",
                     bitrix_user_id=(payload.get("responsible_bitrix_user_id") or None),
                     idempotency_key=(
-                        f"auto-order-sync:{order.id}:v{order.version}:"
-                        f"{payload.get('calculation_id')}"
+                        f"auto-order-sync:{order.id}:v{order.version}:{calculation_id}"
                     ),
                     payload={
-                        "calculation_id": payload.get("calculation_id"),
+                        "calculation_id": calculation_id,
                         "source_run_id": payload.get("source_run_id"),
                         "created": created,
                     },
@@ -748,10 +780,52 @@ def _order_is_immutable(order: ProcurementOrderFormation) -> bool:
     }
 
 
-def _immutable_revision_stable_key(payload: Mapping[str, Any]) -> str:
-    calculation = str(payload.get("calculation_id") or payload.get("source_run_id") or "new")
-    digest = hashlib.sha256(calculation.encode("utf-8")).hexdigest()[:12]
+def _is_display_auto_order(order: ProcurementOrderFormation) -> bool:
+    """Explicitly recognise orders produced by the display auto-order pipeline.
+
+    New orders carry the ``sync_source="display_auto_order"`` marker. Legacy
+    orders persisted before that marker existed only had ``dry_run_source=True``
+    and no ``sync_source`` key; they are identified by the deterministic
+    ``display-auto-order-`` calculation_id prefix that the cron always produces.
+    A foreign order that merely carries a generic ``dry_run_source`` flag (or a
+    different ``sync_source``) is therefore never treated as ours.
+    """
+
+    payload = order.payload or {}
+    if payload.get("sync_source") == "display_auto_order":
+        return True
+    return (
+        payload.get("dry_run_source") is True
+        and "sync_source" not in payload
+        and str(order.calculation_id or "").startswith("display-auto-order-")
+    )
+
+
+def _immutable_revision_stable_key(
+    payload: Mapping[str, Any],
+    *,
+    calculation_id: str,
+) -> str:
+    digest = hashlib.sha256(calculation_id.encode("utf-8")).hexdigest()[:12]
     return f"{payload['stable_key']}:revision:{digest}"
+
+
+def _line_stable_key(namespace: str, raw_stable_key: Any) -> str:
+    """Return a globally unique, bounded stable key for a persisted line.
+
+    Line stable keys are globally unique. The normal (non-revision) path keeps
+    the raw key for backward compatibility. When an immutable order is re-synced
+    into a fresh revision order, its lines must not reuse the original line
+    stable keys, otherwise the insert violates ``uq_proc_order_line_stable_key``.
+    For a revision the key is a short SHA-256 digest of the revision order stable
+    key and the raw line key, which is deterministic and always fits String(255).
+    """
+
+    raw = str(raw_stable_key)
+    if not namespace:
+        return raw
+    digest = hashlib.sha256(f"{namespace}\n{raw}".encode()).hexdigest()
+    return f"revline:{digest}"
 
 
 def _supersede_previous_open_batches(
@@ -760,24 +834,21 @@ def _supersede_previous_open_batches(
     active_order_ids: set[int],
     orders: Sequence[Mapping[str, Any]],
 ) -> None:
-    current_calculation_ids = {str(order.get("calculation_id") or "") for order in orders}
+    current_calculation_ids = {str(order.get("calculation_id") or "").strip() for order in orders}
     candidates = db.scalars(select(ProcurementOrderFormation)).all()
     for order in candidates:
         payload = order.payload or {}
-        is_display_auto_order = bool(payload.get("dry_run_source")) or (
-            payload.get("sync_source") == "display_auto_order"
-        )
         if (
             order.id in active_order_ids
-            or not is_display_auto_order
+            or not _is_display_auto_order(order)
             or _order_is_immutable(order)
             or order.status == "superseded"
-            or order.calculation_id in current_calculation_ids
         ):
             continue
         previous_status = order.status
-        if order.status in {"approved", "review", "error"} or order.approved_version is not None:
-            invalidate_order_approval(order)
+        # Bump the version exactly once through the shared approval-invalidation
+        # mechanism, then mark the order superseded.
+        invalidate_order_approval(order)
         order.status = "superseded"
         order.payload = {
             **payload,

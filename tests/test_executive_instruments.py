@@ -74,6 +74,7 @@ def _snapshot(*, generated_at: datetime) -> dict[str, object]:
                     "active_grants": 1,
                     "pending_grants": 0,
                     "review_required_grants": 1,
+                    "overdue_review_grants": 0,
                     "mfa_review_count": 0,
                     "unowned_credentials": 0,
                     "attention_grant_count": 1,
@@ -104,7 +105,48 @@ def test_loads_sanitized_read_only_snapshot(monkeypatch, tmp_path: Path) -> None
     assert result.summary.total_count == 1
     assert result.devices[0].connectivity_status == "online"
     assert result.devices[0].access.review_required_grants == 1
+    assert result.devices[0].access.overdue_review_grants == 0
+    assert result.devices[0].problems[0].problem_key == "configuration:legacy-issue"
+    assert result.devices[0].problems[0].title == result.devices[0].issue
     assert result.capabilities.access_mutations is False
+
+
+def test_loads_v3_snapshot_with_structured_problems(monkeypatch, tmp_path: Path) -> None:
+    now = datetime(2026, 8, 4, 9, 0, tzinfo=UTC)
+    payload = _snapshot(generated_at=now)
+    payload["schema_version"] = 3
+    payload["devices"][0]["problems"] = [  # type: ignore[index]
+        {
+            "problem_key": "resources:cpu",
+            "category": "resources",
+            "severity": "critical",
+            "title": "Загрузка CPU вышла за безопасный порог",
+            "evidence": ["Фактическое значение: 96%", "Порог critical: ≥ 95%"],
+            "started_at": now.isoformat().replace("+00:00", "Z"),
+            "recommended_action": "Проверить нагрузку",
+        },
+        {
+            "problem_key": "backup:protection",
+            "category": "backup",
+            "severity": "warning",
+            "title": "Резервирование требует проверки",
+            "evidence": ["Restore-test не подтверждён"],
+            "started_at": None,
+            "recommended_action": "Выполнить restore-test",
+        },
+    ]
+    path = tmp_path / "v3.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(executive_instruments, "get_settings", lambda: _settings(path))
+
+    result = executive_instruments.load_executive_instruments_snapshot(now=now)
+
+    assert result.schema_version == 3
+    assert [problem.category for problem in result.devices[0].problems] == [
+        "resources",
+        "backup",
+    ]
+    assert result.devices[0].problems[0].evidence[0] == "Фактическое значение: 96%"
 
 
 def test_missing_snapshot_is_explicit_not_zero_fact(monkeypatch, tmp_path: Path) -> None:

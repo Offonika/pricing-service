@@ -14475,6 +14475,11 @@ components:
           minimum: 0.0
           title: Review Required Grants
           default: 0
+        overdue_review_grants:
+          type: integer
+          minimum: 0.0
+          title: Overdue Review Grants
+          default: 0
         mfa_review_count:
           type: integer
           minimum: 0.0
@@ -14740,6 +14745,11 @@ components:
           $ref: '#/components/schemas/ExecutiveInstrumentIntegration'
         access:
           $ref: '#/components/schemas/ExecutiveInstrumentAccess'
+        problems:
+          items:
+            $ref: '#/components/schemas/ExecutiveInstrumentProblem'
+          type: array
+          title: Problems
         issue:
           anyOf:
           - type: string
@@ -14843,6 +14853,55 @@ components:
       additionalProperties: false
       type: object
       title: ExecutiveInstrumentMetrics
+    ExecutiveInstrumentProblem:
+      properties:
+        problem_key:
+          type: string
+          title: Problem Key
+        category:
+          type: string
+          enum:
+          - connectivity
+          - resources
+          - service
+          - backup
+          - access
+          - monitoring
+          - configuration
+          title: Category
+        severity:
+          type: string
+          enum:
+          - critical
+          - warning
+          - info
+          title: Severity
+        title:
+          type: string
+          title: Title
+        evidence:
+          items:
+            type: string
+          type: array
+          title: Evidence
+        started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Started At
+        recommended_action:
+          type: string
+          title: Recommended Action
+      additionalProperties: false
+      type: object
+      required:
+      - problem_key
+      - category
+      - severity
+      - title
+      - recommended_action
+      title: ExecutiveInstrumentProblem
     ExecutiveInstrumentService:
       properties:
         service_key:
@@ -14917,7 +14976,9 @@ components:
       properties:
         schema_version:
           type: integer
-          const: 2
+          enum:
+          - 2
+          - 3
           title: Schema Version
           default: 2
         generated_at:

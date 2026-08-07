@@ -466,6 +466,34 @@ documents:
       - tests/test_logistics_onec.py
       - tests/test_order_fulfillment_api.py
     keywords: [logistics, transfer-assistant, onec, reserve, placement, pickup, readonly]
+  - path: docs/specs/customer-settlements-backend-v1.md
+    title: Customer Account Settlements Backend V1
+    doc_type: spec
+    domain: receivables
+    status: accepted
+    owner: engineering
+    source_of_truth: true
+    related_code:
+      - app/api/customer_settlements.py
+      - app/models/customer_settlement.py
+      - app/schemas/customer_settlement.py
+      - app/services/customer_settlement_auth.py
+      - app/services/customer_settlement_mapping.py
+      - app/services/customer_settlement_source.py
+      - app/services/customer_settlements.py
+      - app/workers/customer_settlements.py
+      - tasks/check_customer_settlement_health.py
+      - tasks/manage_customer_settlement_pilot.py
+      - tasks/mock_customer_settlement_client.py
+      - alembic/versions/c3d4e5f6a7b9_add_customer_settlements.py
+    related_tests:
+      - tests/test_customer_settlement_api.py
+      - tests/test_customer_settlement_auth.py
+      - tests/test_customer_settlement_mapping.py
+      - tests/test_customer_settlement_migration.py
+      - tests/test_customer_settlement_source.py
+      - tests/test_customer_settlements.py
+    keywords: [customer-account, settlements, onec, bitrix, hmac, snapshot, pilot]
   - path: docs/specs/receivables-smart-process-workflow.md
     title: Receivables Workplace And Smart Process Workflow
     doc_type: spec

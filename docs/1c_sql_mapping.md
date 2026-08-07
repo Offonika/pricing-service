@@ -120,6 +120,44 @@ LEFT JOIN _Reference42 AS subj
 WHERE p._Description = N'Предмет';
 ```
 
+Тот же регистр `_InfoRg6309` хранит доп. реквизиты и для справочника складов
+`_Reference80` (не только для номенклатуры `_Reference62`) — универсальное поле
+`_Fld6310` типизировано (`_Fld6310_TYPE`/`_RTRef`/`_RRRef`), поэтому подходит
+для любого объекта. **Проверено 2026-07-28** точным совпадением с карточкой
+склада в 1С (`Люблино 1-2`, РБ0000045: реквизиты «Роль склада = Резерв»,
+«Магазин = ложь» — совпало день в день с выводом SQL-запроса ниже):
+
+| Реквизит склада | Определение (`_Chrc401`) | Значение | Тип значения |
+| --- | --- | --- | --- |
+| Роль склада | `_IDRRef = 0xb55d002590803daf11f182171ce63dc8` (код `РБ0000140`) | ссылка на `_Reference42` (`Точка продаж`/`Транзит`/`Брак`/`Резерв`/`Центральный`/`Производства` и др.) | `_Fld6312_TYPE = 0x08` |
+| Магазин | `_IDRRef = 0xb5fe0025901e48ee11ee1744e074d8b0` (код `РБ0000113`) | булево | `_Fld6312_TYPE = 0x02`, флаг в `_Fld6312_L` |
+
+```sql
+SELECT
+    w._Code AS warehouse_code,
+    w._Description AS warehouse_name,
+    role_val._Description AS warehouse_role,
+    shop_ip._Fld6312_L AS is_shop
+FROM _Reference80 AS w
+LEFT JOIN _InfoRg6309 AS role_ip
+    ON role_ip._Fld6310_RRRef = w._IDRRef
+    AND role_ip._Fld6311RRef = 0xb55d002590803daf11f182171ce63dc8
+LEFT JOIN _Reference42 AS role_val
+    ON role_val._IDRRef = role_ip._Fld6312_RRRef
+LEFT JOIN _InfoRg6309 AS shop_ip
+    ON shop_ip._Fld6310_RRRef = w._IDRRef
+    AND shop_ip._Fld6311RRef = 0xb5fe0025901e48ee11ee1744e074d8b0;
+```
+
+Это авторитетный источник роли склада — при добавлении/проверке складов в
+`config/assortment/display-warehouse-policy.json` сверять `role`/
+`sells_systematically` именно этим запросом, а не только вручную по названию
+склада. **Найденное расхождение 2026-07-28**: склад `РБ0000045` («Люблино 1-2»)
+в `display-warehouse-policy.json` был помечен как `physical_sales_point`
+(действующая точка продаж), а в 1С его реквизиты — «Роль склада = Резерв»,
+«Магазин = ложь» (магазин закрыт/недействующий). Исправлено на
+`non_systematic`/`sells_systematically: false`.
+
 ### 4.3. Возвратная схема `Розница -> Возврат -> Не розница`
 
 | Бизнес-поле | SQL-источник | Связь | Надёжность | Комментарий |

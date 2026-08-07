@@ -254,6 +254,19 @@ class Settings(BaseSettings):
     receivable_workplace_bitrix_full_access_user_ids: Annotated[list[str], NoDecode] = Field(
         default_factory=list
     )
+    nomenclature_classification_transport_enabled: bool = False
+    nomenclature_classification_worker_enabled: bool = False
+    nomenclature_classification_auto_apply_enabled: bool = False
+    nomenclature_classification_approved_by_allowlist: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    nomenclature_classification_pilot_nomenclature_codes: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    nomenclature_classification_poll_limit: int = Field(default=20, ge=1, le=200)
+    nomenclature_classification_result_timeout_seconds: int = Field(default=900, ge=30, le=86400)
+    nomenclature_classification_max_dry_run_attempts: int = Field(default=3, ge=1, le=5)
+    nomenclature_classification_max_readback_attempts: int = Field(default=3, ge=1, le=5)
     receivable_workplace_bitrix_session_secret: str | None = None
     receivable_workplace_bitrix_session_ttl_seconds: int = 3600
     receivable_workplace_bitrix_rest_timeout_seconds: float = 6.0
@@ -534,6 +547,8 @@ class Settings(BaseSettings):
         "receivable_workplace_bitrix_allowed_domains",
         "receivable_workplace_bitrix_allowed_member_ids",
         "receivable_workplace_bitrix_full_access_user_ids",
+        "nomenclature_classification_approved_by_allowlist",
+        "nomenclature_classification_pilot_nomenclature_codes",
         "executive_dashboard_bitrix_allowed_domains",
         "executive_dashboard_bitrix_allowed_member_ids",
         "executive_dashboard_bitrix_full_access_user_ids",

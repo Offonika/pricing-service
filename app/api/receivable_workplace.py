@@ -221,6 +221,7 @@ def get_receivable_workplace(
     date_value: date = Query(alias="date"),
     department_ref: str | None = Query(default=None),
     status: str | None = Query(default=None),
+    min_debt: Decimal | None = Query(default=None, ge=0),
     limit: int = Query(default=500, ge=1, le=2000),
     db: Session = Depends(get_db),
     access: ReceivableWorkplaceAuthContext = Depends(require_receivable_workplace_access),
@@ -230,6 +231,7 @@ def get_receivable_workplace(
         snapshot_date=date_value,
         department_ref=department_ref,
         status=status,
+        min_debt=min_debt,
         limit=limit,
         allowed_department_refs=access.allowed_department_refs,
     )

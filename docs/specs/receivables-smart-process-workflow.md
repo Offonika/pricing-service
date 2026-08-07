@@ -658,8 +658,8 @@ Workplace API:
 
 Дополнительные поля ответа workplace:
 
-- `total_count` - количество строк после доступа, фильтра подразделения/статуса
-  и правила просрочки;
+- `total_count` - количество строк после доступа, фильтра подразделения/статуса,
+  минимальной суммы долга `min_debt` и правила просрочки;
 - `visible_count` - количество строк в текущем payload с учетом `limit`;
 - `summary_scope=filtered_total` - признак, что сводка относится ко всей
   отфильтрованной выборке;
@@ -671,6 +671,9 @@ Workplace API:
 - `/bitrix/receivables` и `/bitrix/receivables/*` - основной встроенный вход в
   `Bitrix24`;
 - `/receivables/workplace` - технический fallback с ручным internal token.
+- рабочий список имеет независимый фильтр минимальной суммы долга:
+  `больше 500 тыс.` или `больше 1 млн`; он применяется backend до `limit`
+  и совместим с отборами подразделения, статуса и быстрыми фильтрами UI.
 
 Bitrix session API:
 
@@ -678,6 +681,9 @@ Bitrix session API:
 - вход: `access_token`, `domain`, `member_id`;
 - backend проверяет allowlist портала/member, вызывает `user.current`, затем
   выдает короткий `session_token`;
+- при `401` после простоя frontend один раз обновляет OAuth-сессию через
+  `BX24.refreshAuth`, получает новый короткий `session_token` и повторяет
+  исходный запрос без потери введённых данных;
 - ответ: `session_token`, `expires_at`, `expires_in`, `user`, `access_level`,
   `department_refs`;
 - full-access задается `RECEIVABLE_WORKPLACE_BITRIX_FULL_ACCESS_USER_IDS`;
@@ -1029,6 +1035,9 @@ Pilot safety valve:
   групп он ограничен `30%` средней месячной продажи за 90 дней. Форма оплаты
   берется read-only из 1С: `_Document196` как наличные, `_AccumRg7614` recorder
   types `0x000000BA / 0x000000A9` как безнал/эквайринг.
+- 2026-07-30 - для задачи `#43` добавлены реальное обновление истекшей
+  Bitrix OAuth-сессии и серверный фильтр долга `min_debt` с UI-порогами
+  `500 тыс.` / `1 млн`, совместимый с текущими отборами.
 - 2026-07-04 - добавлен локальный расчетный dry-run портрета должника:
   `app/services/receivable_decision_portrait.py` и
   `tasks/build_receivable_decision_portraits.py` считают продажи `30 / 60 / 90`,

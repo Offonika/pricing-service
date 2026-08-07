@@ -101,6 +101,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.product_phone_model import ProductPhoneModel
     from app.models.product_sku_plan import ProductSkuPlan
     from app.models.product_stock import ProductStock
+    from app.models.quality_case import QualityCase, QualityCaseEvent
     from app.models.receivable_balance_snapshot import ReceivableBalanceSnapshot
     from app.models.receivable_case import ReceivableCase
     from app.models.receivable_ledger_event import ReceivableLedgerEvent
@@ -150,6 +151,8 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "ProcurementOrderFormationEvent",
         "ProcurementClassificationProposal",
         "ProcurementLifecycleTransitionProposal",
+        "QualityCase",
+        "QualityCaseEvent",
         "ProductCompatibility",
         "Competitor",
         "CompetitorPrice",

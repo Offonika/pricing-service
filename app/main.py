@@ -47,6 +47,7 @@ from app.api.procurement_order_formation import (
     page_router as procurement_order_formation_page_router,
 )
 from app.api.procurement_order_formation import router as procurement_order_formation_router
+from app.api.quality_cases import router as quality_cases_router
 from app.api.receivable_workplace import page_router as receivable_workplace_page_router
 from app.api.receivable_workplace import router as receivable_workplace_router
 from app.api.receivables import router as receivables_router
@@ -160,6 +161,7 @@ app.include_router(internal_alerts_router, prefix="/api/internal/alerts")
 app.include_router(counterparty_duplicates_router, prefix="/api/internal/counterparty-duplicates")
 app.include_router(customer_price_types_router)
 app.include_router(expertise_router, prefix="/api/expertise")
+app.include_router(quality_cases_router, prefix="/api/quality")
 app.include_router(site_defect_archive_router, prefix="/api/site-defects")
 app.include_router(card_balance_reconciliation_router, prefix="/api/card-balance-reconciliation")
 app.include_router(logistics_router, prefix="/api/logistics")

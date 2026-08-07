@@ -381,6 +381,16 @@ documents:
       - tests/test_report_display_supplier_lead_time_history_task.py
       - tests/test_detect_procurement_cargo_dropoff_refresh_needed_task.py
     keywords: [display, auto-order, procurement, assortment-lifecycle, lead-time, analogs]
+  - path: docs/specs/order-payment-control-api.md
+    title: Order Payment Control API
+    doc_type: spec
+    domain: order_flow
+    status: implemented
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/api/order_payment_control.py, app/schemas/order_payment_control.py, app/services/order_payment_control.py]
+    related_tests: [tests/test_order_payment_control.py]
+    keywords: [site-orders, payments, cloudpayments, onec, read-only, amount-control, bitrix-task-1414]
   - path: docs/specs/site-order-fulfillment-control-contour.md
     title: Site Order Fulfillment Control Contour
     doc_type: spec

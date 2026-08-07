@@ -159,3 +159,19 @@ def require_order_fulfillment_internal_token(
         expected,
         missing_detail="order fulfillment internal token not configured",
     )
+
+
+def require_order_payment_control_internal_token(
+    credentials: HTTPAuthorizationCredentials = Security(security),
+) -> str:
+    settings = get_settings()
+    expected = (
+        settings.order_payment_control_internal_api_token
+        or settings.order_fulfillment_internal_api_token
+        or settings.management_internal_api_token
+    )
+    return _require_bearer_token(
+        credentials,
+        expected,
+        missing_detail="order payment control internal token not configured",
+    )

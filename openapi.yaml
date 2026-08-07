@@ -7752,6 +7752,31 @@ paths:
                 $ref: '#/components/schemas/OrchestrationHealthResponse'
       security:
       - HTTPBearer: []
+  /api/order-payment-control/check:
+    post:
+      summary: Check Order Payment
+      operationId: check_order_payment_api_order_payment_control_check_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderPaymentCheckRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderPaymentCheckResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/procurement-labels/session:
     post:
       summary: Create Bitrix Procurement Labels Session
@@ -19446,6 +19471,108 @@ components:
           title: Items
       type: object
       title: OrderFulfillmentReviewResponse
+    OrderPaymentCheckRequest:
+      properties:
+        site_order_number:
+          type: string
+          maxLength: 40
+          minLength: 1
+          title: Site Order Number
+        site_amount:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*(?:\d{0,13}|(?=[\d.]{1,16}0*$)\d{0,13}\.\d{0,2}0*$)
+          title: Site Amount
+        payment_amount:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*(?:\d{0,13}|(?=[\d.]{1,16}0*$)\d{0,13}\.\d{0,2}0*$)
+          title: Payment Amount
+        stage:
+          type: string
+          enum:
+          - checkout
+          - cloudpayments_check
+          - cloudpayments_pay
+          title: Stage
+        payment_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Payment Id
+      type: object
+      required:
+      - site_order_number
+      - site_amount
+      - payment_amount
+      - stage
+      title: OrderPaymentCheckRequest
+    OrderPaymentCheckResponse:
+      properties:
+        check_id:
+          type: string
+          title: Check Id
+        allowed:
+          type: boolean
+          title: Allowed
+        reason:
+          type: string
+          enum:
+          - amount_match
+          - site_payment_mismatch
+          - onec_order_not_found
+          - onec_order_deleted
+          - onec_order_ambiguous
+          - onec_order_unposted
+          - onec_amount_invalid
+          - onec_amount_mismatch
+          title: Reason
+        site_order_number:
+          type: string
+          title: Site Order Number
+        site_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Site Amount
+        payment_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Payment Amount
+        onec_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Onec Amount
+        onec_document_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Document Number
+        onec_revision:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Revision
+        checked_at:
+          type: string
+          format: date-time
+          title: Checked At
+      type: object
+      required:
+      - check_id
+      - allowed
+      - reason
+      - site_order_number
+      - site_amount
+      - payment_amount
+      - checked_at
+      title: OrderPaymentCheckResponse
     PaginatedCandidates:
       properties:
         items:

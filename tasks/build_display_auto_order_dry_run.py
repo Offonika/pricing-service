@@ -18,6 +18,7 @@ from app.core.config import get_settings
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
 )
+from app.services.onec_stock_availability import fetch_days_in_sale_by_code
 from app.services.procurement_b2b_customer_demand import (
     B2BSkuDemandProfile,
     load_b2b_customer_demand_profiles,
@@ -1079,55 +1080,11 @@ STOCKOUT_GUARD_BUFFER_DAYS = 10
 # 2026-07-31 - без этой поправки скорость занижается для карточек, которые
 # просто были без остатка часть окна, а не потеряли реальный спрос. Здесь -
 # первое подключение к формуле скорости.
-def fetch_days_in_sale_totals(
-    engine: Any,
-    *,
-    codes: Sequence[str],
-    physical_sales_point_codes: Sequence[str],
-    date_to: date,
-    windows_days: Sequence[int],
-) -> dict[str, dict[int, Decimal]]:
-    if not codes or not physical_sales_point_codes:
-        return {}
-    store_count = Decimal(str(len(physical_sales_point_codes)))
-    result: dict[str, dict[int, Decimal]] = {code: {} for code in codes}
-    with engine.connect() as conn:
-        for window_days in sorted(set(windows_days)):
-            window_from = date_to - timedelta(days=window_days - 1)
-            sql = text("""
-                SELECT product_code,
-                    SUM(
-                        GREATEST(
-                            0,
-                            (
-                                LEAST(available_to, :window_to)
-                                - GREATEST(available_from, :window_from)
-                            ) + 1
-                        )
-                    ) AS available_point_days
-                FROM onec_stock_availability_interval
-                WHERE product_code IN :codes
-                  AND warehouse_code IN :warehouse_codes
-                  AND available_from <= :window_to
-                  AND available_to >= :window_from
-                GROUP BY product_code
-                """).bindparams(
-                bindparam("codes", value=tuple(codes), expanding=True),
-                bindparam(
-                    "warehouse_codes",
-                    value=tuple(physical_sales_point_codes),
-                    expanding=True,
-                ),
-                bindparam("window_from", value=window_from),
-                bindparam("window_to", value=date_to),
-            )
-            for row in conn.execute(sql).mappings():
-                code = str(row["product_code"])
-                if code not in result:
-                    continue
-                available_days = Decimal(str(row["available_point_days"] or 0))
-                result[code][window_days] = available_days / store_count
-    return result
+# Функция переехала в app/services/onec_stock_availability.py: тот же расчёт
+# понадобился формуле статусов, и держать две копии значило бы завести
+# второй источник правды по дням наличия. Имя оставлено прежним, чтобы не
+# трогать вызов и тесты автозаказа.
+fetch_days_in_sale_totals = fetch_days_in_sale_by_code
 
 
 def fetch_return_totals(

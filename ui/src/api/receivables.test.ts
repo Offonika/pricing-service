@@ -118,8 +118,17 @@ describe("receivablesErrorMessage", () => {
   });
 
   it("explains a failed session refresh without discarding screen values", () => {
-    expect(
-      receivablesErrorMessage({ response: { status: 401 } }, "Request failed")
-    ).toContain("Введённые данные остались на экране");
+    const message = receivablesErrorMessage(
+      {
+        response: {
+          status: 401,
+          data: { detail: "Bitrix access token was rejected" },
+        },
+      },
+      "Request failed"
+    );
+
+    expect(message).toContain("Введённые данные остались на экране");
+    expect(message).not.toContain("Bitrix access token was rejected");
   });
 });

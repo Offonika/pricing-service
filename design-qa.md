@@ -1,4 +1,72 @@
-# Design QA: вкладка «Закупки»
+# Design QA: «Помощник заказов»
+
+- Source visual truth: `/root/.codex/generated_images/019fbd4c-7110-7461-9a9f-e21a5eac5cac/exec-1b219381-2473-4820-91c8-b37e4f49df2a.png`.
+- Source pixels: `1486 × 1059`, RGB PNG.
+- Implementation: `/bitrix/procurement-order-formation/assistant`, компонент `ui/src/components/ProcurementOrderAssistant.tsx`.
+- Implementation screenshot: `/root/.codex/visualizations/2026/08/01/019fbd4c-7110-7461-9a9f-e21a5eac5cac/procurement-order-assistant-design-qa/implementation-1486x1059-final.png`.
+- Combined comparison: `/root/.codex/visualizations/2026/08/01/019fbd4c-7110-7461-9a9f-e21a5eac5cac/procurement-order-assistant-design-qa/comparison-approved-vs-final.png`.
+- Responsive evidence: `implementation-tablet-1024x900.png` и `implementation-mobile-390x844.png` в том же каталоге.
+- Target viewport: `1486 × 1059` CSS px, `deviceScaleFactor=1`.
+- Density normalization: не применялась; эталон и desktop-снимок имеют одинаковый размер и плотность.
+- State: таблица помощника, быстрый фильтр `Все`, выбранные готовые строки, раскрытая карточка поставщика и меню пакета.
+
+## Findings
+
+- Открытых P0/P1/P2 замечаний нет. В desktop-состоянии полностью видны колонка
+  `Решение`, правая панель и основная кнопка сборки; длинный быстрый фильтр не
+  обрезается.
+- Таблица не содержит колонку `Что мешает`; присутствуют фото, потребность,
+  поставщик, цена, рентабельность, брак, срок и решение. Правая панель показывает
+  классы A/B/C, исторические показатели и финансовые условия.
+- Шрифты и типографика используют существующий стек продукта
+  `Inter, Segoe UI, Arial`; плотность, переносы и иерархия сопоставлены с
+  эталоном в общем изображении `1486 × 1059`.
+- Ритм и компоновка сохраняют основное соотношение таблицы и правой панели.
+  Первая карточка раскрыта, карточки B/C компактны, поэтому CTA остаётся в
+  первом экране.
+- Семантические зелёные, оранжевые и красные состояния читаются без потери
+  контраста. Axe не нашёл critical/serious нарушений WCAG 2 A/AA и 2.1 A/AA.
+- Качество изображений: интерфейс показывает реальную миниатюру и открывает
+  исходный URL без повторного сжатия. Подмена товарных фото заглушками или
+  нарисованными активами не используется.
+- Тексты: русские подписи соответствуют утверждённому сценарию; отсутствие
+  истории обозначается явно, показатели не выдумываются.
+
+## Full-view and focused comparison evidence
+
+Эталон и финальная реализация объединены в `comparison-approved-vs-final.png`
+без масштабирования. Сравнение проверено по шапке, быстрым фильтрам, плотности
+таблицы, фотографиям, правой панели, раскрытому меню пакета и доступности CTA.
+Отдельные responsive-снимки подтверждают одноколоночную компоновку на мобильном
+и отсутствие горизонтального переполнения всей страницы; широкая таблица и
+быстрые фильтры прокручиваются внутри своих областей.
+
+## Interaction and runtime checks
+
+- Playwright проверил быстрый фильтр брака, поиск в расширенных фильтрах и сброс.
+- Скачаны и проверены `Список + фото` и `Фото отдельно`; оба manifest-файла
+  содержат ссылки на оригинальные изображения.
+- Desktop `1486 × 1059`, tablet `1024 × 900` и mobile `390 × 844` отрисованы без
+  горизонтального переполнения документа.
+- Ошибок browser console и `pageerror` нет; critical/serious нарушений Axe нет.
+- Component tests подтверждают загрузку данных, исходную ссылку фото, безопасную
+  сборку полностью выбранного проекта и блокировку проекта без фото.
+
+## Comparison history
+
+1. Первый снимок выявил обрезанную колонку `Решение`, обрезку длинного фильтра и
+   недоступный без прокрутки CTA из-за трёх раскрытых карточек.
+2. Таблица и фильтры уплотнены, первая карточка оставлена раскрытой, B/C переведены
+   в компактное состояние; в шапку добавлена дата.
+3. Axe выявил недостаточный контраст мелкого текста и неверную структуру `dl`;
+   оба нарушения исправлены.
+4. Контрольный Playwright-прогон прошёл полностью.
+
+final result: passed
+
+---
+
+# Архив: Design QA вкладки «Закупки»
 
 - Source visual truth: `/root/.codex/attachments/f8384511-c900-456a-8309-46ba18bbdb46/codex-clipboard-ddb0514d-fabc-4ff1-82cd-b16b19a61930.png`
 - Implementation screenshot: `/root/.codex/visualizations/2026/07/14/019f6131-b844-7ad3-a664-a78086d760cd/procurement-design-implementation/desktop-1366.png`
@@ -41,7 +109,7 @@ The mobile full-page screenshot was used as the focused comparison for filters, 
 
 - P3: a future dashboard-wide pass may further compact the common header and long tab navigation, but changing other tabs is outside this release.
 
-final result: passed
+archived result: passed
 
 ---
 
@@ -74,6 +142,6 @@ final result: passed
 
 ### Итог предыдущей проверки
 
-`final result: blocked`
+`archived result: blocked`
 
 Причина блокировки только визуальная: требуется открыть развернутую сборку в Bitrix24 и сделать браузерные снимки витрины и очереди переходов. Функциональная реализация и статические проверки не заблокированы.

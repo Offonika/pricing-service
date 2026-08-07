@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import anyio.to_thread
+import httpx
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
@@ -35,6 +38,35 @@ from app.services.executive_dashboard import (
     build_executive_sales_period_response,
 )
 from app.services.onec_inventory_cost import OneCInventoryCostSnapshot
+
+
+class _SameThreadASGIClient:
+    """ASGI client for this module's runner, which cannot wake threaded loops."""
+
+    def get(self, url: str, **kwargs) -> httpx.Response:
+        async def send() -> httpx.Response:
+            original_run_sync = anyio.to_thread.run_sync
+
+            async def run_sync_inline(func, *args, **_options):
+                return func(*args)
+
+            anyio.to_thread.run_sync = run_sync_inline
+            try:
+                transport = httpx.ASGITransport(app=app)
+                async with httpx.AsyncClient(
+                    transport=transport,
+                    base_url="http://testserver",
+                ) as async_client:
+                    return await async_client.get(url, **kwargs)
+            finally:
+                anyio.to_thread.run_sync = original_run_sync
+
+        return asyncio.run(send())
+
+
+@pytest.fixture(scope="session")
+def client() -> _SameThreadASGIClient:
+    return _SameThreadASGIClient()
 
 
 def _settings(snapshot_path: Path, *, access_rules_json: str | None = None) -> Settings:
@@ -579,6 +611,7 @@ def _role_rules() -> str:
                 {"role": "receivables", "bitrix_user_ids": ["202"]},
                 {"role": "finance", "bitrix_user_ids": ["203"]},
                 {"role": "warehouse", "bitrix_user_ids": ["206"]},
+                {"role": "infrastructure", "bitrix_user_ids": ["207"]},
                 {"role": "personal", "bitrix_user_ids": ["204"]},
                 {"role": "procurement", "bitrix_user_ids": ["205"]},
                 {"role": "receivables", "bitrix_user_ids": ["205"]},
@@ -635,6 +668,14 @@ def test_access_policy_matrix_resolves_roles_and_blocks(tmp_path: Path) -> None:
     assert warehouse.allowed_blocks == ("warehouse_operations",)
     assert warehouse.allowed_action_domains == ("warehouse_operations",)
     assert warehouse.money_blocks == ()
+
+    infrastructure = bitrix_executive_dashboard_auth.resolve_executive_dashboard_access(
+        bitrix_user_id="207",
+        settings=settings,
+    )
+    assert infrastructure.allowed_blocks == ("infrastructure",)
+    assert infrastructure.allowed_action_domains == ()
+    assert infrastructure.money_blocks == ()
 
     personal = bitrix_executive_dashboard_auth.resolve_executive_dashboard_access(
         bitrix_user_id="204",

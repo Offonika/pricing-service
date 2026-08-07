@@ -5,6 +5,7 @@ import type {
   ExecutiveDashboardAction,
   ExecutiveDashboardBlock,
   ExecutiveDashboardResponse,
+  ExecutiveInstrumentsResponse,
   ExecutiveOnlineStorePeriodResponse,
   ExecutiveProfitLossInventoryLoss,
   ExecutiveProfitLossPeriodResponse,
@@ -13,6 +14,7 @@ import type {
 import {
   fetchExecutiveDashboard,
   fetchExecutiveDashboardActions,
+  fetchExecutiveInstruments,
   fetchExecutiveManagementBalance,
   fetchExecutiveOnlineStorePeriod,
   fetchExecutiveProfitLossPeriod,
@@ -24,6 +26,7 @@ vi.mock("../api/executiveDashboard", () => ({
   fetchExecutiveCashflowPeriod: vi.fn(),
   fetchExecutiveDashboard: vi.fn(),
   fetchExecutiveDashboardActions: vi.fn(),
+  fetchExecutiveInstruments: vi.fn(),
   fetchExecutiveManagementBalance: vi.fn(),
   fetchExecutiveOnlineStorePeriod: vi.fn(),
   fetchExecutiveProfitLossPeriod: vi.fn(),
@@ -34,6 +37,7 @@ import {
   ActionDetail,
   ActionTable,
   ExecutiveDashboard,
+  InstrumentsPanel,
   InventoryLossPanel,
   ManagementBalanceBlockCard,
   MonthlyManagementBalance,
@@ -1416,6 +1420,237 @@ describe("executive online store tab", () => {
     });
     expect(fetchExecutiveDashboardActions).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Начало периода интернет-магазина")).toBeVisible();
+    expect(screen.queryByLabelText("Дата управленческой витрины")).not.toBeInTheDocument();
+  });
+});
+
+function instrumentsResponse(): ExecutiveInstrumentsResponse {
+  return {
+    schema_version: 3,
+    generated_at: "2026-07-31T09:00:00Z",
+    source_status: "partial",
+    freshness_status: "fresh",
+    summary: {
+      total_count: 2,
+      online_count: 1,
+      critical_count: 0,
+      warning_count: 1,
+      not_monitored_count: 1,
+      backup_gap_count: 1,
+      access_review_count: 1,
+      monitoring_coverage_24h_pct: 100,
+    },
+    devices: [
+      {
+        device_key: "onec-ka-bp-zup-win",
+        name: "Офисный Windows-сервер новой 1С КА/БП/ЗУП",
+        kind: "server",
+        lifecycle_status: "active",
+        health_status: "warning",
+        connectivity_status: "online",
+        criticality: "critical",
+        location: "RU/Москва",
+        purpose: ["1С КА 2, Бухгалтерия предприятия и ЗУП"],
+        technical_owner_ids: ["115204"],
+        technical_owners: ["Технический владелец"],
+        business_owner: "Эльдар Ахмедов",
+        last_attempted_at: "2026-07-31T09:00:00Z",
+        last_success_at: "2026-07-31T09:00:00Z",
+        availability_24h_pct: 99.9,
+        availability_30d_pct: 99.5,
+        monitoring_coverage_24h_pct: 100,
+        monitoring_coverage_30d_pct: 99,
+        metrics: { cpu_used_pct: 35, memory_used_pct: 50, disk_free_pct: 42, latency_ms: 120 },
+        services: [
+          {
+            service_key: "onec-ka-bp-zup",
+            name: "1С КА 2, Бухгалтерия предприятия и ЗУП",
+            component_kind: "service",
+            status: "warning",
+            criticality: "critical",
+            source_project: "1C_Dev_Workflow",
+          },
+        ],
+        backup: {
+          status: "warning",
+          protected_datastores: 0,
+          unprotected_datastores: 1,
+          last_backup_at: null,
+          last_restore_test_at: null,
+          off_host_verified: false,
+          readback_verified: false,
+        },
+        integrations: { status: "warning", count: 1, last_success_at: "2026-07-31" },
+        access: {
+          status: "warning",
+          active_grants: 1,
+          pending_grants: 0,
+          review_required_grants: 1,
+          mfa_review_count: 0,
+          unowned_credentials: 0,
+          attention_grant_count: 1,
+          next_review_at: "2026-08-31",
+        },
+        problems: [
+          {
+            problem_key: "backup:unprotected-datastores",
+            category: "backup",
+            severity: "warning",
+            title: "Резервирование требует настройки или проверки",
+            evidence: ["Не защищено хранилищ: 1"],
+            started_at: "2026-07-30T09:00:00Z",
+            recommended_action: "Проверить копию и выполнить restore-test",
+          },
+          {
+            problem_key: "access:review-required",
+            category: "access",
+            severity: "warning",
+            title: "Требуется ревизия доступов",
+            evidence: ["Назначений на ревизию: 1"],
+            recommended_action: "Проверить владельца и актуальность доступа",
+          },
+        ],
+        issue: "Резервирование требует настройки или проверки",
+        recommended_action: "Проверить копию и выполнить restore-test",
+      },
+      {
+        device_key: "unmonitored-device",
+        name: "Устройство без мониторинга",
+        kind: "workstation",
+        lifecycle_status: "inventory_pending",
+        health_status: "not_monitored",
+        connectivity_status: "not_monitored",
+        criticality: "standard",
+        location: "RU",
+        purpose: [],
+        technical_owner_ids: [],
+        technical_owners: [],
+        metrics: {},
+        services: [],
+        backup: {
+          status: "not_configured",
+          protected_datastores: 0,
+          unprotected_datastores: 0,
+          off_host_verified: false,
+          readback_verified: false,
+        },
+        integrations: { status: "not_configured", count: 0 },
+        access: {
+          status: "not_configured",
+          active_grants: 0,
+          pending_grants: 0,
+          review_required_grants: 0,
+          mfa_review_count: 0,
+          unowned_credentials: 0,
+          attention_grant_count: 0,
+        },
+        problems: [
+          {
+            problem_key: "monitoring:not-configured",
+            category: "monitoring",
+            severity: "warning",
+            title: "Мониторинг не настроен",
+            evidence: ["Нет успешных автоматических проверок"],
+            recommended_action: "Подключить устройство к безопасному мониторингу",
+          },
+        ],
+      },
+    ],
+    warnings: [],
+    capabilities: {
+      access_governance: "read_only",
+      access_mutations: false,
+      network_scanning: false,
+    },
+  };
+}
+
+describe("executive instruments tab", () => {
+  beforeEach(() => {
+    vi.mocked(fetchExecutiveDashboard).mockReset();
+    vi.mocked(fetchExecutiveDashboardActions).mockReset();
+    vi.mocked(fetchExecutiveInstruments).mockReset();
+  });
+
+  afterEach(cleanup);
+
+  it("shows attention by default and opens detailed read-only diagnostics", () => {
+    render(<InstrumentsPanel data={instrumentsResponse()} message="" status="ready" />);
+
+    expect(screen.getByRole("button", { name: /Требуют внимания\s*2/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /Проблемы backup\s*1/ })).toBeVisible();
+    expect(within(screen.getByLabelText("Список приборов")).getByText("Офисный Windows-сервер новой 1С КА/БП/ЗУП")).toBeVisible();
+    expect(screen.getByText(/источник частично|источник partial/i)).toBeVisible();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Подробнее: Офисный Windows-сервер новой 1С КА/БП/ЗУП" })[0]);
+
+    expect(screen.getByRole("dialog", { name: "Офисный Windows-сервер новой 1С КА/БП/ЗУП" })).toBeVisible();
+    expect(screen.getByText("Что сейчас не так")).toBeVisible();
+    expect(screen.getByText("Restore-test")).toBeVisible();
+    expect(screen.getByText("Мониторинг и проверки")).toBeVisible();
+    expect(screen.getByText(/Выдача и отзыв доступов отключены/)).toBeVisible();
+    expect(new URLSearchParams(window.location.search).get("device")).toBe("onec-ka-bp-zup-win");
+  });
+
+  it("combines KPI, search and kind filters", () => {
+    render(<InstrumentsPanel data={instrumentsResponse()} message="" status="ready" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Все\s*2/ }));
+    fireEvent.change(screen.getByLabelText("Поиск прибора"), { target: { value: "мониторинг" } });
+
+    const list = within(screen.getByLabelText("Список приборов"));
+    expect(list.getByText("Устройство без мониторинга")).toBeVisible();
+    expect(list.queryByText("Офисный Windows-сервер новой 1С КА/БП/ЗУП")).not.toBeInTheDocument();
+    expect(screen.getByText("Показано 1 из 2")).toBeVisible();
+  });
+
+  it("shows missing source and snapshot freshness explicitly", () => {
+    const missing = instrumentsResponse();
+    missing.source_status = "source_missing";
+    missing.freshness_status = "missing";
+    missing.note = "Снимок инфраструктуры ещё не опубликован.";
+    missing.devices = [];
+    missing.summary = {
+      total_count: 0,
+      online_count: 0,
+      critical_count: 0,
+      warning_count: 0,
+      not_monitored_count: 0,
+      backup_gap_count: 0,
+      access_review_count: 0,
+      monitoring_coverage_24h_pct: null,
+    };
+
+    render(<InstrumentsPanel data={missing} message="" status="ready" />);
+
+    expect(screen.getByText("Снимок инфраструктуры ещё не опубликован.")).toBeVisible();
+    expect(screen.getByText(/источник нет источника|источник source_missing/i)).toBeVisible();
+    expect(screen.getByText(/свежесть нет источника|свежесть missing/i)).toBeVisible();
+  });
+
+  it("loads the tab from access policy without action requests", async () => {
+    window.history.pushState({}, "", "?tab=infrastructure&date=2026-07-31");
+    vi.mocked(fetchExecutiveDashboard).mockResolvedValue({
+      as_of: "2026-07-31",
+      generated_at: "2026-07-31T09:00:00Z",
+      freshness_status: "fresh",
+      source_status: "ready",
+      access_level: "full",
+      roles: ["full"],
+      allowed_blocks: ["infrastructure"],
+      allowed_action_domains: [],
+      blocks: [],
+      source_freshness: [],
+      top_actions: [],
+      summary: {},
+    });
+    vi.mocked(fetchExecutiveInstruments).mockResolvedValue(instrumentsResponse());
+
+    render(<ExecutiveDashboard />);
+
+    expect(await screen.findByRole("heading", { name: "Серверы и устройства" })).toBeVisible();
+    expect(fetchExecutiveInstruments).toHaveBeenCalledTimes(1);
+    expect(fetchExecutiveDashboardActions).not.toHaveBeenCalled();
     expect(screen.queryByLabelText("Дата управленческой витрины")).not.toBeInTheDocument();
   });
 });

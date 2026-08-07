@@ -94,6 +94,51 @@ documents:
       - tests/test_database_infrastructure.py
       - tests/test_import_onec_products.py
     keywords: [architecture, modular-monolith, onec, database, contracts, cron, hardening, dependencies, boundaries, оздоровление]
+  - path: docs/specs/quality-case-confirmed-defect-rate-v1.md
+    title: Quality Case And Confirmed Defect Rate V1
+    doc_type: spec
+    domain: quality-control
+    status: accepted
+    owner: engineering
+    source_of_truth: true
+    related_code:
+      - app/api/quality_cases.py
+      - app/models/quality_case.py
+      - app/schemas/quality_case.py
+      - app/services/quality_case.py
+      - tasks/report_display_auto_order_adaptive_lead_time_comparison.py
+    related_tests:
+      - tests/test_quality_case.py
+      - tests/test_report_display_auto_order_adaptive_lead_time_comparison_task.py
+    keywords: [quality-case, окк, брак, возврат, корректировка-качества, confirmed-defect-rate]
+  - path: docs/specs/customer-settlements-backend-v1.md
+    title: Customer Account Settlements Backend V1
+    doc_type: spec
+    domain: receivables
+    status: accepted
+    owner: engineering
+    source_of_truth: true
+    related_code:
+      - app/api/customer_settlements.py
+      - app/models/customer_settlement.py
+      - app/schemas/customer_settlement.py
+      - app/services/customer_settlement_auth.py
+      - app/services/customer_settlement_mapping.py
+      - app/services/customer_settlement_source.py
+      - app/services/customer_settlements.py
+      - app/workers/customer_settlements.py
+      - tasks/check_customer_settlement_health.py
+      - tasks/manage_customer_settlement_pilot.py
+      - tasks/mock_customer_settlement_client.py
+      - alembic/versions/c3d4e5f6a7b9_add_customer_settlements.py
+    related_tests:
+      - tests/test_customer_settlement_api.py
+      - tests/test_customer_settlement_auth.py
+      - tests/test_customer_settlement_mapping.py
+      - tests/test_customer_settlement_migration.py
+      - tests/test_customer_settlement_source.py
+      - tests/test_customer_settlements.py
+    keywords: [customer-account, settlements, onec, bitrix, hmac, snapshot, pilot]
   - path: .github/workflows/docs-manifest.yml
     title: Docs Manifest Workflow
     doc_type: ci
@@ -134,9 +179,9 @@ documents:
     title: Procurement Decision Contract And Roadmap
     doc_type: spec
     domain: procurement
-    status: draft
+    status: superseded
     owner: operations
-    source_of_truth: true
+    source_of_truth: false
     related_code:
       - scripts/ensure_procurement_bitrix_process.py
       - scripts/import_onec_supplier_order_to_procurement.py
@@ -166,7 +211,6 @@ documents:
       - infra/cron/assortment_lifecycle_classification.sh
       - infra/cron/assortment_lifecycle_classification.cron
       - infra/cron/assortment_lifecycle_ut103_export.sh
-      - infra/cron/assortment_lifecycle_ut103_export.cron
       - infra/cron/display_supplier_lead_time_refresh.sh
       - infra/cron/display_supplier_lead_time_refresh.cron
       - infra/cron/sync_open_procurement_supplier_orders_to_bitrix.sh
@@ -186,6 +230,30 @@ documents:
       - tests/test_ut103_procurement_orders_exporter.py
       - tests/test_export_ut103_procurement_supplier_orders_task.py
     keywords: [procurement, supplier-order, decision-contract, roadmap, wechat, bitrix24, onec, akb]
+  - path: docs/specs/assortment-lifecycle-policy.md
+    title: Assortment Lifecycle Policy
+    doc_type: spec
+    domain: procurement
+    status: accepted
+    owner: operations
+    source_of_truth: true
+    related_code:
+      - app/services/assortment_lifecycle.py
+      - app/services/assortment_lifecycle_facts.py
+      - app/services/assortment_lifecycle_classification_store.py
+      - tasks/build_assortment_lifecycle_facts.py
+      - tasks/build_assortment_lifecycle_updates.py
+      - tasks/refresh_assortment_lifecycle_classification.py
+      - tasks/diff_assortment_lifecycle_classification.py
+      - tasks/build_display_auto_order_dry_run.py
+    related_tests:
+      - tests/test_assortment_lifecycle.py
+      - tests/test_assortment_lifecycle_facts.py
+      - tests/test_build_assortment_lifecycle_facts_task.py
+      - tests/test_build_assortment_lifecycle_updates_task.py
+      - tests/test_refresh_assortment_lifecycle_classification_task.py
+      - tests/test_diff_assortment_lifecycle_classification.py
+    keywords: [assortment, lifecycle, status-policy, demand, availability, hysteresis, растим, поддерживаем, допродаём]
   - path: docs/specs/assortment-status-contour-plan.md
     title: Assortment Status Contour Canonical Plan
     doc_type: spec
@@ -194,6 +262,10 @@ documents:
     owner: operations
     source_of_truth: true
     related_code:
+      - app/services/assortment_lifecycle.py
+      - app/services/assortment_lifecycle_facts.py
+      - tasks/build_assortment_lifecycle_facts.py
+      - tasks/build_assortment_lifecycle_updates.py
       - app/models/procurement_order_formation.py
       - app/api/procurement_order_formation.py
       - app/services/procurement_order_formation.py
@@ -201,6 +273,8 @@ documents:
       - ui/src/components/ProcurementOrderFormationApp.tsx
       - ui/src/components/ProcurementOrderFormationWorkspace.tsx
     related_tests:
+      - tests/test_assortment_lifecycle.py
+      - tests/test_assortment_lifecycle_facts.py
       - tests/test_procurement_order_formation.py
       - tests/test_procurement_order_formation_workspace.py
       - tests/test_procurement_order_formation_api.py
@@ -310,7 +384,7 @@ documents:
     title: Display Auto Order Project Brief
     doc_type: spec
     domain: procurement
-    status: draft
+    status: superseded
     owner: operations
     source_of_truth: false
     related_code:
@@ -338,6 +412,16 @@ documents:
     related_code: [app/api/order_fulfillment.py, app/models/site_order_fulfillment.py, app/schemas/order_fulfillment.py, app/services/site_order_fulfillment.py, infra/cron/order_fulfillment_sync.py, scripts/apply_order_fulfillment_stage_outbox.py, scripts/build_order_fulfillment_stage_outbox.py, scripts/ensure_site_order_deal_stages.py]
     related_tests: [tests/test_ensure_site_order_deal_stages.py, tests/test_order_fulfillment_api.py, tests/test_order_fulfillment_parser.py, tests/test_order_fulfillment_stage_apply.py, tests/test_order_fulfillment_sync.py]
     keywords: [site-orders, order-flow, pickup, courier, bitrix-chat, bitrix24, logistics]
+  - path: docs/specs/order-payment-control-api.md
+    title: Order Payment Control API
+    doc_type: spec
+    domain: order_flow
+    status: implemented
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/api/order_payment_control.py, app/schemas/order_payment_control.py, app/services/order_payment_control.py]
+    related_tests: [tests/test_order_payment_control.py]
+    keywords: [site-orders, payments, cloudpayments, onec, read-only, amount-control, bitrix-task-1414]
   - path: docs/specs/site-defect-archive-search.md
     title: Site Defect Archive Search
     doc_type: spec
@@ -428,20 +512,30 @@ documents:
       - app/services/exporters/ut103_forecast.py
       - app/services/exporters/ut103_nomenclature_properties.py
       - app/services/exporters/ut103_procurement_orders.py
+      - app/services/exporters/ut103_credit_terms.py
+      - app/services/receivable_credit_decisions.py
+      - app/models/receivable_credit_decision.py
+      - tasks/export_ut103_credit_terms.py
+      - tasks/run_receivable_credit_decision_worker.py
+      - scripts/ensure_receivable_credit_decision_process.py
+      - alembic/versions/e2b3c4d5e6f8_add_receivable_credit_decision_operation.py
+      - infra/cron/receivable_credit_decision_worker.sh
+      - infra/cron/receivable_credit_decision_worker.cron
       - tasks/build_assortment_lifecycle_facts.py
-      - tasks/build_assortment_lifecycle_updates.py
-      - tasks/refresh_assortment_lifecycle_classification.py
       - tasks/export_ut103_forecast.py
       - tasks/export_ut103_nomenclature_properties.py
       - tasks/export_ut103_procurement_supplier_orders.py
-      - infra/cron/assortment_lifecycle_ut103_export.sh
     related_tests:
       - tests/test_ut103_exchange.py
       - tests/test_ut103_forecast_exporter.py
       - tests/test_build_assortment_lifecycle_facts_task.py
-      - tests/test_build_assortment_lifecycle_updates_task.py
       - tests/test_ut103_nomenclature_properties_exporter.py
       - tests/test_ut103_procurement_orders_exporter.py
+      - tests/test_ut103_credit_terms_exporter.py
+      - tests/test_export_ut103_credit_terms_task.py
+      - tests/test_receivable_credit_decision_model.py
+      - tests/test_receivable_credit_decision_worker.py
+      - tests/test_receivable_credit_decision_process.py
       - tests/test_export_ut103_forecast_task.py
       - tests/test_export_ut103_nomenclature_properties_task.py
       - tests/test_export_ut103_procurement_supplier_orders_task.py
@@ -525,7 +619,7 @@ documents:
     title: Procurement Management Contour Onepage
     doc_type: onepager
     domain: procurement
-    status: draft
+    status: superseded
     owner: operations
     source_of_truth: false
     related_code:

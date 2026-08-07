@@ -38,8 +38,8 @@ depends_on:
   - docs/specs/display-auto-order-project-brief.md
   - reports/assortment_lifecycle/2026-07-05/procurement-order-prelaunch-audit.md
 supersedes: []
-rollout_required: true
-updated_at: "2026-07-21"
+rollout_required: false
+updated_at: "2026-08-05"
 ---
 
 # Смарт-процесс Закупка/Заказ и автозаказ: исторический единый контур

@@ -2716,6 +2716,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/executive-dashboard/instruments:
+    get:
+      summary: Get Executive Dashboard Instruments
+      operationId: get_executive_dashboard_instruments_api_management_executive_dashboard_instruments_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutiveInstrumentsResponse'
+      security:
+      - HTTPBearer: []
   /api/management/executive-dashboard/management-balance:
     get:
       summary: Get Executive Management Balance
@@ -4148,6 +4161,17 @@ paths:
           - type: string
           - type: 'null'
           title: Status
+      - name: min_debt
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Min Debt
       - name: limit
         in: query
         required: false
@@ -4907,6 +4931,19 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer/settlements/summary:
+    get:
+      summary: Customer Settlement Summary
+      operationId: customer_settlement_summary_api_customer_settlements_summary_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerSettlementSummaryResponse'
+      security:
+      - HTTPBearer: []
   /api/expertise/sync/cases:
     post:
       summary: Sync Cases
@@ -5239,6 +5276,226 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ExpertiseCaseDetailResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/quality/sync/cases:
+    post:
+      summary: Sync Case
+      operationId: sync_case_api_quality_sync_cases_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QualityCaseSyncItem'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QualityCaseResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/quality/cases:
+    get:
+      summary: List Cases
+      operationId: list_cases_api_quality_cases_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: status
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Status
+      - name: nomenclature_code
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Nomenclature Code
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/QualityCaseResponse'
+                title: Response List Cases Api Quality Cases Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/quality/cases/{case_id}:
+    get:
+      summary: Get Case
+      operationId: get_case_api_quality_cases__case_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Case Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QualityCaseResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/quality/cases/{case_id}/history:
+    get:
+      summary: Get History
+      operationId: get_history_api_quality_cases__case_id__history_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Case Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/QualityCaseEventResponse'
+                title: Response Get History Api Quality Cases  Case Id  History Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/quality/cases/{case_id}/start-review:
+    post:
+      summary: Start Review
+      operationId: start_review_api_quality_cases__case_id__start_review_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Case Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QualityCaseActionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QualityCaseResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/quality/cases/{case_id}/decision:
+    post:
+      summary: Record Decision
+      operationId: record_decision_api_quality_cases__case_id__decision_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Case Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/QualityCaseDecisionRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/QualityCaseResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/quality/metrics/quality:
+    get:
+      summary: Get Quality Metrics
+      operationId: get_quality_metrics_api_quality_metrics_quality_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: date_from
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date-time
+          title: Date From
+      - name: date_to
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date-time
+          title: Date To
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/QualityMetricItem'
+                title: Response Get Quality Metrics Api Quality Metrics Quality Get
         '422':
           description: Validation Error
           content:
@@ -7303,6 +7560,31 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-payment-control/check:
+    post:
+      summary: Check Order Payment
+      operationId: check_order_payment_api_order_payment_control_check_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderPaymentCheckRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderPaymentCheckResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/management/internal/orchestration/runs/claim:
     post:
       tags:
@@ -7959,6 +8241,44 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/assistant:
+    get:
+      summary: Read Order Assistant
+      operationId: read_order_assistant_api_procurement_order_formation_assistant_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrderAssistantResponse'
+      security:
+      - HTTPBearer: []
+  /api/procurement-order-formation/assistant/assemble:
+    post:
+      summary: Assemble Order Assistant Projects
+      operationId: assemble_order_assistant_projects_api_procurement_order_formation_assistant_assemble_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementOrderAssistantAssembleRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrderAssistantAssembleResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/procurement-order-formation/classification-proposals:
     get:
       summary: Read Classification Proposals
@@ -13210,6 +13530,59 @@ components:
       - ruleset_version
       - source_status
       title: CustomerPriceTypeWorklistsResponse
+    CustomerSettlementSummaryResponse:
+      properties:
+        status:
+          type: string
+          enum:
+          - available
+          - stale
+          - temporarily_unavailable
+          - not_linked
+          - ambiguous_link
+          - pilot_disabled
+          title: Status
+        state:
+          anyOf:
+          - type: string
+            enum:
+            - debt
+            - advance
+            - zero
+          - type: 'null'
+          title: State
+        amount:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Amount
+        currency:
+          anyOf:
+          - type: string
+            const: RUB
+          - type: 'null'
+          title: Currency
+        as_of:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: As Of
+        synced_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Synced At
+        is_stale:
+          type: boolean
+          title: Is Stale
+      additionalProperties: false
+      type: object
+      required:
+      - status
+      - is_stale
+      title: CustomerSettlementSummaryResponse
     DecisionHistoryItem:
       properties:
         id:
@@ -14107,6 +14480,631 @@ components:
       - source_freshness
       - top_actions
       title: ExecutiveDashboardResponse
+    ExecutiveInstrumentAccess:
+      properties:
+        status:
+          type: string
+          enum:
+          - ready
+          - warning
+          - not_configured
+          title: Status
+          default: not_configured
+        active_grants:
+          type: integer
+          minimum: 0.0
+          title: Active Grants
+          default: 0
+        pending_grants:
+          type: integer
+          minimum: 0.0
+          title: Pending Grants
+          default: 0
+        review_required_grants:
+          type: integer
+          minimum: 0.0
+          title: Review Required Grants
+          default: 0
+        overdue_review_grants:
+          type: integer
+          minimum: 0.0
+          title: Overdue Review Grants
+          default: 0
+        mfa_review_count:
+          type: integer
+          minimum: 0.0
+          title: Mfa Review Count
+          default: 0
+        unowned_credentials:
+          type: integer
+          minimum: 0.0
+          title: Unowned Credentials
+          default: 0
+        attention_grant_count:
+          type: integer
+          minimum: 0.0
+          title: Attention Grant Count
+          default: 0
+        next_review_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Next Review At
+      additionalProperties: false
+      type: object
+      title: ExecutiveInstrumentAccess
+    ExecutiveInstrumentBackup:
+      properties:
+        status:
+          type: string
+          enum:
+          - ready
+          - warning
+          - critical
+          - not_configured
+          title: Status
+          default: not_configured
+        protected_datastores:
+          type: integer
+          minimum: 0.0
+          title: Protected Datastores
+          default: 0
+        unprotected_datastores:
+          type: integer
+          minimum: 0.0
+          title: Unprotected Datastores
+          default: 0
+        rpo_minutes:
+          anyOf:
+          - type: integer
+            minimum: 1.0
+          - type: 'null'
+          title: Rpo Minutes
+        lag_minutes:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Lag Minutes
+        last_backup_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Backup At
+        last_full_backup_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Full Backup At
+        last_differential_backup_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Differential Backup At
+        last_log_backup_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Log Backup At
+        last_restore_test_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Restore Test At
+        off_host_verified:
+          type: boolean
+          title: Off Host Verified
+          default: false
+        readback_verified:
+          type: boolean
+          title: Readback Verified
+          default: false
+      additionalProperties: false
+      type: object
+      title: ExecutiveInstrumentBackup
+    ExecutiveInstrumentCapabilities:
+      properties:
+        access_governance:
+          type: string
+          const: read_only
+          title: Access Governance
+          default: read_only
+        access_mutations:
+          type: boolean
+          const: false
+          title: Access Mutations
+          default: false
+        network_scanning:
+          type: boolean
+          const: false
+          title: Network Scanning
+          default: false
+      additionalProperties: false
+      type: object
+      title: ExecutiveInstrumentCapabilities
+    ExecutiveInstrumentDevice:
+      properties:
+        device_key:
+          type: string
+          title: Device Key
+        name:
+          type: string
+          title: Name
+        kind:
+          type: string
+          title: Kind
+        lifecycle_status:
+          type: string
+          enum:
+          - planned
+          - procurement
+          - inventory_pending
+          - active
+          - draining
+          - decommissioned
+          - unknown
+          title: Lifecycle Status
+        health_status:
+          type: string
+          enum:
+          - ready
+          - warning
+          - critical
+          - not_monitored
+          - maintenance
+          - decommissioned
+          title: Health Status
+        connectivity_status:
+          type: string
+          enum:
+          - online
+          - offline
+          - channel_unavailable
+          - not_monitored
+          - maintenance
+          - not_applicable
+          title: Connectivity Status
+        criticality:
+          type: string
+          enum:
+          - critical
+          - standard
+          title: Criticality
+          default: standard
+        location:
+          type: string
+          title: Location
+        purpose:
+          items:
+            type: string
+          type: array
+          title: Purpose
+        technical_owner_ids:
+          items:
+            type: string
+          type: array
+          title: Technical Owner Ids
+        technical_owners:
+          items:
+            type: string
+          type: array
+          title: Technical Owners
+        business_owner:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Business Owner
+        last_attempted_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Attempted At
+        last_success_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Success At
+        incident_started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Incident Started At
+        outage_duration_seconds:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Outage Duration Seconds
+        availability_24h_pct:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Availability 24H Pct
+        availability_30d_pct:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Availability 30D Pct
+        monitoring_coverage_24h_pct:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Monitoring Coverage 24H Pct
+        monitoring_coverage_30d_pct:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Monitoring Coverage 30D Pct
+        metrics:
+          $ref: '#/components/schemas/ExecutiveInstrumentMetrics'
+        services:
+          items:
+            $ref: '#/components/schemas/ExecutiveInstrumentService'
+          type: array
+          title: Services
+        backup:
+          $ref: '#/components/schemas/ExecutiveInstrumentBackup'
+        integrations:
+          $ref: '#/components/schemas/ExecutiveInstrumentIntegration'
+        access:
+          $ref: '#/components/schemas/ExecutiveInstrumentAccess'
+        problems:
+          items:
+            $ref: '#/components/schemas/ExecutiveInstrumentProblem'
+          type: array
+          title: Problems
+        issue:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Issue
+        recommended_action:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Action
+      additionalProperties: false
+      type: object
+      required:
+      - device_key
+      - name
+      - kind
+      - lifecycle_status
+      - health_status
+      - connectivity_status
+      - location
+      title: ExecutiveInstrumentDevice
+    ExecutiveInstrumentIntegration:
+      properties:
+        status:
+          type: string
+          enum:
+          - ready
+          - warning
+          - critical
+          - not_monitored
+          - not_configured
+          - running
+          - stopped
+          - degraded
+          - unknown
+          title: Status
+          default: not_configured
+        count:
+          type: integer
+          minimum: 0.0
+          title: Count
+          default: 0
+        last_success_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Success At
+      additionalProperties: false
+      type: object
+      title: ExecutiveInstrumentIntegration
+    ExecutiveInstrumentMetrics:
+      properties:
+        cpu_used_pct:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Cpu Used Pct
+        memory_used_pct:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Memory Used Pct
+        disk_free_pct:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Disk Free Pct
+        disk_free_gib:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: 'null'
+          title: Disk Free Gib
+        latency_ms:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Latency Ms
+        vcpu:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Vcpu
+        uptime_seconds:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Uptime Seconds
+      additionalProperties: false
+      type: object
+      title: ExecutiveInstrumentMetrics
+    ExecutiveInstrumentProblem:
+      properties:
+        problem_key:
+          type: string
+          title: Problem Key
+        category:
+          type: string
+          enum:
+          - connectivity
+          - resources
+          - service
+          - backup
+          - access
+          - monitoring
+          - configuration
+          title: Category
+        severity:
+          type: string
+          enum:
+          - critical
+          - warning
+          - info
+          title: Severity
+        title:
+          type: string
+          title: Title
+        evidence:
+          items:
+            type: string
+          type: array
+          title: Evidence
+        started_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Started At
+        recommended_action:
+          type: string
+          title: Recommended Action
+      additionalProperties: false
+      type: object
+      required:
+      - problem_key
+      - category
+      - severity
+      - title
+      - recommended_action
+      title: ExecutiveInstrumentProblem
+    ExecutiveInstrumentService:
+      properties:
+        service_key:
+          type: string
+          title: Service Key
+        name:
+          type: string
+          title: Name
+        component_kind:
+          type: string
+          enum:
+          - windows
+          - sql_server
+          - sql_agent
+          - onec_cluster
+          - onec_database
+          - onec_publication
+          - integration
+          - disk
+          - service
+          title: Component Kind
+          default: service
+        status:
+          type: string
+          enum:
+          - ready
+          - warning
+          - critical
+          - not_monitored
+          - not_configured
+          - running
+          - stopped
+          - degraded
+          - unknown
+          title: Status
+        criticality:
+          type: string
+          enum:
+          - critical
+          - standard
+          title: Criticality
+          default: standard
+        last_verified_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Verified At
+        last_success_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Success At
+        source_project:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Project
+      additionalProperties: false
+      type: object
+      required:
+      - service_key
+      - name
+      - status
+      title: ExecutiveInstrumentService
+    ExecutiveInstrumentsResponse:
+      properties:
+        schema_version:
+          type: integer
+          enum:
+          - 2
+          - 3
+          title: Schema Version
+          default: 2
+        generated_at:
+          type: string
+          format: date-time
+          title: Generated At
+        source_status:
+          type: string
+          enum:
+          - ready
+          - partial
+          - stale
+          - source_missing
+          - source_error
+          title: Source Status
+        freshness_status:
+          type: string
+          enum:
+          - fresh
+          - stale
+          - missing
+          - error
+          title: Freshness Status
+        summary:
+          $ref: '#/components/schemas/ExecutiveInstrumentsSummary'
+        devices:
+          items:
+            $ref: '#/components/schemas/ExecutiveInstrumentDevice'
+          type: array
+          title: Devices
+        warnings:
+          items:
+            type: string
+          type: array
+          title: Warnings
+        capabilities:
+          $ref: '#/components/schemas/ExecutiveInstrumentCapabilities'
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+      additionalProperties: false
+      type: object
+      required:
+      - generated_at
+      - source_status
+      - freshness_status
+      title: ExecutiveInstrumentsResponse
+    ExecutiveInstrumentsSummary:
+      properties:
+        total_count:
+          type: integer
+          minimum: 0.0
+          title: Total Count
+          default: 0
+        online_count:
+          type: integer
+          minimum: 0.0
+          title: Online Count
+          default: 0
+        critical_count:
+          type: integer
+          minimum: 0.0
+          title: Critical Count
+          default: 0
+        warning_count:
+          type: integer
+          minimum: 0.0
+          title: Warning Count
+          default: 0
+        not_monitored_count:
+          type: integer
+          minimum: 0.0
+          title: Not Monitored Count
+          default: 0
+        backup_gap_count:
+          type: integer
+          minimum: 0.0
+          title: Backup Gap Count
+          default: 0
+        access_review_count:
+          type: integer
+          minimum: 0.0
+          title: Access Review Count
+          default: 0
+        monitoring_coverage_24h_pct:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Monitoring Coverage 24H Pct
+      additionalProperties: false
+      type: object
+      title: ExecutiveInstrumentsSummary
     ExecutiveManagementBalanceCloseRequest:
       properties:
         confirm:
@@ -18641,6 +19639,108 @@ components:
           title: Items
       type: object
       title: OrderFulfillmentReviewResponse
+    OrderPaymentCheckRequest:
+      properties:
+        site_order_number:
+          type: string
+          maxLength: 40
+          minLength: 1
+          title: Site Order Number
+        site_amount:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*(?:\d{0,13}|(?=[\d.]{1,16}0*$)\d{0,13}\.\d{0,2}0*$)
+          title: Site Amount
+        payment_amount:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*(?:\d{0,13}|(?=[\d.]{1,16}0*$)\d{0,13}\.\d{0,2}0*$)
+          title: Payment Amount
+        stage:
+          type: string
+          enum:
+          - checkout
+          - cloudpayments_check
+          - cloudpayments_pay
+          title: Stage
+        payment_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Payment Id
+      type: object
+      required:
+      - site_order_number
+      - site_amount
+      - payment_amount
+      - stage
+      title: OrderPaymentCheckRequest
+    OrderPaymentCheckResponse:
+      properties:
+        check_id:
+          type: string
+          title: Check Id
+        allowed:
+          type: boolean
+          title: Allowed
+        reason:
+          type: string
+          enum:
+          - amount_match
+          - site_payment_mismatch
+          - onec_order_not_found
+          - onec_order_deleted
+          - onec_order_ambiguous
+          - onec_order_unposted
+          - onec_amount_invalid
+          - onec_amount_mismatch
+          title: Reason
+        site_order_number:
+          type: string
+          title: Site Order Number
+        site_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Site Amount
+        payment_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Payment Amount
+        onec_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Onec Amount
+        onec_document_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Document Number
+        onec_revision:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Revision
+        checked_at:
+          type: string
+          format: date-time
+          title: Checked At
+      type: object
+      required:
+      - check_id
+      - allowed
+      - reason
+      - site_order_number
+      - site_amount
+      - payment_amount
+      - checked_at
+      title: OrderPaymentCheckResponse
     PaginatedCandidates:
       properties:
         items:
@@ -19910,6 +21010,132 @@ components:
       - run_key
       - facts_hash
       title: ProcurementLifecycleTransitionRead
+    ProcurementOrderAssistantAssembleItem:
+      properties:
+        order_id:
+          type: integer
+          title: Order Id
+        expected_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Version
+      type: object
+      required:
+      - order_id
+      - expected_version
+      title: ProcurementOrderAssistantAssembleItem
+    ProcurementOrderAssistantAssembleRequest:
+      properties:
+        idempotency_key:
+          type: string
+          maxLength: 255
+          minLength: 8
+          title: Idempotency Key
+        items:
+          items:
+            $ref: '#/components/schemas/ProcurementOrderAssistantAssembleItem'
+          type: array
+          maxItems: 100
+          minItems: 1
+          title: Items
+      type: object
+      required:
+      - idempotency_key
+      - items
+      title: ProcurementOrderAssistantAssembleRequest
+    ProcurementOrderAssistantAssembleResponse:
+      properties:
+        approved:
+          type: integer
+          title: Approved
+          default: 0
+        blocked:
+          type: integer
+          title: Blocked
+          default: 0
+        stale:
+          type: integer
+          title: Stale
+          default: 0
+        items:
+          items:
+            $ref: '#/components/schemas/ProcurementOrderAssistantAssembleResult'
+          type: array
+          title: Items
+      type: object
+      title: ProcurementOrderAssistantAssembleResponse
+    ProcurementOrderAssistantAssembleResult:
+      properties:
+        order_id:
+          type: integer
+          title: Order Id
+        status:
+          type: string
+          title: Status
+        message:
+          type: string
+          title: Message
+      type: object
+      required:
+      - order_id
+      - status
+      - message
+      title: ProcurementOrderAssistantAssembleResult
+    ProcurementOrderAssistantResponse:
+      properties:
+        updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Updated At
+        summary:
+          $ref: '#/components/schemas/ProcurementOrderAssistantSummary'
+        orders:
+          items:
+            $ref: '#/components/schemas/ProcurementOrderFormationRead'
+          type: array
+          title: Orders
+      type: object
+      required:
+      - summary
+      title: ProcurementOrderAssistantResponse
+    ProcurementOrderAssistantSummary:
+      properties:
+        lines:
+          type: integer
+          title: Lines
+          default: 0
+        ready_lines:
+          type: integer
+          title: Ready Lines
+          default: 0
+        supplier_missing_lines:
+          type: integer
+          title: Supplier Missing Lines
+          default: 0
+        price_changed_lines:
+          type: integer
+          title: Price Changed Lines
+          default: 0
+        low_profitability_lines:
+          type: integer
+          title: Low Profitability Lines
+          default: 0
+        high_defect_lines:
+          type: integer
+          title: High Defect Lines
+          default: 0
+        photo_missing_lines:
+          type: integer
+          title: Photo Missing Lines
+          default: 0
+        orders:
+          type: integer
+          title: Orders
+          default: 0
+      type: object
+      title: ProcurementOrderAssistantSummary
     ProcurementOrderConditionsUpdateRequest:
       properties:
         expected_order_version:
@@ -20202,6 +21428,48 @@ components:
           anyOf:
           - $ref: '#/components/schemas/ProcurementClassificationProposalRead'
           - type: 'null'
+        photo_thumbnail_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Photo Thumbnail Url
+        photo_original_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Photo Original Url
+        photo_count:
+          type: integer
+          title: Photo Count
+          default: 0
+        profitability_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Profitability Pct
+        supplier_defect_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Supplier Defect Pct
+        supplier_defect_history_units:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Supplier Defect History Units
+        price_change_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Price Change Pct
+        delivery_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Delivery Days
       type: object
       required:
       - id
@@ -20401,6 +21669,8 @@ components:
             type: string
           type: object
           title: Manual Status Options
+        supplier_profile:
+          $ref: '#/components/schemas/ProcurementSupplierProfileRead'
       type: object
       required:
       - id
@@ -20688,6 +21958,78 @@ components:
       - message_id
       - xml_preview
       title: ProcurementOrderTransmissionResponse
+    ProcurementSupplierProfileRead:
+      properties:
+        qualification_class:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Qualification Class
+        qualification_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Qualification Label
+        profitability_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Profitability Pct
+        defect_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Defect Pct
+        defect_history_units:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Defect History Units
+        on_time_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: On Time Pct
+        payment_terms:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Payment Terms
+        credit_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Credit Days
+        credit_limit:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Credit Limit
+        advantages:
+          items:
+            type: string
+          type: array
+          title: Advantages
+        history_order_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: History Order Count
+        updated_at:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Updated At
+        data_status:
+          type: string
+          title: Data Status
+          default: missing
+      type: object
+      title: ProcurementSupplierProfileRead
     ProductFacets:
       properties:
         subjects:
@@ -21281,6 +22623,372 @@ components:
       - count
       - sample_competitor_item_id
       title: PropertyValueSuggestion
+    QualityCaseActionRequest:
+      properties:
+        actor_external_id:
+          type: string
+          title: Actor External Id
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+        idempotency_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Idempotency Key
+      type: object
+      required:
+      - actor_external_id
+      title: QualityCaseActionRequest
+    QualityCaseDecisionRequest:
+      properties:
+        actor_external_id:
+          type: string
+          title: Actor External Id
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+        idempotency_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Idempotency Key
+        decision_code:
+          type: string
+          enum:
+          - factory_defect
+          - supplier_defect
+          - technical_defect
+          - confirmed_ok_after_check
+          - revision_or_catalog_mismatch
+          - transport_damage
+          - internal_handling_damage
+          - customer_reason
+          title: Decision Code
+        disposition_code:
+          type: string
+          enum:
+          - return_to_stock
+          - repair_then_return_to_stock
+          - keep_as_defect
+          - return_to_supplier
+          - convert_to_nonconforming
+          - write_off
+          title: Disposition Code
+        onec_quality_correction_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Quality Correction Ref
+      type: object
+      required:
+      - actor_external_id
+      - decision_code
+      - disposition_code
+      title: QualityCaseDecisionRequest
+    QualityCaseEventResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        event_type:
+          type: string
+          title: Event Type
+        event_at:
+          type: string
+          format: date-time
+          title: Event At
+        actor_external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Actor External Id
+        source:
+          type: string
+          title: Source
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+        meta:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Meta
+      type: object
+      required:
+      - id
+      - event_type
+      - event_at
+      - source
+      title: QualityCaseEventResponse
+    QualityCaseResponse:
+      properties:
+        id:
+          type: integer
+          title: Id
+        external_id:
+          type: string
+          title: External Id
+        source_return_ref:
+          type: string
+          title: Source Return Ref
+        source_return_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Return Number
+        source_return_line_key:
+          type: string
+          title: Source Return Line Key
+        return_at:
+          type: string
+          format: date-time
+          title: Return At
+        nomenclature_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Nomenclature Ref
+        nomenclature_code:
+          type: string
+          title: Nomenclature Code
+        nomenclature_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Nomenclature Name
+        quantity:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Quantity
+        store_external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Store External Id
+        store_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Store Name
+        preliminary_quality:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Preliminary Quality
+        preliminary_reason_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Preliminary Reason Code
+        current_status:
+          type: string
+          title: Current Status
+        owner_external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner External Id
+        due_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Due At
+        final_decision_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Final Decision Code
+        disposition_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Disposition Code
+        decision_comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Decision Comment
+        decision_author_external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Decision Author External Id
+        decided_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Decided At
+        onec_quality_correction_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Quality Correction Ref
+        counts_as_confirmed_product_defect:
+          type: boolean
+          title: Counts As Confirmed Product Defect
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+      type: object
+      required:
+      - id
+      - external_id
+      - source_return_ref
+      - source_return_line_key
+      - return_at
+      - nomenclature_code
+      - quantity
+      - current_status
+      - counts_as_confirmed_product_defect
+      - created_at
+      - updated_at
+      title: QualityCaseResponse
+    QualityCaseSyncItem:
+      properties:
+        external_id:
+          type: string
+          title: External Id
+        source_return_ref:
+          type: string
+          title: Source Return Ref
+        source_return_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Source Return Number
+        source_return_line_key:
+          type: string
+          title: Source Return Line Key
+        return_at:
+          type: string
+          format: date-time
+          title: Return At
+        nomenclature_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Nomenclature Ref
+        nomenclature_code:
+          type: string
+          title: Nomenclature Code
+        nomenclature_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Nomenclature Name
+        quantity:
+          anyOf:
+          - type: number
+            exclusiveMinimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Quantity
+        store_external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Store External Id
+        store_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Store Name
+        preliminary_quality:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Preliminary Quality
+        preliminary_reason_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Preliminary Reason Code
+        owner_external_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner External Id
+        due_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Due At
+        payload:
+          anyOf:
+          - additionalProperties: true
+            type: object
+          - type: 'null'
+          title: Payload
+        idempotency_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Idempotency Key
+      type: object
+      required:
+      - external_id
+      - source_return_ref
+      - source_return_line_key
+      - return_at
+      - nomenclature_code
+      - quantity
+      title: QualityCaseSyncItem
+    QualityMetricItem:
+      properties:
+        nomenclature_code:
+          type: string
+          title: Nomenclature Code
+        candidate_qty:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Candidate Qty
+        pending_qty:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Pending Qty
+        confirmed_product_defect_qty:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Confirmed Product Defect Qty
+        handling_damage_qty:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Handling Damage Qty
+        confirmed_not_product_defect_qty:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Confirmed Not Product Defect Qty
+      type: object
+      required:
+      - nomenclature_code
+      - candidate_qty
+      - pending_qty
+      - confirmed_product_defect_qty
+      - handling_damage_qty
+      - confirmed_not_product_defect_qty
+      title: QualityMetricItem
     ReceivableCaseItem:
       properties:
         snapshot_date:

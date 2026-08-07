@@ -1,0 +1,6 @@
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+CRON_TZ=Europe/Moscow
+
+# Safe while RECEIVABLE_CREDIT_DECISION_ENABLED=false. Install only during rollout.
+*/2 * * * * root /opt/MM/pricing-service/infra/cron/receivable_credit_decision_worker.sh >> /var/log/pricing/receivable_credit_decision_worker.cron.log 2>&1

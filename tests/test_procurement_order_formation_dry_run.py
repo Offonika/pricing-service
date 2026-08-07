@@ -6,6 +6,7 @@ from decimal import Decimal
 from app.models.procurement_order_formation import ProcurementOrderFormation
 from app.services.bitrix_order_formation import BitrixCatalogProduct
 from app.services.procurement_order_formation import serialize_line
+from app.services.procurement_order_formation_workspace import list_orders
 from tasks.build_procurement_order_formation_dry_run import (
     build_grouped_orders,
     build_summary,
@@ -188,3 +189,100 @@ def test_missing_catalog_product_is_a_hard_blocker() -> None:
         calculation_id="calc",
     )
     assert orders[0]["lines"][0]["blockers"] == ["catalog_product_missing"]
+
+
+def _grouped_orders_for_persist(*, batch_id: str, calculation_id: str) -> list[dict[str, object]]:
+    return build_grouped_orders(
+        [_source("A", "5", "A")],
+        [_lead("A", "S1", "0xs1")],
+        nomenclature_by_code={"A": {"nomenclature_ref": "0x00010025901E48EF11E1967C11111111"}},
+        catalog_resolver=lambda guid: BitrixCatalogProduct(
+            product_id="10",
+            name="Каталожный товар",
+            xml_id=guid,
+            assortment_status="Продажа",
+        ),
+        skip_catalog=False,
+        contracts={"default": {"code": "C1", "name": "Договор"}},
+        warehouse={"code": "MAIN", "name": "Склад"},
+        currency="RUB",
+        procurement_contour="ordinary",
+        route="ordinary",
+        batch_id=batch_id,
+        order_date=date(2026, 7, 31),
+        calculation_id=calculation_id,
+        source_run_id=calculation_id,
+        responsible_bitrix_user_id="130757",
+    )
+
+
+def test_persist_repeated_open_batch_updates_without_duplicates(db_session) -> None:
+    orders = _grouped_orders_for_persist(batch_id="2026-07-31", calculation_id="887")
+    first_ids = persist_grouped_orders(db_session, orders)
+    persisted = db_session.get(ProcurementOrderFormation, first_ids[0])
+    assert persisted is not None
+    original_line_id = persisted.lines[0].id
+
+    orders[0]["lines"][0]["final_quantity"] = "7"
+    orders[0]["lines"][0]["amount"] = "700"
+    second_ids = persist_grouped_orders(db_session, orders)
+    refreshed = db_session.get(ProcurementOrderFormation, first_ids[0])
+
+    assert second_ids == first_ids
+    assert refreshed is not None
+    assert refreshed.version == 2
+    assert refreshed.lines[0].id == original_line_id
+    assert refreshed.lines[0].version == 2
+    assert refreshed.lines[0].final_quantity == Decimal("7")
+    assert list_orders(db_session)["total"] == 1
+
+
+def test_persist_new_batch_supersedes_previous_open_batch(db_session) -> None:
+    old_ids = persist_grouped_orders(
+        db_session,
+        _grouped_orders_for_persist(batch_id="2026-07-30", calculation_id="886"),
+    )
+    old_before_sync = db_session.get(ProcurementOrderFormation, old_ids[0])
+    assert old_before_sync is not None
+    old_before_sync.status = "approved"
+    old_before_sync.approved_version = old_before_sync.version
+    db_session.commit()
+    new_ids = persist_grouped_orders(
+        db_session,
+        _grouped_orders_for_persist(batch_id="2026-07-31", calculation_id="887"),
+        supersede_open_batches=True,
+    )
+
+    old_order = db_session.get(ProcurementOrderFormation, old_ids[0])
+    assert old_order is not None
+    assert old_order.status == "superseded"
+    assert old_order.approved_version is None
+    assert list_orders(db_session)["total"] == 1
+    assert list_orders(db_session, status="superseded")["total"] == 1
+    assert new_ids != old_ids
+
+
+def test_persist_never_mutates_transmitted_order(db_session) -> None:
+    original_ids = persist_grouped_orders(
+        db_session,
+        _grouped_orders_for_persist(batch_id="2026-07-31", calculation_id="887"),
+    )
+    original = db_session.get(ProcurementOrderFormation, original_ids[0])
+    assert original is not None
+    original.status = "transmitted"
+    original.onec_status = "transmitted"
+    db_session.commit()
+
+    next_payload = _grouped_orders_for_persist(batch_id="2026-07-31", calculation_id="888")
+    next_payload[0]["lines"][0]["stable_key"] = "888:A"
+    next_ids = persist_grouped_orders(db_session, next_payload)
+
+    db_session.refresh(original)
+    assert next_ids != original_ids
+    assert original.status == "transmitted"
+    assert original.onec_status == "transmitted"
+    assert original.lines[0].final_quantity == Decimal("5")
+    replacement = db_session.get(ProcurementOrderFormation, next_ids[0])
+    assert replacement is not None
+    assert replacement.status == "draft"
+    assert ":revision:" in replacement.stable_key

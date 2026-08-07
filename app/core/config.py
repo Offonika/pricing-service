@@ -184,6 +184,7 @@ class Settings(BaseSettings):
     card_balance_ocr_timeout_seconds: float = 60.0
     card_balance_ocr_max_image_bytes: int = 10 * 1024 * 1024
     order_fulfillment_internal_api_token: str | None = None
+    order_payment_control_internal_api_token: str | None = None
     order_fulfillment_bitrix_webhook_url: str | None = None
     order_fulfillment_artifact_dir: str = ".local/order-fulfillment-pilot"
     order_fulfillment_site_chat_dialog_id: str = "chat733"
@@ -258,9 +259,70 @@ class Settings(BaseSettings):
     receivable_workplace_bitrix_full_access_user_ids: Annotated[list[str], NoDecode] = Field(
         default_factory=list
     )
+    receivable_credit_decision_enabled: bool = False
+    receivable_credit_decision_bitrix_webhook_url: str | None = None
+    receivable_credit_decision_entity_type_id: int | None = None
+    receivable_credit_decision_category_id: int | None = None
+    receivable_credit_decision_stage_map: dict[str, str] = Field(default_factory=dict)
+    receivable_credit_decision_field_map: dict[str, str] = Field(default_factory=dict)
+    receivable_credit_decision_approver_user_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    receivable_credit_decision_auto_apply_enabled: bool = False
+    receivable_credit_decision_pilot_counterparty_codes: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["РБ030337"]
+    )
+    receivable_credit_decision_poll_limit: int = 50
+    receivable_credit_decision_result_timeout_seconds: int = 900
+    receivable_credit_decision_max_dry_run_attempts: int = 3
+    receivable_credit_decision_max_readback_attempts: int = Field(default=3, ge=1, le=3)
+    receivable_credit_decision_mapping_path: str = (
+        "build/bitrix/receivable_credit_decision_mapping.json"
+    )
+    nomenclature_classification_transport_enabled: bool = False
+    nomenclature_classification_worker_enabled: bool = False
+    nomenclature_classification_auto_apply_enabled: bool = False
+    nomenclature_classification_approved_by_allowlist: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    nomenclature_classification_pilot_nomenclature_codes: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    nomenclature_classification_poll_limit: int = Field(default=20, ge=1, le=200)
+    nomenclature_classification_result_timeout_seconds: int = Field(default=900, ge=30, le=86400)
+    nomenclature_classification_max_dry_run_attempts: int = Field(default=3, ge=1, le=5)
+    nomenclature_classification_max_readback_attempts: int = Field(default=3, ge=1, le=5)
     receivable_workplace_bitrix_session_secret: str | None = None
     receivable_workplace_bitrix_session_ttl_seconds: int = 3600
     receivable_workplace_bitrix_rest_timeout_seconds: float = 6.0
+    customer_settlements_enabled: bool = False
+    customer_settlements_shadow_enabled: bool = True
+    customer_settlements_organization_ref: str | None = None
+    customer_settlements_opening_organization_field: str | None = None
+    customer_settlements_movement_organization_field: str | None = None
+    customer_settlements_source_mode: str = "onec_canonical_mutual_statement_7002"
+    customer_settlements_source_validated: bool = False
+    customer_settlements_query_timeout_seconds: int = 30
+    customer_settlements_stale_after_seconds: int = 2 * 60 * 60
+    customer_settlements_hide_after_seconds: int = 6 * 60 * 60
+    customer_settlements_mapping_stale_after_seconds: int = 2 * 60 * 60
+    customer_settlements_success_retention_days: int = 30
+    customer_settlements_failed_retention_days: int = 7
+    customer_settlements_jti_retention_hours: int = 24
+    customer_settlements_assertion_issuer: str = "master-mobile.ru"
+    customer_settlements_assertion_audience: str = "pricing-service:customer-settlements"
+    customer_settlements_assertion_active_kid: str | None = None
+    customer_settlements_assertion_active_secret: str | None = None
+    customer_settlements_assertion_previous_kid: str | None = None
+    customer_settlements_assertion_previous_secret: str | None = None
+    customer_settlements_assertion_ttl_seconds: int = 60
+    customer_settlements_assertion_clock_skew_seconds: int = 30
+    customer_settlements_allowed_source_ips: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    customer_settlements_correlation_salt: str | None = None
+    customer_settlements_crm_webhook_url: str | None = None
+    customer_settlements_crm_timeout_seconds: float = 6.0
     executive_dashboard_finance_snapshot_path: str = (
         "/var/lib/mm-data-contracts/executive-dashboard/finance_snapshot.json"
     )
@@ -270,6 +332,10 @@ class Settings(BaseSettings):
     executive_dashboard_warehouse_snapshot_path: str = (
         "/var/lib/mm-data-contracts/executive-dashboard/warehouse_snapshot.json"
     )
+    executive_dashboard_instruments_snapshot_path: str = (
+        "/var/lib/mm-data-contracts/executive-dashboard/infrastructure_snapshot.json"
+    )
+    executive_dashboard_instruments_max_lag_minutes: int = 30
     executive_dashboard_owner_cash_control_snapshot_path: str = (
         "/var/lib/mm-data-contracts/executive-dashboard/owner_cash_transit_snapshot.json"
     )
@@ -493,6 +559,8 @@ class Settings(BaseSettings):
         "card_balance_bitrix_employee_overrides",
         "receivable_bitrix_stage_map",
         "receivable_bitrix_field_map",
+        "receivable_credit_decision_stage_map",
+        "receivable_credit_decision_field_map",
         "telephony_service_line_labels",
         mode="before",
     )
@@ -541,6 +609,11 @@ class Settings(BaseSettings):
         "receivable_workplace_bitrix_allowed_domains",
         "receivable_workplace_bitrix_allowed_member_ids",
         "receivable_workplace_bitrix_full_access_user_ids",
+        "customer_settlements_allowed_source_ips",
+        "receivable_credit_decision_approver_user_ids",
+        "receivable_credit_decision_pilot_counterparty_codes",
+        "nomenclature_classification_approved_by_allowlist",
+        "nomenclature_classification_pilot_nomenclature_codes",
         "executive_dashboard_bitrix_allowed_domains",
         "executive_dashboard_bitrix_allowed_member_ids",
         "executive_dashboard_bitrix_full_access_user_ids",

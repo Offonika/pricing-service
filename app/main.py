@@ -26,6 +26,7 @@ from app.api.customer_price_types import (
     page_router as customer_price_types_page_router,
 )
 from app.api.customer_price_types import router as customer_price_types_router
+from app.api.customer_settlements import router as customer_settlements_router
 from app.api.expertise import router as expertise_router
 from app.api.health import router as health_router
 from app.api.internal_alerts import router as internal_alerts_router
@@ -37,6 +38,7 @@ from app.api.management import router as management_router
 from app.api.matching import router as matching_router
 from app.api.orchestration import router as orchestration_router
 from app.api.order_fulfillment import router as order_fulfillment_router
+from app.api.order_payment_control import router as order_payment_control_router
 from app.api.procurement_assortment_decisions import (
     page_router as procurement_assortment_page_router,
 )
@@ -47,6 +49,7 @@ from app.api.procurement_order_formation import (
     page_router as procurement_order_formation_page_router,
 )
 from app.api.procurement_order_formation import router as procurement_order_formation_router
+from app.api.quality_cases import router as quality_cases_router
 from app.api.receivable_workplace import page_router as receivable_workplace_page_router
 from app.api.receivable_workplace import router as receivable_workplace_router
 from app.api.receivables import router as receivables_router
@@ -159,13 +162,16 @@ app.include_router(staffing_router, prefix="/api/staffing")
 app.include_router(internal_alerts_router, prefix="/api/internal/alerts")
 app.include_router(counterparty_duplicates_router, prefix="/api/internal/counterparty-duplicates")
 app.include_router(customer_price_types_router)
+app.include_router(customer_settlements_router)
 app.include_router(expertise_router, prefix="/api/expertise")
+app.include_router(quality_cases_router, prefix="/api/quality")
 app.include_router(site_defect_archive_router, prefix="/api/site-defects")
 app.include_router(card_balance_reconciliation_router, prefix="/api/card-balance-reconciliation")
 app.include_router(logistics_router, prefix="/api/logistics")
 app.include_router(logistics_bot_router, prefix="/api/logistics/bot")
 app.include_router(logistics_web_router, prefix="/api/logistics/web")
 app.include_router(order_fulfillment_router, prefix="/api/order-fulfillment")
+app.include_router(order_payment_control_router, prefix="/api/order-payment-control")
 app.include_router(orchestration_router)
 app.include_router(procurement_labels_router, prefix="/api")
 app.include_router(procurement_assortment_router, prefix="/api")

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import uuid
 from collections import Counter
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -30,13 +29,10 @@ from app.services.assortment_lifecycle_classification_store import (
 from app.services.bitrix_procurement_order_formation_auth import (
     ProcurementOrderFormationSession,
 )
-from app.services.exporters.ut103_exchange import resolve_ut103_exchange_root
 from app.services.exporters.ut103_nomenclature_properties import (
     NomenclaturePropertyUpdateMessage,
     NomenclaturePropertyUpdateRow,
     PropertyUpdateExchangeResult,
-    build_nomenclature_property_updates_xml,
-    write_nomenclature_property_updates_message,
 )
 from app.services.procurement_order_formation import (
     PROPERTY_UPDATE_SOURCE,
@@ -45,10 +41,13 @@ from app.services.procurement_order_formation import (
     STATUS_PROPERTY_NAME,
     STATUS_REASON_PROPERTY_NAME,
     STATUS_SOURCE_PROPERTY_NAME,
+    approve_order,
     effective_assortment_status,
+    get_order,
     normalize_guid,
     normalize_status,
     order_blockers,
+    serialize_order,
     serialize_proposal,
     status_label,
 )
@@ -530,34 +529,25 @@ def approve_lifecycle_transitions(
                 continue
         approved.append(proposal)
 
-    mode = "apply" if settings.procurement_order_formation_property_apply_enabled else "dry_run"
+    mode = "internal"
     message_id: str | None = None
     xml_preview = ""
     written_path: Path | None = None
     if approved:
-        message_id = f"proc-lifecycle-{uuid.uuid5(uuid.NAMESPACE_URL, idempotency_key).hex}"
-        message = _build_transition_message(
-            approved,
-            message_id=message_id,
-            mode=mode,
-            approved_by=session.user_name or session.actor,
-        )
-        xml_preview = build_nomenclature_property_updates_xml(message).decode("windows-1251")
-        if mode == "apply":
-            written_path = write_nomenclature_property_updates_message(
-                resolve_ut103_exchange_root(None),
-                message,
-            )
         approved_at = datetime.now(UTC).replace(tzinfo=None)
         for proposal in approved:
-            proposal.status = "sent_to_1c" if mode == "apply" else "approved"
+            proposal.status = "approved"
             proposal.approved_at = approved_at
             proposal.approved_by_actor = session.actor
             proposal.approved_by_bitrix_user_id = session.user_id
             proposal.approved_by_name = session.user_name or session.actor
-            proposal.onec_message_id = message_id
-            proposal.onec_status = "pending" if mode == "apply" else "dry_run"
-            proposal.payload = {**(proposal.payload or {}), "xml_preview": xml_preview}
+            proposal.onec_message_id = None
+            proposal.onec_status = "not_applicable"
+            proposal.payload = {
+                **(proposal.payload or {}),
+                "storage": "pricing-service",
+                "legacy_onec_export_disabled": True,
+            }
             results.append(_approval_result(proposal.id, "approved", "Переход утверждён"))
 
     summary = {key: 0 for key in APPROVAL_RESULT_KEYS}
@@ -603,6 +593,8 @@ def list_orders(
     filtered: list[ProcurementOrderFormation] = []
     for order in orders:
         order_blocker_list = order_blockers(order)
+        if not status and order.status == "superseded":
+            continue
         if status and order.status != status:
             continue
         if supplier_key and supplier_key not in order.supplier_name.casefold():
@@ -634,6 +626,156 @@ def list_orders(
         "page_size": page_size,
         "summary": summary,
         "items": [serialize_order_list_item(item) for item in filtered[start : start + page_size]],
+    }
+
+
+def build_order_assistant(db: Session) -> dict[str, Any]:
+    orders = list(db.scalars(_order_list_statement()).unique().all())
+    orders = [
+        order
+        for order in orders
+        if order.status in {"draft", "review", "error"}
+        and order.onec_status not in {"pending", "transmitted"}
+    ]
+    orders.sort(key=lambda item: (item.order_date, item.updated_at), reverse=True)
+    serialized_orders = [serialize_order(order) for order in orders]
+    lines = [line for order in serialized_orders for line in order["lines"] if not line["removed"]]
+    ready_lines = [
+        line
+        for order in serialized_orders
+        for line in order["lines"]
+        if not order["blockers"] and _assistant_line_ready(line)
+    ]
+    updated_values = [order.updated_at for order in orders if order.updated_at is not None]
+    return {
+        "updated_at": max(updated_values) if updated_values else None,
+        "summary": {
+            "lines": len(lines),
+            "ready_lines": len(ready_lines),
+            "supplier_missing_lines": sum(
+                1
+                for order in orders
+                for line in order.lines
+                if not line.removed
+                if not (order.supplier_ref or order.supplier_code)
+            ),
+            "price_changed_lines": sum(
+                _assistant_decimal(line.get("price_change_pct")) not in {None, Decimal("0")}
+                for line in lines
+            ),
+            "low_profitability_lines": sum(
+                (value := _assistant_decimal(line.get("profitability_pct"))) is not None
+                and value < Decimal("20")
+                for line in lines
+            ),
+            "high_defect_lines": sum(
+                (value := _assistant_decimal(line.get("supplier_defect_pct"))) is not None
+                and value > Decimal("2")
+                for line in lines
+            ),
+            "photo_missing_lines": sum(not line.get("photo_original_url") for line in lines),
+            "orders": len(orders),
+        },
+        "orders": serialized_orders,
+    }
+
+
+def assemble_assistant_orders(
+    db: Session,
+    *,
+    items: list[Mapping[str, Any]],
+    idempotency_key: str,
+    session: ProcurementOrderFormationSession,
+) -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+    for item in items:
+        order_id = int(item["order_id"])
+        expected_version = int(item["expected_version"])
+        event_key = f"assistant-assemble:{idempotency_key}:{order_id}"
+        existing_event = db.scalar(
+            select(ProcurementOrderFormationEvent).where(
+                ProcurementOrderFormationEvent.idempotency_key == event_key
+            )
+        )
+        if existing_event is not None:
+            results.append({"order_id": order_id, "status": "approved", "message": "Уже собрано"})
+            continue
+        try:
+            order = get_order(db, order_id)
+        except LookupError:
+            results.append(
+                {"order_id": order_id, "status": "blocked", "message": "Заказ не найден"}
+            )
+            continue
+        if order.status == "approved":
+            results.append({"order_id": order_id, "status": "approved", "message": "Уже собрано"})
+            continue
+        if order.status not in {"draft", "review", "error"} or order.onec_status in {
+            "pending",
+            "transmitted",
+        }:
+            results.append(
+                {
+                    "order_id": order_id,
+                    "status": "blocked",
+                    "message": "Заказ уже вышел из очереди помощника",
+                }
+            )
+            continue
+        if order.version != expected_version:
+            results.append(
+                {
+                    "order_id": order_id,
+                    "status": "stale",
+                    "message": "Версия изменилась — обновите помощник",
+                }
+            )
+            continue
+        serialized_lines = {int(line["id"]): line for line in serialize_order(order)["lines"]}
+        missing_photo_lines = [
+            line.line_number
+            for line in order.lines
+            if not line.removed
+            and not serialized_lines.get(int(line.id or 0), {}).get("photo_original_url")
+        ]
+        blockers = order_blockers(order)
+        if missing_photo_lines:
+            blockers.append(
+                "Нет исходного фото: строки " + ", ".join(map(str, missing_photo_lines))
+            )
+        if blockers:
+            results.append(
+                {
+                    "order_id": order_id,
+                    "status": "blocked",
+                    "message": "; ".join(blockers),
+                }
+            )
+            continue
+        approved = approve_order(db, order_id, session)
+        record_event(
+            db,
+            order_id=order_id,
+            entity_type="order",
+            entity_id=order_id,
+            event_type="assistant_order_assembled",
+            session=session,
+            after=serialize_order(approved),
+            idempotency_key=event_key,
+        )
+        db.commit()
+        results.append(
+            {
+                "order_id": order_id,
+                "status": "approved",
+                "message": "Проект заказа собран",
+            }
+        )
+    return {
+        "approved": sum(item["status"] == "approved" for item in results),
+        "blocked": sum(item["status"] == "blocked" for item in results),
+        "stale": sum(item["status"] == "stale" for item in results),
+        "items": results,
     }
 
 
@@ -1397,3 +1539,18 @@ def _jsonable(value: Any) -> Any:
     except TypeError:
         return str(value)
     return value
+
+
+def _assistant_line_ready(line: Mapping[str, Any]) -> bool:
+    return bool(
+        not line.get("removed") and not line.get("blockers") and line.get("photo_original_url")
+    )
+
+
+def _assistant_decimal(value: Any) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value).replace(" ", "").replace(",", "."))
+    except (ValueError, ArithmeticError):
+        return None

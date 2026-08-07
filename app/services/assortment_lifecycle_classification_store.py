@@ -20,6 +20,8 @@ from sqlalchemy import (
     Text,
     func,
     insert,
+    inspect,
+    select,
 )
 from sqlalchemy.dialects.postgresql import insert as postgresql_insert
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
@@ -274,6 +276,51 @@ def build_classification_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str,
             )
         ),
     }
+
+
+def fetch_previous_statuses(
+    engine: Engine,
+    *,
+    nomenclature_codes: Sequence[str] = (),
+) -> dict[str, str]:
+    """Статус, присвоенный прошлым расчётом, по коду номенклатуры.
+
+    Нужен гистерезису в формуле: карточка без явного роста или спада остаётся
+    в прежнем статусе и не мигает между «Растим» и «Поддерживаем» от прогона к
+    прогону. Таблицы ещё нет (первый запуск, чистая тестовая база) — возвращаем
+    пусто, формула просто посчитает статус с нуля.
+    """
+    table_name = ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.name
+    if not inspect(engine).has_table(table_name):
+        return {}
+    codes = [code for code in {str(value or "").strip() for value in nomenclature_codes} if code]
+    statement = select(
+        ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.nomenclature_code,
+        ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.status,
+    )
+    result: dict[str, str] = {}
+    with engine.connect() as connection:
+        if codes:
+            for chunk_start in range(0, len(codes), 1000):
+                chunk = codes[chunk_start : chunk_start + 1000]
+                rows = connection.execute(
+                    statement.where(
+                        ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.nomenclature_code.in_(chunk)
+                    )
+                ).mappings()
+                for row in rows:
+                    _collect_previous_status(result, row)
+        else:
+            for row in connection.execute(statement).mappings():
+                _collect_previous_status(result, row)
+    return result
+
+
+def _collect_previous_status(result: dict[str, str], row: Mapping[str, Any]) -> None:
+    code = str(row.get("nomenclature_code") or "").strip()
+    status = str(row.get("status") or "").strip()
+    if code and status:
+        result[code] = status
 
 
 def persist_classification_rows(

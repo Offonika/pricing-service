@@ -166,12 +166,12 @@ function responseDetail(error: unknown) {
 }
 
 export function receivablesErrorMessage(error: unknown, fallback: string) {
-  const detail = responseDetail(error);
-  if (detail) return detail;
   const status = responseStatus(error);
   if (status === 401) {
     return "Сессия истекла и не обновилась. Введённые данные остались на экране; повторите сохранение.";
   }
+  const detail = responseDetail(error);
+  if (detail) return detail;
   if (status === 403) {
     return "Нет доступа к рабочему месту: проверьте привязку пользователя к подразделению.";
   }
@@ -269,6 +269,7 @@ export async function fetchReceivableWorkplace(params: {
   date: string;
   department_ref?: string;
   status?: string;
+  min_debt?: number;
 }) {
   const response = await withReceivablesAuthRetry(() =>
     api.get<ReceivableWorkplaceResponse>("/receivables/workplace", {
@@ -276,6 +277,7 @@ export async function fetchReceivableWorkplace(params: {
         date: params.date,
         department_ref: params.department_ref || undefined,
         limit: 100,
+        min_debt: params.min_debt,
         status: params.status || undefined,
       },
     })

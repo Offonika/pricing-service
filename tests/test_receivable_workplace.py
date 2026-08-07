@@ -578,6 +578,89 @@ def test_receivable_workplace_summary_uses_full_filtered_set_not_visible_limit(
     assert {item.department_ref for item in result.department_options} == {"dep-1", "dep-2"}
 
 
+def test_receivable_workplace_min_debt_filters_before_limit_and_summary(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 6, 23)
+    db_session.add_all(
+        [
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-small",
+                counterparty_name="Малый долг",
+                balance=Decimal("400000"),
+            ),
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-medium",
+                counterparty_name="Средний долг",
+                balance=Decimal("600000"),
+            ),
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-large",
+                counterparty_name="Крупный долг",
+                balance=Decimal("1500000"),
+            ),
+        ]
+    )
+
+    result = build_receivable_workplace(
+        db_session,
+        snapshot_date=as_of,
+        min_debt=Decimal("500000"),
+        limit=1,
+    )
+
+    assert result.total_count == 2
+    assert result.visible_count == 1
+    assert result.summary.row_count == 2
+    assert result.summary.total_receivable == Decimal("2100000.00")
+    assert [item.counterparty_ref for item in result.payload] == ["cp-large"]
+
+
+def test_receivable_workplace_api_forwards_min_debt_to_service(
+    monkeypatch: pytest.MonkeyPatch,
+    db_session: Session,
+) -> None:
+    expected_response = object()
+    captured: dict[str, object] = {}
+
+    def fake_build_receivable_workplace(session: Session, **kwargs):
+        captured["session"] = session
+        captured.update(kwargs)
+        return expected_response
+
+    monkeypatch.setattr(
+        receivable_workplace_api,
+        "build_receivable_workplace",
+        fake_build_receivable_workplace,
+    )
+    access = receivable_workplace_api.ReceivableWorkplaceAuthContext(
+        actor="internal:test",
+        source="internal",
+        access_level="full",
+    )
+
+    response = receivable_workplace_api.get_receivable_workplace(
+        date_value=date(2026, 6, 23),
+        department_ref="dep-1",
+        status="new_debt",
+        min_debt=Decimal("500000"),
+        limit=100,
+        db=db_session,
+        access=access,
+    )
+
+    assert response is expected_response
+    assert captured["session"] is db_session
+    assert captured["department_ref"] == "dep-1"
+    assert captured["status"] == "new_debt"
+    assert captured["min_debt"] == Decimal("500000")
+    assert captured["limit"] == 100
+    assert captured["allowed_department_refs"] is None
+
+
 def test_receivable_workplace_uses_open_debt_cache_for_effective_overdue(
     db_session: Session,
 ) -> None:

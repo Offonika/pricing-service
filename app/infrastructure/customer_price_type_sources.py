@@ -9,7 +9,7 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import BINARY, bindparam, func, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session
 
@@ -42,7 +42,7 @@ _BUYERS_CONTRACTS_SQL = text("""
             CAST(NULL AS varbinary(16)) AS department_ref,
             CAST(NULL AS nvarchar(255)) AS department_name
         FROM _Reference54 WITH (NOLOCK)
-        WHERE master.dbo.fn_varbintohexstr(_IDRRef) = :buyers_root_group_ref
+        WHERE _IDRRef = :buyers_root_group_ref
         UNION ALL
         SELECT
             child._IDRRef,
@@ -80,9 +80,12 @@ _BUYERS_CONTRACTS_SQL = text("""
     WHERE contract._Marked = 0x00
       AND cp._Marked = 0x00
       AND cp._Folder = 0x01  -- element counterparty, not a group (see recursion note)
-      AND master.dbo.fn_varbintohexstr(contract._Fld515RRef) = :contract_kind_ref
+      AND contract._Fld515RRef = :contract_kind_ref
     OPTION (MAXRECURSION 100)
-    """)
+    """).bindparams(
+    bindparam("buyers_root_group_ref", type_=BINARY(16)),
+    bindparam("contract_kind_ref", type_=BINARY(16)),
+)
 
 _DIRECT_MONTHLY_SQL = text("""
     WITH target_organization AS (
@@ -105,7 +108,7 @@ _DIRECT_MONTHLY_SQL = text("""
           AND r._Active = 0x01
           AND r._Fld7559RRef <> 0x00000000000000000000000000000000
           AND r._Fld7558RRef IN (SELECT _IDRRef FROM target_organization)
-          AND master.dbo.fn_varbintohexstr(contract._Fld515RRef) = :contract_kind_ref
+          AND contract._Fld515RRef = :contract_kind_ref
           AND r._Period < :period_end
     ),
     first_activity AS (
@@ -128,12 +131,24 @@ _DIRECT_MONTHLY_SQL = text("""
         counterparty._IDRRef,
         CONVERT(char(7), eligible.event_at, 120),
         first_activity.first_activity_at
-    """)
+    """).bindparams(bindparam("contract_kind_ref", type_=BINARY(16)))
 
 
 def _add_months(value: date, months: int) -> date:
     total = value.year * 12 + value.month - 1 + months
     return date(total // 12, total % 12 + 1, 1)
+
+
+def _reference_bytes(value: str) -> bytes:
+    normalized = str(value).strip()
+    if normalized.lower().startswith("0x"):
+        normalized = normalized[2:]
+    if len(normalized) != 32:
+        raise ValueError("1C reference must contain exactly 16 bytes")
+    try:
+        return bytes.fromhex(normalized)
+    except ValueError as exc:
+        raise ValueError("1C reference must be a hexadecimal value") from exc
 
 
 class CustomerPriceTypeBulkSource:
@@ -278,8 +293,8 @@ class CustomerPriceTypeBulkSource:
             rows = connection.execute(
                 _BUYERS_CONTRACTS_SQL,
                 {
-                    "buyers_root_group_ref": self.buyers_root_group_ref,
-                    "contract_kind_ref": self.contract_kind_ref,
+                    "buyers_root_group_ref": _reference_bytes(self.buyers_root_group_ref),
+                    "contract_kind_ref": _reference_bytes(self.contract_kind_ref),
                 },
             ).mappings()
             for row in rows:
@@ -319,7 +334,7 @@ class CustomerPriceTypeBulkSource:
             rows = connection.execute(
                 _DIRECT_MONTHLY_SQL,
                 {
-                    "contract_kind_ref": self.contract_kind_ref,
+                    "contract_kind_ref": _reference_bytes(self.contract_kind_ref),
                     "period_start": datetime.combine(period_start, datetime.min.time()),
                     "period_end": datetime.combine(period_end, datetime.min.time()),
                 },

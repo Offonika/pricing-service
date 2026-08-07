@@ -88,7 +88,9 @@ def test_working_reached_by_five_receipts_without_manual_confirmation() -> None:
     )
 
     assert decision.status == AssortmentStatus.WORKING
-    assert decision.reason_codes == ("working_receipts_reached",)
+    # demand_data_missing помечает откат на прежнюю, поставочную логику: цифры
+    # продаж по окнам в этот вызов не переданы.
+    assert decision.reason_codes == ("working_receipts_reached", "demand_data_missing")
     assert decision.auto_order_allowed
     assert decision.blockers == ()
     assert not decision.manual_review_required
@@ -115,14 +117,17 @@ def test_sales_start_requires_first_sale_not_second_cargo() -> None:
 
     without_sale = _decision(supplier_order_cargo_handoff_dates=cargo)
     assert without_sale.status == AssortmentStatus.NEW_ITEM
-    assert without_sale.reason_codes == ("first_supplier_order_handed_to_cargo",)
+    assert without_sale.reason_codes == (
+        "first_supplier_order_handed_to_cargo",
+        "demand_data_missing",
+    )
 
     with_sale = _decision(
         supplier_order_cargo_handoff_dates=cargo,
         first_sale_at=date(2026, 2, 22),
     )
     assert with_sale.status == AssortmentStatus.SALES_START
-    assert with_sale.reason_codes == ("first_sale_registered",)
+    assert with_sale.reason_codes == ("first_sale_registered", "demand_data_missing")
 
     # Одного карго и продажи достаточно: второй заказ для СП больше не нужен.
     single_cargo_with_sale = _decision(
@@ -512,3 +517,151 @@ def test_onec_status_values_stay_stable_when_labels_change() -> None:
     # Оба словаря обязаны покрывать все статусы целиком.
     assert set(ASSORTMENT_STATUS_LABELS) == set(AssortmentStatus)
     assert set(ONEC_STATUS_VALUE_NAMES) == set(AssortmentStatus)
+
+
+# --- Переходы по динамике спроса (решение пользователя 2026-08-02) ------------
+# «Растим» и «Поддерживаем» описывают товар, а не работу закупщика, поэтому
+# определяются продажами, а не числом поступлений.
+
+_CARGO = (date(2026, 1, 20), date(2026, 2, 20))
+
+
+def _demand_decision(**kwargs) -> AssortmentLifecycleDecision:
+    """Решение с полным набором цифр спроса, чтобы не сработал откат на поставки."""
+    demand = {
+        "supplier_order_cargo_handoff_dates": _CARGO,
+        "first_sale_at": date(2026, 2, 25),
+        "as_of": date(2026, 8, 1),
+        "sales_qty_short": Decimal("0"),
+        "sales_qty_medium": Decimal("0"),
+        "sales_qty_long": Decimal("0"),
+    }
+    demand.update(kwargs)
+    return _decision(**demand)
+
+
+def test_sale_entered_by_twelve_sales_not_by_receipts() -> None:
+    # Порог 12 продаж за 180 дней = две продажи в месяц.
+    below = _demand_decision(
+        sales_qty_short=Decimal("2"),
+        sales_qty_medium=Decimal("6"),
+        sales_qty_long=Decimal("11"),
+    )
+    assert below.status == AssortmentStatus.SALES_START
+
+    reached = _demand_decision(
+        sales_qty_short=Decimal("2"),
+        sales_qty_medium=Decimal("6"),
+        sales_qty_long=Decimal("12"),
+    )
+    assert reached.status == AssortmentStatus.SALE
+    assert reached.auto_order_allowed
+
+
+def test_five_receipts_no_longer_grant_working_when_demand_is_known() -> None:
+    # Прежнее правило (5 поступлений за 180 дней) снято: поставки больше не
+    # решают, растёт товар или угасает.
+    receipts = (
+        date(2026, 1, 25),
+        date(2026, 2, 25),
+        date(2026, 3, 25),
+        date(2026, 4, 25),
+        date(2026, 5, 25),
+    )
+    decision = _demand_decision(
+        receipt_dates=receipts,
+        sales_qty_short=Decimal("8"),
+        sales_qty_medium=Decimal("20"),
+        sales_qty_long=Decimal("40"),
+    )
+    assert decision.status == AssortmentStatus.SALE
+    assert "working_receipts_reached" not in decision.reason_codes
+
+
+def test_declining_demand_moves_to_working_only_when_item_was_on_shelf() -> None:
+    # Продажи падают три окна подряд: 0.067 / 0.2 / 0.333 шт в день.
+    declining = {
+        "sales_qty_short": Decimal("2"),
+        "sales_qty_medium": Decimal("18"),
+        "sales_qty_long": Decimal("60"),
+        "previous_status": AssortmentStatus.SALE,
+    }
+
+    on_shelf = _demand_decision(
+        **declining,
+        days_in_sale_short=Decimal("30"),
+        days_in_sale_medium=Decimal("90"),
+        days_in_sale_long=Decimal("180"),
+    )
+    assert on_shelf.status == AssortmentStatus.WORKING
+    assert on_shelf.reason_codes == ("demand_declining",)
+
+    # Тот же спад, но товар почти не лежал на полке (10% дней) — это дефицит,
+    # а не угасание спроса, статус понижать нельзя.
+    starved = _demand_decision(
+        **declining,
+        days_in_sale_short=Decimal("3"),
+        days_in_sale_medium=Decimal("9"),
+        days_in_sale_long=Decimal("18"),
+    )
+    assert starved.status == AssortmentStatus.SALE
+    assert starved.reason_codes == ("demand_declining_without_shelf_presence",)
+
+
+def test_growing_demand_returns_from_working_to_sale() -> None:
+    # Рост определяется двумя окнами: месяц заметно быстрее квартала.
+    decision = _demand_decision(
+        sales_qty_short=Decimal("20"),
+        sales_qty_medium=Decimal("30"),
+        sales_qty_long=Decimal("40"),
+        previous_status=AssortmentStatus.WORKING,
+    )
+    assert decision.status == AssortmentStatus.SALE
+    assert decision.reason_codes == ("demand_growing",)
+
+
+def test_flat_demand_keeps_previous_status() -> None:
+    # Ни рост, ни спад: карточка не должна мигать между статусами от прогона
+    # к прогону.
+    flat = {
+        "sales_qty_short": Decimal("5"),
+        "sales_qty_medium": Decimal("15"),
+        "sales_qty_long": Decimal("30"),
+        "days_in_sale_medium": Decimal("60"),
+    }
+    assert _demand_decision(**flat, previous_status=AssortmentStatus.SALE).status == (
+        AssortmentStatus.SALE
+    )
+    assert _demand_decision(**flat, previous_status=AssortmentStatus.WORKING).status == (
+        AssortmentStatus.WORKING
+    )
+
+
+def test_growth_ignores_card_without_any_sales() -> None:
+    # 0 >= 0 не должно читаться как рост.
+    decision = _demand_decision(previous_status=AssortmentStatus.SALE)
+    assert decision.status != AssortmentStatus.SALE or decision.reason_codes != ("demand_growing",)
+    assert "demand_growing" not in decision.reason_codes
+
+
+def test_unknown_previous_status_does_not_break_calculation() -> None:
+    # В таблице классификации могут лежать статусы прежних версий формулы.
+    decision = _demand_decision(
+        sales_qty_short=Decimal("2"),
+        sales_qty_medium=Decimal("6"),
+        sales_qty_long=Decimal("20"),
+        previous_status="exclusive",
+    )
+    assert decision.status == AssortmentStatus.SALE
+
+
+def test_days_without_stock_are_restored_softly_not_by_exclusion() -> None:
+    # Мягкая формула (утверждена 2026-07-20): дни без товара достраиваются
+    # виртуальными продажами, а не выбрасываются из знаменателя. Жёсткий
+    # вариант (продажи / дни наличия) дал бы совсем другую скорость.
+    from app.services.assortment_lifecycle import _soft_availability_rate
+
+    soft = _soft_availability_rate(Decimal("30"), 90, Decimal("30"))
+    hard = Decimal("30") / Decimal("30")
+    calendar = Decimal("30") / Decimal("90")
+    assert calendar < soft < hard

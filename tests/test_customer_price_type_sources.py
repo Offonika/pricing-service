@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from sqlalchemy import create_engine
+from sqlalchemy import BINARY, create_engine
 from sqlalchemy.orm import Session
 
 from app.domains.customer_price_types import (
@@ -109,6 +109,30 @@ def test_contract_bulk_sql_has_no_price_type_prefix_filter() -> None:
     assert "LEFT JOIN _Reference87" in sql
     assert "price_type_marked" in sql
     assert "buyers_group.department_ref" in sql
+
+
+def test_bulk_sql_uses_sargable_binary_reference_filters() -> None:
+    contracts_sql = str(source_module._BUYERS_CONTRACTS_SQL)
+    direct_monthly_sql = str(source_module._DIRECT_MONTHLY_SQL)
+
+    assert "fn_varbintohexstr(contract._Fld515RRef)" not in contracts_sql
+    assert "fn_varbintohexstr(contract._Fld515RRef)" not in direct_monthly_sql
+    assert "CONVERT(varbinary(16)" not in contracts_sql
+    assert "CONVERT(varbinary(16)" not in direct_monthly_sql
+    assert "contract._Fld515RRef = :contract_kind_ref" in contracts_sql
+    assert "contract._Fld515RRef = :contract_kind_ref" in direct_monthly_sql
+    assert "_IDRRef = :buyers_root_group_ref" in contracts_sql
+
+    for statement, parameter_names in (
+        (source_module._BUYERS_CONTRACTS_SQL, ("buyers_root_group_ref", "contract_kind_ref")),
+        (source_module._DIRECT_MONTHLY_SQL, ("contract_kind_ref",)),
+    ):
+        for parameter_name in parameter_names:
+            parameter_type = statement._bindparams[parameter_name].type
+            assert isinstance(parameter_type, BINARY)
+            assert parameter_type.length == 16
+
+    assert source_module._reference_bytes(_ref(1)) == bytes.fromhex(f"{1:032x}")
 
 
 def test_bulk_source_uses_proven_history_and_bulk_enrichments(tmp_path, monkeypatch) -> None:

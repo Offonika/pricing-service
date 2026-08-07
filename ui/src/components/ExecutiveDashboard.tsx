@@ -1,9 +1,10 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
   fetchExecutiveCashflowPeriod,
   closeExecutiveManagementBalance,
   fetchExecutiveDashboard,
   fetchExecutiveDashboardActions,
+  fetchExecutiveInstruments,
   fetchExecutiveManagementBalance,
   fetchExecutiveOnlineStorePeriod,
   fetchExecutiveProfitLossPeriod,
@@ -18,6 +19,9 @@ import {
   type ExecutiveManagementBalanceLineItem,
   type ExecutiveManagementBalanceResponse,
   type ExecutiveManagementBalanceView,
+  type ExecutiveInstrumentDevice,
+  type ExecutiveInstrumentProblem,
+  type ExecutiveInstrumentsResponse,
   type ExecutiveOnlineStorePeriodResponse,
   type ExecutiveProfitLossBreakdownRow,
   type ExecutiveProfitLossExpenseBreakdownRow,
@@ -98,6 +102,7 @@ const PROFIT_LOSS_TAB_KEY = "profit_loss";
 const SALES_TAB_KEY = "sales";
 const ONLINE_STORE_TAB_KEY = "online_store";
 const ODDS_CASHFLOW_TAB_KEY = "odds_cashflow";
+const INSTRUMENTS_TAB_KEY = "infrastructure";
 const TAB_DEFINITIONS = [
   { key: "today", label: "Сегодня" },
   { key: MONEY_TAB_KEY, label: "Деньги / ДДС" },
@@ -111,6 +116,7 @@ const TAB_DEFINITIONS = [
   { key: "procurement_import", label: "Закупки" },
   { key: "warehouse_operations", label: "Склад" },
   { key: "reconciliation", label: "Сверки" },
+  { key: INSTRUMENTS_TAB_KEY, label: "Приборы" },
   { key: "tasks", label: "Задачи" },
 ];
 const TAB_LABELS = Object.fromEntries(TAB_DEFINITIONS.map((item) => [item.key, item.label]));
@@ -128,6 +134,7 @@ const DOMAIN_LABELS: Record<string, string> = {
   procurement_import: "Закупки",
   warehouse_operations: "Склад",
   reconciliation: "Сверки",
+  infrastructure: "Приборы",
   tasks: "Задачи",
   daily_focus: "Фокус",
 };
@@ -266,6 +273,11 @@ function statusLabel(status: string) {
     provided: "задан вручную",
     fallback: "резервный источник",
     missing: "нет источника",
+    active: "работает",
+    active_verified: "работает, проверено",
+    active_backup_incomplete: "работает, backup не подтверждён",
+    warning: "требует внимания",
+    not_configured: "не настроено",
     unknown: "статус не указан",
   };
   return labels[status] || status;
@@ -369,6 +381,7 @@ function isTabAllowed(data: ExecutiveDashboardResponse, tab: string) {
   if (tab === "today") return true;
   if (tab === ODDS_CASHFLOW_TAB_KEY) return Boolean(moneyBlock(data));
   if (tab === ONLINE_STORE_TAB_KEY) return data.allowed_blocks.includes(ONLINE_STORE_TAB_KEY);
+  if (tab === INSTRUMENTS_TAB_KEY) return data.allowed_blocks.includes(INSTRUMENTS_TAB_KEY);
   return data.blocks.some((block) => block.key === tab);
 }
 
@@ -376,13 +389,14 @@ function actionDomainForTab(tab: string) {
   if (tab === "today") return undefined;
   if (tab === ODDS_CASHFLOW_TAB_KEY) return MONEY_TAB_KEY;
   if (tab === ONLINE_STORE_TAB_KEY) return undefined;
+  if (tab === INSTRUMENTS_TAB_KEY) return undefined;
   return tab;
 }
 
 function visibleBlocks(data: ExecutiveDashboardResponse | null, tab: string) {
   if (!data) return [];
   if (tab === "today") return data.blocks.filter((block) => block.key !== "daily_focus");
-  if ([ODDS_CASHFLOW_TAB_KEY, PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, ONLINE_STORE_TAB_KEY].includes(tab)) return [];
+  if ([ODDS_CASHFLOW_TAB_KEY, PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, ONLINE_STORE_TAB_KEY, INSTRUMENTS_TAB_KEY].includes(tab)) return [];
   return data.blocks.filter((block) => block.key === tab);
 }
 
@@ -394,6 +408,7 @@ function tabsForData(data: ExecutiveDashboardResponse | null) {
       item.key === "today" ||
       availableKeys.has(item.key) ||
       (item.key === ONLINE_STORE_TAB_KEY && data.allowed_blocks.includes(ONLINE_STORE_TAB_KEY)) ||
+      (item.key === INSTRUMENTS_TAB_KEY && data.allowed_blocks.includes(INSTRUMENTS_TAB_KEY)) ||
       (item.key === ODDS_CASHFLOW_TAB_KEY && availableKeys.has(MONEY_TAB_KEY))
   );
 }
@@ -4166,6 +4181,548 @@ function actionPayloadText(action: ExecutiveDashboardAction, key: string) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+const INSTRUMENT_HEALTH_LABELS: Record<string, string> = {
+  ready: "Работает",
+  warning: "Предупреждение",
+  critical: "Авария",
+  not_monitored: "Не контролируется",
+  maintenance: "Обслуживание",
+  decommissioned: "Выведено",
+};
+
+const INSTRUMENT_CONNECTIVITY_LABELS: Record<string, string> = {
+  online: "В сети",
+  offline: "Не в сети",
+  channel_unavailable: "Канал недоступен",
+  not_monitored: "Нет проверки",
+  maintenance: "Обслуживание",
+  not_applicable: "Не применяется",
+};
+
+const INSTRUMENT_KIND_LABELS: Record<string, string> = {
+  server: "Сервер",
+  workstation: "Рабочее устройство",
+  network: "Сетевое устройство",
+};
+
+const INSTRUMENT_LIFECYCLE_LABELS: Record<string, string> = {
+  planned: "Планируется",
+  procurement: "Закупка",
+  inventory_pending: "Инвентаризация",
+  active: "Эксплуатируется",
+  draining: "Выводится",
+  decommissioned: "Выведено",
+  unknown: "Не определён",
+};
+
+function instrumentDuration(seconds?: number | null) {
+  if (seconds == null) return "—";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} мин`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)} ч`;
+  return `${Math.floor(seconds / 86400)} д`;
+}
+
+function instrumentPercent(value?: number | null) {
+  return value == null ? "—" : `${formatPlainNumber(value)}%`;
+}
+
+function compactInstrumentMetrics(device: ExecutiveInstrumentDevice) {
+  const rows: string[] = [];
+  if (device.metrics.cpu_used_pct != null) rows.push(`CPU ${formatPlainNumber(device.metrics.cpu_used_pct)}%`);
+  if (device.metrics.memory_used_pct != null) rows.push(`RAM ${formatPlainNumber(device.metrics.memory_used_pct)}%`);
+  if (device.metrics.disk_free_pct != null) rows.push(`Диск свободен ${formatPlainNumber(device.metrics.disk_free_pct)}%`);
+  if (device.metrics.disk_free_gib != null) rows.push(`${formatPlainNumber(device.metrics.disk_free_gib)} ГиБ`);
+  if (device.metrics.latency_ms != null) rows.push(`${formatPlainNumber(device.metrics.latency_ms)} мс`);
+  if (device.metrics.uptime_seconds != null) rows.push(`Uptime ${instrumentDuration(device.metrics.uptime_seconds)}`);
+  return rows;
+}
+
+type InstrumentQuickFilter =
+  | "attention"
+  | "all"
+  | "critical"
+  | "warning"
+  | "not_monitored"
+  | "backup"
+  | "access"
+  | "coverage";
+
+const INSTRUMENT_HEALTH_ORDER: Record<string, number> = {
+  critical: 0,
+  warning: 1,
+  not_monitored: 2,
+  maintenance: 3,
+  ready: 4,
+  decommissioned: 5,
+};
+
+const INSTRUMENT_PROBLEM_CATEGORY_LABELS: Record<string, string> = {
+  connectivity: "Связь",
+  resources: "Ресурсы",
+  service: "Сервис",
+  backup: "Backup",
+  access: "Доступы",
+  monitoring: "Мониторинг",
+  configuration: "Конфигурация",
+};
+
+function instrumentProblems(device: ExecutiveInstrumentDevice): ExecutiveInstrumentProblem[] {
+  if (device.problems?.length) return device.problems;
+  if (!device.issue) return [];
+  return [{
+    problem_key: "configuration:legacy-issue",
+    category: device.health_status === "not_monitored" ? "monitoring" : "configuration",
+    severity: device.health_status === "critical" ? "critical" : "warning",
+    title: device.issue,
+    evidence: [],
+    started_at: device.incident_started_at,
+    recommended_action: device.recommended_action || "Проверить техническую диагностику в управляющем контуре",
+  }];
+}
+
+function instrumentNeedsAttention(device: ExecutiveInstrumentDevice) {
+  return ["critical", "warning", "not_monitored"].includes(device.health_status)
+    || device.backup.status === "critical"
+    || device.backup.status === "warning"
+    || device.access.status === "warning"
+    || (device.monitoring_coverage_24h_pct != null && device.monitoring_coverage_24h_pct < 90);
+}
+
+function instrumentMatchesQuickFilter(device: ExecutiveInstrumentDevice, filter: InstrumentQuickFilter) {
+  if (filter === "all") return true;
+  if (filter === "attention") return instrumentNeedsAttention(device);
+  if (["critical", "warning", "not_monitored"].includes(filter)) return device.health_status === filter;
+  if (filter === "backup") return ["critical", "warning"].includes(device.backup.status);
+  if (filter === "access") return device.access.status === "warning";
+  return device.monitoring_coverage_24h_pct != null && device.monitoring_coverage_24h_pct < 90;
+}
+
+function compareInstruments(left: ExecutiveInstrumentDevice, right: ExecutiveInstrumentDevice) {
+  const healthDelta = (INSTRUMENT_HEALTH_ORDER[left.health_status] ?? 99) - (INSTRUMENT_HEALTH_ORDER[right.health_status] ?? 99);
+  if (healthDelta) return healthDelta;
+  const connectivityDelta = Number(right.connectivity_status === "offline") - Number(left.connectivity_status === "offline");
+  if (connectivityDelta) return connectivityDelta;
+  const criticalityDelta = Number(right.criticality === "critical") - Number(left.criticality === "critical");
+  if (criticalityDelta) return criticalityDelta;
+  const outageDelta = (right.outage_duration_seconds || 0) - (left.outage_duration_seconds || 0);
+  return outageDelta || left.name.localeCompare(right.name, "ru");
+}
+
+function instrumentDeviceParam() {
+  return new URLSearchParams(window.location.search).get("device") || "";
+}
+
+function InstrumentStatus({ device }: { device: ExecutiveInstrumentDevice }) {
+  return (
+    <div className="executive-instruments__state">
+      <span className={`executive-instruments__status executive-instruments__status--${device.health_status}`}>
+        {INSTRUMENT_HEALTH_LABELS[device.health_status] || device.health_status}
+      </span>
+      <small>{INSTRUMENT_CONNECTIVITY_LABELS[device.connectivity_status] || device.connectivity_status}</small>
+    </div>
+  );
+}
+
+function InstrumentProblemSummary({ device }: { device: ExecutiveInstrumentDevice }) {
+  const problems = instrumentProblems(device);
+  const primary = problems[0];
+  if (!primary) return <span className="executive-instruments__healthy">Проблем не обнаружено</span>;
+  return (
+    <div className="executive-instruments__problem-summary">
+      <strong>{primary.title}</strong>
+      {primary.evidence[0] && <span>{primary.evidence[0]}</span>}
+      {primary.started_at && <small>С {formatDateTime(primary.started_at)}</small>}
+      {device.outage_duration_seconds != null && <small>Длительность: {instrumentDuration(device.outage_duration_seconds)}</small>}
+    </div>
+  );
+}
+
+function InstrumentSignals({ device }: { device: ExecutiveInstrumentDevice }) {
+  const problems = instrumentProblems(device).slice(1);
+  if (!problems.length) return <span className="executive-instruments__muted">Дополнительных сигналов нет</span>;
+  return (
+    <div className="executive-instruments__signals">
+      {problems.slice(0, 3).map((problem) => (
+        <span className={`executive-instruments__signal executive-instruments__signal--${problem.severity}`} key={problem.problem_key}>
+          {INSTRUMENT_PROBLEM_CATEGORY_LABELS[problem.category] || problem.category}
+        </span>
+      ))}
+      {problems.length > 3 && <span className="executive-instruments__signal">+{problems.length - 3}</span>}
+    </div>
+  );
+}
+
+function InstrumentDetails({
+  device,
+  onClose,
+  dialogRef,
+  closeButtonRef,
+}: {
+  device: ExecutiveInstrumentDevice;
+  onClose: () => void;
+  dialogRef: RefObject<HTMLElement | null>;
+  closeButtonRef: RefObject<HTMLButtonElement | null>;
+}) {
+  const problems = instrumentProblems(device);
+  const metrics = compactInstrumentMetrics(device);
+  return (
+    <div className="executive-instruments__drawer-layer" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <aside
+        aria-labelledby="instrument-details-title"
+        aria-modal="true"
+        className="executive-instruments__drawer"
+        ref={dialogRef}
+        role="dialog"
+      >
+        <header className="executive-instruments__drawer-header">
+          <div>
+            <span>Подробности устройства</span>
+            <h2 id="instrument-details-title">{device.name}</h2>
+            <InstrumentStatus device={device} />
+          </div>
+          <button aria-label="Закрыть подробности" className="executive-instruments__drawer-close" onClick={onClose} ref={closeButtonRef} type="button">×</button>
+        </header>
+
+        <section className="executive-instruments__drawer-section executive-instruments__drawer-section--problems" aria-labelledby="instrument-problems-title">
+          <h3 id="instrument-problems-title">Что сейчас не так</h3>
+          {!problems.length && <p className="executive-instruments__healthy">Проблем не обнаружено.</p>}
+          {problems.map((problem) => (
+            <article className={`executive-instruments__problem executive-instruments__problem--${problem.severity}`} key={problem.problem_key}>
+              <div className="executive-instruments__problem-title">
+                <span>{INSTRUMENT_PROBLEM_CATEGORY_LABELS[problem.category] || problem.category}</span>
+                <strong>{problem.title}</strong>
+              </div>
+              {problem.started_at && <small>Начало: {formatDateTime(problem.started_at)}</small>}
+              {problem.evidence.length > 0 && <ul>{problem.evidence.map((item) => <li key={item}>{item}</li>)}</ul>}
+              <p><strong>Что сделать:</strong> {problem.recommended_action}</p>
+            </article>
+          ))}
+        </section>
+
+        <section className="executive-instruments__drawer-section" aria-labelledby="instrument-purpose-title">
+          <h3 id="instrument-purpose-title">Назначение и владельцы</h3>
+          <dl className="executive-instruments__details-grid">
+            <div><dt>Тип</dt><dd>{INSTRUMENT_KIND_LABELS[device.kind] || device.kind}</dd></div>
+            <div><dt>Расположение</dt><dd>{device.location}</dd></div>
+            <div><dt>Жизненный цикл</dt><dd>{INSTRUMENT_LIFECYCLE_LABELS[device.lifecycle_status] || device.lifecycle_status}</dd></div>
+            <div><dt>Критичность</dt><dd>{device.criticality === "critical" ? "Критичное" : "Обычное"}</dd></div>
+            <div className="is-wide"><dt>Назначение</dt><dd>{device.purpose.join(" · ") || "Уточняется"}</dd></div>
+            <div><dt>Технический владелец</dt><dd>{device.technical_owners.join(", ") || "Не назначен"}</dd></div>
+            <div><dt>Бизнес-владелец</dt><dd>{device.business_owner || "Не назначен"}</dd></div>
+          </dl>
+        </section>
+
+        <section className="executive-instruments__drawer-section" aria-labelledby="instrument-resources-title">
+          <h3 id="instrument-resources-title">Ресурсы</h3>
+          <div className="executive-instruments__detail-pills">
+            {metrics.length ? metrics.map((item) => <span key={item}>{item}</span>) : <span>Показатели не получены</span>}
+          </div>
+        </section>
+
+        <section className="executive-instruments__drawer-section" aria-labelledby="instrument-services-title">
+          <h3 id="instrument-services-title">Сервисы и 1С</h3>
+          {device.services.length ? (
+            <ul className="executive-instruments__detail-list">
+              {device.services.map((service) => <li key={service.service_key}><strong>{service.name}</strong><span>{statusLabel(service.status)}</span></li>)}
+            </ul>
+          ) : <p className="executive-instruments__muted">Сервисы не зарегистрированы.</p>}
+          {device.integrations.count > 0 && <p className="executive-instruments__muted">Интеграции: {statusLabel(device.integrations.status)} · последний успех {formatDateTime(device.integrations.last_success_at)}</p>}
+        </section>
+
+        <section className="executive-instruments__drawer-section" aria-labelledby="instrument-backup-title">
+          <h3 id="instrument-backup-title">Резервное копирование</h3>
+          <dl className="executive-instruments__details-grid">
+            <div><dt>Состояние</dt><dd>{statusLabel(device.backup.status)}</dd></div>
+            <div><dt>Защищено / пробелов</dt><dd>{device.backup.protected_datastores} / {device.backup.unprotected_datastores}</dd></div>
+            <div><dt>RPO / отставание</dt><dd>{device.backup.rpo_minutes != null ? `${device.backup.rpo_minutes} мин` : "—"} / {device.backup.lag_minutes != null ? `${device.backup.lag_minutes} мин` : "—"}</dd></div>
+            <div><dt>Full / diff / log</dt><dd>{formatDateTime(device.backup.last_full_backup_at)} / {formatDateTime(device.backup.last_differential_backup_at)} / {formatDateTime(device.backup.last_log_backup_at)}</dd></div>
+            <div><dt>Off-host / readback</dt><dd>{device.backup.off_host_verified ? "Да" : "Нет"} / {device.backup.readback_verified ? "Да" : "Нет"}</dd></div>
+            <div><dt>Restore-test</dt><dd>{formatDate(device.backup.last_restore_test_at)}</dd></div>
+          </dl>
+        </section>
+
+        <section className="executive-instruments__drawer-section" aria-labelledby="instrument-access-title">
+          <h3 id="instrument-access-title">Доступы и MFA</h3>
+          <dl className="executive-instruments__details-grid">
+            <div><dt>Состояние</dt><dd>{statusLabel(device.access.status)}</dd></div>
+            <div><dt>Активных назначений</dt><dd>{device.access.active_grants}</dd></div>
+            <div><dt>Требуют внимания</dt><dd>{device.access.attention_grant_count + device.access.unowned_credentials}</dd></div>
+            <div><dt>MFA / ревизия</dt><dd>{device.access.mfa_review_count} / {device.access.review_required_grants}</dd></div>
+            <div><dt>Следующая проверка</dt><dd>{formatDate(device.access.next_review_at)}</dd></div>
+          </dl>
+          <p className="executive-instruments__readonly-note">Вкладка работает только на чтение. Выдача и отзыв доступов отключены контрактом.</p>
+        </section>
+
+        <section className="executive-instruments__drawer-section" aria-labelledby="instrument-monitoring-title">
+          <h3 id="instrument-monitoring-title">Мониторинг и проверки</h3>
+          <dl className="executive-instruments__details-grid">
+            <div><dt>Последняя попытка</dt><dd>{formatDateTime(device.last_attempted_at)}</dd></div>
+            <div><dt>Последний успех</dt><dd>{formatDateTime(device.last_success_at)}</dd></div>
+            <div><dt>Доступность 24 ч / 30 д</dt><dd>{instrumentPercent(device.availability_24h_pct)} / {instrumentPercent(device.availability_30d_pct)}</dd></div>
+            <div><dt>Покрытие 24 ч / 30 д</dt><dd>{instrumentPercent(device.monitoring_coverage_24h_pct)} / {instrumentPercent(device.monitoring_coverage_30d_pct)}</dd></div>
+            {device.incident_started_at && <div className="is-wide"><dt>Текущий сбой</dt><dd>С {formatDateTime(device.incident_started_at)} · {instrumentDuration(device.outage_duration_seconds)}</dd></div>}
+          </dl>
+        </section>
+      </aside>
+    </div>
+  );
+}
+
+export function InstrumentsPanel({
+  data,
+  message,
+  status,
+}: {
+  data: ExecutiveInstrumentsResponse | null;
+  message: string;
+  status: "loading" | "ready" | "error";
+}) {
+  const [quickFilter, setQuickFilter] = useState<InstrumentQuickFilter>("attention");
+  const [kindFilter, setKindFilter] = useState("");
+  const [query, setQuery] = useState("");
+  const [selectedDeviceKey, setSelectedDeviceKey] = useState(instrumentDeviceParam);
+  const drawerRef = useRef<HTMLElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const openerRef = useRef<HTMLButtonElement | null>(null);
+  const openedFromListRef = useRef(false);
+  const devices = useMemo(() => data?.devices || [], [data?.devices]);
+
+  const coverageProblemCount = devices.filter((device) => (
+    device.monitoring_coverage_24h_pct != null && device.monitoring_coverage_24h_pct < 90
+  )).length;
+  const attentionCount = devices.filter(instrumentNeedsAttention).length;
+  const quickFilters: Array<{ key: InstrumentQuickFilter; label: string; count: number; tone?: string }> = [
+    { key: "attention", label: "Требуют внимания", count: attentionCount, tone: attentionCount ? "warning" : undefined },
+    { key: "all", label: "Все", count: data?.summary.total_count || 0 },
+    { key: "critical", label: "Авария", count: data?.summary.critical_count || 0, tone: data?.summary.critical_count ? "critical" : undefined },
+    { key: "warning", label: "Предупреждения", count: data?.summary.warning_count || 0, tone: data?.summary.warning_count ? "warning" : undefined },
+    { key: "not_monitored", label: "Без мониторинга", count: data?.summary.not_monitored_count || 0 },
+    { key: "backup", label: "Проблемы backup", count: data?.summary.backup_gap_count || 0, tone: data?.summary.backup_gap_count ? "warning" : undefined },
+    { key: "access", label: "Доступы", count: data?.summary.access_review_count || 0, tone: data?.summary.access_review_count ? "warning" : undefined },
+    { key: "coverage", label: "Низкое покрытие", count: coverageProblemCount, tone: coverageProblemCount ? "critical" : undefined },
+  ];
+
+  const visibleDevices = useMemo(() => {
+    const needle = query.trim().toLocaleLowerCase("ru");
+    return devices.filter((device) => {
+      if (!instrumentMatchesQuickFilter(device, quickFilter)) return false;
+      if (kindFilter && device.kind !== kindFilter) return false;
+      if (!needle) return true;
+      const problems = instrumentProblems(device);
+      return [
+        device.name,
+        device.location,
+        device.business_owner || "",
+        ...device.purpose,
+        ...device.technical_owners,
+        ...problems.flatMap((problem) => [problem.title, ...problem.evidence]),
+      ]
+        .join(" ")
+        .toLocaleLowerCase("ru")
+        .includes(needle);
+    }).sort(compareInstruments);
+  }, [devices, quickFilter, kindFilter, query]);
+
+  const selectedDevice = devices.find((device) => device.device_key === selectedDeviceKey) || null;
+
+  const closeDetails = useCallback(() => {
+    if (openedFromListRef.current) {
+      openedFromListRef.current = false;
+      window.history.back();
+      return;
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete("device");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    setSelectedDeviceKey("");
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => {
+      const nextDevice = instrumentDeviceParam();
+      setSelectedDeviceKey(nextDevice);
+      if (!nextDevice) window.setTimeout(() => openerRef.current?.focus(), 0);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
+    if (!selectedDevice) return;
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const drawer = drawerRef.current;
+    window.setTimeout(() => closeButtonRef.current?.focus(), 0);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeDetails();
+        return;
+      }
+      if (event.key !== "Tab" || !drawer) return;
+      const focusable = Array.from(drawer.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      )).filter((element) => !element.hasAttribute("disabled"));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      previouslyFocused?.focus();
+    };
+  }, [selectedDevice, closeDetails]);
+
+  const openDetails = (device: ExecutiveInstrumentDevice, button: HTMLButtonElement) => {
+    openerRef.current = button;
+    openedFromListRef.current = true;
+    const url = new URL(window.location.href);
+    url.searchParams.set("device", device.device_key);
+    window.history.pushState({ ...(window.history.state || {}), instrumentDevice: device.device_key }, "", `${url.pathname}${url.search}${url.hash}`);
+    setSelectedDeviceKey(device.device_key);
+  };
+
+  return (
+    <section className="executive-instruments" aria-label="Приборы">
+      <header className="executive-instruments__header">
+        <div>
+          <h2>Серверы и устройства</h2>
+          <span>Read-only состояние инфраструктуры; адреса, порты и ключи скрыты.</span>
+        </div>
+        {data && (
+          <span>
+            Обновлено {formatDateTime(data.generated_at)} · источник {statusLabel(data.source_status)} · свежесть {statusLabel(data.freshness_status)}
+          </span>
+        )}
+      </header>
+
+      {status === "error" && <div className="executive-cashflow-period__empty">{message}</div>}
+      {status === "loading" && !data && <div className="executive-cashflow-period__empty">Загрузка приборов...</div>}
+      {data && (
+        <>
+          {data.note && <div className="executive-cashflow-period__note">{data.note}</div>}
+          {data.warnings.length > 0 && (
+            <details className="executive-instruments__data-quality">
+              <summary>Качество данных: {data.warnings.length} замечаний источника</summary>
+              {data.warnings.map((warning) => <div key={warning}>{warning}</div>)}
+            </details>
+          )}
+          <section aria-labelledby="instrument-summary-title">
+            <h3 className="visually-hidden" id="instrument-summary-title">Сводка по приборам</h3>
+            <div className="executive-instruments__kpis">
+              {quickFilters.map((filter) => (
+                <button
+                  aria-pressed={quickFilter === filter.key}
+                  className={`${filter.tone ? `is-${filter.tone}` : ""} ${quickFilter === filter.key ? "is-active" : ""}`.trim()}
+                  key={filter.key}
+                  onClick={() => setQuickFilter(filter.key)}
+                  type="button"
+                >
+                  <span>{filter.label}</span>
+                  <strong>{filter.count}</strong>
+                  {filter.key === "coverage" && <small>{instrumentPercent(data.summary.monitoring_coverage_24h_pct)}</small>}
+                </button>
+              ))}
+            </div>
+          </section>
+
+          <div className="executive-instruments__filters">
+            <label>
+              <span>Поиск</span>
+              <input
+                aria-label="Поиск прибора"
+                className="app__select"
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="Название, назначение, владелец"
+                type="search"
+                value={query}
+              />
+            </label>
+            <label>
+              <span>Тип</span>
+              <select className="app__select" onChange={(event) => setKindFilter(event.target.value)} value={kindFilter}>
+                <option value="">Все</option>
+                {Object.entries(INSTRUMENT_KIND_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
+              </select>
+            </label>
+            <div className="executive-instruments__result-count" aria-live="polite">
+              Показано {visibleDevices.length} из {data.summary.total_count}
+            </div>
+          </div>
+
+          <div aria-label="Список приборов" className="executive-instruments__table-wrap" tabIndex={0}>
+            <table className="executive-instruments__table">
+              <thead>
+                <tr>
+                  <th>Состояние</th>
+                  <th>Прибор</th>
+                  <th>Главная проблема</th>
+                  <th>Сигналы</th>
+                  <th>Ответственный / проверка</th>
+                  <th><span className="visually-hidden">Действие</span></th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleDevices.map((device) => {
+                  return (
+                    <tr className={`executive-instruments__row executive-instruments__row--${device.health_status}`} key={device.device_key}>
+                      <td><InstrumentStatus device={device} /></td>
+                      <td>
+                        <strong>{device.name}</strong>
+                        <span>{INSTRUMENT_KIND_LABELS[device.kind] || device.kind} · {device.location}</span>
+                        <small>{device.purpose[0] || "Назначение уточняется"}{device.purpose.length > 1 ? ` · +${device.purpose.length - 1}` : ""}</small>
+                      </td>
+                      <td><InstrumentProblemSummary device={device} /></td>
+                      <td><InstrumentSignals device={device} /></td>
+                      <td>
+                        <strong>{device.technical_owners.join(", ") || "Не назначен"}</strong>
+                        <span>Проверка: {formatDateTime(device.last_attempted_at)}</span>
+                        <small>Успех: {formatDateTime(device.last_success_at)}</small>
+                      </td>
+                      <td>
+                        <button aria-label={`Подробнее: ${device.name}`} className="executive-instruments__details-button" onClick={(event) => openDetails(device, event.currentTarget)} type="button">Подробнее</button>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+            {!visibleDevices.length && <div className="executive-cashflow-period__empty">По выбранным фильтрам устройств нет.</div>}
+          </div>
+
+          <div className="executive-instruments__cards" aria-label="Карточки приборов">
+            {visibleDevices.map((device) => (
+              <article className={`executive-instruments__card executive-instruments__row--${device.health_status}`} key={device.device_key}>
+                <InstrumentStatus device={device} />
+                <div className="executive-instruments__card-title">
+                  <strong>{device.name}</strong>
+                  <span>{INSTRUMENT_KIND_LABELS[device.kind] || device.kind} · {device.location}</span>
+                </div>
+                <InstrumentProblemSummary device={device} />
+                <InstrumentSignals device={device} />
+                <div className="executive-instruments__card-meta">
+                  <span>{device.technical_owners.join(", ") || "Ответственный не назначен"}</span>
+                  <small>Проверка: {formatDateTime(device.last_attempted_at)}</small>
+                </div>
+                <button aria-label={`Подробнее: ${device.name}`} className="executive-instruments__details-button" onClick={(event) => openDetails(device, event.currentTarget)} type="button">Подробнее</button>
+              </article>
+            ))}
+            {!visibleDevices.length && <div className="executive-cashflow-period__empty">По выбранным фильтрам устройств нет.</div>}
+          </div>
+        </>
+      )}
+      {selectedDevice && <InstrumentDetails closeButtonRef={closeButtonRef} device={selectedDevice} dialogRef={drawerRef} onClose={closeDetails} />}
+    </section>
+  );
+}
+
 export function ActionTable({
   actions,
   onOpen,
@@ -4347,6 +4904,9 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
   const [actions, setActions] = useState<ExecutiveDashboardAction[]>([]);
   const [selectedAction, setSelectedAction] = useState<ExecutiveDashboardAction | null>(null);
   const [refreshNonce, setRefreshNonce] = useState(0);
+  const [instrumentsStatus, setInstrumentsStatus] = useState<"loading" | "ready" | "error">("loading");
+  const [instrumentsMessage, setInstrumentsMessage] = useState("");
+  const [instrumentsData, setInstrumentsData] = useState<ExecutiveInstrumentsResponse | null>(null);
 
   const [profitLossDateFrom, setProfitLossDateFrom] = useState(() => monthStartIso(date));
   const [profitLossDateTo, setProfitLossDateTo] = useState(date);
@@ -4468,6 +5028,29 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
     };
   }, [tab, onlineStoreDateFrom, onlineStoreDateTo, refreshNonce]);
 
+  useEffect(() => {
+    if (tab !== INSTRUMENTS_TAB_KEY) return;
+    let cancelled = false;
+    Promise.resolve().then(() => {
+      if (!cancelled) setInstrumentsStatus("loading");
+    });
+    fetchExecutiveInstruments()
+      .then((payload) => {
+        if (cancelled) return;
+        setInstrumentsData(payload);
+        setInstrumentsStatus("ready");
+        setInstrumentsMessage("");
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return;
+        setInstrumentsStatus("error");
+        setInstrumentsMessage(errorMessage(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tab, refreshNonce]);
+
   const navigateDashboard = useCallback(
     (next: { date?: string; tab?: string }, mode: "push" | "replace" = "push") => {
       const nextDate = next.date || date;
@@ -4511,7 +5094,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
         const tabAllowed = isTabAllowed(dashboard, tab);
         const effectiveTab = tabAllowed ? tab : "today";
         if (!tabAllowed && !cancelled) navigateDashboard({ tab: "today" }, "replace");
-        if (effectiveTab === ONLINE_STORE_TAB_KEY) {
+        if ([ONLINE_STORE_TAB_KEY, INSTRUMENTS_TAB_KEY].includes(effectiveTab)) {
           return [
             dashboard,
             {
@@ -4555,6 +5138,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
   );
   const visibleSourceFreshness = useMemo(() => {
     if (!data) return [];
+    if (tab === INSTRUMENTS_TAB_KEY) return [];
     const relevantKey = SOURCE_FRESHNESS_KEY_BY_TAB[tab];
     if (!relevantKey) return data.source_freshness;
     return data.source_freshness.filter((source) => source.source_key === relevantKey);
@@ -4563,7 +5147,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
   const tabOverviewBlock = useMemo(() => {
     if (!data || tab === "today") return null;
     if (tab === ODDS_CASHFLOW_TAB_KEY) return moneyBlock(data);
-    if ([PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, ONLINE_STORE_TAB_KEY, "creditors_payables"].includes(tab)) return null;
+    if ([PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, ONLINE_STORE_TAB_KEY, INSTRUMENTS_TAB_KEY, "creditors_payables"].includes(tab)) return null;
     return blocks[0] || null;
   }, [blocks, data, tab]);
   const currentAccess = accessLevel || data?.access_level;
@@ -4581,7 +5165,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
           </span>
         </div>
         <div className="executive__controls">
-          {![PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, ONLINE_STORE_TAB_KEY].includes(tab) && (
+          {![PROFIT_LOSS_TAB_KEY, SALES_TAB_KEY, ONLINE_STORE_TAB_KEY, INSTRUMENTS_TAB_KEY].includes(tab) && (
             <label className="executive__date-field">
               <span>Дата</span>
               <input
@@ -4731,13 +5315,15 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
               </label>
             </div>
           )}
-          <Button
-            disabled={status === "loading"}
-            onClick={() => navigateDashboard({ date: todayIso() })}
-            variant="secondary"
-          >
-            Сегодня
-          </Button>
+          {tab !== INSTRUMENTS_TAB_KEY && (
+            <Button
+              disabled={status === "loading"}
+              onClick={() => navigateDashboard({ date: todayIso() })}
+              variant="secondary"
+            >
+              Сегодня
+            </Button>
+          )}
           <Button disabled={status === "loading"} onClick={refreshDashboard}>
             {status === "loading" ? "Обновляем..." : "Обновить"}
           </Button>
@@ -4780,7 +5366,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
 
       {data && (
         <>
-          {!["procurement_import", ONLINE_STORE_TAB_KEY].includes(tab) && <section aria-label="Состояние витрины" aria-live="polite" className="executive__topline">
+          {!["procurement_import", ONLINE_STORE_TAB_KEY, INSTRUMENTS_TAB_KEY].includes(tab) && <section aria-label="Состояние витрины" aria-live="polite" className="executive__topline">
             <div>
               <span>Данные</span>
               <strong>{statusLabel(data.source_status)}</strong>
@@ -4848,6 +5434,14 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
             />
           )}
 
+          {tab === INSTRUMENTS_TAB_KEY && (
+            <InstrumentsPanel
+              data={instrumentsData}
+              message={instrumentsMessage}
+              status={instrumentsStatus}
+            />
+          )}
+
           {tab === "procurement_import" && (
             <ProcurementImportPanel
               actions={actions}
@@ -4883,7 +5477,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
             </div>
           )}
 
-          {![SALES_TAB_KEY, ONLINE_STORE_TAB_KEY, "procurement_import"].includes(tab) && (
+          {![SALES_TAB_KEY, ONLINE_STORE_TAB_KEY, INSTRUMENTS_TAB_KEY, "procurement_import"].includes(tab) && (
             <section className="executive-actions">
               <header className="executive-actions__header">
                 <div>
@@ -4895,7 +5489,7 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
             </section>
           )}
 
-          <SourceFreshness sources={visibleSourceFreshness} />
+          {tab !== INSTRUMENTS_TAB_KEY && <SourceFreshness sources={visibleSourceFreshness} />}
           {selectedAction && <ActionDetail action={selectedAction} onClose={() => setSelectedAction(null)} />}
         </>
       )}

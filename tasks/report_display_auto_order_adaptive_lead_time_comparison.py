@@ -248,6 +248,7 @@ def build_row_comparison(
     role = _clean(row.get("analog_role"))
     speed_action = _clean(row.get("speed_rule_action"))
     source_warnings = set(_split_codes(row.get("warnings")))
+    source_blockers = set(_split_codes(row.get("blockers")))
 
     adaptive_safety_days = _int_or_none(row.get("speed_rule_safety_stock_days"))
     if adaptive_safety_days is None:
@@ -271,7 +272,12 @@ def build_row_comparison(
         adaptive_effective_days = min(adaptive_effective_days, max_effective_days)
     forecast_days = max(0, adaptive_effective_days - adaptive_safety_days)
 
-    blocked_by_status = bool(source_warnings & BLOCKING_WARNING_CODES)
+    # Любой blocker из основного dry-run является жёстким запретом на
+    # восстановление заказа последующим адаптивным пересчётом. Раньше здесь
+    # проверялись только отдельные warning-коды, поэтому batch_error_suspected
+    # и defect_rate_suspected могли превратиться из 0 обратно в положительный
+    # заказ после пересчёта lead time.
+    blocked_by_status = bool(source_blockers or source_warnings & BLOCKING_WARNING_CODES)
     transition_to_better = role == "transition_to_better_analog"
     slow_review = speed_action == "manual_review"
     group_role = role in {"primary_analog", "transition_to_better_analog"}
@@ -405,7 +411,18 @@ def build_sync_ready_rows(
         adaptive_logistics = _clean(comparison_row.get("adaptive_logistics_days"))
         adaptive_safety_days = _clean(comparison_row.get("adaptive_safety_stock_days"))
 
-        row["dry_run_decision"] = _clean(comparison_row.get("adaptive_decision"))
+        # Защитный барьер на экспортной границе: даже если новый адаптивный
+        # алгоритм в будущем забудет учесть blocker при сравнении, sync-ready
+        # строка не имеет права вернуть товар в автоматический заказ.
+        source_blockers = set(_split_codes(dry_row.get("blockers")))
+        if source_blockers:
+            adaptive_qty = "0"
+            adaptive_qty_raw = "0"
+            comparison_decision = "manual_review"
+        else:
+            comparison_decision = _clean(comparison_row.get("adaptive_decision"))
+
+        row["dry_run_decision"] = comparison_decision
         row["recommended_order_qty"] = adaptive_qty
         row["recommended_order_qty_raw"] = adaptive_qty_raw
         row["target_stock_qty"] = adaptive_target

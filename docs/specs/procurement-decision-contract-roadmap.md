@@ -3,9 +3,9 @@ spec_id: "procurement-decision-contract-roadmap"
 title: "Procurement Decision Contract And Roadmap"
 doc_type: spec
 domain: "procurement"
-status: draft
+status: superseded
 owner: "operations"
-source_of_truth: true
+source_of_truth: false
 related_code:
   - scripts/ensure_procurement_bitrix_process.py
   - scripts/import_onec_supplier_order_to_procurement.py
@@ -40,11 +40,23 @@ depends_on:
   - docs/Onepage.ProcurementManagementContour.md
   - docs/specs/ved-akb-import-pilot.md
 supersedes: []
-rollout_required: true
-updated_at: "2026-07-09"
+rollout_required: false
+updated_at: "2026-08-05"
 ---
 
-# Назначение
+# Документ отменён
+
+> **Не использовать для разработки, тестирования или rollout.** Документ
+> отменён 2026-08-05. Жизненный статус хранится только в `pricing-service` и не
+> экспортируется в УТ 10.3. Актуальные источники: формула —
+> `docs/specs/assortment-lifecycle-policy.md`, порядок работ и межсистемные
+> границы — `docs/specs/assortment-status-contour-plan.md`, приложение и создание
+> непроведённого заказа — `docs/specs/procurement-order-formation-smart-process.md`.
+
+<details>
+<summary>Исторический текст: только для объяснения происхождения решений</summary>
+
+# Историческое назначение
 
 Сделать техническое задание на следующий шаг контура управления закупками:
 программа должна готовить безопасный проект заказа поставщику, объяснять каждую
@@ -2850,3 +2862,5 @@ Rollback:
 - 2026-06-22 - added procurement behavior profiles, free/factual 1C stock,
   hybrid min/max stock rules, multi-metric flagship classification, Omar task.
 - 2026-06-22 - draft created from procurement onepage v4 and user clarifications.
+
+</details>

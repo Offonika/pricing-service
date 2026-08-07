@@ -179,6 +179,66 @@ def test_build_sync_ready_rows_applies_adaptive_quantities_for_bitrix_sync() -> 
     assert "local:adaptive_lead_time" in rows[0]["data_sources"]
 
 
+def test_adaptive_lead_time_preserves_quality_blocker() -> None:
+    dry_row = _dry_row(current_recommended_order_qty="0")
+    dry_row["dry_run_decision"] = "manual_review"
+    dry_row["blockers"] = "batch_error_suspected"
+
+    rows = build_comparison_rows(
+        [dry_row],
+        [
+            {
+                "nomenclature_code": "RB1",
+                "display_group_key": "samsung a12",
+                "supplier_name": "Samsung display",
+                "responsible_name": "Бочаров Омар",
+                "order_line_count": "5",
+                "recommended_supplier_prepare_days": "4",
+                "recommended_logistics_days": "16",
+                "lead_time_confidence": "high",
+                "latest_supplier_order_at": "2026-06-01",
+            }
+        ],
+        policy={"order_rounding_rules": []},
+        as_of=date(2026, 8, 3),
+    )
+
+    assert rows[0]["adaptive_recommended_order_qty"] == "0"
+    assert rows[0]["adaptive_recommended_order_qty_raw"] == "0"
+    assert rows[0]["adaptive_decision"] == "manual_review"
+    assert "manual_blocker_preserved" in rows[0]["warnings"]
+
+
+def test_sync_ready_never_restores_order_for_source_blocker() -> None:
+    dry_row = _dry_row(current_recommended_order_qty="0")
+    dry_row["dry_run_decision"] = "manual_review"
+    dry_row["blockers"] = "defect_rate_suspected"
+    comparison_row = {
+        "adaptive_decision": "order",
+        "adaptive_recommended_order_qty": "63",
+        "adaptive_recommended_order_qty_raw": "63",
+        "adaptive_target_stock_qty": "63",
+        "adaptive_effective_target_days": "70",
+        "adaptive_lead_time_days": "48",
+        "adaptive_supplier_prepare_days": "18",
+        "adaptive_logistics_days": "30",
+        "adaptive_safety_stock_days": "7",
+        "adaptive_forecast_qty": "56",
+        "adaptive_safety_stock_qty": "7",
+        "free_stock_qty": "0",
+        "incoming_qty": "0",
+        "lead_time_applied": "1",
+        "reason_ru": "адаптивный расчет увеличил заказ",
+        "warnings": "adaptive_lead_time_applied",
+    }
+
+    rows = build_sync_ready_rows([dry_row], [comparison_row])
+
+    assert rows[0]["recommended_order_qty"] == "0"
+    assert rows[0]["recommended_order_qty_raw"] == "0"
+    assert rows[0]["dry_run_decision"] == "manual_review"
+
+
 def _dry_row(
     *,
     speed_tier: str = "super_fast",

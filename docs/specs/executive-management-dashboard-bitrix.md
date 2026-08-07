@@ -13,6 +13,7 @@ related_code:
   - app/schemas/executive_dashboard.py
   - app/services/bitrix_executive_dashboard_auth.py
   - app/services/executive_dashboard.py
+  - app/services/executive_instruments.py
   - app/services/executive_management_balance.py
   - tasks/build_executive_management_balance_snapshot.py
   - tasks/export_executive_management_balance_components.py
@@ -21,13 +22,14 @@ related_code:
   - ui/src/components/ExecutiveDashboard.tsx
 related_tests:
   - tests/test_executive_dashboard.py
+  - tests/test_executive_instruments.py
   - tests/test_executive_management_balance.py
 contracts:
   - openapi.yaml
 depends_on: []
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-25"
+updated_at: "2026-07-31"
 ---
 
 # Executive Management Dashboard In Bitrix
@@ -65,6 +67,7 @@ Draft / v1 implementation foundation.
 - одиннадцать обязательных блоков: деньги, отчет о прибылях и убытках, продажи,
   дебиторка покупателей, контроль дебиторки, кредиторка, закупки, склад, сверки,
   задачи, фокус дня;
+- отдельная read-only вкладка `Приборы` для серверов и устройств;
 - явные статусы `ready`, `partial`, `stale`, `source_missing`, `source_error`;
 - `executive_action_item` как кросс-доменный список решений без автопубликации
   задач в v1.
@@ -92,6 +95,7 @@ Draft / v1 implementation foundation.
 | Сверки | `mm-compensation` jobs Sber / CloudPayments / acquiring / ДДС | `pricing-service` читает compact JSON |
 | Задачи | Bitrix cached/read-only task-health, `executive_action_item` | `pricing-service` |
 | Фокус дня | `executive_action_item` | `pricing-service` |
+| Приборы | `/opt/MM/docs/registry/{compute-nodes,service-placement,access-matrix}.yml` и обезличенный compact snapshot | `pricing-service` читает только JSON-контракт |
 
 ## Management Balance Rule
 
@@ -152,6 +156,46 @@ Draft / v1 implementation foundation.
 блокирует закрытие месяца. Запись в 1С не выполняется.
 
 ## API Contract
+
+### `GET /api/management/executive-dashboard/instruments`
+
+Возвращает данные вкладки `Приборы` из
+`/var/lib/mm-data-contracts/executive-dashboard/infrastructure_snapshot.json`.
+Snapshot формируется управляющим контуром `/opt/MM`, а `pricing-service` не
+подключается к SSH, VPN, provider API или 1С при открытии страницы.
+
+Контракт содержит:
+
+- сводку по количеству устройств, online, warning, critical и без мониторинга;
+- по одному элементу `devices[]` на `device_key` инфраструктурного реестра;
+- безопасные ресурсные показатели, сервисы, резервирование и интеграции 1С;
+- read-only состояние доступов: активные/ожидающие назначения, MFA, сроки ревизии
+  и неопознанные credentials только количественно;
+- `capabilities.access_mutations=false` и `network_scanning=false`.
+
+Consumer принимает `schema_version=2` и `schema_version=3`, но не принимает v1.
+Для v2 поля `issue` и `recommended_action` преобразуются в одну fallback-проблему.
+В v3 `devices[].problems[]` содержит все одновременные проблемы с категорией,
+severity, безопасными доказательствами, временем начала и рекомендацией; первая по
+приоритету проблема также заполняет legacy-поля. На устройстве раздельно
+передаются `last_attempted_at`, `last_success_at`, `incident_started_at`, длительность
+сбоя, availability и monitoring coverage за 24 часа/30 дней. При coverage ниже
+90% availability не публикуется. Windows, SQL Server, SQL Agent, кластер и базы 1С,
+публикации и обмены являются отдельными компонентами; backup показывает RPO, lag,
+full/diff/log, off-host/readback и restore-test.
+
+IP, DNS/SSH aliases, порты, usernames, fingerprints, `secret_ref`, токены и
+connection strings запрещены на стороне producer и повторно блокируются
+consumer-валидацией. Отсутствующий snapshot возвращается как `source_missing`,
+просроченный — как `stale`; отсутствие данных нельзя подменять нулями.
+
+UI по умолчанию показывает critical, warning и not monitored, использует KPI как
+фильтры и открывает полную диагностику устройства в панели, связанной с query-параметром
+`device`. На ширине до 760 px список отображается карточками без горизонтальной
+прокрутки. Текущий этап не создаёт CRM-сущности, задачи и назначения доступов. Следующий
+этап управления доступами расширяет этот же контракт отдельными action API с
+approval, revision guard, audit и readback; до отдельного утверждения любые
+мутации остаются заблокированы.
 
 ### `GET /api/management/executive-dashboard?date=YYYY-MM-DD`
 
@@ -542,6 +586,8 @@ token для iframe.
   операционный блок не возвращается, если он не указан в policy.
 - `personal` — личный фокус: `tasks`, `daily_focus`; действия только свои или
   публичные; суммы скрыты.
+- `infrastructure` — только вкладка `Приборы`; финансовые блоки и action domains
+  не выдаются. Полный управленческий доступ также видит вкладку.
 
 Если пользователь попадает сразу в несколько ролей, разрешения объединяются.
 `full` всегда побеждает. Старый список
@@ -593,6 +639,8 @@ fallback-режимом: пользователь видит прежнюю ст
   ошибкой мониторинга;
 - receivables — целевой лаг до 1 дня;
 - actions — идемпотентные записи по `stable_key` и `dedupe_key`;
+- instruments snapshot — целевой лаг до 30 минут; сбор только по allowlisted
+  read-only профилям, без сетевого сканирования;
 - закупочные actions формируются из `procurement_import.attention_items` и сортируются
   `critical -> warning -> срок -> сумма`; ранний заказ без cargo в v2 не является риском;
 - клик открывает карточку решения с номером `Заказа поставщику` и полем 1С для
@@ -759,4 +807,8 @@ app/admin context или через OAuth-контекст установлен�
   `create -> verify`, где обе стороны получают один тестовый clock.
 - Idempotency: повторный запуск не создает дубли actions.
 - Bitrix iframe smoke: страница, session, загрузка блоков, drill-down links.
+- Приборы: один элемент на каждый зарегистрированный `device_key`, статусы
+  online/not monitored не смешиваются, v1/небезопасные/неизвестные поля отклоняются,
+  v2 получает fallback-проблему, v3 сохраняет одновременные `problems[]`, stale,
+  missing, freshness и coverage показываются явно, доступы остаются read-only.
 - Docs/OpenAPI: manifest и generated contract без drift.

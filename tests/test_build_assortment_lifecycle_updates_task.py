@@ -186,7 +186,7 @@ def test_build_assortment_lifecycle_updates_display_folder_includes_laptop_matri
     assert summary["rows"] == 4
 
 
-def test_build_assortment_lifecycle_updates_task_prints_dry_run_xml(
+def test_build_assortment_lifecycle_updates_task_rejects_ut103_xml(
     tmp_path: Path,
 ) -> None:
     input_path = tmp_path / "facts.json"
@@ -208,15 +208,14 @@ def test_build_assortment_lifecycle_updates_task_prints_dry_run_xml(
             "2026-06-25",
             "--print-xml",
         ],
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
 
-    assert "<Schema>nomenclature_property_updates.v1</Schema>" in result.stdout
-    assert "<MessageId>assortment-lifecycle-test-001</MessageId>" in result.stdout
-    assert "<NewValueTag>new_item</NewValueTag>" in result.stdout
-    assert "<NewValueTag>fast_expensive</NewValueTag>" in result.stdout
+    assert result.returncode != 0
+    assert "Lifecycle property export to UT 10.3 is retired" in result.stderr
+    assert result.stdout == ""
 
 
 def test_build_assortment_lifecycle_updates_keeps_status_and_blocks_incomplete_exclusive_mark(

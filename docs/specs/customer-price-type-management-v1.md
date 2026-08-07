@@ -12,6 +12,7 @@ related_code:
   - app/infrastructure/customer_price_type_sources.py
   - app/infrastructure/customer_price_types.py
   - app/services/customer_price_types.py
+  - app/services/customer_price_type_exports.py
   - app/models/customer_price_type.py
   - app/api/customer_price_types.py
   - scripts/build_bronze_monthly_inventory.py
@@ -35,7 +36,7 @@ depends_on:
 supersedes:
   - reports/retail_price_types/customer-price-type-automation/2026-07-16/customer-price-type-smart-process-blueprint-draft-2026-07-16.md
 rollout_required: true
-updated_at: "2026-07-25"
+updated_at: "2026-08-02"
 ---
 
 # Назначение
@@ -312,8 +313,19 @@ Append-only audit trail:
 - Key Account: только личное решение руководителя, автоматика не меняет тип.
 - Дубль: блок всех автоматических решений до master-data cleanup.
 - Несколько активных договоров одного уровня считаются совместно на контрагента.
-- Разные уровни типа цены в активных договорах: `data_check`; уровень не выбирается
-  эвристикой.
+- Для карточки с разными уровнями типа цены рабочим считается действующий
+  (не помеченный на удаление) договор, по которому есть хотя бы одна реализация
+  за 12 полных календарных месяцев до даты расчёта.
+- Если за этот период работал ровно один договор, рекомендуемый тип цены
+  определяется по нему. В карточке и задаче обязательно показываются
+  договор-основание и дата последней реализации.
+- Если работали несколько договоров одного уровня, выбирается их общий уровень,
+  а в основании перечисляются все рабочие договоры.
+- Если работали несколько договоров разных уровней, карточка остаётся в
+  `data_check`; уровень автоматически не выбирается.
+- Договор без реализаций за 12 полных месяцев сам по себе не создаёт конфликт и
+  не является основанием переводить контрагента на `Розница`, когда найден хотя
+  бы один рабочий договор.
 - Карточка `data_check` с разными уровнями обязана показывать каждый договор и его
   тип цены, применимое правило контура, принцип определения итогового типа,
   рекомендуемое действие и чек-лист проверки менеджеру.
@@ -492,6 +504,32 @@ Decision=approved_for_manual_1c_update
 Переходы верхних уровней могут быть рассчитаны и согласованы, но остаются
 `unsupported_by_onec_contract` и не получают `READY_FOR_1C` до версии v2.
 
+Экспорт v1 связан с persisted-кейсами `pricing-service` по fail-closed правилам:
+
+- очередь XML формируется только из кейсов текущего месяца в стадии
+  `READY_FOR_1C` с `onec_export_status=ready`;
+- обязательны `approval_status=approved`, решение `downgrade_to_retail`,
+  согласующий, время согласования и совпадающий `approved_snapshot_hash`;
+- snapshot должен быть последним для того же профиля, месяца и case key,
+  оставаться actionable, иметь `source_status=ready`, пустые conflicts и только
+  допустимый после согласования stop factor `human_approval_required`;
+- `ApprovedBy` берётся из persisted-кейса; кейсы разных согласующих разделяются
+  на разные пакеты;
+- idempotency key строится из неизменяемых `case_key + snapshot_hash`;
+- произвольный CSV допускается только в `--validate-only` и не может записать
+  файл в очередь;
+- request, постановка файла в очередь и result сохраняются отдельными append-only
+  событиями case; один `MessageId` нельзя связать с другим составом пакета или
+  изменённым result;
+- result принимается только для ранее зарегистрированного и поставленного в
+  очередь пакета, с точным совпадением schema, idempotency key, контрагента,
+  целевого типа и snapshot identity;
+- DB-backed `apply` требует новый `MessageId` и явную ссылку на persisted
+  успешный `validated` dry-run того же case, snapshot, approver и idempotency key;
+- успешный `apply` закрывает case как `CLOSED_CHANGED` только при result
+  `applied/already_actual` и фактическом readback `Розница`; иной или частичный
+  результат переводит case в `ONEC_ERROR`.
+
 # Invariants
 
 - Нет внешних side effects во время расчета, просмотра и shadow mode.
@@ -499,7 +537,8 @@ Decision=approved_for_manual_1c_update
 - Нет повышения при `upgrades_enabled=false`.
 - Нет больше одного обычного шага понижения за цикл.
 - Нет 1С-экспорта при partial/conflict/duplicate/multi-contract/stale snapshot.
-- Нет договора, выбранного по имени или «первого найденного».
+- Нет договора, выбранного по имени или «первого найденного»: основанием служат
+  фактические реализации по договору за 12 полных календарных месяцев.
 - Нет закрытия `CLOSED_CHANGED` без readback из 1С.
 - Нет второго rules engine в Bitrix, UI, SQL-скрипте или cron.
 - Нет скрытых санкций по возвратам.
@@ -509,7 +548,8 @@ Decision=approved_for_manual_1c_update
 
 # Errors / Edge Cases
 
-- Несколько активных договоров: `DATA_CHECK`, экспорт запрещен.
+- Несколько рабочих договоров разных ценовых уровней: `DATA_CHECK`, экспорт
+  запрещён. Несколько рабочих договоров одного уровня конфликтом не считаются.
 - Текущий тип не совпал с ожидаемым: stale/conflict, согласование снимается.
 - Источник partial или недоступен: run/snapshot сохраняет статус, решения и
   экспорт блокируются.
@@ -553,6 +593,22 @@ Go/no-go первой волны:
 - переходов вне whitelist 1С — `0`;
 - все примененные изменения подтверждены readback.
 
+Следующий обязательный gate после тестовой приёмки 1С v1:
+
+1. В non-production application DB выполнить один полный закрытый месячный
+   shadow-цикл по зафиксированным read-only источникам, без Bitrix sync,
+   1С-экспорта, worker и Scheduler.
+2. Зафиксировать month, ruleset version, run key, source fingerprint, статусы
+   всех обязательных источников и количества profile/snapshot/case по группам.
+3. Повторить тот же срез и подтвердить детерминированный результат без дублей
+   case и quality sample.
+4. Завершить подготовленную экспертную выборку и подписать метрики go/no-go из
+   списка выше; partial source, незавершённая разметка или любой критический
+   false positive означают `no-go`.
+5. Только после подписанного shadow-результата выбрать один production pilot и
+   запросить отдельное разрешение сначала на production `dry_run`. Production
+   `apply`, worker и Scheduler остаются отдельными решениями.
+
 # Implementation Checklist
 
 ## Phase 0 — accepted specification
@@ -584,8 +640,32 @@ Phase 1 реализована как backend-only read-only core. Persisted sna
   поиска по всему портфелю.
 - [x] Добавить в `data_check` карточку договоров/типов цен, применимое правило,
   итоговый принцип выбора и чек-лист менеджеру.
-- [ ] Провести один полный цикл без Bitrix/1С writes.
+- [x] Провести один полный цикл без Bitrix/1С writes.
 - [ ] Завершить экспертную разметку и рассчитать метрики.
+
+Технический pre-shadow за `2026-07` выполнен дважды только на read-only срезе
+`Ekama_Test_Arsen`, с ruleset `2026-07-25.1` и без `--persist`. Оба запуска
+сформировали одинаковые 16 CSV (совпали имена, содержимое и SHA-256) по 12 596
+контрагентам. Это подтверждает исполнимость и детерминированность расчёта, но не
+закрывало пункт полного persisted shadow-цикла.
+
+После отдельного разрешения persisted shadow выполнен один раз в development DB
+`pricing` с read-only источником `Ekama_Test_Arsen`: run key
+`task2553-shadow-2026-07-persist-01`, run ID `6`, source fingerprint
+`3c5c9fe1703437c642bf2cc49f872f84ff923547b70c1a722c83fe6b92b8ac2c`.
+Зафиксированы 47 921 входной профиль, 12 исключённых, 47 909 snapshots и 7 754
+actionable cases/events. Дублей run key, snapshot profile, case key/profile и
+event idempotency key нет; Bitrix links, 1С-export и readback отсутствуют.
+
+Run завершён как `partial`: 41 716 snapshots имеют `ready`, 1 124 — `partial`,
+5 069 — `conflict`; создано 6 193 `data_check` и 1 561 `recovery` cases. Поэтому
+результат является `no-go` до экспертной проверки.
+
+Для run ID `6` отдельно подготовлен детерминированный quality sample по 30 строк
+на доступную группу: `data_check`, `recovery`, `no_action`, всего 90 уникальных
+snapshots. Все строки имеют `pending`, `correct_group` пуст, reviewed `0`; дублей
+snapshot ID нет. Выборка выгружена в локальный CSV для экспертной разметки, но в
+DB ещё не размечена и метрики не подписаны.
 
 ## Phase 3 — thin smart-process
 
@@ -595,10 +675,21 @@ Phase 1 реализована как backend-only read-only core. Persisted sna
 
 ## Phase 4 — 1С v1
 
-- [ ] Выполнить малый dry-run `2.Бронзовый -> Розница`.
-- [ ] Проверить result и repeated-run idempotency.
-- [ ] Выполнить ограниченный apply после go/no-go.
-- [ ] Подтвердить каждое изменение readback.
+- [x] Связать экспорт только с реально согласованными actionable-кейсами.
+- [x] Сохранять request/queued/result в audit trail и блокировать `apply` без
+  соответствующего persisted `validated` dry-run.
+- [x] Выполнить малый dry-run `2.Бронзовый -> Розница`.
+- [x] Проверить result и repeated-run idempotency.
+- [x] Выполнить ограниченный apply после тестового go/no-go.
+- [x] Подтвердить каждое изменение readback.
+
+Durable-контракт 1С отдельно принят в `Ekama_Test_Arsen` на обратимом цикле
+№2553: `dry_run`, `apply`, readback, повтор и конфликт идентичности проверены.
+Сквозной пакет из isolated persisted-кейса `pricing-service` затем прошёл тот же
+lifecycle на `T-117 Разыков Сардор`: `validated dry_run`, отдельный одноразовый
+`apply`, транзакционный readback `Розница`, закрытие case как `CLOSED_CHANGED` и
+идемпотентный повтор приёма result без нового события. Это закрывает тестовую
+Phase 4, но не является production go/no-go и не разрешает production rollout.
 
 ## Phase 5 — expansion
 
@@ -613,8 +704,14 @@ Phase 1 реализована как backend-only read-only core. Persisted sna
 - Текущий передаваемый архив предшествует части исправлений 2026-07-18 и должен
   быть пересобран до внешней ревизии.
 - Верхние уровни еще не имеют равномерного месячного production-расчета.
-- Экспертная разметка и один полный цикл еще не завершены.
-- 1С v1 остается draft-контуром с незакрытыми live acceptance criteria.
+- Два технических read-only pre-shadow-среза за `2026-07` детерминированы, один
+  persisted shadow-цикл зафиксирован без дублей и внешних side effects. Его
+  статус `partial`; quality sample из 90 строк подготовлен, но экспертная
+  разметка ещё не завершена.
+- Durable-обработчик 1С v1 и end-to-end lifecycle из isolated persisted-кейса
+  `pricing-service` приняты в `Ekama_Test_Arsen`; production очередь не
+  запускалась. Технический shadow-месяц рассчитан, повторён и один раз сохранён
+  в development DB; run `partial`, экспертная выборка и метрики ещё не подписаны.
 - Любое расширение Bitrix/1С side effects требует отдельного rollout-решения.
 
 # Tests
@@ -661,6 +758,39 @@ sync dedupe и 1С whitelist/dry-run/apply/readback проверяются в Ph
 
 # Changelog
 
+- 2026-08-02 — для persisted shadow run ID 6 подготовлен детерминированный
+  quality sample: по 30 уникальных pending-строк `data_check`, `recovery` и
+  `no_action`. Разметка и метрики ещё не выполнены; внешние side effects не
+  использовались.
+- 2026-08-02 — один разрешённый persisted shadow `2026-07` выполнен в
+  development DB `pricing` с read-only источником `Ekama_Test_Arsen`: run ID 6,
+  47 921 входной профиль, 47 909 snapshots, 7 754 cases/events, ноль дублей и
+  внешних side effects. Статус `partial` из-за 1 124 partial и 5 069 conflict
+  snapshots; production остаётся `no-go`, quality sample и экспертные метрики
+  ещё не подготовлены.
+- 2026-08-02 — месячный технический pre-shadow `2026-07` выполнен дважды только
+  на `Ekama_Test_Arsen` после перевода фильтров ссылок на прямые типизированные
+  `BINARY(16)` bind-параметры. Оба запуска без `--persist` дали 16 побайтно
+  одинаковых CSV по 12 596 контрагентам. Production, Bitrix24, worker,
+  Scheduler и 1С-экспорт не использовались; persisted shadow-gate и экспертная
+  разметка остаются обязательными до go/no-go.
+- 2026-08-02 — тестовая Phase 4 закрыта сквозным persisted-циклом №2553 в
+  `Ekama_Test_Arsen`: кейс `T-117 Разыков Сардор` прошёл `validated dry_run`,
+  отдельный одноразовый `apply`, readback `Розница`, `CLOSED_CHANGED` и
+  идемпотентный повтор приёма result. Production не использовалась; следующим
+  обязательным gate зафиксирован полный shadow-месяц и подписанные метрики.
+- 2026-08-02 — XML-экспорт v1 связан с persisted actionable-кейсами: добавлен
+  fail-closed gate по стадии, согласованию, актуальному snapshot, conflicts и
+  stop factors; `ApprovedBy` берётся из кейса, CSV ограничен `validate-only`.
+  Request, queued и result фиксируются append-only событиями; `apply` допускается
+  только по явно указанному persisted `validated` dry-run, а закрытие требует
+  точного readback. Отдельно зафиксирована приёмка durable-контракта 1С в
+  `Ekama_Test_Arsen` циклом №2553.
+- 2026-07-29 — для карточек с разными ценовыми уровнями закреплён выбор по
+  фактически рабочим договорам за 12 полных календарных месяцев. Один рабочий
+  договор определяет рекомендуемый тип цены; несколько рабочих договоров одного
+  уровня дают общий тип; разные рабочие уровни остаются в `data_check`.
+  Договор-основание и последняя реализация обязательны в карточке и задаче.
 - 2026-07-25 — карточка `conflicting_price_levels` дополнена всеми договорами и
   типами цен, блоками «По нашим правилам», «Рекомендуемое действие», принципом
   итогового типа и чек-листом менеджеру; поиск зафиксирован как локальный

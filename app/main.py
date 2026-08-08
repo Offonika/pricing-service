@@ -37,6 +37,7 @@ from app.api.management import router as management_router
 from app.api.matching import router as matching_router
 from app.api.orchestration import router as orchestration_router
 from app.api.order_fulfillment import router as order_fulfillment_router
+from app.api.order_payment_control import router as order_payment_control_router
 from app.api.procurement_assortment_decisions import (
     page_router as procurement_assortment_page_router,
 )
@@ -169,6 +170,7 @@ app.include_router(logistics_bot_router, prefix="/api/logistics/bot")
 app.include_router(logistics_web_router, prefix="/api/logistics/web")
 app.include_router(order_fulfillment_router, prefix="/api/order-fulfillment")
 app.include_router(orchestration_router)
+app.include_router(order_payment_control_router, prefix="/api/order-payment-control")
 app.include_router(procurement_labels_router, prefix="/api")
 app.include_router(procurement_assortment_router, prefix="/api")
 app.include_router(procurement_order_formation_router, prefix="/api")

@@ -20461,6 +20461,7 @@ components:
           - onec_order_deleted
           - onec_order_ambiguous
           - onec_order_unposted
+          - onec_order_closed
           - onec_amount_invalid
           - onec_amount_mismatch
           title: Reason
@@ -20491,6 +20492,21 @@ components:
           - type: string
           - type: 'null'
           title: Onec Revision
+        onec_posted:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Onec Posted
+        onec_closure_document:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Closure Document
+        onec_closure_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Closure Reason
         checked_at:
           type: string
           format: date-time

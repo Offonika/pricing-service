@@ -180,6 +180,11 @@ class Settings(BaseSettings):
     card_balance_ocr_max_image_bytes: int = 10 * 1024 * 1024
     order_fulfillment_internal_api_token: str | None = None
     order_payment_control_internal_api_token: str | None = None
+    order_payment_control_require_posted: bool = False
+    order_payment_control_closure_blocks_payment: bool = True
+    order_payment_control_closure_allowed_reasons: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["Исполнение заказа", "Частичное исполнение заказа"]
+    )
     order_fulfillment_bitrix_webhook_url: str | None = None
     order_fulfillment_artifact_dir: str = ".local/order-fulfillment-pilot"
     order_fulfillment_site_chat_dialog_id: str = "chat733"
@@ -562,6 +567,7 @@ class Settings(BaseSettings):
         "telephony_review_line_ids",
         "bank_payments_own_accounts",
         "card_balance_pilot_cashbox_codes",
+        "order_payment_control_closure_allowed_reasons",
         "order_fulfillment_known_raw_deliveries",
         "receivable_workflow_department_refs",
         "receivable_workflow_department_names",

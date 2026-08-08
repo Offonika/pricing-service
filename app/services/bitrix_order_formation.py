@@ -39,6 +39,8 @@ class BitrixCatalogProduct:
     quality: str = ""
     procurement_profile: str = ""
     manual_minimum: Decimal | None = None
+    photo_thumbnail_url: str = ""
+    photo_original_url: str = ""
     raw: dict[str, Any] | None = None
 
 
@@ -69,9 +71,15 @@ def resolve_catalog_product_by_xml_id(
     catalog = mapping.get("catalog") or {}
     selected = list(
         dict.fromkeys(
-            str(value)
-            for key, value in catalog.items()
-            if key != "catalog_id" and str(value).strip()
+            [
+                *(
+                    str(value)
+                    for key, value in catalog.items()
+                    if key != "catalog_id" and str(value).strip()
+                ),
+                "PREVIEW_PICTURE",
+                "DETAIL_PICTURE",
+            ]
         )
     )
     result = bitrix_call(
@@ -92,7 +100,87 @@ def resolve_catalog_product_by_xml_id(
         return None
     if len(exact) > 1:
         raise RuntimeError(f"multiple Bitrix catalog products have XML_ID {xml_id}")
-    row = exact[0]
+    return _catalog_product_from_row(exact[0], catalog=catalog)
+
+
+def resolve_catalog_products_by_xml_ids(
+    xml_ids: list[str],
+    *,
+    settings: Settings | None = None,
+    mapping: dict[str, Any] | None = None,
+    chunk_size: int = 40,
+) -> dict[str, BitrixCatalogProduct]:
+    """Resolve catalog products in bounded batches keyed by normalized 1C GUID."""
+
+    settings = settings or get_settings()
+    mapping = mapping or load_order_formation_mapping(settings)
+    normalized_ids = list(
+        dict.fromkeys(normalized for xml_id in xml_ids if (normalized := normalize_guid(xml_id)))
+    )
+    if not normalized_ids:
+        return {}
+    if chunk_size < 1:
+        raise ValueError("chunk_size must be positive")
+
+    catalog = mapping.get("catalog") or {}
+    selected = list(
+        dict.fromkeys(
+            [
+                *(
+                    str(value)
+                    for key, value in catalog.items()
+                    if key != "catalog_id" and str(value).strip()
+                ),
+                "PREVIEW_PICTURE",
+                "DETAIL_PICTURE",
+            ]
+        )
+    )
+    xml_field = str(catalog.get("xml_id") or "XML_ID")
+    resolved: dict[str, BitrixCatalogProduct] = {}
+    for start in range(0, len(normalized_ids), chunk_size):
+        chunk = normalized_ids[start : start + chunk_size]
+        commands = {
+            f"catalog_{index}": "crm.product.list?"
+            + urllib.parse.urlencode(
+                _flatten_params(
+                    {
+                        "filter": {xml_field: normalized_guid},
+                        "select": selected,
+                    }
+                )
+            )
+            for index, normalized_guid in enumerate(chunk)
+        }
+        payload = bitrix_call(
+            "batch",
+            {"halt": 1, "cmd": commands},
+            settings=settings,
+        )
+        batch_payload = payload.get("result") or {}
+        batch_errors = batch_payload.get("result_error") or {}
+        if batch_errors:
+            first_key = sorted(batch_errors)[0]
+            raise RuntimeError(
+                f"Bitrix catalog batch failed at {first_key}: {batch_errors[first_key]}"
+            )
+        batch_results = batch_payload.get("result") or {}
+        for index, requested_guid in enumerate(chunk):
+            result = batch_results.get(f"catalog_{index}")
+            rows = result if isinstance(result, list) else []
+            exact = [
+                row for row in rows if normalize_guid(_value(row, xml_field)) == requested_guid
+            ]
+            if len(exact) > 1:
+                raise RuntimeError(f"multiple Bitrix catalog products have XML_ID {requested_guid}")
+            if exact:
+                resolved[requested_guid] = _catalog_product_from_row(exact[0], catalog=catalog)
+    return resolved
+
+
+def _catalog_product_from_row(
+    row: dict[str, Any], *, catalog: dict[str, Any]
+) -> BitrixCatalogProduct:
     enum_values = catalog.get("enum_values") or {}
     return BitrixCatalogProduct(
         product_id=str(_value(row, str(catalog.get("product_id") or "ID")) or "").strip(),
@@ -116,6 +204,8 @@ def resolve_catalog_product_by_xml_id(
         manual_minimum=_decimal_or_none(
             _scalar(_value(row, str(catalog.get("manual_minimum") or "")))
         ),
+        photo_thumbnail_url=_file_url(_value(row, "PREVIEW_PICTURE")),
+        photo_original_url=_file_url(_value(row, "DETAIL_PICTURE")),
         raw=row,
     )
 
@@ -506,6 +596,29 @@ def _decimal_or_none(value: Any) -> Decimal | None:
         return Decimal(str(value).replace(" ", "").replace(",", "."))
     except (InvalidOperation, ValueError):
         return None
+
+
+def _file_url(value: Any) -> str:
+    if isinstance(value, list):
+        for item in value:
+            if url := _file_url(item):
+                return url
+        return ""
+    if isinstance(value, dict):
+        for key in (
+            "downloadUrl",
+            "download_url",
+            "showUrl",
+            "show_url",
+            "src",
+            "url",
+            "URL",
+        ):
+            if url := _file_url(value.get(key)):
+                return url
+        return ""
+    text = str(value or "").strip()
+    return text if text.startswith(("https://", "http://", "/")) else ""
 
 
 def _decoded_property_value(row: dict[str, Any], *, field_name: str, values: dict[str, str]) -> str:

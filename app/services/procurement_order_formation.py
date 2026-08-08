@@ -129,12 +129,15 @@ def serialize_order(order: ProcurementOrderFormation) -> dict[str, Any]:
         "total_amount": total_amount,
         "lines": line_payloads,
         "manual_status_options": MANUAL_STATUS_LABELS,
+        "supplier_profile": supplier_profile(order),
     }
 
 
 def serialize_line(line: ProcurementOrderFormationLine) -> dict[str, Any]:
     latest = latest_classification_proposal(line)
     effective_status = effective_assortment_status(line)
+    payload = dict(line.payload or {})
+    photos = _line_photos(payload)
     return {
         "id": line.id,
         "line_number": line.line_number,
@@ -160,11 +163,82 @@ def serialize_line(line: ProcurementOrderFormationLine) -> dict[str, Any]:
         "quality": line.quality,
         "procurement_profile": line.procurement_profile,
         "manual_minimum": line.manual_minimum,
-        "payload": dict(line.payload or {}),
+        "payload": payload,
         "removed": line.removed,
         "effective_assortment_status": effective_status,
         "effective_assortment_status_label": status_label(effective_status),
         "latest_classification": serialize_proposal(latest) if latest else None,
+        "photo_thumbnail_url": _photo_url(photos, "thumbnail") or _photo_url(photos, "original"),
+        "photo_original_url": _photo_url(photos, "original"),
+        "photo_count": len(photos),
+        "profitability_pct": _payload_decimal(
+            payload,
+            "profitability_pct",
+            "gross_margin_pct",
+            "margin_pct",
+        ),
+        "supplier_defect_pct": _payload_decimal(
+            payload,
+            "supplier_defect_pct",
+            "defect_pct",
+        ),
+        "supplier_defect_history_units": _payload_int(
+            payload,
+            "supplier_defect_history_units",
+            "defect_history_units",
+        ),
+        "price_change_pct": _payload_decimal(payload, "price_change_pct"),
+        "delivery_days": _payload_int(
+            payload,
+            "delivery_days",
+            "recommended_supplier_prepare_days",
+        ),
+    }
+
+
+def supplier_profile(order: ProcurementOrderFormation) -> dict[str, Any]:
+    payload = dict(order.payload or {})
+    raw = payload.get("supplier_profile")
+    profile = dict(raw) if isinstance(raw, dict) else {}
+    advantages = profile.get("advantages")
+    if isinstance(advantages, str):
+        advantages = [item.strip() for item in advantages.split(";") if item.strip()]
+    elif not isinstance(advantages, list):
+        advantages = []
+    qualification_class = _payload_text(
+        profile,
+        "qualification_class",
+        "supplier_class",
+    )
+    data_values = [
+        qualification_class,
+        _payload_text(profile, "qualification_label"),
+        _payload_decimal(profile, "profitability_pct"),
+        _payload_decimal(profile, "defect_pct"),
+        _payload_int(profile, "defect_history_units"),
+        _payload_decimal(profile, "on_time_pct"),
+        _payload_text(profile, "payment_terms"),
+        _payload_int(profile, "credit_days"),
+        _payload_decimal(profile, "credit_limit"),
+        _payload_int(profile, "history_order_count"),
+        _payload_text(profile, "updated_at"),
+        *advantages,
+    ]
+    populated = sum(value not in (None, "") for value in data_values)
+    return {
+        "qualification_class": qualification_class.upper() if qualification_class else None,
+        "qualification_label": _payload_text(profile, "qualification_label"),
+        "profitability_pct": _payload_decimal(profile, "profitability_pct"),
+        "defect_pct": _payload_decimal(profile, "defect_pct"),
+        "defect_history_units": _payload_int(profile, "defect_history_units"),
+        "on_time_pct": _payload_decimal(profile, "on_time_pct"),
+        "payment_terms": _payload_text(profile, "payment_terms"),
+        "credit_days": _payload_int(profile, "credit_days"),
+        "credit_limit": _payload_decimal(profile, "credit_limit"),
+        "advantages": [str(item).strip() for item in advantages if str(item).strip()],
+        "history_order_count": _payload_int(profile, "history_order_count"),
+        "updated_at": _payload_text(profile, "updated_at") or None,
+        "data_status": "ready" if populated >= 5 else "partial" if populated else "missing",
     }
 
 
@@ -833,6 +907,93 @@ def _order_statement():
             ProcurementOrderFormationLine.classification_proposals
         )
     )
+
+
+def _line_photos(payload: dict[str, Any]) -> list[dict[str, str]]:
+    raw_photos = payload.get("photos") or payload.get("product_photos") or []
+    if not isinstance(raw_photos, list):
+        raw_photos = [raw_photos]
+    photos: list[dict[str, str]] = []
+    for raw in raw_photos:
+        if isinstance(raw, str):
+            url = _safe_media_url(raw)
+            if url:
+                photos.append({"thumbnail": url, "original": url})
+            continue
+        if not isinstance(raw, dict):
+            continue
+        thumbnail = _safe_media_url(
+            raw.get("thumbnail") or raw.get("thumbnail_url") or raw.get("preview_url")
+        )
+        original = _safe_media_url(raw.get("original") or raw.get("original_url") or raw.get("url"))
+        if thumbnail or original:
+            photos.append(
+                {
+                    "thumbnail": thumbnail or original,
+                    "original": original,
+                }
+            )
+    if not photos:
+        thumbnail = _safe_media_url(
+            payload.get("photo_thumbnail_url")
+            or payload.get("preview_image_url")
+            or payload.get("image_url")
+        )
+        original = _safe_media_url(
+            payload.get("photo_original_url")
+            or payload.get("detail_image_url")
+            or payload.get("photo_url")
+            or payload.get("image_url")
+        )
+        if thumbnail or original:
+            photos.append(
+                {
+                    "thumbnail": thumbnail or original,
+                    "original": original,
+                }
+            )
+    return photos
+
+
+def _photo_url(photos: list[dict[str, str]], kind: str) -> str | None:
+    if not photos:
+        return None
+    return photos[0].get(kind) or None
+
+
+def _safe_media_url(value: Any) -> str:
+    text = str(value or "").strip()
+    if text.startswith(("https://", "http://", "/")):
+        return text
+    return ""
+
+
+def _payload_text(payload: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, ""):
+            return str(value).strip() or None
+    return None
+
+
+def _payload_decimal(payload: dict[str, Any], *keys: str) -> Decimal | None:
+    value = _payload_text(payload, *keys)
+    if value is None:
+        return None
+    try:
+        return Decimal(value.replace(" ", "").replace(",", "."))
+    except (ValueError, ArithmeticError):
+        return None
+
+
+def _payload_int(payload: dict[str, Any], *keys: str) -> int | None:
+    value = _payload_decimal(payload, *keys)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (ValueError, ArithmeticError):
+        return None
 
 
 def _money(value: Decimal) -> Decimal:

@@ -1,0 +1,174 @@
+import "@testing-library/jest-dom/vitest";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import toast from "react-hot-toast";
+import type { ProcurementOrderAssistant } from "../api/procurementAssortment";
+import {
+  assembleProcurementOrderProjects,
+  fetchProcurementOrderAssistant,
+} from "../api/procurementAssortment";
+import { ProcurementOrderAssistant as ProcurementOrderAssistantView } from "./ProcurementOrderAssistant";
+
+vi.mock("../api/procurementAssortment", () => ({
+  assembleProcurementOrderProjects: vi.fn(),
+  fetchProcurementOrderAssistant: vi.fn(),
+}));
+
+vi.mock("react-hot-toast", () => ({
+  default: { success: vi.fn(), error: vi.fn() },
+}));
+
+function assistantData(photoOriginal: string | null = "https://cdn.example.test/original/display.jpg"): ProcurementOrderAssistant {
+  return {
+    updated_at: "2026-08-01T10:00:00",
+    summary: {
+      lines: 1,
+      ready_lines: photoOriginal ? 1 : 0,
+      supplier_missing_lines: 0,
+      price_changed_lines: 1,
+      low_profitability_lines: 0,
+      high_defect_lines: 0,
+      photo_missing_lines: photoOriginal ? 0 : 1,
+      orders: 1,
+    },
+    orders: [{
+      id: 12,
+      stable_key: "order-12",
+      status: "draft",
+      version: 1,
+      supplier_ref: "supplier-ref",
+      supplier_name: "Tianma",
+      contract_ref: "contract-ref",
+      contract_name: "Основной договор",
+      currency: "USD",
+      warehouse_name: "Главный склад",
+      procurement_contour: "ordinary",
+      route: "ordinary",
+      batch_id: "2026-08-01",
+      order_date: "2026-08-05",
+      calculation_id: "calc-1",
+      onec_status: "not_sent",
+      blockers: [],
+      total_amount: "578.40",
+      manual_status_options: {},
+      supplier_profile: {
+        qualification_class: "A",
+        qualification_label: "Лучшие условия",
+        profitability_pct: "34.6",
+        defect_pct: "0.8",
+        defect_history_units: 1842,
+        on_time_pct: "94",
+        payment_terms: "30/70",
+        credit_days: 45,
+        credit_limit: "25000",
+        advantages: ["Компенсация брака", "Быстрый ответ"],
+        history_order_count: 24,
+        updated_at: "2026-08-01",
+        data_status: "ready",
+      },
+      lines: [{
+        id: 40,
+        line_number: 1,
+        version: 1,
+        bitrix_product_xml_id: "11111111-2222-3333-4444-555555555555",
+        nomenclature_ref: "11111111-2222-3333-4444-555555555555",
+        nomenclature_code: "MMI-15P-OLED-TM",
+        nomenclature_name: "Дисплей iPhone 15 Pro OLED",
+        recommended_quantity: "12",
+        final_quantity: "12",
+        purchase_price: "48.2",
+        amount: "578.4",
+        currency: "USD",
+        source_kind: "automatic",
+        explicit_demand: false,
+        risk_codes: [],
+        blockers: [],
+        payload: {},
+        removed: false,
+        photo_thumbnail_url: photoOriginal ? "https://cdn.example.test/thumb/display.jpg" : null,
+        photo_original_url: photoOriginal,
+        photo_count: photoOriginal ? 1 : 0,
+        profitability_pct: "34.6",
+        supplier_defect_pct: "0.8",
+        supplier_defect_history_units: 1842,
+        price_change_pct: "-2.1",
+        delivery_days: 12,
+      }],
+    }],
+  };
+}
+
+describe("ProcurementOrderAssistant", () => {
+  beforeEach(() => {
+    vi.mocked(fetchProcurementOrderAssistant).mockReset();
+    vi.mocked(assembleProcurementOrderProjects).mockReset();
+    vi.mocked(toast.success).mockReset();
+    vi.mocked(toast.error).mockReset();
+  });
+
+  afterEach(cleanup);
+
+  it("показывает утверждённые показатели, исходное фото и не возвращает колонку блокеров", async () => {
+    vi.mocked(fetchProcurementOrderAssistant).mockResolvedValue(assistantData());
+
+    render(<ProcurementOrderAssistantView />);
+
+    expect(await screen.findByRole("heading", { name: "Помощник заказов" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Рентабельность" })).toBeInTheDocument();
+    expect(screen.getByRole("columnheader", { name: "Брак" })).toBeInTheDocument();
+    expect(screen.queryByText("Что мешает")).not.toBeInTheDocument();
+    expect(screen.getByText("Класс A")).toBeInTheDocument();
+    expect(screen.getByText("Лучшие условия")).toBeInTheDocument();
+    expect(screen.getByText("30/70")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Открыть исходное фото/ })).toHaveAttribute(
+      "href",
+      "https://cdn.example.test/original/display.jpg"
+    );
+  });
+
+  it("собирает только готовую полностью выбранную группу и не отправляет её в 1С", async () => {
+    const data = assistantData();
+    vi.mocked(fetchProcurementOrderAssistant).mockResolvedValue(data);
+    vi.mocked(assembleProcurementOrderProjects).mockResolvedValue({
+      approved: 1,
+      blocked: 0,
+      stale: 0,
+      items: [{ order_id: 12, status: "approved", message: "Проект заказа собран" }],
+    });
+
+    render(<ProcurementOrderAssistantView />);
+    fireEvent.click(await screen.findByRole("button", { name: "Собрать 1 проект заказа" }));
+
+    await waitFor(() => expect(assembleProcurementOrderProjects).toHaveBeenCalledWith(data.orders));
+    expect(toast.success).toHaveBeenCalledWith("Собрано проектов заказов: 1");
+    expect(screen.getByText(/Проекты не будут отправлены в 1С автоматически/)).toBeInTheDocument();
+  });
+
+  it("не позволяет собрать проект без исходного фото", async () => {
+    vi.mocked(fetchProcurementOrderAssistant).mockResolvedValue(assistantData(null));
+
+    render(<ProcurementOrderAssistantView />);
+
+    expect(await screen.findByText("Нет фото")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Собрать 0/ })).toBeDisabled();
+    expect(assembleProcurementOrderProjects).not.toHaveBeenCalled();
+  });
+
+  it("фильтрует очередь быстрыми кнопками и показывает оба варианта пакета", async () => {
+    vi.mocked(fetchProcurementOrderAssistant).mockResolvedValue(assistantData());
+
+    render(<ProcurementOrderAssistantView />);
+    expect(await screen.findByText("Дисплей iPhone 15 Pro OLED")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /Брак выше 2%/ }));
+    expect(screen.queryByText("Дисплей iPhone 15 Pro OLED")).not.toBeInTheDocument();
+    expect(screen.getByText("По выбранным фильтрам строк нет.")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /^Все1$/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Все фильтры" }));
+    expect(screen.getByPlaceholderText("Товар, код или поставщик")).toBeInTheDocument();
+    expect(screen.getByText("Пакет поставщику")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Список + фото" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Фото отдельно" })).toBeInTheDocument();
+  });
+});

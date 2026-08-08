@@ -15,6 +15,9 @@ from app.schemas.procurement_order_formation import (
     ProcurementLifecycleTransitionApprovalRequest,
     ProcurementLifecycleTransitionApprovalResponse,
     ProcurementLifecycleTransitionList,
+    ProcurementOrderAssistantAssembleRequest,
+    ProcurementOrderAssistantAssembleResponse,
+    ProcurementOrderAssistantResponse,
     ProcurementOrderConditionsUpdateRequest,
     ProcurementOrderFormationEventList,
     ProcurementOrderFormationRead,
@@ -48,7 +51,9 @@ from app.services.procurement_order_formation import (
 )
 from app.services.procurement_order_formation_workspace import (
     approve_lifecycle_transitions,
+    assemble_assistant_orders,
     build_dashboard,
+    build_order_assistant,
     list_classification_proposals,
     list_events,
     list_lifecycle_transitions,
@@ -217,6 +222,41 @@ def read_orders(
                 blockers=blockers,
                 page=page,
                 page_size=page_size,
+            )
+        )
+    except Exception as exc:
+        raise _service_error(exc) from exc
+
+
+@router.get("/assistant", response_model=ProcurementOrderAssistantResponse)
+def read_order_assistant(
+    db: Session = Depends(get_db),
+    _session: ProcurementOrderFormationSession = Depends(
+        verify_procurement_order_formation_session
+    ),
+) -> ProcurementOrderAssistantResponse:
+    try:
+        return ProcurementOrderAssistantResponse.model_validate(build_order_assistant(db))
+    except Exception as exc:
+        raise _service_error(exc) from exc
+
+
+@router.post(
+    "/assistant/assemble",
+    response_model=ProcurementOrderAssistantAssembleResponse,
+)
+def assemble_order_assistant_projects(
+    payload: ProcurementOrderAssistantAssembleRequest,
+    db: Session = Depends(get_db),
+    session: ProcurementOrderFormationSession = Depends(verify_procurement_order_formation_session),
+) -> ProcurementOrderAssistantAssembleResponse:
+    try:
+        return ProcurementOrderAssistantAssembleResponse.model_validate(
+            assemble_assistant_orders(
+                db,
+                items=[item.model_dump() for item in payload.items],
+                idempotency_key=payload.idempotency_key,
+                session=session,
             )
         )
     except Exception as exc:

@@ -16,6 +16,12 @@ COURIER_CHAT_LIMIT="${ORDER_FULFILLMENT_SYNC_COURIER_CHAT_LIMIT:-10}"
 REVIEW_LIMIT="${ORDER_FULFILLMENT_SYNC_REVIEW_LIMIT:-100}"
 OUTPUT_DIR="${ORDER_FULFILLMENT_ARTIFACT_DIR:-${REPO_DIR}/.local/order-fulfillment-pilot}"
 
+# Explicit cron overrides must win over defaults loaded from .env. Quick/chat
+# runs set notifications to false and must stay silent even when the daily digest
+# is enabled in the shared environment.
+NOTIFY_ENABLED_OVERRIDE_SET="${ORDER_FULFILLMENT_NOTIFY_ENABLED+x}"
+NOTIFY_ENABLED_OVERRIDE="${ORDER_FULFILLMENT_NOTIFY_ENABLED:-}"
+
 mkdir -p "${LOG_DIR}"
 cd "${REPO_DIR}"
 
@@ -23,6 +29,10 @@ if [[ -f "${ENV_FILE}" ]]; then
   # shellcheck disable=SC1090
   source "${ENV_LOADER}"
   load_env_file_preserve_json "${ENV_FILE}"
+fi
+
+if [[ -n "${NOTIFY_ENABLED_OVERRIDE_SET}" ]]; then
+  export ORDER_FULFILLMENT_NOTIFY_ENABLED="${NOTIFY_ENABLED_OVERRIDE}"
 fi
 
 if [[ ! -x "${PYTHON_BIN}" ]]; then

@@ -3,7 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
@@ -14,29 +15,37 @@ from app.core.config import get_settings
 from app.infrastructure.db.engines import build_engine
 from app.services.assortment_lifecycle_classification_store import (
     build_classification_rows,
+    fetch_previous_statuses,
     persist_classification_rows,
     result_to_mapping,
     utcnow_naive,
 )
 from app.services.assortment_lifecycle_facts import (
     DEFAULT_HISTORY_MONTHS,
+    DEMAND_WINDOWS_DAYS,
     RECEIPT_MAPPING_UNRESOLVED,
     SUPPLIER_ORDER_MAPPING_UNRESOLVED,
     DocumentLineMapping,
     build_assortment_lifecycle_fact_records,
     default_history_start,
     enrich_nomenclature_rows_with_product_snapshot,
+    fetch_first_sale_dates,
     fetch_onec_lifecycle_source_rows,
+    fetch_sales_window_totals,
     normalize_manager_signals,
     normalize_manual_overrides,
     validate_warehouse_policy,
 )
-from app.services.exporters.ut103_exchange import load_ut103_env_file, resolve_ut103_exchange_root
-from app.services.exporters.ut103_nomenclature_properties import (
-    NomenclaturePropertyUpdateMessage,
-    NomenclaturePropertyUpdateRow,
-    build_nomenclature_property_updates_xml,
-    write_nomenclature_property_updates_message,
+from app.services.exporters.ut103_exchange import load_ut103_env_file
+from app.services.onec_stock_availability import (
+    DEFAULT_HISTORY_DAYS as DEFAULT_AVAILABILITY_HISTORY_DAYS,
+)
+from app.services.onec_stock_availability import (
+    attach_effective_availability_shadow_to_facts,
+    fetch_days_in_sale_by_code,
+)
+from app.services.onec_stock_availability import (
+    physical_sales_point_codes as _physical_sales_point_codes,
 )
 from app.services.procurement_order_formation_workspace import (
     sync_lifecycle_transition_proposals,
@@ -50,6 +59,11 @@ DEFAULT_FACT_STATUS_DECISIONS_JSON = Path("config/assortment/display-fact-status
 def main() -> int:
     load_ut103_env_file()
     args = _parse_args()
+    if args.print_xml or args.write_ready:
+        raise SystemExit(
+            "Lifecycle property export to UT 10.3 is retired; "
+            "classification is stored only in pricing-service"
+        )
     started_at = utcnow_naive()
     classified_at = args.classified_at or started_at
     settings = get_settings()
@@ -61,7 +75,7 @@ def main() -> int:
             database_url=database_url,
             settings_onec_database_url=settings.onec_database_url or "",
         )
-        update_rows, summaries = build_updates_from_records(
+        _, summaries = build_updates_from_records(
             records,
             folder_filter=args.folder,
             changed_at=classified_at.date(),
@@ -117,21 +131,14 @@ def main() -> int:
             )
         raise SystemExit(str(exc)) from exc
 
-    property_update_path = _export_property_updates(
-        args,
-        message_id=args.message_id or _default_message_id(classified_at, args.folder),
-        rows=update_rows,
-    )
-
     payload = {"status": "ready", **result_to_mapping(result)}
     payload.update(
         {
             "transition_sync": transition_sync,
-            "property_update_message_id": args.message_id
-            or _default_message_id(classified_at, args.folder),
-            "property_update_mode": args.export_mode,
-            "property_update_rows": len(update_rows),
-            "property_update_path": str(property_update_path) if property_update_path else None,
+            "property_update_message_id": None,
+            "property_update_mode": "disabled",
+            "property_update_rows": 0,
+            "property_update_path": None,
         }
     )
     if args.output_json:
@@ -244,41 +251,6 @@ def _parse_args() -> argparse.Namespace:
     return args
 
 
-def _export_property_updates(
-    args: argparse.Namespace,
-    *,
-    message_id: str,
-    rows: list[NomenclaturePropertyUpdateRow],
-) -> Path | None:
-    if not (args.print_xml or args.write_ready):
-        return None
-    if not rows:
-        if args.allow_empty:
-            return None
-        raise SystemExit("No property update rows built; nothing to export")
-
-    message = NomenclaturePropertyUpdateMessage(
-        message_id=message_id,
-        rows=tuple(rows),
-        mode=args.export_mode,
-        approved_by=args.approved_by,
-        source=args.source,
-    )
-    if args.print_xml:
-        print(build_nomenclature_property_updates_xml(message).decode("windows-1251"))
-    if not args.write_ready:
-        return None
-    try:
-        exchange_root = resolve_ut103_exchange_root(args.exchange_root)
-    except ValueError as exc:
-        raise SystemExit(str(exc)) from exc
-    return write_nomenclature_property_updates_message(
-        exchange_root,
-        message,
-        overwrite=args.overwrite,
-    )
-
-
 def _default_history_months() -> int:
     raw_value = os.getenv("ASSORTMENT_LIFECYCLE_HISTORY_MONTHS")
     if raw_value is None or raw_value == "":
@@ -316,6 +288,11 @@ def _load_or_build_fact_records(
         )
         manager_signals = normalize_manager_signals(_load_optional_json(args.manager_signals_json))
         history_start = default_history_start(args.today, history_months=args.history_months)
+        # Витрина наличия закрыта по вчерашний день, поэтому спрос и дни на
+        # полке меряем на ту же дату — иначе последнее окно у них разъедется.
+        demand_date_to = (args.today or date.today()) - timedelta(days=1)
+        first_sale_dates: dict[str, tuple[date, date]] = {}
+        sales_window_totals: dict[str, dict[int, Decimal]] = {}
 
         if args.source_rows_json:
             raw_payload = _load_json_object(args.source_rows_json)
@@ -358,6 +335,24 @@ def _load_or_build_fact_records(
                     receipt_mapping=receipt_mapping,
                     limit=args.limit,
                 )
+                codes = [
+                    str(row.get("nomenclature_code") or row.get("code") or "")
+                    for row in nomenclature_rows
+                ]
+                # Даты первой и последней продажи: без них правила «Пошли
+                # продажи», «Родился мёртвым» и «Допродаём» просто молчат.
+                # Ночной пересчёт их не собирал — правила, написанные
+                # 2026-08-02, в нём не срабатывали вообще.
+                first_sale_dates = fetch_first_sale_dates(
+                    onec_engine,
+                    nomenclature_codes=codes,
+                )
+                # Продажи по окнам 30/90/180 — вход переходов по динамике спроса.
+                sales_window_totals = fetch_sales_window_totals(
+                    onec_engine,
+                    nomenclature_codes=codes,
+                    date_to=demand_date_to,
+                )
             finally:
                 onec_engine.dispose()
             product_engine = build_engine(database_url, pool_pre_ping=True)
@@ -369,6 +364,22 @@ def _load_or_build_fact_records(
             finally:
                 product_engine.dispose()
 
+        product_engine = build_engine(database_url, pool_pre_ping=True)
+        try:
+            days_in_sale_totals = fetch_days_in_sale_by_code(
+                product_engine,
+                codes=[
+                    str(row.get("nomenclature_code") or row.get("code") or "")
+                    for row in nomenclature_rows
+                ],
+                physical_sales_point_codes=_physical_sales_point_codes(warehouse_policy),
+                date_to=demand_date_to,
+                windows_days=DEMAND_WINDOWS_DAYS,
+            )
+            previous_statuses = fetch_previous_statuses(product_engine)
+        finally:
+            product_engine.dispose()
+
         facts, _ = build_assortment_lifecycle_fact_records(
             nomenclature_rows=nomenclature_rows,
             supplier_order_rows=supplier_order_rows,
@@ -377,9 +388,24 @@ def _load_or_build_fact_records(
             manual_overrides=manual_overrides,
             manager_signals=manager_signals,
             history_start=history_start,
+            first_sale_dates=first_sale_dates,
+            as_of=args.today or date.today(),
+            sales_window_totals=sales_window_totals,
+            days_in_sale_totals=days_in_sale_totals,
+            previous_statuses=previous_statuses,
         )
     fact_status_decisions = _load_fact_status_decisions(args.fact_status_decisions_json)
-    return _attach_fact_status_decisions(facts, fact_status_decisions)
+    facts = _attach_fact_status_decisions(facts, fact_status_decisions)
+    product_engine = build_engine(database_url, pool_pre_ping=True)
+    try:
+        return attach_effective_availability_shadow_to_facts(
+            product_engine,
+            facts,
+            date_to=(args.today or date.today()) - timedelta(days=1),
+            history_days=DEFAULT_AVAILABILITY_HISTORY_DAYS,
+        )
+    finally:
+        product_engine.dispose()
 
 
 def _load_fact_records(path: Path) -> list[dict[str, Any]]:
@@ -473,11 +499,6 @@ def _env_path(name: str) -> Path | None:
 def _default_run_key(classified_at: datetime, folder: str) -> str:
     safe_folder = "".join(char if char.isalnum() else "-" for char in folder.casefold()).strip("-")
     return f"assortment-lifecycle:{safe_folder or 'all'}:{classified_at:%Y%m%d%H%M%S}"
-
-
-def _default_message_id(classified_at: datetime, folder: str) -> str:
-    safe_folder = "".join(char if char.isalnum() else "-" for char in folder.casefold()).strip("-")
-    return f"assortment-lifecycle-{safe_folder or 'all'}-{classified_at:%Y%m%d%H%M%S}"
 
 
 def _parse_date(value: str) -> date:

@@ -111,6 +111,18 @@ OPERATIONAL_ALERT_ACTIONS = {
     "rtu_without_assembled": "Проверить оформление в 1С и добить событие «Собран», если заказ действительно готов.",
     "pickup_waiting_close_candidate": "Проверить оплату/долг в 1С и закрыть в успех, если заказ действительно выдан.",
 }
+MANUAL_REVIEW_LABELS = {
+    "bitrix_deal_not_found": "для заказа не найдена сделка в Bitrix24",
+    "terminal_crm_stage": "сделка уже находится в финальной стадии",
+    "pickup_received_without_payment_confirmation": "выдача указана, но оплата не подтверждена",
+    "manual_review": "недостаточно данных для автоматического решения",
+}
+MANUAL_REVIEW_ACTIONS = {
+    "bitrix_deal_not_found": "Найти или создать сделку и связать её с заказом.",
+    "terminal_crm_stage": "Проверить, нужно ли исправлять финальную стадию; автоматически она не меняется.",
+    "pickup_received_without_payment_confirmation": "Сверить оплату и долг в 1С перед закрытием сделки.",
+    "manual_review": "Открыть заказ и определить следующий шаг вручную.",
+}
 MONITORING_CSV_FIELDS = (
     "key",
     "severity",
@@ -257,6 +269,14 @@ def decide_new_deal_stage(
                 order_status=order_status,
             )
         if _is_prepayment_waiting_expired(order_status):
+            if onec_settlement is None or onec_settlement.posted_sale_count <= 0:
+                return _new_decision(
+                    deal,
+                    None,
+                    "prepayment_unpaid_unconfirmed_in_onec",
+                    order_status=order_status,
+                    onec_settlement=onec_settlement,
+                )
             return _new_decision(
                 deal,
                 "LOSE",
@@ -958,15 +978,18 @@ def quick_onec_settlement_candidate_orders(
         if not order_number:
             continue
         order_status = order_statuses.get(order_number)
-        if order_status is None or order_status.status_id != "F" or order_status.payed is True:
+        if order_status is None or order_status.payed is True:
             continue
-        if fulfillment._clean_string(deal.stage_id) != "PICKUP_WAITING":  # noqa: SLF001
+        stage_id = fulfillment._clean_string(deal.stage_id)  # noqa: SLF001
+        if stage_id == "PREPAYMENT_INVOICE" and _is_prepayment_waiting_expired(order_status):
+            order_numbers.append(order_number)
             continue
-        if fulfillment._clean_string(deal.payment_status) == "1":  # noqa: SLF001
-            continue
-        if not _is_pickup_delivery(fulfillment._clean_string(deal.delivery)):  # noqa: SLF001
-            continue
-        order_numbers.append(order_number)
+        if stage_id == "PICKUP_WAITING" and order_status.status_id == "F":
+            if fulfillment._clean_string(deal.payment_status) == "1":  # noqa: SLF001
+                continue
+            if not _is_pickup_delivery(fulfillment._clean_string(deal.delivery)):  # noqa: SLF001
+                continue
+            order_numbers.append(order_number)
     return order_numbers
 
 
@@ -1735,19 +1758,17 @@ def deliver_order_fulfillment_notifications(
 
     manual_events = collect_events(summary, mode="chat", key_field="manual_review_keys")
     manual_new = new_events_for_state(state, "manual_review_keys", manual_events)
-    if manual_new and has_notification_recipient(
-        user_ids=config.business_user_ids,
-        dialog_id=config.site_dialog_id,
-    ):
+    if manual_new and config.business_user_ids:
         delivery = send_order_fulfillment_message(
             client=client,
             config=config,
             user_ids=config.business_user_ids,
+            dialog_id=None,
             tag=f"order-fulfillment|manual|{summary.get('stamp')}",
             message=build_manual_review_message(summary, summary_path, manual_new),
         )
         result["errors"].extend(delivery["errors"])
-        if delivery_reached_required_target(delivery, config=config):
+        if delivery_reached_required_target(delivery, required_dialog_id=None):
             result["sent"].append({"kind": "manual_review", "count": len(manual_new)})
             remember_state_keys(state, "manual_review_keys", [event["key"] for event in manual_new])
             state_changed = True
@@ -1758,19 +1779,17 @@ def deliver_order_fulfillment_notifications(
 
     technical_events = collect_events(summary, key_field="technical_review_keys")
     technical_new = new_events_for_state(state, "technical_review_keys", technical_events)
-    if technical_new and has_notification_recipient(
-        user_ids=config.tech_user_ids,
-        dialog_id=config.site_dialog_id,
-    ):
+    if technical_new and config.tech_user_ids:
         delivery = send_order_fulfillment_message(
             client=client,
             config=config,
             user_ids=config.tech_user_ids,
+            dialog_id=None,
             tag=f"order-fulfillment|technical|{summary.get('stamp')}",
             message=build_technical_review_message(summary, summary_path, technical_new),
         )
         result["errors"].extend(delivery["errors"])
-        if delivery_reached_required_target(delivery, config=config):
+        if delivery_reached_required_target(delivery, required_dialog_id=None):
             result["sent"].append({"kind": "technical_review", "count": len(technical_new)})
             remember_state_keys(
                 state,
@@ -1798,11 +1817,12 @@ def deliver_order_fulfillment_notifications(
             client=client,
             config=config,
             user_ids=operational_user_ids,
+            dialog_id=config.site_dialog_id,
             tag=f"order-fulfillment|ops|{summary.get('stamp')}",
             message=build_operational_alert_message(summary, summary_path, operational_new),
         )
         result["errors"].extend(delivery["errors"])
-        if delivery_reached_required_target(delivery, config=config):
+        if delivery_reached_required_target(delivery, required_dialog_id=config.site_dialog_id):
             result["sent"].append({"kind": "operational_alert", "count": len(operational_new)})
             remember_state_keys(
                 state,
@@ -1928,6 +1948,7 @@ def send_order_fulfillment_message(
     client: Any,
     config: NotifyConfig,
     user_ids: list[int],
+    dialog_id: str | None,
     tag: str,
     message: str,
 ) -> dict[str, Any]:
@@ -1941,7 +1962,7 @@ def send_order_fulfillment_message(
     dialog = send_bitrix_dialog_message(
         client=client,
         method=config.site_dialog_method,
-        dialog_id=config.site_dialog_id,
+        dialog_id=dialog_id,
         message=message,
     )
     return {
@@ -1977,9 +1998,9 @@ def has_notification_recipient(*, user_ids: list[int], dialog_id: str | None) ->
 def delivery_reached_required_target(
     delivery: dict[str, Any],
     *,
-    config: NotifyConfig,
+    required_dialog_id: str | None,
 ) -> bool:
-    if config.site_dialog_id:
+    if required_dialog_id:
         return bool(delivery.get("sent_dialog_ids"))
     return bool(delivery.get("sent_user_ids"))
 
@@ -2005,16 +2026,17 @@ def build_manual_review_message(
         clean_csv_value(event.get("example", {}).get("reason")) or "manual_review"
         for event in events
     )
+    del summary, summary_path
     lines = [
-        "MASTER-MOBILE.RU: CRM интернет-заказы, нужен ручной разбор",
+        "Интернет-заказы: требуется ручная проверка",
         f"Новых случаев: {len(events)}",
-        f"Причины: {format_top_counts(counts)}",
-        "Примеры:",
-        *format_examples([event.get("example", {}) for event in events]),
-        f"Подробный отчет: {format_paths(paths_for_events(events, 'review'))}",
-        f"Служебная сводка: {summary_path}",
-        f"Автоизменение CRM: {auto_apply_label_ru(summary)}",
+        "Что произошло и что сделать:",
+        *format_manual_review_summary(counts),
     ]
+    examples = format_manual_review_examples([event.get("example", {}) for event in events])
+    if examples:
+        lines.extend(["Заказы:", *examples])
+    lines.append("Ответственный: менеджер сделки или руководитель интернет-заказов.")
     return "\n".join(lines)
 
 
@@ -2046,18 +2068,53 @@ def build_operational_alert_message(
     events: list[dict[str, Any]],
 ) -> str:
     counts = Counter(operational_alert_type(event) for event in events)
+    del summary, summary_path
     lines = [
-        "MASTER-MOBILE.RU: контроль интернет-заказов",
-        f"Нужно проверить: {format_ru_count(len(events), 'сигнал', 'сигнала', 'сигналов')}",
+        "Интернет-заказы: требуется действие",
+        f"Новых сигналов: {format_ru_count(len(events), 'сигнал', 'сигнала', 'сигналов')}",
         "Что видно:",
         *format_operational_alert_summary(counts),
         "Примеры:",
         *format_operational_examples(events),
-        f"Подробный отчет: {format_paths(paths_for_events(events, 'monitoring'))}",
-        f"Служебная сводка: {summary_path}",
-        f"Автоизменение CRM: {auto_apply_label_ru(summary)}",
+        "Ответственный: менеджер сделки; если он не определён — руководитель интернет-заказов.",
     ]
     return "\n".join(lines)
+
+
+def manual_review_label(reason: str) -> str:
+    return MANUAL_REVIEW_LABELS.get(reason, "нужна ручная проверка")
+
+
+def manual_review_action(reason: str) -> str:
+    return MANUAL_REVIEW_ACTIONS.get(reason, "Открыть заказ и определить следующий шаг вручную.")
+
+
+def format_manual_review_summary(counts: Counter, *, limit: int = 5) -> list[str]:
+    if not counts:
+        return ["- новых случаев нет"]
+    return [
+        f"- {manual_review_label(reason)}: {count}. {manual_review_action(reason)}"
+        for reason, count in sorted(counts.items(), key=lambda item: (-item[1], item[0]))[:limit]
+    ]
+
+
+def format_manual_review_examples(examples: list[dict[str, Any]], *, limit: int = 5) -> list[str]:
+    lines: list[str] = []
+    for example in examples:
+        if not isinstance(example, dict):
+            continue
+        order_number = clean_csv_value(example.get("site_order_number"))
+        deal_id = clean_csv_value(example.get("bitrix_deal_id"))
+        if order_number in {"", "-"} and deal_id in {"", "-"}:
+            continue
+        reason = clean_csv_value(example.get("reason")) or "manual_review"
+        lines.append(
+            f"- заказ {order_number or '-'} / сделка {deal_id or '-'}: "
+            f"{manual_review_label(reason)}"
+        )
+        if len(lines) >= limit:
+            break
+    return lines
 
 
 def operational_alert_type(event: dict[str, Any]) -> str:
@@ -2249,10 +2306,7 @@ def deliver_daily_digest(
     if state.get("last_daily_digest_date") == daily_date:
         result["skipped"].append("daily_digest_already_sent")
         return result
-    if not has_notification_recipient(
-        user_ids=config.business_user_ids,
-        dialog_id=config.site_dialog_id,
-    ):
+    if not config.business_user_ids:
         result["skipped"].append("daily_digest_no_recipients")
         return result
 
@@ -2261,11 +2315,12 @@ def deliver_daily_digest(
         client=client,
         config=config,
         user_ids=config.business_user_ids,
+        dialog_id=None,
         tag=f"order-fulfillment|daily|{daily_date}",
         message=digest["message"],
     )
     result["errors"].extend(delivery["errors"])
-    if delivery_reached_required_target(delivery, config=config):
+    if delivery_reached_required_target(delivery, required_dialog_id=None):
         result["sent"].append({"kind": "daily_digest", "count": 1})
         state["last_daily_digest_date"] = daily_date
         state["last_daily_digest_stamp"] = current_stamp

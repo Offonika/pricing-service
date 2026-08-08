@@ -4,7 +4,6 @@ import json
 import subprocess
 import sys
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
 from sqlalchemy import create_engine, select
 
@@ -128,7 +127,7 @@ def test_refresh_assortment_lifecycle_classification_task_upserts_current_rows(
     )
 
     assert first["written_items"] == 2
-    assert first["summary"]["statuses"] == {"fruit": 1, "sale": 1}
+    assert first["summary"]["statuses"] == {"fruit": 1, "working": 1}
     assert first["summary"]["commercial_marks"] == {"exclusive": 1}
     assert first["summary"]["feature_snapshot_ready"] == 1
     assert second["written_items"] == 2
@@ -149,9 +148,9 @@ def test_refresh_assortment_lifecycle_classification_task_upserts_current_rows(
 
     assert len(rows) == 2
     assert len(runs) == 2
-    assert rows[0]["status"] == "sale"
-    assert rows[0]["recommended_status"] == "working"
-    assert rows[0]["manual_review_required"] is True
+    assert rows[0]["status"] == "working"
+    assert rows[0]["recommended_status"] is None
+    assert rows[0]["manual_review_required"] is False
     assert rows[0]["feature_snapshot_schema"] == "procurement_feature_snapshot.v1"
     assert rows[0]["subject_1c"] == "Дисплей"
     assert rows[0]["item_tags"] == ["iPhone", "рамка"]
@@ -277,14 +276,14 @@ def test_refresh_assortment_lifecycle_classification_applies_fact_status_decisio
     engine.dispose()
 
     assert row["status"] == "sales_start"
-    assert row["status_label"] == "СП / Старт продаж"
+    assert row["status_label"] == "Пошли продажи"
     assert row["export_blockers"] == [
         "ut103_export_blocked",
         "fact_status_decision_requires_1c_approval",
     ]
 
 
-def test_refresh_assortment_lifecycle_classification_task_writes_ut103_export(
+def test_refresh_assortment_lifecycle_classification_task_rejects_ut103_export(
     tmp_path: Path,
 ) -> None:
     facts_path = tmp_path / "facts.json"
@@ -312,12 +311,20 @@ def test_refresh_assortment_lifecycle_classification_task_writes_ut103_export(
     ASSORTMENT_LIFECYCLE_METADATA.create_all(engine)
     engine.dispose()
 
-    result = _run_refresh(
-        facts_path=facts_path,
-        database_url=database_url,
-        run_key="classification-export-test",
-        classified_at="2026-06-27T10:00:00",
-        extra_args=[
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tasks.refresh_assortment_lifecycle_classification",
+            "--facts-json",
+            str(facts_path),
+            "--database-url",
+            database_url,
+            "--run-key",
+            "classification-export-test",
+            "--classified-at",
+            "2026-06-27T10:00:00",
+            "--json",
             "--write-ready",
             "--allow-empty",
             "--export-mode",
@@ -329,28 +336,15 @@ def test_refresh_assortment_lifecycle_classification_task_writes_ut103_export(
             "--exchange-root",
             str(exchange_root),
         ],
+        check=False,
+        capture_output=True,
+        cwd=PROJECT_ROOT,
+        text=True,
     )
 
-    assert result["property_update_message_id"] == "assortment-lifecycle-export-test-001"
-    assert result["property_update_mode"] == "apply"
-    assert result["property_update_rows"] == 4
-
-    output_path = Path(str(result["property_update_path"]))
-    assert output_path == (
-        exchange_root
-        / "to_1c"
-        / "new"
-        / "nomenclature_properties_assortment-lifecycle-export-test-001.ready.xml"
-    )
-    root = ET.fromstring(output_path.read_bytes())
-    assert root.findtext("Header/Schema") == "nomenclature_property_updates.v1"
-    assert root.findtext("Header/Mode") == "apply"
-    assert root.findtext("Header/ApprovedBy") == "pricing-service-nightly"
-    assert root.findtext("Items/Item/NomenclatureCode") == "РБ0001"
-    assert root.findtext("Items/Item/PropertyName") == "Статус ассортимента"
-    assert root.findtext("Items/Item/ValueType") == "property_value"
-    assert root.findtext("Items/Item/NewValueName") == "Плод"
-    assert root.findtext("Items/Item/NewValueTag") == "fruit"
+    assert result.returncode != 0
+    assert "Lifecycle property export to UT 10.3 is retired" in result.stderr
+    assert not (exchange_root / "to_1c" / "new").exists()
 
 
 def _run_refresh(

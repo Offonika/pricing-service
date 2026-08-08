@@ -169,9 +169,11 @@ def test_build_assortment_lifecycle_facts_task_feeds_updates_task(tmp_path: Path
 
     updates_summary = json.loads(updates_result.stdout)
     item = updates_summary["items"][0]
-    assert item["status"] == "sale"
-    assert item["recommended_status"] == "working"
-    assert item["blockers"] == ["working_confirmation_required"]
+    # 2026-08-02: 5 поступлений за 180 дней дают Рабочий сразу, без
+    # подтверждения ответственного (решение 2026-07-20 доведено до кода).
+    assert item["status"] == "working"
+    assert item["recommended_status"] is None
+    assert item["blockers"] == []
     assert item["sales_point_warehouse_codes"] == ["shop-1"]
     assert item["expensive_profile"] == "fast_expensive"
     assert updates_summary["rows"] > 0

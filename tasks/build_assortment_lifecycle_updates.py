@@ -47,6 +47,11 @@ DISPLAY_SCOPE_MARKERS = ("диспле", "матриц")
 def main() -> int:
     load_ut103_env_file()
     args = _parse_args()
+    if args.print_xml or args.write_ready:
+        raise SystemExit(
+            "Lifecycle property export to UT 10.3 is retired; "
+            "use pricing-service classification output"
+        )
     records = _load_records(args.input_json)
     rows, items = build_updates_from_records(
         records,
@@ -246,6 +251,29 @@ def _lifecycle_input_from_record(record: dict[str, Any]) -> AssortmentLifecycleI
         receipt_dates=_date_tuple(
             _optional_field(record, "receipt_dates", "ReceiptDates", default=[])
         ),
+        first_sale_at=_optional_date_field(record, "first_sale_at", "FirstSaleAt"),
+        last_sale_at=_optional_date_field(record, "last_sale_at", "LastSaleAt"),
+        # Дата расчёта приходит из факта (сборщик проставляет as_of при выгрузке).
+        # Без неё правило «Родился мёртвым» просто не сработает — статус не поедет.
+        as_of=_optional_date_field(record, "as_of", "AsOf"),
+        # Спрос по окнам 30/90/180 и дни наличия за те же окна: на них держатся
+        # переходы «Пошли продажи -> Растим -> Поддерживаем». Полей нет —
+        # формула сама откатится на прежнюю, поставочную логику.
+        sales_qty_short=_optional_field(record, "sales_qty_short", "SalesQtyShort", default=None),
+        sales_qty_medium=_optional_field(
+            record, "sales_qty_medium", "SalesQtyMedium", default=None
+        ),
+        sales_qty_long=_optional_field(record, "sales_qty_long", "SalesQtyLong", default=None),
+        days_in_sale_short=_optional_field(
+            record, "days_in_sale_short", "DaysInSaleShort", default=None
+        ),
+        days_in_sale_medium=_optional_field(
+            record, "days_in_sale_medium", "DaysInSaleMedium", default=None
+        ),
+        days_in_sale_long=_optional_field(
+            record, "days_in_sale_long", "DaysInSaleLong", default=None
+        ),
+        previous_status=_optional_field(record, "previous_status", "PreviousStatus", default=None),
         has_need_signal=_bool_field(record, "has_need_signal", "HasNeedSignal", default=False),
         working_confirmed_by_folder_responsible=_bool_field(
             record,

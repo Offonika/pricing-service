@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from enum import StrEnum
@@ -29,6 +29,44 @@ DEFAULT_STATUS_SOURCE = "assortment_lifecycle_v1"
 DEFAULT_EXCLUSIVE_REVIEW_PERIOD_DAYS = 30
 WORKING_RECEIPT_WINDOW_DAYS = 180
 WORKING_MIN_RECEIPTS = 5
+# Окна наблюдения спроса. Те же три, что уже считает автозаказ
+# (TREND_WINDOW_* в tasks/build_display_auto_order_dry_run.py): держим числа
+# одинаковыми, иначе статус и объём заказа начнут спорить о том, что такое
+# «последний месяц».
+DEMAND_WINDOW_SHORT_DAYS = 30
+DEMAND_WINDOW_MEDIUM_DAYS = 90
+DEMAND_WINDOW_LONG_DAYS = 180
+# Вход в «Растим»: 12 продаж за 180 дней = две продажи в месяц. Решение
+# пользователя 2026-08-02 на реальном распределении дисплеев (порог отсекает
+# нижние 19%, 246 карточек из 1294). Условие «30 дней на полке» намеренно
+# отвергнуто: оно меряет работу закупщика, а не товар, и бьёт по дефицитным
+# ходовым позициям (РБ000051864 — 63 продажи за 23 дня на полке).
+SALE_MIN_SALES_QTY = Decimal("12")
+# Насколько окно должно отличаться от соседнего, чтобы это считалось трендом,
+# а не шумом. Тот же множитель, что в автозаказе
+# (ACCELERATING_MIN_GROWTH_MULTIPLIER): строгое «чуть больше» ловило шум на
+# маленьких числах — реальный пример РБ000064147 (0.1485/0.1341/0.1161,
+# формально рост, по факту его нет).
+DEMAND_TREND_MIN_CHANGE_MULTIPLIER = Decimal("1.2")
+# Обязательное условие вывода в угасание: товар РЕАЛЬНО был на полке. Иначе
+# падение продаж означает дефицит, а не спад спроса. Порог тот же, что у гейта
+# «Пенсия» в автозаказе (PENSION_CANDIDATE_MIN_DAYS_IN_SALE): 15 дней наличия
+# из 90 — решение пользователя, отдельного числа для статусов не заводим.
+DECLINE_MIN_DAYS_IN_SALE = Decimal("15")
+# «Родился мёртвым»: сколько дней карточка может молчать без единого движения,
+# прежде чем попасть к человеку на разбор. 12 месяцев — решение пользователя
+# 2026-08-02 на распределении реальных данных (см. _is_dead_born_candidate).
+DEAD_BORN_SILENCE_DAYS = 365
+# «Пенсия»: сколько дней товар может не продаваться, прежде чем попасть к
+# менеджеру на вывод из активного оборота. 18 месяцев — решение пользователя
+# 2026-08-02, тот же срок, что и у правила 2c из инвентаризации legacy-правил.
+PENSION_SILENCE_DAYS = 548
+# «Старт продаж» — статус про НАЧАЛО продаж. Если первая продажа была давно,
+# карточка уже не стартует, что бы ни говорило окно наблюдения. Найдено
+# 2026-08-02 на РБ000016562 (дисплей iPhone 4): 15703 продажи с 2014 года, вся
+# история заказов и поступлений вне окна 24 месяцев — формула видела только
+# продажи и ставила «Старт продаж» ветерану с 26 тысячами проданных штук.
+SALES_START_MAX_AGE_DAYS = 365
 FAST_EXPENSIVE_MAX_ROUTE_DAYS = 7
 EXPENSIVE_TOP_QUARTILE = Decimal("0.75")
 
@@ -49,6 +87,11 @@ class AssortmentStatus(StrEnum):
     REPLACE_CANDIDATE = "replace_candidate"
     NONLIQUID = "nonliquid"
     DO_NOT_ORDER = "do_not_order"
+    # "Пенсия" — товар продавался и заглох. Ручной статус по решению
+    # пользователя 2026-08-02: формула только предлагает кандидата, присваивает
+    # и снимает человек. Автовозврата нет намеренно — иначе одна случайная
+    # продажа вернула бы в оборот то, что вывели осознанно.
+    PENSION = "pension"
 
 
 class ProcurementBehaviorProfile(StrEnum):
@@ -63,7 +106,33 @@ class CommercialMark(StrEnum):
     FLAGSHIP = "flagship"
 
 
+# Человеческие названия статусов. Решение пользователя 2026-08-02: название
+# должно говорить закупщику, ЧТО ДЕЛАТЬ, а не описывать состояние — прежние
+# «ПРОДАЖА» и «Рабочий» не подсказывали действие и путались местами.
+# ВАЖНО: эти названия свободно меняются, потому что они только для наших
+# экранов и отчётов. Значение, уезжающее в 1С, живёт отдельно —
+# ONEC_STATUS_VALUE_NAMES ниже.
 ASSORTMENT_STATUS_LABELS = {
+    AssortmentStatus.FRUIT: "Рассматриваем",
+    AssortmentStatus.NEWBORN: "Заказали",
+    AssortmentStatus.NEWBORN_NEED: "Добираем",
+    AssortmentStatus.NEW_ITEM: "Завезли",
+    AssortmentStatus.SALES_START: "Пошли продажи",
+    AssortmentStatus.SALE: "Растим",
+    AssortmentStatus.WORKING: "Поддерживаем",
+    AssortmentStatus.MATRIX: "Держим всегда",
+    AssortmentStatus.ON_DEMAND: "Только под заказ",
+    AssortmentStatus.REPLACE_CANDIDATE: "Меняем на аналог",
+    AssortmentStatus.NONLIQUID: "Выводим",
+    AssortmentStatus.DO_NOT_ORDER: "Не закупаем",
+    AssortmentStatus.PENSION: "Допродаём",
+}
+
+# Значения свойства «Статус ассортимента» для обмена с 1С. Держим отдельно от
+# человеческих названий: в справочнике 1С заведены свои значения, и обмен
+# сломается, если отправить туда незнакомую строку. Переименование статусов у
+# нас не должно трогать учётную систему.
+ONEC_STATUS_VALUE_NAMES = {
     AssortmentStatus.FRUIT: "Плод",
     AssortmentStatus.NEWBORN: "Новорожденный",
     AssortmentStatus.NEWBORN_NEED: "ДН / Добор новорожденного",
@@ -76,6 +145,7 @@ ASSORTMENT_STATUS_LABELS = {
     AssortmentStatus.REPLACE_CANDIDATE: "Кандидат на замену",
     AssortmentStatus.NONLIQUID: "Кандидат на неликвид",
     AssortmentStatus.DO_NOT_ORDER: "Не закупать",
+    AssortmentStatus.PENSION: "Пенсия",
 }
 
 PROCUREMENT_PROFILE_LABELS = {
@@ -107,6 +177,7 @@ MANUAL_ASSORTMENT_STATUSES = frozenset(
         AssortmentStatus.REPLACE_CANDIDATE,
         AssortmentStatus.NONLIQUID,
         AssortmentStatus.DO_NOT_ORDER,
+        AssortmentStatus.PENSION,
     }
 )
 
@@ -118,6 +189,35 @@ class AssortmentLifecycleInput:
     first_supplier_order_at: date | None = None
     supplier_order_cargo_handoff_dates: tuple[date, ...] = ()
     receipt_dates: tuple[date, ...] = ()
+    # Дата первой реализации покупателю. Определяет вход в СП / Старт продаж:
+    # решение 2026-08-02 — статус называется "стартанули продажи" и должен
+    # означать факт продажи, а не второй заказ поставщику. Пусто = продаж не
+    # было (не путать с "нет данных": сборщик фактов всегда заполняет поле).
+    first_sale_at: date | None = None
+    # Дата последней реализации покупателю. Нужна правилу «Пенсия»: товар
+    # продавался и заглох. Пусто = продаж не было вообще (тогда это не Пенсия,
+    # а «Родился мёртвым» или обычный Плод — см. решение 2026-08-02).
+    last_sale_at: date | None = None
+    # Дата расчёта. Нужна правилу «Родился мёртвым»: без неё формула не может
+    # сказать, сколько карточка уже молчит. Пусто — правило не применяется
+    # (детерминированность важнее: функция не смотрит на системные часы).
+    as_of: date | None = None
+    # Продано штук за окна 30/90/180 дней, брутто (возвраты не вычитаем — тот
+    # же «спрос брутто», что уже принят для расчёта количества заказа).
+    # None = данных нет (старый факт/фикстура), не путать с «продаж не было».
+    sales_qty_short: Decimal | int | str | None = None
+    sales_qty_medium: Decimal | int | str | None = None
+    sales_qty_long: Decimal | int | str | None = None
+    # Дни, когда товар реально лежал на полке, за те же три окна (среднее по
+    # физическим точкам продаж). Нужны, чтобы отличить угасание спроса от
+    # дефицита: пустая полка занижает продажи, но это не спад.
+    days_in_sale_short: Decimal | int | str | None = None
+    days_in_sale_medium: Decimal | int | str | None = None
+    days_in_sale_long: Decimal | int | str | None = None
+    # Статус, присвоенный на прошлом расчёте. Нужен гистерезису: для входа в
+    # рост достаточно двух окон, для вывода в угасание нужны три, а плоская
+    # карточка остаётся там, где стояла, и не дёргается от прогона к прогону.
+    previous_status: AssortmentStatus | str | None = None
     has_need_signal: bool = False
     working_confirmed_by_folder_responsible: bool = False
     analog_winner_confirmed_by_folder_responsible: bool = False
@@ -241,20 +341,38 @@ def decide_assortment_status(item: AssortmentLifecycleInput) -> AssortmentLifecy
     if manual_status is not None:
         return _manual_status_decision(item, manual_status)
 
-    if item.analog_winner_confirmed_by_folder_responsible:
-        reason = (
-            item.manual_reason.strip()
-            or "Лучший аналог группы подтвержден ответственным за папку как рабочий товар."
+    decision = _decide_by_events(item)
+    # «Пенсия» не меняет вычисленный статус, а вешает на него рекомендацию:
+    # присваивает и снимает статус человек (решение 2026-08-02). Проверка идёт
+    # поверх готового решения, потому что кандидат может оказаться в любом
+    # рабочем статусе — от Новинки до Рабочего.
+    if _is_pension_candidate(item):
+        silent_days = (item.as_of - item.last_sale_at).days
+        return replace(
+            decision,
+            reason_codes=(*decision.reason_codes, "pension_candidate"),
+            reason_text=(
+                f"Товар продавался, но последней продаже {silent_days} дней "
+                f"(порог {PENSION_SILENCE_DAYS}), новых поставок за этот срок не было. "
+                "Кандидат в «Пенсию»: автозаказ выключить, остаток допродать до нуля. "
+                "Статус присваивает менеджер."
+            ),
+            recommended_status=AssortmentStatus.PENSION,
+            requires_human_approval=True,
+            manual_review_required=True,
+            auto_order_allowed=False,
         )
-        return _decision(
-            item,
-            AssortmentStatus.WORKING,
-            "analog_winner_confirmed",
-            reason_text=reason,
-            auto_order_allowed=True,
-            changed_at=item.manual_changed_at,
-            approved_by=item.manual_approved_by.strip(),
-        )
+    return decision
+
+
+def _decide_by_events(item: AssortmentLifecycleInput) -> AssortmentLifecycleDecision:
+
+    # Ветка "победитель группы аналогов -> сразу Рабочий" снята 2026-08-02.
+    # Консолидация по аналогам отменена целиком 2026-07-26 (каждый SKU считается
+    # независимо), но этот флаг продолжал раздавать статус Рабочий в обход
+    # формулы: из 132 карточек в Рабочем 93 держались только на нём, без
+    # необходимых 5 поступлений. Поле входа сохранено для совместимости с
+    # конфигом ручных решений, но на статус больше не влияет.
 
     cargo_dates = tuple(sorted(item.supplier_order_cargo_handoff_dates))
     receipt_dates = tuple(sorted(item.receipt_dates))
@@ -262,42 +380,51 @@ def decide_assortment_status(item: AssortmentLifecycleInput) -> AssortmentLifecy
     second_cargo_at = cargo_dates[1] if len(cargo_dates) >= 2 else None
 
     if first_cargo_at is not None:
+        if _demand_data_available(item):
+            status, reason_code, reason_text = _demand_stage(item)
+            return _decision(
+                item,
+                status,
+                reason_code,
+                reason_text=reason_text,
+                auto_order_allowed=status in (AssortmentStatus.SALE, AssortmentStatus.WORKING),
+                changed_at=item.manual_changed_at,
+                approved_by=item.manual_approved_by.strip(),
+            )
+        # Данных о спросе нет (старый факт, фикстура, вызов из витрины
+        # «Формирование заказа») — работаем по прежней, поставочной логике.
+        # Отдельная ветка нужна, чтобы «нет цифр продаж» не читалось как
+        # «продаж не было»: иначе карточка молча съехала бы с «Растим» на
+        # «Завезли».
         working_receipts = _receipt_dates_in_working_window(receipt_dates, first_cargo_at)
-        reached_working = len(working_receipts) >= WORKING_MIN_RECEIPTS
-        if reached_working and item.working_confirmed_by_folder_responsible:
+        if len(working_receipts) >= WORKING_MIN_RECEIPTS:
             return _decision(
                 item,
                 AssortmentStatus.WORKING,
-                "working_confirmed",
+                "working_receipts_reached",
+                "demand_data_missing",
                 reason_text=(
                     f"За {WORKING_RECEIPT_WINDOW_DAYS} дней от Новинки есть "
-                    f"{len(working_receipts)} поступлений, ответственный за папку подтвердил Рабочий."
+                    f"{len(working_receipts)} поступлений — товар подтвердил повторяемость. "
+                    "Цифры продаж по окнам не переданы, статус определён по поставкам."
                 ),
                 auto_order_allowed=True,
                 changed_at=item.manual_changed_at,
                 approved_by=item.manual_approved_by.strip(),
             )
-        if reached_working:
-            fallback_status = _post_cargo_status(second_cargo_at, receipt_dates)
-            return _decision(
-                item,
-                fallback_status,
-                "working_confirmation_required",
-                reason_text=(
-                    f"Товар набрал {len(working_receipts)} поступлений за "
-                    f"{WORKING_RECEIPT_WINDOW_DAYS} дней от Новинки, нужен ответственный за папку."
-                ),
-                recommended_status=AssortmentStatus.WORKING,
-                requires_human_approval=True,
-                manual_review_required=True,
-                blockers=("working_confirmation_required",),
-            )
-        reason_code, reason_text = _post_cargo_reason(second_cargo_at, receipt_dates)
+        reason_code, reason_text = _post_cargo_reason(
+            second_cargo_at, receipt_dates, item.first_sale_at, item.as_of
+        )
+        post_cargo_status = _post_cargo_status(
+            second_cargo_at, receipt_dates, item.first_sale_at, item.as_of
+        )
         return _decision(
             item,
-            _post_cargo_status(second_cargo_at, receipt_dates),
+            post_cargo_status,
             reason_code,
+            "demand_data_missing",
             reason_text=reason_text,
+            auto_order_allowed=post_cargo_status is AssortmentStatus.SALE,
         )
 
     if item.has_need_signal and item.first_supplier_order_at is not None:
@@ -318,6 +445,24 @@ def decide_assortment_status(item: AssortmentLifecycleInput) -> AssortmentLifecy
             manual_review_required=True,
         )
 
+    if _is_dead_born_candidate(item):
+        silent_days = (item.as_of - item.created_at).days
+        return _decision(
+            item,
+            AssortmentStatus.FRUIT,
+            "product_created",
+            "dead_born_candidate",
+            reason_text=(
+                f"Карточка заведена {silent_days} дней назад и не дала ни одного движения: "
+                f"нет заказа поставщику, поступления и продажи. Порог "
+                f"{DEAD_BORN_SILENCE_DAYS} дней пройден — кандидат «Родился мёртвым», "
+                "нужна ручная проверка нового спроса."
+            ),
+            recommended_status=AssortmentStatus.DO_NOT_ORDER,
+            requires_human_approval=True,
+            manual_review_required=True,
+        )
+
     reason_codes = ("product_created",)
     reason_text = "Номенклатура создана, первого заказа поставщику еще нет."
     if item.has_need_signal:
@@ -332,6 +477,281 @@ def decide_assortment_status(item: AssortmentLifecycleInput) -> AssortmentLifecy
         reason_text=reason_text,
         manual_review_required=item.has_need_signal,
     )
+
+
+def _demand_data_available(item: AssortmentLifecycleInput) -> bool:
+    """Переданы ли цифры продаж по всем трём окнам.
+
+    Проверяем именно наличие поля, а не «больше нуля»: 0 продаж за окно — это
+    факт спроса, а отсутствие поля — отсутствие данных. Путать их нельзя, на
+    этом уже обжигались в автозаказе (trend_data_available).
+    """
+    return all(
+        _to_optional_decimal(value) is not None
+        for value in (item.sales_qty_short, item.sales_qty_medium, item.sales_qty_long)
+    )
+
+
+def _demand_stage(item: AssortmentLifecycleInput) -> tuple[AssortmentStatus, str, str]:
+    """Ступень лестницы после первого карго — по динамике спроса, не по поставкам.
+
+    Решение пользователя 2026-08-02: «Растим» и «Поддерживаем» описывают товар,
+    а не работу закупщика, поэтому определять их числом поступлений неверно.
+      * «Пошли продажи» -> «Растим»: 12 продаж за 180 дней;
+      * «Растим» -> «Поддерживаем»: спад по трём окнам И товар был на полке;
+      * «Поддерживаем» -> «Растим»: рост по двум окнам;
+      * ни рост, ни спад — статус не меняется (гистерезис по прошлому статусу).
+    Асимметрия «два окна на рост, три на спад» намеренная: ошибочно объявить
+    товар угасающим дороже, чем ошибочно дать ему вырасти.
+    """
+    previous_status = _previous_status(item.previous_status)
+    sales_long = _to_optional_decimal(item.sales_qty_long) or Decimal("0")
+    trend, trend_text = _demand_trend(item)
+    already_grown = previous_status in (AssortmentStatus.SALE, AssortmentStatus.WORKING)
+    proven_demand = sales_long >= SALE_MIN_SALES_QTY or already_grown
+
+    if proven_demand:
+        if trend == "declining":
+            if _was_really_on_shelf(item):
+                return (
+                    AssortmentStatus.WORKING,
+                    "demand_declining",
+                    (
+                        f"Спрос падает три окна подряд ({trend_text}), и товар при этом "
+                        "был на полке — это угасание, а не дефицит. Поддерживаем без "
+                        "запаса: закрываем спрос и не больше."
+                    ),
+                )
+            return (
+                previous_status or AssortmentStatus.SALE,
+                "demand_declining_without_shelf_presence",
+                (
+                    f"Продажи падают ({trend_text}), но товара почти не было на полке "
+                    f"(меньше {DECLINE_MIN_DAYS_IN_SALE} дней наличия за "
+                    f"{DEMAND_WINDOW_MEDIUM_DAYS} дней). Это дефицит, а не спад спроса — "
+                    "статус не понижаем."
+                ),
+            )
+        if trend == "growing":
+            return (
+                AssortmentStatus.SALE,
+                "demand_growing",
+                (
+                    f"Спрос растёт ({trend_text}). Растим: заправляем магазин полностью, "
+                    "при необходимости с излишком."
+                ),
+            )
+        if already_grown and previous_status is not None:
+            return (
+                previous_status,
+                "demand_stable",
+                (
+                    f"Спрос держится ровно ({trend_text}) — ни роста, ни спада по окнам "
+                    f"{DEMAND_WINDOW_SHORT_DAYS}/{DEMAND_WINDOW_MEDIUM_DAYS}/"
+                    f"{DEMAND_WINDOW_LONG_DAYS} дней. Статус оставляем прежним."
+                ),
+            )
+        return (
+            AssortmentStatus.SALE,
+            "sales_threshold_reached",
+            (
+                f"Продано {_format_qty(sales_long)} шт за {DEMAND_WINDOW_LONG_DAYS} дней "
+                f"(порог {_format_qty(SALE_MIN_SALES_QTY)}) — спрос подтверждён. Растим."
+            ),
+        )
+
+    if item.first_sale_at is not None:
+        if _sales_start_expired(item.first_sale_at, item.as_of):
+            return (
+                AssortmentStatus.WORKING,
+                "sales_history_beyond_start",
+                (
+                    "Первая продажа была давно, а за последние полгода спрос ниже порога "
+                    f"({_format_qty(sales_long)} шт из {_format_qty(SALE_MIN_SALES_QTY)}): "
+                    "карточка не стартует заново. Поддерживаем без запаса."
+                ),
+            )
+        return (
+            AssortmentStatus.SALES_START,
+            "first_sale_registered",
+            (
+                f"Продажи пошли ({_format_qty(sales_long)} шт за "
+                f"{DEMAND_WINDOW_LONG_DAYS} дней), но порога "
+                f"{_format_qty(SALE_MIN_SALES_QTY)} шт для «Растим» ещё нет."
+            ),
+        )
+    return (
+        AssortmentStatus.NEW_ITEM,
+        "first_supplier_order_handed_to_cargo",
+        "Первый заказ поставщику сдан в cargo, продаж ещё не было.",
+    )
+
+
+def _demand_trend(item: AssortmentLifecycleInput) -> tuple[str, str]:
+    """Куда идёт спрос: ``growing`` / ``declining`` / ``flat``.
+
+    Сравниваем скорость продаж на трёх окнах. Скорость восстанавливаем мягкой
+    формулой (см. ``_soft_availability_rate``), чтобы дни без товара не выдавали
+    голодание за падение спроса.
+    """
+    rate_short = _soft_availability_rate(
+        item.sales_qty_short, DEMAND_WINDOW_SHORT_DAYS, item.days_in_sale_short
+    )
+    rate_medium = _soft_availability_rate(
+        item.sales_qty_medium, DEMAND_WINDOW_MEDIUM_DAYS, item.days_in_sale_medium
+    )
+    rate_long = _soft_availability_rate(
+        item.sales_qty_long, DEMAND_WINDOW_LONG_DAYS, item.days_in_sale_long
+    )
+    trend_text = (
+        f"{_format_rate(rate_short)}/{_format_rate(rate_medium)}/{_format_rate(rate_long)} "
+        f"шт в день за {DEMAND_WINDOW_SHORT_DAYS}/{DEMAND_WINDOW_MEDIUM_DAYS}/"
+        f"{DEMAND_WINDOW_LONG_DAYS} дней"
+    )
+    # Рост — две ступени: последний месяц заметно быстрее квартала. Условие
+    # rate_short > 0 обязательно: без него карточка без единой продажи прошла бы
+    # проверку 0 >= 0 и объявилась растущей.
+    if rate_short > 0 and rate_short >= rate_medium * DEMAND_TREND_MIN_CHANGE_MULTIPLIER:
+        return "growing", trend_text
+    # Спад — три ступени подряд: месяц медленнее квартала, квартал медленнее
+    # полугода. Одного окна мало: короткое окно шумит, а объявить товар
+    # угасающим по ошибке дороже, чем передержать его в «Растим».
+    if (
+        rate_short * DEMAND_TREND_MIN_CHANGE_MULTIPLIER <= rate_medium
+        and rate_medium * DEMAND_TREND_MIN_CHANGE_MULTIPLIER <= rate_long
+    ):
+        return "declining", trend_text
+    return "flat", trend_text
+
+
+def _soft_availability_rate(
+    sales_qty: Decimal | int | str | None,
+    calendar_days: int,
+    days_in_sale: Decimal | int | str | None,
+) -> Decimal:
+    """Скорость продаж с мягким восстановлением дней без товара.
+
+    Утверждённая методология (спека `assortment-status-legacy-rule-inventory.md`,
+    раздел 1, решение 2026-07-20): дни без остатка не выбрасываются из
+    знаменателя, а достраиваются виртуальными продажами по фактической скорости
+    окна::
+
+        виртуальные = дни_без_остатка × (продажи / календарные_дни)
+        скорость    = (продажи + виртуальные) / календарные_дни
+
+    Жёсткий вариант (``продажи / дни_наличия``) намеренно не используется: на
+    реальных данных он расходится с мягким в 29 раз и уже приводил к росту
+    ежедневного заказа в 18 раз. Нет данных о днях наличия — считаем по
+    календарю, то есть просто не применяем поправку.
+    """
+    if calendar_days <= 0:
+        return Decimal("0")
+    qty = _to_optional_decimal(sales_qty)
+    if qty is None or qty <= 0:
+        return Decimal("0")
+    window = Decimal(str(calendar_days))
+    base_rate = qty / window
+    available_days = _to_optional_decimal(days_in_sale)
+    if available_days is None or available_days <= 0:
+        return base_rate
+    days_without_stock = max(Decimal("0"), window - min(available_days, window))
+    virtual_qty = days_without_stock * base_rate
+    return (qty + virtual_qty) / window
+
+
+def _was_really_on_shelf(item: AssortmentLifecycleInput) -> bool:
+    """Был ли товар на полке достаточно, чтобы спаду можно было верить.
+
+    Нет данных о днях наличия — считаем, что был: иначе отсутствие витрины
+    наличия молча заморозило бы все переходы в «Поддерживаем».
+    """
+    days_in_sale = _to_optional_decimal(item.days_in_sale_medium)
+    if days_in_sale is None:
+        return True
+    return days_in_sale >= DECLINE_MIN_DAYS_IN_SALE
+
+
+def _previous_status(value: AssortmentStatus | str | None) -> AssortmentStatus | None:
+    """Прошлый статус из базы, терпимо к неизвестным значениям.
+
+    В таблице классификации могут лежать статусы прежних версий формулы —
+    падать из-за них нельзя: гистерезис не настолько важен, чтобы ронять весь
+    расчёт. Неизвестное значение читаем как «прошлого статуса нет».
+    """
+    try:
+        return _normalize_status(value)
+    except ValueError:
+        return None
+
+
+def _to_optional_decimal(value: Decimal | int | str | None) -> Decimal | None:
+    if value is None or value == "":
+        return None
+    if isinstance(value, Decimal):
+        return value
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def _format_qty(value: Decimal) -> str:
+    return str(value.quantize(Decimal("1")))
+
+
+def _format_rate(value: Decimal) -> str:
+    return str(value.quantize(Decimal("0.001")))
+
+
+def _is_pension_candidate(item: AssortmentLifecycleInput) -> bool:
+    """Товар продавался, но заглох: последней продаже больше порога.
+
+    Условия по решению пользователя 2026-08-02:
+      * продажи БЫЛИ (иначе это «Родился мёртвым», не «Пенсия»);
+      * последней продаже больше PENSION_SILENCE_DAYS;
+      * новых поставок за тот же срок не было — иначе товар только что завезли
+        и он ещё не успел продаться, это не пенсия.
+
+    Формула только помечает кандидата: статус «Пенсия» ручной, присваивает и
+    снимает его менеджер. Автовозврата нет намеренно — одна случайная продажа
+    не должна возвращать в оборот то, что вывели осознанно.
+    """
+    if item.as_of is None or item.last_sale_at is None:
+        return False
+    if (item.as_of - item.last_sale_at).days < PENSION_SILENCE_DAYS:
+        return False
+    threshold = item.as_of - timedelta(days=PENSION_SILENCE_DAYS)
+    if any(receipt_at >= threshold for receipt_at in item.receipt_dates):
+        return False
+    return True
+
+
+def _is_dead_born_candidate(item: AssortmentLifecycleInput) -> bool:
+    """Карточка молчит дольше порога и не дала ни одного движения.
+
+    Порог 12 месяцев выбран на реальных данных 2026-08-02: из 2097 дисплеев,
+    у которых движение было, 95.2% дали его в первые 365 дней. Оставшиеся 4.8%
+    (100 карточек) оживали позже, рекорд — 580 дней; дольше 730 дней не ожил
+    никто. То есть 12 месяцев отсекают небольшой живой хвост, и решение
+    намеренно оставлено человеку: формула только помечает кандидата.
+
+    Статус при этом НЕ меняется — карточка остаётся «Плодом», как и записано в
+    procurement-order-auto-order-unified-contour.md: программа открывает
+    РМ-кандидата и ставит в очередь, присваивает статус человек.
+    """
+    if item.as_of is None or item.created_at is None:
+        return False
+    if item.has_need_signal:
+        return False
+    moved = (
+        item.first_supplier_order_at is not None
+        or item.supplier_order_cargo_handoff_dates
+        or item.receipt_dates
+        or item.first_sale_at is not None
+    )
+    if moved:
+        return False
+    return (item.as_of - item.created_at).days >= DEAD_BORN_SILENCE_DAYS
 
 
 def classify_expensive_profile(item: ExpensiveProfileInput) -> ExpensiveProfileDecision:
@@ -517,7 +937,7 @@ def build_status_property_update_rows(
             nomenclature_code=decision.nomenclature_code,
             property_name=STATUS_PROPERTY_NAME,
             value_type="property_value",
-            new_value_name=decision.status_label,
+            new_value_name=ONEC_STATUS_VALUE_NAMES[decision.status],
             new_value_tag=decision.status.value,
             reason=reason,
             approved_by=approved_by,
@@ -772,6 +1192,7 @@ def _manual_status_decision(
             AssortmentStatus.REPLACE_CANDIDATE,
             AssortmentStatus.NONLIQUID,
             AssortmentStatus.DO_NOT_ORDER,
+            AssortmentStatus.PENSION,
         },
         blockers=tuple(blockers),
         changed_at=item.manual_changed_at,
@@ -780,27 +1201,54 @@ def _manual_status_decision(
 
 
 def _post_cargo_status(
-    second_cargo_at: date | None, receipt_dates: tuple[date, ...]
+    second_cargo_at: date | None,
+    receipt_dates: tuple[date, ...],
+    first_sale_at: date | None = None,
+    as_of: date | None = None,
 ) -> AssortmentStatus:
-    if second_cargo_at is not None:
-        if any(receipt_at >= second_cargo_at for receipt_at in receipt_dates):
+    # Решение 2026-08-02: вход в СП определяет ФАКТ ПЕРВОЙ ПРОДАЖИ, а не второй
+    # заказ поставщику, сданный в cargo. Раньше карточка получала статус
+    # "Старт продаж", ничего не продав: на 2026-08-02 таких было 20 из 112.
+    if second_cargo_at is not None and any(
+        receipt_at >= second_cargo_at for receipt_at in receipt_dates
+    ):
+        return AssortmentStatus.SALE
+    if first_sale_at is not None:
+        if _sales_start_expired(first_sale_at, as_of):
             return AssortmentStatus.SALE
         return AssortmentStatus.SALES_START
     return AssortmentStatus.NEW_ITEM
 
 
+def _sales_start_expired(first_sale_at: date, as_of: date | None) -> bool:
+    """Старт продаж давно позади — карточка не может «стартовать» повторно."""
+    if as_of is None:
+        return False
+    return (as_of - first_sale_at).days > SALES_START_MAX_AGE_DAYS
+
+
 def _post_cargo_reason(
-    second_cargo_at: date | None, receipt_dates: tuple[date, ...]
+    second_cargo_at: date | None,
+    receipt_dates: tuple[date, ...],
+    first_sale_at: date | None = None,
+    as_of: date | None = None,
 ) -> tuple[str, str]:
-    if second_cargo_at is not None:
-        if any(receipt_at >= second_cargo_at for receipt_at in receipt_dates):
+    if second_cargo_at is not None and any(
+        receipt_at >= second_cargo_at for receipt_at in receipt_dates
+    ):
+        return (
+            "receipt_after_sales_start",
+            "Товар поступил после этапа СП, запускаем режим ПРОДАЖА с недельным анализом.",
+        )
+    if first_sale_at is not None:
+        if _sales_start_expired(first_sale_at, as_of):
             return (
-                "receipt_after_sales_start",
-                "Товар поступил после этапа СП, запускаем режим ПРОДАЖА с недельным анализом.",
+                "sales_history_beyond_start",
+                "Первая продажа была давно: карточка уже не стартует, режим ПРОДАЖА.",
             )
         return (
-            "second_supplier_order_handed_to_cargo",
-            "Второй заказ поставщику сдан в cargo, запускаем СП / Старт продаж.",
+            "first_sale_registered",
+            "Есть первая продажа покупателю, запускаем СП / Старт продаж.",
         )
     return (
         "first_supplier_order_handed_to_cargo",

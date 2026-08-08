@@ -254,7 +254,7 @@ def test_decide_new_deal_stage_keeps_active_prepayment_waiting() -> None:
     assert decision.review_reason == "prepayment_waiting_payment"
 
 
-def test_decide_new_deal_stage_closes_expired_prepayment_waiting() -> None:
+def test_decide_new_deal_stage_keeps_unconfirmed_expired_prepayment_for_review() -> None:
     decision = sync.decide_new_deal_stage(
         _deal(stage_id="PREPAYMENT_INVOICE", delivery="СДЭК", payment_status="0"),
         order_status=sync.SaleOrderStatus(
@@ -267,9 +267,73 @@ def test_decide_new_deal_stage_closes_expired_prepayment_waiting() -> None:
         ),
     )
 
+    assert decision.action == "manual_review"
+    assert decision.recommended_stage is None
+    assert decision.review_reason == "prepayment_unpaid_unconfirmed_in_onec"
+
+
+def test_decide_new_deal_stage_closes_expired_prepayment_with_posted_sale() -> None:
+    decision = sync.decide_new_deal_stage(
+        _deal(stage_id="PREPAYMENT_INVOICE", delivery="СДЭК", payment_status="0"),
+        order_status=sync.SaleOrderStatus(
+            order_number="218001",
+            canceled=False,
+            status_id="N",
+            payed=False,
+            created_at=datetime.now()
+            - timedelta(days=sync.PREPAYMENT_WAITING_MAX_AGE_DAYS, minutes=1),
+        ),
+        onec_settlement=sync.OneCOrderSettlement(
+            order_number="218001",
+            posted_sale_count=1,
+            posted_sale_amount=Decimal("250.00"),
+            payment_amount=None,
+            debt_amount=Decimal("250.00"),
+            payment_confirmed=False,
+            evidence="onec_payment_not_confirmed",
+        ),
+    )
+
     assert decision.action == "update_stage"
     assert decision.recommended_stage == "LOSE"
     assert decision.review_reason == "prepayment_unpaid_expired_to_lost"
+
+
+def test_quick_onec_candidates_include_expired_prepayment_and_completed_pickup() -> None:
+    now = datetime.now()
+    deals = [
+        _deal(deal_id=1, order_number="218001", stage_id="PREPAYMENT_INVOICE", delivery="СДЭК"),
+        _deal(deal_id=2, order_number="218002", stage_id="PICKUP_WAITING", delivery="Самовывоз"),
+        _deal(deal_id=3, order_number="218003", stage_id="PREPAYMENT_INVOICE", delivery="СДЭК"),
+    ]
+    statuses = {
+        "218001": sync.SaleOrderStatus(
+            order_number="218001",
+            canceled=False,
+            status_id="N",
+            payed=False,
+            created_at=now - timedelta(days=sync.PREPAYMENT_WAITING_MAX_AGE_DAYS, minutes=1),
+        ),
+        "218002": sync.SaleOrderStatus(
+            order_number="218002",
+            canceled=False,
+            status_id="F",
+            payed=False,
+            created_at=now,
+        ),
+        "218003": sync.SaleOrderStatus(
+            order_number="218003",
+            canceled=False,
+            status_id="N",
+            payed=False,
+            created_at=now,
+        ),
+    }
+
+    assert sync.quick_onec_settlement_candidate_orders(deals, statuses) == [
+        "218001",
+        "218002",
+    ]
 
 
 def test_decide_pickup_waiting_closes_only_when_payment_is_confirmed() -> None:
@@ -476,6 +540,15 @@ def test_build_operational_monitoring_rows_flags_stage_errors_and_rtu_gap() -> N
                 payed=False,
                 created_at=datetime.now()
                 - timedelta(days=sync.PREPAYMENT_WAITING_MAX_AGE_DAYS, minutes=1),
+            ),
+            onec_settlement=sync.OneCOrderSettlement(
+                order_number="218001",
+                posted_sale_count=1,
+                posted_sale_amount=Decimal("250.00"),
+                payment_amount=None,
+                debt_amount=Decimal("250.00"),
+                payment_confirmed=False,
+                evidence="onec_payment_not_confirmed",
             ),
         ),
         sync.decide_new_deal_stage(
@@ -684,7 +757,12 @@ def test_chat_manual_review_sends_once_to_business_users(tmp_path: Path) -> None
             ],
         },
     )
-    settings = _notify_settings(tmp_path, business_user_ids="10,11", tech_user_ids="20")
+    settings = _notify_settings(
+        tmp_path,
+        business_user_ids="10,11",
+        tech_user_ids="20",
+        site_dialog_id="chat733",
+    )
 
     first = sync.deliver_order_fulfillment_notifications(
         client=client,
@@ -704,7 +782,12 @@ def test_chat_manual_review_sends_once_to_business_users(tmp_path: Path) -> None
     assert first["sent"] == [{"kind": "manual_review", "count": 1}]
     assert second["sent"] == []
     assert [call["payload"]["USER_ID"] for call in client.calls] == ["10", "11"]
-    assert "нужен ручной разбор" in client.calls[0]["payload"]["MESSAGE"]
+    message = client.calls[0]["payload"]["MESSAGE"]
+    assert "требуется ручная проверка" in message
+    assert "для заказа не найдена сделка" in message
+    assert "manual_review" not in message
+    assert "/opt/MM" not in message
+    assert all(call["method"] != "im.message.add" for call in client.calls)
 
 
 def test_technical_review_sends_only_to_tech_users(tmp_path: Path) -> None:
@@ -732,12 +815,40 @@ def test_technical_review_sends_only_to_tech_users(tmp_path: Path) -> None:
         summary=summary,
         summary_path=tmp_path / "summary.json",
         output_dir=tmp_path,
-        settings=_notify_settings(tmp_path, business_user_ids="10", tech_user_ids="20,21"),
+        settings=_notify_settings(
+            tmp_path,
+            business_user_ids="10",
+            tech_user_ids="20,21",
+            site_dialog_id="chat733",
+        ),
     )
 
     assert [call["payload"]["USER_ID"] for call in client.calls] == ["20", "21"]
     assert "technical_review" in client.calls[0]["payload"]["MESSAGE"]
     assert "213486" in client.calls[0]["payload"]["MESSAGE"]
+    assert all(call["method"] != "im.message.add" for call in client.calls)
+
+
+def test_manual_review_message_skips_empty_order_examples(tmp_path: Path) -> None:
+    message = sync.build_manual_review_message(
+        {"dry_run": True},
+        tmp_path / "summary.json",
+        [
+            {
+                "key": "empty",
+                "example": {
+                    "site_order_number": "-",
+                    "bitrix_deal_id": "-",
+                    "reason": "manual_review",
+                },
+            }
+        ],
+    )
+
+    assert "недостаточно данных" in message
+    assert "заказ - / сделка -" not in message
+    assert "Заказы:" not in message
+    assert "/opt/MM" not in message
 
 
 def test_operational_alert_sends_to_site_group_dialog(tmp_path: Path) -> None:
@@ -793,12 +904,14 @@ def test_operational_alert_sends_to_site_group_dialog(tmp_path: Path) -> None:
     assert client.calls[0]["method"] == "im.message.add"
     assert client.calls[0]["payload"]["DIALOG_ID"] == "chat733"
     message = client.calls[0]["payload"]["MESSAGE"]
-    assert "MASTER-MOBILE.RU" in message
-    assert "контроль интернет-заказов" in message
+    assert "Интернет-заказы: требуется действие" in message
     assert "зависшие заказы в очередях" in message
-    assert "Нужно проверить: 1 сигнал" in message
+    assert "Новых сигналов: 1 сигнал" in message
     assert "стадия «Новые»: 1 заказ требует проверки" in message
-    assert "Автоизменение CRM: выключено, CRM не менялась" in message
+    assert "Ответственный: менеджер сделки" in message
+    assert "Автоизменение CRM" not in message
+    assert "Подробный отчет" not in message
+    assert "/opt/MM" not in message
     assert "stage_count" not in message
     assert "Auto-apply" not in message
 

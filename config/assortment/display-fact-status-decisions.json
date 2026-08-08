@@ -1610,6 +1610,22 @@
       "source_review_csv": "reports/assortment_lifecycle/2026-07-09/display-fruit-status-transfer-77-items-2026-07-09.csv",
       "decided_at": "2026-07-09",
       "approved_by": "chat_2026-07-09"
+    },
+    {
+      "nomenclature_code": "РБ000047407",
+      "name": "Дисплей для Samsung A035 Galaxy A03 + тачскрин (черный) (в рамке) (ORIG100) (SP) (164mm)",
+      "fact_lifecycle_relation": "structural_low_volume_regional_revision_sell_down_to_zero",
+      "target_status": "do_not_order",
+      "status_action": "manual_override",
+      "order_action": "do_not_reorder",
+      "reason": "Решение 2026-07-31 (подтверждено пользователем после уточняющего вопроса): выключить автозаказ полностью, дать текущему остатку распродаться до нуля. Не удалять и не архивировать номенклатуру — карточка остаётся в 1С, просто без новых заказов поставщику. Причина низкого спроса — не брак, а структурная редкость: у Samsung A035 Galaxy A03 две физически несовместимые ревизии дисплейного модуля (короткая ~160,5-162,2 мм под SM-A035F, официально ввозимую в РФ; длинная ~163-164 мм под SM-A035G/A035M, в РФ почти не встречается), скорость 0,0352 шт/день (~1 продажа в месяц). Концептуально это статус 'Пенсия' ('вывод из активной работы', упомянут в docs/specs/procurement-order-auto-order-unified-contour.md и др.), но 'Пенсия' не реализована как отдельный статус в коде (AssortmentStatus enum) — используется ближайший реально работающий эквивалент 'Не закупать' (do_not_order), уже входящий в ALWAYS_BLOCKING_STATUSES.",
+      "evidence": {
+        "avg_daily_sales_qty": "0.0352",
+        "speed_tier": "slow",
+        "oem_matrix_part_number": "GH81-21625A",
+        "user_decision_at": "2026-07-31",
+        "superseded_prior_decision": "keep_minimal_service_stock_exclude_from_nonliquid_review"
+      }
     }
   ],
   "_fruit_status_transfer_77_applied_at": "2026-07-09T20:16:57",

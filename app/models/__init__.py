@@ -35,6 +35,14 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         CustomerPriceTypeRun,
         CustomerPriceTypeSnapshot,
     )
+    from app.models.customer_settlement import (
+        CustomerSettlementAssertionJti,
+        CustomerSettlementBalance,
+        CustomerSettlementMappingEntry,
+        CustomerSettlementMappingRevision,
+        CustomerSettlementPilotAccess,
+        CustomerSettlementRevision,
+    )
     from app.models.device_brand import (
         CompatibilityMappingDecision,
         DeviceBrand,
@@ -109,6 +117,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.quality_case import QualityCase, QualityCaseEvent
     from app.models.receivable_balance_snapshot import ReceivableBalanceSnapshot
     from app.models.receivable_case import ReceivableCase
+    from app.models.receivable_credit_decision import ReceivableCreditDecisionOperation
     from app.models.receivable_ledger_event import ReceivableLedgerEvent
     from app.models.receivable_reconciliation_snapshot import ReceivableReconciliationSnapshot
     from app.models.receivable_work import (
@@ -262,6 +271,13 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "ReceivableBalanceSnapshot",
         "ReceivableReconciliationSnapshot",
         "ReceivableCase",
+        "ReceivableCreditDecisionOperation",
+        "CustomerSettlementRevision",
+        "CustomerSettlementBalance",
+        "CustomerSettlementMappingRevision",
+        "CustomerSettlementMappingEntry",
+        "CustomerSettlementPilotAccess",
+        "CustomerSettlementAssertionJti",
         "ReceivableWorkItem",
         "ReceivableWorkEvent",
         "ReceivableSmsLog",

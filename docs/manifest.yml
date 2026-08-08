@@ -163,9 +163,9 @@ documents:
     title: Procurement Decision Contract And Roadmap
     doc_type: spec
     domain: procurement
-    status: draft
+    status: superseded
     owner: operations
-    source_of_truth: true
+    source_of_truth: false
     related_code:
       - scripts/ensure_procurement_bitrix_process.py
       - scripts/import_onec_supplier_order_to_procurement.py
@@ -215,6 +215,30 @@ documents:
       - tests/test_ut103_procurement_orders_exporter.py
       - tests/test_export_ut103_procurement_supplier_orders_task.py
     keywords: [procurement, supplier-order, decision-contract, roadmap, wechat, bitrix24, onec, akb]
+  - path: docs/specs/assortment-lifecycle-policy.md
+    title: Assortment Lifecycle Policy
+    doc_type: spec
+    domain: procurement
+    status: accepted
+    owner: operations
+    source_of_truth: true
+    related_code:
+      - app/services/assortment_lifecycle.py
+      - app/services/assortment_lifecycle_facts.py
+      - app/services/assortment_lifecycle_classification_store.py
+      - tasks/build_assortment_lifecycle_facts.py
+      - tasks/build_assortment_lifecycle_updates.py
+      - tasks/refresh_assortment_lifecycle_classification.py
+      - tasks/diff_assortment_lifecycle_classification.py
+      - tasks/build_display_auto_order_dry_run.py
+    related_tests:
+      - tests/test_assortment_lifecycle.py
+      - tests/test_assortment_lifecycle_facts.py
+      - tests/test_build_assortment_lifecycle_facts_task.py
+      - tests/test_build_assortment_lifecycle_updates_task.py
+      - tests/test_refresh_assortment_lifecycle_classification_task.py
+      - tests/test_diff_assortment_lifecycle_classification.py
+    keywords: [assortment, lifecycle, status-policy, demand, availability, hysteresis, растим, поддерживаем, допродаём]
   - path: docs/specs/assortment-status-contour-plan.md
     title: Assortment Status Contour Canonical Plan
     doc_type: spec
@@ -339,7 +363,7 @@ documents:
     title: Display Auto Order Project Brief
     doc_type: spec
     domain: procurement
-    status: draft
+    status: superseded
     owner: operations
     source_of_truth: false
     related_code:
@@ -687,6 +711,16 @@ documents:
     related_code: [tasks/]
     related_tests: [tests/]
     keywords: [llm, embeddings, matching]
+  - path: docs/runbooks/scheduled-jobs-inventory.md
+    title: Scheduled Jobs Inventory
+    doc_type: runbook
+    domain: operations
+    status: active
+    owner: pricing-platform
+    source_of_truth: true
+    related_code: [infra/cron/]
+    related_tests: []
+    keywords: [cron, расписание, задания, релиз, рабочая-папка, операции]
   - path: docs/competitor-matching-nightly-audit-2026-05-02.md
     title: Competitor Matching Nightly Audit 2026-05-02
     doc_type: audit

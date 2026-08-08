@@ -20,6 +20,7 @@ from sqlalchemy import (
     Table,
     Text,
     and_,
+    bindparam,
     delete,
     insert,
     select,
@@ -556,6 +557,77 @@ def fetch_effective_availability_shadow(
     return result
 
 
+def fetch_days_in_sale_by_code(
+    engine: Engine,
+    *,
+    codes: Sequence[str],
+    physical_sales_point_codes: Sequence[str],
+    date_to: date,
+    windows_days: Sequence[int],
+) -> dict[str, dict[int, Decimal]]:
+    """Средние дни наличия по сети за каждое окно, ключ — код номенклатуры.
+
+    Сумма точко-дней наличия по физическим точкам продаж, делённая на число
+    точек: «сколько дней товар в среднем был на полке». Ищем по
+    ``product_code``, а не по ссылке 1С, потому что ссылки в витрине и в
+    классификации совпадают не у всех карточек (у 629 из 2735 на 2026-08-01
+    формат отличается) — поиск по ссылке молча отдавал бы 0 дней при живых
+    данных.
+
+    Уровень расчёта здесь сетевой, а не по каждой точке отдельно, как требует
+    спека: это осознанное упрощение до починки сопоставления ссылок, оно уже
+    работает в автозаказе и даёт корректные числа.
+    """
+    if not codes or not physical_sales_point_codes:
+        return {}
+    windows = tuple(sorted({int(value) for value in windows_days if int(value) > 0}))
+    if not windows:
+        return {}
+    store_count = Decimal(str(len(set(physical_sales_point_codes))))
+    result: dict[str, dict[int, Decimal]] = {code: {} for code in codes}
+    statement = text("""
+        SELECT product_code,
+            SUM(
+                GREATEST(
+                    0,
+                    (
+                        LEAST(available_to, :window_to)
+                        - GREATEST(available_from, :window_from)
+                    ) + 1
+                )
+            ) AS available_point_days
+        FROM onec_stock_availability_interval
+        WHERE product_code IN :codes
+          AND warehouse_code IN :warehouse_codes
+          AND available_from <= :window_to
+          AND available_to >= :window_from
+        GROUP BY product_code
+        """).bindparams(
+        bindparam("codes", expanding=True),
+        bindparam("warehouse_codes", expanding=True),
+    )
+    with engine.connect() as connection:
+        for window_days in windows:
+            window_from = date_to - timedelta(days=window_days - 1)
+            for chunk in _chunks(sorted(set(codes)), 1000):
+                rows = connection.execute(
+                    statement,
+                    {
+                        "codes": list(chunk),
+                        "warehouse_codes": sorted(set(physical_sales_point_codes)),
+                        "window_from": window_from,
+                        "window_to": date_to,
+                    },
+                ).mappings()
+                for row in rows:
+                    code = _clean(row.get("product_code"))
+                    if code not in result:
+                        continue
+                    point_days = Decimal(str(row.get("available_point_days") or 0))
+                    result[code][window_days] = point_days / store_count
+    return result
+
+
 def attach_effective_availability_shadow_to_facts(
     engine: Engine,
     facts: Sequence[Mapping[str, Any]],
@@ -860,26 +932,37 @@ def _require_tables(engine: Engine) -> None:
         raise RuntimeError(f"onec_stock_availability_tables_missing:{','.join(missing)}")
 
 
+def physical_sales_point_codes(warehouses: Sequence[Mapping[str, Any]]) -> list[str]:
+    """Коды реальных точек продаж из политики складов.
+
+    Отдельная публичная функция нужна тем, у кого на руках сама политика
+    складов, а не собранные факты (например, ночной пересчёт классификации).
+    """
+    codes: set[str] = set()
+    for warehouse in warehouses:
+        if not isinstance(warehouse, Mapping):
+            continue
+        role = _clean(warehouse.get("role"))
+        if role:
+            include = role == "physical_sales_point"
+        else:
+            name = _clean(warehouse.get("name")).casefold()
+            include = bool(warehouse.get("sells_systematically")) and not any(
+                marker in name for marker in ("сайт", "онлайн", "оптов")
+            )
+        code = _clean(warehouse.get("warehouse_code") or warehouse.get("code"))
+        if include and code:
+            codes.add(code)
+    return sorted(codes)
+
+
 def _physical_sales_point_codes(facts: Sequence[Mapping[str, Any]]) -> list[str]:
     codes: set[str] = set()
     for fact in facts:
         warehouses = fact.get("warehouses")
         if not isinstance(warehouses, Sequence) or isinstance(warehouses, (str, bytes)):
             continue
-        for warehouse in warehouses:
-            if not isinstance(warehouse, Mapping):
-                continue
-            role = _clean(warehouse.get("role"))
-            if role:
-                include = role == "physical_sales_point"
-            else:
-                name = _clean(warehouse.get("name")).casefold()
-                include = bool(warehouse.get("sells_systematically")) and not any(
-                    marker in name for marker in ("сайт", "онлайн", "оптов")
-                )
-            code = _clean(warehouse.get("warehouse_code") or warehouse.get("code"))
-            if include and code:
-                codes.add(code)
+        codes.update(physical_sales_point_codes(warehouses))
     return sorted(codes)
 
 

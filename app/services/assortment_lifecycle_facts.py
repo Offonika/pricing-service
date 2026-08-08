@@ -13,6 +13,20 @@ from sqlalchemy import bindparam, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import NoSuchTableError
 
+from app.services.assortment_lifecycle import (
+    DEMAND_WINDOW_LONG_DAYS,
+    DEMAND_WINDOW_MEDIUM_DAYS,
+    DEMAND_WINDOW_SHORT_DAYS,
+)
+
+# Окна наблюдения спроса берём из самой формулы, чтобы сборщик фактов и
+# формула не разъехались числами.
+DEMAND_WINDOWS_DAYS = (
+    DEMAND_WINDOW_SHORT_DAYS,
+    DEMAND_WINDOW_MEDIUM_DAYS,
+    DEMAND_WINDOW_LONG_DAYS,
+)
+
 ONEC_EMPTY_DATE = date(1753, 1, 1)
 DEFAULT_HISTORY_MONTHS = 24
 RECEIPT_MAPPING_UNRESOLVED = "receipt_mapping_unresolved"
@@ -169,6 +183,11 @@ def build_assortment_lifecycle_fact_records(
     manual_overrides: Mapping[str, Mapping[str, Any]] | None = None,
     manager_signals: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     history_start: date | None = None,
+    first_sale_dates: Mapping[str, tuple[date, date]] | None = None,
+    as_of: date | None = None,
+    sales_window_totals: Mapping[str, Mapping[int, Decimal]] | None = None,
+    days_in_sale_totals: Mapping[str, Mapping[int, Decimal]] | None = None,
+    previous_statuses: Mapping[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     items_by_key: dict[str, Mapping[str, Any]] = {}
     code_by_key: dict[str, str] = {}
@@ -259,6 +278,23 @@ def build_assortment_lifecycle_fact_records(
             "receipt_dates": [
                 _json_date(value) for value in sorted(set(receipt_dates.get(key, ())))
             ],
+            # Дата первой реализации покупателю — вход в СП / Старт продаж
+            # (решение 2026-08-02). None означает "продаж не было".
+            "first_sale_at": _json_date(((first_sale_dates or {}).get(code) or (None, None))[0]),
+            # Последняя продажа — вход в «Пенсию» (решение 2026-08-02).
+            "last_sale_at": _json_date(((first_sale_dates or {}).get(code) or (None, None))[1]),
+            # Дата, на которую собран факт: нужна правилу «Родился мёртвым»,
+            # чтобы измерить, сколько карточка молчит. Берём конец окна
+            # наблюдения, а не системные часы — иначе повторный расчёт того же
+            # снимка дал бы другой результат.
+            "as_of": _json_date(as_of),
+            # Продажи по окнам 30/90/180 и дни наличия за те же окна — вход
+            # переходов «Пошли продажи -> Растим -> Поддерживаем» по динамике
+            # спроса. None означает «замера не было», 0 — «продаж не было».
+            **_demand_window_fields(code, sales_window_totals, days_in_sale_totals),
+            # Прошлый статус нужен гистерезису: плоская карточка остаётся там,
+            # где стояла, и не дёргается между «Растим» и «Поддерживаем».
+            "previous_status": (previous_statuses or {}).get(code) or None,
             "has_need_signal": bool(manager_signals.get(code)),
             "warehouses": [dict(row) for row in warehouse_policy],
             "manager_need_signals": [dict(row) for row in manager_signals.get(code, ())],
@@ -410,6 +446,131 @@ def validate_document_line_mapping(engine: Engine, mapping: DocumentLineMapping)
     for column in sorted(line_required - table_columns[mapping.line_table]):
         issues.append(f"column_missing:{mapping.line_table}.{column}")
     return tuple(issues)
+
+
+def fetch_first_sale_dates(
+    engine: Engine,
+    *,
+    nomenclature_codes: Sequence[str],
+) -> dict[str, tuple[date, date]]:
+    """Дата первой реализации покупателю по каждому коду номенклатуры.
+
+    Окно истории намеренно НЕ применяется: факт «продажи начались» не должен
+    исчезать оттого, что первая продажа вышла за горизонт сбора остальных
+    фактов. Запрос агрегатный (MIN по коду), поэтому дешёвый даже без окна.
+    """
+    codes = tuple(code for code in {_clean(value) for value in nomenclature_codes} if code)
+    if not codes:
+        return {}
+    query = text("""
+        SELECT NULLIF(LTRIM(RTRIM(product._Code)), N'') AS nomenclature_code,
+               MIN(sale._Date_Time) AS first_sale_at,
+               MAX(sale._Date_Time) AS last_sale_at
+        FROM dbo._Document203 AS sale WITH (NOLOCK)
+        JOIN dbo._Document203_VT4966 AS sale_line WITH (NOLOCK)
+            ON sale_line._Document203_IDRRef = sale._IDRRef
+        JOIN dbo._Reference62 AS product WITH (NOLOCK)
+            ON product._IDRRef = sale_line._Fld4974RRef
+        WHERE sale._Marked = 0x00 AND sale._Posted = 0x01
+          AND sale_line._Fld4971 > 0
+          AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
+        GROUP BY NULLIF(LTRIM(RTRIM(product._Code)), N'')
+        """).bindparams(bindparam("codes", expanding=True))
+    result: dict[str, tuple[date, date]] = {}
+    with engine.connect() as conn:
+        for chunk in _chunks(list(codes), MAX_SQLSERVER_EXPANDING_REFS):
+            for row in conn.execute(query, {"codes": chunk}).mappings():
+                code = _clean(row.get("nomenclature_code"))
+                first = _date(row.get("first_sale_at"))
+                last = _date(row.get("last_sale_at"))
+                if code and first is not None and last is not None:
+                    result[code] = (first, last)
+    return result
+
+
+def _demand_window_fields(
+    code: str,
+    sales_window_totals: Mapping[str, Mapping[int, Decimal]] | None,
+    days_in_sale_totals: Mapping[str, Mapping[int, Decimal]] | None,
+) -> dict[str, Any]:
+    sales = (sales_window_totals or {}).get(code) or {}
+    days_in_sale = (days_in_sale_totals or {}).get(code) or {}
+    fields: dict[str, Any] = {}
+    for suffix, window_days in (
+        ("short", DEMAND_WINDOW_SHORT_DAYS),
+        ("medium", DEMAND_WINDOW_MEDIUM_DAYS),
+        ("long", DEMAND_WINDOW_LONG_DAYS),
+    ):
+        fields[f"sales_qty_{suffix}"] = _json_decimal(sales.get(window_days))
+        fields[f"days_in_sale_{suffix}"] = _json_decimal(days_in_sale.get(window_days))
+    return fields
+
+
+def fetch_sales_window_totals(
+    engine: Engine,
+    *,
+    nomenclature_codes: Sequence[str],
+    date_to: date,
+    windows_days: Sequence[int] = DEMAND_WINDOWS_DAYS,
+) -> dict[str, dict[int, Decimal]]:
+    """Продано штук по каждому коду за окна 30/90/180 дней.
+
+    Брутто, без вычета возвратов — тот же «спрос брутто», что уже принят для
+    расчёта количества заказа (возврат «не понадобился» означает, что спрос
+    был). Нужен формуле статусов, чтобы «Растим» и «Поддерживаем» определялись
+    динамикой спроса, а не числом поступлений.
+    """
+    codes = tuple(code for code in {_clean(value) for value in nomenclature_codes} if code)
+    windows = tuple(sorted({int(value) for value in windows_days if int(value) > 0}))
+    if not codes or not windows:
+        return {}
+    window_starts = {
+        window_days: datetime.combine(
+            date_to - timedelta(days=window_days - 1), datetime.min.time()
+        )
+        for window_days in windows
+    }
+    window_columns = ",\n".join(
+        f"               SUM(CASE WHEN sale._Date_Time >= :window_from_{window_days} "
+        f"THEN CAST(sale_line._Fld4971 AS decimal(18, 3)) ELSE 0 END) AS window_{window_days}"
+        for window_days in windows
+    )
+    query = text(f"""
+        SELECT NULLIF(LTRIM(RTRIM(product._Code)), N'') AS nomenclature_code,
+{window_columns}
+        FROM dbo._Document203 AS sale WITH (NOLOCK)
+        JOIN dbo._Document203_VT4966 AS sale_line WITH (NOLOCK)
+            ON sale_line._Document203_IDRRef = sale._IDRRef
+        JOIN dbo._Reference62 AS product WITH (NOLOCK)
+            ON product._IDRRef = sale_line._Fld4974RRef
+        WHERE sale._Marked = 0x00 AND sale._Posted = 0x01
+          AND sale_line._Fld4971 > 0
+          AND sale._Date_Time >= :window_from_min
+          AND sale._Date_Time < :date_to
+          AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
+        GROUP BY NULLIF(LTRIM(RTRIM(product._Code)), N'')
+        """).bindparams(bindparam("codes", expanding=True))
+    params: dict[str, Any] = {
+        "date_to": datetime.combine(date_to + timedelta(days=1), datetime.min.time()),
+        "window_from_min": min(window_starts.values()),
+    }
+    for window_days, window_from in window_starts.items():
+        params[f"window_from_{window_days}"] = window_from
+    # Нули проставляем заранее: код без единой продажи в окне должен вернуть 0,
+    # а не «нет данных» — иначе формула не отличит тишину от отсутствия замера.
+    result: dict[str, dict[int, Decimal]] = {
+        code: {window_days: Decimal("0") for window_days in windows} for code in codes
+    }
+    with engine.connect() as conn:
+        for chunk in _chunks(list(codes), MAX_SQLSERVER_EXPANDING_REFS):
+            for row in conn.execute(query, {**params, "codes": chunk}).mappings():
+                code = _clean(row.get("nomenclature_code"))
+                if code not in result:
+                    continue
+                for window_days in windows:
+                    qty = _decimal(row.get(f"window_{window_days}"))
+                    result[code][window_days] = qty if qty is not None else Decimal("0")
+    return result
 
 
 def fetch_onec_lifecycle_source_rows(
@@ -1279,5 +1440,5 @@ def _json_date(value: date | None) -> str | None:
     return value.isoformat() if value is not None else None
 
 
-def _json_decimal(value: Decimal) -> str:
-    return format(value, "f")
+def _json_decimal(value: Decimal | None) -> str | None:
+    return None if value is None else format(value, "f")

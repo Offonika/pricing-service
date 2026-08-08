@@ -15253,6 +15253,8 @@ components:
           $ref: '#/components/schemas/ExecutiveInstrumentIntegration'
         access:
           $ref: '#/components/schemas/ExecutiveInstrumentAccess'
+        exchange:
+          $ref: '#/components/schemas/ExecutiveInstrumentExchange'
         problems:
           items:
             $ref: '#/components/schemas/ExecutiveInstrumentProblem'
@@ -15279,6 +15281,92 @@ components:
       - connectivity_status
       - location
       title: ExecutiveInstrumentDevice
+    ExecutiveInstrumentExchange:
+      properties:
+        status:
+          type: string
+          enum:
+          - ready
+          - warning
+          - critical
+          - not_configured
+          title: Status
+          default: not_configured
+        queue_items:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Queue Items
+        queue_status:
+          anyOf:
+          - type: string
+            enum:
+            - ready
+            - warning
+            - critical
+            - not_configured
+          - type: 'null'
+          title: Queue Status
+        last_success_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Success At
+        last_error_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Last Error At
+        consecutive_failures:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Consecutive Failures
+        active_job_seconds:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Active Job Seconds
+        stage_last:
+          anyOf:
+          - type: string
+            enum:
+            - checkauth
+            - init
+            - file
+            - import
+            - none
+          - type: 'null'
+          title: Stage Last
+        stage_file_missing_cycles:
+          anyOf:
+          - type: integer
+            minimum: 0.0
+          - type: 'null'
+          title: Stage File Missing Cycles
+        platform_cpu_pct:
+          anyOf:
+          - type: number
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Platform Cpu Pct
+        source_status:
+          type: string
+          enum:
+          - ready
+          - partial
+          - not_configured
+          title: Source Status
+          default: not_configured
+      additionalProperties: false
+      type: object
+      title: ExecutiveInstrumentExchange
     ExecutiveInstrumentIntegration:
       properties:
         status:
@@ -15487,6 +15575,7 @@ components:
           enum:
           - 2
           - 3
+          - 4
           title: Schema Version
           default: 2
         generated_at:

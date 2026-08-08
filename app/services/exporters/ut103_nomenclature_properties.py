@@ -18,6 +18,23 @@ VALID_MODES = frozenset({"dry_run", "apply"})
 VALID_TARGET_KINDS = frozenset({"property", "requisite"})
 VALID_VALUE_TYPES = frozenset({"property_value", "string", "date", "number", "boolean"})
 
+# Жизненный статус и связанные управленческие поля хранятся только в
+# pricing-service. Универсальный property-транспорт остаётся доступен для SKU,
+# предмета и других отдельно утверждённых коннекторов, но не должен снова стать
+# вторым источником жизненного статуса в УТ 10.3.
+PROHIBITED_LIFECYCLE_PROPERTY_NAMES = frozenset(
+    {
+        "дата изменения статуса ассортимента",
+        "дата пересмотра правила наличия",
+        "источник статуса ассортимента",
+        "причина статуса ассортимента",
+        "профиль закупочного поведения",
+        "ручной минимальный остаток",
+        "статус ассортимента",
+        "утвердил статус ассортимента",
+    }
+)
+
 
 @dataclass(frozen=True)
 class NomenclaturePropertyUpdateRow:
@@ -199,6 +216,11 @@ def _validate_row(
         raise ValueError("nomenclature_code is required")
     if not row.property_name.strip():
         raise ValueError("property_name is required")
+    if row.property_name.strip().casefold() in PROHIBITED_LIFECYCLE_PROPERTY_NAMES:
+        raise ValueError(
+            "lifecycle property export to UT 10.3 is disabled; "
+            "store lifecycle status in pricing-service"
+        )
     if row.target_kind not in VALID_TARGET_KINDS:
         raise ValueError(f"target_kind must be one of: {', '.join(sorted(VALID_TARGET_KINDS))}")
     if row.value_type not in VALID_VALUE_TYPES:

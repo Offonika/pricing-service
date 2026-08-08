@@ -460,7 +460,7 @@ def test_stop_statuses_and_on_demand_rules() -> None:
     assert not classification_blocks_line("working", explicit_demand=False)
 
 
-def test_classification_approval_checks_permission_and_builds_property_contract(
+def test_classification_approval_checks_permission_and_stays_internal(
     db_session,
 ) -> None:
     order = _order(db_session)
@@ -501,21 +501,13 @@ def test_classification_approval_checks_permission_and_builds_property_contract(
 
     assert refreshed.approved_version is None
     assert approved.status == "approved"
-    assert mode == "dry_run"
+    assert mode == "internal"
     assert path is None
-    root = ET.fromstring(xml_preview.encode("windows-1251"))
-    status_row = next(
-        item
-        for item in root.findall("Items/Item")
-        if item.findtext("PropertyName") == "Статус ассортимента"
-    )
-    assert status_row.findtext("NewValueTag") == "matrix"
-    assert status_row.findtext("ExpectedCurrentValueName") == "Продажа"
-    assert root.findtext("Header/Mode") == "dry_run"
-    assert any(
-        item.findtext("PropertyName") == "Ручной минимальный остаток"
-        for item in root.findall("Items/Item")
-    )
+    assert xml_preview == ""
+    assert approved.onec_message_id is None
+    assert approved.onec_status == "not_applicable"
+    assert approved.payload["storage"] == "pricing-service"
+    assert approved.payload["legacy_onec_export_disabled"] is True
 
 
 def test_classification_rejection_requires_other_approver_reason_and_versions(
@@ -768,7 +760,8 @@ def test_exporters_still_validate_generated_messages(db_session) -> None:
     property_message = build_classification_update_message(
         proposal, line=order.lines[0], mode="dry_run"
     )
-    assert build_nomenclature_property_updates_xml(property_message)
+    with pytest.raises(ValueError, match="lifecycle property export"):
+        build_nomenclature_property_updates_xml(property_message)
 
 
 def test_onec_order_result_marks_card_transmitted(db_session) -> None:

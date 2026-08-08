@@ -18,15 +18,15 @@ from app.services.exporters.ut103_nomenclature_properties import (
 )
 
 
-def _status_row() -> NomenclaturePropertyUpdateRow:
+def _allowed_property_row() -> NomenclaturePropertyUpdateRow:
     return NomenclaturePropertyUpdateRow(
-        idempotency_key="nom-prop:РБ000074721:Статус ассортимента:2026-06-23:r1",
+        idempotency_key="nom-prop:РБ000074721:Предмет:2026-06-23:r1",
         nomenclature_code="РБ000074721",
-        property_name="Статус ассортимента",
+        property_name="Предмет",
         value_type="property_value",
-        new_value_name="Новинка",
-        new_value_tag="new_item",
-        reason="Первый заказ поставщику сдан в cargo",
+        new_value_name="дисплей",
+        new_value_tag="display",
+        reason="Подтверждённый классификатор товара",
     )
 
 
@@ -34,7 +34,7 @@ def test_build_nomenclature_property_updates_xml_uses_contract() -> None:
     message = NomenclaturePropertyUpdateMessage(
         message_id="nomenclature-properties-test-001",
         mode="dry_run",
-        rows=(_status_row(),),
+        rows=(_allowed_property_row(),),
     )
 
     payload = build_nomenclature_property_updates_xml(message)
@@ -48,15 +48,14 @@ def test_build_nomenclature_property_updates_xml_uses_contract() -> None:
     assert root.findtext("Header/Target") == "1c_ut_10_3"
     assert root.findtext("Header/Mode") == "dry_run"
     assert (
-        root.findtext("Items/Item/IdempotencyKey")
-        == "nom-prop:РБ000074721:Статус ассортимента:2026-06-23:r1"
+        root.findtext("Items/Item/IdempotencyKey") == "nom-prop:РБ000074721:Предмет:2026-06-23:r1"
     )
     assert root.findtext("Items/Item/NomenclatureCode") == "РБ000074721"
-    assert root.findtext("Items/Item/PropertyName") == "Статус ассортимента"
+    assert root.findtext("Items/Item/PropertyName") == "Предмет"
     assert root.findtext("Items/Item/ValueType") == "property_value"
-    assert root.findtext("Items/Item/NewValueName") == "Новинка"
-    assert root.findtext("Items/Item/NewValueTag") == "new_item"
-    assert root.findtext("Items/Item/Reason") == "Первый заказ поставщику сдан в cargo"
+    assert root.findtext("Items/Item/NewValueName") == "дисплей"
+    assert root.findtext("Items/Item/NewValueTag") == "display"
+    assert root.findtext("Items/Item/Reason") == "Подтверждённый классификатор товара"
 
 
 def test_build_nomenclature_property_updates_xml_allows_commercial_marks() -> None:
@@ -108,7 +107,7 @@ def test_build_nomenclature_property_updates_xml_requires_approval_for_apply() -
     message = NomenclaturePropertyUpdateMessage(
         message_id="nomenclature-properties-test-apply-001",
         mode="apply",
-        rows=(_status_row(),),
+        rows=(_allowed_property_row(),),
     )
 
     with pytest.raises(ValueError, match="ApprovedBy"):
@@ -118,10 +117,43 @@ def test_build_nomenclature_property_updates_xml_requires_approval_for_apply() -
         message_id="nomenclature-properties-test-apply-001",
         mode="apply",
         approved_by="Арсений",
-        rows=(_status_row(),),
+        rows=(_allowed_property_row(),),
     )
     root = ET.fromstring(build_nomenclature_property_updates_xml(approved_message))
     assert root.findtext("Header/ApprovedBy") == "Арсений"
+
+
+@pytest.mark.parametrize(
+    "property_name",
+    (
+        "Статус ассортимента",
+        "Причина статуса ассортимента",
+        "Дата изменения статуса ассортимента",
+        "Источник статуса ассортимента",
+        "Утвердил статус ассортимента",
+        "Профиль закупочного поведения",
+        "Ручной минимальный остаток",
+        "Дата пересмотра правила наличия",
+    ),
+)
+def test_build_nomenclature_property_updates_xml_rejects_lifecycle_properties(
+    property_name: str,
+) -> None:
+    message = NomenclaturePropertyUpdateMessage(
+        message_id="lifecycle-property-export-must-fail",
+        rows=(
+            NomenclaturePropertyUpdateRow(
+                idempotency_key=f"blocked:{property_name}",
+                nomenclature_code="РБ000074721",
+                property_name=property_name,
+                value_type="string",
+                new_value="legacy-value",
+            ),
+        ),
+    )
+
+    with pytest.raises(ValueError, match="lifecycle property export"):
+        build_nomenclature_property_updates_xml(message)
 
 
 def test_build_nomenclature_property_updates_xml_allows_any_non_empty_property_name() -> None:
@@ -171,7 +203,7 @@ def test_write_nomenclature_property_updates_message_places_ready_xml_atomically
 ) -> None:
     message = NomenclaturePropertyUpdateMessage(
         message_id="nomenclature-properties-test-001",
-        rows=(_status_row(),),
+        rows=(_allowed_property_row(),),
     )
 
     output_path = write_nomenclature_property_updates_message(tmp_path, message)

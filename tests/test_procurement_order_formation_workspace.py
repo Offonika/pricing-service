@@ -588,7 +588,9 @@ def test_batch_approval_returns_partial_result_and_is_idempotent(
         settings=_settings(),
     )
 
-    assert first["mode"] == "dry_run"
+    assert first["mode"] == "internal"
+    assert first["xml_preview"] == ""
+    assert first["written_path"] is None
     assert first["summary"]["approved"] == 1
     assert first["summary"]["blocked"] == 1
     assert second == first

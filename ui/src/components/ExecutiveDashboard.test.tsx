@@ -1805,6 +1805,99 @@ describe("executive instruments tab", () => {
     expect(screen.getByText(/свежесть нет источника|свежесть missing/i)).toBeVisible();
   });
 
+  it("shows a compact read-only site exchange block for a v4 device", () => {
+    const data = instrumentsResponse();
+    data.schema_version = 4;
+    data.devices[0].exchange = {
+      status: "critical",
+      queue_items: 3600,
+      queue_status: "critical",
+      last_success_at: "2026-07-31T07:00:00Z",
+      last_error_at: "2026-07-31T09:00:00Z",
+      consecutive_failures: 3,
+      active_job_seconds: 960,
+      stage_last: "init",
+      stage_file_missing_cycles: 2,
+      platform_cpu_pct: 96.5,
+      source_status: "partial",
+    };
+
+    render(<InstrumentsPanel data={data} message="" status="ready" />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Подробнее: / })[0]);
+
+    const exchange = within(screen.getAllByLabelText("Обмен с сайтом")[0]);
+    expect(exchange.getByText("Обмен с сайтом: критично")).toBeVisible();
+    expect(exchange.getByText(/Очередь: 3.?600/)).toBeVisible();
+    expect(exchange.getByText(/Стадия: инициализация/)).toBeVisible();
+    expect(exchange.getByText(/CPU платформы 8.2: 96,50%/)).toBeVisible();
+    expect(exchange.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("defaults legacy exchange to not configured", () => {
+    render(<InstrumentsPanel data={instrumentsResponse()} message="" status="ready" />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Подробнее: / })[0]);
+
+    expect(screen.getAllByLabelText("Обмен с сайтом")[0]).toHaveTextContent(
+      "Обмен с сайтом: не настроено"
+    );
+  });
+
+  it("does not render unknown exchange counters as zero", () => {
+    const data = instrumentsResponse();
+    data.schema_version = 4;
+    data.devices[0].exchange = {
+      status: "warning",
+      queue_items: null,
+      queue_status: null,
+      last_success_at: null,
+      last_error_at: null,
+      consecutive_failures: null,
+      active_job_seconds: null,
+      stage_last: null,
+      stage_file_missing_cycles: null,
+      platform_cpu_pct: null,
+      source_status: "partial",
+    };
+
+    render(<InstrumentsPanel data={data} message="" status="ready" />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Подробнее: / })[0]);
+
+    const exchange = screen.getAllByLabelText("Обмен с сайтом")[0];
+    expect(exchange).toHaveTextContent("Очередь: — · —");
+    expect(exchange).toHaveTextContent("Ошибок подряд: —");
+    expect(exchange).toHaveTextContent("циклов без файла: —");
+  });
+
+  it("keeps exchange not configured while showing available platform CPU", () => {
+    const data = instrumentsResponse();
+    data.schema_version = 4;
+    data.devices[0].exchange = {
+      status: "not_configured",
+      queue_items: null,
+      queue_status: null,
+      last_success_at: null,
+      last_error_at: null,
+      consecutive_failures: null,
+      active_job_seconds: null,
+      stage_last: null,
+      stage_file_missing_cycles: null,
+      platform_cpu_pct: 70,
+      source_status: "not_configured",
+    };
+
+    render(<InstrumentsPanel data={data} message="" status="ready" />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Подробнее: / })[0]);
+
+    const exchange = screen.getAllByLabelText("Обмен с сайтом")[0];
+    expect(exchange).toHaveTextContent("Обмен с сайтом: не настроено");
+    expect(exchange).toHaveTextContent("CPU платформы 8.2: 70,00%");
+    expect(exchange).toHaveTextContent("источник обмена: не настроено");
+  });
+
   it("loads the tab from access policy without action requests", async () => {
     window.history.pushState({}, "", "?tab=infrastructure&date=2026-07-31");
     vi.mocked(fetchExecutiveDashboard).mockResolvedValue({

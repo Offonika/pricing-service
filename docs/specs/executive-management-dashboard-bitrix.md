@@ -24,12 +24,13 @@ related_tests:
   - tests/test_executive_dashboard.py
   - tests/test_executive_instruments.py
   - tests/test_executive_management_balance.py
+  - ui/src/components/ExecutiveDashboard.test.tsx
 contracts:
   - openapi.yaml
 depends_on: []
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-31"
+updated_at: "2026-08-08"
 ---
 
 # Executive Management Dashboard In Bitrix
@@ -185,29 +186,66 @@ Snapshot формируется управляющим контуром `/opt/MM
   и неопознанные credentials только количественно;
 - `capabilities.access_mutations=false` и `network_scanning=false`.
 
-Consumer принимает `schema_version=2` и `schema_version=3`, но не принимает v1.
+Consumer принимает `schema_version=2`, `schema_version=3` и `schema_version=4`,
+но не принимает v1. Канонические требования к наблюдаемости обмена находятся в
+`/opt/MM/docs/specs/ut103-site-exchange-observability.md`.
 Для v2 поля `issue` и `recommended_action` преобразуются в одну fallback-проблему.
 В v3 `devices[].problems[]` содержит все одновременные проблемы с категорией,
 severity, безопасными доказательствами, временем начала и рекомендацией; первая по
-приоритету проблема также заполняет legacy-поля. На устройстве раздельно
+приоритету проблема также заполняет legacy-поля. В v4 устройство дополнительно
+содержит read-only блок `exchange`: состояние, очередь, последний успех и ошибку,
+число ошибок подряд, длительность активной работы, последнюю стадию сайта и общую
+загрузку CPU платформы 8.2. Для v2/v3 этот блок заполняется безопасным значением
+`not_configured`; это же значение используется для v4 без блока `exchange`.
+Неизвестные `consecutive_failures` и `stage_file_missing_cycles` остаются `null`,
+а `0` означает измеренный ноль. Счётчики принимаются только как JSON integer без
+преобразования строк и boolean; CPU принимается только как конечное JSON number
+`0..100`, также без преобразования строк и boolean.
+Проблемы обмена используют стабильные ключи
+`service:ut103_site_exchange:failed` и
+`service:ut103_site_exchange:loop_overload`; legacy- и неизвестные exchange-ключи
+отклоняются. Их `evidence[]` допускает только канонические строки счётчиков,
+стадии и CPU из producer-контракта. Любой другой текст, включая относительный путь,
+URL, host или secret-like значение, отклоняется.
+На устройстве раздельно
 передаются `last_attempted_at`, `last_success_at`, `incident_started_at`, длительность
 сбоя, availability и monitoring coverage за 24 часа/30 дней. При coverage ниже
 90% availability не публикуется. Windows, SQL Server, SQL Agent, кластер и базы 1С,
 публикации и обмены являются отдельными компонентами; backup показывает RPO, lag,
 full/diff/log, off-host/readback и restore-test.
 
-IP, DNS/SSH aliases, порты, usernames, fingerprints, `secret_ref`, токены и
-connection strings запрещены на стороне producer и повторно блокируются
-consumer-валидацией. Отсутствующий snapshot возвращается как `source_missing`,
+IP, DNS/SSH aliases, host/URL, абсолютные пути и относительные каталоги обмена
+`noms/1cbitrix` / `noms\\1cbitrix`, порты, usernames, fingerprints, `secret_ref`,
+токены и connection strings запрещены на стороне producer и повторно блокируются
+consumer-валидацией. Даты и словарные статусы не должны ошибочно распознаваться как
+пути. Времена `exchange.last_success_at` и `exchange.last_error_at` не могут быть
+позже `generated_at` snapshot; общий допуск будущего времени к ним не применяется.
+Они передаются строго как RFC3339 UTC с `T` и суффиксом `Z` или `+00:00`:
+date-only, naive datetime и ненулевой timezone offset не принимаются.
+Отсутствующий snapshot возвращается как `source_missing`,
 просроченный — как `stale`; отсутствие данных нельзя подменять нулями.
 
 UI по умолчанию показывает critical, warning и not monitored, использует KPI как
 фильтры и открывает полную диагностику устройства в панели, связанной с query-параметром
 `device`. На ширине до 760 px список отображается карточками без горизонтальной
-прокрутки. Текущий этап не создаёт CRM-сущности, задачи и назначения доступов. Следующий
+прокрутки. Компактный read-only блок `Обмен с сайтом` показывается в подробностях
+устройства, в разделе «Сервисы и 1С», без кнопок запуска, перезапуска или изменения
+расписания. При `source_status=not_configured` статус обмена остаётся «не настроено»,
+но доступная общая загрузка CPU платформы всё равно показывается и не превращает
+статус в warning/critical. Текущий этап не создаёт CRM-сущности, задачи и назначения
+доступов. Следующий
 этап управления доступами расширяет этот же контракт отдельными action API с
 approval, revision guard, audit и readback; до отдельного утверждения любые
 мутации остаются заблокированы.
+
+Rollout выполняется consumer-first: сначала consumer, принимающий v2/v3/v4 и
+проверенный на каноническом fixture реального producer, затем producer начинает
+публиковать v4. До переключения producer v2/v3 продолжают отображаться с безопасным
+`exchange=not_configured`; откат producer не требует отката consumer. Fixture
+`tests/fixtures/instruments_snapshot_v4_exchange_contract.json` копируется из
+producer без абсолютной зависимости от его worktree. Его SHA-256 закреплён в
+consumer contract-тесте; изменение producer-контракта требует синхронно обновить
+fixture и checksum после зелёного producer builder equality test.
 
 ### `GET /api/management/executive-dashboard?date=YYYY-MM-DD`
 
@@ -891,6 +929,7 @@ app/admin context или через OAuth-контекст установлен�
 - Bitrix iframe smoke: страница, session, загрузка блоков, drill-down links.
 - Приборы: один элемент на каждый зарегистрированный `device_key`, статусы
   online/not monitored не смешиваются, v1/небезопасные/неизвестные поля отклоняются,
-  v2 получает fallback-проблему, v3 сохраняет одновременные `problems[]`, stale,
-  missing, freshness и coverage показываются явно, доступы остаются read-only.
+  v2 получает fallback-проблему, v3 сохраняет одновременные `problems[]`, v4
+  показывает read-only `exchange`, stale, missing, freshness и coverage показываются
+  явно, доступы и обмен остаются без управляющих действий.
 - Docs/OpenAPI: manifest и generated contract без drift.

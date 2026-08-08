@@ -631,6 +631,24 @@ export interface ExecutiveInstrumentProblem {
   recommended_action: string;
 }
 
+export interface ExecutiveInstrumentExchange {
+  status:
+    | "ready"
+    | "warning"
+    | "critical"
+    | "not_configured";
+  queue_items: number | null;
+  queue_status: "ready" | "warning" | "critical" | "not_configured" | null;
+  last_success_at?: string | null;
+  last_error_at?: string | null;
+  consecutive_failures: number | null;
+  active_job_seconds: number | null;
+  stage_last: "checkauth" | "init" | "file" | "import" | "none" | null;
+  stage_file_missing_cycles: number | null;
+  platform_cpu_pct?: number | null;
+  source_status: "ready" | "partial" | "not_configured";
+}
+
 export interface ExecutiveInstrumentDevice {
   device_key: string;
   name: string;
@@ -683,13 +701,14 @@ export interface ExecutiveInstrumentDevice {
     attention_grant_count: number;
     next_review_at?: string | null;
   };
-  problems: ExecutiveInstrumentProblem[];
+  exchange?: ExecutiveInstrumentExchange | null;
+  problems?: ExecutiveInstrumentProblem[];
   issue?: string | null;
   recommended_action?: string | null;
 }
 
 export interface ExecutiveInstrumentsResponse {
-  schema_version: 2 | 3;
+  schema_version: 2 | 3 | 4;
   generated_at: string;
   source_status: string;
   freshness_status: string;

@@ -23,8 +23,6 @@ from app.services.exporters.ut103_nomenclature_properties import (
     NomenclaturePropertyUpdateMessage,
     NomenclaturePropertyUpdateRow,
     PropertyUpdateExchangeResult,
-    build_nomenclature_property_updates_xml,
-    write_nomenclature_property_updates_message,
 )
 from app.services.exporters.ut103_procurement_orders import (
     OneCReference,
@@ -483,19 +481,20 @@ def approve_classification_proposal(
     proposal.approved_by_actor = session.actor
     proposal.approved_by_bitrix_user_id = session.user_id
     proposal.approved_by_name = session.user_name or session.actor
-    mode = "apply" if settings.procurement_order_formation_property_apply_enabled else "dry_run"
-    message = build_classification_update_message(proposal, line=line, mode=mode)
-    xml_preview = build_nomenclature_property_updates_xml(message).decode("windows-1251")
+    # Ручные статусы являются внутренним решением pricing-service. Исторический
+    # общий флаг property apply больше не может превратить это решение в XML для
+    # УТ 10.3: иначе снова появятся два источника жизненного статуса.
+    mode = "internal"
+    xml_preview = ""
     written_path: Path | None = None
-    proposal.onec_message_id = message.message_id
-    proposal.onec_status = "dry_run"
+    proposal.onec_message_id = None
+    proposal.onec_status = "not_applicable"
     proposal.status = "approved"
-    proposal.payload = {**(proposal.payload or {}), "xml_preview": xml_preview}
-    if mode == "apply":
-        exchange_root = resolve_ut103_exchange_root(None)
-        written_path = write_nomenclature_property_updates_message(exchange_root, message)
-        proposal.onec_status = "pending"
-        proposal.status = "sent_to_1c"
+    proposal.payload = {
+        **(proposal.payload or {}),
+        "storage": "pricing-service",
+        "legacy_onec_export_disabled": True,
+    }
     line.version += 1
     invalidate_order_approval(order)
     if commit:

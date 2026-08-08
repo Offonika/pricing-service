@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 ExecutiveAccessLevel = Literal["full", "domain"]
 ExecutiveManagementBalanceView = Literal["closed", "operational"]
@@ -193,6 +194,70 @@ class ExecutiveInstrumentAccess(ExecutiveInstrumentStrictModel):
     next_review_at: date | None = None
 
 
+ExecutiveInstrumentExchangeStatus = Literal[
+    "ready",
+    "warning",
+    "critical",
+    "not_configured",
+]
+ExecutiveInstrumentExchangeQueueStatus = Literal[
+    "ready",
+    "warning",
+    "critical",
+    "not_configured",
+]
+ExecutiveInstrumentExchangeStage = Literal[
+    "checkauth",
+    "init",
+    "file",
+    "import",
+    "none",
+]
+ExecutiveInstrumentExchangeSourceStatus = Literal["ready", "partial", "not_configured"]
+
+
+class ExecutiveInstrumentExchange(ExecutiveInstrumentStrictModel):
+    status: ExecutiveInstrumentExchangeStatus = "not_configured"
+    queue_items: int | None = Field(default=None, ge=0, strict=True)
+    queue_status: ExecutiveInstrumentExchangeQueueStatus | None = None
+    last_success_at: datetime | None = None
+    last_error_at: datetime | None = None
+    consecutive_failures: int | None = Field(default=None, ge=0, strict=True)
+    active_job_seconds: int | None = Field(default=None, ge=0, strict=True)
+    stage_last: ExecutiveInstrumentExchangeStage | None = None
+    stage_file_missing_cycles: int | None = Field(default=None, ge=0, strict=True)
+    platform_cpu_pct: float | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+        allow_inf_nan=False,
+        strict=True,
+    )
+    source_status: ExecutiveInstrumentExchangeSourceStatus = "not_configured"
+
+    @field_validator("last_success_at", "last_error_at", mode="before")
+    @classmethod
+    def require_rfc3339_utc(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            if value.tzinfo is None or value.utcoffset() != timedelta(0):
+                raise ValueError("exchange timestamp must be timezone-aware UTC")
+            return value
+        if not isinstance(value, str) or not re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\+00:00)",
+            value,
+        ):
+            raise ValueError("exchange timestamp must be RFC3339 UTC")
+        return value
+
+    @model_validator(mode="after")
+    def preserve_not_configured_status(self) -> ExecutiveInstrumentExchange:
+        if self.source_status == "not_configured" and self.status != "not_configured":
+            raise ValueError("not-configured exchange source cannot raise exchange severity")
+        return self
+
+
 class ExecutiveInstrumentProblem(ExecutiveInstrumentStrictModel):
     problem_key: str
     category: Literal[
@@ -239,6 +304,7 @@ class ExecutiveInstrumentDevice(ExecutiveInstrumentStrictModel):
         default_factory=ExecutiveInstrumentIntegration
     )
     access: ExecutiveInstrumentAccess = Field(default_factory=ExecutiveInstrumentAccess)
+    exchange: ExecutiveInstrumentExchange = Field(default_factory=ExecutiveInstrumentExchange)
     problems: list[ExecutiveInstrumentProblem] = Field(default_factory=list)
     issue: str | None = None
     recommended_action: str | None = None
@@ -262,7 +328,7 @@ class ExecutiveInstrumentCapabilities(ExecutiveInstrumentStrictModel):
 
 
 class ExecutiveInstrumentsResponse(ExecutiveInstrumentStrictModel):
-    schema_version: Literal[2, 3] = 2
+    schema_version: Literal[2, 3, 4] = 2
     generated_at: datetime
     source_status: ExecutiveInstrumentSourceStatus
     freshness_status: ExecutiveInstrumentFreshnessStatus
@@ -334,7 +400,8 @@ class ExecutiveInstrumentsResponse(ExecutiveInstrumentStrictModel):
         generated_at = self.generated_at
         if generated_at.tzinfo is None:
             generated_at = generated_at.replace(tzinfo=UTC)
-        latest_allowed = generated_at.astimezone(UTC) + timedelta(minutes=5)
+        generated_at_utc = generated_at.astimezone(UTC)
+        latest_allowed = generated_at_utc + timedelta(minutes=5)
 
         def observed_at(value: date | datetime | None) -> datetime | None:
             if value is None:
@@ -344,6 +411,16 @@ class ExecutiveInstrumentsResponse(ExecutiveInstrumentStrictModel):
             return datetime.combine(value, time.min, UTC)
 
         for device in self.devices:
+            exchange_timestamps = [
+                device.exchange.last_success_at,
+                device.exchange.last_error_at,
+            ]
+            if any(
+                timestamp is not None and timestamp > generated_at_utc
+                for value in exchange_timestamps
+                if (timestamp := observed_at(value)) is not None
+            ):
+                raise ValueError("future exchange timestamp in infrastructure snapshot")
             timestamps: list[date | datetime | None] = [
                 device.last_attempted_at,
                 device.last_success_at,

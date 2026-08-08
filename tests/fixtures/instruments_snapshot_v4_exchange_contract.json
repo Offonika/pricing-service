@@ -1,0 +1,49 @@
+{
+  "schema_version": 4,
+  "exchange": {
+    "status": "critical",
+    "queue_items": 3600,
+    "queue_status": "critical",
+    "last_success_at": "2026-08-06T06:00:00Z",
+    "last_error_at": "2026-08-06T08:45:00Z",
+    "consecutive_failures": 2,
+    "active_job_seconds": 960,
+    "stage_last": "init",
+    "stage_file_missing_cycles": 2,
+    "platform_cpu_pct": 98.0,
+    "source_status": "ready"
+  },
+  "problems": [
+    {
+      "problem_key": "service:ut103_site_exchange:failed",
+      "category": "service",
+      "severity": "critical",
+      "title": "Обмен УТ 10.3 с сайтом остановлен",
+      "evidence": [
+        "Ошибок обмена подряд: 2",
+        "Циклов без передачи файла: 2",
+        "Последняя стадия сайта: init",
+        "Размер очереди: 3600"
+      ],
+      "started_at": "2026-08-06T08:45:00Z",
+      "recommended_action": "Проверить обмен УТ 10.3 с сайтом в управляющем контуре"
+    },
+    {
+      "problem_key": "service:ut103_site_exchange:loop_overload",
+      "category": "service",
+      "severity": "critical",
+      "title": "Обмен УТ 10.3 зациклился с перегрузкой",
+      "evidence": [
+        "Ошибок обмена подряд: 2",
+        "Циклов без передачи файла: 2",
+        "Последняя стадия сайта: init",
+        "Размер очереди: 3600",
+        "Циклов без убывания очереди: 2",
+        "Длительность активной работы, сек: 960",
+        "Общая загрузка платформы 8.2, %: 98"
+      ],
+      "started_at": "2026-08-06T08:45:00Z",
+      "recommended_action": "Проверить очередь и активную работу обмена УТ 10.3 в управляющем контуре"
+    }
+  ]
+}

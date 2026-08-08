@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import uuid
 from collections import Counter
 from datetime import UTC, date, datetime
 from decimal import Decimal
@@ -34,13 +33,10 @@ from app.services.assortment_lifecycle_classification_store import (
 from app.services.bitrix_procurement_order_formation_auth import (
     ProcurementOrderFormationSession,
 )
-from app.services.exporters.ut103_exchange import resolve_ut103_exchange_root
 from app.services.exporters.ut103_nomenclature_properties import (
     NomenclaturePropertyUpdateMessage,
     NomenclaturePropertyUpdateRow,
     PropertyUpdateExchangeResult,
-    build_nomenclature_property_updates_xml,
-    write_nomenclature_property_updates_message,
 )
 from app.services.procurement_order_formation import (
     PROPERTY_UPDATE_SOURCE,
@@ -568,34 +564,25 @@ def approve_lifecycle_transitions(
                 continue
         approved.append(proposal)
 
-    mode = "apply" if settings.procurement_order_formation_property_apply_enabled else "dry_run"
+    mode = "internal"
     message_id: str | None = None
     xml_preview = ""
     written_path: Path | None = None
     if approved:
-        message_id = f"proc-lifecycle-{uuid.uuid5(uuid.NAMESPACE_URL, idempotency_key).hex}"
-        message = _build_transition_message(
-            approved,
-            message_id=message_id,
-            mode=mode,
-            approved_by=session.user_name or session.actor,
-        )
-        xml_preview = build_nomenclature_property_updates_xml(message).decode("windows-1251")
-        if mode == "apply":
-            written_path = write_nomenclature_property_updates_message(
-                resolve_ut103_exchange_root(None),
-                message,
-            )
         approved_at = datetime.now(UTC).replace(tzinfo=None)
         for proposal in approved:
-            proposal.status = "sent_to_1c" if mode == "apply" else "approved"
+            proposal.status = "approved"
             proposal.approved_at = approved_at
             proposal.approved_by_actor = session.actor
             proposal.approved_by_bitrix_user_id = session.user_id
             proposal.approved_by_name = session.user_name or session.actor
-            proposal.onec_message_id = message_id
-            proposal.onec_status = "pending" if mode == "apply" else "dry_run"
-            proposal.payload = {**(proposal.payload or {}), "xml_preview": xml_preview}
+            proposal.onec_message_id = None
+            proposal.onec_status = "not_applicable"
+            proposal.payload = {
+                **(proposal.payload or {}),
+                "storage": "pricing-service",
+                "legacy_onec_export_disabled": True,
+            }
             results.append(_approval_result(proposal.id, "approved", "Переход утверждён"))
 
     summary = {key: 0 for key in APPROVAL_RESULT_KEYS}

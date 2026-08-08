@@ -158,6 +158,7 @@ def main(argv: Sequence[str] | None = None) -> None:
         "required_route_count": len(REQUIRED_ROUTES),
         "code_migration_head": code_head,
         "database_migration_head": database_head,
+        "database_revision_checked": not args.skip_database_revision,
         "errors": errors,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))

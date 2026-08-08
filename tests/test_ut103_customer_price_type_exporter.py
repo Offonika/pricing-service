@@ -114,6 +114,7 @@ def test_write_and_parse_customer_price_type_result(tmp_path: Path) -> None:
         f"""<?xml version="1.0" encoding="windows-1251"?>
 <ExchangeResult>
   <MessageId>bronze-to-retail-202606</MessageId>
+  <Schema>customer_price_type_updates.v1</Schema>
   <Status>success</Status>
   <ProcessedAt>2026-07-12T10:00:00</ProcessedAt>
   <Loaded>1</Loaded>
@@ -131,6 +132,7 @@ def test_write_and_parse_customer_price_type_result(tmp_path: Path) -> None:
       <ContractName>Основной договор</ContractName>
       <CurrentPriceType>2.Бронзовый</CurrentPriceType>
       <TargetPriceType>Розница</TargetPriceType>
+      <ReadbackPriceType>2.Бронзовый</ReadbackPriceType>
       <FoundContracts>Основной договор</FoundContracts>
     </ItemResult>
   </ItemResults>
@@ -140,6 +142,8 @@ def test_write_and_parse_customer_price_type_result(tmp_path: Path) -> None:
 
     result = parse_customer_price_type_exchange_result(result_path)
     assert result.ok
+    assert result.schema == "customer_price_type_updates.v1"
     assert result.item_results[0].result == "validated"
     assert result.item_results[0].current_price_type == "2.Бронзовый"
+    assert result.item_results[0].readback_price_type == "2.Бронзовый"
     assert list_customer_price_type_exchange_results(tmp_path) == [result]

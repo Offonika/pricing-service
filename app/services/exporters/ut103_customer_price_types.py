@@ -56,12 +56,14 @@ class CustomerPriceTypeItemResult:
     contract_name: str = ""
     current_price_type: str = ""
     target_price_type: str = ""
+    readback_price_type: str = ""
     found_contracts: str = ""
 
 
 @dataclass(frozen=True)
 class CustomerPriceTypeExchangeResult:
     message_id: str
+    schema: str
     status: str
     processed_at: str
     loaded: int
@@ -160,6 +162,7 @@ def parse_customer_price_type_exchange_result(
         raise ValueError(f"unexpected root tag: {root.tag}")
     return CustomerPriceTypeExchangeResult(
         message_id=_node_text(root, "MessageId"),
+        schema=_node_text(root, "Schema"),
         status=_node_text(root, "Status"),
         processed_at=_node_text(root, "ProcessedAt"),
         loaded=_parse_int(_node_text(root, "Loaded"), "Loaded"),
@@ -237,6 +240,7 @@ def _parse_item_result(node: ET.Element) -> CustomerPriceTypeItemResult:
         contract_name=_node_text(node, "ContractName"),
         current_price_type=_node_text(node, "CurrentPriceType"),
         target_price_type=_node_text(node, "TargetPriceType"),
+        readback_price_type=_node_text(node, "ReadbackPriceType"),
         found_contracts=_node_text(node, "FoundContracts"),
     )
 

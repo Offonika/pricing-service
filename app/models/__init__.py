@@ -75,6 +75,11 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         MatchingPropertyRuleAudit,
         MatchingPropertyValueMap,
     )
+    from app.models.nomenclature_classification_operation import (
+        NomenclatureClassificationOperation,
+        NomenclatureClassificationOperationEvent,
+        NomenclatureClassificationOperationItem,
+    )
     from app.models.onec_sales_daily_kpi import OneCSalesDailyKpi
     from app.models.orchestration import (
         OrchestrationApiRequest,
@@ -151,6 +156,9 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "ProcurementOrderFormationEvent",
         "ProcurementClassificationProposal",
         "ProcurementLifecycleTransitionProposal",
+        "NomenclatureClassificationOperation",
+        "NomenclatureClassificationOperationEvent",
+        "NomenclatureClassificationOperationItem",
         "QualityCase",
         "QualityCaseEvent",
         "ProductCompatibility",

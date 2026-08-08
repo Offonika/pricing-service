@@ -20,6 +20,7 @@ import {
   type ExecutiveManagementBalanceResponse,
   type ExecutiveManagementBalanceView,
   type ExecutiveInstrumentDevice,
+  type ExecutiveInstrumentExchange,
   type ExecutiveInstrumentsResponse,
   type ExecutiveOnlineStorePeriodResponse,
   type ExecutiveProfitLossBreakdownRow,
@@ -4183,6 +4184,55 @@ function compactInstrumentMetrics(device: ExecutiveInstrumentDevice) {
   return rows;
 }
 
+const INSTRUMENT_EXCHANGE_STAGE_LABELS: Record<string, string> = {
+  checkauth: "авторизация",
+  init: "инициализация",
+  file: "передача файла",
+  import: "импорт на сайте",
+  none: "нет данных",
+};
+
+const INSTRUMENT_EXCHANGE_STATUS_LABELS: Record<string, string> = {
+  ready: "готово",
+  warning: "требует внимания",
+  critical: "критично",
+  not_configured: "не настроено",
+};
+
+function instrumentExchangeIsMeaningful(
+  exchange?: ExecutiveInstrumentExchange | null
+): exchange is ExecutiveInstrumentExchange {
+  return exchange != null && (
+    exchange.source_status !== "not_configured"
+    || exchange.queue_items != null
+    || exchange.last_success_at != null
+    || exchange.last_error_at != null
+    || exchange.active_job_seconds != null
+    || exchange.stage_last != null
+    || exchange.platform_cpu_pct != null
+  );
+}
+
+function InstrumentExchange({ exchange }: { exchange?: ExecutiveInstrumentExchange | null }) {
+  if (!instrumentExchangeIsMeaningful(exchange)) {
+    return (
+      <section className="executive-instruments__exchange" aria-label="Обмен с сайтом">
+        <strong>Обмен с сайтом: не настроено</strong>
+      </section>
+    );
+  }
+  return (
+    <section className="executive-instruments__exchange" aria-label="Обмен с сайтом">
+      <strong>Обмен с сайтом: {INSTRUMENT_EXCHANGE_STATUS_LABELS[exchange.status] || exchange.status}</strong>
+      <small>Очередь: {exchange.queue_items == null ? "—" : formatPlainNumber(exchange.queue_items)} · {exchange.queue_status == null ? "—" : statusLabel(exchange.queue_status)}</small>
+      <small>Успех: {formatDateTime(exchange.last_success_at) || "—"} · ошибка: {formatDateTime(exchange.last_error_at) || "—"}</small>
+      <small>Ошибок подряд: {exchange.consecutive_failures == null ? "—" : formatPlainNumber(exchange.consecutive_failures)} · активная работа: {instrumentDuration(exchange.active_job_seconds)}</small>
+      <small>Стадия: {exchange.stage_last == null ? "—" : (INSTRUMENT_EXCHANGE_STAGE_LABELS[exchange.stage_last] || exchange.stage_last)} · циклов без файла: {exchange.stage_file_missing_cycles == null ? "—" : formatPlainNumber(exchange.stage_file_missing_cycles)}</small>
+      <small>CPU платформы 8.2: {instrumentPercent(exchange.platform_cpu_pct)} · источник обмена: {statusLabel(exchange.source_status)}</small>
+    </section>
+  );
+}
+
 export function InstrumentsPanel({
   data,
   message,
@@ -4314,6 +4364,7 @@ export function InstrumentsPanel({
                           <span key={service.service_key}>{service.name}: {statusLabel(service.status)}</span>
                         )) : <span>Не зарегистрированы</span>}
                         {device.integrations.count > 0 && <small>Интеграции: {statusLabel(device.integrations.status)} · {formatDateTime(device.integrations.last_success_at)}</small>}
+                        <InstrumentExchange exchange={device.exchange} />
                       </td>
                       <td>
                         <span>{statusLabel(device.backup.status)}</span>

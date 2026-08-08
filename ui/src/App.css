@@ -7357,6 +7357,19 @@
   color: #536279 !important;
 }
 
+.executive-instruments__exchange {
+  display: grid;
+  gap: 3px;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #e1e7ef;
+}
+
+.executive-instruments__exchange strong,
+.executive-instruments__exchange small {
+  overflow-wrap: anywhere;
+}
+
 .executive-instruments__row--critical td:first-child {
   box-shadow: inset 3px 0 #c74242;
 }

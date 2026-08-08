@@ -660,6 +660,16 @@ documents:
     related_code: [tasks/]
     related_tests: [tests/]
     keywords: [llm, embeddings, matching]
+  - path: docs/runbooks/scheduled-jobs-inventory.md
+    title: Scheduled Jobs Inventory
+    doc_type: runbook
+    domain: operations
+    status: active
+    owner: pricing-platform
+    source_of_truth: true
+    related_code: [infra/cron/]
+    related_tests: []
+    keywords: [cron, расписание, задания, релиз, рабочая-папка, операции]
   - path: docs/competitor-matching-nightly-audit-2026-05-02.md
     title: Competitor Matching Nightly Audit 2026-05-02
     doc_type: audit

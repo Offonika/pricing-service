@@ -17,14 +17,18 @@ from app.core.config import get_settings
 from app.infrastructure.db.engines import build_engine
 from app.models.procurement_order_formation import (
     ProcurementOrderFormation,
+    ProcurementOrderFormationEvent,
     ProcurementOrderFormationLine,
 )
 from app.services.bitrix_order_formation import (
     BitrixCatalogProduct,
     load_order_formation_mapping,
-    resolve_catalog_product_by_xml_id,
+    resolve_catalog_products_by_xml_ids,
 )
-from app.services.procurement_order_formation import invalidate_order_approval
+from app.services.procurement_order_formation import (
+    ensure_order_editable,
+    invalidate_order_approval,
+)
 from tasks.report_display_auto_order_adaptive_lead_time_comparison import (
     build_lead_time_indexes,
     choose_lead_time_candidate,
@@ -58,6 +62,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch-id", default=date.today().isoformat())
     parser.add_argument("--order-date", type=date.fromisoformat, default=date.today())
     parser.add_argument("--calculation-id", default="")
+    parser.add_argument("--source-run-id", default="")
+    parser.add_argument("--source-summary-json", type=Path)
+    parser.add_argument("--responsible-bitrix-user-id", default="")
     parser.add_argument("--output-json", type=Path, default=DEFAULT_OUTPUT_JSON)
     parser.add_argument("--output-csv", type=Path, default=DEFAULT_OUTPUT_CSV)
     parser.add_argument(
@@ -70,9 +77,32 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Persist pricing-service drafts only; still never writes Bitrix or 1C.",
     )
+    parser.add_argument(
+        "--supersede-open-batches",
+        action="store_true",
+        help="Hide older open display-auto-order batches after a successful DB persist.",
+    )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--fail-on-blockers", action="store_true")
     return parser.parse_args()
+
+
+def build_calculation_id(*, explicit: str, source_run_id: str, order_date: date) -> str:
+    """Build a deterministic calculation_id for a display auto-order run.
+
+    An explicit ``--calculation-id`` always wins. Otherwise the order_date is
+    always part of the id, so the same classification run replayed on another
+    day produces a different id. Without the date, a new day yields new order
+    stable keys but the old global line stable keys, which collide.
+    """
+
+    explicit_value = str(explicit or "").strip()
+    source_run_value = str(source_run_id or "").strip()
+    if explicit_value:
+        return explicit_value
+    if source_run_value:
+        return f"display-auto-order-{order_date.isoformat()}-{source_run_value}"
+    return f"display-auto-order-{order_date.isoformat()}"
 
 
 def main() -> int:
@@ -80,6 +110,21 @@ def main() -> int:
     settings = get_settings()
     source_rows = read_csv(args.input_csv)
     lead_time_rows = read_csv(args.lead_time_csv)
+    source_summary = (
+        json.loads(args.source_summary_json.read_text(encoding="utf-8-sig"))
+        if args.source_summary_json and args.source_summary_json.exists()
+        else {}
+    )
+    source_run_id = str(
+        args.source_run_id
+        or (source_summary.get("classification_run_id") if isinstance(source_summary, dict) else "")
+        or ""
+    )
+    calculation_id = build_calculation_id(
+        explicit=args.calculation_id,
+        source_run_id=source_run_id,
+        order_date=args.order_date,
+    )
     selected_rows = select_order_rows(source_rows)
     nomenclature = fetch_nomenclature_by_codes(
         settings.onec_database_url,
@@ -96,14 +141,28 @@ def main() -> int:
     if not args.skip_bitrix_catalog:
         catalog_mapping = load_order_formation_mapping(settings)
 
-    def catalog_resolver(xml_id: str) -> BitrixCatalogProduct | None:
-        if args.skip_bitrix_catalog:
-            return None
-        return resolve_catalog_product_by_xml_id(
-            xml_id,
+    catalog_products = (
+        {}
+        if args.skip_bitrix_catalog
+        else resolve_catalog_products_by_xml_ids(
+            [
+                _onec_binary_ref_to_guid_or_empty(
+                    str(
+                        (nomenclature.get(str(row.get("nomenclature_code") or "")) or {}).get(
+                            "nomenclature_ref"
+                        )
+                        or ""
+                    )
+                )
+                for row in selected_rows
+            ],
             settings=settings,
             mapping=catalog_mapping,
         )
+    )
+
+    def catalog_resolver(xml_id: str) -> BitrixCatalogProduct | None:
+        return catalog_products.get(_normalize_guid(xml_id))
 
     orders = build_grouped_orders(
         selected_rows,
@@ -123,9 +182,12 @@ def main() -> int:
         route=args.route,
         batch_id=args.batch_id,
         order_date=args.order_date,
-        calculation_id=args.calculation_id or f"display-auto-order-{args.order_date.isoformat()}",
+        calculation_id=calculation_id,
+        source_run_id=source_run_id,
+        responsible_bitrix_user_id=args.responsible_bitrix_user_id,
     )
     summary = build_summary(source_rows=source_rows, selected_rows=selected_rows, orders=orders)
+    blocked_by_gate = bool(args.fail_on_blockers and summary["blocking_line_count"])
     payload = {
         "summary": summary,
         "orders": orders,
@@ -133,16 +195,20 @@ def main() -> int:
             "bitrix_write": False,
             "onec_write": False,
             "onec_document_posting": False,
-            "pricing_service_db_write": bool(args.persist_db),
+            "pricing_service_db_write": bool(args.persist_db and not blocked_by_gate),
         },
     }
     write_json(args.output_json, payload)
     write_lines_csv(args.output_csv, orders)
     persisted_ids: list[int] = []
-    if args.persist_db:
+    if args.persist_db and not blocked_by_gate:
         engine = build_engine(settings.database_url)
         with Session(engine) as db:
-            persisted_ids = persist_grouped_orders(db, orders)
+            persisted_ids = persist_grouped_orders(
+                db,
+                orders,
+                supersede_open_batches=args.supersede_open_batches,
+            )
         payload["persisted_order_ids"] = persisted_ids
         write_json(args.output_json, payload)
     output = {
@@ -161,7 +227,7 @@ def main() -> int:
             indent=None if args.json else 2,
         )
     )
-    return 2 if args.fail_on_blockers and summary["blocking_line_count"] else 0
+    return 2 if blocked_by_gate else 0
 
 
 def select_order_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -189,6 +255,8 @@ def build_grouped_orders(
     batch_id: str,
     order_date: date,
     calculation_id: str,
+    source_run_id: str = "",
+    responsible_bitrix_user_id: str = "",
 ) -> list[dict[str, Any]]:
     code_index, group_index = build_lead_time_indexes(lead_time_rows)
     groups: dict[tuple[str, ...], list[dict[str, Any]]] = defaultdict(list)
@@ -251,6 +319,11 @@ def build_grouped_orders(
             "order_date": order_date.isoformat(),
             "responsible_name": _clean((lead_candidate or {}).get("responsible_name")),
             "calculation_id": calculation_id,
+            "source_run_id": source_run_id,
+            "responsible_bitrix_user_id": responsible_bitrix_user_id,
+            "payload": {
+                "supplier_profile": supplier_profile_payload(lead_candidate or {}),
+            },
         }
         product = catalog_resolver(xml_id) if xml_id else None
         blockers = _split_codes(row.get("blockers"))
@@ -273,6 +346,13 @@ def build_grouped_orders(
         quantity = _decimal(row.get("recommended_order_qty")) or Decimal("0")
         price = _decimal(row.get("latest_purchase_price")) or Decimal("0")
         b2b_customer_demand = _b2b_customer_demand_payload(row)
+        line_payload = procurement_assistant_line_payload(
+            row,
+            product=product,
+            lead_candidate=lead_candidate or {},
+        )
+        if b2b_customer_demand:
+            line_payload["b2b_customer_demand"] = b2b_customer_demand
         if price <= 0:
             blockers.append("purchase_price_missing")
         groups[key].append(
@@ -304,9 +384,7 @@ def build_grouped_orders(
                     if product and product.manual_minimum is not None
                     else None
                 ),
-                "payload": (
-                    {"b2b_customer_demand": b2b_customer_demand} if b2b_customer_demand else {}
-                ),
+                "payload": line_payload,
             }
         )
 
@@ -518,18 +596,49 @@ def build_summary(
     }
 
 
-def persist_grouped_orders(db: Session, orders: Sequence[Mapping[str, Any]]) -> list[int]:
+def persist_grouped_orders(
+    db: Session,
+    orders: Sequence[Mapping[str, Any]],
+    *,
+    supersede_open_batches: bool = False,
+) -> list[int]:
     persisted_ids: list[int] = []
     for payload in orders:
+        calculation_id = str(payload.get("calculation_id") or "").strip()
+        if not calculation_id:
+            raise ValueError("calculation_id is required to persist a procurement order")
+        requested_stable_key = str(payload["stable_key"])
+        line_key_namespace = ""
         order = db.scalar(
             select(ProcurementOrderFormation).where(
-                ProcurementOrderFormation.stable_key == payload["stable_key"]
+                ProcurementOrderFormation.stable_key == requested_stable_key
             )
         )
+        if order is not None and _order_is_immutable(order):
+            if order.calculation_id == calculation_id:
+                # Same calculation replayed against an immutable order: strict
+                # no-op, keep the original order untouched and return its id.
+                persisted_ids.append(order.id)
+                continue
+            # A different calculation must not mutate the immutable order, so it
+            # is routed into a fresh revision order with namespaced line keys.
+            requested_stable_key = _immutable_revision_stable_key(
+                payload,
+                calculation_id=calculation_id,
+            )
+            line_key_namespace = requested_stable_key
+            order = db.scalar(
+                select(ProcurementOrderFormation).where(
+                    ProcurementOrderFormation.stable_key == requested_stable_key
+                )
+            )
+            if order is not None and _order_is_immutable(order):
+                persisted_ids.append(order.id)
+                continue
         created = order is None
         if order is None:
             order = ProcurementOrderFormation(
-                stable_key=str(payload["stable_key"]),
+                stable_key=requested_stable_key,
                 status="draft",
                 version=1,
                 supplier_ref=payload["supplier"].get("ref") or None,
@@ -547,22 +656,52 @@ def persist_grouped_orders(db: Session, orders: Sequence[Mapping[str, Any]]) -> 
                 batch_id=str(payload["batch_id"]),
                 order_date=date.fromisoformat(str(payload["order_date"])),
                 responsible_name=payload.get("responsible_name") or None,
-                calculation_id=str(payload["calculation_id"]),
-                payload={"dry_run_source": True},
+                responsible_bitrix_user_id=(payload.get("responsible_bitrix_user_id") or None),
+                calculation_id=calculation_id,
+                source_run_id=payload.get("source_run_id") or None,
+                payload={
+                    "dry_run_source": True,
+                    "sync_source": "display_auto_order",
+                    **dict(payload.get("payload") or {}),
+                },
             )
             db.add(order)
             db.flush()
-        existing = {line.stable_key: line for line in order.lines}
         changed = False
+        if not created:
+            ensure_order_editable(order)
+            header_values = {
+                "calculation_id": calculation_id,
+                "source_run_id": payload.get("source_run_id") or None,
+                "responsible_bitrix_user_id": (payload.get("responsible_bitrix_user_id") or None),
+                "responsible_name": payload.get("responsible_name") or None,
+            }
+            for field_name, value in header_values.items():
+                if getattr(order, field_name) != value:
+                    setattr(order, field_name, value)
+                    changed = True
+            expected_payload = {
+                **(order.payload or {}),
+                "dry_run_source": True,
+                "sync_source": "display_auto_order",
+                **dict(payload.get("payload") or {}),
+            }
+            if order.payload != expected_payload:
+                order.payload = expected_payload
+                changed = True
+        existing = {line.stable_key: line for line in order.lines}
         seen: set[str] = set()
         for line_payload in payload.get("lines", []):
-            stable_key = str(line_payload["stable_key"])
+            stable_key = _line_stable_key(line_key_namespace, line_payload["stable_key"])
             seen.add(stable_key)
             line = existing.get(stable_key)
             if line is None:
                 line = ProcurementOrderFormationLine(order=order, stable_key=stable_key)
                 db.add(line)
                 changed = True
+                line_changed = False
+            else:
+                line_changed = False
             values = {
                 "line_number": int(line_payload["line_number"]),
                 "bitrix_product_id": line_payload.get("bitrix_product_id"),
@@ -597,16 +736,139 @@ def persist_grouped_orders(db: Session, orders: Sequence[Mapping[str, Any]]) -> 
                 if getattr(line, field_name, None) != value:
                     setattr(line, field_name, value)
                     changed = True
+                    line_changed = True
+            if line_changed and line.id is not None:
+                line.version += 1
         for stable_key, line in existing.items():
             if stable_key not in seen and not line.removed:
                 line.removed = True
+                line.version += 1
                 changed = True
         if changed and not created:
             invalidate_order_approval(order)
         db.flush()
+        if created or changed:
+            db.add(
+                ProcurementOrderFormationEvent(
+                    order_id=order.id,
+                    entity_type="order",
+                    entity_id=str(order.id),
+                    event_type="automatic_order_sync",
+                    actor="display-auto-order-sync",
+                    bitrix_user_id=(payload.get("responsible_bitrix_user_id") or None),
+                    idempotency_key=(
+                        f"auto-order-sync:{order.id}:v{order.version}:{calculation_id}"
+                    ),
+                    payload={
+                        "calculation_id": calculation_id,
+                        "source_run_id": payload.get("source_run_id"),
+                        "created": created,
+                    },
+                )
+            )
         persisted_ids.append(order.id)
+    if supersede_open_batches:
+        _supersede_previous_open_batches(db, active_order_ids=set(persisted_ids), orders=orders)
     db.commit()
     return persisted_ids
+
+
+def _order_is_immutable(order: ProcurementOrderFormation) -> bool:
+    return order.status in {"transmitting", "transmitted"} or order.onec_status in {
+        "pending",
+        "transmitted",
+    }
+
+
+def _is_display_auto_order(order: ProcurementOrderFormation) -> bool:
+    """Explicitly recognise orders produced by the display auto-order pipeline.
+
+    New orders carry the ``sync_source="display_auto_order"`` marker. Legacy
+    orders persisted before that marker existed only had ``dry_run_source=True``
+    and no ``sync_source`` key; they are identified by the deterministic
+    ``display-auto-order-`` calculation_id prefix that the cron always produces.
+    A foreign order that merely carries a generic ``dry_run_source`` flag (or a
+    different ``sync_source``) is therefore never treated as ours.
+    """
+
+    payload = order.payload or {}
+    if payload.get("sync_source") == "display_auto_order":
+        return True
+    return (
+        payload.get("dry_run_source") is True
+        and "sync_source" not in payload
+        and str(order.calculation_id or "").startswith("display-auto-order-")
+    )
+
+
+def _immutable_revision_stable_key(
+    payload: Mapping[str, Any],
+    *,
+    calculation_id: str,
+) -> str:
+    digest = hashlib.sha256(calculation_id.encode("utf-8")).hexdigest()[:12]
+    return f"{payload['stable_key']}:revision:{digest}"
+
+
+def _line_stable_key(namespace: str, raw_stable_key: Any) -> str:
+    """Return a globally unique, bounded stable key for a persisted line.
+
+    Line stable keys are globally unique. The normal (non-revision) path keeps
+    the raw key for backward compatibility. When an immutable order is re-synced
+    into a fresh revision order, its lines must not reuse the original line
+    stable keys, otherwise the insert violates ``uq_proc_order_line_stable_key``.
+    For a revision the key is a short SHA-256 digest of the revision order stable
+    key and the raw line key, which is deterministic and always fits String(255).
+    """
+
+    raw = str(raw_stable_key)
+    if not namespace:
+        return raw
+    digest = hashlib.sha256(f"{namespace}\n{raw}".encode()).hexdigest()
+    return f"revline:{digest}"
+
+
+def _supersede_previous_open_batches(
+    db: Session,
+    *,
+    active_order_ids: set[int],
+    orders: Sequence[Mapping[str, Any]],
+) -> None:
+    current_calculation_ids = {str(order.get("calculation_id") or "").strip() for order in orders}
+    candidates = db.scalars(select(ProcurementOrderFormation)).all()
+    for order in candidates:
+        payload = order.payload or {}
+        if (
+            order.id in active_order_ids
+            or not _is_display_auto_order(order)
+            or _order_is_immutable(order)
+            or order.status == "superseded"
+        ):
+            continue
+        previous_status = order.status
+        # Bump the version exactly once through the shared approval-invalidation
+        # mechanism, then mark the order superseded.
+        invalidate_order_approval(order)
+        order.status = "superseded"
+        order.payload = {
+            **payload,
+            "superseded_by_calculation_ids": sorted(current_calculation_ids),
+        }
+        db.add(
+            ProcurementOrderFormationEvent(
+                order_id=order.id,
+                entity_type="order",
+                entity_id=str(order.id),
+                event_type="automatic_order_superseded",
+                actor="display-auto-order-sync",
+                idempotency_key=(
+                    f"auto-order-supersede:{order.id}:"
+                    f"{','.join(sorted(current_calculation_ids))}"
+                ),
+                before={"status": previous_status},
+                after={"status": "superseded"},
+            )
+        )
 
 
 def read_csv(path: Path) -> list[dict[str, Any]]:
@@ -677,6 +939,72 @@ def _decimal(value: Any) -> Decimal | None:
 
 def _split_codes(value: Any) -> list[str]:
     return [item.strip() for item in _clean(value).replace(",", ";").split(";") if item.strip()]
+
+
+def procurement_assistant_line_payload(
+    row: Mapping[str, Any],
+    *,
+    product: BitrixCatalogProduct | None,
+    lead_candidate: Mapping[str, Any],
+) -> dict[str, Any]:
+    thumbnail = _clean(row.get("photo_thumbnail_url")) or _clean(
+        product.photo_thumbnail_url if product else ""
+    )
+    original = (
+        _clean(row.get("photo_original_url"))
+        or _clean(row.get("photo_url"))
+        or _clean(product.photo_original_url if product else "")
+    )
+    payload: dict[str, Any] = {}
+    if thumbnail or original:
+        payload["photos"] = [
+            {
+                "thumbnail": thumbnail or original,
+                "original": original,
+            }
+        ]
+    optional_values = {
+        "profitability_pct": _clean(
+            row.get("profitability_pct") or row.get("gross_margin_pct") or row.get("margin_pct")
+        ),
+        "supplier_defect_pct": _clean(row.get("supplier_defect_pct") or row.get("defect_pct")),
+        "supplier_defect_history_units": _clean(
+            row.get("supplier_defect_history_units") or row.get("defect_history_units")
+        ),
+        "price_change_pct": _clean(row.get("price_change_pct")),
+        "delivery_days": _clean(
+            lead_candidate.get("recommended_supplier_prepare_days") or row.get("delivery_days")
+        ),
+    }
+    payload.update({key: value for key, value in optional_values.items() if value})
+    return payload
+
+
+def supplier_profile_payload(candidate: Mapping[str, Any]) -> dict[str, Any]:
+    advantages = [
+        item.strip() for item in _clean(candidate.get("advantages")).split(";") if item.strip()
+    ]
+    values: dict[str, Any] = {
+        "qualification_class": _clean(
+            candidate.get("qualification_class") or candidate.get("supplier_class")
+        ),
+        "qualification_label": _clean(candidate.get("qualification_label")),
+        "profitability_pct": _clean(candidate.get("profitability_pct")),
+        "defect_pct": _clean(candidate.get("defect_pct") or candidate.get("supplier_defect_pct")),
+        "defect_history_units": _integer(
+            candidate.get("defect_history_units") or candidate.get("supplier_defect_history_units")
+        ),
+        "on_time_pct": _clean(candidate.get("on_time_pct")),
+        "payment_terms": _clean(candidate.get("payment_terms")),
+        "credit_days": _integer(candidate.get("credit_days")),
+        "credit_limit": _clean(candidate.get("credit_limit")),
+        "advantages": advantages,
+        "history_order_count": _integer(candidate.get("history_order_count")),
+        "updated_at": _clean(
+            candidate.get("updated_at") or candidate.get("latest_supplier_order_at")
+        ),
+    }
+    return {key: value for key, value in values.items() if value not in (None, "", [])}
 
 
 def _b2b_customer_demand_payload(row: Mapping[str, Any]) -> dict[str, Any]:

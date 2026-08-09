@@ -607,6 +607,13 @@ def test_declining_demand_moves_to_working_only_when_item_was_on_shelf() -> None
     assert starved.status == AssortmentStatus.SALE
     assert starved.reason_codes == ("demand_declining_without_shelf_presence",)
 
+    # Дней наличия нет в данных вообще — присутствие на полке не доказано,
+    # понижать статус нельзя (fail-safe из docs/specs/assortment-lifecycle-
+    # policy.md; до 2026-08-09 код в этом случае понижал до «Поддерживаем»).
+    unknown = _demand_decision(**declining)
+    assert unknown.status == AssortmentStatus.SALE
+    assert unknown.reason_codes == ("availability_data_missing",)
+
 
 def test_growing_demand_returns_from_working_to_sale() -> None:
     # Рост определяется двумя окнами: месяц заметно быстрее квартала.

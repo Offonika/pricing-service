@@ -121,9 +121,7 @@ def fetch_onec_order_payment_snapshots(
                 marked=_binary_flag(row.get("marked")),
                 posted=_binary_flag(row.get("posted")),
                 revision=_revision(row.get("revision")),
-                order_ref=(
-                    bytes(row["order_ref"]) if row.get("order_ref") is not None else None
-                ),
+                order_ref=(bytes(row["order_ref"]) if row.get("order_ref") is not None else None),
             )
             for row in rows
         ]

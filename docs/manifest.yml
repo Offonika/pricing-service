@@ -391,6 +391,16 @@ documents:
     related_code: [app/api/order_fulfillment.py, app/models/site_order_fulfillment.py, app/schemas/order_fulfillment.py, app/services/site_order_fulfillment.py, infra/cron/order_fulfillment_sync.py, scripts/apply_order_fulfillment_stage_outbox.py, scripts/build_order_fulfillment_stage_outbox.py, scripts/ensure_site_order_deal_stages.py]
     related_tests: [tests/test_ensure_site_order_deal_stages.py, tests/test_order_fulfillment_api.py, tests/test_order_fulfillment_parser.py, tests/test_order_fulfillment_stage_apply.py, tests/test_order_fulfillment_sync.py]
     keywords: [site-orders, order-flow, pickup, courier, bitrix-chat, bitrix24, logistics]
+  - path: docs/specs/order-payment-control-api.md
+    title: Order Payment Control API
+    doc_type: spec
+    domain: order_flow
+    status: implemented
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/api/order_payment_control.py, app/schemas/order_payment_control.py, app/services/order_payment_control.py]
+    related_tests: [tests/test_order_payment_control.py]
+    keywords: [site-orders, payments, cloudpayments, onec, read-only, amount-control, bitrix-task-1414]
   - path: docs/specs/site-defect-archive-search.md
     title: Site Defect Archive Search
     doc_type: spec
@@ -526,6 +536,7 @@ documents:
       - app/services/executive_instruments.py
       - app/services/executive_management_balance.py
       - tasks/build_executive_management_balance_snapshot.py
+      - tasks/export_executive_management_balance_components.py
       - infra/cron/executive_management_balance_snapshot.sh
       - infra/cron/executive_management_balance_snapshot.cron
       - ui/src/api/executiveDashboard.ts

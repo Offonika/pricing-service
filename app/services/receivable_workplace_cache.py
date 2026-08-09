@@ -16,13 +16,20 @@ from app.models import (
     ReceivableOpenDebtCache,
 )
 from app.services.counterparty_folder_recommendations import (
+    OPEN_DEBT_DIAGNOSTIC_MATCHED,
+    QUEUE_ACTIONABLE,
+    QUEUE_ALL,
+    QUEUE_BUSINESS_REVIEW,
+    QUEUE_DATA_QUALITY,
+    QUEUE_EXCLUDED,
     STATUS_MOVE_RECOMMENDED,
     STATUS_NEEDS_REVIEW,
     STATUS_NO_OVERDUE,
     STATUS_OK,
     build_open_debt_documents_by_counterparty,
+    classify_open_debt_documents,
+    enrich_folder_recommendation_item,
     evaluate_open_debt_source_freshness,
-    open_debt_documents_match_balance,
 )
 from app.services.receivables import CASE_BUYERS
 
@@ -37,6 +44,7 @@ class CachedOpenDebtDocuments:
     source_max_document_date: datetime | None = None
     source_lag_days: int | None = None
     hidden_counterparty_refs: frozenset[str] = frozenset()
+    document_mismatch_counterparty_refs: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -175,6 +183,9 @@ def load_cached_open_debt_documents(
         for row in rows
         if row.source_status in {"source_stale", "document_mismatch"}
     )
+    document_mismatch_counterparty_refs = frozenset(
+        _ref_key(row.counterparty_ref) for row in rows if row.source_status == "document_mismatch"
+    )
     freshness = evaluate_open_debt_source_freshness(
         session,
         snapshot_date=snapshot_date,
@@ -196,6 +207,7 @@ def load_cached_open_debt_documents(
         source_max_document_date=freshness.source_max_document_date,
         source_lag_days=freshness.source_lag_days,
         hidden_counterparty_refs=hidden_counterparty_refs,
+        document_mismatch_counterparty_refs=document_mismatch_counterparty_refs,
     )
 
 
@@ -229,6 +241,7 @@ def rebuild_open_debt_cache(
             ReceivableOpenDebtCache.counterparty_ref.not_in(active_counterparty_refs)
         )
     deleted_count = session.execute(stale_cache_delete).rowcount or 0
+    open_debt_diagnostics: dict[str, Any] = {}
     documents_by_counterparty = (
         build_open_debt_documents_by_counterparty(
             session,
@@ -236,19 +249,29 @@ def rebuild_open_debt_cache(
             snapshots=snapshots,
             snapshot_date=snapshot_date,
             include_onec_enrichment=include_onec_enrichment,
+            diagnostics=open_debt_diagnostics,
         )
         if freshness.source_status == "cache_ready"
         else {}
     )
     now = datetime.utcnow()
     updated_count = 0
+    diagnostic_counts: Counter[str] = Counter()
+    statement_sale_counts = open_debt_diagnostics.get("statement_sale_counts") or {}
     for snapshot in snapshots:
         key = _ref_key(snapshot.counterparty_ref)
         documents = documents_by_counterparty.get(key, [])
-        document_amount_mismatch = not open_debt_documents_match_balance(
-            documents,
-            current_balance=snapshot.current_balance,
+        document_diagnostic = (
+            classify_open_debt_documents(
+                documents,
+                current_balance=snapshot.current_balance,
+                statement_sale_count=int(statement_sale_counts.get(key) or 0),
+            )
+            if freshness.source_status == "cache_ready"
+            else freshness.source_status
         )
+        diagnostic_counts[document_diagnostic] += 1
+        document_amount_mismatch = document_diagnostic != OPEN_DEBT_DIAGNOSTIC_MATCHED
         row = session.scalar(
             select(ReceivableOpenDebtCache).where(
                 ReceivableOpenDebtCache.snapshot_date == snapshot_date,
@@ -281,6 +304,14 @@ def rebuild_open_debt_cache(
         "source_status": freshness.source_status,
         "source_max_document_date": freshness.source_max_document_date,
         "source_lag_days": freshness.source_lag_days,
+        "document_diagnostic_counts": dict(sorted(diagnostic_counts.items())),
+        "document_mismatch_count": sum(
+            count
+            for diagnostic, count in diagnostic_counts.items()
+            if diagnostic != OPEN_DEBT_DIAGNOSTIC_MATCHED
+        ),
+        "revealed_document_mismatch_count": 0,
+        "extra_cache_rows": 0,
     }
 
 
@@ -301,9 +332,13 @@ def _filter_folder_payload_for_access(
 
 
 def _folder_summary(
-    payload: list[dict[str, Any]], *, source_snapshot_count: int = 0
+    payload: list[dict[str, Any]],
+    *,
+    source_snapshot_count: int = 0,
+    queue_population: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     status_counts = Counter(str(item.get("status") or "") for item in payload)
+    queue_counts = Counter(str(item.get("queue") or "") for item in (queue_population or payload))
     return {
         "total_count": len(payload),
         "source_snapshot_count": source_snapshot_count,
@@ -311,6 +346,14 @@ def _folder_summary(
         "ok_count": status_counts[STATUS_OK],
         "no_overdue_count": status_counts[STATUS_NO_OVERDUE],
         "needs_review_count": status_counts[STATUS_NEEDS_REVIEW],
+        "queue_counts": dict(sorted(queue_counts.items())),
+        "actionable_count": queue_counts[QUEUE_ACTIONABLE],
+        "business_review_count": queue_counts[QUEUE_BUSINESS_REVIEW],
+        "data_quality_count": queue_counts[QUEUE_DATA_QUALITY],
+        "excluded_count": queue_counts[QUEUE_EXCLUDED],
+        "document_mismatch_count": sum(
+            item.get("open_debt_source_status") == "document_mismatch" for item in payload
+        ),
         "total_open_debt": sum(
             (_money(item.get("current_balance")) for item in payload),
             Decimal("0.00"),
@@ -361,6 +404,7 @@ def load_cached_folder_recommendation_report(
     *,
     snapshot_date: date,
     status: str | None = None,
+    queue: str = QUEUE_ALL,
     limit: int | None = None,
     allowed_department_refs: set[str] | frozenset[str] | None = None,
 ) -> dict[str, Any] | None:
@@ -372,12 +416,28 @@ def load_cached_folder_recommendation_report(
     )
     if row is None:
         return None
+    allowed_queues = {
+        QUEUE_ACTIONABLE,
+        QUEUE_BUSINESS_REVIEW,
+        QUEUE_DATA_QUALITY,
+        QUEUE_EXCLUDED,
+        QUEUE_ALL,
+    }
+    if queue not in allowed_queues:
+        raise ValueError(f"unsupported queue: {queue}")
+    source_status = "source_stale" if row.source_status == "source_stale" else "cache_ready"
     payload = _filter_folder_payload_for_access(
-        list(row.payload or []),
+        [
+            enrich_folder_recommendation_item(item, source_status=source_status)
+            for item in list(row.payload or [])
+        ],
         allowed_department_refs=allowed_department_refs,
     )
     if status:
         payload = [item for item in payload if item.get("status") == status]
+    queue_population = list(payload)
+    if queue != QUEUE_ALL:
+        payload = [item for item in payload if item.get("queue") == queue]
     if limit is not None:
         payload = payload[:limit]
     source_snapshot_count = int((row.summary or {}).get("source_snapshot_count") or len(payload))
@@ -385,11 +445,15 @@ def load_cached_folder_recommendation_report(
         "snapshot_date": row.snapshot_date,
         "report_revision": row.report_revision,
         "summary": _json_safe(
-            _folder_summary(payload, source_snapshot_count=source_snapshot_count)
+            _folder_summary(
+                payload,
+                source_snapshot_count=source_snapshot_count,
+                queue_population=queue_population,
+            )
         ),
         "payload": payload,
         "computed_at": row.computed_at,
-        "source_status": ("source_stale" if row.source_status == "source_stale" else "cache_ready"),
+        "source_status": source_status,
     }
 
 

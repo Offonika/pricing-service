@@ -241,8 +241,10 @@ if ! (
   cd "$RELEASE_DIR"
   PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$RELEASE_DIR" \
     "$PYTHON_BIN" scripts/export_openapi.py --check
+  PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$RELEASE_DIR" \
+    "$PYTHON_BIN" scripts/validate_cron_module_imports.py
 ); then
-  reject "candidate OpenAPI contract is stale"
+  reject "candidate OpenAPI contract is stale or cron module import failed"
 fi
 if ! (
   cd "$RELEASE_DIR"

@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import logging
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal, InvalidOperation
-from typing import Any
+from typing import Any, Literal
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -13,12 +14,16 @@ from app.core.config import get_settings
 from app.models import (
     ReceivableCase,
     ReceivableFolderRecommendationCache,
+    ReceivableSupervisorNote,
     ReceivableWorkEvent,
     ReceivableWorkItem,
     StaffMember,
 )
 from app.models.receivable_balance_snapshot import ReceivableBalanceSnapshot
 from app.schemas.receivable_workplace import (
+    ReceivableSupervisorNoteItem,
+    ReceivableSupervisorNoteMutationResponse,
+    ReceivableSupervisorNoteUpsertRequest,
     ReceivableWorkplaceActionRequest,
     ReceivableWorkplaceActionResponse,
     ReceivableWorkplaceDepartmentOption,
@@ -29,6 +34,7 @@ from app.schemas.receivable_workplace import (
     ReceivableWorkplaceStaffOption,
     ReceivableWorkplaceStatusOption,
     ReceivableWorkplaceSummary,
+    SupervisorNoteVisibility,
 )
 from app.services.counterparty_folder_recommendations import (
     build_open_debt_documents_by_counterparty,
@@ -47,6 +53,7 @@ from app.services.receivable_workflow import (
     debt_age_days,
     debt_key_for_case,
     needs_call_on_date,
+    reset_receivable_debt_cycle,
     stable_key_for_counterparty,
     utcnow,
 )
@@ -61,7 +68,11 @@ from app.services.receivables import CASE_BUYERS
 logger = logging.getLogger(__name__)
 
 DEFAULT_CREDIT_DEPTH_DAYS = 7
+WorkplaceSortBy = Literal["balance", "overdue_days"]
+WorkplaceSortDir = Literal["asc", "desc"]
 WORKPLACE_EVENT_MANAGER_UPDATE = "manager_update"
+WORKPLACE_EVENT_SUPERVISOR_NOTE_UPSERT = "supervisor_note_upserted"
+WORKPLACE_EVENT_SUPERVISOR_NOTE_DELETE = "supervisor_note_deleted"
 WORKPLACE_PAYLOAD_KEYS = {
     "contacted_staff_ref",
     "contacted_staff_name",
@@ -83,6 +94,13 @@ MANUAL_STATUS_OPTIONS = [
     ReceivableWorkplaceStatusOption(value="waiting_payment", label="Ждем оплату"),
     ReceivableWorkplaceStatusOption(value="call_back", label="Перезвонить"),
     ReceivableWorkplaceStatusOption(value="intervention_required", label="Требуется вмешательство"),
+    ReceivableWorkplaceStatusOption(
+        value="not_ours_transfer",
+        label=(
+            "Не наш, прошу перенести ответственным "
+            "(необходимо указать долгообразующую РТУ, если возможно)"
+        ),
+    ),
     ReceivableWorkplaceStatusOption(value="remind", label="Напомнить"),
     ReceivableWorkplaceStatusOption(value="paid", label="Оплачено"),
     ReceivableWorkplaceStatusOption(value="transfer", label="Перемещение", scope="pyatigorsk"),
@@ -177,6 +195,25 @@ def _action_idempotency_key(counterparty_ref: str, action_id: str | None) -> str
     if not normalized:
         return None
     return f"receivable-workplace:{stable_key_for_counterparty(counterparty_ref)}:{normalized}"
+
+
+def _supervisor_note_idempotency_key(
+    counterparty_ref: str,
+    *,
+    author_user_id: str,
+    visibility: SupervisorNoteVisibility,
+    operation: str,
+    action_id: str | None,
+) -> str | None:
+    normalized = str(action_id or "").strip()
+    if not normalized:
+        return None
+    action_digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()[:32]
+    return (
+        "receivable-supervisor-note:"
+        f"{stable_key_for_counterparty(counterparty_ref)}:{author_user_id}:"
+        f"{visibility}:{operation}:{action_digest}"
+    )
 
 
 def _selected_debt_document_date(open_debt_documents: list[dict[str, Any]]) -> datetime | None:
@@ -629,6 +666,8 @@ def _build_item(
     open_debt_documents: list[dict[str, Any]] | None = None,
     counterparty_code: str | None = None,
     hide_open_debt_documents: bool = False,
+    suppress_unverified_overdue: bool = False,
+    supervisor_notes: list[ReceivableSupervisorNoteItem] | None = None,
 ) -> ReceivableWorkplaceItem:
     has_open_debt_source = open_debt_documents is not None
     open_debt_documents = _sort_open_debt_documents(open_debt_documents or [])
@@ -636,7 +675,11 @@ def _build_item(
         open_debt_documents = []
     primary_open_document = open_debt_documents[0] if open_debt_documents else {}
     debt_document_date = _selected_debt_document_date(open_debt_documents)
-    if hide_open_debt_documents:
+    if suppress_unverified_overdue:
+        effective_due_date = None
+        effective_overdue_days = None
+        needs_default_credit_depth = False
+    elif hide_open_debt_documents:
         effective_due_date, needs_default_credit_depth = _effective_due_date(case)
         effective_overdue_days, _ = _effective_overdue_days(case, as_of=as_of)
     elif has_open_debt_source and not open_debt_documents:
@@ -677,10 +720,14 @@ def _build_item(
     item_payload = _payload_dict(item)
     phone = item.phone if item is not None else None
     phone_status = item.phone_status if item is not None else ("present" if phone else "missing")
-    needs_call = _needs_call_today(
-        item=item,
-        effective_overdue_days=effective_overdue_days,
-        as_of=as_of,
+    needs_call = (
+        False
+        if suppress_unverified_overdue
+        else _needs_call_today(
+            item=item,
+            effective_overdue_days=effective_overdue_days,
+            as_of=as_of,
+        )
     )
     status = item.status if item is not None else (STATUS_NO_PHONE if not phone else "new_debt")
     responsible_ref = (
@@ -732,6 +779,7 @@ def _build_item(
         criticality=_criticality(effective_overdue_days),
         documents=documents,
         staff_options=_staff_options_for_case(case=case, staff_members=staff_members),
+        supervisor_notes=supervisor_notes or [],
     )
 
 
@@ -767,6 +815,74 @@ def _load_work_items(
         .all()
     )
     return {item.counterparty_ref: item for item in items}
+
+
+def _supervisor_note_item(
+    note: ReceivableSupervisorNote,
+    *,
+    viewer_user_id: str | None,
+    viewer_can_edit: bool,
+) -> ReceivableSupervisorNoteItem:
+    return ReceivableSupervisorNoteItem(
+        id=note.id,
+        visibility=note.visibility,
+        comment=note.comment,
+        author_user_id=note.author_bitrix_user_id,
+        author_name=note.author_name,
+        created_at=note.created_at,
+        updated_at=note.updated_at,
+        can_edit=(
+            viewer_can_edit
+            and viewer_user_id is not None
+            and note.author_bitrix_user_id == viewer_user_id
+        ),
+    )
+
+
+def _load_visible_supervisor_notes(
+    session: Session,
+    *,
+    work_items: list[ReceivableWorkItem],
+    viewer_user_id: str | None,
+    viewer_can_edit: bool,
+) -> dict[int, list[ReceivableSupervisorNoteItem]]:
+    work_item_ids = [item.id for item in work_items if item.id is not None]
+    if not work_item_ids:
+        return {}
+    visibility_clause = ReceivableSupervisorNote.visibility == "shared"
+    if viewer_user_id is not None:
+        visibility_clause = or_(
+            visibility_clause,
+            ReceivableSupervisorNote.author_bitrix_user_id == viewer_user_id,
+        )
+    rows = (
+        session.execute(
+            select(ReceivableSupervisorNote)
+            .where(
+                ReceivableSupervisorNote.work_item_id.in_(work_item_ids),
+                ReceivableSupervisorNote.deleted_at.is_(None),
+                visibility_clause,
+            )
+            .order_by(
+                ReceivableSupervisorNote.work_item_id,
+                ReceivableSupervisorNote.visibility,
+                ReceivableSupervisorNote.updated_at.desc(),
+                ReceivableSupervisorNote.id,
+            )
+        )
+        .scalars()
+        .all()
+    )
+    result: dict[int, list[ReceivableSupervisorNoteItem]] = {}
+    for row in rows:
+        result.setdefault(row.work_item_id, []).append(
+            _supervisor_note_item(
+                row,
+                viewer_user_id=viewer_user_id,
+                viewer_can_edit=viewer_can_edit,
+            )
+        )
+    return result
 
 
 def _load_counterparty_codes_from_folder_cache(
@@ -927,8 +1043,13 @@ def build_receivable_workplace(
     snapshot_date: date,
     department_ref: str | None = None,
     status: str | None = None,
+    min_debt: Decimal | None = None,
     limit: int = 500,
+    sort_by: WorkplaceSortBy = "balance",
+    sort_dir: WorkplaceSortDir = "desc",
     allowed_department_refs: set[str] | frozenset[str] | None = None,
+    viewer_user_id: str | None = None,
+    viewer_can_edit_supervisor_notes: bool = False,
 ) -> ReceivableWorkplaceResponse:
     cases = _load_cases(session, snapshot_date=snapshot_date)
     if allowed_department_refs is not None:
@@ -963,6 +1084,12 @@ def build_receivable_workplace(
         session,
         counterparty_refs=[case.counterparty_ref for case in cases],
     )
+    supervisor_notes_by_work_item = _load_visible_supervisor_notes(
+        session,
+        work_items=list(work_items.values()),
+        viewer_user_id=viewer_user_id,
+        viewer_can_edit=viewer_can_edit_supervisor_notes,
+    )
     counterparty_codes = _load_counterparty_codes_from_folder_cache(
         session,
         snapshot_date=snapshot_date,
@@ -974,6 +1101,8 @@ def build_receivable_workplace(
             for case in cases
             if _status_for_case(case, work_items.get(case.counterparty_ref)) == status
         ]
+    if min_debt is not None:
+        cases = [case for case in cases if case.current_balance > min_debt]
     cases.sort(key=_case_sort_key, reverse=True)
     open_debt_cache = load_cached_open_debt_documents(
         session,
@@ -1019,18 +1148,34 @@ def build_receivable_workplace(
                 open_debt_source_status == "source_stale"
                 or _ref_key(case.counterparty_ref) in open_debt_cache.hidden_counterparty_refs
             ),
+            suppress_unverified_overdue=(
+                _ref_key(case.counterparty_ref)
+                in open_debt_cache.document_mismatch_counterparty_refs
+            ),
+            supervisor_notes=(
+                supervisor_notes_by_work_item.get(work_items[case.counterparty_ref].id, [])
+                if case.counterparty_ref in work_items
+                else []
+            ),
         )
         for case in cases
     ]
     items = [item for item in items if (item.effective_overdue_days or 0) > 0]
-    items.sort(
-        key=lambda item: (
+
+    def sort_key(item: ReceivableWorkplaceItem) -> tuple[int | Decimal, Decimal | int, str]:
+        if sort_by == "overdue_days":
+            return (
+                item.effective_overdue_days or 0,
+                item.current_balance,
+                item.counterparty_name or "",
+            )
+        return (
             item.current_balance,
             item.effective_overdue_days or 0,
             item.counterparty_name or "",
-        ),
-        reverse=True,
-    )
+        )
+
+    items.sort(key=sort_key, reverse=sort_dir == "desc")
     visible_items = items[:limit]
     cache_status = workplace_cache_status(session, snapshot_date=snapshot_date)
     cache_status["open_debt"]["source_status"] = open_debt_source_status
@@ -1078,15 +1223,26 @@ def _find_staff(
 
 def _refresh_work_item_from_case(
     *,
+    session: Session,
     item: ReceivableWorkItem,
     case: ReceivableCase,
     as_of: date,
 ) -> None:
+    debt_key = debt_key_for_case(case)
+    reset_receivable_debt_cycle(
+        session,
+        item=item,
+        new_debt_key=debt_key,
+        current_balance=case.current_balance,
+        phone=item.phone,
+        as_of=as_of,
+        source="web_workplace_refresh",
+    )
     payload = _payload_dict(item)
     preserved = {key: payload.get(key) for key in WORKPLACE_PAYLOAD_KEYS if key in payload}
     item.counterparty_ref = case.counterparty_ref
     item.counterparty_name = case.counterparty_name
-    item.current_debt_key = debt_key_for_case(case)
+    item.current_debt_key = debt_key
     item.current_balance = case.current_balance
     item.origin_document_ref = case.origin_document_ref
     item.origin_document_number = case.origin_document_number
@@ -1133,7 +1289,7 @@ def _get_or_create_work_item(
         )
         session.add(item)
         session.flush()
-    _refresh_work_item_from_case(item=item, case=case, as_of=as_of)
+    _refresh_work_item_from_case(session=session, item=item, case=case, as_of=as_of)
     return item
 
 
@@ -1144,6 +1300,8 @@ def apply_receivable_workplace_action(
     counterparty_ref: str,
     payload: ReceivableWorkplaceActionRequest,
     allowed_department_refs: set[str] | frozenset[str] | None = None,
+    viewer_user_id: str | None = None,
+    viewer_can_edit_supervisor_notes: bool = False,
 ) -> ReceivableWorkplaceActionResponse | None:
     case = _get_case_or_none(
         session,
@@ -1206,6 +1364,12 @@ def apply_receivable_workplace_action(
                     counterparty_refs=[case.counterparty_ref],
                 ).documents_by_counterparty.get(_ref_key(case.counterparty_ref)),
                 counterparty_code=counterparty_code,
+                supervisor_notes=_load_visible_supervisor_notes(
+                    session,
+                    work_items=[item],
+                    viewer_user_id=viewer_user_id,
+                    viewer_can_edit=viewer_can_edit_supervisor_notes,
+                ).get(item.id, []),
             )
             return ReceivableWorkplaceActionResponse(
                 item=response_item,
@@ -1224,6 +1388,7 @@ def apply_receivable_workplace_action(
     previous_promised_payment_date = item.promised_payment_date
     previous_last_contact_at = item.last_contact_at
     previous_comment = item.last_contact_comment
+    payload_comment: str | None = None
 
     if payload.status is not None:
         item.status = payload.status
@@ -1245,7 +1410,8 @@ def apply_receivable_workplace_action(
         payload_dict["payment_postponed"] = False
     if "comment" in fields_set:
         comment = payload.comment.strip() if payload.comment else ""
-        item.last_contact_comment = comment or None
+        payload_comment = comment or None
+        item.last_contact_comment = payload_comment
     if "contacted_staff_ref" in fields_set or "contacted_staff_name" in fields_set:
         payload_dict["contacted_staff_ref"] = payload.contacted_staff_ref
         payload_dict["contacted_staff_name"] = (
@@ -1257,6 +1423,12 @@ def apply_receivable_workplace_action(
                 else payload.contacted_staff_name
             )
         )
+
+    manager_comment_cleared = payload.status == "paid" and previous_status != "paid"
+    event_comment = item.last_contact_comment
+    if manager_comment_cleared:
+        event_comment = payload_comment or previous_comment
+        item.last_contact_comment = None
 
     now = utcnow()
     contact_changed = any(
@@ -1285,7 +1457,7 @@ def apply_receivable_workplace_action(
         event_type=WORKPLACE_EVENT_MANAGER_UPDATE,
         event_at=now,
         source="web_workplace",
-        comment=item.last_contact_comment,
+        comment=event_comment,
         payload={
             "status": item.status,
             "contacted_staff_ref": payload_dict.get("contacted_staff_ref"),
@@ -1304,6 +1476,7 @@ def apply_receivable_workplace_action(
             "payment_postponed": False,
             "payment_postponed_added": bool(payload.payment_postponed),
             "payment_postponed_count": payload_dict.get("payment_postponed_count", 0),
+            "manager_comment_cleared": manager_comment_cleared,
             "action_id": payload.action_id,
         },
         idempotency_key=action_key,
@@ -1329,6 +1502,12 @@ def apply_receivable_workplace_action(
             snapshot_date=snapshot_date,
             counterparty_refs=[case.counterparty_ref],
         ).get(_ref_key(case.counterparty_ref)),
+        supervisor_notes=_load_visible_supervisor_notes(
+            session,
+            work_items=[item],
+            viewer_user_id=viewer_user_id,
+            viewer_can_edit=viewer_can_edit_supervisor_notes,
+        ).get(item.id, []),
     )
     return ReceivableWorkplaceActionResponse(
         item=response_item,
@@ -1338,4 +1517,225 @@ def apply_receivable_workplace_action(
             "source": event.source,
         },
         cache_status=workplace_cache_status(session, snapshot_date=snapshot_date),
+    )
+
+
+def _supervisor_note_event_payload(
+    note: ReceivableSupervisorNote,
+    *,
+    operation: str,
+) -> dict[str, Any]:
+    return {
+        "note_id": note.id,
+        "visibility": note.visibility,
+        "author_user_id": note.author_bitrix_user_id,
+        "operation": operation,
+        "comment_length": len(note.comment),
+    }
+
+
+def upsert_receivable_supervisor_note(
+    session: Session,
+    *,
+    snapshot_date: date,
+    counterparty_ref: str,
+    visibility: SupervisorNoteVisibility,
+    payload: ReceivableSupervisorNoteUpsertRequest,
+    author_user_id: str,
+    author_name: str,
+    allowed_department_refs: set[str] | frozenset[str] | None = None,
+) -> ReceivableSupervisorNoteMutationResponse | None:
+    case = _get_case_or_none(
+        session,
+        snapshot_date=snapshot_date,
+        counterparty_ref=counterparty_ref,
+    )
+    if case is None:
+        return None
+    if not _department_allowed(
+        case.department_ref,
+        allowed_department_refs=allowed_department_refs,
+    ):
+        raise PermissionError("receivable workplace item is outside allowed departments")
+    comment = payload.comment.strip()
+    if not comment:
+        raise ValueError("Supervisor note cannot be empty")
+    item = _get_or_create_work_item(session, case=case, as_of=snapshot_date)
+    action_key = _supervisor_note_idempotency_key(
+        counterparty_ref,
+        author_user_id=author_user_id,
+        visibility=visibility,
+        operation="upsert",
+        action_id=payload.action_id,
+    )
+    if action_key:
+        existing_event = session.scalar(
+            select(ReceivableWorkEvent).where(ReceivableWorkEvent.idempotency_key == action_key)
+        )
+        if existing_event is not None:
+            existing_note = session.scalar(
+                select(ReceivableSupervisorNote).where(
+                    ReceivableSupervisorNote.work_item_id == item.id,
+                    ReceivableSupervisorNote.author_bitrix_user_id == author_user_id,
+                    ReceivableSupervisorNote.visibility == visibility,
+                    ReceivableSupervisorNote.deleted_at.is_(None),
+                )
+            )
+            return ReceivableSupervisorNoteMutationResponse(
+                note=(
+                    _supervisor_note_item(
+                        existing_note,
+                        viewer_user_id=author_user_id,
+                        viewer_can_edit=True,
+                    )
+                    if existing_note is not None
+                    else None
+                ),
+                event={
+                    "event_type": existing_event.event_type,
+                    "event_at": existing_event.event_at.isoformat(),
+                    "source": existing_event.source,
+                    "idempotent": True,
+                },
+            )
+
+    note = session.scalar(
+        select(ReceivableSupervisorNote).where(
+            ReceivableSupervisorNote.work_item_id == item.id,
+            ReceivableSupervisorNote.author_bitrix_user_id == author_user_id,
+            ReceivableSupervisorNote.visibility == visibility,
+        )
+    )
+    now = utcnow()
+    if note is None:
+        note = ReceivableSupervisorNote(
+            work_item=item,
+            author_bitrix_user_id=author_user_id,
+            author_name=author_name,
+            visibility=visibility,
+            comment=comment,
+            created_at=now,
+            updated_at=now,
+        )
+        session.add(note)
+    else:
+        if note.deleted_at is not None:
+            note.created_at = now
+        note.author_name = author_name
+        note.comment = comment
+        note.updated_at = now
+        note.deleted_at = None
+    session.flush()
+    event = ReceivableWorkEvent(
+        work_item=item,
+        event_type=WORKPLACE_EVENT_SUPERVISOR_NOTE_UPSERT,
+        event_at=now,
+        source="web_workplace",
+        comment=None,
+        payload=_supervisor_note_event_payload(
+            note,
+            operation="upsert",
+        ),
+        idempotency_key=action_key,
+    )
+    session.add(event)
+    session.flush()
+    return ReceivableSupervisorNoteMutationResponse(
+        note=_supervisor_note_item(
+            note,
+            viewer_user_id=author_user_id,
+            viewer_can_edit=True,
+        ),
+        event={
+            "event_type": event.event_type,
+            "event_at": event.event_at.isoformat(),
+            "source": event.source,
+        },
+    )
+
+
+def delete_receivable_supervisor_note(
+    session: Session,
+    *,
+    snapshot_date: date,
+    counterparty_ref: str,
+    visibility: SupervisorNoteVisibility,
+    action_id: str | None,
+    author_user_id: str,
+    allowed_department_refs: set[str] | frozenset[str] | None = None,
+) -> ReceivableSupervisorNoteMutationResponse | None:
+    case = _get_case_or_none(
+        session,
+        snapshot_date=snapshot_date,
+        counterparty_ref=counterparty_ref,
+    )
+    if case is None:
+        return None
+    if not _department_allowed(
+        case.department_ref,
+        allowed_department_refs=allowed_department_refs,
+    ):
+        raise PermissionError("receivable workplace item is outside allowed departments")
+    item = session.scalar(
+        select(ReceivableWorkItem).where(
+            ReceivableWorkItem.stable_key == stable_key_for_counterparty(counterparty_ref)
+        )
+    )
+    if item is None:
+        return None
+    action_key = _supervisor_note_idempotency_key(
+        counterparty_ref,
+        author_user_id=author_user_id,
+        visibility=visibility,
+        operation="delete",
+        action_id=action_id,
+    )
+    if action_key:
+        existing_event = session.scalar(
+            select(ReceivableWorkEvent).where(ReceivableWorkEvent.idempotency_key == action_key)
+        )
+        if existing_event is not None:
+            return ReceivableSupervisorNoteMutationResponse(
+                note=None,
+                event={
+                    "event_type": existing_event.event_type,
+                    "event_at": existing_event.event_at.isoformat(),
+                    "source": existing_event.source,
+                    "idempotent": True,
+                },
+            )
+    note = session.scalar(
+        select(ReceivableSupervisorNote).where(
+            ReceivableSupervisorNote.work_item_id == item.id,
+            ReceivableSupervisorNote.author_bitrix_user_id == author_user_id,
+            ReceivableSupervisorNote.visibility == visibility,
+            ReceivableSupervisorNote.deleted_at.is_(None),
+        )
+    )
+    if note is None:
+        return None
+    now = utcnow()
+    note.deleted_at = now
+    note.updated_at = now
+    event = ReceivableWorkEvent(
+        work_item=item,
+        event_type=WORKPLACE_EVENT_SUPERVISOR_NOTE_DELETE,
+        event_at=now,
+        source="web_workplace",
+        comment=None,
+        payload=_supervisor_note_event_payload(
+            note,
+            operation="delete",
+        ),
+        idempotency_key=action_key,
+    )
+    session.add(event)
+    session.flush()
+    return ReceivableSupervisorNoteMutationResponse(
+        note=None,
+        event={
+            "event_type": event.event_type,
+            "event_at": event.event_at.isoformat(),
+            "source": event.source,
+        },
     )

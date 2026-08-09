@@ -106,14 +106,18 @@ def load_price_type_ruleset(path: str | Path) -> PriceTypeRuleset:
     return PriceTypeRuleset(
         version=str(payload["ruleset_version"]),
         effective_date=date.fromisoformat(str(payload["effective_date"])),
+        buyers_root_group_ref=str(population["buyers_root_group_ref"]),
+        contract_kind_ref=str(population["contract_kind_ref"]),
         retail_prefixes=tuple(price_types.get("retail_prefixes", ["Розница"])),
         key_account_prefixes=tuple(price_types.get("key_account_prefixes", ["Key Account"])),
         variants=tuple(price_types.get("variants", ["бн", "USD"])),
         levels=levels,
         upgrades_frozen=bool(payload["upgrades"]["frozen"]),
         zero_months_to_recovery=int(payload["sleeping"]["zero_months_to_recovery"]),
-        dead_after_months=int(payload["sleeping"]["dead_after_months"]),
+        history_window_months=int(payload["working_contracts"]["window_months"]),
+        working_contract_min_sale_documents=int(payload["working_contracts"]["min_sale_documents"]),
         mismatch_max_pct=_decimal(payload["economics"]["data_mismatch_max_pct"]),
+        exclude_without_sales_history=bool(population.get("exclude_without_sales_history", False)),
         excluded_registry_classes=frozenset(population["excluded_registry_classes"]),
         hygiene_registry_classes=frozenset(population["hygiene_registry_classes"]),
         required_sources=tuple(
@@ -219,6 +223,38 @@ class CustomerPriceTypeRulesEngine:
                 return variant.casefold()
         return None
 
+    def _canonical_price_type(self, level_key: str) -> str:
+        if level_key == "retail":
+            return self.ruleset.retail_prefixes[0]
+        if level_key == "key_account":
+            return self.ruleset.key_account_prefixes[0]
+        return next(
+            level.price_type_prefix for level in self.ruleset.levels if level.key == level_key
+        )
+
+    def _usable_contracts(
+        self, facts: CustomerPriceTypeFacts
+    ) -> tuple[tuple[Any, str, str | None], ...]:
+        result: list[tuple[Any, str, str | None]] = []
+        for contract in facts.contracts:
+            if contract.price_type_missing or contract.price_type_marked:
+                continue
+            level, variant = self._price_type(contract.price_type_name)
+            if level is not None:
+                result.append((contract, level, variant))
+        return tuple(result)
+
+    def _is_working_contract(self, contract: Any) -> bool:
+        document_count = int(contract.sale_document_count_12m or 0)
+        return document_count >= self.ruleset.working_contract_min_sale_documents
+
+    def _selection_contracts(
+        self, facts: CustomerPriceTypeFacts
+    ) -> tuple[tuple[Any, str, str | None], ...]:
+        usable = self._usable_contracts(facts)
+        working = tuple(item for item in usable if self._is_working_contract(item[0]))
+        return working or usable
+
     def _manual_override(self, facts: CustomerPriceTypeFacts) -> ManualOverride | None:
         month = _month_key(facts.snapshot_month)
         normalized_ref = normalize_counterparty_ref(facts.counterparty_ref)
@@ -253,7 +289,7 @@ class CustomerPriceTypeRulesEngine:
         return values, sum(values, Decimal("0"))
 
     def _consecutive_zero_months(self, facts: CustomerPriceTypeFacts) -> int:
-        months = min(facts.history_coverage_months, self.ruleset.dead_after_months)
+        months = min(facts.history_coverage_months, self.ruleset.history_window_months)
         count = 0
         for offset in range(months):
             key = _month_key(_add_months(facts.snapshot_month, -offset))
@@ -298,6 +334,18 @@ class CustomerPriceTypeRulesEngine:
         excluded: bool = False,
     ) -> CustomerPriceTypeDecision:
         values, total = self._window_values(facts)
+        calculation_contract_refs = tuple(
+            str(contract.contract_ref)
+            for contract, _, _ in self._selection_contracts(facts)
+            if contract.contract_ref
+        )
+        price_type_change_contract_refs = (
+            calculation_contract_refs
+            if recommended_price_type is not None
+            and current_price_type is not None
+            and recommended_price_type != current_price_type
+            else ()
+        )
         decision = CustomerPriceTypeDecision(
             source_status=source_status,
             current_level=current_level,
@@ -311,6 +359,8 @@ class CustomerPriceTypeRulesEngine:
             review_type=review_type,
             reasons=reasons or (reason,),
             stop_factors=stop_factors,
+            calculation_contract_refs=calculation_contract_refs,
+            price_type_change_contract_refs=price_type_change_contract_refs,
             total_3m=total,
             last_month=values[-1],
             consecutive_zero_months=self._consecutive_zero_months(facts),
@@ -360,34 +410,87 @@ class CustomerPriceTypeRulesEngine:
                 excluded=True,
             )
 
-        contracts = facts.contracts
-        raw_types = tuple(
-            contract.price_type_name for contract in contracts if contract.price_type_name
-        )
-        current_price_type = raw_types[0] if len(raw_types) == 1 else None
-        current_level, variant = self._price_type(current_price_type)
+        has_recorded_sales = any(_decimal(value) != 0 for value in facts.monthly_sales.values())
+        if (
+            self.ruleset.exclude_without_sales_history
+            and facts.first_activity_date is None
+            and facts.history_coverage_months == 0
+            and not has_recorded_sales
+        ):
+            return self._decision(
+                facts,
+                source_status="excluded",
+                current_level=None,
+                current_price_type=None,
+                price_type_variant=None,
+                recommendation="excluded_without_sales_history",
+                recommended_price_type=None,
+                reason=(
+                    "Карточка исключена из рабочего списка: в 1С нет ни одной "
+                    "покупки и отсутствует история продаж."
+                ),
+                action_required=False,
+                case_type=None,
+                review_type=None,
+                stop_factors=("no_sales_history",),
+                excluded=True,
+            )
 
+        contracts = facts.contracts
         if not contracts:
+            return self._data_check(facts, "active_contract_missing", None, None, None)
+        working_contracts = tuple(
+            contract for contract in contracts if self._is_working_contract(contract)
+        )
+        if working_contracts:
+            if any(contract.price_type_missing for contract in working_contracts):
+                return self._data_check(facts, "price_type_missing", None, None, None)
+            if any(contract.price_type_marked for contract in working_contracts):
+                return self._data_check(facts, "price_type_marked", None, None, None)
+            if any(
+                self._price_type(contract.price_type_name)[0] is None
+                for contract in working_contracts
+            ):
+                return self._data_check(facts, "unknown_price_type", None, None, None)
+        validation_contracts = working_contracts or contracts
+        usable_contracts = self._selection_contracts(facts)
+        if not working_contracts:
+            if any(contract.price_type_missing for contract in validation_contracts):
+                return self._data_check(facts, "price_type_missing", None, None, None)
+            if any(contract.price_type_marked for contract in validation_contracts):
+                return self._data_check(facts, "price_type_marked", None, None, None)
+            if any(
+                self._price_type(contract.price_type_name)[0] is None
+                for contract in validation_contracts
+            ):
+                return self._data_check(facts, "unknown_price_type", None, None, None)
+        if not usable_contracts:
+            if any(contract.price_type_missing for contract in validation_contracts):
+                return self._data_check(facts, "price_type_missing", None, None, None)
+            if any(contract.price_type_marked for contract in validation_contracts):
+                return self._data_check(facts, "price_type_marked", None, None, None)
+            return self._data_check(facts, "unknown_price_type", None, None, None)
+
+        levels = {level for _, level, _ in usable_contracts}
+        if len(levels) != 1:
+            return self._data_check(facts, "conflicting_price_levels", None, None, None)
+
+        current_level = next(iter(levels))
+        normalized_types = {
+            " ".join(str(contract.price_type_name or "").split()).casefold()
+            for contract, _, _ in usable_contracts
+        }
+        if len(normalized_types) != 1:
             return self._data_check(
-                facts, "active_contract_missing", current_level, current_price_type, variant
+                facts,
+                "conflicting_price_type_variants",
+                current_level,
+                None,
+                None,
             )
-        if len(contracts) != 1:
-            return self._data_check(
-                facts, "multi_contract", current_level, current_price_type, variant
-            )
-        contract = contracts[0]
-        if contract.price_type_missing:
-            return self._data_check(
-                facts, "price_type_missing", current_level, current_price_type, variant
-            )
-        if contract.price_type_marked:
-            return self._data_check(
-                facts, "price_type_marked", current_level, current_price_type, variant
-            )
-        if current_level is None:
-            return self._data_check(
-                facts, "unknown_price_type", current_level, current_price_type, variant
-            )
+        current_price_type = " ".join(str(usable_contracts[0][0].price_type_name or "").split())
+        variants = {variant for _, _, variant in usable_contracts}
+        variant = next(iter(variants)) if len(variants) == 1 else None
         if facts.duplicate_flag:
             return self._data_check(
                 facts, "duplicate_counterparty", current_level, current_price_type, variant
@@ -576,30 +679,6 @@ class CustomerPriceTypeRulesEngine:
                 case_type="special_review",
                 review_type="key_account",
                 stop_factors=("key_account",),
-            )
-        if zero_months >= self.ruleset.dead_after_months:
-            if facts.economics_status not in {"ok", "ready"}:
-                return self._data_check(
-                    facts,
-                    "economics_missing",
-                    current_level,
-                    current_price_type,
-                    variant,
-                    stop_factors=("economics_required",),
-                )
-            return self._decision(
-                facts,
-                source_status="ready",
-                current_level=current_level,
-                current_price_type=current_price_type,
-                price_type_variant=variant,
-                recommendation="downgrade_to_retail",
-                recommended_price_type=self.ruleset.retail_prefixes[0],
-                reason="Продаж нет 12 и более месяцев; нужна ручная проверка перед розницей.",
-                action_required=True,
-                case_type="recovery",
-                review_type="dead_soul",
-                stop_factors=("human_approval_required",),
             )
         if zero_months >= self.ruleset.zero_months_to_recovery:
             return self._decision(

@@ -52,12 +52,16 @@
   отклоняется автоматически.
 - Аксессуары для программирования аккумуляторов, отдельные ячейки и держатели
   SIM отделяются от готового аккумулятора на уровне catalog guardrails.
-- Ограничение: исторические top-K, score и снимок признаков на момент решения пока
-  не сохраняются, поэтому отчёт не является полным replay embedding matcher.
+- Для новых решений сохраняются top-K, score/gap и снимок признаков на момент решения.
+  Исторические строки без snapshot используются только для поиска правил и hard negatives,
+  а полноценная replay-оценка строится на новых snapshot-данных с временным split.
 
 ## MVP пайплайна «разбор → embeddings → матчинг»
 
-- Ограничение: один `competitor_item` → максимум один `Product`. Авто/LLM создают `suggested`, `accepted` выставляется вручную/отдельной командой; `accepted/manual` не трогаем без `--force`.
+- Ограничение: один `competitor_item` → максимум один `Product`. Pipeline создаёт
+  `suggested/needs_review/ambiguous`, а `accepted` — вручную либо именованным
+  категорийным auto-accept правилом после validation gate. `accepted/manual` не трогаем
+  без явного revoke; общий unique-auto-accept отключён.
 - `item_type` (LLM + гардрейлы) фиксированный список: `display`, `battery`, `camera`, `flex`, `housing`, `connector`, `cable`, `board`, `other`.
 - Пороги по умолчанию (env/CLI): `TOP_K=20`, `TOP_K_LLM=5`, `MIN_LLM_CONFIDENCE=0.60`, `MIN_EMBED_SCORE=0.40`, `MIN_GAP=0.02`.
 - Хранилище эмбеддингов: без pgvector, файл `embeddings/our_catalog_{model}_{dim}.npy` + JSON-индекс `embeddings/our_catalog_index.json`; кеш в памяти, инкрементальный пересчёт только изменившихся SKU/competitor_item.
@@ -66,4 +70,7 @@
   - `./.venv/bin/python -m tasks.extract_competitor_attrs`: LLM отдаёт `{item_type, normalized_title, attrs, confidence, uncertain_fields}`, пишет `attrs_json/llm_confidence/llm_raw_json/parse_status`, умеет `--only-null/--only-bad/--overwrite` и перезапуск ошибок (invalid_json/timeout/low_confidence/conflict). Для отладки можно писать сэмплы в файл через `--samples-file`.
   - `./.venv/bin/python -m tasks.compute_embeddings`: считает эмбеддинги для наших SKU и новых/обновлённых `competitor_item` (normalized_title + attrs_string), сохраняет `.npy` + index.
   - `./.venv/bin/python -m tasks.match_competitor_items_embeddings`: brute-force cosine → top-K, гардрейлы (item_type/brand/variant/stop-слова, score_gap, + battery capacity / display type / connector type), при проходе порога опциональный LLM-арбитр на top-5, запись в `competitor_item_match` со счётами и `rationale_json`. Для рестарта по статусам: `--only-open` или `--include-status`, для отладки `--samples-file`, `--report-file`, `--report-csv` (CSV включает parsed/normalized поля и best-product метаданные).
+  - `./.venv/bin/python -m tasks.evaluate_competitor_matching_policy`: read-only offline
+    replay по decision snapshots, хронологический 80/20 split и JSON-артефакт
+    объяснимого NumPy reranker без новой runtime-зависимости.
   - Общие флаги: `--limit/--batch-size/--workers`, `--only-null/--overwrite/--force`, `--min-llm-confidence`, `--min-embed-score`, `--min-gap`, `--top-k`, `--top-k-llm`, `--dry-run`, фильтры для рестарта (`parse_status!=ok`, `llm_confidence<t`, рематч только `suggested/needs_review/ambiguous`).

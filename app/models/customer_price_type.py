@@ -280,6 +280,74 @@ class CustomerPriceTypeCaseEvent(Base):
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
 
 
+class CustomerPriceTypeReviewBatch(Base):
+    __tablename__ = "customer_price_type_review_batch"
+    __table_args__ = (
+        UniqueConstraint("batch_key", name="uq_customer_price_type_review_batch_key"),
+        CheckConstraint(
+            "status IN ('ready','superseded')",
+            name="ck_customer_price_type_review_batch_status",
+        ),
+        Index("ix_customer_price_type_review_batch_status", "status"),
+    )
+
+    batch_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    label: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_sha256: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_files: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    expected_counts: Mapped[dict[str, int]] = mapped_column(JSON, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="ready")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CustomerPriceTypeReviewBatchItem(Base):
+    __tablename__ = "customer_price_type_review_batch_item"
+    __table_args__ = (
+        UniqueConstraint(
+            "batch_id",
+            "counterparty_ref",
+            name="uq_customer_price_type_review_batch_item_ref",
+        ),
+        UniqueConstraint(
+            "batch_id",
+            "counterparty_code",
+            name="uq_customer_price_type_review_batch_item_code",
+        ),
+        CheckConstraint(
+            "expected_bucket IN ('working_bronze','review_queue')",
+            name="ck_customer_price_type_review_batch_item_bucket",
+        ),
+        CheckConstraint(
+            "counterparty_ref = lower(counterparty_ref)",
+            name="ck_customer_price_type_review_batch_item_ref_lower",
+        ),
+        Index(
+            "ix_customer_price_type_review_batch_item_bucket",
+            "batch_id",
+            "expected_bucket",
+        ),
+    )
+
+    batch_id: Mapped[int] = mapped_column(
+        ForeignKey("customer_price_type_review_batch.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    counterparty_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    counterparty_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    expected_bucket: Mapped[str] = mapped_column(String(32), nullable=False)
+    expected_price_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    source_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_row: Mapped[int] = mapped_column(nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+
+
 class CustomerPriceTypeQualitySample(Base):
     __tablename__ = "customer_price_type_quality_sample"
     __table_args__ = (

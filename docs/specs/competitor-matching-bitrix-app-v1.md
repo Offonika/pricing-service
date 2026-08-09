@@ -5,17 +5,20 @@ doc_type: spec
 domain: matching
 status: accepted
 owner: engineering
-source_of_truth: true
+source_of_truth: false
 related_code: [app/api/bitrix_matching.py, app/services/bitrix_matching_auth.py, ui/]
 related_tests: [tests/test_matching_api.py]
 contracts: [openapi.yaml]
 depends_on: [docs/specs/competitor-matching-ui-v1.md]
 supersedes: []
 rollout_required: true
-updated_at: "2026-05-01"
+updated_at: "2026-07-31"
 ---
 
 # Назначение
+
+Это расширение канонического item-level контура
+`docs/specs/competitor-matching-ui-v1.md`; при расхождении приоритет у него.
 
 Встроить текущий ручной интерфейс сопоставления товаров в Bitrix24 как локальное
 приложение-страницу, не перенося данные и бизнес-логику в Bitrix24.
@@ -53,3 +56,21 @@ updated_at: "2026-05-01"
 
 - Smoke: `/` требует Basic, `/bitrix/matching/` открывается без Basic, matching API без auth
   возвращает 401, с Bitrix Bearer возвращает товары.
+
+# Change Summary / Spec Delta
+
+- Документ больше не объявляет себя самостоятельным source of truth: он описывает
+  только Bitrix24-вход в канонический item-level контур.
+- Контракты сессии, авторизации и аудита решений не меняются.
+
+# Acceptance Criteria
+
+- Bitrix24 iframe использует те же matching endpoints и данные, что standalone UI.
+- Решения сохраняют идентичность Bitrix-пользователя в `created_by`.
+- При расхождении требований применяется `competitor-matching-ui-v1.md`.
+
+# Implementation Checklist
+
+- [x] Канонический item-level spec указан единственной зависимостью.
+- [x] `source_of_truth=false` зафиксирован во frontmatter.
+- [x] Security, API и smoke-контракты Bitrix24 сохранены без изменений.

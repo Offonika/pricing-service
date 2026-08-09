@@ -16,6 +16,7 @@ import {
   fetchExecutiveDashboardActions,
   fetchExecutiveInstruments,
   fetchExecutiveManagementBalance,
+  fetchExecutiveManagementBalanceTurnover,
   fetchExecutiveOnlineStorePeriod,
   fetchExecutiveProfitLossPeriod,
   fetchExecutiveSalesPeriod,
@@ -28,6 +29,7 @@ vi.mock("../api/executiveDashboard", () => ({
   fetchExecutiveDashboardActions: vi.fn(),
   fetchExecutiveInstruments: vi.fn(),
   fetchExecutiveManagementBalance: vi.fn(),
+  fetchExecutiveManagementBalanceTurnover: vi.fn(),
   fetchExecutiveOnlineStorePeriod: vi.fn(),
   fetchExecutiveProfitLossPeriod: vi.fn(),
   fetchExecutiveSalesPeriod: vi.fn(),
@@ -525,6 +527,7 @@ describe("executive management balance", () => {
   afterEach(() => {
     cleanup();
     vi.mocked(fetchExecutiveManagementBalance).mockReset();
+    vi.mocked(fetchExecutiveManagementBalanceTurnover).mockReset();
   });
 
   it("renders the balance separately from the KPI cards", () => {
@@ -605,12 +608,178 @@ describe("executive management balance", () => {
       note: "Оперативный срез",
     });
 
-    render(<MonthlyManagementBalance asOf="2026-07-13" canCloseMonth={false} refreshNonce={0} />);
+    render(<MonthlyManagementBalance canCloseMonth={false} refreshNonce={0} />);
 
     expect(await screen.findByText("Сверка зарплаты выполнена частично")).toBeVisible();
+    expect(fetchExecutiveManagementBalance).toHaveBeenCalledWith({
+      month: undefined,
+      view: undefined,
+    });
     expect(screen.getByText(/Неподтверждено:/)).toHaveTextContent(/4\s*301\s*900 ₽/);
     expect(screen.getByText(/Неподтверждено:/)).toHaveTextContent("в итог баланса не включено");
     expect(screen.getByText(/Неподтверждено:/)).toHaveTextContent("Сопоставлено сотрудников: 0%");
+  });
+
+  it("shows a trial balance scoped to UT 10.3 and accrued BP taxes", async () => {
+    vi.mocked(fetchExecutiveManagementBalance).mockResolvedValue({
+      month: "2026-06",
+      balance_date: "2026-06-30",
+      view: "closed",
+      version: 2,
+      status: "closed",
+      source_status: "ready",
+      freshness_status: "fresh",
+      generated_at: "2026-06-30T10:00:00+03:00",
+      currency: "RUB",
+      assets: [],
+      liabilities: [],
+      equity: [],
+      assets_total: "120.00",
+      liabilities_total: "85.00",
+      equity_total: "35.00",
+      liabilities_and_equity_total: "120.00",
+      imbalance_amount: "0.00",
+      can_close: false,
+      validation_errors: [],
+      source_summary: {},
+      available_months: ["2026-06"],
+      note: "Закрытый месяц",
+    });
+    vi.mocked(fetchExecutiveManagementBalanceTurnover).mockResolvedValue({
+      month: "2026-06",
+      date_from: "2026-01-01",
+      date_to: "2026-06-30",
+      opening_balance_date: "2026-01-01",
+      view: "closed",
+      opening_version: 1,
+      closing_version: 2,
+      opening_status: "closed",
+      closing_status: "closed",
+      opening_validation_error_count: 0,
+      opening_content_sha256: "a".repeat(64),
+      closing_content_sha256: "b".repeat(64),
+      turnover_method: "mixed_gross_cashflow_and_net_change",
+      source_scope: "onec_ut_10_3_plus_bp_accrued_taxes",
+      source_status: "ready",
+      currency: "RUB",
+      lines: [
+        {
+          key: "cash",
+          label: "Денежные средства",
+          section: "asset",
+          opening_balance: "100.00",
+          debit_turnover: "40.00",
+          credit_turnover: "20.00",
+          closing_balance: "120.00",
+          reconciliation_difference: "0.00",
+          turnover_method: "gross_cashflow_movements",
+          source_key: "onec_cash_position",
+          source_status: "ready",
+        },
+        {
+          key: "taxes_payable",
+          label: "Начисленные налоги",
+          section: "liability",
+          opening_balance: "10.00",
+          debit_turnover: "0.00",
+          credit_turnover: "5.00",
+          closing_balance: "15.00",
+          reconciliation_difference: "0.00",
+          turnover_method: "net_change_from_snapshots",
+          source_key: "onec_bp_tax_accounting",
+          source_status: "ready",
+        },
+      ],
+      totals: [
+        {
+          section: "asset",
+          label: "Итого активы",
+          opening_balance: "100.00",
+          debit_turnover: "20.00",
+          credit_turnover: "0.00",
+          closing_balance: "120.00",
+          reconciliation_difference: "0.00",
+          unknown_line_count: 0,
+        },
+        {
+          section: "liability",
+          label: "Итого обязательства",
+          opening_balance: "10.00",
+          debit_turnover: "0.00",
+          credit_turnover: "5.00",
+          closing_balance: "15.00",
+          reconciliation_difference: "0.00",
+          unknown_line_count: 0,
+        },
+        {
+          section: "equity",
+          label: "Итого собственные средства",
+          opening_balance: "0.00",
+          debit_turnover: "0.00",
+          credit_turnover: "0.00",
+          closing_balance: "0.00",
+          reconciliation_difference: "0.00",
+          unknown_line_count: 0,
+        },
+      ],
+      excluded_lines: [
+        {
+          key: "fixed_assets_net",
+          source_key: "onec_bp_fixed_assets",
+          reason: "В БП для ОСВ разрешена только строка начисленных налогов",
+        },
+      ],
+      opening_imbalance_amount: "0.00",
+      closing_imbalance_amount: "0.00",
+      opening_scope_imbalance_amount: "90.00",
+      closing_scope_imbalance_amount: "105.00",
+      unknown_line_count: 0,
+      available_months: ["2026-06", "2026-07"],
+      available_period_starts: ["2026-01", "2026-07"],
+      available_period_ends: ["2026-06", "2026-07"],
+      selected_month_from: "2026-01",
+      selected_month_to: "2026-06",
+      note:
+        "Диапазон применяется ко всей ОСВ. По денежным средствам показаны валовые движения УТ 10.3.",
+    });
+
+    render(<MonthlyManagementBalance canCloseMonth={false} refreshNonce={0} />);
+
+    expect(await screen.findByText("Оборотно-сальдовая ведомость")).toBeVisible();
+    expect(screen.getByText(/Диапазон применяется ко всей ОСВ/)).toBeVisible();
+    expect(screen.getByLabelText("Начальный месяц оборотно-сальдовой ведомости")).toHaveValue(
+      "2026-01"
+    );
+    expect(screen.getByLabelText("Конечный месяц оборотно-сальдовой ведомости")).toHaveValue(
+      "2026-06"
+    );
+    fireEvent.change(screen.getByLabelText("Конечный месяц оборотно-сальдовой ведомости"), {
+      target: { value: "2026-07" },
+    });
+    fireEvent.change(screen.getByLabelText("Начальный месяц оборотно-сальдовой ведомости"), {
+      target: { value: "2026-07" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Показать ОСВ" }));
+    await waitFor(() =>
+      expect(fetchExecutiveManagementBalanceTurnover).toHaveBeenLastCalledWith({
+        month: "2026-06",
+        monthFrom: "2026-07",
+        monthTo: "2026-07",
+        view: "closed",
+      })
+    );
+    const table = screen.getByRole("table", {
+      name: "Оборотно-сальдовая ведомость по статьям баланса",
+    });
+    const cashRow = within(table).getByText("Денежные средства").closest("tr");
+    expect(cashRow).toHaveTextContent(/100 ₽/);
+    expect(cashRow).toHaveTextContent(/40 ₽/);
+    expect(cashRow).toHaveTextContent("Валовые обороты 1С");
+    expect(within(table).getByText("Начисленные налоги").closest("tr")).toHaveTextContent(
+      /10 ₽/
+    );
+    expect(screen.getByText(/Не включено строк БП: 1/)).toBeVisible();
+    expect(screen.getByText("Итоги ограниченного контура не равны")).toBeVisible();
   });
 });
 
@@ -1434,7 +1603,7 @@ describe("executive online store tab", () => {
 
 function instrumentsResponse(): ExecutiveInstrumentsResponse {
   return {
-    schema_version: 2,
+    schema_version: 3,
     generated_at: "2026-07-31T09:00:00Z",
     source_status: "partial",
     freshness_status: "fresh",
@@ -1499,6 +1668,25 @@ function instrumentsResponse(): ExecutiveInstrumentsResponse {
           attention_grant_count: 1,
           next_review_at: "2026-08-31",
         },
+        problems: [
+          {
+            problem_key: "backup:unprotected-datastores",
+            category: "backup",
+            severity: "warning",
+            title: "Резервирование требует настройки или проверки",
+            evidence: ["Не защищено хранилищ: 1"],
+            started_at: "2026-07-30T09:00:00Z",
+            recommended_action: "Проверить копию и выполнить restore-test",
+          },
+          {
+            problem_key: "access:review-required",
+            category: "access",
+            severity: "warning",
+            title: "Требуется ревизия доступов",
+            evidence: ["Назначений на ревизию: 1"],
+            recommended_action: "Проверить владельца и актуальность доступа",
+          },
+        ],
         issue: "Резервирование требует настройки или проверки",
         recommended_action: "Проверить копию и выполнить restore-test",
       },
@@ -1533,6 +1721,16 @@ function instrumentsResponse(): ExecutiveInstrumentsResponse {
           unowned_credentials: 0,
           attention_grant_count: 0,
         },
+        problems: [
+          {
+            problem_key: "monitoring:not-configured",
+            category: "monitoring",
+            severity: "warning",
+            title: "Мониторинг не настроен",
+            evidence: ["Нет успешных автоматических проверок"],
+            recommended_action: "Подключить устройство к безопасному мониторингу",
+          },
+        ],
       },
     ],
     warnings: [],
@@ -1553,17 +1751,34 @@ describe("executive instruments tab", () => {
 
   afterEach(cleanup);
 
-  it("renders infrastructure, 1C, backup and read-only access control", () => {
+  it("shows attention by default and opens detailed read-only diagnostics", () => {
     render(<InstrumentsPanel data={instrumentsResponse()} message="" status="ready" />);
 
-    expect(screen.getByLabelText("Сводка по приборам")).toHaveTextContent("Пробелы backup1");
-    expect(screen.getByText("Офисный Windows-сервер новой 1С КА/БП/ЗУП")).toBeVisible();
-    expect(screen.getAllByText(/Restore-test/)[0]).toBeVisible();
-    expect(screen.getAllByText(/Покрытие 24 ч/)[0]).toBeVisible();
-    expect(screen.getByText("Требуют внимания: 1")).toBeVisible();
+    expect(screen.getByRole("button", { name: /Требуют внимания\s*2/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /Проблемы backup\s*1/ })).toBeVisible();
+    expect(within(screen.getByLabelText("Список приборов")).getByText("Офисный Windows-сервер новой 1С КА/БП/ЗУП")).toBeVisible();
     expect(screen.getByText(/источник частично|источник partial/i)).toBeVisible();
-    expect(screen.getByText("Контроль доступов — следующий этап")).toBeVisible();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Подробнее: Офисный Windows-сервер новой 1С КА/БП/ЗУП" })[0]);
+
+    expect(screen.getByRole("dialog", { name: "Офисный Windows-сервер новой 1С КА/БП/ЗУП" })).toBeVisible();
+    expect(screen.getByText("Что сейчас не так")).toBeVisible();
+    expect(screen.getByText("Restore-test")).toBeVisible();
+    expect(screen.getByText("Мониторинг и проверки")).toBeVisible();
     expect(screen.getByText(/Выдача и отзыв доступов отключены/)).toBeVisible();
+    expect(new URLSearchParams(window.location.search).get("device")).toBe("onec-ka-bp-zup-win");
+  });
+
+  it("combines KPI, search and kind filters", () => {
+    render(<InstrumentsPanel data={instrumentsResponse()} message="" status="ready" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Все\s*2/ }));
+    fireEvent.change(screen.getByLabelText("Поиск прибора"), { target: { value: "мониторинг" } });
+
+    const list = within(screen.getByLabelText("Список приборов"));
+    expect(list.getByText("Устройство без мониторинга")).toBeVisible();
+    expect(list.queryByText("Офисный Windows-сервер новой 1С КА/БП/ЗУП")).not.toBeInTheDocument();
+    expect(screen.getByText("Показано 1 из 2")).toBeVisible();
   });
 
   it("shows missing source and snapshot freshness explicitly", () => {
@@ -1609,6 +1824,8 @@ describe("executive instruments tab", () => {
 
     render(<InstrumentsPanel data={data} message="" status="ready" />);
 
+    fireEvent.click(screen.getAllByRole("button", { name: /^Подробнее: / })[0]);
+
     const exchange = within(screen.getAllByLabelText("Обмен с сайтом")[0]);
     expect(exchange.getByText("Обмен с сайтом: критично")).toBeVisible();
     expect(exchange.getByText(/Очередь: 3.?600/)).toBeVisible();
@@ -1619,6 +1836,8 @@ describe("executive instruments tab", () => {
 
   it("defaults legacy exchange to not configured", () => {
     render(<InstrumentsPanel data={instrumentsResponse()} message="" status="ready" />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Подробнее: / })[0]);
 
     expect(screen.getAllByLabelText("Обмен с сайтом")[0]).toHaveTextContent(
       "Обмен с сайтом: не настроено"
@@ -1644,6 +1863,8 @@ describe("executive instruments tab", () => {
 
     render(<InstrumentsPanel data={data} message="" status="ready" />);
 
+    fireEvent.click(screen.getAllByRole("button", { name: /^Подробнее: / })[0]);
+
     const exchange = screen.getAllByLabelText("Обмен с сайтом")[0];
     expect(exchange).toHaveTextContent("Очередь: — · —");
     expect(exchange).toHaveTextContent("Ошибок подряд: —");
@@ -1668,6 +1889,8 @@ describe("executive instruments tab", () => {
     };
 
     render(<InstrumentsPanel data={data} message="" status="ready" />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Подробнее: / })[0]);
 
     const exchange = screen.getAllByLabelText("Обмен с сайтом")[0];
     expect(exchange).toHaveTextContent("Обмен с сайтом: не настроено");

@@ -32,6 +32,8 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         CustomerPriceTypeCaseEvent,
         CustomerPriceTypeProfile,
         CustomerPriceTypeQualitySample,
+        CustomerPriceTypeReviewBatch,
+        CustomerPriceTypeReviewBatchItem,
         CustomerPriceTypeRun,
         CustomerPriceTypeSnapshot,
     )
@@ -90,6 +92,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         ProcurementOrderFormation,
         ProcurementOrderFormationEvent,
         ProcurementOrderFormationLine,
+        ProcurementSupplierProfile,
     )
     from app.models.product import Product
     from app.models.product_compatibility import ProductCompatibility
@@ -103,10 +106,12 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.product_stock import ProductStock
     from app.models.receivable_balance_snapshot import ReceivableBalanceSnapshot
     from app.models.receivable_case import ReceivableCase
+    from app.models.receivable_credit_decision import ReceivableCreditDecisionOperation
     from app.models.receivable_ledger_event import ReceivableLedgerEvent
     from app.models.receivable_reconciliation_snapshot import ReceivableReconciliationSnapshot
     from app.models.receivable_work import (
         ReceivableSmsLog,
+        ReceivableSupervisorNote,
         ReceivableWorkEvent,
         ReceivableWorkItem,
     )
@@ -149,6 +154,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "ProcurementOrderFormationLine",
         "ProcurementOrderFormationEvent",
         "ProcurementClassificationProposal",
+        "ProcurementSupplierProfile",
         "ProcurementLifecycleTransitionProposal",
         "ProductCompatibility",
         "Competitor",
@@ -164,6 +170,8 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "CustomerPriceTypeCase",
         "CustomerPriceTypeCaseEvent",
         "CustomerPriceTypeQualitySample",
+        "CustomerPriceTypeReviewBatch",
+        "CustomerPriceTypeReviewBatchItem",
         "CompetitorFtpFile",
         "CompetitorFtpRawRow",
         "CompetitorFtpRecord",
@@ -251,9 +259,11 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "ReceivableBalanceSnapshot",
         "ReceivableReconciliationSnapshot",
         "ReceivableCase",
+        "ReceivableCreditDecisionOperation",
         "ReceivableWorkItem",
         "ReceivableWorkEvent",
         "ReceivableSmsLog",
+        "ReceivableSupervisorNote",
         "ReceivableOpenDebtCache",
         "ReceivableFolderRecommendationCache",
         "ReceivableBitrixUserAccess",

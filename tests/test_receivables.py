@@ -28,6 +28,7 @@ from app.services.receivables import (
     _build_synthetic_receivable_ref,
     _find_unpaid_origin_event,
     _resolve_counterparty_credit_terms,
+    _resolve_counterparty_credit_terms_from_values,
     build_receivable_balance_snapshots,
     build_receivable_cases,
     build_receivable_opening_import_events,
@@ -436,6 +437,24 @@ def test_credit_terms_ignore_zero_depth_and_dates_before_origin() -> None:
         events,
         origin_event=origin_event,
         snapshot_date=date(2026, 3, 20),
+    )
+
+    assert result["planned_payment_date"] is None
+    assert result["credit_depth_days"] is None
+    assert result["payment_term_source"] == "missing"
+    assert result["due_date"] is None
+    assert result["overdue_days"] is None
+    assert result["is_overdue"] is False
+
+
+def test_credit_terms_ignore_stale_dates_for_non_positive_balance() -> None:
+    result = _resolve_counterparty_credit_terms_from_values(
+        planned_payment_date=datetime(1983, 7, 6, 0, 0, 0),
+        credit_depth_days=None,
+        shipment_ban=False,
+        origin_document_date=None,
+        snapshot_date=date(2026, 7, 26),
+        current_balance=Decimal("-0.14"),
     )
 
     assert result["planned_payment_date"] is None
@@ -1795,7 +1814,7 @@ def test_build_receivable_reconciliation_strict_overrides_do_not_duplicate_same_
         assert total == Decimal("33.00")
 
 
-def test_build_receivable_cases_keeps_signed_buyers_but_skips_negative_debt_cases() -> None:
+def test_build_receivable_cases_keeps_negative_reconciliation_out_of_buyer_cases() -> None:
     app_engine = create_engine("sqlite:///:memory:")
     onec_engine = create_engine("sqlite:///:memory:")
     Base.metadata.create_all(app_engine)
@@ -1807,6 +1826,11 @@ def test_build_receivable_cases_keeps_signed_buyers_but_skips_negative_debt_case
     with Session(app_engine) as session:
         sync_receivable_ledger(session, events)
         build_receivable_balance_snapshots(
+            session,
+            snapshot_date=date(2026, 3, 20),
+            current_balance_overrides={"контрагент c": Decimal("-25.00")},
+        )
+        build_receivable_reconciliation_snapshots(
             session,
             snapshot_date=date(2026, 3, 20),
             current_balance_overrides={"контрагент c": Decimal("-25.00")},
@@ -1825,7 +1849,7 @@ def test_build_receivable_cases_keeps_signed_buyers_but_skips_negative_debt_case
             .all()
         )
 
-        assert result["segments"]["buyers"] == 3
+        assert result["segments"]["buyers"] == 2
         assert result["segments"]["new_daily"] == 1
         assert result["segments"]["employee"] == 1
         assert result["segments"]["overdue"] == 1
@@ -1834,16 +1858,18 @@ def test_build_receivable_cases_keeps_signed_buyers_but_skips_negative_debt_case
         assert result["segments"].get("adjustment_candidates", 0) == 0
         assert [(item.segment, item.counterparty_ref) for item in cases] == [
             ("buyers", "cp-a"),
-            ("buyers", "cp-c"),
             ("buyers", "cp-d"),
             ("employee", "cp-b"),
             ("new_daily", "cp-d"),
             ("overdue", "cp-b"),
         ]
-        cp_c_buyer = next(
-            item for item in cases if item.segment == "buyers" and item.counterparty_ref == "cp-c"
+        assert not any(item.counterparty_ref == "cp-c" for item in cases)
+        reconciliation = (
+            session.query(ReceivableReconciliationSnapshot)
+            .filter(ReceivableReconciliationSnapshot.counterparty_ref == "cp-c")
+            .one()
         )
-        assert cp_c_buyer.current_balance == Decimal("-25.00")
+        assert reconciliation.signed_balance == Decimal("-25.00")
 
 
 def test_build_receivable_cases_creates_required_segments() -> None:
@@ -2046,12 +2072,10 @@ def test_build_receivable_cases_skips_new_daily_when_prepayment_covers_sale() ->
         result = build_receivable_cases(session, snapshot_date=date(2026, 3, 20))
         session.commit()
 
-        assert result["segments"]["buyers"] == 1
+        assert result["segments"].get("buyers", 0) == 0
         assert result["segments"].get("new_daily", 0) == 0
         cases = session.query(ReceivableCase).all()
-        assert len(cases) == 1
-        assert cases[0].segment == "buyers"
-        assert cases[0].current_balance == Decimal("-10.00")
+        assert cases == []
 
 
 def test_build_receivable_cases_limits_adjustment_candidates_to_buyers_pool() -> None:

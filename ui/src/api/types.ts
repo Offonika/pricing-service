@@ -121,11 +121,31 @@ export interface DecisionHistoryItem {
   name?: string;
   action: "accept" | "reject" | "revoke";
   reason?: string;
+  reason_code: MatchingDecisionReasonCode;
   created_by?: string;
   created_at: string;
   previous_product_id?: number;
   previous_status?: string;
+  snapshot_schema_version?: number;
+  snapshot_score?: number;
+  snapshot_rank?: number;
+  snapshot_top_k_count: number;
 }
+
+export type MatchingDecisionReasonCode =
+  | "legacy_unspecified"
+  | "wrong_model"
+  | "wrong_item_type"
+  | "wrong_quality"
+  | "wrong_color"
+  | "wrong_frame"
+  | "wrong_part_number"
+  | "wrong_capacity"
+  | "duplicate_or_irrelevant"
+  | "confirmed_exact_code"
+  | "confirmed_attributes"
+  | "auto_false_positive"
+  | "other";
 
 export interface DecisionHistoryResponse {
   items: DecisionHistoryItem[];

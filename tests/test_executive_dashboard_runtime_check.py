@@ -86,6 +86,17 @@ def _payloads() -> dict[str, dict]:
                 }
             },
         },
+        "management_balance_turnover": {
+            "month": "2026-07",
+            "date_from": "2026-01-01",
+            "date_to": "2026-07-11",
+            "source_scope": "onec_ut_10_3_plus_bp_accrued_taxes",
+            "turnover_method": "net_change_from_snapshots",
+            "source_status": "partial",
+            "lines": [],
+            "totals": [],
+            "excluded_lines": [],
+        },
         "service_accruals": {
             "month": "2026-07",
             "source_status": "ready",
@@ -114,6 +125,8 @@ def _runtime_handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json=payloads["sales"])
     if path.endswith("/service-accruals"):
         return httpx.Response(200, json=payloads["service_accruals"])
+    if path.endswith("/management-balance-turnover"):
+        return httpx.Response(200, json=payloads["management_balance_turnover"])
     if path.endswith("/management-balance"):
         return httpx.Response(200, json=payloads["management_balance"])
     if path == "/api/management/executive-dashboard":
@@ -133,8 +146,79 @@ def test_collect_runtime_checks_accepts_empty_actions_and_session_probe_422() ->
         )
 
     assert not errors
-    assert len(checks) == 9
+    assert len(checks) == 10
     assert payloads["actions"]["payload"] == []
+
+
+def test_monitor_runtime_check_skips_heavy_period_endpoints() -> None:
+    requested_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_paths.append(request.url.path)
+        return _runtime_handler(request)
+
+    with httpx.Client(
+        base_url="http://dashboard.test",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        checks, payloads, errors = collect_runtime_checks(
+            client,
+            requested_date=date(2026, 7, 11),
+            headers={"Authorization": "Bearer test"},
+            mode="monitor",
+        )
+
+    assert not errors
+    assert len(checks) == 8
+    assert "cashflow" not in payloads
+    assert "profit_loss" not in payloads
+    assert not any(path.endswith("/cashflow-period") for path in requested_paths)
+    assert not any(path.endswith("/profit-loss-period") for path in requested_paths)
+
+
+def test_release_runtime_check_keeps_heavy_period_endpoints() -> None:
+    requested_paths: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requested_paths.append(request.url.path)
+        return _runtime_handler(request)
+
+    with httpx.Client(
+        base_url="http://dashboard.test",
+        transport=httpx.MockTransport(handler),
+    ) as client:
+        checks, payloads, errors = collect_runtime_checks(
+            client,
+            requested_date=date(2026, 7, 11),
+            headers={"Authorization": "Bearer test"},
+            mode="release",
+        )
+
+    assert not errors
+    assert len(checks) == 10
+    assert "cashflow" in payloads
+    assert "profit_loss" in payloads
+    assert any(path.endswith("/cashflow-period") for path in requested_paths)
+    assert any(path.endswith("/profit-loss-period") for path in requested_paths)
+
+
+def test_monitor_data_health_allows_omitted_heavy_period_payloads() -> None:
+    payloads = _payloads()
+    payloads.pop("cashflow")
+    payloads.pop("profit_loss")
+    payloads["dashboard"]["blocks"][1].update(
+        source_status="ready",
+        freshness_status="fresh",
+    )
+
+    status, degraded, errors = evaluate_data_health(
+        payloads,
+        now=datetime(2026, 7, 11, 12, 0, tzinfo=MOSCOW_TZ),
+    )
+
+    assert status == "degraded"
+    assert all(item["name"] not in {"cashflow", "profit_loss"} for item in degraded)
+    assert not errors
 
 
 def test_collect_runtime_checks_rejects_http_and_schema_failures() -> None:

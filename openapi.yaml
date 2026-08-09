@@ -2769,6 +2769,64 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/management/executive-dashboard/management-balance-turnover:
+    get:
+      summary: Get Executive Management Balance Turnover
+      operationId: get_executive_management_balance_turnover_api_management_executive_dashboard_management_balance_turnover_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: month
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Month
+      - name: month_from
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Month From
+      - name: month_to
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Month To
+      - name: view
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - closed
+            - operational
+            type: string
+          - type: 'null'
+          title: View
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ExecutiveManagementBalanceTurnoverResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/management/executive-dashboard/management-balance/{month}/close:
     post:
       summary: Close Executive Management Balance
@@ -3293,6 +3351,14 @@ paths:
             pattern: ^(move_recommended|ok|no_overdue|needs_review)$
           - type: 'null'
           title: Status
+      - name: queue
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^(actionable|business_review|data_quality|excluded|all)$
+          default: all
+          title: Queue
       - name: limit
         in: query
         required: false
@@ -4161,6 +4227,17 @@ paths:
           - type: string
           - type: 'null'
           title: Status
+      - name: min_debt
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Min Debt
       - name: limit
         in: query
         required: false
@@ -4170,6 +4247,26 @@ paths:
           minimum: 1
           default: 500
           title: Limit
+      - name: sort_by
+        in: query
+        required: false
+        schema:
+          enum:
+          - balance
+          - overdue_days
+          type: string
+          default: balance
+          title: Sort By
+      - name: sort_dir
+        in: query
+        required: false
+        schema:
+          enum:
+          - asc
+          - desc
+          type: string
+          default: desc
+          title: Sort Dir
       responses:
         '200':
           description: Successful Response
@@ -4206,6 +4303,14 @@ paths:
             pattern: ^(move_recommended|ok|no_overdue|needs_review)$
           - type: 'null'
           title: Status
+      - name: queue
+        in: query
+        required: false
+        schema:
+          type: string
+          pattern: ^(actionable|business_review|data_quality|excluded|all)$
+          default: all
+          title: Queue
       - name: limit
         in: query
         required: false
@@ -4262,6 +4367,104 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ReceivableWorkplaceActionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/receivables/workplace/{counterparty_ref}/supervisor-notes/{visibility}:
+    put:
+      summary: Put Receivable Supervisor Note
+      operationId: put_receivable_supervisor_note_api_receivables_workplace__counterparty_ref__supervisor_notes__visibility__put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: counterparty_ref
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Counterparty Ref
+      - name: visibility
+        in: path
+        required: true
+        schema:
+          enum:
+          - personal
+          - shared
+          type: string
+          title: Visibility
+      - name: date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: Date
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReceivableSupervisorNoteUpsertRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReceivableSupervisorNoteMutationResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    delete:
+      summary: Remove Receivable Supervisor Note
+      operationId: remove_receivable_supervisor_note_api_receivables_workplace__counterparty_ref__supervisor_notes__visibility__delete
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: counterparty_ref
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Counterparty Ref
+      - name: visibility
+        in: path
+        required: true
+        schema:
+          enum:
+          - personal
+          - shared
+          type: string
+          title: Visibility
+      - name: date
+        in: query
+        required: true
+        schema:
+          type: string
+          format: date
+          title: Date
+      - name: action_id
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 160
+          - type: 'null'
+          title: Action Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReceivableSupervisorNoteMutationResponse'
         '422':
           description: Validation Error
           content:
@@ -4532,6 +4735,99 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CustomerPriceTypeWorklistsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/portfolio:
+    get:
+      tags:
+      - customer-price-types
+      summary: List Customer Price Type Portfolio
+      operationId: list_customer_price_type_portfolio_api_customer_price_types_portfolio_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: batch_key
+        in: query
+        required: false
+        schema:
+          type: string
+          maxLength: 128
+          default: reviewed-working-contracts-2026-07
+          title: Batch Key
+      - name: snapshot_month
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Snapshot Month
+      - name: bucket
+        in: query
+        required: false
+        schema:
+          enum:
+          - working_bronze
+          - review_queue
+          - all
+          type: string
+          default: all
+          title: Bucket
+      - name: current_price_type
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Current Price Type
+      - name: action_required
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Action Required
+      - name: search
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Search
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypePortfolioResponse'
         '422':
           description: Validation Error
           content:
@@ -7316,6 +7612,31 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/order-payment-control/check:
+    post:
+      summary: Check Order Payment
+      operationId: check_order_payment_api_order_payment_control_check_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OrderPaymentCheckRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/OrderPaymentCheckResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/management/internal/orchestration/runs/claim:
     post:
       tags:
@@ -7972,6 +8293,147 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/assistant:
+    get:
+      summary: Read Order Assistant
+      operationId: read_order_assistant_api_procurement_order_formation_assistant_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrderAssistantResponse'
+      security:
+      - HTTPBearer: []
+  /api/procurement-order-formation/suppliers/{supplier_ref}/profile:
+    get:
+      summary: Read Supplier Profile
+      operationId: read_supplier_profile_api_procurement_order_formation_suppliers__supplier_ref__profile_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: supplier_ref
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Supplier Ref
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementSupplierProfileRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+    patch:
+      summary: Change Supplier Profile
+      operationId: change_supplier_profile_api_procurement_order_formation_suppliers__supplier_ref__profile_patch
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: supplier_ref
+        in: path
+        required: true
+        schema:
+          type: string
+          title: Supplier Ref
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementSupplierProfileUpdateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementSupplierProfileRead'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/assistant/assemble:
+    post:
+      summary: Assemble Order Assistant Projects
+      operationId: assemble_order_assistant_projects_api_procurement_order_formation_assistant_assemble_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementOrderAssistantAssembleRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementOrderAssistantAssembleResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
+  /api/procurement-order-formation/orders/export.xlsx:
+    get:
+      summary: Export Orders Excel
+      operationId: export_orders_excel_api_procurement_order_formation_orders_export_xlsx_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: search
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Search
+      - name: status
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Status
+      - name: supplier
+        in: query
+        required: false
+        schema:
+          type: string
+          default: ''
+          title: Supplier
+      - name: blockers
+        in: query
+        required: false
+        schema:
+          type: string
+          default: all
+          title: Blockers
+      responses:
+        '200':
+          description: Расчёт заказов в Excel
+          content:
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet: {}
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/procurement-order-formation/classification-proposals:
     get:
       summary: Read Classification Proposals
@@ -8227,6 +8689,50 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ProcurementClassificationApprovalResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/procurement-order-formation/orders/{order_id}/lines/{line_id}/classification/{proposal_id}/reject:
+    post:
+      summary: Reject Line Classification
+      operationId: reject_line_classification_api_procurement_order_formation_orders__order_id__lines__line_id__classification__proposal_id__reject_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: order_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Order Id
+      - name: line_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Line Id
+      - name: proposal_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Proposal Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProcurementClassificationRejectRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProcurementClassificationRejectResponse'
         '422':
           description: Validation Error
           content:
@@ -9712,6 +10218,25 @@ components:
           - type: string
           - type: 'null'
           title: Reason
+        reason_code:
+          anyOf:
+          - type: string
+            enum:
+            - legacy_unspecified
+            - wrong_model
+            - wrong_item_type
+            - wrong_quality
+            - wrong_color
+            - wrong_frame
+            - wrong_part_number
+            - wrong_capacity
+            - duplicate_or_irrelevant
+            - confirmed_exact_code
+            - confirmed_attributes
+            - auto_false_positive
+            - other
+          - type: 'null'
+          title: Reason Code
       type: object
       title: BulkRejectRequest
     BulkRejectResponse:
@@ -11842,6 +12367,29 @@ components:
           - type: string
           - type: 'null'
           title: Review Reason
+        exclusion_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Exclusion Reason
+        business_review_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Business Review Reason
+        signal_key:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Signal Key
+        queue:
+          type: string
+          title: Queue
+          default: data_quality
+        action_required:
+          type: boolean
+          title: Action Required
+          default: false
         document_structure_status:
           anyOf:
           - type: string
@@ -12035,6 +12583,10 @@ components:
           $ref: '#/components/schemas/CustomerPriceTypeCaseItem'
         snapshot:
           $ref: '#/components/schemas/CustomerPriceTypeSnapshotResponse'
+        guidance:
+          anyOf:
+          - $ref: '#/components/schemas/CustomerPriceTypeCaseGuidance'
+          - type: 'null'
         events:
           items:
             $ref: '#/components/schemas/CustomerPriceTypeCaseEventResponse'
@@ -12098,6 +12650,32 @@ components:
       - source
       - idempotency_key
       title: CustomerPriceTypeCaseEventResponse
+    CustomerPriceTypeCaseGuidance:
+      properties:
+        title:
+          type: string
+          title: Title
+        rules:
+          type: string
+          title: Rules
+        recommended_action:
+          type: string
+          title: Recommended Action
+        expected_price_type:
+          type: string
+          title: Expected Price Type
+        manager_attention:
+          items:
+            type: string
+          type: array
+          title: Manager Attention
+      type: object
+      required:
+      - title
+      - rules
+      - recommended_action
+      - expected_price_type
+      title: CustomerPriceTypeCaseGuidance
     CustomerPriceTypeCaseItem:
       properties:
         id:
@@ -12249,6 +12827,255 @@ components:
       - limit
       - offset
       title: CustomerPriceTypeCaseListResponse
+    CustomerPriceTypeContractCandidate:
+      properties:
+        contract_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contract Ref
+        contract_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Contract Name
+        price_type_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Price Type Name
+        price_type_marked:
+          type: boolean
+          title: Price Type Marked
+          default: false
+        price_type_missing:
+          type: boolean
+          title: Price Type Missing
+          default: false
+        sale_document_count_12m:
+          type: integer
+          title: Sale Document Count 12M
+          default: 0
+        sales_amount_12m:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Sales Amount 12M
+        last_sale_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Last Sale At
+        is_working:
+          type: boolean
+          title: Is Working
+          default: false
+        used_for_calculation:
+          type: boolean
+          title: Used For Calculation
+          default: false
+        price_type_change_target:
+          type: boolean
+          title: Price Type Change Target
+          default: false
+        ignored_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ignored Reason
+      type: object
+      title: CustomerPriceTypeContractCandidate
+    CustomerPriceTypePortfolioItem:
+      properties:
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        counterparty_code:
+          type: string
+          title: Counterparty Code
+        counterparty_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Name
+        department_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Name
+        owner_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Name
+        bucket:
+          type: string
+          enum:
+          - working_bronze
+          - review_queue
+          title: Bucket
+        expected_bucket:
+          type: string
+          enum:
+          - working_bronze
+          - review_queue
+          title: Expected Bucket
+        expected_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Expected Price Type
+        current_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Price Type
+        price_type_variant:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Price Type Variant
+        working_contracts:
+          items:
+            $ref: '#/components/schemas/CustomerPriceTypeContractCandidate'
+          type: array
+          title: Working Contracts
+        action_required:
+          type: boolean
+          title: Action Required
+          default: false
+        system_recommendation:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: System Recommendation
+        recommended_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Price Type
+        source_status:
+          type: string
+          title: Source Status
+        stop_factors:
+          items:
+            type: string
+          type: array
+          title: Stop Factors
+        review_status:
+          type: string
+          enum:
+          - ready
+          - business_conflict
+          - technical_incomplete
+          - missing_snapshot
+          title: Review Status
+        case_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Case Id
+        case_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Case Type
+        case_stage:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Case Stage
+        reconciliation_status:
+          type: string
+          enum:
+          - match
+          - mismatch
+          - missing_snapshot
+          title: Reconciliation Status
+      type: object
+      required:
+      - counterparty_ref
+      - counterparty_code
+      - bucket
+      - expected_bucket
+      - source_status
+      - review_status
+      - reconciliation_status
+      title: CustomerPriceTypePortfolioItem
+    CustomerPriceTypePortfolioResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        batch_key:
+          type: string
+          title: Batch Key
+        batch_label:
+          type: string
+          title: Batch Label
+        expected_counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Expected Counts
+        counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Counts
+        review_status_counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Review Status Counts
+        mismatch_count:
+          type: integer
+          title: Mismatch Count
+          default: 0
+        total:
+          type: integer
+          title: Total
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+        payload:
+          items:
+            $ref: '#/components/schemas/CustomerPriceTypePortfolioItem'
+          type: array
+          title: Payload
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - batch_key
+      - batch_label
+      - total
+      - limit
+      - offset
+      title: CustomerPriceTypePortfolioResponse
     CustomerPriceTypeProfileResponse:
       properties:
         run_id:
@@ -12325,6 +13152,11 @@ components:
           anyOf:
           - $ref: '#/components/schemas/CustomerPriceTypeCaseItem'
           - type: 'null'
+        case_history:
+          items:
+            $ref: '#/components/schemas/CustomerPriceTypeCaseItem'
+          type: array
+          title: Case History
         history:
           items:
             $ref: '#/components/schemas/CustomerPriceTypeSnapshotResponse'
@@ -12982,8 +13814,7 @@ components:
           title: Price Type Variant
         contract_candidates:
           items:
-            additionalProperties: true
-            type: object
+            $ref: '#/components/schemas/CustomerPriceTypeContractCandidate'
           type: array
           title: Contract Candidates
         monthly_sales:
@@ -13231,6 +14062,24 @@ components:
           - type: string
           - type: 'null'
           title: Reason
+        reason_code:
+          type: string
+          enum:
+          - legacy_unspecified
+          - wrong_model
+          - wrong_item_type
+          - wrong_quality
+          - wrong_color
+          - wrong_frame
+          - wrong_part_number
+          - wrong_capacity
+          - duplicate_or_irrelevant
+          - confirmed_exact_code
+          - confirmed_attributes
+          - auto_false_positive
+          - other
+          title: Reason Code
+          default: legacy_unspecified
         created_by:
           anyOf:
           - type: string
@@ -13250,6 +14099,25 @@ components:
           - type: string
           - type: 'null'
           title: Previous Status
+        snapshot_schema_version:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Snapshot Schema Version
+        snapshot_score:
+          anyOf:
+          - type: number
+          - type: 'null'
+          title: Snapshot Score
+        snapshot_rank:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Snapshot Rank
+        snapshot_top_k_count:
+          type: integer
+          title: Snapshot Top K Count
+          default: 0
       type: object
       required:
       - id
@@ -14114,6 +14982,11 @@ components:
           type: integer
           minimum: 0.0
           title: Review Required Grants
+          default: 0
+        overdue_review_grants:
+          type: integer
+          minimum: 0.0
+          title: Overdue Review Grants
           default: 0
         mfa_review_count:
           type: integer
@@ -15014,6 +15887,273 @@ components:
       - freshness_status
       - generated_at
       title: ExecutiveManagementBalanceResponse
+    ExecutiveManagementBalanceTurnoverLine:
+      properties:
+        key:
+          type: string
+          title: Key
+        label:
+          type: string
+          title: Label
+        section:
+          type: string
+          enum:
+          - asset
+          - liability
+          - equity
+          title: Section
+        opening_balance:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Opening Balance
+        debit_turnover:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Debit Turnover
+        credit_turnover:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Credit Turnover
+        closing_balance:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Closing Balance
+        reconciliation_difference:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Reconciliation Difference
+        turnover_method:
+          type: string
+          enum:
+          - net_change_from_snapshots
+          - gross_cashflow_movements
+          title: Turnover Method
+          default: net_change_from_snapshots
+        source_key:
+          type: string
+          title: Source Key
+        source_status:
+          type: string
+          title: Source Status
+        source_as_of:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Source As Of
+        note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Note
+      type: object
+      required:
+      - key
+      - label
+      - section
+      - source_key
+      - source_status
+      title: ExecutiveManagementBalanceTurnoverLine
+    ExecutiveManagementBalanceTurnoverResponse:
+      properties:
+        month:
+          type: string
+          title: Month
+        date_from:
+          type: string
+          format: date
+          title: Date From
+        date_to:
+          type: string
+          format: date
+          title: Date To
+        opening_balance_date:
+          type: string
+          format: date
+          title: Opening Balance Date
+        view:
+          type: string
+          enum:
+          - closed
+          - operational
+          title: View
+        opening_version:
+          type: integer
+          title: Opening Version
+        closing_version:
+          type: integer
+          title: Closing Version
+        opening_status:
+          type: string
+          title: Opening Status
+        closing_status:
+          type: string
+          title: Closing Status
+        opening_validation_error_count:
+          type: integer
+          title: Opening Validation Error Count
+          default: 0
+        opening_content_sha256:
+          type: string
+          title: Opening Content Sha256
+        closing_content_sha256:
+          type: string
+          title: Closing Content Sha256
+        turnover_method:
+          type: string
+          const: mixed_gross_cashflow_and_net_change
+          title: Turnover Method
+          default: mixed_gross_cashflow_and_net_change
+        source_scope:
+          type: string
+          const: onec_ut_10_3_plus_bp_accrued_taxes
+          title: Source Scope
+          default: onec_ut_10_3_plus_bp_accrued_taxes
+        source_status:
+          type: string
+          title: Source Status
+        currency:
+          type: string
+          title: Currency
+          default: RUB
+        lines:
+          items:
+            $ref: '#/components/schemas/ExecutiveManagementBalanceTurnoverLine'
+          type: array
+          title: Lines
+        totals:
+          items:
+            $ref: '#/components/schemas/ExecutiveManagementBalanceTurnoverTotal'
+          type: array
+          title: Totals
+        excluded_lines:
+          items:
+            additionalProperties: true
+            type: object
+          type: array
+          title: Excluded Lines
+        opening_imbalance_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Opening Imbalance Amount
+          default: '0'
+        closing_imbalance_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Closing Imbalance Amount
+          default: '0'
+        opening_scope_imbalance_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Opening Scope Imbalance Amount
+          default: '0'
+        closing_scope_imbalance_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Closing Scope Imbalance Amount
+          default: '0'
+        unknown_line_count:
+          type: integer
+          title: Unknown Line Count
+          default: 0
+        available_months:
+          items:
+            type: string
+          type: array
+          title: Available Months
+        available_period_starts:
+          items:
+            type: string
+          type: array
+          title: Available Period Starts
+        available_period_ends:
+          items:
+            type: string
+          type: array
+          title: Available Period Ends
+        selected_month_from:
+          type: string
+          title: Selected Month From
+        selected_month_to:
+          type: string
+          title: Selected Month To
+        note:
+          type: string
+          title: Note
+      type: object
+      required:
+      - month
+      - date_from
+      - date_to
+      - opening_balance_date
+      - view
+      - opening_version
+      - closing_version
+      - opening_status
+      - closing_status
+      - opening_content_sha256
+      - closing_content_sha256
+      - source_status
+      - selected_month_from
+      - selected_month_to
+      - note
+      title: ExecutiveManagementBalanceTurnoverResponse
+    ExecutiveManagementBalanceTurnoverTotal:
+      properties:
+        section:
+          type: string
+          enum:
+          - asset
+          - liability
+          - equity
+          title: Section
+        label:
+          type: string
+          title: Label
+        opening_balance:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Opening Balance
+          default: '0'
+        debit_turnover:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Debit Turnover
+          default: '0'
+        credit_turnover:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Credit Turnover
+          default: '0'
+        closing_balance:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Closing Balance
+          default: '0'
+        reconciliation_difference:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Reconciliation Difference
+          default: '0'
+        unknown_line_count:
+          type: integer
+          title: Unknown Line Count
+          default: 0
+      type: object
+      required:
+      - section
+      - label
+      title: ExecutiveManagementBalanceTurnoverTotal
     ExecutiveOnlineStoreDailyRow:
       properties:
         business_date:
@@ -19003,6 +20143,25 @@ components:
           - type: string
           - type: 'null'
           title: Reason
+        reason_code:
+          anyOf:
+          - type: string
+            enum:
+            - legacy_unspecified
+            - wrong_model
+            - wrong_item_type
+            - wrong_quality
+            - wrong_color
+            - wrong_frame
+            - wrong_part_number
+            - wrong_capacity
+            - duplicate_or_irrelevant
+            - confirmed_exact_code
+            - confirmed_attributes
+            - auto_false_positive
+            - other
+          - type: 'null'
+          title: Reason Code
       type: object
       title: MatchRequest
     MatchStatus:
@@ -19333,6 +20492,108 @@ components:
           title: Items
       type: object
       title: OrderFulfillmentReviewResponse
+    OrderPaymentCheckRequest:
+      properties:
+        site_order_number:
+          type: string
+          maxLength: 40
+          minLength: 1
+          title: Site Order Number
+        site_amount:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*(?:\d{0,13}|(?=[\d.]{1,16}0*$)\d{0,13}\.\d{0,2}0*$)
+          title: Site Amount
+        payment_amount:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*(?:\d{0,13}|(?=[\d.]{1,16}0*$)\d{0,13}\.\d{0,2}0*$)
+          title: Payment Amount
+        stage:
+          type: string
+          enum:
+          - checkout
+          - cloudpayments_check
+          - cloudpayments_pay
+          title: Stage
+        payment_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Payment Id
+      type: object
+      required:
+      - site_order_number
+      - site_amount
+      - payment_amount
+      - stage
+      title: OrderPaymentCheckRequest
+    OrderPaymentCheckResponse:
+      properties:
+        check_id:
+          type: string
+          title: Check Id
+        allowed:
+          type: boolean
+          title: Allowed
+        reason:
+          type: string
+          enum:
+          - amount_match
+          - site_payment_mismatch
+          - onec_order_not_found
+          - onec_order_deleted
+          - onec_order_ambiguous
+          - onec_order_unposted
+          - onec_amount_invalid
+          - onec_amount_mismatch
+          title: Reason
+        site_order_number:
+          type: string
+          title: Site Order Number
+        site_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Site Amount
+        payment_amount:
+          type: string
+          pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          title: Payment Amount
+        onec_amount:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Onec Amount
+        onec_document_number:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Document Number
+        onec_revision:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Onec Revision
+        checked_at:
+          type: string
+          format: date-time
+          title: Checked At
+      type: object
+      required:
+      - check_id
+      - allowed
+      - reason
+      - site_order_number
+      - site_amount
+      - payment_amount
+      - checked_at
+      title: OrderPaymentCheckResponse
     PaginatedCandidates:
       properties:
         items:
@@ -19709,6 +20970,35 @@ components:
           - type: string
           - type: 'null'
           title: Approved By Name
+        rejected_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Rejected At
+        rejected_by_bitrix_user_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Rejected By Bitrix User Id
+        rejected_by_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Rejected By Name
+        rejection_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Rejection Reason
+        can_approve:
+          type: boolean
+          title: Can Approve
+          default: false
+        can_reject:
+          type: boolean
+          title: Can Reject
+          default: false
         onec_status:
           type: string
           title: Onec Status
@@ -19825,6 +21115,38 @@ components:
       - approved_today
       - readback_conflicts
       title: ProcurementClassificationQueueResponse
+    ProcurementClassificationRejectRequest:
+      properties:
+        expected_order_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Order Version
+        expected_line_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Line Version
+        reason:
+          type: string
+          maxLength: 4000
+          minLength: 1
+          title: Reason
+      type: object
+      required:
+      - expected_order_version
+      - expected_line_version
+      - reason
+      title: ProcurementClassificationRejectRequest
+    ProcurementClassificationRejectResponse:
+      properties:
+        order:
+          $ref: '#/components/schemas/ProcurementOrderFormationRead'
+        proposal:
+          $ref: '#/components/schemas/ProcurementClassificationProposalRead'
+      type: object
+      required:
+      - order
+      - proposal
+      title: ProcurementClassificationRejectResponse
     ProcurementDashboardAttentionItem:
       properties:
         proposal_id:
@@ -20602,6 +21924,132 @@ components:
       - run_key
       - facts_hash
       title: ProcurementLifecycleTransitionRead
+    ProcurementOrderAssistantAssembleItem:
+      properties:
+        order_id:
+          type: integer
+          title: Order Id
+        expected_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Version
+      type: object
+      required:
+      - order_id
+      - expected_version
+      title: ProcurementOrderAssistantAssembleItem
+    ProcurementOrderAssistantAssembleRequest:
+      properties:
+        idempotency_key:
+          type: string
+          maxLength: 255
+          minLength: 8
+          title: Idempotency Key
+        items:
+          items:
+            $ref: '#/components/schemas/ProcurementOrderAssistantAssembleItem'
+          type: array
+          maxItems: 100
+          minItems: 1
+          title: Items
+      type: object
+      required:
+      - idempotency_key
+      - items
+      title: ProcurementOrderAssistantAssembleRequest
+    ProcurementOrderAssistantAssembleResponse:
+      properties:
+        approved:
+          type: integer
+          title: Approved
+          default: 0
+        blocked:
+          type: integer
+          title: Blocked
+          default: 0
+        stale:
+          type: integer
+          title: Stale
+          default: 0
+        items:
+          items:
+            $ref: '#/components/schemas/ProcurementOrderAssistantAssembleResult'
+          type: array
+          title: Items
+      type: object
+      title: ProcurementOrderAssistantAssembleResponse
+    ProcurementOrderAssistantAssembleResult:
+      properties:
+        order_id:
+          type: integer
+          title: Order Id
+        status:
+          type: string
+          title: Status
+        message:
+          type: string
+          title: Message
+      type: object
+      required:
+      - order_id
+      - status
+      - message
+      title: ProcurementOrderAssistantAssembleResult
+    ProcurementOrderAssistantResponse:
+      properties:
+        updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Updated At
+        summary:
+          $ref: '#/components/schemas/ProcurementOrderAssistantSummary'
+        orders:
+          items:
+            $ref: '#/components/schemas/ProcurementOrderFormationRead'
+          type: array
+          title: Orders
+      type: object
+      required:
+      - summary
+      title: ProcurementOrderAssistantResponse
+    ProcurementOrderAssistantSummary:
+      properties:
+        lines:
+          type: integer
+          title: Lines
+          default: 0
+        ready_lines:
+          type: integer
+          title: Ready Lines
+          default: 0
+        supplier_missing_lines:
+          type: integer
+          title: Supplier Missing Lines
+          default: 0
+        price_changed_lines:
+          type: integer
+          title: Price Changed Lines
+          default: 0
+        low_profitability_lines:
+          type: integer
+          title: Low Profitability Lines
+          default: 0
+        high_defect_lines:
+          type: integer
+          title: High Defect Lines
+          default: 0
+        photo_missing_lines:
+          type: integer
+          title: Photo Missing Lines
+          default: 0
+        orders:
+          type: integer
+          title: Orders
+          default: 0
+      type: object
+      title: ProcurementOrderAssistantSummary
     ProcurementOrderConditionsUpdateRequest:
       properties:
         expected_order_version:
@@ -20894,6 +22342,170 @@ components:
           anyOf:
           - $ref: '#/components/schemas/ProcurementClassificationProposalRead'
           - type: 'null'
+        photo_thumbnail_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Photo Thumbnail Url
+        photo_original_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Photo Original Url
+        product_card_url:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Product Card Url
+        photo_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Photo Source
+        photo_count:
+          type: integer
+          title: Photo Count
+          default: 0
+        profitability_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Profitability Pct
+        profitability_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Profitability Status
+        profitability_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Profitability Source
+        profitability_explanation:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Profitability Explanation
+        metrics_as_of:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Metrics As Of
+        metrics_window_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Metrics Window Days
+        product_defect_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Product Defect Pct
+        product_defect_history_units:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Product Defect History Units
+        product_defect_confidence:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Product Defect Confidence
+        product_defect_source:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Product Defect Source
+        supplier_defect_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Supplier Defect Pct
+        supplier_defect_history_units:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Supplier Defect History Units
+        supplier_defect_confidence:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Defect Confidence
+        supplier_defect_attribution:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Defect Attribution
+        supplier_defect_source_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Defect Source Status
+        price_change_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Price Change Pct
+        price_change_status:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Price Change Status
+        price_history_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Price History Count
+        price_history_currency_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Price History Currency Ref
+        price_history_expected_currency:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Price History Expected Currency
+        price_history_available_currencies:
+          items:
+            type: string
+          type: array
+          title: Price History Available Currencies
+        supplier_prepare_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Supplier Prepare Days
+        logistics_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Logistics Days
+        lead_time_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Lead Time Days
+        lead_time_source_level:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lead Time Source Level
+        lead_time_confidence:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lead Time Confidence
+        delivery_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Delivery Days
       type: object
       required:
       - id
@@ -21093,6 +22705,8 @@ components:
             type: string
           type: object
           title: Manual Status Options
+        supplier_profile:
+          $ref: '#/components/schemas/ProcurementSupplierProfileRead'
       type: object
       required:
       - id
@@ -21380,6 +22994,205 @@ components:
       - message_id
       - xml_preview
       title: ProcurementOrderTransmissionResponse
+    ProcurementSupplierProfileRead:
+      properties:
+        supplier_ref:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Ref
+        supplier_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Code
+        supplier_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Supplier Name
+        version:
+          type: integer
+          title: Version
+          default: 0
+        qualification_class:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Qualification Class
+        qualification_label:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Qualification Label
+        class_description:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Class Description
+        profitability_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Profitability Pct
+        defect_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Defect Pct
+        defect_history_units:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Defect History Units
+        defect_confidence:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Defect Confidence
+        defect_attribution:
+          type: string
+          title: Defect Attribution
+          default: unconfirmed
+        on_time_pct:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: On Time Pct
+        payment_terms:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Payment Terms
+        credit_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Credit Days
+        credit_limit:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Credit Limit
+        terms_source:
+          type: string
+          title: Terms Source
+          default: onec_contract
+        terms_status:
+          type: string
+          title: Terms Status
+          default: missing
+        advantages:
+          items:
+            type: string
+          type: array
+          title: Advantages
+        internal_note:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Internal Note
+        history_order_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: History Order Count
+        supplier_prepare_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Supplier Prepare Days
+        logistics_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Logistics Days
+        lead_time_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Lead Time Days
+        lead_time_confidence:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Lead Time Confidence
+        price_history_count:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Price History Count
+        facts_updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Facts Updated At
+        manual_updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Manual Updated At
+        manual_updated_by_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Manual Updated By Name
+        updated_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Updated At
+        data_status:
+          type: string
+          title: Data Status
+          default: missing
+        can_edit:
+          type: boolean
+          title: Can Edit
+          default: false
+      type: object
+      title: ProcurementSupplierProfileRead
+    ProcurementSupplierProfileUpdateRequest:
+      properties:
+        expected_version:
+          type: integer
+          minimum: 0.0
+          title: Expected Version
+        qualification_class:
+          anyOf:
+          - type: string
+            pattern: ^[ABCabc]$
+          - type: 'null'
+          title: Qualification Class
+        qualification_label:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Qualification Label
+        advantages:
+          items:
+            type: string
+          type: array
+          maxItems: 20
+          title: Advantages
+        internal_note:
+          anyOf:
+          - type: string
+            maxLength: 4000
+          - type: 'null'
+          title: Internal Note
+      type: object
+      required:
+      - expected_version
+      title: ProcurementSupplierProfileUpdateRequest
     ProductFacets:
       properties:
         subjects:
@@ -22111,6 +23924,79 @@ components:
       - aged_bucket
       - activity_segment
       title: ReceivableCaseItem
+    ReceivableSupervisorNoteItem:
+      properties:
+        id:
+          type: integer
+          title: Id
+        visibility:
+          type: string
+          enum:
+          - personal
+          - shared
+          title: Visibility
+        comment:
+          type: string
+          title: Comment
+        author_user_id:
+          type: string
+          title: Author User Id
+        author_name:
+          type: string
+          title: Author Name
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        can_edit:
+          type: boolean
+          title: Can Edit
+          default: false
+      type: object
+      required:
+      - id
+      - visibility
+      - comment
+      - author_user_id
+      - author_name
+      - created_at
+      - updated_at
+      title: ReceivableSupervisorNoteItem
+    ReceivableSupervisorNoteMutationResponse:
+      properties:
+        note:
+          anyOf:
+          - $ref: '#/components/schemas/ReceivableSupervisorNoteItem'
+          - type: 'null'
+        event:
+          additionalProperties: true
+          type: object
+          title: Event
+      type: object
+      required:
+      - event
+      title: ReceivableSupervisorNoteMutationResponse
+    ReceivableSupervisorNoteUpsertRequest:
+      properties:
+        comment:
+          type: string
+          maxLength: 5000
+          minLength: 1
+          title: Comment
+        action_id:
+          anyOf:
+          - type: string
+            maxLength: 160
+          - type: 'null'
+          title: Action Id
+      type: object
+      required:
+      - comment
+      title: ReceivableSupervisorNoteUpsertRequest
     ReceivableWorkplaceActionRequest:
       properties:
         action_id:
@@ -22468,6 +24354,11 @@ components:
             $ref: '#/components/schemas/ReceivableWorkplaceStaffOption'
           type: array
           title: Staff Options
+        supervisor_notes:
+          items:
+            $ref: '#/components/schemas/ReceivableSupervisorNoteItem'
+          type: array
+          title: Supervisor Notes
       type: object
       required:
       - snapshot_date
@@ -22779,6 +24670,25 @@ components:
           - type: string
           - type: 'null'
           title: Reason
+        reason_code:
+          anyOf:
+          - type: string
+            enum:
+            - legacy_unspecified
+            - wrong_model
+            - wrong_item_type
+            - wrong_quality
+            - wrong_color
+            - wrong_frame
+            - wrong_part_number
+            - wrong_capacity
+            - duplicate_or_irrelevant
+            - confirmed_exact_code
+            - confirmed_attributes
+            - auto_false_positive
+            - other
+          - type: 'null'
+          title: Reason Code
       type: object
       title: RejectRequest
     RetailCounterpartyZeroBalanceItem:
@@ -23375,6 +25285,25 @@ components:
           - type: string
           - type: 'null'
           title: Reason
+        reason_code:
+          anyOf:
+          - type: string
+            enum:
+            - legacy_unspecified
+            - wrong_model
+            - wrong_item_type
+            - wrong_quality
+            - wrong_color
+            - wrong_frame
+            - wrong_part_number
+            - wrong_capacity
+            - duplicate_or_irrelevant
+            - confirmed_exact_code
+            - confirmed_attributes
+            - auto_false_positive
+            - other
+          - type: 'null'
+          title: Reason Code
       type: object
       required:
       - competitor_item_id

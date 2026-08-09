@@ -13,6 +13,12 @@ from sqlalchemy.orm import Session
 
 from app.models.receivable_balance_snapshot import ReceivableBalanceSnapshot
 from app.models.receivable_ledger_event import ReceivableLedgerEvent
+from app.services.receivable_canonical_debt_origin import (
+    CANONICAL_DEBT_SELECTION_RULE,
+    CANONICAL_DEBT_STATUS_MATCHED,
+    CanonicalOpenDebtDocument,
+    fetch_canonical_open_debt_documents,
+)
 from app.services.receivable_department_aliases import (
     receivable_department_alias_key,
     receivable_department_display_name,
@@ -35,6 +41,11 @@ STATUS_MOVE_RECOMMENDED = "move_recommended"
 STATUS_OK = "ok"
 STATUS_NO_OVERDUE = "no_overdue"
 STATUS_NEEDS_REVIEW = "needs_review"
+QUEUE_ACTIONABLE = "actionable"
+QUEUE_BUSINESS_REVIEW = "business_review"
+QUEUE_DATA_QUALITY = "data_quality"
+QUEUE_EXCLUDED = "excluded"
+QUEUE_ALL = "all"
 DEFAULT_PAYMENT_TERM_DAYS = 7
 MIN_RECOMMENDATION_BALANCE = Decimal("500.00")
 PAYMENT_TERM_SOURCE_FALLBACK = "fallback_7_days_read_only"
@@ -51,6 +62,13 @@ STATUS_SORT_ORDER = {
     STATUS_NO_OVERDUE: 3,
 }
 
+QUEUE_SORT_ORDER = {
+    QUEUE_ACTIONABLE: 0,
+    QUEUE_BUSINESS_REVIEW: 1,
+    QUEUE_DATA_QUALITY: 2,
+    QUEUE_EXCLUDED: 3,
+}
+
 REVIEW_REASON_MISSING_DOCUMENT = "missing_origin_document"
 REVIEW_REASON_DOCUMENT_NOT_FOUND = "origin_document_not_found"
 REVIEW_REASON_DOCUMENT_DEPARTMENT_MISSING = "origin_document_department_missing"
@@ -58,8 +76,11 @@ REVIEW_REASON_DEPARTMENT_FOLDER_MISSING = "department_folder_missing"
 REVIEW_REASON_CURRENT_FOLDER_MISSING = "current_counterparty_folder_missing"
 REVIEW_REASON_FOLDER_MISMATCH_PAYMENT_TERM_MISSING = "folder_mismatch_payment_term_missing"
 REVIEW_REASON_SPB_CROSS_FOLDER = "spb_cross_folder_manual_review"
+REVIEW_REASON_MULTIPLE_OPEN_DEBT_FOLDERS = "multiple_open_debt_folders"
 REVIEW_REASON_EXCLUDED_EMPLOYEE_FOLDER = "excluded_employee_folder"
 REVIEW_REASON_EXCLUDED_WHOLESALE = "excluded_wholesale_counterparty"
+REVIEW_REASON_EXCLUDED_SUPPLIER_FOLDER = "excluded_supplier_folder"
+REVIEW_REASON_EXCLUDED_SERVICE_COUNTERPARTY = "excluded_service_counterparty"
 REVIEW_REASON_EXCLUDED_SITE_PAYMENT_ON_PICKUP = "excluded_site_payment_on_pickup"
 REVIEW_REASON_EXCLUDED_MAKLAB_SPB_PROSVET = "excluded_maklab_spb_prosvet"
 REVIEW_REASON_BELOW_MIN_BALANCE = "below_min_balance_threshold"
@@ -76,6 +97,18 @@ REVIEW_REASON_ORIGIN_DOCUMENT_CLOSED_BY_STRUCTURE = "origin_document_closed_by_s
 REVIEW_REASON_DOCUMENT_COMMENT_HISTORY_REQUIRED = "document_comment_history_required"
 REVIEW_REASON_OPEN_DEBT_SOURCE_STALE = "open_debt_source_stale"
 REVIEW_REASON_OPEN_DEBT_AMOUNT_MISMATCH = "open_debt_document_amount_mismatch"
+REVIEW_REASON_OPEN_DEBT_STATEMENT_MISSING = "open_debt_statement_missing"
+REVIEW_REASON_OPEN_DEBT_STRUCTURE_UNCONFIRMED = "open_debt_structure_unconfirmed"
+REVIEW_REASON_OPEN_DEBT_TOTAL_BELOW_BALANCE = "open_debt_document_total_below_balance"
+REVIEW_REASON_OPEN_DEBT_TOTAL_ABOVE_BALANCE = "open_debt_document_total_above_balance"
+
+OPEN_DEBT_DIAGNOSTIC_MATCHED = "matched"
+OPEN_DEBT_DIAGNOSTIC_STATEMENT_MISSING = "statement_missing"
+OPEN_DEBT_DIAGNOSTIC_STRUCTURE_UNCONFIRMED = "structure_unconfirmed"
+OPEN_DEBT_DIAGNOSTIC_TOTAL_BELOW_BALANCE = "document_total_below_balance"
+OPEN_DEBT_DIAGNOSTIC_TOTAL_ABOVE_BALANCE = "document_total_above_balance"
+
+EXCLUDED_SERVICE_COUNTERPARTY_CODES = frozenset({"рб034645"})
 
 
 @dataclass(frozen=True)
@@ -91,12 +124,53 @@ def open_debt_documents_match_balance(
     current_balance: Decimal,
 ) -> bool:
     if not documents:
-        return True
-    document_total = sum(
+        return Decimal(current_balance).quantize(Decimal("0.01")) == Decimal("0.00")
+    balance = Decimal(current_balance).quantize(Decimal("0.01"))
+    return abs(open_debt_document_total(documents) - balance) <= Decimal("0.01")
+
+
+def open_debt_document_total(documents: Sequence[dict[str, Any]]) -> Decimal:
+    return sum(
         (Decimal(str(document.get("open_amount") or "0")) for document in documents),
         Decimal("0.00"),
     ).quantize(Decimal("0.01"))
-    return document_total == Decimal(current_balance).quantize(Decimal("0.01"))
+
+
+def classify_open_debt_documents(
+    documents: Sequence[dict[str, Any]],
+    *,
+    current_balance: Decimal,
+    statement_sale_count: int,
+) -> str:
+    balance = Decimal(current_balance).quantize(Decimal("0.01"))
+    if not documents:
+        return (
+            OPEN_DEBT_DIAGNOSTIC_STRUCTURE_UNCONFIRMED
+            if statement_sale_count
+            else OPEN_DEBT_DIAGNOSTIC_STATEMENT_MISSING
+        )
+    total = open_debt_document_total(documents)
+    if abs(total - balance) <= Decimal("0.01"):
+        return OPEN_DEBT_DIAGNOSTIC_MATCHED
+    if any(
+        str(document.get("document_structure_status") or "") != DOCUMENT_STRUCTURE_CONFIRMED_OPEN
+        for document in documents
+    ):
+        return OPEN_DEBT_DIAGNOSTIC_STRUCTURE_UNCONFIRMED
+    return (
+        OPEN_DEBT_DIAGNOSTIC_TOTAL_BELOW_BALANCE
+        if total < balance
+        else OPEN_DEBT_DIAGNOSTIC_TOTAL_ABOVE_BALANCE
+    )
+
+
+def open_debt_review_reason(diagnostic: str) -> str:
+    return {
+        OPEN_DEBT_DIAGNOSTIC_STATEMENT_MISSING: REVIEW_REASON_OPEN_DEBT_STATEMENT_MISSING,
+        OPEN_DEBT_DIAGNOSTIC_STRUCTURE_UNCONFIRMED: (REVIEW_REASON_OPEN_DEBT_STRUCTURE_UNCONFIRMED),
+        OPEN_DEBT_DIAGNOSTIC_TOTAL_BELOW_BALANCE: (REVIEW_REASON_OPEN_DEBT_TOTAL_BELOW_BALANCE),
+        OPEN_DEBT_DIAGNOSTIC_TOTAL_ABOVE_BALANCE: (REVIEW_REASON_OPEN_DEBT_TOTAL_ABOVE_BALANCE),
+    }.get(diagnostic, REVIEW_REASON_OPEN_DEBT_AMOUNT_MISMATCH)
 
 
 def evaluate_open_debt_source_freshness(
@@ -762,12 +836,27 @@ def _is_site_folder(current_folder_name: str | None) -> bool:
     return _folder_alias_key(current_folder_name) == "online_store"
 
 
+def _is_supplier_context(
+    *,
+    current_folder_name: str | None,
+    recommended_folder_name: str | None,
+) -> bool:
+    return any(
+        "поставщик" in _text_key(value) for value in (current_folder_name, recommended_folder_name)
+    )
+
+
 def _counterparty_exception_reason(
     *,
     snapshot: ReceivableBalanceSnapshot,
     folder_row: CounterpartyFolderRow | None,
     recommended_folder_name: str | None = None,
 ) -> str | None:
+    counterparty_code = snapshot.counterparty_code or (
+        folder_row.counterparty_code if folder_row else None
+    )
+    if _text_key(counterparty_code) in EXCLUDED_SERVICE_COUNTERPARTY_CODES:
+        return REVIEW_REASON_EXCLUDED_SERVICE_COUNTERPARTY
     if _is_employee_context(
         counterparty_name=snapshot.counterparty_name,
         current_folder_name=folder_row.current_folder_name if folder_row else None,
@@ -780,6 +869,11 @@ def _counterparty_exception_reason(
         recommended_folder_name=recommended_folder_name,
     ):
         return REVIEW_REASON_EXCLUDED_WHOLESALE
+    if _is_supplier_context(
+        current_folder_name=folder_row.current_folder_name if folder_row else None,
+        recommended_folder_name=recommended_folder_name,
+    ):
+        return REVIEW_REASON_EXCLUDED_SUPPLIER_FOLDER
     if _is_site_payment_on_pickup(snapshot.counterparty_name):
         return REVIEW_REASON_EXCLUDED_SITE_PAYMENT_ON_PICKUP
     if _is_maklab_spb_prosvet(
@@ -824,6 +918,8 @@ def _is_excluded_reason(reason: str | None) -> bool:
         REVIEW_REASON_EXCLUDED_CHINA_SUPPLIER_GROUP,
         REVIEW_REASON_EXCLUDED_EMPLOYEE_FOLDER,
         REVIEW_REASON_EXCLUDED_WHOLESALE,
+        REVIEW_REASON_EXCLUDED_SUPPLIER_FOLDER,
+        REVIEW_REASON_EXCLUDED_SERVICE_COUNTERPARTY,
         REVIEW_REASON_EXCLUDED_SITE_PAYMENT_ON_PICKUP,
         REVIEW_REASON_EXCLUDED_MAKLAB_SPB_PROSVET,
         REVIEW_REASON_ORIGIN_DOCUMENT_NEEDS_ORDER_PAYMENT_CHECK,
@@ -1057,17 +1153,105 @@ def _open_debt_documents_from_statement(
     return documents
 
 
+def _open_debt_documents_from_canonical_origin(
+    documents: Sequence[CanonicalOpenDebtDocument],
+    *,
+    document_departments: dict[str, SaleDocumentDepartmentRow],
+) -> list[dict[str, Any]]:
+    result: list[dict[str, Any]] = []
+    for document in documents:
+        document_key = _ref_key(document.document_ref)
+        document_row = document_departments.get(document_key)
+        recommended_folder_ref, recommended_folder_name, recommended_folder_source = (
+            _effective_recommended_folder(document_row)
+        )
+        result.append(
+            {
+                "document_ref": document.document_ref,
+                "document_number": document.document_number,
+                "document_date": document.document_date,
+                "open_amount": document.open_amount,
+                "sale_amount": document.gross_amount,
+                "closing_amount": document.closing_amount,
+                "return_amount": Decimal("0.00"),
+                "manager_ref": None,
+                "manager_name": None,
+                "document_responsible_ref": (
+                    document_row.document_responsible_ref if document_row else None
+                ),
+                "document_responsible_name": (
+                    document_row.document_responsible_name if document_row else None
+                ),
+                "document_author_ref": (document_row.document_author_ref if document_row else None),
+                "document_author_name": (
+                    document_row.document_author_name if document_row else None
+                ),
+                "debt_department_ref": (
+                    document_row.document_department_ref if document_row else None
+                ),
+                "debt_department_name": (
+                    document_row.document_department_name if document_row else None
+                ),
+                "document_department_recommended_folder_ref": (
+                    document_row.recommended_folder_ref if document_row else None
+                ),
+                "document_department_recommended_folder_name": (
+                    document_row.recommended_folder_name if document_row else None
+                ),
+                "document_responsible_department_ref": (
+                    document_row.responsible_department_ref if document_row else None
+                ),
+                "document_responsible_department_name": (
+                    document_row.responsible_department_name if document_row else None
+                ),
+                "document_responsible_folder_ref": (
+                    document_row.responsible_folder_ref if document_row else None
+                ),
+                "document_responsible_folder_name": (
+                    document_row.responsible_folder_name if document_row else None
+                ),
+                "recommended_folder_ref": recommended_folder_ref,
+                "recommended_folder_name": recommended_folder_name,
+                "recommended_folder_source": recommended_folder_source,
+                "document_structure_status": DOCUMENT_STRUCTURE_CONFIRMED_OPEN,
+                "document_structure_order_ref": None,
+                "document_structure_order_number": None,
+                "document_structure_order_date": None,
+                "document_structure_linked_documents": [],
+                "statement_selection_rule": CANONICAL_DEBT_SELECTION_RULE,
+                "statement_balance_after": document.open_amount,
+                "statement_segment_start_row": None,
+                "statement_segment_end_row": None,
+                "statement_match_details": [
+                    {
+                        "rule": CANONICAL_DEBT_SELECTION_RULE,
+                        "gross_amount": document.gross_amount,
+                        "open_amount": document.open_amount,
+                    }
+                ],
+            }
+        )
+    return result
+
+
 def _candidate_sale_events_for_structure(
     snapshot: ReceivableBalanceSnapshot,
-    sale_events: Sequence[LedgerSaleEventRow],
-) -> list[LedgerSaleEventRow]:
-    events = sorted(sale_events, key=lambda row: (row.document_date, row.document_ref))
+    sale_events: Sequence[ReceivableStatementEvent],
+) -> list[ReceivableStatementEvent]:
+    events = sorted(
+        (
+            event
+            for event in sale_events
+            if event.event_type == "sale" and Decimal(event.amount_delta) > Decimal("0")
+        ),
+        key=lambda row: (row.document_date, row.document_ref),
+    )
     if not events:
         return []
 
-    selected_by_ref: dict[str, LedgerSaleEventRow] = {}
+    selected_by_ref: dict[str, ReceivableStatementEvent] = {}
 
-    def add(items: Sequence[LedgerSaleEventRow]) -> None:
+    def add(items: Sequence[ReceivableStatementEvent]) -> None:
         for item in items:
             selected_by_ref.setdefault(_ref_key(item.document_ref), item)
 
@@ -1094,6 +1278,7 @@ def build_open_debt_documents_by_counterparty(
     snapshot_date: date,
     status: str | None = None,
     include_onec_enrichment: bool = True,
+    diagnostics: dict[str, Any] | None = None,
 ) -> dict[str, list[dict[str, Any]]]:
     structure_candidate_refs = [
         snapshot.counterparty_ref
@@ -1105,28 +1290,92 @@ def build_open_debt_documents_by_counterparty(
         counterparty_refs=structure_candidate_refs,
         snapshot_date=snapshot_date,
     )
+    if diagnostics is not None:
+        diagnostics["statement_sale_counts"] = {
+            key: sum(
+                1
+                for event in events
+                if event.event_type == "sale" and Decimal(event.amount_delta) > Decimal("0")
+            )
+            for key, events in statement_events_by_counterparty.items()
+        }
+    should_enrich_from_onec = include_onec_enrichment and onec_engine is not None
+    if should_enrich_from_onec and onec_engine.dialect.name == "mssql":
+        canonical_batch = fetch_canonical_open_debt_documents(
+            onec_engine,
+            counterparty_balances={
+                snapshot.counterparty_ref: snapshot.current_balance
+                for snapshot in snapshots
+                if _needs_structure_lookup_for_status(snapshot, status=status)
+            },
+            snapshot_date=snapshot_date,
+        )
+        if canonical_batch.supported:
+            selected_document_refs = sorted(
+                {
+                    document.document_ref
+                    for documents in canonical_batch.documents_by_counterparty.values()
+                    for document in documents
+                }
+            )
+            canonical_document_departments = (
+                fetch_sale_document_departments(
+                    onec_engine,
+                    document_refs=selected_document_refs,
+                )
+                if selected_document_refs
+                else {}
+            )
+            if diagnostics is not None:
+                diagnostics["canonical_opening_period"] = canonical_batch.opening_period
+                diagnostics["canonical_origin_statuses"] = {
+                    key: resolution.status
+                    for key, resolution in canonical_batch.resolutions_by_counterparty.items()
+                }
+                diagnostics["canonical_matched_count"] = sum(
+                    resolution.status == CANONICAL_DEBT_STATUS_MATCHED
+                    for resolution in canonical_batch.resolutions_by_counterparty.values()
+                )
+            return {
+                _ref_key(snapshot.counterparty_ref): _open_debt_documents_from_canonical_origin(
+                    canonical_batch.documents_by_counterparty.get(
+                        _ref_key(snapshot.counterparty_ref),
+                        (),
+                    ),
+                    document_departments=canonical_document_departments,
+                )
+                for snapshot in snapshots
+                if _needs_structure_lookup_for_status(snapshot, status=status)
+            }
     document_departments: dict[str, SaleDocumentDepartmentRow] = {}
     document_structure_checks: dict[str, ReceivableDocumentStructureCheck] = {}
-    origin_document_refs = sorted(
-        {
-            _normalize_ref(snapshot.origin_document_ref)
-            for snapshot in snapshots
-            if _needs_structure_lookup_for_status(snapshot, status=status)
-            and _normalize_ref(snapshot.origin_document_ref)
-        }
-    )
-    should_enrich_from_onec = include_onec_enrichment and onec_engine is not None
-    if should_enrich_from_onec and origin_document_refs:
+    structure_document_refs: set[str] = set()
+    for snapshot in snapshots:
+        if not _needs_structure_lookup_for_status(snapshot, status=status):
+            continue
+        origin_document_ref = _normalize_ref(snapshot.origin_document_ref)
+        if origin_document_ref:
+            structure_document_refs.add(origin_document_ref)
+        counterparty_key = _ref_key(snapshot.counterparty_ref)
+        structure_document_refs.update(
+            event.document_ref
+            for event in _candidate_sale_events_for_structure(
+                snapshot,
+                statement_events_by_counterparty.get(counterparty_key, ()),
+            )
+        )
+    initial_structure_refs = sorted(structure_document_refs)
+    if should_enrich_from_onec and initial_structure_refs:
         document_departments.update(
             fetch_sale_document_departments(
                 onec_engine,
-                document_refs=origin_document_refs,
+                document_refs=initial_structure_refs,
             )
         )
         document_structure_checks.update(
             fetch_receivable_document_structure_checks(
                 onec_engine,
-                document_refs=origin_document_refs,
+                document_refs=initial_structure_refs,
                 snapshot_date=snapshot_date,
             )
         )
@@ -1250,6 +1499,27 @@ def _build_item(
         folder_row=folder_row,
         recommended_folder_name=recommended_folder_name,
     )
+    exclusion_reason = (
+        REVIEW_REASON_EXCLUDED_CHINA_SUPPLIER_GROUP
+        if is_excluded_china_supplier
+        else counterparty_exception
+    )
+    open_document_folder_keys = {
+        _ref_key(document.get("recommended_folder_ref") or document.get("recommended_folder_name"))
+        for document in open_debt_documents
+        if document.get("recommended_folder_ref") or document.get("recommended_folder_name")
+    }
+    business_review_reason = None
+    if len(open_document_folder_keys) > 1:
+        business_review_reason = REVIEW_REASON_MULTIPLE_OPEN_DEBT_FOLDERS
+        recommended_folder_ref = None
+        recommended_folder_name = None
+        recommended_folder_source = None
+    elif folder_row and _is_spb_cross_folder(
+        current_folder_name=folder_row.current_folder_name,
+        recommended_folder_name=recommended_folder_name,
+    ):
+        business_review_reason = REVIEW_REASON_SPB_CROSS_FOLDER
     if is_excluded_china_supplier:
         review_reason = REVIEW_REASON_EXCLUDED_CHINA_SUPPLIER_GROUP
     elif counterparty_exception:
@@ -1314,7 +1584,8 @@ def _build_item(
     return {
         "snapshot_date": snapshot.snapshot_date,
         "counterparty_ref": snapshot.counterparty_ref,
-        "counterparty_code": folder_row.counterparty_code if folder_row else None,
+        "counterparty_code": snapshot.counterparty_code
+        or (folder_row.counterparty_code if folder_row else None),
         "counterparty_name": snapshot.counterparty_name,
         "snapshot_department_ref": snapshot.department_ref,
         "snapshot_department_name": snapshot.department_name,
@@ -1379,6 +1650,8 @@ def _build_item(
         "effective_overdue_days": term.overdue_days,
         "status": status,
         "review_reason": review_reason,
+        "exclusion_reason": exclusion_reason,
+        "business_review_reason": business_review_reason,
         "document_structure_status": structure_check.status if structure_check else None,
         "document_structure_open_amount": structure_check.open_amount if structure_check else None,
         "document_structure_sale_amount": structure_check.sale_amount if structure_check else None,
@@ -1400,16 +1673,136 @@ def _is_actionable_status(status: str | None) -> bool:
     return status in {STATUS_MOVE_RECOMMENDED, STATUS_NEEDS_REVIEW}
 
 
-def _apply_report_suppression(item: dict[str, Any]) -> dict[str, Any]:
+def _folder_identity(item: dict[str, Any], prefix: str) -> str:
+    return _ref_key(
+        item.get(f"{prefix}_folder_ref")
+        or item.get(f"{prefix}_folder_name")
+        or item.get(f"{prefix}_folder_display_name")
+    )
+
+
+def classify_folder_recommendation_queue(
+    item: dict[str, Any], *, source_status: str = "cache_ready"
+) -> str:
+    review_reason = str(item.get("review_reason") or "")
+    exclusion_reason = str(item.get("exclusion_reason") or "")
+    business_review_reason = str(item.get("business_review_reason") or "")
     if (
-        _is_actionable_status(str(item.get("status")))
-        and Decimal(item.get("current_balance") or 0) < MIN_RECOMMENDATION_BALANCE
+        _is_excluded_reason(exclusion_reason)
+        or _is_excluded_reason(review_reason)
+        or review_reason == REVIEW_REASON_BELOW_MIN_BALANCE
     ):
+        return QUEUE_EXCLUDED
+    if source_status != "cache_ready" or review_reason == REVIEW_REASON_OPEN_DEBT_SOURCE_STALE:
+        return QUEUE_DATA_QUALITY
+    if business_review_reason or review_reason in {
+        REVIEW_REASON_SPB_CROSS_FOLDER,
+        REVIEW_REASON_MULTIPLE_OPEN_DEBT_FOLDERS,
+        REVIEW_REASON_DOCUMENT_COMMENT_HISTORY_REQUIRED,
+    }:
+        return QUEUE_BUSINESS_REVIEW
+    if str(item.get("status") or "") in {STATUS_OK, STATUS_NO_OVERDUE}:
+        return QUEUE_EXCLUDED
+    current_folder = _folder_identity(item, "current")
+    recommended_folder = _folder_identity(item, "recommended")
+    if (
+        review_reason == REVIEW_REASON_ORIGIN_DOCUMENT_STRUCTURE_CONFIRMED
+        and bool(item.get("is_overdue"))
+        and Decimal(str(item.get("current_balance") or "0")) >= MIN_RECOMMENDATION_BALANCE
+        and current_folder
+        and recommended_folder
+        and current_folder != recommended_folder
+    ):
+        return QUEUE_ACTIONABLE
+    return QUEUE_DATA_QUALITY
+
+
+def folder_recommendation_signal_key(item: dict[str, Any]) -> str:
+    raw = json.dumps(
+        {
+            "counterparty_ref": _ref_key(item.get("counterparty_ref")),
+            "current_folder": _folder_identity(item, "current"),
+            "recommended_folder": _folder_identity(item, "recommended"),
+            "document_ref": _ref_key(
+                item.get("debt_document_ref") or item.get("origin_document_ref")
+            ),
+            "review_reason": str(item.get("review_reason") or ""),
+            "exclusion_reason": str(item.get("exclusion_reason") or ""),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def enrich_folder_recommendation_item(
+    item: dict[str, Any], *, source_status: str = "cache_ready"
+) -> dict[str, Any]:
+    enriched = dict(item)
+    queue = classify_folder_recommendation_queue(enriched, source_status=source_status)
+    enriched["signal_key"] = folder_recommendation_signal_key(enriched)
+    enriched["queue"] = queue
+    enriched["action_required"] = queue == QUEUE_ACTIONABLE
+    return enriched
+
+
+def _apply_document_mismatch_guard(
+    item: dict[str, Any],
+    *,
+    diagnostic: str,
+) -> dict[str, Any]:
+    guarded = dict(item)
+    excluded = _is_excluded_reason(guarded.get("exclusion_reason")) or _is_excluded_reason(
+        guarded.get("review_reason")
+    )
+    mismatch_reason = open_debt_review_reason(diagnostic)
+    guarded.update(
+        {
+            "open_debt_source_status": "document_mismatch",
+            "document_mismatch_reason": mismatch_reason,
+            "status": STATUS_NO_OVERDUE if excluded else STATUS_NEEDS_REVIEW,
+            "review_reason": mismatch_reason,
+            "business_review_reason": None,
+            "recommended_folder_ref": None,
+            "recommended_folder_name": None,
+            "recommended_folder_display_name": None,
+            "recommended_folder_source": None,
+            "debt_document_ref": None,
+            "debt_document_number": None,
+            "debt_document_date": None,
+            "debt_document_responsible_ref": None,
+            "debt_document_responsible_name": None,
+            "debt_document_author_ref": None,
+            "debt_document_author_name": None,
+            "open_debt_documents": [],
+            "statement_balance_after": None,
+            "statement_segment_start_row": None,
+            "statement_segment_end_row": None,
+            "statement_selection_rule": None,
+            "origin_document_ref": None,
+            "origin_document_number": None,
+            "origin_document_date": None,
+            "due_date": None,
+            "overdue_days": None,
+            "is_overdue": False,
+            "effective_credit_depth_days": None,
+            "effective_payment_term_source": None,
+            "effective_due_date": None,
+            "effective_overdue_days": None,
+        }
+    )
+    return guarded
+
+
+def _apply_report_suppression(item: dict[str, Any]) -> dict[str, Any]:
+    if Decimal(item.get("current_balance") or 0) < MIN_RECOMMENDATION_BALANCE:
         item = dict(item)
-        item["status"] = STATUS_NO_OVERDUE
-        item["review_reason"] = REVIEW_REASON_BELOW_MIN_BALANCE
         item["suppressed_from_daily_report"] = True
         item["suppression_reason"] = REVIEW_REASON_BELOW_MIN_BALANCE
+        if _is_actionable_status(str(item.get("status"))):
+            item["status"] = STATUS_NO_OVERDUE
+            if item.get("open_debt_source_status") != "document_mismatch":
+                item["review_reason"] = REVIEW_REASON_BELOW_MIN_BALANCE
     return item
 
 
@@ -1447,6 +1840,11 @@ def _build_report_revision(snapshot_date: date, items: Sequence[dict[str, Any]])
             "recommended_folder_ref": item.get("recommended_folder_ref"),
             "debt_document_ref": item.get("debt_document_ref"),
             "status": item.get("status"),
+            "review_reason": item.get("review_reason"),
+            "queue": item.get("queue"),
+            "exclusion_reason": item.get("exclusion_reason"),
+            "business_review_reason": item.get("business_review_reason"),
+            "open_debt_source_status": item.get("open_debt_source_status"),
         }
         for item in items
     ]
@@ -1466,6 +1864,7 @@ def build_counterparty_folder_recommendations(
     snapshot_date: date,
     limit: int | None = None,
     status: str | None = None,
+    queue: str = QUEUE_ALL,
     candidate_limit: int | None = None,
     snapshot_department_refs: set[str] | frozenset[str] | None = None,
 ) -> dict[str, Any]:
@@ -1477,6 +1876,15 @@ def build_counterparty_folder_recommendations(
     }
     if status is not None and status not in allowed_statuses:
         raise ValueError(f"unsupported status: {status}")
+    allowed_queues = {
+        QUEUE_ACTIONABLE,
+        QUEUE_BUSINESS_REVIEW,
+        QUEUE_DATA_QUALITY,
+        QUEUE_EXCLUDED,
+        QUEUE_ALL,
+    }
+    if queue not in allowed_queues:
+        raise ValueError(f"unsupported queue: {queue}")
 
     snapshots = (
         session.execute(
@@ -1514,6 +1922,7 @@ def build_counterparty_folder_recommendations(
         onec_engine,
         counterparty_refs=counterparty_refs,
     )
+    open_debt_diagnostics: dict[str, Any] = {}
     open_debt_documents_by_counterparty = (
         build_open_debt_documents_by_counterparty(
             session,
@@ -1521,6 +1930,7 @@ def build_counterparty_folder_recommendations(
             snapshots=snapshots,
             snapshot_date=snapshot_date,
             status=status,
+            diagnostics=open_debt_diagnostics,
         )
         if source_freshness.source_status == "cache_ready"
         else {}
@@ -1557,15 +1967,19 @@ def build_counterparty_folder_recommendations(
     }
 
     items = []
+    statement_sale_counts = open_debt_diagnostics.get("statement_sale_counts") or {}
     for snapshot in snapshots:
         counterparty_key = _ref_key(snapshot.counterparty_ref)
         open_debt_documents = open_debt_documents_by_counterparty.get(counterparty_key, [])
-        document_amount_mismatch = not open_debt_documents_match_balance(
+        document_diagnostic = classify_open_debt_documents(
             open_debt_documents,
             current_balance=snapshot.current_balance,
+            statement_sale_count=int(statement_sale_counts.get(counterparty_key) or 0),
         )
-        if document_amount_mismatch:
-            open_debt_documents = []
+        document_amount_mismatch = (
+            source_freshness.source_status == "cache_ready"
+            and document_diagnostic != OPEN_DEBT_DIAGNOSTIC_MATCHED
+        )
         primary_document_ref = (
             _normalize_ref(open_debt_documents[0].get("document_ref"))
             if open_debt_documents
@@ -1580,22 +1994,16 @@ def build_counterparty_folder_recommendations(
             is_excluded_china_supplier=counterparty_key in china_supplier_refs,
         )
         if document_amount_mismatch:
-            item = dict(item)
-            item.update(
-                {
-                    "status": STATUS_NEEDS_REVIEW,
-                    "review_reason": REVIEW_REASON_OPEN_DEBT_AMOUNT_MISMATCH,
-                    "recommended_folder_ref": None,
-                    "recommended_folder_name": None,
-                    "recommended_folder_display_name": None,
-                    "recommended_folder_source": None,
-                }
+            item = _apply_document_mismatch_guard(
+                item,
+                diagnostic=document_diagnostic,
             )
         if source_freshness.source_status == "source_stale":
             item = dict(item)
+            excluded = _is_excluded_reason(item.get("exclusion_reason"))
             item.update(
                 {
-                    "status": STATUS_NEEDS_REVIEW,
+                    "status": STATUS_NO_OVERDUE if excluded else STATUS_NEEDS_REVIEW,
                     "review_reason": REVIEW_REASON_OPEN_DEBT_SOURCE_STALE,
                     "recommended_folder_ref": None,
                     "recommended_folder_name": None,
@@ -1607,15 +2015,25 @@ def build_counterparty_folder_recommendations(
                     "open_debt_documents": [],
                 }
             )
-        items.append(_apply_report_suppression(item))
+        item = _apply_report_suppression(item)
+        items.append(
+            enrich_folder_recommendation_item(
+                item,
+                source_status=source_freshness.source_status,
+            )
+        )
     below_min_balance_count = sum(
         1 for item in items if item.get("suppression_reason") == REVIEW_REASON_BELOW_MIN_BALANCE
     )
     if status is not None:
         items = [item for item in items if item["status"] == status]
+    queue_counts_all = Counter(str(item.get("queue") or "") for item in items)
+    if queue != QUEUE_ALL:
+        items = [item for item in items if item.get("queue") == queue]
 
     items.sort(
         key=lambda item: (
+            QUEUE_SORT_ORDER.get(str(item.get("queue")), 99),
             STATUS_SORT_ORDER.get(str(item["status"]), 99),
             -(int(item.get("overdue_days") or 0)),
             -(item.get("current_balance") or Decimal("0")),
@@ -1626,6 +2044,9 @@ def build_counterparty_folder_recommendations(
         items = items[:limit]
 
     status_counts = Counter(item["status"] for item in items)
+    document_mismatch_count = sum(
+        item.get("open_debt_source_status") == "document_mismatch" for item in items
+    )
     review_reason_counts = Counter(
         item["review_reason"]
         for item in items
@@ -1652,6 +2073,12 @@ def build_counterparty_folder_recommendations(
             "needs_review_count": status_counts[STATUS_NEEDS_REVIEW],
             "candidate_snapshot_count": len(snapshots),
             "below_min_balance_count": below_min_balance_count,
+            "document_mismatch_count": document_mismatch_count,
+            "queue_counts": dict(sorted(queue_counts_all.items())),
+            "actionable_count": queue_counts_all[QUEUE_ACTIONABLE],
+            "business_review_count": queue_counts_all[QUEUE_BUSINESS_REVIEW],
+            "data_quality_count": queue_counts_all[QUEUE_DATA_QUALITY],
+            "excluded_count": queue_counts_all[QUEUE_EXCLUDED],
             "min_recommendation_balance": MIN_RECOMMENDATION_BALANCE,
             "review_reason_counts": dict(sorted(review_reason_counts.items())),
             "total_open_debt": total_open_debt,

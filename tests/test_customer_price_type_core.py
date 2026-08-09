@@ -156,9 +156,9 @@ def test_retail_and_variants_never_create_upgrade_case() -> None:
     assert key_account.action_required is False
 
 
-def test_multi_contract_unknown_and_partial_sources_are_data_checks() -> None:
+def test_same_level_contracts_are_combined_and_conflicting_levels_need_data_check() -> None:
     base = _facts()
-    multi = ENGINE.evaluate(
+    same_level = ENGINE.evaluate(
         replace(
             base,
             contracts=base.contracts
@@ -171,14 +171,15 @@ def test_multi_contract_unknown_and_partial_sources_are_data_checks() -> None:
             ),
         )
     )
-    unknown = ENGINE.evaluate(
+    duplicate_type = ENGINE.evaluate(
         replace(
             base,
-            contracts=(
+            contracts=base.contracts
+            + (
                 ContractFact(
-                    contract_ref=_ref(100),
-                    contract_name="Основной",
-                    price_type_name="Неизвестный",
+                    contract_ref=_ref(105),
+                    contract_name="Ещё один бронзовый",
+                    price_type_name="2.Бронзовый",
                 ),
             ),
         )
@@ -192,6 +193,81 @@ def test_multi_contract_unknown_and_partial_sources_are_data_checks() -> None:
                     contract_ref=_ref(102),
                     contract_name="Другой уровень",
                     price_type_name="3.Серебряный",
+                ),
+            ),
+        )
+    )
+
+    assert same_level.reasons == ("conflicting_price_type_variants",)
+    assert duplicate_type.current_level == "bronze"
+    assert duplicate_type.current_price_type == "2.Бронзовый"
+    assert duplicate_type.total_3m == Decimal("9000")
+    assert different_levels.reasons == ("conflicting_price_levels",)
+
+
+def test_working_contracts_determine_exact_price_type_and_ignore_unused_levels() -> None:
+    base = _facts()
+    bronze_ref = _ref(110)
+    unused_retail_ref = _ref(111)
+    resolved = ENGINE.evaluate(
+        replace(
+            base,
+            contracts=(
+                ContractFact(
+                    contract_ref=unused_retail_ref,
+                    contract_name="Старый розничный",
+                    price_type_name="Розница",
+                ),
+                ContractFact(
+                    contract_ref=bronze_ref,
+                    contract_name="Основной",
+                    price_type_name="2.Бронзовый",
+                    sale_document_count_12m=3,
+                    sales_amount_12m=Decimal("2760"),
+                    last_sale_at=date(2026, 3, 5),
+                    is_working=True,
+                ),
+            ),
+        )
+    )
+    variant_conflict = ENGINE.evaluate(
+        replace(
+            base,
+            contracts=(
+                ContractFact(
+                    contract_ref=_ref(112),
+                    contract_name="Наличный",
+                    price_type_name="2.Бронзовый",
+                    sale_document_count_12m=1,
+                    is_working=True,
+                ),
+                ContractFact(
+                    contract_ref=_ref(113),
+                    contract_name="Безналичный",
+                    price_type_name="2.Бронзовый бн",
+                    sale_document_count_12m=1,
+                    is_working=True,
+                ),
+            ),
+        )
+    )
+
+    assert resolved.current_price_type == "2.Бронзовый"
+    assert resolved.calculation_contract_refs == (bronze_ref,)
+    assert unused_retail_ref not in resolved.calculation_contract_refs
+    assert variant_conflict.reasons == ("conflicting_price_type_variants",)
+
+
+def test_invalid_contract_price_types_and_partial_sources_are_data_checks() -> None:
+    base = _facts()
+    unknown = ENGINE.evaluate(
+        replace(
+            base,
+            contracts=(
+                ContractFact(
+                    contract_ref=_ref(100),
+                    contract_name="Основной",
+                    price_type_name="Неизвестный",
                 ),
             ),
         )
@@ -227,8 +303,6 @@ def test_multi_contract_unknown_and_partial_sources_are_data_checks() -> None:
     )
     omitted = ENGINE.evaluate(replace(base, source_statuses={"contracts": "ready"}))
 
-    assert multi.reasons == ("multi_contract",)
-    assert different_levels.reasons == ("multi_contract",)
     assert unknown.reasons == ("unknown_price_type",)
     assert missing.reasons == ("price_type_missing",)
     assert marked.reasons == ("price_type_marked",)
@@ -236,6 +310,118 @@ def test_multi_contract_unknown_and_partial_sources_are_data_checks() -> None:
     assert partial.source_status == "partial"
     assert omitted.recommendation == "data_check"
     assert "source_sales_history_missing" in omitted.stop_factors
+
+
+def test_working_contract_has_priority_over_incomplete_unused_contracts() -> None:
+    base = _facts()
+    usable_ref = _ref(106)
+    mixed = ENGINE.evaluate(
+        replace(
+            base,
+            contracts=(
+                ContractFact(
+                    contract_ref=_ref(103),
+                    contract_name="Пустой договор",
+                    price_type_name=None,
+                    price_type_missing=True,
+                ),
+                ContractFact(
+                    contract_ref=usable_ref,
+                    contract_name="Договор с покупателем",
+                    price_type_name="2.Бронзовый",
+                    sale_document_count_12m=1,
+                    is_working=True,
+                ),
+                ContractFact(
+                    contract_ref=_ref(107),
+                    contract_name="Неизвестный тип",
+                    price_type_name="Старый тип",
+                ),
+            ),
+        )
+    )
+    conflict = ENGINE.evaluate(
+        replace(
+            base,
+            contracts=(
+                ContractFact(
+                    contract_ref=_ref(103),
+                    contract_name="Пустой договор",
+                    price_type_name=None,
+                    price_type_missing=True,
+                ),
+                ContractFact(
+                    contract_ref=usable_ref,
+                    contract_name="Бронзовый",
+                    price_type_name="2.Бронзовый",
+                    sale_document_count_12m=1,
+                    is_working=True,
+                ),
+                ContractFact(
+                    contract_ref=_ref(108),
+                    contract_name="Серебряный",
+                    price_type_name="3.Серебряный",
+                    sale_document_count_12m=1,
+                    is_working=True,
+                ),
+            ),
+        )
+    )
+
+    assert mixed.current_level == "bronze"
+    assert mixed.current_price_type == "2.Бронзовый"
+    assert mixed.recommendation == "isolate"
+    assert mixed.calculation_contract_refs == (usable_ref,)
+    assert mixed.price_type_change_contract_refs == (usable_ref,)
+    assert mixed.reasons != ("price_type_missing",)
+    assert conflict.reasons == ("conflicting_price_levels",)
+    assert set(conflict.calculation_contract_refs) == {usable_ref, _ref(108)}
+    assert conflict.price_type_change_contract_refs == ()
+
+
+def test_never_purchased_card_is_excluded_before_missing_price_type() -> None:
+    missing_contract = ContractFact(
+        contract_ref=_ref(103),
+        contract_name="Без типа",
+        price_type_name=None,
+        price_type_missing=True,
+    )
+    never_purchased = ENGINE.evaluate(
+        replace(
+            _facts(),
+            contracts=(missing_contract,),
+            monthly_sales={},
+            first_activity_date=None,
+            history_coverage_months=0,
+            direct_onec_total_3m=Decimal("0"),
+            ledger_total_3m=Decimal("0"),
+        )
+    )
+    sales_without_first_activity = ENGINE.evaluate(
+        replace(
+            _facts(),
+            contracts=(missing_contract,),
+            first_activity_date=None,
+        )
+    )
+    history_without_window_sales = ENGINE.evaluate(
+        replace(
+            _facts(),
+            contracts=(missing_contract,),
+            monthly_sales={},
+            first_activity_date=date(2025, 1, 15),
+            history_coverage_months=12,
+            direct_onec_total_3m=Decimal("0"),
+            ledger_total_3m=Decimal("0"),
+        )
+    )
+
+    assert never_purchased.excluded is True
+    assert never_purchased.action_required is False
+    assert never_purchased.recommendation == "excluded_without_sales_history"
+    assert never_purchased.stop_factors == ("no_sales_history",)
+    assert sales_without_first_activity.reasons == ("price_type_missing",)
+    assert history_without_window_sales.reasons == ("price_type_missing",)
 
 
 def test_history_coverage_blocks_dead_soul_and_full_history_enables_it() -> None:
@@ -249,7 +435,8 @@ def test_history_coverage_blocks_dead_soul_and_full_history_enables_it() -> None
     dead = ENGINE.evaluate(replace(base, history_coverage_months=12))
 
     assert insufficient.recommendation == "insufficient_history"
-    assert dead.recommendation == "downgrade_to_retail"
+    assert dead.recommendation == "recovery"
+    assert dead.recommended_price_type == "2.Бронзовый"
     assert dead.action_required is True
 
 
@@ -319,7 +506,8 @@ def test_registry_hygiene_returns_and_dead_soul_economics() -> None:
     assert advisory.recommendation == "keep_current"
     assert quality.review_type == "quality"
     assert quality.action_required is True
-    assert dead_without_economics.reasons == ("economics_missing",)
+    assert dead_without_economics.recommendation == "recovery"
+    assert dead_without_economics.recommended_price_type == "2.Бронзовый"
 
 
 def _session_factory(tmp_path: Path):
@@ -359,6 +547,61 @@ def func_count(model):
     return func.count(model.id)
 
 
+def test_never_purchased_card_is_removed_from_open_cases_on_recalculation(
+    tmp_path: Path,
+) -> None:
+    engine, factory = _session_factory(tmp_path)
+    try:
+        service = CustomerPriceTypeRunService(factory)
+        missing_contract = ContractFact(
+            contract_ref=_ref(103),
+            contract_name="Без типа",
+            price_type_name=None,
+            price_type_missing=True,
+        )
+        active = replace(_facts(), contracts=(missing_contract,))
+        statuses = {
+            "contracts": "ready",
+            "sales_history": "ready",
+            "ledger_reconciliation": "ready",
+            "master_data": "ready",
+        }
+        service.execute([active], source_statuses=statuses)
+        inactive = replace(
+            active,
+            monthly_sales={},
+            first_activity_date=None,
+            history_coverage_months=0,
+            direct_onec_total_3m=Decimal("0"),
+            ledger_total_3m=Decimal("0"),
+        )
+        excluded_run = service.execute(
+            [inactive],
+            source_statuses=statuses,
+            run_key="exclude-never-purchased",
+        )
+
+        with Session(engine) as session:
+            profile = session.scalar(select(CustomerPriceTypeProfile))
+            case = session.scalar(select(CustomerPriceTypeCase))
+            run = session.get(CustomerPriceTypeRun, excluded_run.run_id)
+            events = session.scalars(
+                select(CustomerPriceTypeCaseEvent).order_by(CustomerPriceTypeCaseEvent.id)
+            ).all()
+
+            assert profile.open_case_id is None
+            assert profile.is_service_card is False
+            assert case is not None
+            assert run.excluded_count == 1
+            assert run.actionable_count == 0
+            assert [event.event_type for event in events] == [
+                "case_created",
+                "profile_excluded",
+            ]
+    finally:
+        engine.dispose()
+
+
 def test_changed_snapshot_resets_approval_once(tmp_path: Path) -> None:
     engine, factory = _session_factory(tmp_path)
     try:
@@ -395,6 +638,140 @@ def test_changed_snapshot_resets_approval_once(tmp_path: Path) -> None:
             assert case.human_final_decision is None
             assert case.version == 2
             assert [event.event_type for event in events] == ["case_created", "snapshot_changed"]
+    finally:
+        engine.dispose()
+
+
+def test_resolved_data_check_is_closed_or_reclassified_without_duplicate_case(
+    tmp_path: Path,
+) -> None:
+    engine, factory = _session_factory(tmp_path)
+    try:
+        service = CustomerPriceTypeRunService(factory)
+        base = _facts(monthly=("4000", "4000", "4000"))
+        conflicting = replace(
+            base,
+            contracts=(
+                ContractFact(
+                    _ref(120),
+                    "Бронзовый",
+                    "2.Бронзовый",
+                    sale_document_count_12m=2,
+                    is_working=True,
+                ),
+                ContractFact(
+                    _ref(121),
+                    "Серебряный",
+                    "3.Серебряный",
+                    sale_document_count_12m=1,
+                    is_working=True,
+                ),
+            ),
+        )
+        statuses = {"contracts": "ready"}
+        service.execute([conflicting], source_statuses=statuses, run_key="conflict-first")
+
+        resolved = replace(
+            base,
+            contracts=(
+                ContractFact(
+                    _ref(120),
+                    "Бронзовый",
+                    "2.Бронзовый",
+                    sale_document_count_12m=2,
+                    is_working=True,
+                ),
+                ContractFact(_ref(121), "Серебряный", "3.Серебряный"),
+            ),
+        )
+        service.execute([resolved], source_statuses=statuses, run_key="resolved-keep")
+
+        with Session(engine) as session:
+            profile = session.scalar(select(CustomerPriceTypeProfile))
+            case = session.scalar(select(CustomerPriceTypeCase))
+            events = session.scalars(
+                select(CustomerPriceTypeCaseEvent).order_by(CustomerPriceTypeCaseEvent.id)
+            ).all()
+            assert profile.open_case_id is None
+            assert case.stage == "CLOSED_KEEP"
+            assert session.scalar(select(func_count(CustomerPriceTypeCase))) == 1
+            assert [event.event_type for event in events] == [
+                "case_created",
+                "case_auto_closed",
+            ]
+
+        actionable = replace(
+            resolved,
+            monthly_sales={
+                "2026-04": Decimal("1"),
+                "2026-05": Decimal("1"),
+                "2026-06": Decimal("1"),
+            },
+            direct_onec_total_3m=Decimal("3"),
+            ledger_total_3m=Decimal("3"),
+        )
+        service.execute([actionable], source_statuses=statuses, run_key="resolved-actionable")
+        with Session(engine) as session:
+            profile = session.scalar(select(CustomerPriceTypeProfile))
+            case = session.scalar(select(CustomerPriceTypeCase))
+            events = session.scalars(
+                select(CustomerPriceTypeCaseEvent).order_by(CustomerPriceTypeCaseEvent.id)
+            ).all()
+            assert profile.open_case_id == case.id
+            assert case.case_type == "isolate"
+            assert case.stage == "NEW"
+            assert session.scalar(select(func_count(CustomerPriceTypeCase))) == 1
+            assert events[-1].event_type == "case_reclassified"
+    finally:
+        engine.dispose()
+
+
+def test_exported_case_is_not_auto_closed_before_readback(tmp_path: Path) -> None:
+    engine, factory = _session_factory(tmp_path)
+    try:
+        service = CustomerPriceTypeRunService(factory)
+        active = _facts(monthly=("1", "1", "1"))
+        service.execute([active], source_statuses={"contracts": "ready"}, run_key="active")
+        with Session(engine) as session:
+            case = session.scalar(select(CustomerPriceTypeCase))
+            case.onec_export_status = "exported"
+            case.onec_readback_status = "pending"
+            session.commit()
+
+        keep = replace(
+            active,
+            monthly_sales={
+                "2026-04": Decimal("4000"),
+                "2026-05": Decimal("4000"),
+                "2026-06": Decimal("4000"),
+            },
+            direct_onec_total_3m=Decimal("12000"),
+            ledger_total_3m=Decimal("12000"),
+        )
+        service.execute([keep], source_statuses={"contracts": "ready"}, run_key="keep")
+        with Session(engine) as session:
+            profile = session.scalar(select(CustomerPriceTypeProfile))
+            case = session.scalar(select(CustomerPriceTypeCase))
+            assert profile.open_case_id == case.id
+            assert case.stage != "CLOSED_KEEP"
+            repository = SqlAlchemyCustomerPriceTypeRepository(session)
+            latest_run = repository.latest_run()
+            _, total = repository.list_cases(
+                access=CustomerPriceTypeAccessScope(
+                    actor="test", role="internal", can_view_money=True
+                ),
+                run_id=latest_run.id,
+                snapshot_month=latest_run.snapshot_month,
+                worklist=None,
+                stage=None,
+                review_type=None,
+                source_status=None,
+                department_ref=None,
+                search=None,
+                limit=100,
+                offset=0,
+            )
+            assert total == 1
     finally:
         engine.dispose()
 

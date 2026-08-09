@@ -1,7 +1,7 @@
 """add read-only 1C stock availability cache
 
 Revision ID: d1a2b3c4e5f7
-Revises: c0f1e2d3a456
+Revises: ef56ab78cd90
 Create Date: 2026-07-27 21:00:00.000000
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "d1a2b3c4e5f7"
-down_revision = "c0f1e2d3a456"
+down_revision = "ef56ab78cd90"
 branch_labels = None
 depends_on = None
 

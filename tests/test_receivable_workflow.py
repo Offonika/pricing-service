@@ -12,17 +12,22 @@ from app.models import (
     ReceivableCase,
     ReceivableOpenDebtCache,
     ReceivableSmsLog,
+    ReceivableSupervisorNote,
     ReceivableWorkEvent,
     ReceivableWorkItem,
 )
 from app.services.receivable_workflow import (
     EVENT_DATA_QUALITY,
+    EVENT_DEBT_CYCLE_RESET,
     SMS_DRY_RUN,
     SMS_SKIPPED_NO_PHONE,
     STATUS_CALLING,
     STATUS_CLOSED,
     STATUS_DATA_QUALITY,
     STATUS_ESCALATED,
+    STATUS_NEW_DEBT,
+    STATUS_NO_PHONE,
+    STATUS_PAID,
     debt_key_for_case,
     format_chain_documents_for_bitrix,
     stable_key_for_counterparty,
@@ -506,6 +511,221 @@ def test_bitrix_sync_does_not_fall_back_when_open_debt_cache_row_is_empty(
     assert bitrix.added[0]["fields"]["UF_CRM_RECEIVABLE_CHAIN_DOCUMENTS"] == ""
 
 
+def test_bitrix_sync_does_not_create_card_for_document_mismatch(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 7, 31)
+    db_session.add_all(
+        [
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_BUYERS,
+                balance=Decimal("11960.00"),
+                origin_date=datetime(2026, 7, 10, 12, 59, 36),
+                due_date=datetime(2026, 7, 17),
+                overdue_days=14,
+            ),
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_OVERDUE,
+                balance=Decimal("11960.00"),
+                origin_date=datetime(2026, 7, 10, 12, 59, 36),
+                due_date=datetime(2026, 7, 17),
+                overdue_days=14,
+            ),
+            ReceivableOpenDebtCache(
+                snapshot_date=as_of,
+                counterparty_ref="cp-a",
+                department_ref="dep-1",
+                source_status="document_mismatch",
+                documents=[],
+            ),
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_BUYERS,
+                counterparty_ref="cp-stale",
+                balance=Decimal("500.00"),
+                origin_date=datetime(2026, 7, 30, 12, 0),
+                due_date=datetime(2026, 8, 6),
+                overdue_days=0,
+            ),
+            ReceivableOpenDebtCache(
+                snapshot_date=as_of,
+                counterparty_ref="cp-stale",
+                department_ref="dep-1",
+                source_status="source_stale",
+                documents=[],
+            ),
+        ]
+    )
+    bitrix = FakeBitrixClient()
+
+    summary = sync_receivable_workflow(
+        db_session,
+        as_of=as_of,
+        settings=_settings(),
+        bitrix_client=bitrix,
+        sync_sms=False,
+    )
+
+    assert summary.data_quality_skipped == 1
+    assert summary.work_items_created == 0
+    assert bitrix.added == []
+    assert bitrix.updated == []
+    assert db_session.scalars(select(ReceivableWorkItem)).all() == []
+
+
+def test_bitrix_sync_quarantines_existing_card_for_document_mismatch(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 7, 31)
+    item = ReceivableWorkItem(
+        stable_key=stable_key_for_counterparty("cp-a"),
+        counterparty_ref="cp-a",
+        counterparty_name="Ромашка ООО",
+        status=STATUS_CALLING,
+        current_balance=Decimal("11960.00"),
+        origin_document_ref="sale-closed",
+        origin_document_number="РБГУ0314426",
+        origin_document_date=datetime(2026, 7, 10, 12, 59, 36),
+        due_date=datetime(2026, 7, 17),
+        overdue_days=14,
+        age_days=21,
+        needs_call_today=True,
+        escalation_level="retail_network_head",
+        escalated_at=datetime(2026, 7, 31, 8, 0),
+        chain_documents=[{"document_number": "РБГУ0314426"}],
+        bitrix_item_id=77,
+    )
+    db_session.add_all(
+        [
+            item,
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_BUYERS,
+                balance=Decimal("11960.00"),
+                origin_date=datetime(2026, 7, 10, 12, 59, 36),
+                due_date=datetime(2026, 7, 17),
+                overdue_days=14,
+            ),
+            _case(
+                snapshot_date=as_of,
+                segment=CASE_OVERDUE,
+                balance=Decimal("11960.00"),
+                origin_date=datetime(2026, 7, 10, 12, 59, 36),
+                due_date=datetime(2026, 7, 17),
+                overdue_days=14,
+            ),
+            ReceivableOpenDebtCache(
+                snapshot_date=as_of,
+                counterparty_ref="cp-a",
+                department_ref="dep-1",
+                source_status="document_mismatch",
+                documents=[],
+            ),
+        ]
+    )
+    bitrix = FakeBitrixClient()
+    settings = _settings(
+        receivable_bitrix_field_map={
+            **_settings().receivable_bitrix_field_map,
+            "origin_document_number": "UF_CRM_RECEIVABLE_ORIGIN_DOCUMENT_NUMBER",
+            "origin_document_date": "UF_CRM_RECEIVABLE_ORIGIN_DOCUMENT_DATE",
+            "due_date": "UF_CRM_RECEIVABLE_DUE_DATE",
+            "overdue_days": "UF_CRM_RECEIVABLE_OVERDUE_DAYS",
+            "needs_call_today": "UF_CRM_RECEIVABLE_NEEDS_CALL_TODAY",
+            "chain_documents": "UF_CRM_RECEIVABLE_CHAIN_DOCUMENTS",
+            "status": "UF_CRM_RECEIVABLE_STATUS",
+        },
+        receivable_bitrix_stage_map={
+            **_settings().receivable_bitrix_stage_map,
+            STATUS_DATA_QUALITY: "DT187_1:DATA_QUALITY",
+        },
+    )
+
+    first = sync_receivable_workflow(
+        db_session,
+        as_of=as_of,
+        phone_by_counterparty={"cp-a": "+79990000000"},
+        settings=settings,
+        bitrix_client=bitrix,
+        sync_sms=False,
+    )
+    second = sync_receivable_workflow(
+        db_session,
+        as_of=as_of,
+        phone_by_counterparty={"cp-a": "+79990000000"},
+        settings=settings,
+        bitrix_client=bitrix,
+        sync_sms=False,
+    )
+
+    assert first.data_quality_skipped == 1
+    assert first.work_items_updated == 1
+    assert first.bitrix_updated == 1
+    assert second.data_quality_skipped == 1
+    assert item.status == STATUS_DATA_QUALITY
+    assert item.current_balance == Decimal("11960.00")
+    assert item.origin_document_ref is None
+    assert item.origin_document_number is None
+    assert item.origin_document_date is None
+    assert item.due_date is None
+    assert item.overdue_days is None
+    assert item.age_days is None
+    assert item.needs_call_today is False
+    assert item.escalation_level is None
+    assert item.escalated_at is None
+    assert item.chain_documents == []
+    assert item.closed_at is None
+    assert item.payload is not None
+    assert item.payload["data_quality_reason"] == "document_mismatch"
+    events = db_session.scalars(select(ReceivableWorkEvent)).all()
+    assert len(events) == 1
+    assert events[0].event_type == EVENT_DATA_QUALITY
+    assert len(bitrix.updated) == 2
+    fields = bitrix.updated[-1][1]["fields"]
+    assert fields["UF_CRM_RECEIVABLE_ORIGIN_DOCUMENT_NUMBER"] is None
+    assert fields["UF_CRM_RECEIVABLE_ORIGIN_DOCUMENT_DATE"] is None
+    assert fields["UF_CRM_RECEIVABLE_DUE_DATE"] is None
+    assert fields["UF_CRM_RECEIVABLE_OVERDUE_DAYS"] is None
+    assert fields["UF_CRM_RECEIVABLE_NEEDS_CALL_TODAY"] is False
+    assert fields["UF_CRM_RECEIVABLE_CHAIN_DOCUMENTS"] == ""
+    assert fields["UF_CRM_RECEIVABLE_STATUS"] == STATUS_DATA_QUALITY
+    assert fields["stageId"] == "DT187_1:DATA_QUALITY"
+    assert bitrix.added == []
+
+    cache_row = db_session.scalar(
+        select(ReceivableOpenDebtCache).where(ReceivableOpenDebtCache.counterparty_ref == "cp-a")
+    )
+    assert cache_row is not None
+    cache_row.source_status = "ready"
+    cache_row.documents = [
+        {
+            "document_ref": "sale-fresh",
+            "document_number": "РБГУ0350595",
+            "document_date": "2026-07-29T14:41:23",
+            "open_amount": "11960.00",
+        }
+    ]
+
+    recovered = sync_receivable_workflow(
+        db_session,
+        as_of=as_of,
+        phone_by_counterparty={"cp-a": "+79990000000"},
+        settings=settings,
+        bitrix_client=bitrix,
+        sync_sms=False,
+    )
+
+    assert recovered.work_items_updated == 1
+    assert item.status == STATUS_CALLING
+    assert item.due_date == datetime(2026, 7, 17)
+    assert item.overdue_days == 14
+    assert item.needs_call_today is True
+    recovered_events = db_session.scalars(select(ReceivableWorkEvent)).all()
+    assert sum(event.event_type == EVENT_DATA_QUALITY for event in recovered_events) == 1
+
+
 def test_existing_bitrix_item_is_reused_by_stable_key(db_session: Session) -> None:
     as_of = date(2026, 3, 21)
     db_session.add_all(
@@ -886,6 +1106,206 @@ def test_existing_work_item_is_closed_when_debt_disappears(db_session: Session) 
     assert summary.work_items_closed == 1
     events = db_session.scalars(select(ReceivableWorkEvent)).all()
     assert {event.event_type for event in events} == {"closed_by_onec"}
+
+
+def test_new_debt_key_after_paid_starts_clean_cycle_and_preserves_card_and_notes(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 3, 21)
+    buyer_case = _case(snapshot_date=as_of, segment=CASE_BUYERS)
+    overdue_case = _case(snapshot_date=as_of, segment=CASE_OVERDUE)
+    item = ReceivableWorkItem(
+        stable_key=stable_key_for_counterparty("cp-a"),
+        counterparty_ref="cp-a",
+        counterparty_name="Ромашка ООО",
+        status=STATUS_PAID,
+        current_debt_key="old-debt-key",
+        current_balance=Decimal("1000"),
+        phone="+79990000000",
+        phone_status="present",
+        bitrix_item_id=321,
+        last_contact_comment="Комментарий прошлого долга",
+        promised_payment_date=datetime(2026, 3, 20),
+        next_action_date=datetime(2026, 3, 22),
+        last_contact_at=datetime(2026, 3, 20),
+        last_manager_update_at=datetime(2026, 3, 20),
+        last_sms_at=datetime(2026, 3, 20),
+        last_sms_status=SMS_DRY_RUN,
+        escalated_at=datetime(2026, 3, 20),
+        escalation_level="retail_network_head",
+        assigned_bitrix_user_id=777,
+        assigned_source="retail_network_head",
+        payload={
+            "contacted_staff_ref": "staff-old",
+            "contacted_staff_name": "Старый менеджер",
+            "payment_postponed": False,
+            "payment_postponed_count": 2,
+            "workplace_last_action_at": "2026-03-20T10:00:00",
+        },
+    )
+    note = ReceivableSupervisorNote(
+        work_item=item,
+        author_bitrix_user_id="42",
+        author_name="Руководитель",
+        visibility="shared",
+        comment="Заметка руководителя",
+    )
+    db_session.add_all([buyer_case, overdue_case, item, note])
+
+    summary = sync_receivable_workflow(
+        db_session,
+        as_of=as_of,
+        phone_by_counterparty={"cp-a": "+79990000000"},
+        settings=_settings(),
+        dry_run_bitrix=True,
+    )
+    db_session.flush()
+
+    cycle_event = db_session.scalar(
+        select(ReceivableWorkEvent).where(ReceivableWorkEvent.event_type == EVENT_DEBT_CYCLE_RESET)
+    )
+    assert item.status == STATUS_NEW_DEBT
+    assert item.current_debt_key == debt_key_for_case(buyer_case)
+    assert item.bitrix_item_id == 321
+    assert item.last_contact_comment is None
+    assert item.promised_payment_date is None
+    assert item.next_action_date is None
+    assert item.last_contact_at is None
+    assert item.last_manager_update_at is None
+    assert item.last_sms_at is None
+    assert item.last_sms_status is None
+    assert item.escalated_at is None
+    assert item.escalation_level is None
+    assert item.assigned_bitrix_user_id is None
+    assert item.assigned_source is None
+    assert item.payload is not None
+    assert "contacted_staff_ref" not in item.payload
+    assert "payment_postponed_count" not in item.payload
+    assert note.comment == "Заметка руководителя"
+    assert cycle_event is not None
+    assert cycle_event.payload["previous_debt_key"] == "old-debt-key"
+    assert cycle_event.payload["new_debt_key"] == debt_key_for_case(buyer_case)
+    assert "last_contact_comment" in cycle_event.payload["reset_fields"]
+    assert summary.events_created >= 1
+
+
+def test_closed_item_starts_new_cycle_with_same_debt_key_and_no_phone(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 3, 21)
+    buyer_case = _case(snapshot_date=as_of, segment=CASE_BUYERS)
+    overdue_case = _case(snapshot_date=as_of, segment=CASE_OVERDUE)
+    debt_key = debt_key_for_case(buyer_case)
+    item = ReceivableWorkItem(
+        stable_key=stable_key_for_counterparty("cp-a"),
+        counterparty_ref="cp-a",
+        counterparty_name="Ромашка ООО",
+        status=STATUS_CLOSED,
+        current_debt_key=debt_key,
+        current_balance=Decimal("0"),
+        phone_status="missing",
+        closed_at=datetime(2026, 3, 20),
+        last_contact_comment="Закрытый цикл",
+    )
+    db_session.add_all([buyer_case, overdue_case, item])
+
+    sync_receivable_workflow(
+        db_session,
+        as_of=as_of,
+        settings=_settings(),
+        dry_run_bitrix=True,
+    )
+    db_session.flush()
+
+    events = db_session.scalars(
+        select(ReceivableWorkEvent).where(ReceivableWorkEvent.event_type == EVENT_DEBT_CYCLE_RESET)
+    ).all()
+    assert item.status == STATUS_NO_PHONE
+    assert item.current_debt_key == debt_key
+    assert item.closed_at is None
+    assert item.last_contact_comment is None
+    assert len(events) == 1
+
+
+def test_nonterminal_debt_key_change_does_not_reset_manager_state(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 3, 21)
+    buyer_case = _case(snapshot_date=as_of, segment=CASE_BUYERS)
+    overdue_case = _case(snapshot_date=as_of, segment=CASE_OVERDUE)
+    item = ReceivableWorkItem(
+        stable_key=stable_key_for_counterparty("cp-a"),
+        counterparty_ref="cp-a",
+        counterparty_name="Ромашка ООО",
+        status="waiting_payment",
+        current_debt_key="technical-old-key",
+        current_balance=Decimal("1000"),
+        phone="+79990000000",
+        phone_status="present",
+        last_contact_comment="Сохранить при технической смене РТУ",
+        promised_payment_date=datetime(2026, 3, 25),
+        payload={"payment_postponed_count": 3},
+    )
+    db_session.add_all([buyer_case, overdue_case, item])
+
+    sync_receivable_workflow(
+        db_session,
+        as_of=as_of,
+        phone_by_counterparty={"cp-a": "+79990000000"},
+        settings=_settings(),
+        dry_run_bitrix=True,
+    )
+    db_session.flush()
+
+    cycle_events = db_session.scalars(
+        select(ReceivableWorkEvent).where(ReceivableWorkEvent.event_type == EVENT_DEBT_CYCLE_RESET)
+    ).all()
+    assert item.status == "waiting_payment"
+    assert item.last_contact_comment == "Сохранить при технической смене РТУ"
+    assert item.promised_payment_date == datetime(2026, 3, 25)
+    assert item.payload["payment_postponed_count"] == 3
+    assert cycle_events == []
+
+
+def test_paid_item_with_same_debt_key_is_not_reopened_before_onec_changes_cycle(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 3, 21)
+    buyer_case = _case(snapshot_date=as_of, segment=CASE_BUYERS)
+    overdue_case = _case(snapshot_date=as_of, segment=CASE_OVERDUE)
+    debt_key = debt_key_for_case(buyer_case)
+    item = ReceivableWorkItem(
+        stable_key=stable_key_for_counterparty("cp-a"),
+        counterparty_ref="cp-a",
+        counterparty_name="Ромашка ООО",
+        status=STATUS_PAID,
+        current_debt_key=debt_key,
+        current_balance=Decimal("15000"),
+        phone="+79990000000",
+        phone_status="present",
+        last_contact_comment="До release-нормализации",
+    )
+    db_session.add_all([buyer_case, overdue_case, item])
+
+    sync_receivable_workflow(
+        db_session,
+        as_of=as_of,
+        phone_by_counterparty={"cp-a": "+79990000000"},
+        settings=_settings(),
+        dry_run_bitrix=True,
+    )
+    db_session.flush()
+
+    assert item.status == STATUS_PAID
+    assert item.last_contact_comment == "До release-нормализации"
+    assert (
+        db_session.scalars(
+            select(ReceivableWorkEvent).where(
+                ReceivableWorkEvent.event_type == EVENT_DEBT_CYCLE_RESET
+            )
+        ).all()
+        == []
+    )
 
 
 def test_empty_case_snapshot_does_not_close_existing_work_items(db_session: Session) -> None:

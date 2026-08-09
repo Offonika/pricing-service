@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   fetchCptCaseDetail,
   fetchCptCases,
+  fetchCptPortfolio,
   fetchCptQualityMetrics,
   fetchCptQualitySampleDetail,
   fetchCptQualitySamples,
@@ -13,6 +14,7 @@ import {
   reviewCptQualitySample,
   type CptQualityGroup,
   type CptQualitySample,
+  type CptPortfolioBucket,
   type CptWorklist,
 } from "../api/customerPriceTypes";
 import {
@@ -46,9 +48,24 @@ const WORKLIST_LABELS: Record<string, string> = {
   manager_work: "Удержание / дожим",
   isolate: "Изолятор",
   recovery: "Реанимация спящих",
-  data_check: "Сверка данных",
+  data_check: "Требуют проверки",
   special_review: "Спецпроверка",
   downgrade_approval: "Согласование понижения",
+};
+
+const WORKLIST_HINTS: Record<CptWorklist, string> = {
+  manager_work:
+    "Выручка за три месяца ниже нормы, но в последнем месяце клиент достиг порога удержания. Нужно восстановить объём продаж до нормы.",
+  isolate:
+    "Выручка за три месяца и за последний месяц ниже порога. Клиент проходит полный месяц изолятора перед дальнейшим решением.",
+  recovery:
+    "Покупок нет три месяца или дольше, но история работы с клиентом есть. Нужна попытка вернуть клиента.",
+  data_check:
+    "Автоматическое решение невозможно: например, не указан тип цены, в договорах разные уровни или данные источников расходятся.",
+  special_review:
+    "Нужна отдельная проверка качества, кредита, экономики или истории клиента.",
+  downgrade_approval:
+    "Изолятор завершён и есть основания понизить ценовой уровень. Требуется решение руководителя.",
 };
 
 const QUALITY_GROUP_LABELS: Record<CptQualityGroup, string> = {
@@ -65,6 +82,13 @@ const LEVEL_LABELS: Record<string, string> = {
   gold: "Золото",
   platinum: "Платина",
   unknown: "Не распознан",
+};
+
+const REVIEW_STATUS_LABELS: Record<string, string> = {
+  ready: "Данные готовы",
+  business_conflict: "Бизнес-конфликт договоров",
+  technical_incomplete: "Неполные технические данные",
+  missing_snapshot: "Нет расчёта",
 };
 
 const shell: CSSProperties = {
@@ -116,6 +140,9 @@ export function CustomerPriceTypesWorkspace({
 }: CustomerPriceTypesWorkspaceProps) {
   const [worklist, setWorklist] = useState<CptWorklist | null>(null);
   const [search, setSearch] = useState("");
+  const [portfolioSearch, setPortfolioSearch] = useState("");
+  const [portfolioBucket, setPortfolioBucket] =
+    useState<Exclude<CptPortfolioBucket, "all">>("working_bronze");
   const [selectedCaseId, setSelectedCaseId] = useState<number | null>(null);
   const [section, setSection] = useState<"portfolio" | "quality">("portfolio");
 
@@ -126,6 +153,15 @@ export function CustomerPriceTypesWorkspace({
   const worklistsQuery = useQuery({
     queryKey: ["cpt", "worklists"],
     queryFn: () => fetchCptWorklists(),
+  });
+  const portfolioQuery = useQuery({
+    queryKey: ["cpt", "portfolio", portfolioBucket, portfolioSearch],
+    queryFn: () =>
+      fetchCptPortfolio({
+        bucket: portfolioBucket,
+        search: portfolioSearch.trim() || null,
+        limit: 100,
+      }),
   });
   const casesQuery = useQuery({
     queryKey: ["cpt", "cases", worklist, search],
@@ -198,6 +234,114 @@ export function CustomerPriceTypesWorkspace({
           )}
       </section>
 
+      <section style={{ ...card, display: "grid", gap: 12 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <div>
+            <strong>Проверенный пакет 82</strong>
+            <div style={{ marginTop: 4, color: "var(--color-text-muted, #667085)", fontSize: 13 }}>
+              Рабочий тип определяется только по фактическим реализациям договоров.
+            </div>
+          </div>
+          <input
+            type="search"
+            placeholder="Поиск в пакете по коду или клиенту…"
+            value={portfolioSearch}
+            onChange={(event) => setPortfolioSearch(event.target.value)}
+            style={{ minHeight: 36, minWidth: 280, padding: "0 12px", border: "1px solid var(--color-border, #e2e2e2)", borderRadius: 8, font: "inherit" }}
+          />
+        </div>
+
+        {portfolioQuery.isError && (
+          <p style={{ margin: 0, color: "var(--color-danger, #d92d20)" }}>
+            Контрольный пакет пока не загружен или недоступен.
+          </p>
+        )}
+        {portfolioQuery.data && (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
+              {([
+                ["working_bronze", "Рабочий тип 2.Бронзовый"],
+                ["review_queue", "Остальные на разбор"],
+              ] as const).map(([key, label]) => (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setPortfolioBucket(key)}
+                  style={{ ...card, textAlign: "left", cursor: "pointer", borderColor: portfolioBucket === key ? "var(--color-primary, #2563eb)" : "var(--color-border, #e2e2e2)", boxShadow: portfolioBucket === key ? "0 0 0 2px var(--color-primary, #2563eb)" : "none" }}
+                >
+                  <div style={{ fontSize: 22, fontWeight: 800 }}>
+                    {(portfolioQuery.data.counts[key] ?? 0).toLocaleString("ru-RU")}
+                  </div>
+                  <div style={{ color: "var(--color-text-muted, #667085)", fontSize: 13 }}>{label}</div>
+                </button>
+              ))}
+            </div>
+
+            {portfolioQuery.data.mismatch_count > 0 && (
+              <div role="alert" style={{ border: "1px solid #f0b429", background: "#fff8e1", borderRadius: 8, padding: 12 }}>
+                Расчёт расходится с эталонным распределением: {portfolioQuery.data.mismatch_count}. Автоматической подмены результата нет.
+                {(portfolioQuery.data.review_status_counts.technical_incomplete ?? 0) > 0 && (
+                  <> Неполных технических данных: {portfolioQuery.data.review_status_counts.technical_incomplete}.</>
+                )}
+              </div>
+            )}
+
+            <div style={{ overflowX: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 900 }}>
+                <thead>
+                  <tr>
+                    <th style={th}>Код 1С</th>
+                    <th style={th}>Клиент</th>
+                    <th style={th}>Вычисленный тип</th>
+                    <th style={th}>Рабочий договор</th>
+                    <th style={th}>Операционная очередь</th>
+                    <th style={th}>Сверка</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {portfolioQuery.data.payload.map((row) => (
+                    <tr
+                      key={row.counterparty_ref}
+                      onClick={() => row.case_id != null && setSelectedCaseId(row.case_id)}
+                      style={{ cursor: row.case_id != null ? "pointer" : "default" }}
+                    >
+                      <td style={td}>{row.counterparty_code}</td>
+                      <td style={td}>
+                        <div>{row.counterparty_name ?? "—"}</div>
+                        <small style={{ color: "var(--color-text-muted, #667085)" }}>{row.department_name ?? "—"}</small>
+                      </td>
+                      <td style={td}>{row.current_price_type ?? "Ручная проверка"}</td>
+                      <td style={td}>
+                        {row.working_contracts.length > 0
+                          ? row.working_contracts.map((contract) => (
+                              <div key={contract.contract_ref ?? contract.contract_name}>
+                                {contract.contract_name ?? "Без названия"} · {contract.price_type_name ?? "без типа"}
+                                <small style={{ display: "block", color: "var(--color-text-muted, #667085)" }}>
+                                  {contract.sale_document_count_12m ?? 0} реализаций · последняя {contract.last_sale_at ?? "—"}
+                                </small>
+                              </div>
+                            ))
+                          : "Нет однозначного рабочего договора"}
+                      </td>
+                      <td style={td}>{row.action_required && row.case_type ? WORKLIST_LABELS[row.case_type] ?? row.case_type : "Действий не требуется"}</td>
+                      <td style={td}>
+                        {row.reconciliation_status === "match" ? "Совпадает" : row.reconciliation_status === "missing_snapshot" ? "Нет расчёта" : "Расхождение"}
+                        <small style={{ display: "block", color: "var(--color-text-muted, #667085)" }}>
+                          {REVIEW_STATUS_LABELS[row.review_status] ?? row.review_status}
+                        </small>
+                      </td>
+                    </tr>
+                  ))}
+                  {portfolioQuery.data.payload.length === 0 && (
+                    <tr><td style={td} colSpan={6}>Карточек не найдено.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </>
+        )}
+      </section>
+
       {/* Worklist queues */}
       <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
         {WORKLIST_ORDER.map((key) => {
@@ -207,6 +351,8 @@ export function CustomerPriceTypesWorkspace({
             <button
               key={key}
               type="button"
+              title={WORKLIST_HINTS[key]}
+              aria-label={`${WORKLIST_LABELS[key]}: ${count.toLocaleString("ru-RU")}. ${WORKLIST_HINTS[key]}`}
               onClick={() => setWorklist(active ? null : key)}
               style={{
                 ...card,
@@ -248,6 +394,11 @@ export function CustomerPriceTypesWorkspace({
             </button>
           )}
         </div>
+        <p style={{ margin: 0, color: "var(--color-text-muted, #667085)", fontSize: 13 }}>
+          Правило расчёта: выручка одного контрагента суммируется в одну сумму по всем
+          его договорам и вариантам типа цены. Несколько договоров одного ценового
+          уровня считаются вместе; разные уровни отправляются на сверку данных.
+        </p>
 
         {casesQuery.isLoading && <p>Загрузка…</p>}
         {casesQuery.isError && <p style={{ color: "var(--color-danger, #d92d20)" }}>Не удалось загрузить кейсы.</p>}
@@ -339,6 +490,68 @@ export function CustomerPriceTypesWorkspace({
                     </div>
                   )}
                 </div>
+                {detail.snapshot.contract_candidates.length > 0 && (
+                  <div style={card}>
+                    <div style={{ fontWeight: 700, marginBottom: 8 }}>Договоры и типы цен</div>
+                    <div style={{ overflowX: "auto" }}>
+                      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                        <thead>
+                          <tr>
+                            <th style={th}>Договор</th>
+                            <th style={th}>Тип цены</th>
+                            <th style={th}>Состояние</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {detail.snapshot.contract_candidates.map((contract, index) => (
+                            <tr key={contract.contract_ref ?? `${contract.contract_name}-${index}`}>
+                              <td style={td}>{contract.contract_name ?? "Без названия"}</td>
+                              <td style={td}>{contract.price_type_name ?? "Не задан"}</td>
+                              <td style={td}>
+                                {contract.price_type_change_target
+                                  ? "Договор для изменения типа цены"
+                                  : contract.used_for_calculation
+                                    ? "Используется в расчёте"
+                                    : contract.price_type_missing
+                                      ? "Не участвует: тип не задан"
+                                      : contract.price_type_marked
+                                        ? "Не участвует: тип помечен на удаление"
+                                        : "Не участвует: тип не распознан"}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                )}
+                {detail.guidance && (
+                  <div style={{ ...card, borderColor: "var(--color-warning, #f79009)", background: "var(--color-warning-subtle, #fffaeb)" }}>
+                    <div style={{ fontWeight: 800, marginBottom: 10 }}>{detail.guidance.title}</div>
+                    <div style={{ display: "grid", gap: 10, fontSize: 13 }}>
+                      <div>
+                        <strong>По нашим правилам</strong>
+                        <p style={{ margin: "4px 0 0" }}>{detail.guidance.rules}</p>
+                      </div>
+                      <div>
+                        <strong>Рекомендуемое действие</strong>
+                        <p style={{ margin: "4px 0 0" }}>{detail.guidance.recommended_action}</p>
+                      </div>
+                      <div>
+                        <strong>Какой тип цены должен остаться</strong>
+                        <p style={{ margin: "4px 0 0" }}>{detail.guidance.expected_price_type}</p>
+                      </div>
+                      <div>
+                        <strong>На что обратить внимание менеджеру</strong>
+                        <ul style={{ margin: "4px 0 0", paddingLeft: 18 }}>
+                          {detail.guidance.manager_attention.map((item) => (
+                            <li key={item}>{item}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  </div>
+                )}
                 <div style={card}>
                   <div style={{ fontWeight: 700, marginBottom: 6 }}>События</div>
                   <ul style={{ margin: 0, paddingLeft: 16, fontSize: 13 }}>

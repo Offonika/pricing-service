@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal
+from typing import Iterator, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Security
 from fastapi.responses import HTMLResponse
@@ -20,13 +22,21 @@ from app.schemas.management import (
     CounterpartyFolderRecommendationResponse,
 )
 from app.schemas.receivable_workplace import (
+    ReceivableSupervisorNoteMutationResponse,
+    ReceivableSupervisorNoteUpsertRequest,
     ReceivableWorkplaceActionRequest,
     ReceivableWorkplaceActionResponse,
     ReceivableWorkplaceMetaResponse,
     ReceivableWorkplaceResponse,
+    SupervisorNoteVisibility,
 )
 from app.services.bitrix_receivables_auth import verify_receivables_session_token
 from app.services.counterparty_folder_recommendations import (
+    QUEUE_ACTIONABLE,
+    QUEUE_ALL,
+    QUEUE_BUSINESS_REVIEW,
+    QUEUE_DATA_QUALITY,
+    QUEUE_EXCLUDED,
     STATUS_MOVE_RECOMMENDED,
     STATUS_NEEDS_REVIEW,
     STATUS_NO_OVERDUE,
@@ -34,14 +44,21 @@ from app.services.counterparty_folder_recommendations import (
     build_counterparty_folder_recommendations,
 )
 from app.services.receivable_workplace import (
+    WorkplaceSortBy,
+    WorkplaceSortDir,
     apply_receivable_workplace_action,
     build_receivable_workplace,
     build_receivable_workplace_meta,
+    delete_receivable_supervisor_note,
+    upsert_receivable_supervisor_note,
 )
 from app.services.receivable_workplace_cache import load_cached_folder_recommendation_report
 
 router = APIRouter()
 page_router = APIRouter()
+_WORKPLACE_BUILD_MAX_CONCURRENCY = 2
+_WORKPLACE_BUILD_ACQUIRE_TIMEOUT_SECONDS = 20.0
+_WORKPLACE_BUILD_SEMAPHORE = threading.BoundedSemaphore(value=_WORKPLACE_BUILD_MAX_CONCURRENCY)
 
 _INDEX_PATHS = (
     Path(__file__).resolve().parents[2] / "ui" / "dist" / "index.html",
@@ -81,6 +98,8 @@ class ReceivableWorkplaceAuthContext:
     source: Literal["internal", "bitrix"]
     access_level: Literal["full", "department"]
     department_refs: frozenset[str] | None = None
+    user_id: str | None = None
+    user_name: str | None = None
 
     @property
     def allowed_department_refs(self) -> frozenset[str] | None:
@@ -98,6 +117,20 @@ def _management_internal_token() -> str | None:
     )
 
 
+@contextmanager
+def _receivable_workplace_build_slot() -> Iterator[None]:
+    acquired = _WORKPLACE_BUILD_SEMAPHORE.acquire(timeout=_WORKPLACE_BUILD_ACQUIRE_TIMEOUT_SECONDS)
+    if not acquired:
+        raise HTTPException(
+            status_code=503,
+            detail="Рабочий список временно занят, повторите запрос через несколько секунд",
+        )
+    try:
+        yield
+    finally:
+        _WORKPLACE_BUILD_SEMAPHORE.release()
+
+
 def require_receivable_workplace_access(
     credentials: HTTPAuthorizationCredentials | None = Security(security),
 ) -> ReceivableWorkplaceAuthContext:
@@ -112,6 +145,8 @@ def require_receivable_workplace_access(
             source="internal",
             access_level="full",
             department_refs=None,
+            user_id=None,
+            user_name=None,
         )
 
     try:
@@ -125,6 +160,8 @@ def require_receivable_workplace_access(
         source="bitrix",
         access_level=session.access_level,
         department_refs=session.department_refs,
+        user_id=session.user_id,
+        user_name=session.user_name,
     )
 
 
@@ -221,18 +258,33 @@ def get_receivable_workplace(
     date_value: date = Query(alias="date"),
     department_ref: str | None = Query(default=None),
     status: str | None = Query(default=None),
+    min_debt: Decimal | None = Query(default=None, ge=0),
     limit: int = Query(default=500, ge=1, le=2000),
+    sort_by: WorkplaceSortBy = Query(default="balance"),
+    sort_dir: WorkplaceSortDir = Query(default="desc"),
     db: Session = Depends(get_db),
     access: ReceivableWorkplaceAuthContext = Depends(require_receivable_workplace_access),
 ) -> ReceivableWorkplaceResponse:
-    return build_receivable_workplace(
-        db,
-        snapshot_date=date_value,
-        department_ref=department_ref,
-        status=status,
-        limit=limit,
-        allowed_department_refs=access.allowed_department_refs,
-    )
+    with _receivable_workplace_build_slot():
+        return build_receivable_workplace(
+            db,
+            snapshot_date=date_value,
+            department_ref=department_ref,
+            status=status,
+            min_debt=min_debt,
+            limit=limit,
+            sort_by=sort_by,
+            sort_dir=sort_dir,
+            allowed_department_refs=access.allowed_department_refs,
+            viewer_user_id=(
+                access.user_id
+                if access.source == "bitrix" and access.access_level == "full"
+                else None
+            ),
+            viewer_can_edit_supervisor_notes=(
+                access.source == "bitrix" and access.access_level == "full"
+            ),
+        )
 
 
 @router.get(
@@ -248,6 +300,13 @@ def get_receivable_workplace_folder_recommendations(
             f"{STATUS_NO_OVERDUE}|{STATUS_NEEDS_REVIEW})$"
         ),
     ),
+    queue: str = Query(
+        default=QUEUE_ALL,
+        pattern=(
+            f"^({QUEUE_ACTIONABLE}|{QUEUE_BUSINESS_REVIEW}|{QUEUE_DATA_QUALITY}|"
+            f"{QUEUE_EXCLUDED}|{QUEUE_ALL})$"
+        ),
+    ),
     limit: int | None = Query(default=None, ge=1, le=10000),
     db: Session = Depends(get_db),
     access: ReceivableWorkplaceAuthContext = Depends(require_receivable_workplace_access),
@@ -256,6 +315,7 @@ def get_receivable_workplace_folder_recommendations(
         db,
         snapshot_date=date_value,
         status=status,
+        queue=queue,
         limit=limit,
         allowed_department_refs=access.allowed_department_refs,
     )
@@ -268,6 +328,7 @@ def get_receivable_workplace_folder_recommendations(
                 snapshot_date=date_value,
                 limit=limit,
                 status=status,
+                queue=queue,
                 candidate_limit=_folder_candidate_limit(limit),
                 snapshot_department_refs=access.allowed_department_refs,
             )
@@ -322,6 +383,14 @@ def update_receivable_workplace_item(
             counterparty_ref=counterparty_ref,
             payload=payload,
             allowed_department_refs=access.allowed_department_refs,
+            viewer_user_id=(
+                access.user_id
+                if access.source == "bitrix" and access.access_level == "full"
+                else None
+            ),
+            viewer_can_edit_supervisor_notes=(
+                access.source == "bitrix" and access.access_level == "full"
+            ),
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -329,5 +398,79 @@ def update_receivable_workplace_item(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if result is None:
         raise HTTPException(status_code=404, detail="receivable workplace item not found")
+    db.commit()
+    return result
+
+
+def _require_supervisor_note_writer(access: ReceivableWorkplaceAuthContext) -> tuple[str, str]:
+    if access.source != "bitrix" or access.access_level != "full" or not access.user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Заметки руководителя могут изменять только пользователи с полным доступом",
+        )
+    return access.user_id, access.user_name or f"Bitrix user {access.user_id}"
+
+
+@router.put(
+    "/workplace/{counterparty_ref}/supervisor-notes/{visibility}",
+    response_model=ReceivableSupervisorNoteMutationResponse,
+)
+def put_receivable_supervisor_note(
+    counterparty_ref: str,
+    visibility: SupervisorNoteVisibility,
+    payload: ReceivableSupervisorNoteUpsertRequest,
+    date_value: date = Query(alias="date"),
+    db: Session = Depends(get_db),
+    access: ReceivableWorkplaceAuthContext = Depends(require_receivable_workplace_access),
+) -> ReceivableSupervisorNoteMutationResponse:
+    author_user_id, author_name = _require_supervisor_note_writer(access)
+    try:
+        result = upsert_receivable_supervisor_note(
+            db,
+            snapshot_date=date_value,
+            counterparty_ref=counterparty_ref,
+            visibility=visibility,
+            payload=payload,
+            author_user_id=author_user_id,
+            author_name=author_name,
+            allowed_department_refs=access.allowed_department_refs,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="receivable workplace item not found")
+    db.commit()
+    return result
+
+
+@router.delete(
+    "/workplace/{counterparty_ref}/supervisor-notes/{visibility}",
+    response_model=ReceivableSupervisorNoteMutationResponse,
+)
+def remove_receivable_supervisor_note(
+    counterparty_ref: str,
+    visibility: SupervisorNoteVisibility,
+    date_value: date = Query(alias="date"),
+    action_id: str | None = Query(default=None, max_length=160),
+    db: Session = Depends(get_db),
+    access: ReceivableWorkplaceAuthContext = Depends(require_receivable_workplace_access),
+) -> ReceivableSupervisorNoteMutationResponse:
+    author_user_id, _ = _require_supervisor_note_writer(access)
+    try:
+        result = delete_receivable_supervisor_note(
+            db,
+            snapshot_date=date_value,
+            counterparty_ref=counterparty_ref,
+            visibility=visibility,
+            action_id=action_id,
+            author_user_id=author_user_id,
+            allowed_department_refs=access.allowed_department_refs,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    if result is None:
+        raise HTTPException(status_code=404, detail="supervisor note not found")
     db.commit()
     return result

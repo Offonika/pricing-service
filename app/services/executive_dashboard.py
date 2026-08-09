@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import threading
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -12,7 +15,11 @@ from sqlalchemy import Select, false, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.infrastructure.contracts import ContractIntegrityError, read_json_contract
+from app.infrastructure.contracts import (
+    ContractIntegrityError,
+    read_json_contract,
+    validate_json_contract_manifest,
+)
 from app.infrastructure.db.engines import DatabaseNotConfiguredError, get_onec_engine
 from app.models import (
     ExecutiveActionItem,
@@ -93,6 +100,24 @@ _SEVERITY_RANK = {
     "medium": 3,
     "low": 4,
 }
+
+
+@dataclass(frozen=True)
+class _CashflowPeriodCacheRevision:
+    path: str
+    artifact_inode: int
+    artifact_size: int
+    artifact_mtime_ns: int
+    artifact_ctime_ns: int
+    manifest_sha256: str | None
+    manifest_size: int | None
+    manifest_mtime_ns: int | None
+    content_sha256: str | None
+
+
+_cashflow_period_cache_lock = threading.Lock()
+_cashflow_period_cache_revision: _CashflowPeriodCacheRevision | None = None
+_cashflow_period_cache_result: tuple[dict[str, Any], str, str] | None = None
 
 
 def _decimal(value: Any) -> Decimal:
@@ -356,17 +381,78 @@ def _resolve_cashflow_period_cache_path() -> Path:
     return _resolve_shared_path(get_settings().executive_dashboard_cashflow_period_cache_path)
 
 
+def _cashflow_period_cache_file_revision(path: Path) -> _CashflowPeriodCacheRevision:
+    artifact_stat = path.stat()
+    manifest_path = path.with_suffix(path.suffix + ".manifest.json")
+    manifest_sha256: str | None = None
+    manifest_size: int | None = None
+    manifest_mtime_ns: int | None = None
+    content_sha256: str | None = None
+    if manifest_path.exists():
+        manifest_content = manifest_path.read_bytes()
+        manifest_stat = manifest_path.stat()
+        manifest_sha256 = hashlib.sha256(manifest_content).hexdigest()
+        manifest_size = manifest_stat.st_size
+        manifest_mtime_ns = manifest_stat.st_mtime_ns
+        manifest = json.loads(manifest_content.decode("utf-8"))
+        if isinstance(manifest, dict):
+            content_sha256 = str(manifest.get("content_sha256") or "") or None
+    return _CashflowPeriodCacheRevision(
+        path=str(path.resolve()),
+        artifact_inode=artifact_stat.st_ino,
+        artifact_size=artifact_stat.st_size,
+        artifact_mtime_ns=artifact_stat.st_mtime_ns,
+        artifact_ctime_ns=artifact_stat.st_ctime_ns,
+        manifest_sha256=manifest_sha256,
+        manifest_size=manifest_size,
+        manifest_mtime_ns=manifest_mtime_ns,
+        content_sha256=content_sha256,
+    )
+
+
 def _load_cashflow_period_cache() -> tuple[dict[str, Any] | None, str, str]:
+    global _cashflow_period_cache_result, _cashflow_period_cache_revision
+
     path = _resolve_cashflow_period_cache_path()
     if not path.exists():
         return None, "source_missing", f"cashflow period cache is not found: {path}"
     try:
-        payload = read_json_contract(path)
+        revision = _cashflow_period_cache_file_revision(path)
     except (OSError, json.JSONDecodeError, ContractIntegrityError) as exc:
         return None, "source_error", f"cashflow period cache is not readable: {exc}"
-    if not isinstance(payload, dict):
-        return None, "source_error", "cashflow period cache root must be an object"
-    return payload, str(payload.get("source_status") or "ready"), str(path)
+
+    with _cashflow_period_cache_lock:
+        if (
+            _cashflow_period_cache_revision == revision
+            and _cashflow_period_cache_result is not None
+        ):
+            cached_result = _cashflow_period_cache_result
+        else:
+            _cashflow_period_cache_revision = None
+            _cashflow_period_cache_result = None
+            try:
+                payload = read_json_contract(path)
+            except (OSError, json.JSONDecodeError, ContractIntegrityError) as exc:
+                return None, "source_error", f"cashflow period cache is not readable: {exc}"
+            if not isinstance(payload, dict):
+                return None, "source_error", "cashflow period cache root must be an object"
+            cached_result = (
+                payload,
+                str(payload.get("source_status") or "ready"),
+                str(path),
+            )
+            _cashflow_period_cache_revision = revision
+            _cashflow_period_cache_result = cached_result
+
+    if revision.content_sha256 is not None:
+        try:
+            validate_json_contract_manifest(
+                path,
+                actual_content_sha256=revision.content_sha256,
+            )
+        except (OSError, json.JSONDecodeError, ContractIntegrityError) as exc:
+            return None, "source_error", f"cashflow period cache is not readable: {exc}"
+    return cached_result
 
 
 def _resolve_warehouse_snapshot_path() -> Path:
@@ -3960,6 +4046,7 @@ def _build_management_balance_block(
     *,
     requested_date: date,
     money_block: ExecutiveDashboardBlock,
+    receivables_block: ExecutiveDashboardBlock,
     access_context: ExecutiveDashboardAuthContext,
 ) -> ExecutiveDashboardBlock:
     section = _finance_section(finance_payload, "creditors_payables")
@@ -3971,7 +4058,10 @@ def _build_management_balance_block(
     inventory_status = (
         inventory_cost.source_status if inventory_cost is not None else "source_missing"
     )
-    source_status = _combine_source_status_strings([cash_status, payables_status, inventory_status])
+    buyer_receivables_status = receivables_block.source_status
+    source_status = _combine_source_status_strings(
+        [cash_status, payables_status, inventory_status, buyer_receivables_status]
+    )
     masked = any(
         _mask_finance(block_key, access_context)
         for block_key in ("money_today", "creditors_payables")
@@ -3984,6 +4074,14 @@ def _build_management_balance_block(
         if cash_metric is not None and _source_available_for_metric(cash_status)
         else None
     )
+    buyer_receivables_metric = _metric_by_key(receivables_block, "total_receivable")
+    buyer_receivables_amount = (
+        _decimal(buyer_receivables_metric.value)
+        if buyer_receivables_metric is not None
+        and _source_available_for_metric(buyer_receivables_status)
+        else None
+    )
+    buyer_receivables_as_of = receivables_block.as_of
     supplier_receivable = _settlement_group_amount(
         section,
         group_key="suppliers",
@@ -4037,14 +4135,6 @@ def _build_management_balance_block(
         adjusted_legal_rows[counterparty_ref] = adjusted_legal_rows.get(
             counterparty_ref, Decimal("0")
         ) - _decimal(amount)
-    service_advances_raw = sum(
-        (max(amount, Decimal("0")) for amount in legal_entity_rows.values()),
-        Decimal("0"),
-    )
-    service_advances_adjusted = sum(
-        (max(amount, Decimal("0")) for amount in adjusted_legal_rows.values()),
-        Decimal("0"),
-    )
     accrued_service_liability = sum(
         (max(-amount, Decimal("0")) for amount in adjusted_legal_rows.values()),
         Decimal("0"),
@@ -4057,6 +4147,15 @@ def _build_management_balance_block(
         )
         or accrual_amount != 0
     )
+    inventory_line_note = inventory_note
+    if inventory_cost is not None:
+        inventory_line_note = inventory_cost.source_title
+        if inventory_cost.reconciliation_status != "ready":
+            inventory_line_note += (
+                f"; контроль количества: склад {inventory_cost.quantity}, "
+                f"партии {inventory_cost.party_quantity}, "
+                f"разница {inventory_cost.quantity_difference}"
+            )
     assets = [
         _balance_line(
             key="cash",
@@ -4073,10 +4172,68 @@ def _build_management_balance_block(
             source_status=inventory_status,
             as_of=inventory_cost.as_of if inventory_cost is not None else None,
             masked=masked,
-            note=(inventory_cost.source_title if inventory_cost is not None else inventory_note),
+            note=inventory_line_note,
             quantity=(str(inventory_cost.quantity) if inventory_cost is not None else None),
+            stock_quantity=(str(inventory_cost.quantity) if inventory_cost is not None else None),
+            party_quantity=(
+                str(inventory_cost.party_quantity) if inventory_cost is not None else None
+            ),
+            party_amount=(
+                None if masked or inventory_cost is None else str(inventory_cost.party_amount)
+            ),
+            valuation_party_quantity=(
+                str(inventory_cost.valuation_party_quantity) if inventory_cost is not None else None
+            ),
+            valuation_party_amount=(
+                None
+                if masked or inventory_cost is None
+                else str(inventory_cost.valuation_party_amount)
+            ),
+            excluded_party_quantity=(
+                str(inventory_cost.excluded_party_quantity) if inventory_cost is not None else None
+            ),
+            excluded_party_amount=(
+                None
+                if masked or inventory_cost is None
+                else str(inventory_cost.excluded_party_amount)
+            ),
+            quantity_difference=(
+                str(inventory_cost.quantity_difference) if inventory_cost is not None else None
+            ),
+            reconciliation_status=(
+                inventory_cost.reconciliation_status if inventory_cost is not None else None
+            ),
+            valuation_method=(
+                inventory_cost.valuation_method if inventory_cost is not None else None
+            ),
             source_row_count=(
                 inventory_cost.source_row_count if inventory_cost is not None else None
+            ),
+            stock_source_row_count=(
+                inventory_cost.stock_source_row_count if inventory_cost is not None else None
+            ),
+            party_source_row_count=(
+                inventory_cost.party_source_row_count if inventory_cost is not None else None
+            ),
+            stock_row_count=(
+                inventory_cost.stock_row_count if inventory_cost is not None else None
+            ),
+            party_row_count=(
+                inventory_cost.party_row_count if inventory_cost is not None else None
+            ),
+            unmatched_stock_row_count=(
+                inventory_cost.unmatched_stock_row_count if inventory_cost is not None else None
+            ),
+            unmatched_stock_quantity=(
+                str(inventory_cost.unmatched_stock_quantity) if inventory_cost is not None else None
+            ),
+            unmatched_stock_quantity_abs=(
+                str(inventory_cost.unmatched_stock_quantity_abs)
+                if inventory_cost is not None
+                else None
+            ),
+            zero_party_quantity_row_count=(
+                inventory_cost.zero_party_quantity_row_count if inventory_cost is not None else None
             ),
             negative_cost_row_count=(
                 inventory_cost.negative_cost_row_count if inventory_cost is not None else 0
@@ -4084,6 +4241,15 @@ def _build_management_balance_block(
             negative_cost_amount=(
                 str(inventory_cost.negative_cost_amount) if inventory_cost is not None else None
             ),
+        ),
+        _balance_line(
+            key="receivables",
+            label="Дебиторка покупателей",
+            amount=buyer_receivables_amount,
+            source_status=buyer_receivables_status,
+            as_of=buyer_receivables_as_of,
+            masked=masked,
+            note="Положительная дебиторка buyers-сегмента УТ 10.3",
         ),
         _balance_line(
             key="supplier_receivables",
@@ -4143,51 +4309,8 @@ def _build_management_balance_block(
             as_of=payables_as_of,
             masked=masked,
         ),
-        _balance_line(
-            key="owners",
-            label="Задолженность собственникам",
-            amount=owner_payable,
-            source_status=payables_status,
-            as_of=payables_as_of,
-            masked=masked,
-        ),
     ]
     if has_service_settlements:
-        assets[2:2] = [
-            _balance_line(
-                key="service_supplier_advances_1c",
-                label="Авансы поставщикам услуг по данным 1С",
-                amount=service_advances_raw,
-                source_status=payables_status,
-                as_of=payables_as_of,
-                masked=masked,
-                include_in_total=False,
-            ),
-            _balance_line(
-                key="service_accruals_without_documents",
-                label="Минус: услуги, признанные без документов",
-                amount=-accrual_amount,
-                source_status=str(accrual_adjustments["source_status"]),
-                as_of=requested_date,
-                masked=masked,
-                include_in_total=False,
-                recognition_method="approved_fixed_monthly_rule",
-                estimated_count=int(accrual_adjustments["estimated_count"]),
-            ),
-            _balance_line(
-                key="service_supplier_advances",
-                label="Остаток авансов поставщикам услуг",
-                amount=service_advances_adjusted,
-                source_status=str(accrual_adjustments["source_status"]),
-                as_of=requested_date,
-                masked=masked,
-                source_amount=str(service_advances_raw),
-                adjustment_amount=str(-accrual_amount),
-                adjusted_amount=str(service_advances_adjusted),
-                recognition_method="accrual",
-                estimated_count=int(accrual_adjustments["estimated_count"]),
-            ),
-        ]
         liabilities.insert(
             0,
             _balance_line(
@@ -4207,7 +4330,7 @@ def _build_management_balance_block(
             for amount in (
                 cash_amount,
                 inventory_cost.amount if inventory_cost is not None else None,
-                service_advances_adjusted,
+                buyer_receivables_amount,
                 supplier_receivable,
                 employee_receivable,
                 other_receivable,
@@ -4225,7 +4348,6 @@ def _build_management_balance_block(
                 accrued_service_liability,
                 employee_payable,
                 other_payable,
-                owner_payable,
             )
             if amount is not None
         ),
@@ -4236,13 +4358,46 @@ def _build_management_balance_block(
         for value in (
             cash_as_of,
             payables_as_of,
+            buyer_receivables_as_of,
             inventory_cost.as_of if inventory_cost is not None else None,
         )
         if value
     ]
     as_of = max(source_dates) if source_dates else None
-    equity_lines = []
-    if has_service_settlements:
+    period_result = build_executive_profit_loss_period_response(
+        session,
+        date_from=requested_date.replace(month=1, day=1),
+        date_to=requested_date,
+    )
+    source_status = _combine_source_status_strings([source_status, period_result.source_status])
+    net_profit_raw = period_result.totals.get("net_profit")
+    net_profit_ytd = _decimal(net_profit_raw) if net_profit_raw is not None else None
+    equity_lines = [
+        _balance_line(
+            key="owner_contributed_funds",
+            label="Средства, внесённые собственниками",
+            amount=owner_payable,
+            source_status=payables_status,
+            as_of=payables_as_of,
+            masked=masked,
+            note=(
+                "Управленческая классификация финансирования собственников. "
+                "Юридическая переквалификация задолженности требует подтверждающих документов."
+            ),
+            recognition_method="management_equity_reclassification",
+        ),
+        _balance_line(
+            key="current_period_result",
+            label="Чистая прибыль текущего года",
+            amount=net_profit_ytd,
+            source_status=period_result.source_status,
+            as_of=requested_date,
+            masked=masked,
+            note=f"Накопительно с 01.01.{requested_date.year} по данным управленческого ОПиУ.",
+            recognition_method="management_profit_loss_ytd",
+        ),
+    ]
+    if has_service_settlements and net_profit_ytd is None:
         equity_lines.append(
             _balance_line(
                 key="service_accrual_result_adjustment",
@@ -4251,10 +4406,20 @@ def _build_management_balance_block(
                 source_status=str(accrual_adjustments["source_status"]),
                 as_of=requested_date,
                 masked=masked,
+                note="Временная корректировка до появления результата управленческого ОПиУ.",
                 recognition_method="accrual",
                 estimated_count=int(accrual_adjustments["estimated_count"]),
             )
         )
+    equity_total = sum(
+        (
+            _decimal(item.get("amount"))
+            for item in equity_lines
+            if item.get("amount") is not None and item.get("include_in_total", True)
+        ),
+        Decimal("0"),
+    )
+    liabilities_and_equity_total = liabilities_total + equity_total
     return ExecutiveDashboardBlock(
         key="creditors_payables",
         title="Управленческий баланс",
@@ -4262,23 +4427,27 @@ def _build_management_balance_block(
         freshness_status=_freshness_from_status(source_status),
         as_of=as_of,
         summary={
-            "source_anchor": ("1С: деньги, взаиморасчёты и фактическая стоимость товарных партий"),
+            "source_anchor": ("1С: деньги, взаиморасчёты и смешанная складская оценка УТ 10.3"),
             "period_independent": True,
             "selected_month": payables_as_of.strftime("%Y-%m") if payables_as_of else None,
             "monthly_balance_endpoint": ("/api/management/executive-dashboard/management-balance"),
             "note": (
-                "Частичный управленческий баланс в рублях. Товарные остатки взяты "
-                "по фактической стоимости партий в 1С УТ 10.3. Не включены налоги, "
-                "прочие активы и обязательства вне подключенных источников, капитал."
+                "Частичный управленческий баланс в рублях. Товарные остатки рассчитаны "
+                "как в стандартном смешанном режиме УТ 10.3: складское количество "
+                "умножено на среднюю себестоимость партий. Чистая прибыль текущего "
+                "года взята из управленческого ОПиУ. Не включены прочие активы и "
+                "обязательства вне подключенных источников."
             ),
             "amount_currency": "RUB",
             "balance_assets": assets,
             "balance_liabilities": liabilities,
             "balance_equity": equity_lines,
             "balance_assets_total_label": "Итого подключенные активы",
-            "balance_liabilities_total_label": "Итого подключенные пассивы",
+            "balance_liabilities_total_label": "Итого обязательства и собственные средства",
             "balance_assets_total": None if masked else str(assets_total),
-            "balance_liabilities_total": None if masked else str(liabilities_total),
+            "balance_liabilities_total": (None if masked else str(liabilities_and_equity_total)),
+            "balance_obligations_total": None if masked else str(liabilities_total),
+            "balance_equity_total": None if masked else str(equity_total),
         },
         metrics=[
             _metric(
@@ -4292,8 +4461,8 @@ def _build_management_balance_block(
             ),
             _metric(
                 "balance_liabilities_total",
-                "Пассивы по подключенным статьям",
-                liabilities_total,
+                "Обязательства и собственные средства",
+                liabilities_and_equity_total,
                 unit="RUB",
                 tone="warning",
                 masked=masked,
@@ -5404,6 +5573,7 @@ def build_executive_dashboard(
             inventory_note,
             requested_date=requested_date,
             money_block=money_today_block,
+            receivables_block=debtors_block,
             access_context=context,
         ),
         _build_procurement_block(finance_payload, access_context=context),

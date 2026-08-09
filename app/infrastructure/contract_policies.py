@@ -63,6 +63,20 @@ CONTRACT_POLICIES: ContractPolicyRegistry = ContractPolicyRegistry(
             "9cc59b8044ef0771668da57ad6f97db81454cb81b8b3a8492d8e3a8075f6d330",
             timedelta(hours=48),
         ),
+        "executive-dashboard/bp_balance_snapshot.json": ContractPolicy(
+            "executive-bp-balance-snapshot.v1",
+            "mm-compensation",
+            "executive-bp-balance-snapshot.schema.json",
+            "5284b96a1002cfc0c4d6639e780fe7e469f950b4a69aefad0e3639aeadfb0e10",
+            timedelta(hours=48),
+        ),
+        ("executive-dashboard/management-opening-equity/2026-01-01/current.json"): ContractPolicy(
+            "management-opening-equity-snapshot.v1",
+            "mm-compensation",
+            "management-opening-equity-snapshot.schema.json",
+            "66d41d919332c497125eb131aa2f4cba60c2c231091217fdc1dc44d5bfcf5805",
+            timedelta(days=3650),
+        ),
         "executive-dashboard/cashflow_period_cache.json": ContractPolicy(
             "executive-cashflow-period-cache.v1",
             "mm-compensation",

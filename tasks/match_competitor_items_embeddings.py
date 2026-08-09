@@ -27,6 +27,11 @@ from app.models.competitor_item_match import (
 )
 from app.models.device_model import PhoneModel
 from app.models.product_phone_model import ProductPhoneModel
+from app.services.competitor_auto_accept_policy import (
+    AutoAcceptPolicy,
+    CategoryPolicy,
+    load_auto_accept_policy,
+)
 from app.services.display_normalization import (
     normalize_display_construction,
     normalize_display_quality,
@@ -56,6 +61,8 @@ from app.services.matching_battery import (
 from app.services.matching_battery import (
     battery_premium_tier_conflict,
     battery_subject_conflict_reason,
+    premium_battery_item_signal,
+    premium_battery_product_signal,
 )
 from app.services.matching_battery import (
     competitor_battery_part_codes as _competitor_battery_part_codes,
@@ -858,6 +865,8 @@ def _safe_iphone_battery_capacity_auto_accept(
     *,
     score: float,
 ) -> bool:
+    if not (premium_battery_item_signal(item) and premium_battery_product_signal(product)):
+        return False
     if not _safe_iphone_battery_model_capacity_suggest(item, product, score=score):
         return False
     return _product_iphone_enhanced_battery_signal(product.name)
@@ -919,6 +928,8 @@ def _safe_battery_original_part_code_auto_accept(
         return False
     if not item.competitor or item.competitor.casefold() != "moba":
         return False
+    if not (premium_battery_item_signal(item) and premium_battery_product_signal(product)):
+        return False
     competitor_codes = _competitor_battery_part_codes(item)
     product_codes = _product_battery_part_codes(product)
     if not competitor_codes or not product_codes or competitor_codes.isdisjoint(product_codes):
@@ -946,6 +957,8 @@ def _safe_battery_part_code_auto_accept(
 ) -> bool:
     code_min_score = min(min_score, 0.75)
     if score < code_min_score:
+        return False
+    if not (premium_battery_item_signal(item) and premium_battery_product_signal(product)):
         return False
     competitor_codes = _competitor_battery_part_codes(item)
     product_codes = _product_battery_part_codes(product)
@@ -5252,6 +5265,15 @@ def _auto_reject_display_attribute_conflicts(session: Session) -> int:
     return rejected
 
 
+def _auto_accept_source_allowed(
+    item: CompetitorItem,
+    competitors: set[str] | None,
+) -> bool:
+    if competitors is None:
+        return True
+    return (item.competitor or "").strip().lower() in competitors
+
+
 def _auto_accept_explicit_model_text_matches(session: Session, *, min_score: float) -> int:
     matches = (
         session.execute(
@@ -5437,7 +5459,12 @@ def _auto_accept_battery_part_code_matches(session: Session, *, min_score: float
     return accepted
 
 
-def _auto_accept_iphone_battery_capacity_matches(session: Session, *, min_score: float) -> int:
+def _auto_accept_iphone_battery_capacity_matches(
+    session: Session,
+    *,
+    min_score: float,
+    competitors: set[str] | None = None,
+) -> int:
     query_min_score = min(min_score, 0.68)
     matches = (
         session.execute(
@@ -5466,7 +5493,12 @@ def _auto_accept_iphone_battery_capacity_matches(session: Session, *, min_score:
     for match in matches:
         item = match.competitor_item
         product = match.product
-        if not item or not product or _effective_item_type(item) != "battery":
+        if (
+            not item
+            or not product
+            or not _auto_accept_source_allowed(item, competitors)
+            or _effective_item_type(item) != "battery"
+        ):
             continue
         if not _safe_iphone_battery_capacity_auto_accept(
             item,
@@ -5498,7 +5530,12 @@ def _auto_accept_iphone_battery_capacity_matches(session: Session, *, min_score:
     return accepted
 
 
-def _auto_accept_housing_part_matches(session: Session, *, min_score: float) -> int:
+def _auto_accept_housing_part_matches(
+    session: Session,
+    *,
+    min_score: float,
+    competitors: set[str] | None = None,
+) -> int:
     query_min_score = min(min_score, 0.75)
     matches = (
         session.execute(
@@ -5527,7 +5564,12 @@ def _auto_accept_housing_part_matches(session: Session, *, min_score: float) -> 
     for match in matches:
         item = match.competitor_item
         product = match.product
-        if not item or not product or _effective_item_type(item) != "housing":
+        if (
+            not item
+            or not product
+            or not _auto_accept_source_allowed(item, competitors)
+            or _effective_item_type(item) != "housing"
+        ):
             continue
         if not _safe_housing_part_auto_accept(
             item,
@@ -5565,7 +5607,12 @@ def _auto_accept_housing_part_matches(session: Session, *, min_score: float) -> 
     return accepted
 
 
-def _auto_accept_flex_matches(session: Session, *, min_score: float) -> int:
+def _auto_accept_flex_matches(
+    session: Session,
+    *,
+    min_score: float,
+    competitors: set[str] | None = None,
+) -> int:
     query_min_score = min(min_score, 0.74)
     matches = (
         session.execute(
@@ -5594,7 +5641,12 @@ def _auto_accept_flex_matches(session: Session, *, min_score: float) -> int:
     for match in matches:
         item = match.competitor_item
         product = match.product
-        if not item or not product or _effective_item_type(item) != "flex":
+        if (
+            not item
+            or not product
+            or not _auto_accept_source_allowed(item, competitors)
+            or _effective_item_type(item) != "flex"
+        ):
             continue
         score = float(match.final_score or 0)
         lower_board_accept = _safe_lower_board_flex_auto_accept(
@@ -5644,7 +5696,12 @@ def _auto_accept_flex_matches(session: Session, *, min_score: float) -> int:
     return accepted
 
 
-def _auto_accept_camera_matches(session: Session, *, min_score: float) -> int:
+def _auto_accept_camera_matches(
+    session: Session,
+    *,
+    min_score: float,
+    competitors: set[str] | None = None,
+) -> int:
     query_min_score = min(min_score, 0.80)
     matches = (
         session.execute(
@@ -5673,7 +5730,12 @@ def _auto_accept_camera_matches(session: Session, *, min_score: float) -> int:
     for match in matches:
         item = match.competitor_item
         product = match.product
-        if not item or not product or _effective_item_type(item) != "camera":
+        if (
+            not item
+            or not product
+            or not _auto_accept_source_allowed(item, competitors)
+            or _effective_item_type(item) != "camera"
+        ):
             continue
         if not _safe_camera_suggest(item, product, score=float(match.final_score or 0)):
             continue
@@ -5701,7 +5763,12 @@ def _auto_accept_camera_matches(session: Session, *, min_score: float) -> int:
     return accepted
 
 
-def _auto_accept_connector_matches(session: Session, *, min_score: float) -> int:
+def _auto_accept_connector_matches(
+    session: Session,
+    *,
+    min_score: float,
+    competitors: set[str] | None = None,
+) -> int:
     query_min_score = min(min_score, 0.74)
     matches = (
         session.execute(
@@ -5730,7 +5797,12 @@ def _auto_accept_connector_matches(session: Session, *, min_score: float) -> int
     for match in matches:
         item = match.competitor_item
         product = match.product
-        if not item or not product or _effective_item_type(item) != "connector":
+        if (
+            not item
+            or not product
+            or not _auto_accept_source_allowed(item, competitors)
+            or _effective_item_type(item) != "connector"
+        ):
             continue
         if not _safe_connector_suggest(item, product, score=float(match.final_score or 0)):
             continue
@@ -5958,7 +6030,12 @@ def _safe_other_family_auto_accept_details(
     return None
 
 
-def _auto_accept_other_safe_family_matches(session: Session, *, min_score: float) -> int:
+def _auto_accept_other_safe_family_matches(
+    session: Session,
+    *,
+    min_score: float,
+    competitors: set[str] | None = None,
+) -> int:
     query_min_score = min(min_score, 0.60)
     matches = (
         session.execute(
@@ -5987,7 +6064,7 @@ def _auto_accept_other_safe_family_matches(session: Session, *, min_score: float
     for match in matches:
         item = match.competitor_item
         product = match.product
-        if not item or not product:
+        if not item or not product or not _auto_accept_source_allowed(item, competitors):
             continue
         if _effective_item_type(item) not in {"other", "cable"}:
             continue
@@ -6013,7 +6090,12 @@ def _auto_accept_other_safe_family_matches(session: Session, *, min_score: float
     return accepted
 
 
-def _auto_accept_display_original_quality_matches(session: Session, *, min_score: float) -> int:
+def _auto_accept_display_original_quality_matches(
+    session: Session,
+    *,
+    min_score: float,
+    competitors: set[str] | None = None,
+) -> int:
     query_min_score = min(min_score, 0.75)
     matches = (
         session.execute(
@@ -6042,7 +6124,7 @@ def _auto_accept_display_original_quality_matches(session: Session, *, min_score
     for match in matches:
         item = match.competitor_item
         product = match.product
-        if not item or not product:
+        if not item or not product or not _auto_accept_source_allowed(item, competitors):
             continue
         item_type = _effective_item_type(item)
         reason = _safe_display_original_quality_auto_accept(
@@ -6075,7 +6157,12 @@ def _auto_accept_display_original_quality_matches(session: Session, *, min_score
     return accepted
 
 
-def _auto_accept_display_unspecified_quality_matches(session: Session, *, min_score: float) -> int:
+def _auto_accept_display_unspecified_quality_matches(
+    session: Session,
+    *,
+    min_score: float,
+    competitors: set[str] | None = None,
+) -> int:
     query_min_score = max(0.83, min_score)
     matches = (
         session.execute(
@@ -6104,7 +6191,7 @@ def _auto_accept_display_unspecified_quality_matches(session: Session, *, min_sc
     for match in matches:
         item = match.competitor_item
         product = match.product
-        if not item or not product:
+        if not item or not product or not _auto_accept_source_allowed(item, competitors):
             continue
         item_type = _effective_item_type(item)
         reason = _safe_display_unspecified_quality_auto_accept(
@@ -6135,7 +6222,12 @@ def _auto_accept_display_unspecified_quality_matches(session: Session, *, min_sc
     return accepted
 
 
-def _auto_accept_display_construction_matches(session: Session, *, min_score: float) -> int:
+def _auto_accept_display_construction_matches(
+    session: Session,
+    *,
+    min_score: float,
+    competitors: set[str] | None = None,
+) -> int:
     matches = (
         session.execute(
             select(CompetitorItemMatch)
@@ -6163,7 +6255,7 @@ def _auto_accept_display_construction_matches(session: Session, *, min_score: fl
     for match in matches:
         item = match.competitor_item
         product = match.product
-        if not item or not product:
+        if not item or not product or not _auto_accept_source_allowed(item, competitors):
             continue
         item_type = _effective_item_type(item)
         reason = _safe_display_copy_construction_auto_accept(
@@ -6196,7 +6288,12 @@ def _auto_accept_display_construction_matches(session: Session, *, min_score: fl
     return accepted
 
 
-def _auto_accept_display_matrix_tag_matches(session: Session, *, min_score: float) -> int:
+def _auto_accept_display_matrix_tag_matches(
+    session: Session,
+    *,
+    min_score: float,
+    competitors: set[str] | None = None,
+) -> int:
     matches = (
         session.execute(
             select(CompetitorItemMatch)
@@ -6224,7 +6321,7 @@ def _auto_accept_display_matrix_tag_matches(session: Session, *, min_score: floa
     for match in matches:
         item = match.competitor_item
         product = match.product
-        if not item or not product:
+        if not item or not product or not _auto_accept_source_allowed(item, competitors):
             continue
         item_type = _effective_item_type(item)
         reason = _safe_display_matrix_tag_auto_accept(
@@ -6259,7 +6356,12 @@ def _auto_accept_display_matrix_tag_matches(session: Session, *, min_score: floa
     return accepted
 
 
-def _auto_accept_display_matrix_type_matches(session: Session, *, min_score: float) -> int:
+def _auto_accept_display_matrix_type_matches(
+    session: Session,
+    *,
+    min_score: float,
+    competitors: set[str] | None = None,
+) -> int:
     matches = (
         session.execute(
             select(CompetitorItemMatch)
@@ -6287,7 +6389,7 @@ def _auto_accept_display_matrix_type_matches(session: Session, *, min_score: flo
     for match in matches:
         item = match.competitor_item
         product = match.product
-        if not item or not product:
+        if not item or not product or not _auto_accept_source_allowed(item, competitors):
             continue
         item_type = _effective_item_type(item)
         reason = _safe_display_copy_matrix_type_auto_accept(
@@ -6402,6 +6504,87 @@ def _backfill_explicit_code_overlap_compatibilities(session: Session) -> int:
         details = _display_model_code_overlap_details(item, product)
         created += _ensure_code_overlap_compatibilities(session, item, product, details)
     return created
+
+
+def _annotate_category_policy_accepts(
+    session: Session,
+    *,
+    policy: AutoAcceptPolicy,
+    category: str,
+    competitor: str | None,
+    category_policy: CategoryPolicy,
+) -> None:
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch)
+            .options(joinedload(CompetitorItemMatch.competitor_item))
+            .where(CompetitorItemMatch.status == CompetitorItemMatchStatus.ACCEPTED)
+        )
+        .scalars()
+        .all()
+    )
+    category_types = {"other", "cable"} if category == "other" else {category}
+    for match in matches:
+        item = match.competitor_item
+        if not item or _effective_item_type(item) not in category_types:
+            continue
+        if competitor and (item.competitor or "").strip().lower() != competitor:
+            continue
+        rationale = dict(match.rationale_json or {})
+        if not any(key.startswith("auto_accept_") for key in rationale):
+            continue
+        rationale["auto_accept_policy"] = {
+            "version": policy.version,
+            "category": category,
+            "competitor": (item.competitor or "unknown").lower(),
+            "mode": category_policy.effective_mode,
+            "min_score": category_policy.min_score,
+            "target_precision": category_policy.target_precision,
+            "validation_examples": category_policy.validation_examples,
+            "measured_precision": category_policy.measured_precision,
+            "required_evidence": list(category_policy.required_evidence),
+        }
+        match.rationale_json = rationale
+        session.add(match)
+
+
+def _annotate_exact_policy_accepts(
+    session: Session,
+    *,
+    policy: AutoAcceptPolicy,
+    category_policy: CategoryPolicy,
+) -> None:
+    exact_rule_keys = {
+        "auto_accept_explicit_model_code_overlap",
+        "auto_accept_explicit_model_text",
+        "auto_accept_battery_part_code",
+        "auto_accept_battery_original_part_code",
+    }
+    matches = (
+        session.execute(
+            select(CompetitorItemMatch).where(
+                CompetitorItemMatch.status == CompetitorItemMatchStatus.ACCEPTED
+            )
+        )
+        .scalars()
+        .all()
+    )
+    for match in matches:
+        rationale = dict(match.rationale_json or {})
+        if not exact_rule_keys.intersection(rationale):
+            continue
+        rationale["auto_accept_policy"] = {
+            "version": policy.version,
+            "category": "exact_evidence",
+            "mode": category_policy.effective_mode,
+            "min_score": category_policy.min_score,
+            "target_precision": category_policy.target_precision,
+            "validation_examples": category_policy.validation_examples,
+            "measured_precision": category_policy.measured_precision,
+            "required_evidence": list(category_policy.required_evidence),
+        }
+        match.rationale_json = rationale
+        session.add(match)
 
 
 def _display_model_text_overlap(item: CompetitorItem, product: Product) -> bool:
@@ -7584,8 +7767,10 @@ def match_items(
     auto_accept_unique: bool = False,
     auto_accept_code_overlap: bool = True,
     auto_accept_min_score: float = 0.80,
+    auto_accept_policy_path: str | None = None,
     live_embed_missing: bool = True,
 ) -> dict[str, int]:
+    auto_accept_policy = load_auto_accept_policy(auto_accept_policy_path)
     product_matrix, product_index = _load_embeddings("our_catalog", embeddings_dir)
     if not product_index.get("meta", {}).get("normalized", False):
         norms = np.linalg.norm(product_matrix, axis=1, keepdims=True)
@@ -8732,79 +8917,92 @@ def match_items(
             _auto_reject_display_attribute_conflicts(session)
         )
     if auto_accept_unique and not dry_run:
-        stats["auto_accepted_unique"] = _auto_accept_unique_suggested_matches(
-            session,
-            min_score=auto_accept_min_score,
-        )
+        stats["auto_accepted_unique"] = 0
+        stats["policy_unique_auto_accept_disabled"] = 1
     if auto_accept_code_overlap and not dry_run:
-        stats["auto_accepted_code_overlap"] = _auto_accept_explicit_code_overlap_matches(
-            session,
-            min_score=auto_accept_min_score,
-        )
-        stats["auto_accepted_model_text"] = _auto_accept_explicit_model_text_matches(
-            session,
-            min_score=auto_accept_min_score,
-        )
-        stats["auto_accepted_battery_part_code"] = _auto_accept_battery_part_code_matches(
-            session,
-            min_score=auto_accept_min_score,
-        )
-        stats["auto_accepted_battery_original_part_code"] = (
-            _auto_accept_battery_original_part_code_matches(
+        exact_policy = auto_accept_policy.exact_evidence_policy
+        exact_min_score = max(auto_accept_min_score, exact_policy.min_score)
+        exact_rules = {
+            "auto_accepted_code_overlap": _auto_accept_explicit_code_overlap_matches,
+            "auto_accepted_model_text": _auto_accept_explicit_model_text_matches,
+            "auto_accepted_battery_part_code": _auto_accept_battery_part_code_matches,
+            "auto_accepted_battery_original_part_code": (
+                _auto_accept_battery_original_part_code_matches
+            ),
+        }
+        if exact_policy.effective_mode == "auto":
+            for stat_key, rule in exact_rules.items():
+                stats[stat_key] = rule(
+                    session,
+                    min_score=exact_min_score,
+                )
+            _annotate_exact_policy_accepts(
                 session,
-                min_score=auto_accept_min_score,
+                policy=auto_accept_policy,
+                category_policy=exact_policy,
             )
+        else:
+            stats[f"policy_exact_evidence_{exact_policy.effective_mode}"] = 1
+            for stat_key in exact_rules:
+                stats[stat_key] = 0
+
+        category_rules = {
+            "battery": [
+                (
+                    "auto_accepted_iphone_battery_capacity",
+                    _auto_accept_iphone_battery_capacity_matches,
+                )
+            ],
+            "housing": [("auto_accepted_housing_part", _auto_accept_housing_part_matches)],
+            "flex": [("auto_accepted_flex", _auto_accept_flex_matches)],
+            "camera": [("auto_accepted_camera", _auto_accept_camera_matches)],
+            "connector": [("auto_accepted_connector", _auto_accept_connector_matches)],
+            "other": [("auto_accepted_other_safe_family", _auto_accept_other_safe_family_matches)],
+            "display": [
+                (
+                    "auto_accepted_display_original_quality",
+                    _auto_accept_display_original_quality_matches,
+                ),
+                (
+                    "auto_accepted_display_unspecified_quality",
+                    _auto_accept_display_unspecified_quality_matches,
+                ),
+                ("auto_accepted_display_construction", _auto_accept_display_construction_matches),
+                ("auto_accepted_display_matrix_tag", _auto_accept_display_matrix_tag_matches),
+                ("auto_accepted_display_matrix_type", _auto_accept_display_matrix_type_matches),
+            ],
+        }
+        configured_competitors = set(auto_accept_policy.competitors)
+        selected_competitors = (
+            configured_competitors.intersection(source.lower() for source in sources)
+            if sources
+            else configured_competitors
         )
-        stats["auto_accepted_iphone_battery_capacity"] = (
-            _auto_accept_iphone_battery_capacity_matches(
-                session,
-                min_score=auto_accept_min_score,
-            )
-        )
-        stats["auto_accepted_housing_part"] = _auto_accept_housing_part_matches(
-            session,
-            min_score=auto_accept_min_score,
-        )
-        stats["auto_accepted_flex"] = _auto_accept_flex_matches(
-            session,
-            min_score=auto_accept_min_score,
-        )
-        stats["auto_accepted_camera"] = _auto_accept_camera_matches(
-            session,
-            min_score=auto_accept_min_score,
-        )
-        stats["auto_accepted_connector"] = _auto_accept_connector_matches(
-            session,
-            min_score=auto_accept_min_score,
-        )
-        stats["auto_accepted_other_safe_family"] = _auto_accept_other_safe_family_matches(
-            session,
-            min_score=auto_accept_min_score,
-        )
-        stats["auto_accepted_display_original_quality"] = (
-            _auto_accept_display_original_quality_matches(
-                session,
-                min_score=auto_accept_min_score,
-            )
-        )
-        stats["auto_accepted_display_unspecified_quality"] = (
-            _auto_accept_display_unspecified_quality_matches(
-                session,
-                min_score=auto_accept_min_score,
-            )
-        )
-        stats["auto_accepted_display_construction"] = _auto_accept_display_construction_matches(
-            session,
-            min_score=auto_accept_min_score,
-        )
-        stats["auto_accepted_display_matrix_tag"] = _auto_accept_display_matrix_tag_matches(
-            session,
-            min_score=auto_accept_min_score,
-        )
-        stats["auto_accepted_display_matrix_type"] = _auto_accept_display_matrix_type_matches(
-            session,
-            min_score=auto_accept_min_score,
-        )
+        policy_scopes: list[str | None] = sorted(selected_competitors) or [None]
+        for category, rules in category_rules.items():
+            for stat_key, _rule in rules:
+                stats[stat_key] = 0
+            for competitor in policy_scopes:
+                category_policy = auto_accept_policy.for_category(category, competitor)
+                scope_label = competitor or "default"
+                if category_policy.effective_mode == "auto":
+                    for stat_key, rule in rules:
+                        accepted = rule(
+                            session,
+                            min_score=max(auto_accept_min_score, category_policy.min_score),
+                            competitors={competitor} if competitor else None,
+                        )
+                        stats[stat_key] += accepted
+                        stats[f"{stat_key}_{scope_label}"] = accepted
+                    _annotate_category_policy_accepts(
+                        session,
+                        policy=auto_accept_policy,
+                        category=category,
+                        competitor=competitor,
+                        category_policy=category_policy,
+                    )
+                else:
+                    stats[f"policy_{category}_{scope_label}_{category_policy.effective_mode}"] = 1
         stats["auto_code_overlap_compatibilities_created"] = (
             _backfill_explicit_code_overlap_compatibilities(session)
         )
@@ -8935,6 +9133,10 @@ def main() -> None:
         help="Min score for safe auto-accept rules",
     )
     parser.add_argument(
+        "--auto-accept-policy",
+        help="Path to a versioned category auto-accept policy JSON",
+    )
+    parser.add_argument(
         "--live-embed-missing",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -8986,6 +9188,7 @@ def main() -> None:
             auto_accept_unique=args.auto_accept_unique,
             auto_accept_code_overlap=args.auto_accept_code_overlap,
             auto_accept_min_score=args.auto_accept_min_score,
+            auto_accept_policy_path=args.auto_accept_policy,
             live_embed_missing=args.live_embed_missing,
         )
     print(json.dumps(stats, ensure_ascii=False, indent=2))

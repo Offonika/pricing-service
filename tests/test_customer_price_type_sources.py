@@ -47,7 +47,10 @@ def test_bulk_source_uses_all_contracts_direct_sales_and_ledger_reconciliation(
                         "counterparty_name": "Клиент",
                         "department_ref": _ref(700),
                         "department_name": "Подразделение",
-                        "contracts": [ContractFact(_ref(100), "Основной", "3.Серебряный")],
+                        "contracts": [
+                            ContractFact(_ref(100), "Основной", "3.Серебряный"),
+                            ContractFact(_ref(101), "Старый", "Key Account"),
+                        ],
                     }
                 },
             )
@@ -64,6 +67,17 @@ def test_bulk_source_uses_all_contracts_direct_sales_and_ledger_reconciliation(
                     },
                     {ref: date(2024, 1, 15)},
                 ),
+            )
+            monkeypatch.setattr(
+                source,
+                "_contract_activity",
+                lambda *_: {
+                    _ref(100): {
+                        "sale_document_count_12m": 4,
+                        "sales_amount_12m": Decimal("420.50"),
+                        "last_sale_at": date(2026, 6, 20),
+                    }
+                },
             )
             monkeypatch.setattr(
                 source,
@@ -93,6 +107,12 @@ def test_bulk_source_uses_all_contracts_direct_sales_and_ledger_reconciliation(
         assert fact.first_activity_date == date(2024, 1, 15)
         assert fact.history_coverage_months == 12
         assert fact.duplicate_flag is True
+        assert fact.contracts[0].sale_document_count_12m == 4
+        assert fact.contracts[0].sales_amount_12m == Decimal("420.50")
+        assert fact.contracts[0].last_sale_at == date(2026, 6, 20)
+        assert fact.contracts[0].is_working is True
+        assert fact.contracts[1].is_working is False
+        assert fact.key_account_flag is False
 
         ruleset = load_price_type_ruleset("config/price_types/ruleset.yaml")
         decision = CustomerPriceTypeRulesEngine(ruleset).evaluate(fact)
@@ -109,6 +129,12 @@ def test_contract_bulk_sql_has_no_price_type_prefix_filter() -> None:
     assert "LEFT JOIN _Reference87" in sql
     assert "price_type_marked" in sql
     assert "buyers_group.department_ref" in sql
+
+    activity_sql = str(source_module._CONTRACT_ACTIVITY_SQL)
+    assert "r._RecorderTRef = 0x000000CB" in activity_sql
+    assert "r._RecorderRRef AS document_ref" in activity_sql
+    assert "COUNT_BIG(*) AS sale_document_count_12m" in activity_sql
+    assert "0x0000006D" not in activity_sql
 
 
 def test_bulk_source_uses_proven_history_and_bulk_enrichments(tmp_path, monkeypatch) -> None:
@@ -153,6 +179,7 @@ def test_bulk_source_uses_proven_history_and_bulk_enrichments(tmp_path, monkeypa
                 "_direct_monthly",
                 lambda *_: ({ref: {"2026-06": Decimal("-10")}}, {ref: date(2026, 6, 15)}),
             )
+            monkeypatch.setattr(source, "_contract_activity", lambda *_: {})
             monkeypatch.setattr(
                 source,
                 "_ledger_monthly",

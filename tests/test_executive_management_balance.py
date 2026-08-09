@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
@@ -24,10 +24,12 @@ from app.services import executive_management_balance as balance_service
 from app.services.executive_management_balance import (
     BalanceLineDraft,
     ManagementBalanceCloseError,
+    ManagementBalanceNotFoundError,
     build_and_persist_management_balance_snapshot,
     build_management_balance_snapshot_command,
     close_management_balance,
     get_management_balance,
+    get_management_balance_turnover,
     month_end,
     parse_month,
 )
@@ -118,11 +120,234 @@ def _complete_lines() -> tuple[list[BalanceLineDraft], dict[str, object]]:
     )
 
 
+def _turnover_fixture_lines(
+    *,
+    as_of: date,
+    cash: str,
+    fixed_assets: str,
+    suppliers: str,
+    taxes: str,
+    equity: str,
+) -> tuple[list[BalanceLineDraft], dict[str, object]]:
+    return (
+        [
+            BalanceLineDraft(
+                "asset",
+                "cash",
+                "Денежные средства",
+                Decimal(cash),
+                10,
+                "onec_cash_position",
+                "ready",
+                as_of,
+            ),
+            BalanceLineDraft(
+                "asset",
+                "fixed_assets_net",
+                "Основные средства",
+                Decimal(fixed_assets),
+                20,
+                "onec_bp_fixed_assets",
+                "ready",
+                as_of,
+            ),
+            BalanceLineDraft(
+                "liability",
+                "suppliers",
+                "Задолженность поставщикам",
+                Decimal(suppliers),
+                10,
+                "onec_counterparty_settlements",
+                "ready",
+                as_of,
+            ),
+            BalanceLineDraft(
+                "liability",
+                "taxes_payable",
+                "Начисленные налоги",
+                Decimal(taxes),
+                20,
+                "onec_bp_tax_accounting",
+                "ready",
+                as_of,
+            ),
+            BalanceLineDraft(
+                "equity",
+                "retained_earnings",
+                "Управленческий капитал",
+                Decimal(equity),
+                10,
+                "management_opening_equity",
+                "ready",
+                as_of,
+            ),
+        ],
+        {
+            "trade_detail": {"status": "ready", "as_of": as_of.isoformat()},
+            "accounting": {"configured": True, "status": "partial"},
+            "salary_reconciliation": {
+                "configured": True,
+                "status": "ready",
+                "closing_blocked": False,
+                "blockers": [],
+            },
+        },
+    )
+
+
+def _build_turnover_fixture(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    opening_status: str = "closed",
+) -> None:
+    settings = _settings()
+    monkeypatch.setattr(balance_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        balance_service,
+        "_load_cashflow_period_cache",
+        lambda: (None, "source_missing", "fixture without cashflow"),
+    )
+    opening = _turnover_fixture_lines(
+        as_of=date(2026, 1, 1),
+        cash="100.00",
+        fixed_assets="50.00",
+        suppliers="80.00",
+        taxes="10.00",
+        equity="60.00",
+    )
+    monkeypatch.setattr(balance_service, "_build_draft_lines", lambda *args, **kwargs: opening)
+    opening_snapshot = build_and_persist_management_balance_snapshot(
+        db_session,
+        balance_date=date(2026, 1, 1),
+        view="closed",
+    )
+    opening_snapshot.status = opening_status
+    if opening_status == "closed":
+        opening_snapshot.validation_errors = []
+    db_session.commit()
+
+    closing = _turnover_fixture_lines(
+        as_of=date(2026, 6, 30),
+        cash="120.00",
+        fixed_assets="45.00",
+        suppliers="70.00",
+        taxes="15.00",
+        equity="80.00",
+    )
+    monkeypatch.setattr(balance_service, "_build_draft_lines", lambda *args, **kwargs: closing)
+    build_and_persist_management_balance_snapshot(
+        db_session,
+        balance_date=date(2026, 6, 30),
+        view="closed",
+    )
+
+
 def test_month_parser_and_leap_year_end() -> None:
     assert parse_month("2024-02") == date(2024, 2, 1)
     assert month_end(date(2024, 2, 1)) == date(2024, 2, 29)
     with pytest.raises(ValueError):
         parse_month("2024-13")
+
+
+def test_exact_cash_position_replaces_compact_balance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lines = [
+        BalanceLineDraft(
+            "asset",
+            "cash",
+            "Денежные средства",
+            Decimal("999.00"),
+            10,
+            "onec_cash_position",
+            "partial",
+            date(2026, 2, 1),
+        )
+    ]
+    monkeypatch.setattr(
+        balance_service,
+        "_load_cashflow_period_cache",
+        lambda: (
+            {
+                "cash_position": {
+                    "rows": [
+                        {
+                            "snapshot_date": "2026-01-31",
+                            "total_balance_rub": "16356506.09",
+                            "source_status": "partial",
+                        }
+                    ]
+                }
+            },
+            "partial",
+            "fixture",
+        ),
+    )
+
+    summary = balance_service._apply_exact_cash_position(
+        lines=lines,
+        balance_date=date(2026, 1, 31),
+    )
+
+    assert lines[0].amount == Decimal("16356506.09")
+    assert lines[0].source_as_of == date(2026, 1, 31)
+    assert summary == {
+        "status": "partial",
+        "as_of": "2026-01-31",
+        "method": "fact_cash_position_daily_exact_date",
+    }
+
+
+def test_historical_cash_is_not_backfilled_without_exact_position(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    lines = [
+        BalanceLineDraft(
+            "asset",
+            "cash",
+            "Денежные средства",
+            Decimal("999.00"),
+            10,
+            "onec_cash_position",
+            "ready",
+            date(2026, 7, 24),
+        )
+    ]
+    monkeypatch.setattr(
+        balance_service,
+        "_load_cashflow_period_cache",
+        lambda: ({"cash_position": {"rows": []}}, "partial", "fixture"),
+    )
+
+    summary = balance_service._apply_exact_cash_position(
+        lines=lines,
+        balance_date=date(2026, 1, 31),
+    )
+
+    assert lines[0].amount is None
+    assert lines[0].source_status == "source_missing"
+    assert lines[0].source_as_of is None
+    assert summary["status"] == "source_missing"
+
+
+def test_inventory_quantity_reconciliation_mismatch_blocks_month_close() -> None:
+    lines, source_summary = _complete_lines()
+    source_summary["inventory"] = {
+        "status": "partial",
+        "reconciliation_status": "quantity_mismatch",
+        "stock_quantity": "951101.000",
+        "party_quantity": "951367.000",
+        "quantity_difference": "-266.000",
+    }
+
+    errors = balance_service._validation_errors(lines, source_summary)
+
+    mismatch = next(
+        item for item in errors if item["code"] == "inventory_quantity_reconciliation_mismatch"
+    )
+    assert mismatch["severity"] == "error"
+    assert "-266.000" in mismatch["message"]
 
 
 def test_bp_tax_snapshot_populates_taxes_payable(tmp_path: Path) -> None:
@@ -184,6 +409,300 @@ def test_bp_tax_snapshot_requires_exact_balance_date(tmp_path: Path) -> None:
     assert line.amount is None
     assert line.source_status == "stale"
     assert summary["status"] == "stale"
+
+
+def test_bp_balance_snapshot_populates_verified_lines_and_keeps_unverified_unknown(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "bp-balance.json"
+    path.write_text(
+        json.dumps(
+            {
+                "contract_version": "executive-bp-balance-snapshot.v1",
+                "as_of": "2026-06-30",
+                "source_status": "partial",
+                "lines": {
+                    "fixed_assets_net": {
+                        "amount": "1500000.00",
+                        "source_status": "partial",
+                        "source_key": "onec_bp_fixed_assets",
+                    },
+                    "tax_receivables": {
+                        "amount": "100000.00",
+                        "source_status": "partial",
+                        "source_key": "onec_bp_tax_accounting",
+                    },
+                    "loans_and_interest": {
+                        "amount": "70000.00",
+                        "source_status": "partial",
+                        "source_key": "onec_bp_loans",
+                    },
+                    "owner_capital": {
+                        "amount": "10000.00",
+                        "source_status": "partial",
+                        "source_key": "onec_bp_owner_capital",
+                    },
+                    "other_liabilities": {
+                        "amount": None,
+                        "source_status": "source_unverified",
+                        "source_key": "onec_bp_other_liabilities",
+                    },
+                },
+                "excluded": [{"family": "retained_earnings_accounting"}],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    lines, summary = balance_service._load_bp_balance_lines(
+        balance_date=date(2026, 6, 30),
+        snapshot_path=str(path),
+    )
+
+    amounts = {line.key: line.amount for line in lines}
+    assert amounts["fixed_assets_net"] == Decimal("1500000.00")
+    assert amounts["tax_receivables"] == Decimal("100000.00")
+    assert amounts["loans_and_interest"] == Decimal("70000.00")
+    assert amounts["owner_capital"] == Decimal("10000.00")
+    assert amounts["other_liabilities"] is None
+    assert summary["status"] == "partial"
+    assert summary["as_of"] == "2026-06-30"
+
+
+def test_opening_equity_contract_is_frozen_and_exposes_versioned_bridge(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "opening-equity.json"
+    path.write_text(
+        json.dumps(
+            {
+                "contract_version": "management-opening-equity-snapshot.v1",
+                "baseline_date": "2026-01-01",
+                "source_cutoff_date": "2025-12-31",
+                "version": 2,
+                "source_hash": "a" * 64,
+                "source_status": "partial",
+                "calculation_method": (
+                    "assets_minus_liabilities_minus_known_equity_at_frozen_baseline"
+                ),
+                "lines": {
+                    "retained_earnings": {
+                        "amount": "300000000.00",
+                        "source_status": "partial",
+                        "source_key": "management_opening_equity",
+                    },
+                    "prior_period_adjustments": {
+                        "amount": "125.50",
+                        "source_status": "partial",
+                        "source_key": "management_opening_equity",
+                    },
+                },
+                "bridge": {"imbalance_amount": "0.00"},
+                "components": [
+                    {
+                        "section": "asset",
+                        "key": "tax_receivables",
+                        "label": "Налоги к возмещению",
+                        "amount": "1286476.07",
+                        "source_status": "partial",
+                        "source_key": "onec_bp_tax_accounting",
+                    },
+                    {
+                        "section": "liability",
+                        "key": "loans_and_interest",
+                        "label": "Займы и проценты",
+                        "amount": "60000.00",
+                        "source_status": "partial",
+                        "source_key": "onec_bp_loans",
+                    },
+                ],
+                "control": {"daily_balancing_forbidden": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    lines, summary = balance_service._load_opening_equity_lines(
+        balance_date=date(2026, 7, 23),
+        snapshot_path=str(path),
+    )
+
+    amounts = {line.key: line.amount for line in lines}
+    assert amounts == {
+        "retained_earnings": Decimal("300000000.00"),
+        "prior_period_adjustments": Decimal("125.50"),
+    }
+    assert all(line.source_as_of == date(2026, 1, 1) for line in lines)
+    assert summary["baseline_date"] == "2026-01-01"
+    assert summary["source_cutoff_date"] == "2025-12-31"
+    assert summary["version"] == 2
+    assert summary["source_hash"] == "a" * 64
+    assert summary["daily_balancing_forbidden"] is True
+
+
+def test_opening_equity_replays_all_historical_components_on_baseline(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "opening-equity.json"
+    path.write_text(
+        json.dumps(
+            {
+                "baseline_date": "2026-01-01",
+                "source_cutoff_date": "2025-12-31",
+                "version": 1,
+                "source_hash": "b" * 64,
+                "source_status": "partial",
+                "lines": {
+                    "retained_earnings": {
+                        "amount": "300000000.00",
+                        "source_status": "partial",
+                    },
+                    "prior_period_adjustments": {
+                        "amount": "0.00",
+                        "source_status": "partial",
+                    },
+                },
+                "components": [
+                    {
+                        "section": "asset",
+                        "key": "cash",
+                        "label": "Деньги",
+                        "amount": "1000000.00",
+                        "source_status": "ready",
+                        "source_key": "onec_ut_money_places",
+                        "as_of": "2025-12-31",
+                    },
+                    {
+                        "section": "asset",
+                        "key": "tax_receivables",
+                        "label": "Налоги к возмещению",
+                        "amount": "1286476.07",
+                        "source_status": "partial",
+                        "source_key": "onec_bp_tax_accounting",
+                        "as_of": "2025-12-31",
+                    },
+                    {
+                        "section": "liability",
+                        "key": "loans_and_interest",
+                        "label": "Займы и проценты",
+                        "amount": "60000.00",
+                        "source_status": "partial",
+                        "source_key": "onec_bp_loans",
+                        "as_of": "2025-12-31",
+                    },
+                ],
+                "control": {"daily_balancing_forbidden": True},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    lines, _summary = balance_service._load_opening_equity_lines(
+        balance_date=date(2026, 1, 1),
+        snapshot_path=str(path),
+    )
+
+    amounts = {line.key: line.amount for line in lines}
+    assert amounts["cash"] == Decimal("1000000.00")
+    assert amounts["tax_receivables"] == Decimal("1286476.07")
+    assert amounts["loans_and_interest"] == Decimal("60000.00")
+    historical = [line for line in lines if line.key in {"cash", "tax_receivables"}]
+    assert {line.source_as_of for line in historical} == {date(2025, 12, 31)}
+
+
+def test_opening_equity_is_not_applied_before_baseline(tmp_path: Path) -> None:
+    lines, summary = balance_service._load_opening_equity_lines(
+        balance_date=date(2025, 12, 31),
+        snapshot_path=str(tmp_path / "missing.json"),
+    )
+
+    assert lines == []
+    assert summary["status"] == "not_applicable"
+
+
+def test_baseline_replay_drops_live_amounts_not_present_in_frozen_contract() -> None:
+    lines = [
+        BalanceLineDraft(
+            "liability",
+            "accrued_service_liability",
+            "Live начисление услуг",
+            Decimal("10.00"),
+            10,
+            "management_service_accruals",
+            "ready",
+            date(2026, 1, 1),
+        ),
+        BalanceLineDraft(
+            "liability",
+            "salary_blocker",
+            "Неподтверждённая зарплата",
+            None,
+            20,
+            "ut_bp_salary_reconciliation",
+            "source_missing",
+            None,
+        ),
+    ]
+    opening_lines = [
+        BalanceLineDraft(
+            "liability",
+            "service_liability",
+            "Услуги по факту закрытия",
+            Decimal("10.00"),
+            10,
+            "onec_ut_legal_entity_settlements",
+            "ready",
+            date(2025, 12, 31),
+        )
+    ]
+
+    merged = balance_service._merge_opening_equity_lines(
+        lines=lines,
+        opening_lines=opening_lines,
+        balance_date=date(2026, 1, 1),
+    )
+
+    assert {line.key for line in merged} == {"salary_blocker", "service_liability"}
+    assert sum(
+        (line.amount for line in merged if line.amount is not None and line.include_in_total),
+        Decimal("0"),
+    ) == Decimal("10.00")
+
+
+def test_components_export_avoids_opening_equity_recursion(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def fake_build(
+        _session: Session,
+        *,
+        balance_date: date,
+        access_context: object,
+        include_contract_enrichment: bool,
+    ) -> tuple[list[BalanceLineDraft], dict[str, object]]:
+        captured.update(
+            {
+                "balance_date": balance_date,
+                "access_context": access_context,
+                "include_contract_enrichment": include_contract_enrichment,
+            }
+        )
+        return _complete_lines()
+
+    monkeypatch.setattr(balance_service, "_build_draft_lines", fake_build)
+
+    payload = balance_service.build_management_balance_components_export(
+        db_session,
+        balance_date=date(2026, 6, 30),
+    )
+
+    assert captured["balance_date"] == date(2026, 6, 30)
+    assert captured["include_contract_enrichment"] is False
+    assert payload["as_of"] == "2026-06-30"
+    assert payload["totals"]["pre_opening_imbalance"] == "0.00"
+    assert len(payload["source_hash"]) == 64
 
 
 def test_salary_snapshot_replaces_net_employee_line_with_gross_articles(
@@ -406,6 +925,29 @@ def test_closed_snapshot_is_immutable_and_close_is_idempotent(
     assert audit_count == 1
 
 
+def test_opening_boundary_can_be_persisted_as_closed_draft(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings()
+    monkeypatch.setattr(balance_service, "get_settings", lambda: settings)
+    monkeypatch.setattr(
+        balance_service, "_build_draft_lines", lambda *args, **kwargs: _complete_lines()
+    )
+
+    snapshot = build_and_persist_management_balance_snapshot(
+        db_session,
+        balance_date=date(2026, 1, 1),
+        view="closed",
+        actor="test:opening-builder",
+    )
+
+    assert snapshot.period_month == date(2026, 1, 1)
+    assert snapshot.balance_date == date(2026, 1, 1)
+    assert snapshot.view_mode == "closed"
+    assert snapshot.validation_errors == []
+
+
 def test_snapshot_build_is_idempotent_by_content(
     db_session: Session,
     monkeypatch: pytest.MonkeyPatch,
@@ -560,3 +1102,291 @@ def test_management_balance_api_is_independent_from_dashboard_date(
     assert payload["month"] == date.today().strftime("%Y-%m")
     assert "date" not in payload
     assert payload["can_close"] is False
+
+
+def test_management_balance_turnover_uses_ut_scope_and_bp_taxes_only(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _build_turnover_fixture(db_session, monkeypatch)
+
+    response = get_management_balance_turnover(
+        db_session,
+        month="2026-06",
+        view="closed",
+        access_context=bitrix_executive_dashboard_auth.full_executive_dashboard_context(),
+    )
+
+    lines = {line.key: line for line in response.lines}
+    assert response.source_scope == "onec_ut_10_3_plus_bp_accrued_taxes"
+    assert response.date_from == date(2026, 1, 1)
+    assert response.date_to == date(2026, 6, 30)
+    assert response.opening_balance_date == date(2026, 1, 1)
+    assert response.opening_status == "closed"
+    assert "fixed_assets_net" not in lines
+    assert any(item["key"] == "fixed_assets_net" for item in response.excluded_lines)
+    assert lines["cash"].opening_balance == Decimal("100.00")
+    assert lines["cash"].debit_turnover == Decimal("20.00")
+    assert lines["cash"].credit_turnover == Decimal("0.00")
+    assert lines["suppliers"].debit_turnover == Decimal("10.00")
+    assert lines["suppliers"].credit_turnover == Decimal("0.00")
+    assert lines["taxes_payable"].debit_turnover == Decimal("0.00")
+    assert lines["taxes_payable"].credit_turnover == Decimal("5.00")
+    assert lines["retained_earnings"].credit_turnover == Decimal("20.00")
+    assert all(line.reconciliation_difference == Decimal("0.00") for line in response.lines)
+    assert response.opening_scope_imbalance_amount == Decimal("-50.00")
+    assert response.closing_scope_imbalance_amount == Decimal("-45.00")
+    assert response.turnover_method == "mixed_gross_cashflow_and_net_change"
+    assert response.available_period_starts == ["2026-01", "2026-07"]
+    assert response.available_period_ends == ["2026-06"]
+
+
+def test_management_balance_turnover_uses_gross_cash_movements_in_common_statement(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _build_turnover_fixture(db_session, monkeypatch)
+    monkeypatch.setattr(
+        balance_service,
+        "_load_cashflow_period_cache",
+        lambda: (
+            {
+                "generated_at": "2026-03-01T08:30:00+00:00",
+                "source_status": "ready",
+                "period": {"date_from": "2026-01-01", "date_to": "2026-06-30"},
+                "rows": [
+                    {
+                        "business_date": "2026-01-10",
+                        "inflow_amount": "40.00",
+                        "outflow_amount": "10.00",
+                        "is_internal_transfer": False,
+                    },
+                    {
+                        "business_date": "2026-06-10",
+                        "inflow_amount": "5.00",
+                        "outflow_amount": "20.00",
+                        "is_internal_transfer": False,
+                    },
+                ],
+                "cash_position": {
+                    "rows": [
+                        {
+                            "snapshot_date": "2026-06-30",
+                            "total_balance": "115.00",
+                            "source_status": "partial",
+                        }
+                    ]
+                },
+            },
+            "ready",
+            "fixture",
+        ),
+    )
+
+    response = get_management_balance_turnover(
+        db_session,
+        month="2026-06",
+        month_from="2026-01",
+        month_to="2026-06",
+        view="closed",
+        access_context=bitrix_executive_dashboard_auth.full_executive_dashboard_context(),
+    )
+
+    assert response.selected_month_from == "2026-01"
+    assert response.selected_month_to == "2026-06"
+    assert response.available_period_starts == ["2026-01", "2026-07"]
+    assert response.available_period_ends == ["2026-06"]
+    lines = {line.key: line for line in response.lines}
+    assert lines["cash"].opening_balance == Decimal("100.00")
+    assert lines["cash"].debit_turnover == Decimal("45.00")
+    assert lines["cash"].credit_turnover == Decimal("30.00")
+    assert lines["cash"].closing_balance == Decimal("115.00")
+    assert lines["cash"].reconciliation_difference == Decimal("0.00")
+    assert lines["cash"].turnover_method == "gross_cashflow_movements"
+    assert lines["cash"].source_as_of == date(2026, 6, 30)
+    assert "управленческих рублях" in (lines["cash"].note or "")
+    assert "рублёвый snapshot" in (lines["cash"].note or "")
+    assert lines["suppliers"].turnover_method == "net_change_from_snapshots"
+
+
+def test_management_balance_turnover_applies_range_to_all_lines(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    current_day = date.today()
+    current_month = current_day.strftime("%Y-%m")
+    opening_day = current_day.replace(day=1) - timedelta(days=1)
+    _build_turnover_fixture(db_session, monkeypatch)
+    if opening_day != date(2026, 6, 30):
+        opening = _turnover_fixture_lines(
+            as_of=opening_day,
+            cash="120.00",
+            fixed_assets="45.00",
+            suppliers="70.00",
+            taxes="15.00",
+            equity="80.00",
+        )
+        monkeypatch.setattr(
+            balance_service,
+            "_build_draft_lines",
+            lambda *args, **kwargs: opening,
+        )
+        build_and_persist_management_balance_snapshot(
+            db_session,
+            balance_date=opening_day,
+            view="closed",
+        )
+    current = _turnover_fixture_lines(
+        as_of=current_day,
+        cash="130.00",
+        fixed_assets="45.00",
+        suppliers="65.00",
+        taxes="17.00",
+        equity="85.00",
+    )
+    monkeypatch.setattr(balance_service, "_build_draft_lines", lambda *args, **kwargs: current)
+    build_and_persist_management_balance_snapshot(
+        db_session,
+        balance_date=current_day,
+        view="operational",
+    )
+    monkeypatch.setattr(
+        balance_service,
+        "_load_cashflow_period_cache",
+        lambda: (
+            {
+                "source_status": "ready",
+                "period": {
+                    "date_from": "2026-01-01",
+                    "date_to": current_day.isoformat(),
+                },
+                "rows": [
+                    {
+                        "business_date": current_day.isoformat(),
+                        "inflow_amount": "20.00",
+                        "outflow_amount": "5.00",
+                    }
+                ],
+                "cash_position": {
+                    "rows": [
+                        {
+                            "snapshot_date": opening_day.isoformat(),
+                            "total_balance_rub": "125.00",
+                            "source_status": "ready",
+                        },
+                        {
+                            "snapshot_date": current_day.isoformat(),
+                            "total_balance_rub": "140.00",
+                            "source_status": "ready",
+                        },
+                    ]
+                },
+            },
+            "ready",
+            "fixture",
+        ),
+    )
+
+    response = get_management_balance_turnover(
+        db_session,
+        month=current_month,
+        month_from=current_month,
+        month_to=current_month,
+        view="operational",
+        access_context=bitrix_executive_dashboard_auth.full_executive_dashboard_context(),
+    )
+
+    lines = {line.key: line for line in response.lines}
+    assert response.date_from == current_day.replace(day=1)
+    assert response.date_to == current_day
+    assert response.opening_balance_date == opening_day
+    assert lines["cash"].opening_balance == Decimal("125.00")
+    assert lines["cash"].closing_balance == Decimal("140.00")
+    assert lines["cash"].debit_turnover == Decimal("20.00")
+    assert lines["cash"].credit_turnover == Decimal("5.00")
+    assert lines["cash"].reconciliation_difference == Decimal("0.00")
+    assert lines["cash"].source_as_of == current_day
+    assert lines["suppliers"].opening_balance == Decimal("70.00")
+    assert lines["suppliers"].closing_balance == Decimal("65.00")
+
+
+def test_management_balance_turnover_rejects_reversed_month_range(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _build_turnover_fixture(db_session, monkeypatch)
+
+    with pytest.raises(ValueError, match="раньше начального"):
+        get_management_balance_turnover(
+            db_session,
+            month="2026-06",
+            month_from="2026-03",
+            month_to="2026-02",
+            view="closed",
+            access_context=bitrix_executive_dashboard_auth.full_executive_dashboard_context(),
+        )
+
+
+def test_management_balance_turnover_rejects_unsaved_opening_boundary(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _build_turnover_fixture(db_session, monkeypatch)
+
+    with pytest.raises(ManagementBalanceNotFoundError, match="начального остатка"):
+        get_management_balance_turnover(
+            db_session,
+            month="2026-06",
+            month_from="2026-02",
+            month_to="2026-06",
+            view="closed",
+            access_context=bitrix_executive_dashboard_auth.full_executive_dashboard_context(),
+        )
+
+
+def test_management_balance_turnover_accepts_confirmed_opening_draft(
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _build_turnover_fixture(db_session, monkeypatch, opening_status="draft")
+
+    response = get_management_balance_turnover(
+        db_session,
+        month="2026-06",
+        view="closed",
+        access_context=bitrix_executive_dashboard_auth.full_executive_dashboard_context(),
+    )
+
+    assert response.opening_status == "draft"
+    assert response.opening_validation_error_count > 0
+    assert response.date_from == date(2026, 1, 1)
+
+
+def test_management_balance_turnover_api_uses_balance_permissions(
+    client: TestClient,
+    db_session: Session,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _build_turnover_fixture(db_session, monkeypatch)
+    settings = _settings()
+    monkeypatch.setattr(bitrix_executive_dashboard_auth, "get_settings", lambda: settings)
+    app.dependency_overrides[get_db] = lambda: db_session
+    try:
+        response = client.get(
+            (
+                "/api/management/executive-dashboard/management-balance-turnover"
+                "?month=2026-06&month_from=2026-01&month_to=2026-06&view=closed"
+            ),
+            headers={"Authorization": "Bearer secret-token"},
+        )
+    finally:
+        app.dependency_overrides.pop(get_db, None)
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["date_from"] == "2026-01-01"
+    assert payload["date_to"] == "2026-06-30"
+    assert payload["opening_balance_date"] == "2026-01-01"
+    assert payload["source_scope"] == "onec_ut_10_3_plus_bp_accrued_taxes"
+    assert payload["selected_month_from"] == "2026-01"
+    assert payload["selected_month_to"] == "2026-06"

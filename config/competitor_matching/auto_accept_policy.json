@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "target_precision": 0.95,
+  "exact_code_target_precision": 0.995,
+  "minimum_validation_examples": 50,
+  "audit_sample_rate": 0.10,
+  "rollback_error_rate": 0.05,
+  "global": {
+    "mode": "review",
+    "min_score": 1.0,
+    "required_evidence": []
+  },
+  "exact_evidence": {
+    "mode": "shadow",
+    "min_score": 0.90,
+    "target_precision": 0.995,
+    "validation_examples": 0,
+    "measured_precision": null,
+    "required_evidence": ["exact_model_or_part_code", "no_hard_conflicts"]
+  },
+  "categories": {
+    "camera": {
+      "mode": "auto",
+      "min_score": 0.80,
+      "validation_examples": 0,
+      "measured_precision": null,
+      "required_evidence": ["same_model", "same_camera_position", "no_hard_conflicts"]
+    },
+    "housing": {
+      "mode": "auto",
+      "min_score": 0.80,
+      "validation_examples": 0,
+      "measured_precision": null,
+      "required_evidence": ["same_model_or_code", "same_part_kind", "same_color", "no_hard_conflicts"]
+    },
+    "other": {
+      "mode": "auto",
+      "min_score": 0.80,
+      "validation_examples": 0,
+      "measured_precision": null,
+      "required_evidence": ["named_safe_family_rule", "no_hard_conflicts"]
+    },
+    "connector": {
+      "mode": "auto",
+      "min_score": 0.82,
+      "validation_examples": 0,
+      "measured_precision": null,
+      "required_evidence": ["same_model_or_code", "same_connector_purpose", "no_hard_conflicts"]
+    },
+    "battery": {
+      "mode": "shadow",
+      "min_score": 0.90,
+      "validation_examples": 0,
+      "measured_precision": null,
+      "required_evidence": ["same_subject", "same_model", "same_part_number_or_capacity", "premium_tier", "no_hard_conflicts"]
+    },
+    "display": {
+      "mode": "shadow",
+      "min_score": 0.92,
+      "validation_examples": 0,
+      "measured_precision": null,
+      "required_evidence": ["same_model", "same_construction", "same_quality", "same_color", "same_frame", "no_hard_conflicts"]
+    },
+    "flex": {
+      "mode": "shadow",
+      "min_score": 0.90,
+      "validation_examples": 0,
+      "measured_precision": null,
+      "required_evidence": ["same_model", "same_flex_purpose", "no_hard_conflicts"]
+    },
+    "unknown": {
+      "mode": "review",
+      "min_score": 1.0,
+      "validation_examples": 0,
+      "measured_precision": null,
+      "required_evidence": []
+    }
+  },
+  "competitors": {
+    "moba": {},
+    "liberti": {}
+  }
+}

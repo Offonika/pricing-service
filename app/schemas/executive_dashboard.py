@@ -187,6 +187,7 @@ class ExecutiveInstrumentAccess(ExecutiveInstrumentStrictModel):
     active_grants: int = Field(default=0, ge=0)
     pending_grants: int = Field(default=0, ge=0)
     review_required_grants: int = Field(default=0, ge=0)
+    overdue_review_grants: int = Field(default=0, ge=0)
     mfa_review_count: int = Field(default=0, ge=0)
     unowned_credentials: int = Field(default=0, ge=0)
     attention_grant_count: int = Field(default=0, ge=0)
@@ -484,6 +485,72 @@ class ExecutiveManagementBalanceResponse(BaseModel):
     source_summary: dict[str, Any] = Field(default_factory=dict)
     available_months: list[str] = Field(default_factory=list)
     note: str | None = None
+
+
+class ExecutiveManagementBalanceTurnoverLine(BaseModel):
+    key: str
+    label: str
+    section: Literal["asset", "liability", "equity"]
+    opening_balance: Decimal | None = None
+    debit_turnover: Decimal | None = None
+    credit_turnover: Decimal | None = None
+    closing_balance: Decimal | None = None
+    reconciliation_difference: Decimal | None = None
+    turnover_method: Literal["net_change_from_snapshots", "gross_cashflow_movements"] = (
+        "net_change_from_snapshots"
+    )
+    source_key: str
+    source_status: str
+    source_as_of: date | None = None
+    note: str | None = None
+
+
+class ExecutiveManagementBalanceTurnoverTotal(BaseModel):
+    section: Literal["asset", "liability", "equity"]
+    label: str
+    opening_balance: Decimal = Decimal("0")
+    debit_turnover: Decimal = Decimal("0")
+    credit_turnover: Decimal = Decimal("0")
+    closing_balance: Decimal = Decimal("0")
+    reconciliation_difference: Decimal = Decimal("0")
+    unknown_line_count: int = 0
+
+
+class ExecutiveManagementBalanceTurnoverResponse(BaseModel):
+    month: str
+    date_from: date
+    date_to: date
+    opening_balance_date: date
+    view: ExecutiveManagementBalanceView
+    opening_version: int
+    closing_version: int
+    opening_status: str
+    closing_status: str
+    opening_validation_error_count: int = 0
+    opening_content_sha256: str
+    closing_content_sha256: str
+    turnover_method: Literal["mixed_gross_cashflow_and_net_change"] = (
+        "mixed_gross_cashflow_and_net_change"
+    )
+    source_scope: Literal["onec_ut_10_3_plus_bp_accrued_taxes"] = (
+        "onec_ut_10_3_plus_bp_accrued_taxes"
+    )
+    source_status: str
+    currency: str = "RUB"
+    lines: list[ExecutiveManagementBalanceTurnoverLine] = Field(default_factory=list)
+    totals: list[ExecutiveManagementBalanceTurnoverTotal] = Field(default_factory=list)
+    excluded_lines: list[dict[str, Any]] = Field(default_factory=list)
+    opening_imbalance_amount: Decimal = Decimal("0")
+    closing_imbalance_amount: Decimal = Decimal("0")
+    opening_scope_imbalance_amount: Decimal = Decimal("0")
+    closing_scope_imbalance_amount: Decimal = Decimal("0")
+    unknown_line_count: int = 0
+    available_months: list[str] = Field(default_factory=list)
+    available_period_starts: list[str] = Field(default_factory=list)
+    available_period_ends: list[str] = Field(default_factory=list)
+    selected_month_from: str
+    selected_month_to: str
+    note: str
 
 
 class ExecutiveManagementBalanceCloseRequest(BaseModel):

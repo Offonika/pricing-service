@@ -6,6 +6,7 @@ import json
 import re
 import sys
 from pathlib import Path
+from typing import Sequence
 
 sys.dont_write_bytecode = True
 
@@ -22,24 +23,36 @@ REQUIRED_ROUTES = {
     ("GET", "/api/management/executive-dashboard/profit-loss-period"),
     ("GET", "/api/management/executive-dashboard/sales-period"),
     ("GET", "/api/management/executive-dashboard/management-balance"),
+    ("GET", "/api/management/executive-dashboard/management-balance-turnover"),
     ("POST", "/api/management/executive-dashboard/management-balance/{month}/close"),
     ("GET", "/api/management/executive-dashboard/service-accruals"),
 }
 ASSET_RE = re.compile(r"(?:src|href)=[\"'](?:\./|/)?assets/([^\"']+)[\"']")
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--skip-database-revision",
         action="store_true",
-        help="validate release inputs before the guarded database migration",
+        help="check database connectivity but defer revision equality until migration",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
-def main() -> None:
-    args = _parse_args()
+def _migration_revision_error(
+    database_head: str | None,
+    code_head: str | None,
+    *,
+    skip_database_revision: bool,
+) -> str | None:
+    if not skip_database_revision and database_head is not None and database_head != code_head:
+        return f"database revision {database_head} does not match code head {code_head}"
+    return None
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    args = _parse_args(argv)
     from alembic.config import Config
     from alembic.runtime.migration import MigrationContext
     from alembic.script import ScriptDirectory
@@ -125,15 +138,18 @@ def main() -> None:
     script = ScriptDirectory.from_config(alembic_config)
     code_head = script.get_current_head()
     database_head = None
-    if not args.skip_database_revision:
-        try:
-            engine = get_application_engine()
-            with engine.connect() as connection:
-                database_head = MigrationContext.configure(connection).get_current_revision()
-        except Exception as exc:  # pragma: no cover - operational diagnostic
-            errors.append(f"database migration check failed: {type(exc).__name__}: {exc}")
-        if database_head is not None and database_head != code_head:
-            errors.append(f"database revision {database_head} does not match code head {code_head}")
+    try:
+        engine = get_application_engine()
+        with engine.connect() as connection:
+            database_head = MigrationContext.configure(connection).get_current_revision()
+    except Exception as exc:  # pragma: no cover - operational diagnostic
+        errors.append(f"database migration check failed: {type(exc).__name__}: {exc}")
+    if revision_error := _migration_revision_error(
+        database_head,
+        code_head,
+        skip_database_revision=args.skip_database_revision,
+    ):
+        errors.append(revision_error)
 
     result = {
         "status": "ok" if not errors else "failed",

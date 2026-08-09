@@ -14,6 +14,7 @@ from typing import Any
 from sqlalchemy import and_, delete, exists, select, text
 from sqlalchemy.orm import Session
 
+from app.core.config import get_settings
 from app.models import (
     CounterpartyManagerAssignment,
     ReceivableBalanceSnapshot,
@@ -1971,25 +1972,78 @@ def _fetch_canonical_summary_current_balance_rows_from_onec(
 ) -> tuple[list[AuthoritativeReceivableBalanceRow], dict[str, Any]]:
     """Build one signed balance per counterparty from the 1C mutual-settlement summary."""
 
-    opening_cutoff = date(snapshot_date.year, snapshot_date.month, 1)
-    movement_start = datetime.combine(opening_cutoff, time.min)
+    requested_opening_period = date(snapshot_date.year, snapshot_date.month, 1)
     movement_end = datetime.combine(snapshot_date + timedelta(days=1), time.min)
+
+    opening_period_stmt = text("""
+        SELECT MAX(t._Period) AS opening_period
+        FROM _AccumRgT7009 AS t WITH (NOLOCK)
+        WHERE t._Period <= :requested_opening_period
+        """)
+    try:
+        with onec_engine.connect() as conn:
+            raw_opening_period = conn.execute(
+                opening_period_stmt,
+                {"requested_opening_period": datetime.combine(requested_opening_period, time.min)},
+            ).scalar_one_or_none()
+    except Exception as exc:
+        raise RuntimeError(
+            "receivable canonical source query failed: "
+            f"requested_opening_period={requested_opening_period.isoformat()} "
+            f"stage=opening_period error_type={type(exc).__name__} "
+            "continuity_confirmed=false"
+        ) from exc
+
+    if isinstance(raw_opening_period, datetime):
+        actual_opening_period = raw_opening_period.date()
+    elif isinstance(raw_opening_period, date):
+        actual_opening_period = raw_opening_period
+    else:
+        actual_opening_period = None
+
+    max_lag_days = get_settings().receivable_canonical_opening_max_lag_days
+    if actual_opening_period is None:
+        raise ValueError(
+            "receivable canonical continuity check failed: "
+            f"requested_opening_period={requested_opening_period.isoformat()} "
+            "actual_opening_period=missing continuity_confirmed=false"
+        )
+    opening_lag_days = (requested_opening_period - actual_opening_period).days
+    if actual_opening_period > requested_opening_period or actual_opening_period > snapshot_date:
+        raise ValueError(
+            "receivable canonical continuity check failed: "
+            f"requested_opening_period={requested_opening_period.isoformat()} "
+            f"actual_opening_period={actual_opening_period.isoformat()} "
+            f"opening_lag_days={opening_lag_days} reason=future_period "
+            "continuity_confirmed=false"
+        )
+    if opening_lag_days > max_lag_days:
+        raise ValueError(
+            "receivable canonical continuity check failed: "
+            f"requested_opening_period={requested_opening_period.isoformat()} "
+            f"actual_opening_period={actual_opening_period.isoformat()} "
+            f"opening_lag_days={opening_lag_days} max_lag_days={max_lag_days} "
+            "reason=opening_period_too_old continuity_confirmed=false"
+        )
+
+    movement_start = datetime.combine(actual_opening_period, time.min)
+    if movement_start.date() != actual_opening_period:
+        raise ValueError(
+            "receivable canonical continuity check failed: "
+            f"actual_opening_period={actual_opening_period.isoformat()} "
+            f"movement_start={movement_start.isoformat()} "
+            "reason=movement_start_mismatch continuity_confirmed=false"
+        )
 
     stmt = text("""
         WITH
-        latest_opening_period AS (
-            SELECT MAX(t._Period) AS period
-            FROM _AccumRgT7009 AS t WITH (NOLOCK)
-            WHERE t._Period <= :opening_cutoff
-        ),
         opening_rows AS (
             SELECT
                 t._Fld7006RRef AS counterparty_rref,
                 SUM(CAST(t._Fld7008 AS decimal(18, 2))) AS amount
             FROM _AccumRgT7009 AS t WITH (NOLOCK)
-            JOIN latest_opening_period AS p
-                ON t._Period = p.period
-            WHERE t._Fld7006RRef <> 0x00000000000000000000000000000000
+            WHERE t._Period = :opening_period
+              AND t._Fld7006RRef <> 0x00000000000000000000000000000000
             GROUP BY
                 t._Fld7006RRef
             HAVING SUM(CAST(t._Fld7008 AS decimal(18, 2))) <> 0
@@ -2058,6 +2112,12 @@ def _fetch_canonical_summary_current_balance_rows_from_onec(
             WHERE r._Active = 0x01
               AND r._Fld7006RRef <> 0x00000000000000000000000000000000
               AND r._Period < :movement_end
+        ),
+        source_stats AS (
+            SELECT
+                (SELECT COUNT(*) FROM opening_rows) AS opening_row_count,
+                (SELECT COUNT(*) FROM movement_rows) AS movement_row_count,
+                (SELECT COUNT(*) FROM balances) AS balance_row_count
         )
         SELECT
             master.dbo.fn_varbintohexstr(counterparty._IDRRef) AS counterparty_ref,
@@ -2065,11 +2125,14 @@ def _fetch_canonical_summary_current_balance_rows_from_onec(
             CAST(balances.current_balance AS decimal(18, 2)) AS current_balance,
             master.dbo.fn_varbintohexstr(latest_manager.manager_rref) AS current_manager_ref,
             latest_manager.manager_name AS current_manager_name,
-            CAST((SELECT period FROM latest_opening_period) AS date) AS opening_period,
-            (SELECT COUNT(*) FROM opening_rows) AS opening_row_count,
-            (SELECT COUNT(*) FROM movement_rows) AS daily_movement_row_count
-        FROM balances
-        JOIN _Reference54 AS counterparty WITH (NOLOCK)
+            CAST(:opening_period AS date) AS opening_period,
+            source_stats.opening_row_count,
+            source_stats.movement_row_count AS daily_movement_row_count,
+            source_stats.balance_row_count
+        FROM source_stats
+        LEFT JOIN balances
+            ON 1 = 1
+        LEFT JOIN _Reference54 AS counterparty WITH (NOLOCK)
             ON counterparty._IDRRef = balances.counterparty_rref
         LEFT JOIN latest_sale_managers AS latest_manager
             ON latest_manager.counterparty_rref = balances.counterparty_rref
@@ -2079,40 +2142,60 @@ def _fetch_canonical_summary_current_balance_rows_from_onec(
             counterparty._IDRRef
         """)
     params = {
-        "opening_cutoff": datetime.combine(opening_cutoff, time.min),
+        "opening_period": datetime.combine(actual_opening_period, time.min),
         "movement_start": movement_start,
         "movement_end": movement_end,
     }
 
     rows: list[AuthoritativeReceivableBalanceRow] = []
-    opening_period: date | None = None
     opening_row_count = 0
     daily_movement_row_count = 0
-    with onec_engine.connect() as conn:
-        for row in conn.execute(stmt, params).mappings():
-            counterparty_ref = _clean_string(row.get("counterparty_ref"))
-            if counterparty_ref is None:
-                continue
-            if opening_period is None:
-                raw_opening_period = row.get("opening_period")
-                if isinstance(raw_opening_period, datetime):
-                    opening_period = raw_opening_period.date()
-                elif isinstance(raw_opening_period, date):
-                    opening_period = raw_opening_period
-            opening_row_count = _to_int(row.get("opening_row_count")) or opening_row_count
-            daily_movement_row_count = (
-                _to_int(row.get("daily_movement_row_count")) or daily_movement_row_count
-            )
-            rows.append(
-                AuthoritativeReceivableBalanceRow(
-                    counterparty_ref=counterparty_ref,
-                    counterparty_name=_clean_string(row.get("counterparty_name")),
-                    current_balance=_quantize_amount(_to_decimal(row.get("current_balance"))),
-                    current_manager_ref=_clean_string(row.get("current_manager_ref")),
-                    current_manager_name=_clean_string(row.get("current_manager_name")),
-                    source="onec_canonical_mutual_statement",
+    source_balance_row_count = 0
+    try:
+        with onec_engine.connect() as conn:
+            for row in conn.execute(stmt, params).mappings():
+                opening_row_count = _to_int(row.get("opening_row_count"))
+                daily_movement_row_count = _to_int(row.get("daily_movement_row_count"))
+                source_balance_row_count = _to_int(row.get("balance_row_count"))
+                counterparty_ref = _clean_string(row.get("counterparty_ref"))
+                if counterparty_ref is None:
+                    continue
+                rows.append(
+                    AuthoritativeReceivableBalanceRow(
+                        counterparty_ref=counterparty_ref,
+                        counterparty_name=_clean_string(row.get("counterparty_name")),
+                        current_balance=_quantize_amount(_to_decimal(row.get("current_balance"))),
+                        current_manager_ref=_clean_string(row.get("current_manager_ref")),
+                        current_manager_name=_clean_string(row.get("current_manager_name")),
+                        source="onec_canonical_mutual_statement",
+                    )
                 )
-            )
+    except Exception as exc:
+        raise RuntimeError(
+            "receivable canonical source query failed: "
+            f"requested_opening_period={requested_opening_period.isoformat()} "
+            f"actual_opening_period={actual_opening_period.isoformat()} "
+            f"opening_lag_days={opening_lag_days} "
+            f"movement_start={movement_start.isoformat()} "
+            f"movement_end={movement_end.isoformat()} "
+            f"stage=balance_rows error_type={type(exc).__name__} "
+            "continuity_confirmed=false"
+        ) from exc
+
+    if opening_row_count <= 0 or source_balance_row_count <= 0 or not rows:
+        raise ValueError(
+            "receivable canonical continuity check failed: "
+            f"requested_opening_period={requested_opening_period.isoformat()} "
+            f"actual_opening_period={actual_opening_period.isoformat()} "
+            f"opening_lag_days={opening_lag_days} "
+            f"movement_start={movement_start.isoformat()} "
+            f"movement_end={movement_end.isoformat()} "
+            f"opening_row_count={opening_row_count} "
+            f"movement_row_count={daily_movement_row_count} "
+            f"balance_row_count={source_balance_row_count} "
+            f"result_row_count={len(rows)} reason=empty_source "
+            "continuity_confirmed=false"
+        )
 
     open_debt_managers = _fetch_open_debt_managers_from_onec(
         onec_engine,
@@ -2140,13 +2223,29 @@ def _fetch_canonical_summary_current_balance_rows_from_onec(
         "total_current_override_count": 0,
         "employee_current_import_override_count": 0,
         "authoritative_balance_row_count": len(rows),
-        "opening_balance_date": opening_cutoff,
-        "opening_balance_dates": [opening_cutoff],
-        "regular_opening_balance_date": opening_cutoff,
+        "opening_balance_date": actual_opening_period,
+        "opening_balance_dates": [actual_opening_period],
+        "regular_opening_balance_date": actual_opening_period,
         "employee_opening_balance_date": None,
-        "canonical_opening_register_period": opening_period,
+        "canonical_requested_opening_period": requested_opening_period,
+        "canonical_actual_opening_period": actual_opening_period,
+        "canonical_opening_register_period": actual_opening_period,
+        "canonical_opening_lag_days": opening_lag_days,
+        "canonical_opening_max_lag_days": max_lag_days,
+        "canonical_movement_start": movement_start,
+        "canonical_movement_end": movement_end,
+        "canonical_continuity_confirmed": True,
         "opening_row_count": opening_row_count,
         "daily_movement_row_count": daily_movement_row_count,
+        "canonical_balance_row_count": source_balance_row_count,
+        "requested_opening_period": requested_opening_period,
+        "actual_opening_period": actual_opening_period,
+        "opening_lag_days": opening_lag_days,
+        "movement_start": movement_start,
+        "movement_end": movement_end,
+        "continuity_confirmed": True,
+        "balance_row_count": source_balance_row_count,
+        "result_row_count": len(rows),
         "balance_source_mode": "onec_canonical_mutual_statement_7002",
     }
     return rows, meta
@@ -2496,10 +2595,15 @@ def _resolve_counterparty_credit_terms_from_values(
     shipment_ban: bool | None,
     origin_document_date: datetime | None,
     snapshot_date: date,
+    current_balance: Decimal | None = None,
 ) -> dict[str, Any]:
     normalized_planned_payment_date = planned_payment_date
     normalized_credit_depth_days = credit_depth_days
     normalized_shipment_ban = shipment_ban
+
+    if current_balance is not None and _quantize_amount(current_balance) <= 0:
+        normalized_planned_payment_date = None
+        normalized_credit_depth_days = None
 
     if (
         normalized_planned_payment_date is not None
@@ -2743,6 +2847,7 @@ def build_receivable_balance_snapshots(
                     origin_event["external_document_date"] if origin_event else None
                 ),
                 snapshot_date=snapshot_date,
+                current_balance=current_balance,
             )
             session.add(
                 ReceivableBalanceSnapshot(
@@ -2931,6 +3036,7 @@ def build_receivable_balance_snapshots(
             shipment_ban=state["shipment_ban"],
             origin_document_date=origin_event["external_document_date"] if origin_event else None,
             snapshot_date=snapshot_date,
+            current_balance=effective_balance,
         )
         session.add(
             ReceivableBalanceSnapshot(
@@ -3870,7 +3976,7 @@ def build_receivable_cases(
             else snapshot["counterparty_ref"] not in employee_refs
         )
         is_employee = snapshot["counterparty_ref"] in employee_refs
-        if is_buyer:
+        if is_buyer and snapshot["current_balance"] > 0:
             segments.append(CASE_BUYERS)
         debt_case_segments = list(segments)
         if snapshot["current_balance"] > 0:

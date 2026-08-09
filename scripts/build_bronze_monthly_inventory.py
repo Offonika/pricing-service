@@ -177,6 +177,8 @@ def _level_for_fact(fact: CustomerPriceTypeFacts) -> str | None:
 
 def _bucket(recommendation: str, *, excluded: bool) -> str:
     if excluded:
+        if recommendation == "excluded_without_sales_history":
+            return "исключено_без_истории_продаж"
         return "служебная_карточка"
     return {
         "keep_current": "норма",

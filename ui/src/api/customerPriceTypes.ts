@@ -55,6 +55,60 @@ export interface CptCaseListResponse extends CptEnvelope {
   payload: CptCaseItem[];
 }
 
+export interface CptContractCandidate {
+  contract_ref?: string | null;
+  contract_name?: string | null;
+  price_type_name?: string | null;
+  price_type_marked?: boolean;
+  price_type_missing?: boolean;
+  sale_document_count_12m?: number;
+  sales_amount_12m?: string | null;
+  last_sale_at?: string | null;
+  is_working?: boolean;
+  used_for_calculation?: boolean;
+  price_type_change_target?: boolean;
+  ignored_reason?: string | null;
+}
+
+export type CptPortfolioBucket = "working_bronze" | "review_queue" | "all";
+
+export interface CptPortfolioItem {
+  counterparty_ref: string;
+  counterparty_code: string;
+  counterparty_name: string | null;
+  department_name: string | null;
+  owner_name: string | null;
+  bucket: Exclude<CptPortfolioBucket, "all">;
+  expected_bucket: Exclude<CptPortfolioBucket, "all">;
+  expected_price_type: string | null;
+  current_price_type: string | null;
+  price_type_variant: string | null;
+  working_contracts: CptContractCandidate[];
+  action_required: boolean;
+  system_recommendation: string | null;
+  recommended_price_type: string | null;
+  source_status: string;
+  stop_factors: string[];
+  review_status: "ready" | "business_conflict" | "technical_incomplete" | "missing_snapshot";
+  case_id: number | null;
+  case_type: string | null;
+  case_stage: string | null;
+  reconciliation_status: "match" | "mismatch" | "missing_snapshot";
+}
+
+export interface CptPortfolioResponse extends CptEnvelope {
+  batch_key: string;
+  batch_label: string;
+  expected_counts: Record<string, number>;
+  counts: Record<string, number>;
+  review_status_counts: Record<string, number>;
+  mismatch_count: number;
+  total: number;
+  limit: number;
+  offset: number;
+  payload: CptPortfolioItem[];
+}
+
 export interface CptSnapshot {
   id: number;
   run_id: number;
@@ -64,7 +118,7 @@ export interface CptSnapshot {
   current_price_type: string | null;
   current_level: string | null;
   price_type_variant: string | null;
-  contract_candidates: Record<string, unknown>[];
+  contract_candidates: CptContractCandidate[];
   monthly_sales: Record<string, string> | null;
   total_3m: string | null;
   last_month: string | null;
@@ -100,6 +154,13 @@ export interface CptCaseEvent {
 export interface CptCaseDetailResponse extends CptEnvelope {
   case: CptCaseItem;
   snapshot: CptSnapshot;
+  guidance: {
+    title: string;
+    rules: string;
+    recommended_action: string;
+    expected_price_type: string;
+    manager_attention: string[];
+  } | null;
   events: CptCaseEvent[];
 }
 
@@ -199,6 +260,28 @@ export async function fetchCptSummary(month?: string | null): Promise<CptSummary
 export async function fetchCptWorklists(month?: string | null): Promise<CptWorklistsResponse> {
   const { data } = await api.get<CptWorklistsResponse>("/customer-price-types/worklists", {
     params: monthParams(month),
+  });
+  return data;
+}
+
+export async function fetchCptPortfolio(options: {
+  bucket?: CptPortfolioBucket;
+  search?: string | null;
+  currentPriceType?: string | null;
+  actionRequired?: boolean | null;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<CptPortfolioResponse> {
+  const { data } = await api.get<CptPortfolioResponse>("/customer-price-types/portfolio", {
+    params: {
+      batch_key: "reviewed-working-contracts-2026-07",
+      bucket: options.bucket ?? "all",
+      ...(options.search ? { search: options.search } : {}),
+      ...(options.currentPriceType ? { current_price_type: options.currentPriceType } : {}),
+      ...(options.actionRequired != null ? { action_required: options.actionRequired } : {}),
+      limit: options.limit ?? 100,
+      offset: options.offset ?? 0,
+    },
   });
   return data;
 }

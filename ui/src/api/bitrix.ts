@@ -106,6 +106,7 @@ interface BX24CallResult<T> {
 interface BX24Api {
   init(callback: () => void): void;
   getAuth(): false | BitrixAuthPayload;
+  refreshAuth?(callback: () => void): void;
   callMethod<T>(
     method: string,
     params: Record<string, unknown>,
@@ -391,6 +392,25 @@ function initBitrix() {
       const auth = window.BX24?.getAuth();
       if (!auth) {
         reject(new Error("Bitrix24 не вернул OAuth-сессию"));
+        return;
+      }
+      resolve(auth);
+    });
+  });
+}
+
+export function refreshBitrixAuth() {
+  return new Promise<BitrixAuthPayload>((resolve, reject) => {
+    const sdk = window.BX24;
+    if (!sdk?.refreshAuth) {
+      reject(new Error("Bitrix24 SDK не поддерживает обновление OAuth-сессии"));
+      return;
+    }
+
+    sdk.refreshAuth(() => {
+      const auth = sdk.getAuth();
+      if (!auth) {
+        reject(new Error("Bitrix24 не вернул обновлённую OAuth-сессию"));
         return;
       }
       resolve(auth);
@@ -756,7 +776,7 @@ async function requestBitrixReceivablesSession(forceRefresh: boolean) {
   let auth: BitrixAuthPayload | null = null;
   if (forceRefresh) {
     await loadBitrixSdk();
-    auth = await initBitrix();
+    auth = await refreshBitrixAuth();
   } else {
     auth = getLaunchAuth();
     if (!auth) {

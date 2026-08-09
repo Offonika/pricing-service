@@ -82,6 +82,11 @@ def test_review_queue_exports_reason_codes_and_alternatives(db_session):
     assert row["status"] == "ambiguous"
     assert row["review_bucket"] == "display_attributes"
     assert row["review_priority"] == 2
+    assert row["business_value_score"] == 0.75
+    assert row["uncertainty_score"] > 0
+    assert row["training_examples"] == 0
+    assert row["training_scarcity_score"] == 1.0
+    assert row["family_group"] == "moba:display:iphone 17"
     assert row["competitor_name"] == "Дисплей для iPhone 17 Черный - OR"
     assert row["product_article"] == "P-IPH17"
     assert row["has_compatibility"] is True

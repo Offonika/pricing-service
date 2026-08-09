@@ -1550,7 +1550,7 @@ def test_candidate_search_accept_revoke_history(
 
     accepted = matching_client.post(
         f"/api/matching/products/{product.id}/matches",
-        json={"competitor_item_id": item.id},
+        json={"competitor_item_id": item.id, "reason_code": "confirmed_attributes"},
         auth=_auth(),
     )
     assert accepted.status_code == 200
@@ -1564,7 +1564,7 @@ def test_candidate_search_accept_revoke_history(
 
     revoked = matching_client.post(
         f"/api/matching/products/{product.id}/revoke",
-        json={"competitor_item_id": item.id},
+        json={"competitor_item_id": item.id, "reason_code": "auto_false_positive"},
         auth=_auth(),
     )
     assert revoked.status_code == 200
@@ -1575,6 +1575,10 @@ def test_candidate_search_accept_revoke_history(
     assert [row["action"] for row in history_items] == ["revoke", "accept"]
     assert history_items[0]["previous_status"] == "accepted"
     assert history_items[1]["previous_status"] == "suggested"
+    assert history_items[0]["reason_code"] == "auto_false_positive"
+    assert history_items[1]["reason_code"] == "confirmed_attributes"
+    assert history_items[1]["snapshot_schema_version"] == 1
+    assert history_items[1]["snapshot_top_k_count"] >= 1
 
 
 def test_accept_new_item_infers_missing_compatibility_from_product_model(

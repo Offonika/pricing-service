@@ -709,15 +709,20 @@ def test_dashboard_marks_missing_finance_sources_without_zero_truth(
 
     blocks = {block.key: block for block in result.blocks}
     assert blocks["money_today"].source_status == "source_missing"
-    assert blocks["creditors_payables"].source_status == "source_missing"
+    assert blocks["creditors_payables"].source_status == "partial"
     assert (
         blocks["creditors_payables"].summary["source_anchor"]
-        == "1С: деньги, взаиморасчёты и фактическая стоимость товарных партий"
+        == "1С: деньги, взаиморасчёты и смешанная складская оценка УТ 10.3"
     )
     assert blocks["debtors"].source_status == "ready"
     assert blocks["debtors"].title == "Дебиторка покупателей"
     assert blocks["debtors"].metrics[0].value == Decimal("12500.00")
     assert blocks["debtors"].drilldown_url == "/bitrix/receivables/?date=2026-06-27"
+    balance_assets = {
+        row["key"]: row for row in blocks["creditors_payables"].summary["balance_assets"]
+    }
+    assert balance_assets["receivables"]["amount"] == "12500.00"
+    assert balance_assets["supplier_receivables"]["amount"] is None
     assert blocks["receivables_control"].source_status == "partial"
 
 
@@ -785,6 +790,16 @@ def test_management_balance_places_assets_and_liabilities_on_their_sides(
                             "total_payable": "200.00",
                             "reverse_balance": "0.00",
                         },
+                        {
+                            "key": "legal_entities",
+                            "asset_counterparties": [
+                                {
+                                    "counterparty_ref": "service-provider-1",
+                                    "asset_amount": "40.00",
+                                }
+                            ],
+                            "counterparties": [],
+                        },
                     ],
                 },
             },
@@ -802,6 +817,10 @@ def test_management_balance_places_assets_and_liabilities_on_their_sides(
                 quantity=Decimal("25.000"),
                 as_of=as_of,
                 source_row_count=5,
+                party_quantity=Decimal("25.000"),
+                party_amount=Decimal("1000.00"),
+                valuation_party_quantity=Decimal("25.000"),
+                valuation_party_amount=Decimal("1000.00"),
             ),
             "",
         ),
@@ -819,12 +838,13 @@ def test_management_balance_places_assets_and_liabilities_on_their_sides(
     metrics = {metric.key: metric.value for metric in block.metrics}
     assert block.title == "Управленческий баланс"
     assert metrics == {
-        "balance_assets_total": Decimal("1650.00"),
+        "balance_assets_total": Decimal("1720.00"),
         "balance_liabilities_total": Decimal("200.00"),
     }
     assert [row["amount"] for row in block.summary["balance_assets"]] == [
         "500.00",
         "1000.00",
+        "70.00",
         "80.00",
         "50.00",
         "20.00",
@@ -833,17 +853,40 @@ def test_management_balance_places_assets_and_liabilities_on_their_sides(
     assert block.summary["balance_assets"][1]["source_status"] == "ready"
     assert (
         block.summary["balance_assets"][1]["note"]
-        == "1С УТ 10.3: ПартииТоваровНаСкладах.СтоимостьОстаток"
+        == "1С УТ 10.3: смешанный режим стандартного отчёта — количество по складам "
+        "× средняя себестоимость партий"
+    )
+    assert block.summary["balance_assets"][1]["party_quantity"] == "25.000"
+    assert block.summary["balance_assets"][1]["valuation_method"] == (
+        "ut103_mixed_stock_quantity_party_average"
     )
     assert [row["amount"] for row in block.summary["balance_liabilities"]] == [
         "0",
         "0",
         "0",
-        "200.00",
+        "0",
     ]
-    assert block.summary["balance_assets"][2]["label"] == "Дебиторка поставщиков"
-    assert block.summary["balance_assets"][4]["label"] == "Прочие дебиторы"
-    assert block.summary["balance_liabilities"][3]["label"] == "Задолженность собственникам"
+    assets = {row["key"]: row for row in block.summary["balance_assets"]}
+    assert assets["receivables"]["label"] == "Дебиторка покупателей"
+    assert assets["receivables"]["amount"] == "70.00"
+    assert assets["supplier_receivables"]["label"] == "Дебиторка поставщиков"
+    assert assets["supplier_receivables"]["amount"] == "80.00"
+    assert (
+        not {
+            "service_supplier_advances_1c",
+            "service_accruals_without_documents",
+            "service_supplier_advances",
+        }
+        & assets.keys()
+    )
+    equity = {row["key"]: row for row in block.summary["balance_equity"]}
+    assert equity["owner_contributed_funds"]["amount"] == "200.00"
+    assert equity["owner_contributed_funds"]["label"] == "Средства, внесённые собственниками"
+    assert equity["owner_contributed_funds"]["recognition_method"] == (
+        "management_equity_reclassification"
+    )
+    assert equity["current_period_result"]["label"] == "Чистая прибыль текущего года"
+    assert equity["current_period_result"]["recognition_method"] == "management_profit_loss_ytd"
 
 
 def test_management_balance_does_not_activate_unreleased_owner_cash_formula(

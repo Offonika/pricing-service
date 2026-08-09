@@ -44,6 +44,12 @@ class ProcurementClassificationProposalRead(BaseModel):
     approved_at: datetime | None = None
     approved_by_bitrix_user_id: str | None = None
     approved_by_name: str | None = None
+    rejected_at: datetime | None = None
+    rejected_by_bitrix_user_id: str | None = None
+    rejected_by_name: str | None = None
+    rejection_reason: str | None = None
+    can_approve: bool = False
+    can_reject: bool = False
     onec_status: str
     onec_message_id: str | None = None
     onec_error: str | None = None
@@ -83,6 +89,73 @@ class ProcurementOrderFormationLineRead(BaseModel):
     effective_assortment_status: str | None = None
     effective_assortment_status_label: str | None = None
     latest_classification: ProcurementClassificationProposalRead | None = None
+    photo_thumbnail_url: str | None = None
+    photo_original_url: str | None = None
+    product_card_url: str | None = None
+    photo_source: str | None = None
+    photo_count: int = 0
+    profitability_pct: Decimal | None = None
+    profitability_status: str | None = None
+    profitability_source: str | None = None
+    profitability_explanation: str | None = None
+    metrics_as_of: date | None = None
+    metrics_window_days: int | None = None
+    product_defect_pct: Decimal | None = None
+    product_defect_history_units: int | None = None
+    product_defect_confidence: str | None = None
+    product_defect_source: str | None = None
+    supplier_defect_pct: Decimal | None = None
+    supplier_defect_history_units: int | None = None
+    supplier_defect_confidence: str | None = None
+    supplier_defect_attribution: str | None = None
+    supplier_defect_source_status: str | None = None
+    price_change_pct: Decimal | None = None
+    price_change_status: str | None = None
+    price_history_count: int | None = None
+    price_history_currency_ref: str | None = None
+    price_history_expected_currency: str | None = None
+    price_history_available_currencies: list[str] = Field(default_factory=list)
+    supplier_prepare_days: int | None = None
+    logistics_days: int | None = None
+    lead_time_days: int | None = None
+    lead_time_source_level: str | None = None
+    lead_time_confidence: str | None = None
+    delivery_days: int | None = None
+
+
+class ProcurementSupplierProfileRead(BaseModel):
+    supplier_ref: str | None = None
+    supplier_code: str | None = None
+    supplier_name: str | None = None
+    version: int = 0
+    qualification_class: str | None = None
+    qualification_label: str | None = None
+    class_description: str | None = None
+    profitability_pct: Decimal | None = None
+    defect_pct: Decimal | None = None
+    defect_history_units: int | None = None
+    defect_confidence: str | None = None
+    defect_attribution: str = "unconfirmed"
+    on_time_pct: Decimal | None = None
+    payment_terms: str | None = None
+    credit_days: int | None = None
+    credit_limit: Decimal | None = None
+    terms_source: str = "onec_contract"
+    terms_status: str = "missing"
+    advantages: list[str] = Field(default_factory=list)
+    internal_note: str | None = None
+    history_order_count: int | None = None
+    supplier_prepare_days: int | None = None
+    logistics_days: int | None = None
+    lead_time_days: int | None = None
+    lead_time_confidence: str | None = None
+    price_history_count: int | None = None
+    facts_updated_at: datetime | None = None
+    manual_updated_at: datetime | None = None
+    manual_updated_by_name: str | None = None
+    updated_at: datetime | None = None
+    data_status: str = "missing"
+    can_edit: bool = False
 
 
 class ProcurementOrderFormationRead(BaseModel):
@@ -129,6 +202,49 @@ class ProcurementOrderFormationRead(BaseModel):
     total_amount: Decimal = Decimal("0")
     lines: list[ProcurementOrderFormationLineRead] = Field(default_factory=list)
     manual_status_options: dict[str, str] = Field(default_factory=dict)
+    supplier_profile: ProcurementSupplierProfileRead = Field(
+        default_factory=ProcurementSupplierProfileRead
+    )
+
+
+class ProcurementOrderAssistantSummary(BaseModel):
+    lines: int = 0
+    ready_lines: int = 0
+    supplier_missing_lines: int = 0
+    price_changed_lines: int = 0
+    low_profitability_lines: int = 0
+    high_defect_lines: int = 0
+    photo_missing_lines: int = 0
+    orders: int = 0
+
+
+class ProcurementOrderAssistantResponse(BaseModel):
+    updated_at: datetime | None = None
+    summary: ProcurementOrderAssistantSummary
+    orders: list[ProcurementOrderFormationRead] = Field(default_factory=list)
+
+
+class ProcurementOrderAssistantAssembleItem(BaseModel):
+    order_id: int
+    expected_version: int = Field(ge=1)
+
+
+class ProcurementOrderAssistantAssembleRequest(BaseModel):
+    idempotency_key: str = Field(min_length=8, max_length=255)
+    items: list[ProcurementOrderAssistantAssembleItem] = Field(min_length=1, max_length=100)
+
+
+class ProcurementOrderAssistantAssembleResult(BaseModel):
+    order_id: int
+    status: str
+    message: str
+
+
+class ProcurementOrderAssistantAssembleResponse(BaseModel):
+    approved: int = 0
+    blocked: int = 0
+    stale: int = 0
+    items: list[ProcurementOrderAssistantAssembleResult] = Field(default_factory=list)
 
 
 class ProcurementOrderLineUpdateRequest(BaseModel):
@@ -181,6 +297,25 @@ class ProcurementClassificationCreateRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=4000)
     manual_minimum: Decimal | None = Field(default=None, ge=0)
     review_date: date | None = None
+
+
+class ProcurementClassificationRejectRequest(BaseModel):
+    expected_order_version: int = Field(ge=1)
+    expected_line_version: int = Field(ge=1)
+    reason: str = Field(min_length=1, max_length=4000)
+
+
+class ProcurementClassificationRejectResponse(BaseModel):
+    order: ProcurementOrderFormationRead
+    proposal: ProcurementClassificationProposalRead
+
+
+class ProcurementSupplierProfileUpdateRequest(BaseModel):
+    expected_version: int = Field(ge=0)
+    qualification_class: str | None = Field(default=None, pattern="^[ABCabc]$")
+    qualification_label: str | None = Field(default=None, max_length=255)
+    advantages: list[str] = Field(default_factory=list, max_length=20)
+    internal_note: str | None = Field(default=None, max_length=4000)
 
 
 class ProcurementOrderTransmissionResponse(BaseModel):

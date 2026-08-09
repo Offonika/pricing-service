@@ -7,12 +7,12 @@ status: accepted
 owner: engineering
 source_of_truth: true
 related_code: [app/api/matching.py, app/schemas/matching.py, ui/]
-related_tests: [tests/test_matching_api.py, tests/test_embedding_matching.py]
+related_tests: [tests/test_matching_api.py, tests/test_embedding_matching.py, tests/test_manual_matching_decisions.py, tests/test_competitor_auto_accept_policy.py, tests/test_competitor_matching_replay.py]
 contracts: [openapi.yaml]
-depends_on: [docs/TechDesign.CompetitorMatchingUI.md, docs/competitor_matching.md]
-supersedes: []
+depends_on: [docs/competitor_matching.md, docs/TechDesign.CompetitorFTPImport.md]
+supersedes: [docs/TechDesign.CompetitorMatchingUI.md]
 rollout_required: true
-updated_at: "2026-05-01"
+updated_at: "2026-07-31"
 ---
 
 # Назначение
@@ -30,6 +30,8 @@ updated_at: "2026-05-01"
 - фильтры по конкуренту, наличию, группе категории, типу товара, бренду, модели, качеству,
   цвету и цене;
 - журнал решений accept/reject/revoke;
+- структурированные причины и воспроизводимый серверный snapshot каждого решения;
+- версионируемая категорийная auto-accept policy и offline replay;
 - полноэкранная UI-форма подбора.
 
 Не входит:
@@ -47,13 +49,25 @@ updated_at: "2026-05-01"
 
 # Data Flow
 
-1. Embedding/LLM pipeline пишет `CompetitorItemMatch` со статусами `suggested`,
-   `needs_review`, `ambiguous`, `rejected`.
+1. Embedding pipeline пишет `CompetitorItemMatch` со статусами `suggested`,
+   `needs_review`, `ambiguous`, `rejected` и может создать `accepted` только через
+   именованное категорийное правило, допущенное текущей `auto_accept_policy`.
 2. UI открывает список наших товаров и считает статус по item-level связям.
 3. Форма подбора ищет `CompetitorItem` и обогащает строки текущим статусом/score.
 4. Оператор принимает, отклоняет или снимает конкретный `competitor_item_id`.
 5. Backend обновляет `CompetitorItemMatch` и пишет событие в
-   `ProductCompetitorItemDecision`.
+   `ProductCompetitorItemDecision` вместе с `reason_code` и `snapshot_json`.
+
+# Два независимых контура
+
+1. Legacy SKU→цена: HTTPS XLSX → совместимые таблицы `competitor_ftp_*` →
+   `CompetitorPrice` / `ProductMatch`. Он отвечает за цены и точное SKU-сопоставление.
+2. Item-level: те же импортированные строки формируют `CompetitorItem`, после чего
+   parser/compatibility/embeddings создают кандидатов `CompetitorItemMatch` для ручного UI.
+
+`CompetitorItem` не удалён и остаётся каноничным источником ручного UI. Фактический
+сетевой транспорт production — HTTPS; слово `ftp` в именах таблиц и freshness-полях
+сохранено только как совместимый schema contract.
 
 # API / Data Contracts
 
@@ -69,10 +83,15 @@ updated_at: "2026-05-01"
   Для дисплеев дополнительно требуется признак дисплея в содержании строки конкурента
   (`дисплей`, `LCD`, `OLED`, `экран`, `тачскрин` и аналоги), чтобы ошибочно размеченные
   сервисные модули не попадали в подбор.
-- `POST /api/matching/products/{product_id}/matches` — принять `competitor_item_id`.
-- `POST /api/matching/products/{product_id}/reject` — отклонить `competitor_item_id`.
-- `POST /api/matching/products/{product_id}/revoke` — снять accepted/manual связь.
-- `GET /api/matching/products/{product_id}/history` — история решений.
+- `POST /api/matching/products/{product_id}/matches` — принять `competitor_item_id`;
+  `reason_code` необязателен для старых клиентов, новый UI отправляет
+  `confirmed_attributes`.
+- `POST /api/matching/products/{product_id}/reject` — отклонить `competitor_item_id`;
+  новый UI требует структурированную причину.
+- `POST /api/matching/products/{product_id}/revoke` — снять accepted/manual связь;
+  новый UI требует структурированную причину.
+- `GET /api/matching/products/{product_id}/history` — история с `reason_code` и краткими
+  полями snapshot; полный `snapshot_json` наружу не возвращается.
 
 Legacy endpoints `/api/matching/products/{product_id}` и
 `DELETE /api/matching/products/{product_id}/{competitor_id}` сохраняются как совместимость
@@ -83,9 +102,14 @@ Legacy endpoints `/api/matching/products/{product_id}` и
 - Один `CompetitorItem` может иметь только одну текущую связь `CompetitorItemMatch`.
 - `accepted/manual` нельзя перетереть новым ручным accept на другой product без явного
   снятия текущей связи.
-- Уверенный `suggested` автоматически считается принятой автосвязью, если у товара по
-  этому конкуренту нет дублей-кандидатов; дубль у одного конкурента остаётся для ручного
-  выбора.
+- Общий unique-auto-accept запрещён. Автопринятие возможно только через именованное
+  правило категории/конкурента с версией policy в `rationale_json`.
+- Запрошенный режим `auto` фактически остаётся `shadow`, пока в категории нет минимум
+  50 новых snapshot-примеров и precision ≥95%; для точных кодов/партномеров — ≥99,5%.
+- Конфликт типа/семейства, модели/варианта, manual-связи, партномера/ёмкости,
+  конструкции дисплея или устаревшие источники всегда блокирует downstream и auto-accept.
+- `battery` требует совпадения предмета, модели, партномера/ёмкости и Premium tier;
+  `display` — модели, конструкции, качества, цвета и рамки; `flex` — модели и назначения.
 - Rejected-кандидаты скрываются из обычной выдачи только для конкретного нашего товара.
 - Legacy `ProductMatch` / `CompetitorPrice` остаются для старого FTP/ценового контура.
 
@@ -104,14 +128,69 @@ Legacy endpoints `/api/matching/products/{product_id}` и
 - Frontend: build, lint, smoke-тесты формы подбора.
 - Regression: `tests/test_matching.py`, `tests/test_embedding_matching.py`,
   `tests/test_competitor_matching.py`, OpenAPI export.
+- Decision data: миграция/backfill, API-совместимость, обязательность причин в UI,
+  полнота snapshot и безопасное history summary.
+- Policy/replay: hard blockers, shadow→auto gate, временной split без утечки будущих
+  решений, precision/coverage и отдельный порог точных кодов.
+
+# Обратная связь и replay
+
+- Стабильные причины: `wrong_model`, `wrong_item_type`, `wrong_quality`, `wrong_color`,
+  `wrong_frame`, `wrong_part_number`, `wrong_capacity`, `duplicate_or_irrelevant`,
+  `confirmed_exact_code`, `confirmed_attributes`, `auto_false_positive`, `other`.
+- Старые решения и запросы без кода получают `legacy_unspecified`.
+- Snapshot schema v1 содержит top-K и выбранный rank, score/gap, признаки обеих позиций,
+  rationale, версии embeddings/parser/guardrails и даты источника.
+- `tasks.evaluate_competitor_matching_policy` строит JSON-артефакт NumPy reranker с
+  версией признаков, коэффициентами и порогами. Split только хронологический 80/20;
+  старые решения без snapshot учитываются как rule-discovery/hard negatives, но не как
+  полноценная оценочная выборка.
+- Тот же отчёт детерминированно формирует 10% audit sample текущих auto-accepted;
+  категория получает рекомендацию отключения при error rate >5% или любом
+  систематическом конфликте модели/типа.
+- Ручная очередь ранжируется по бизнес-ценности, неопределённости и дефициту примеров;
+  одинаковые товарные семейства выводятся рядом.
 
 # Rollout
 
-1. Применить миграцию с журналом решений и поисковыми индексами.
-2. Выпустить backend API с legacy-совместимостью.
-3. Включить новый UI.
-4. При rollback оставить журнал решений в БД; legacy расчётный контур не зависит от него.
+1. Recovery HTTPS/nightly и fail-closed freshness gate.
+2. Миграция `reason_code`/`snapshot_json`, backend API и UI-причины.
+3. Shadow-policy, replay и отчёты ручной очереди.
+4. Категорийный auto-accept только после выполнения validation gate.
+
+Каждый этап выпускается отдельным clean release через штатный release-контроллер.
+При rollback additive-колонки журнала остаются в БД; legacy ценовой контур от них не зависит.
+
+# Change Summary / Spec Delta
+
+- Спецификация стала единственным source of truth для item-level сопоставления;
+  прежний tech design помечен как superseded.
+- Ручные решения дополнены структурированными причинами и воспроизводимыми snapshots.
+- Общий unique-auto-accept заменён версионируемой категорийной policy с обязательным
+  validation gate и offline replay.
+- Разведены legacy SKU→цена и item-level товар конкурента→товар 1С; production transport
+  зафиксирован как HTTPS при сохранении совместимых имён `competitor_ftp_*`.
+
+# Acceptance Criteria
+
+- Reject/revoke в новом UI невозможны без структурированной причины; старые API-клиенты
+  без `reason_code` продолжают работать как `legacy_unspecified`.
+- История отдаёт код причины и краткую диагностику snapshot, но не полный снимок.
+- Ни одно категорийное правило не переходит из shadow в auto без 50 проверенных примеров
+  и требуемой precision; hard blockers не обходятся.
+- Replay использует только хронологическое разделение и формирует воспроизводимый
+  JSON-артефакт без новой тяжёлой runtime-зависимости.
+
+# Implementation Checklist
+
+- [x] Добавлены `reason_code`, `snapshot_json`, API/UI и regression-тесты.
+- [x] Добавлены category policy, hard gates, replay и audit sample в shadow-режиме.
+- [x] Исправлены противоречия по `CompetitorItem`, HTTPS/FTP и двум независимым связям.
+- [ ] Переводить отдельные категории в реальный auto только после заполнения и проверки
+  production snapshot-выборки.
 
 # Changelog
 
 - 2026-05-01 — accepted draft created.
+- 2026-07-31 — документ сделан каноническим для item-level контура; зафиксированы
+  HTTPS transport, decision snapshots, category policy, replay и staged rollout.

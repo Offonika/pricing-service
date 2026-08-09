@@ -1,12 +1,18 @@
 # Единый машинный справочник правил контура «Типы цен».
 # ИСТОЧНИК ИСТИНЫ для нормативов: скрипты, blueprint и линтер читают этот файл.
 # Изменение правила = правка здесь + пересборка (см. README ревизионного пакета).
-ruleset_version: "2026-07-18.2"
-effective_date: "2026-07-18"
+ruleset_version: "2026-07-31.1"
+effective_date: "2026-07-31"
 
 population:
   buyers_root_group_ref: "0x859f00215d1c454811df26d4ab62d095" # группа ПОКУПАТЕЛИ
   contract_kind_ref: "0x9363c6f0a10557bf4822a55db4862286" # вид договора "С покупателем"
+  revenue_aggregation: "counterparty_all_buyer_contracts"
+  same_level_multiple_contracts: "combine"
+  conflicting_price_levels: "data_check"
+  usable_contract_priority: "recognized_price_type"
+  incomplete_contracts_with_usable: "ignore_for_price_type_selection"
+  exclude_without_sales_history: true
   excluded_registry_classes: # классы реестра служебных карточек вне расчета
     - "служебный инструмент"
     - "фиктивная/техническая"
@@ -78,6 +84,13 @@ price_types:
     - "бн"
     - "USD"
 
+working_contracts:
+  window_months: 12
+  min_sale_documents: 1
+  selection: "actual_sales_by_contract"
+  exact_price_type_required: true
+  unused_contracts_create_conflict: false
+
 source_requirements:
   core:
     - contracts
@@ -126,12 +139,18 @@ downgrade:
   max_steps_per_cycle: 1
   requires: "изолятор/реанимация 1 полный месяц + утверждение человеком"
   isolate_months: 1
-  dead_souls_exception: "12+ мес нуля -> сразу Розница (решение 2026-07-18)"
+  one_time_cleanup_only: "12+ мес нуля обрабатываются отдельным утверждённым batch"
 
 sleeping:
   zero_months_to_recovery: 3 # 3 мес нуля -> месяц CRM-реанимации
-  dead_after_months: 12 # 12+ мес нуля -> чистка в Розницу
+  recurring_policy: "реанимация -> полный месяц работы -> решение человека"
   comeback: "уровень возвращается закупками, без испытательного срока"
+
+one_time_cleanups:
+  bronze_dead_souls_2026_07:
+    status: "protocol_required"
+    source_count: 6737
+    automatic_apply: false
 
 economics:
   mandatory_recovery:
@@ -208,6 +227,7 @@ decision_log:
   - { date: "2026-07-12", decision: "пересчет предложений: изолятор 816, удержание 249; немедленных переводов нет" }
   - { date: "2026-07-17", decision: "заморозка повышений; бронза с первого договора; ветка спящих; подсветка Розницы раз в месяц; реестр служебных" }
   - { date: "2026-07-18", decision: "нормативы 330к/900к/2900к (+удержание /3); гарантия платины 60; мертвые души всех уровней -> Розница; экономика вариант Б; Key Account вручную; черная метка 3 шпилям; мораторий РБ034611; ветеранское исключение 18м+; политика 'пока только лампочка'" }
+  - { date: "2026-07-31", decision: "рабочий договор определяется по реализациям за 12 закрытых месяцев; разные полные типы рабочих договоров -> data_check; неиспользуемые договоры не конфликтуют; правило 12+ вынесено из регулярного расчёта в разовую чистку" }
 
 # Для линтера: значения, признанные устаревшими (не должны встречаться в
 # актуальных нормативных документах вне разделов истории решений).

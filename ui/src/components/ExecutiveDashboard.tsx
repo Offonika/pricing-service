@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from "react";
 import {
   fetchExecutiveCashflowPeriod,
   closeExecutiveManagementBalance,
@@ -6,6 +6,7 @@ import {
   fetchExecutiveDashboardActions,
   fetchExecutiveInstruments,
   fetchExecutiveManagementBalance,
+  fetchExecutiveManagementBalanceTurnover,
   fetchExecutiveOnlineStorePeriod,
   fetchExecutiveProfitLossPeriod,
   fetchExecutiveSalesPeriod,
@@ -18,8 +19,10 @@ import {
   type ExecutiveDashboardResponse,
   type ExecutiveManagementBalanceLineItem,
   type ExecutiveManagementBalanceResponse,
+  type ExecutiveManagementBalanceTurnoverResponse,
   type ExecutiveManagementBalanceView,
   type ExecutiveInstrumentDevice,
+  type ExecutiveInstrumentProblem,
   type ExecutiveInstrumentExchange,
   type ExecutiveInstrumentsResponse,
   type ExecutiveOnlineStorePeriodResponse,
@@ -1410,32 +1413,237 @@ function formatSignedMoney(value: string | number) {
   return `${numeric > 0 ? "+" : numeric < 0 ? "−" : ""}${formatted}`;
 }
 
+function formatTurnoverMoney(value?: string | number | null) {
+  return value === null || value === undefined ? "—" : formatMoney(value);
+}
+
+function turnoverSourceLabel(sourceKey: string) {
+  if (sourceKey === "onec_bp_tax_accounting") return "БП · начисленные налоги";
+  if (sourceKey.startsWith("management_")) return "Управленческий расчёт";
+  return "УТ 10.3";
+}
+
+function ManagementBalanceTurnoverTable({
+  turnover,
+  periodMonthFrom,
+  periodMonthTo,
+  periodLoading,
+  onPeriodMonthFromChange,
+  onPeriodMonthToChange,
+  onPeriodApply,
+}: {
+  turnover: ExecutiveManagementBalanceTurnoverResponse;
+  periodMonthFrom: string;
+  periodMonthTo: string;
+  periodLoading: boolean;
+  onPeriodMonthFromChange: (month: string) => void;
+  onPeriodMonthToChange: (month: string) => void;
+  onPeriodApply: () => void;
+}) {
+  const sectionLabels = {
+    asset: "Активы",
+    liability: "Обязательства",
+    equity: "Собственные средства",
+  } as const;
+  const availablePeriodStarts = turnover.available_period_starts || ["2026-01"];
+  const availablePeriodEnds = turnover.available_period_ends || turnover.available_months || [];
+  const periodInvalid = !periodMonthFrom || !periodMonthTo || periodMonthFrom > periodMonthTo;
+
+  return (
+    <section
+      className="executive-management-balance__turnover"
+      aria-label="Оборотно-сальдовая ведомость по статьям баланса"
+    >
+      <header>
+        <div>
+          <h3>Оборотно-сальдовая ведомость</h3>
+          <span>
+            с {formatDate(turnover.date_from)} по {formatDate(turnover.date_to)}
+          </span>
+        </div>
+        <div className="executive-management-balance__turnover-period">
+          <label>
+            <span>Период с</span>
+            <select
+              aria-label="Начальный месяц оборотно-сальдовой ведомости"
+              disabled={periodLoading}
+              onChange={(event) => onPeriodMonthFromChange(event.target.value)}
+              value={periodMonthFrom}
+            >
+              {availablePeriodStarts.map((item) => (
+                <option key={item} value={item}>{formatBalanceMonth(item)}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            <span>Период по</span>
+            <select
+              aria-label="Конечный месяц оборотно-сальдовой ведомости"
+              disabled={periodLoading}
+              onChange={(event) => onPeriodMonthToChange(event.target.value)}
+              value={periodMonthTo}
+            >
+              {availablePeriodEnds.map((item) => (
+                <option key={item} value={item}>{formatBalanceMonth(item)}</option>
+              ))}
+            </select>
+          </label>
+          <button
+            disabled={periodLoading || periodInvalid}
+            onClick={onPeriodApply}
+            type="button"
+          >
+            {periodLoading ? "Загрузка…" : "Показать ОСВ"}
+          </button>
+        </div>
+      </header>
+      {periodInvalid && (
+        <div className="executive-management-balance__turnover-note" role="alert">
+          <strong>Проверьте период</strong>
+          <span>Конечный месяц не может быть раньше начального.</span>
+        </div>
+      )}
+      <div className="executive-management-balance__turnover-note" role="note">
+        <strong>Сверочная версия</strong>
+        <span>{turnover.note}</span>
+      </div>
+      {turnover.opening_status !== "closed" && (
+        <div className="executive-management-balance__turnover-note" role="note">
+          <strong>Начальный баланс — рабочая база</strong>
+          <span>
+            Версия {turnover.opening_version} подтверждена для сверки, но содержит{" "}
+            {turnover.opening_validation_error_count} контрольных блокера. Начальные суммы можно
+            уточнить позднее.
+          </span>
+        </div>
+      )}
+      {(Number(turnover.opening_scope_imbalance_amount) !== 0 ||
+        Number(turnover.closing_scope_imbalance_amount) !== 0) && (
+        <div className="executive-management-balance__turnover-note" role="alert">
+          <strong>Итоги ограниченного контура не равны</strong>
+          <span>
+            Контроль на начало: {formatSignedMoney(turnover.opening_scope_imbalance_amount)};
+            на конец: {formatSignedMoney(turnover.closing_scope_imbalance_amount)}. Расхождение
+            остаётся видимым, потому что статьи БП, кроме начисленных налогов, не включаются.
+          </span>
+        </div>
+      )}
+      <div className="executive-management-balance__turnover-scroll">
+        <table aria-label="Оборотно-сальдовая ведомость по статьям баланса">
+          <thead>
+            <tr>
+              <th scope="col">Статья баланса</th>
+              <th scope="col">Сальдо начальное</th>
+              <th scope="col">Дебет</th>
+              <th scope="col">Кредит</th>
+              <th scope="col">Сальдо конечное</th>
+              <th scope="col">Контроль</th>
+            </tr>
+          </thead>
+          <tbody>
+            {(["asset", "liability", "equity"] as const).map((section) => {
+              const lines = turnover.lines.filter((line) => line.section === section);
+              const total = turnover.totals.find((item) => item.section === section);
+              return [
+                <tr className="executive-management-balance__turnover-section" key={`${section}-title`}>
+                  <th colSpan={6} scope="rowgroup">{sectionLabels[section]}</th>
+                </tr>,
+                ...lines.map((line) => (
+                  <tr key={`${section}-${line.key}`}>
+                    <th scope="row">
+                      <span>{line.label}</span>
+                      <small>
+                        {turnoverSourceLabel(line.source_key)} · {line.source_status}
+                      </small>
+                      <small>
+                        {line.turnover_method === "gross_cashflow_movements"
+                          ? "Валовые обороты 1С"
+                          : "Чистое изменение сальдо"}
+                      </small>
+                      {line.note && <small>{line.note}</small>}
+                    </th>
+                    <td>{formatTurnoverMoney(line.opening_balance)}</td>
+                    <td>{formatTurnoverMoney(line.debit_turnover)}</td>
+                    <td>{formatTurnoverMoney(line.credit_turnover)}</td>
+                    <td>{formatTurnoverMoney(line.closing_balance)}</td>
+                    <td className={Number(line.reconciliation_difference || 0) === 0 ? "is-ok" : "is-error"}>
+                      {formatTurnoverMoney(line.reconciliation_difference)}
+                    </td>
+                  </tr>
+                )),
+                total ? (
+                  <tr className="executive-management-balance__turnover-total" key={`${section}-total`}>
+                    <th scope="row">{total.label}</th>
+                    <td>{formatMoney(total.opening_balance)}</td>
+                    <td>{formatMoney(total.debit_turnover)}</td>
+                    <td>{formatMoney(total.credit_turnover)}</td>
+                    <td>{formatMoney(total.closing_balance)}</td>
+                    <td className={Number(total.reconciliation_difference) === 0 ? "is-ok" : "is-error"}>
+                      {formatMoney(total.reconciliation_difference)}
+                    </td>
+                  </tr>
+                ) : null,
+              ];
+            })}
+          </tbody>
+        </table>
+      </div>
+      {turnover.excluded_lines.length > 0 && (
+        <footer>
+          Не включено строк БП: {turnover.excluded_lines.length}. Они исключены по принятой
+          методике; из БП в ОСВ используется только задолженность по начисленным налогам.
+        </footer>
+      )}
+    </section>
+  );
+}
+
 export function MonthlyManagementBalance({
-  asOf,
   refreshNonce,
   canCloseMonth,
 }: {
-  asOf: string;
   refreshNonce: number;
   canCloseMonth: boolean;
 }) {
   const [balance, setBalance] = useState<ExecutiveManagementBalanceResponse | null>(null);
+  const [turnover, setTurnover] = useState<ExecutiveManagementBalanceTurnoverResponse | null>(null);
   const [month, setMonth] = useState<string | undefined>();
   const [view, setView] = useState<ExecutiveManagementBalanceView | undefined>();
+  const [turnoverMonthFrom, setTurnoverMonthFrom] = useState("");
+  const [turnoverMonthTo, setTurnoverMonthTo] = useState("");
+  const [turnoverPeriodLoading, setTurnoverPeriodLoading] = useState(false);
   const [loading, setLoading] = useState(true);
   const [message, setMessage] = useState("");
+  const [turnoverMessage, setTurnoverMessage] = useState("");
 
   const load = useCallback(async (nextMonth?: string, nextView?: ExecutiveManagementBalanceView) => {
     setMonth(nextMonth);
     setView(nextView);
     setLoading(true);
     setMessage("");
+    setTurnoverMessage("");
     setBalance(null);
+    setTurnover(null);
     try {
       const payload = await fetchExecutiveManagementBalance({ month: nextMonth, view: nextView });
       setBalance(payload);
       setMonth(payload.month);
       setView(payload.view);
+      try {
+        const turnoverPayload = await fetchExecutiveManagementBalanceTurnover({
+          month: payload.month,
+          view: payload.view,
+        });
+        setTurnover(turnoverPayload);
+        setTurnoverMonthFrom(
+          turnoverPayload.selected_month_from ||
+            turnoverPayload.available_period_starts?.[0] ||
+            "2026-01"
+        );
+        setTurnoverMonthTo(turnoverPayload.selected_month_to || payload.month);
+      } catch (error: unknown) {
+        setTurnoverMessage(errorMessage(error));
+      }
     } catch (error: unknown) {
       if (nextView === "closed") {
         try {
@@ -1447,6 +1655,21 @@ export function MonthlyManagementBalance({
           setMonth(fallback.month);
           setView(fallback.view);
           setMessage("Закрытая версия отсутствует. Показан доступный оперативный срез.");
+          try {
+            const turnoverPayload = await fetchExecutiveManagementBalanceTurnover({
+              month: fallback.month,
+              view: fallback.view,
+            });
+            setTurnover(turnoverPayload);
+            setTurnoverMonthFrom(
+              turnoverPayload.selected_month_from ||
+                turnoverPayload.available_period_starts?.[0] ||
+                "2026-01"
+            );
+            setTurnoverMonthTo(turnoverPayload.selected_month_to || fallback.month);
+          } catch (turnoverError: unknown) {
+            setTurnoverMessage(errorMessage(turnoverError));
+          }
           return;
         } catch {
           // No operational history exists for this month either.
@@ -1459,23 +1682,45 @@ export function MonthlyManagementBalance({
   }, []);
 
   useEffect(() => {
-    const selectedMonth = asOf.slice(0, 7);
-    const selectedView: ExecutiveManagementBalanceView =
-      selectedMonth === todayIso().slice(0, 7) ? "operational" : "closed";
     let cancelled = false;
     Promise.resolve().then(() => {
-      if (!cancelled) load(selectedMonth, selectedView);
+      if (!cancelled) load();
     });
     return () => {
       cancelled = true;
     };
-  }, [asOf, load, refreshNonce]);
+  }, [load, refreshNonce]);
 
   const chooseMonth = (nextMonth: string) => {
     load(nextMonth, view || "operational");
   };
   const chooseView = (nextView: ExecutiveManagementBalanceView) => {
     load(month, nextView);
+  };
+  const applyTurnoverPeriod = () => {
+    if (
+      !balance ||
+      !turnoverMonthFrom ||
+      !turnoverMonthTo ||
+      turnoverMonthFrom > turnoverMonthTo
+    ) {
+      return;
+    }
+    setTurnoverPeriodLoading(true);
+    setTurnoverMessage("");
+    fetchExecutiveManagementBalanceTurnover({
+      month: balance.month,
+      monthFrom: turnoverMonthFrom,
+      monthTo: turnoverMonthTo,
+      view: balance.view,
+    })
+      .then((payload) => {
+        setTurnover(payload);
+        setTurnoverMonthFrom(payload.selected_month_from || turnoverMonthFrom);
+        setTurnoverMonthTo(payload.selected_month_to || turnoverMonthTo);
+      })
+      .catch((error: unknown) => setTurnoverMessage(errorMessage(error)))
+      .finally(() => setTurnoverPeriodLoading(false));
   };
   const closeMonth = () => {
     if (!balance || !window.confirm(`Закрыть управленческий баланс за ${formatBalanceMonth(balance.month)}?`)) {
@@ -1511,6 +1756,28 @@ export function MonthlyManagementBalance({
         salaryReconciliation.closing_blocked ||
         unconfirmedSalaryAmount > 0)
   );
+  const openingEquityValue = balance?.source_summary?.opening_equity;
+  const openingEquity =
+    openingEquityValue &&
+    typeof openingEquityValue === "object" &&
+    !Array.isArray(openingEquityValue)
+      ? (openingEquityValue as Record<string, unknown>)
+      : null;
+  const openingBridgeValue = openingEquity?.bridge;
+  const openingBridge =
+    openingBridgeValue &&
+    typeof openingBridgeValue === "object" &&
+    !Array.isArray(openingBridgeValue)
+      ? (openingBridgeValue as Record<string, unknown>)
+      : null;
+  const openingBridgeRows = [
+    ["retained_earnings", "Входящий капитал"],
+    ["prior_period_adjustments", "Корректировки прошлых периодов"],
+    ["owner_capital", "Уставный и добавочный капитал"],
+    ["owner_contributed_funds", "Средства, внесённые собственниками"],
+    ["current_period_result", "Чистая прибыль текущего года"],
+    ["dividends_paid_ytd", "Минус выплаченные дивиденды"],
+  ].filter(([key]) => openingBridge?.[key] !== undefined);
 
   return (
     <section className={`executive-block executive-block--management-balance executive-block--${balance?.source_status || "source_missing"}`}>
@@ -1602,6 +1869,42 @@ export function MonthlyManagementBalance({
               </span>
             </div>
           )}
+          {openingEquity && openingBridge && (
+            <section
+              className="executive-management-balance__equity-bridge"
+              aria-label="Мост собственного капитала"
+            >
+              <header>
+                <div>
+                  <h3>Мост собственного капитала</h3>
+                  <span>
+                    Рассчитано автоматически на{" "}
+                    {formatDate(String(openingEquity.baseline_date || "2026-01-01"))}
+                  </span>
+                </div>
+                <small>
+                  версия {String(openingEquity.version || "—")} ·{" "}
+                  {String(openingEquity.source_hash || "").slice(0, 12)}
+                </small>
+              </header>
+              <div>
+                {openingBridgeRows.map(([key, label]) => (
+                  <p key={key}>
+                    <span>{label}</span>
+                    <strong>{formatSignedMoney(openingBridge[key] as string | number)}</strong>
+                  </p>
+                ))}
+                <p className="executive-management-balance__equity-bridge-total">
+                  <span>Итого собственный капитал по мосту</span>
+                  <strong>
+                    {formatMoney(
+                      openingBridge.equity_bridge_total as string | number
+                    )}
+                  </strong>
+                </p>
+              </div>
+            </section>
+          )}
           {Number(balance.imbalance_amount) !== 0 && (
             <div className="executive-management-balance__warning" role="status">
               <strong>Стороны баланса не равны</strong>
@@ -1626,6 +1929,23 @@ export function MonthlyManagementBalance({
               <footer><span>Итого собственные средства</span><strong>{formatMoney(balance.equity_total)}</strong></footer>
             </section>
           </div>
+          {turnover && (
+            <ManagementBalanceTurnoverTable
+              onPeriodApply={applyTurnoverPeriod}
+              onPeriodMonthFromChange={setTurnoverMonthFrom}
+              onPeriodMonthToChange={setTurnoverMonthTo}
+              periodLoading={turnoverPeriodLoading}
+              periodMonthFrom={turnoverMonthFrom}
+              periodMonthTo={turnoverMonthTo}
+              turnover={turnover}
+            />
+          )}
+          {turnoverMessage && (
+            <div className="executive-management-balance__warning" role="status">
+              <strong>ОСВ пока недоступна</strong>
+              <span>{turnoverMessage}</span>
+            </div>
+          )}
           <footer className="executive-block__footer executive-management-balance__footer">
             <span>{balance.note}</span>
             {balance.validation_errors.length > 0 && (
@@ -4184,6 +4504,238 @@ function compactInstrumentMetrics(device: ExecutiveInstrumentDevice) {
   return rows;
 }
 
+type InstrumentQuickFilter =
+  | "attention"
+  | "all"
+  | "critical"
+  | "warning"
+  | "not_monitored"
+  | "backup"
+  | "access"
+  | "coverage";
+
+const INSTRUMENT_HEALTH_ORDER: Record<string, number> = {
+  critical: 0,
+  warning: 1,
+  not_monitored: 2,
+  maintenance: 3,
+  ready: 4,
+  decommissioned: 5,
+};
+
+const INSTRUMENT_PROBLEM_CATEGORY_LABELS: Record<string, string> = {
+  connectivity: "Связь",
+  resources: "Ресурсы",
+  service: "Сервис",
+  backup: "Backup",
+  access: "Доступы",
+  monitoring: "Мониторинг",
+  configuration: "Конфигурация",
+};
+
+function instrumentProblems(device: ExecutiveInstrumentDevice): ExecutiveInstrumentProblem[] {
+  if (device.problems?.length) return device.problems;
+  if (!device.issue) return [];
+  return [{
+    problem_key: "configuration:legacy-issue",
+    category: device.health_status === "not_monitored" ? "monitoring" : "configuration",
+    severity: device.health_status === "critical" ? "critical" : "warning",
+    title: device.issue,
+    evidence: [],
+    started_at: device.incident_started_at,
+    recommended_action: device.recommended_action || "Проверить техническую диагностику в управляющем контуре",
+  }];
+}
+
+function instrumentNeedsAttention(device: ExecutiveInstrumentDevice) {
+  return ["critical", "warning", "not_monitored"].includes(device.health_status)
+    || device.backup.status === "critical"
+    || device.backup.status === "warning"
+    || device.access.status === "warning"
+    || (device.monitoring_coverage_24h_pct != null && device.monitoring_coverage_24h_pct < 90);
+}
+
+function instrumentMatchesQuickFilter(device: ExecutiveInstrumentDevice, filter: InstrumentQuickFilter) {
+  if (filter === "all") return true;
+  if (filter === "attention") return instrumentNeedsAttention(device);
+  if (["critical", "warning", "not_monitored"].includes(filter)) return device.health_status === filter;
+  if (filter === "backup") return ["critical", "warning"].includes(device.backup.status);
+  if (filter === "access") return device.access.status === "warning";
+  return device.monitoring_coverage_24h_pct != null && device.monitoring_coverage_24h_pct < 90;
+}
+
+function compareInstruments(left: ExecutiveInstrumentDevice, right: ExecutiveInstrumentDevice) {
+  const healthDelta = (INSTRUMENT_HEALTH_ORDER[left.health_status] ?? 99) - (INSTRUMENT_HEALTH_ORDER[right.health_status] ?? 99);
+  if (healthDelta) return healthDelta;
+  const connectivityDelta = Number(right.connectivity_status === "offline") - Number(left.connectivity_status === "offline");
+  if (connectivityDelta) return connectivityDelta;
+  const criticalityDelta = Number(right.criticality === "critical") - Number(left.criticality === "critical");
+  if (criticalityDelta) return criticalityDelta;
+  const outageDelta = (right.outage_duration_seconds || 0) - (left.outage_duration_seconds || 0);
+  return outageDelta || left.name.localeCompare(right.name, "ru");
+}
+
+function instrumentDeviceParam() {
+  return new URLSearchParams(window.location.search).get("device") || "";
+}
+
+function InstrumentStatus({ device }: { device: ExecutiveInstrumentDevice }) {
+  return (
+    <div className="executive-instruments__state">
+      <span className={`executive-instruments__status executive-instruments__status--${device.health_status}`}>
+        {INSTRUMENT_HEALTH_LABELS[device.health_status] || device.health_status}
+      </span>
+      <small>{INSTRUMENT_CONNECTIVITY_LABELS[device.connectivity_status] || device.connectivity_status}</small>
+    </div>
+  );
+}
+
+function InstrumentProblemSummary({ device }: { device: ExecutiveInstrumentDevice }) {
+  const problems = instrumentProblems(device);
+  const primary = problems[0];
+  if (!primary) return <span className="executive-instruments__healthy">Проблем не обнаружено</span>;
+  return (
+    <div className="executive-instruments__problem-summary">
+      <strong>{primary.title}</strong>
+      {primary.evidence[0] && <span>{primary.evidence[0]}</span>}
+      {primary.started_at && <small>С {formatDateTime(primary.started_at)}</small>}
+      {device.outage_duration_seconds != null && <small>Длительность: {instrumentDuration(device.outage_duration_seconds)}</small>}
+    </div>
+  );
+}
+
+function InstrumentSignals({ device }: { device: ExecutiveInstrumentDevice }) {
+  const problems = instrumentProblems(device).slice(1);
+  if (!problems.length) return <span className="executive-instruments__muted">Дополнительных сигналов нет</span>;
+  return (
+    <div className="executive-instruments__signals">
+      {problems.slice(0, 3).map((problem) => (
+        <span className={`executive-instruments__signal executive-instruments__signal--${problem.severity}`} key={problem.problem_key}>
+          {INSTRUMENT_PROBLEM_CATEGORY_LABELS[problem.category] || problem.category}
+        </span>
+      ))}
+      {problems.length > 3 && <span className="executive-instruments__signal">+{problems.length - 3}</span>}
+    </div>
+  );
+}
+
+function InstrumentDetails({
+  device,
+  onClose,
+  dialogRef,
+  closeButtonRef,
+}: {
+  device: ExecutiveInstrumentDevice;
+  onClose: () => void;
+  dialogRef: RefObject<HTMLElement | null>;
+  closeButtonRef: RefObject<HTMLButtonElement | null>;
+}) {
+  const problems = instrumentProblems(device);
+  const metrics = compactInstrumentMetrics(device);
+  return (
+    <div className="executive-instruments__drawer-layer" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
+      <aside
+        aria-labelledby="instrument-details-title"
+        aria-modal="true"
+        className="executive-instruments__drawer"
+        ref={dialogRef}
+        role="dialog"
+      >
+        <header className="executive-instruments__drawer-header">
+          <div>
+            <span>Подробности устройства</span>
+            <h2 id="instrument-details-title">{device.name}</h2>
+            <InstrumentStatus device={device} />
+          </div>
+          <button aria-label="Закрыть подробности" className="executive-instruments__drawer-close" onClick={onClose} ref={closeButtonRef} type="button">×</button>
+        </header>
+
+        <section className="executive-instruments__drawer-section executive-instruments__drawer-section--problems" aria-labelledby="instrument-problems-title">
+          <h3 id="instrument-problems-title">Что сейчас не так</h3>
+          {!problems.length && <p className="executive-instruments__healthy">Проблем не обнаружено.</p>}
+          {problems.map((problem) => (
+            <article className={`executive-instruments__problem executive-instruments__problem--${problem.severity}`} key={problem.problem_key}>
+              <div className="executive-instruments__problem-title">
+                <span>{INSTRUMENT_PROBLEM_CATEGORY_LABELS[problem.category] || problem.category}</span>
+                <strong>{problem.title}</strong>
+              </div>
+              {problem.started_at && <small>Начало: {formatDateTime(problem.started_at)}</small>}
+              {problem.evidence.length > 0 && <ul>{problem.evidence.map((item) => <li key={item}>{item}</li>)}</ul>}
+              <p><strong>Что сделать:</strong> {problem.recommended_action}</p>
+            </article>
+          ))}
+        </section>
+
+        <section className="executive-instruments__drawer-section" aria-labelledby="instrument-purpose-title">
+          <h3 id="instrument-purpose-title">Назначение и владельцы</h3>
+          <dl className="executive-instruments__details-grid">
+            <div><dt>Тип</dt><dd>{INSTRUMENT_KIND_LABELS[device.kind] || device.kind}</dd></div>
+            <div><dt>Расположение</dt><dd>{device.location}</dd></div>
+            <div><dt>Жизненный цикл</dt><dd>{INSTRUMENT_LIFECYCLE_LABELS[device.lifecycle_status] || device.lifecycle_status}</dd></div>
+            <div><dt>Критичность</dt><dd>{device.criticality === "critical" ? "Критичное" : "Обычное"}</dd></div>
+            <div className="is-wide"><dt>Назначение</dt><dd>{device.purpose.join(" · ") || "Уточняется"}</dd></div>
+            <div><dt>Технический владелец</dt><dd>{device.technical_owners.join(", ") || "Не назначен"}</dd></div>
+            <div><dt>Бизнес-владелец</dt><dd>{device.business_owner || "Не назначен"}</dd></div>
+          </dl>
+        </section>
+
+        <section className="executive-instruments__drawer-section" aria-labelledby="instrument-resources-title">
+          <h3 id="instrument-resources-title">Ресурсы</h3>
+          <div className="executive-instruments__detail-pills">
+            {metrics.length ? metrics.map((item) => <span key={item}>{item}</span>) : <span>Показатели не получены</span>}
+          </div>
+        </section>
+
+        <section className="executive-instruments__drawer-section" aria-labelledby="instrument-services-title">
+          <h3 id="instrument-services-title">Сервисы и 1С</h3>
+          {device.services.length ? (
+            <ul className="executive-instruments__detail-list">
+              {device.services.map((service) => <li key={service.service_key}><strong>{service.name}</strong><span>{statusLabel(service.status)}</span></li>)}
+            </ul>
+          ) : <p className="executive-instruments__muted">Сервисы не зарегистрированы.</p>}
+          {device.integrations.count > 0 && <p className="executive-instruments__muted">Интеграции: {statusLabel(device.integrations.status)} · последний успех {formatDateTime(device.integrations.last_success_at)}</p>}
+          <InstrumentExchange exchange={device.exchange} />
+        </section>
+
+        <section className="executive-instruments__drawer-section" aria-labelledby="instrument-backup-title">
+          <h3 id="instrument-backup-title">Резервное копирование</h3>
+          <dl className="executive-instruments__details-grid">
+            <div><dt>Состояние</dt><dd>{statusLabel(device.backup.status)}</dd></div>
+            <div><dt>Защищено / пробелов</dt><dd>{device.backup.protected_datastores} / {device.backup.unprotected_datastores}</dd></div>
+            <div><dt>RPO / отставание</dt><dd>{device.backup.rpo_minutes != null ? `${device.backup.rpo_minutes} мин` : "—"} / {device.backup.lag_minutes != null ? `${device.backup.lag_minutes} мин` : "—"}</dd></div>
+            <div><dt>Full / diff / log</dt><dd>{formatDateTime(device.backup.last_full_backup_at)} / {formatDateTime(device.backup.last_differential_backup_at)} / {formatDateTime(device.backup.last_log_backup_at)}</dd></div>
+            <div><dt>Off-host / readback</dt><dd>{device.backup.off_host_verified ? "Да" : "Нет"} / {device.backup.readback_verified ? "Да" : "Нет"}</dd></div>
+            <div><dt>Restore-test</dt><dd>{formatDate(device.backup.last_restore_test_at)}</dd></div>
+          </dl>
+        </section>
+
+        <section className="executive-instruments__drawer-section" aria-labelledby="instrument-access-title">
+          <h3 id="instrument-access-title">Доступы и MFA</h3>
+          <dl className="executive-instruments__details-grid">
+            <div><dt>Состояние</dt><dd>{statusLabel(device.access.status)}</dd></div>
+            <div><dt>Активных назначений</dt><dd>{device.access.active_grants}</dd></div>
+            <div><dt>Требуют внимания</dt><dd>{device.access.attention_grant_count + device.access.unowned_credentials}</dd></div>
+            <div><dt>MFA / ревизия</dt><dd>{device.access.mfa_review_count} / {device.access.review_required_grants}</dd></div>
+            <div><dt>Следующая проверка</dt><dd>{formatDate(device.access.next_review_at)}</dd></div>
+          </dl>
+          <p className="executive-instruments__readonly-note">Вкладка работает только на чтение. Выдача и отзыв доступов отключены контрактом.</p>
+        </section>
+
+        <section className="executive-instruments__drawer-section" aria-labelledby="instrument-monitoring-title">
+          <h3 id="instrument-monitoring-title">Мониторинг и проверки</h3>
+          <dl className="executive-instruments__details-grid">
+            <div><dt>Последняя попытка</dt><dd>{formatDateTime(device.last_attempted_at)}</dd></div>
+            <div><dt>Последний успех</dt><dd>{formatDateTime(device.last_success_at)}</dd></div>
+            <div><dt>Доступность 24 ч / 30 д</dt><dd>{instrumentPercent(device.availability_24h_pct)} / {instrumentPercent(device.availability_30d_pct)}</dd></div>
+            <div><dt>Покрытие 24 ч / 30 д</dt><dd>{instrumentPercent(device.monitoring_coverage_24h_pct)} / {instrumentPercent(device.monitoring_coverage_30d_pct)}</dd></div>
+            {device.incident_started_at && <div className="is-wide"><dt>Текущий сбой</dt><dd>С {formatDateTime(device.incident_started_at)} · {instrumentDuration(device.outage_duration_seconds)}</dd></div>}
+          </dl>
+        </section>
+      </aside>
+    </div>
+  );
+}
+
 const INSTRUMENT_EXCHANGE_STAGE_LABELS: Record<string, string> = {
   checkauth: "авторизация",
   init: "инициализация",
@@ -4242,21 +4794,117 @@ export function InstrumentsPanel({
   message: string;
   status: "loading" | "ready" | "error";
 }) {
-  const [healthFilter, setHealthFilter] = useState("");
+  const [quickFilter, setQuickFilter] = useState<InstrumentQuickFilter>("attention");
   const [kindFilter, setKindFilter] = useState("");
   const [query, setQuery] = useState("");
+  const [selectedDeviceKey, setSelectedDeviceKey] = useState(instrumentDeviceParam);
+  const drawerRef = useRef<HTMLElement | null>(null);
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const openerRef = useRef<HTMLButtonElement | null>(null);
+  const openedFromListRef = useRef(false);
+  const devices = useMemo(() => data?.devices || [], [data?.devices]);
+
+  const coverageProblemCount = devices.filter((device) => (
+    device.monitoring_coverage_24h_pct != null && device.monitoring_coverage_24h_pct < 90
+  )).length;
+  const attentionCount = devices.filter(instrumentNeedsAttention).length;
+  const quickFilters: Array<{ key: InstrumentQuickFilter; label: string; count: number; tone?: string }> = [
+    { key: "attention", label: "Требуют внимания", count: attentionCount, tone: attentionCount ? "warning" : undefined },
+    { key: "all", label: "Все", count: data?.summary.total_count || 0 },
+    { key: "critical", label: "Авария", count: data?.summary.critical_count || 0, tone: data?.summary.critical_count ? "critical" : undefined },
+    { key: "warning", label: "Предупреждения", count: data?.summary.warning_count || 0, tone: data?.summary.warning_count ? "warning" : undefined },
+    { key: "not_monitored", label: "Без мониторинга", count: data?.summary.not_monitored_count || 0 },
+    { key: "backup", label: "Проблемы backup", count: data?.summary.backup_gap_count || 0, tone: data?.summary.backup_gap_count ? "warning" : undefined },
+    { key: "access", label: "Доступы", count: data?.summary.access_review_count || 0, tone: data?.summary.access_review_count ? "warning" : undefined },
+    { key: "coverage", label: "Низкое покрытие", count: coverageProblemCount, tone: coverageProblemCount ? "critical" : undefined },
+  ];
+
   const visibleDevices = useMemo(() => {
     const needle = query.trim().toLocaleLowerCase("ru");
-    return (data?.devices || []).filter((device) => {
-      if (healthFilter && device.health_status !== healthFilter) return false;
+    return devices.filter((device) => {
+      if (!instrumentMatchesQuickFilter(device, quickFilter)) return false;
       if (kindFilter && device.kind !== kindFilter) return false;
       if (!needle) return true;
-      return [device.name, device.location, ...device.purpose, ...device.technical_owners]
+      const problems = instrumentProblems(device);
+      return [
+        device.name,
+        device.location,
+        device.business_owner || "",
+        ...device.purpose,
+        ...device.technical_owners,
+        ...problems.flatMap((problem) => [problem.title, ...problem.evidence]),
+      ]
         .join(" ")
         .toLocaleLowerCase("ru")
         .includes(needle);
-    });
-  }, [data, healthFilter, kindFilter, query]);
+    }).sort(compareInstruments);
+  }, [devices, quickFilter, kindFilter, query]);
+
+  const selectedDevice = devices.find((device) => device.device_key === selectedDeviceKey) || null;
+
+  const closeDetails = useCallback(() => {
+    if (openedFromListRef.current) {
+      openedFromListRef.current = false;
+      window.history.back();
+      return;
+    }
+    const url = new URL(window.location.href);
+    url.searchParams.delete("device");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    setSelectedDeviceKey("");
+  }, []);
+
+  useEffect(() => {
+    const onPopState = () => {
+      const nextDevice = instrumentDeviceParam();
+      setSelectedDeviceKey(nextDevice);
+      if (!nextDevice) window.setTimeout(() => openerRef.current?.focus(), 0);
+    };
+    window.addEventListener("popstate", onPopState);
+    return () => window.removeEventListener("popstate", onPopState);
+  }, []);
+
+  useEffect(() => {
+    if (!selectedDevice) return;
+    const previouslyFocused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const drawer = drawerRef.current;
+    window.setTimeout(() => closeButtonRef.current?.focus(), 0);
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeDetails();
+        return;
+      }
+      if (event.key !== "Tab" || !drawer) return;
+      const focusable = Array.from(drawer.querySelectorAll<HTMLElement>(
+        'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+      )).filter((element) => !element.hasAttribute("disabled"));
+      if (!focusable.length) return;
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      previouslyFocused?.focus();
+    };
+  }, [selectedDevice, closeDetails]);
+
+  const openDetails = (device: ExecutiveInstrumentDevice, button: HTMLButtonElement) => {
+    openerRef.current = button;
+    openedFromListRef.current = true;
+    const url = new URL(window.location.href);
+    url.searchParams.set("device", device.device_key);
+    window.history.pushState({ ...(window.history.state || {}), instrumentDevice: device.device_key }, "", `${url.pathname}${url.search}${url.hash}`);
+    setSelectedDeviceKey(device.device_key);
+  };
 
   return (
     <section className="executive-instruments" aria-label="Приборы">
@@ -4278,21 +4926,29 @@ export function InstrumentsPanel({
         <>
           {data.note && <div className="executive-cashflow-period__note">{data.note}</div>}
           {data.warnings.length > 0 && (
-            <details className="executive-cashflow-period__note">
-              <summary>Предупреждения источника: {data.warnings.length}</summary>
+            <details className="executive-instruments__data-quality">
+              <summary>Качество данных: {data.warnings.length} замечаний источника</summary>
               {data.warnings.map((warning) => <div key={warning}>{warning}</div>)}
             </details>
           )}
-          <div className="executive-instruments__kpis" aria-label="Сводка по приборам">
-            <div><span>Всего</span><strong>{data.summary.total_count}</strong></div>
-            <div><span>В сети</span><strong>{data.summary.online_count}</strong></div>
-            <div className={data.summary.critical_count ? "is-critical" : ""}><span>Авария</span><strong>{data.summary.critical_count}</strong></div>
-            <div className={data.summary.warning_count ? "is-warning" : ""}><span>Предупреждения</span><strong>{data.summary.warning_count}</strong></div>
-            <div><span>Не контролируются</span><strong>{data.summary.not_monitored_count}</strong></div>
-            <div className={data.summary.backup_gap_count ? "is-warning" : ""}><span>Пробелы backup</span><strong>{data.summary.backup_gap_count}</strong></div>
-            <div className={data.summary.access_review_count ? "is-warning" : ""}><span>Доступы на проверку</span><strong>{data.summary.access_review_count}</strong></div>
-            <div><span>Покрытие 24 ч</span><strong>{instrumentPercent(data.summary.monitoring_coverage_24h_pct)}</strong></div>
-          </div>
+          <section aria-labelledby="instrument-summary-title">
+            <h3 className="visually-hidden" id="instrument-summary-title">Сводка по приборам</h3>
+            <div className="executive-instruments__kpis">
+              {quickFilters.map((filter) => (
+                <button
+                  aria-pressed={quickFilter === filter.key}
+                  className={`${filter.tone ? `is-${filter.tone}` : ""} ${quickFilter === filter.key ? "is-active" : ""}`.trim()}
+                  key={filter.key}
+                  onClick={() => setQuickFilter(filter.key)}
+                  type="button"
+                >
+                  <span>{filter.label}</span>
+                  <strong>{filter.count}</strong>
+                  {filter.key === "coverage" && <small>{instrumentPercent(data.summary.monitoring_coverage_24h_pct)}</small>}
+                </button>
+              ))}
+            </div>
+          </section>
 
           <div className="executive-instruments__filters">
             <label>
@@ -4307,86 +4963,48 @@ export function InstrumentsPanel({
               />
             </label>
             <label>
-              <span>Состояние</span>
-              <select className="app__select" onChange={(event) => setHealthFilter(event.target.value)} value={healthFilter}>
-                <option value="">Все</option>
-                {Object.entries(INSTRUMENT_HEALTH_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
-              </select>
-            </label>
-            <label>
               <span>Тип</span>
               <select className="app__select" onChange={(event) => setKindFilter(event.target.value)} value={kindFilter}>
                 <option value="">Все</option>
                 {Object.entries(INSTRUMENT_KIND_LABELS).map(([key, label]) => <option key={key} value={key}>{label}</option>)}
               </select>
             </label>
+            <div className="executive-instruments__result-count" aria-live="polite">
+              Показано {visibleDevices.length} из {data.summary.total_count}
+            </div>
           </div>
 
-          <div className="executive-instruments__table-wrap">
+          <div aria-label="Список приборов" className="executive-instruments__table-wrap" tabIndex={0}>
             <table className="executive-instruments__table">
               <thead>
                 <tr>
                   <th>Состояние</th>
                   <th>Прибор</th>
-                  <th>Ресурсы</th>
-                  <th>Сервисы / 1С</th>
-                  <th>Резервирование</th>
-                  <th>Доступы</th>
-                  <th>Проверка</th>
+                  <th>Главная проблема</th>
+                  <th>Сигналы</th>
+                  <th>Ответственный / проверка</th>
+                  <th><span className="visually-hidden">Действие</span></th>
                 </tr>
               </thead>
               <tbody>
                 {visibleDevices.map((device) => {
-                  const metrics = compactInstrumentMetrics(device);
-                  const accessIssueCount = device.access.attention_grant_count + device.access.unowned_credentials;
                   return (
                     <tr className={`executive-instruments__row executive-instruments__row--${device.health_status}`} key={device.device_key}>
-                      <td>
-                        <span className={`executive-instruments__status executive-instruments__status--${device.health_status}`}>
-                          {INSTRUMENT_HEALTH_LABELS[device.health_status] || device.health_status}
-                        </span>
-                        <small>{INSTRUMENT_CONNECTIVITY_LABELS[device.connectivity_status] || device.connectivity_status}</small>
-                      </td>
+                      <td><InstrumentStatus device={device} /></td>
                       <td>
                         <strong>{device.name}</strong>
                         <span>{INSTRUMENT_KIND_LABELS[device.kind] || device.kind} · {device.location}</span>
-                        <small>{INSTRUMENT_LIFECYCLE_LABELS[device.lifecycle_status] || device.lifecycle_status} · {device.criticality === "critical" ? "критичный" : "обычный"}</small>
-                        <small>{device.purpose.join(" · ") || "Назначение уточняется"}</small>
-                        <small>Бизнес-владелец: {device.business_owner || "не назначен"}</small>
-                        {device.issue && <em>{device.issue}</em>}
-                        {device.recommended_action && <small>{device.recommended_action}</small>}
+                        <small>{device.purpose[0] || "Назначение уточняется"}{device.purpose.length > 1 ? ` · +${device.purpose.length - 1}` : ""}</small>
                       </td>
+                      <td><InstrumentProblemSummary device={device} /></td>
+                      <td><InstrumentSignals device={device} /></td>
                       <td>
-                        {metrics.length ? metrics.map((item) => <span key={item}>{item}</span>) : <span>Нет показателей</span>}
-                      </td>
-                      <td>
-                        {device.services.length ? device.services.map((service) => (
-                          <span key={service.service_key}>{service.name}: {statusLabel(service.status)}</span>
-                        )) : <span>Не зарегистрированы</span>}
-                        {device.integrations.count > 0 && <small>Интеграции: {statusLabel(device.integrations.status)} · {formatDateTime(device.integrations.last_success_at)}</small>}
-                        <InstrumentExchange exchange={device.exchange} />
-                      </td>
-                      <td>
-                        <span>{statusLabel(device.backup.status)}</span>
-                        <small>Защищено: {device.backup.protected_datastores} · пробелов: {device.backup.unprotected_datastores}</small>
-                        <small>RPO: {device.backup.rpo_minutes != null ? `${device.backup.rpo_minutes} мин` : "—"} · отставание: {device.backup.lag_minutes != null ? `${device.backup.lag_minutes} мин` : "—"}</small>
-                        <small>Full: {formatDateTime(device.backup.last_full_backup_at)} · diff: {formatDateTime(device.backup.last_differential_backup_at)} · log: {formatDateTime(device.backup.last_log_backup_at)}</small>
-                        <small>Внешняя/readback: {device.backup.off_host_verified ? "да" : "нет"}/{device.backup.readback_verified ? "да" : "нет"}</small>
-                        <small>Restore-test: {formatDate(device.backup.last_restore_test_at)}</small>
-                      </td>
-                      <td>
-                        <span>{accessIssueCount ? `Требуют внимания: ${accessIssueCount}` : "Без замечаний"}</span>
-                        <small>Активных назначений: {device.access.active_grants}</small>
-                        <small>MFA/ревизия: {device.access.mfa_review_count + device.access.review_required_grants}</small>
-                        <small>Следующая проверка: {formatDate(device.access.next_review_at)}</small>
-                      </td>
-                      <td>
-                        <span>Попытка: {formatDateTime(device.last_attempted_at)}</span>
+                        <strong>{device.technical_owners.join(", ") || "Не назначен"}</strong>
+                        <span>Проверка: {formatDateTime(device.last_attempted_at)}</span>
                         <small>Успех: {formatDateTime(device.last_success_at)}</small>
-                        <small>Доступность 24 ч / 30 д: {instrumentPercent(device.availability_24h_pct)} / {instrumentPercent(device.availability_30d_pct)}</small>
-                        <small>Покрытие 24 ч / 30 д: {instrumentPercent(device.monitoring_coverage_24h_pct)} / {instrumentPercent(device.monitoring_coverage_30d_pct)}</small>
-                        {device.incident_started_at && <small>Сбой с {formatDateTime(device.incident_started_at)} · {instrumentDuration(device.outage_duration_seconds)}</small>}
-                        <small>{device.technical_owners.join(", ") || "Ответственный не назначен"}</small>
+                      </td>
+                      <td>
+                        <button aria-label={`Подробнее: ${device.name}`} className="executive-instruments__details-button" onClick={(event) => openDetails(device, event.currentTarget)} type="button">Подробнее</button>
                       </td>
                     </tr>
                   );
@@ -4396,12 +5014,28 @@ export function InstrumentsPanel({
             {!visibleDevices.length && <div className="executive-cashflow-period__empty">По выбранным фильтрам устройств нет.</div>}
           </div>
 
-          <aside className="executive-instruments__access-note">
-            <strong>Контроль доступов — следующий этап</strong>
-            <span>Сейчас вкладка только показывает назначения, MFA, сроки ревизии и неопознанные credentials. Выдача и отзыв доступов отключены контрактом.</span>
-          </aside>
+          <div className="executive-instruments__cards" aria-label="Карточки приборов">
+            {visibleDevices.map((device) => (
+              <article className={`executive-instruments__card executive-instruments__row--${device.health_status}`} key={device.device_key}>
+                <InstrumentStatus device={device} />
+                <div className="executive-instruments__card-title">
+                  <strong>{device.name}</strong>
+                  <span>{INSTRUMENT_KIND_LABELS[device.kind] || device.kind} · {device.location}</span>
+                </div>
+                <InstrumentProblemSummary device={device} />
+                <InstrumentSignals device={device} />
+                <div className="executive-instruments__card-meta">
+                  <span>{device.technical_owners.join(", ") || "Ответственный не назначен"}</span>
+                  <small>Проверка: {formatDateTime(device.last_attempted_at)}</small>
+                </div>
+                <button aria-label={`Подробнее: ${device.name}`} className="executive-instruments__details-button" onClick={(event) => openDetails(device, event.currentTarget)} type="button">Подробнее</button>
+              </article>
+            ))}
+            {!visibleDevices.length && <div className="executive-cashflow-period__empty">По выбранным фильтрам устройств нет.</div>}
+          </div>
         </>
       )}
+      {selectedDevice && <InstrumentDetails closeButtonRef={closeButtonRef} device={selectedDevice} dialogRef={drawerRef} onClose={closeDetails} />}
     </section>
   );
 }
@@ -5154,7 +5788,6 @@ export function ExecutiveDashboard({ bitrixMode, bitrixUserName, accessLevel }: 
           {managementBalance && (
             <div className="executive-management-balance-section">
               <MonthlyManagementBalance
-                asOf={date}
                 canCloseMonth={currentAccess === "full" || data.roles.includes("finance")}
                 refreshNonce={refreshNonce}
               />

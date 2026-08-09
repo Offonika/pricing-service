@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import date, datetime
 from decimal import Decimal
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -58,6 +58,20 @@ class ReceivableWorkplaceDocument(BaseModel):
     document_structure_status: str | None = None
 
 
+SupervisorNoteVisibility = Literal["personal", "shared"]
+
+
+class ReceivableSupervisorNoteItem(BaseModel):
+    id: int
+    visibility: SupervisorNoteVisibility
+    comment: str
+    author_user_id: str
+    author_name: str
+    created_at: datetime
+    updated_at: datetime
+    can_edit: bool = False
+
+
 class ReceivableWorkplaceItem(BaseModel):
     snapshot_date: date
     stable_key: str
@@ -93,6 +107,7 @@ class ReceivableWorkplaceItem(BaseModel):
     criticality: str
     documents: list[ReceivableWorkplaceDocument] = Field(default_factory=list)
     staff_options: list[ReceivableWorkplaceStaffOption] = Field(default_factory=list)
+    supervisor_notes: list[ReceivableSupervisorNoteItem] = Field(default_factory=list)
 
 
 class ReceivableWorkplaceSummary(BaseModel):
@@ -136,3 +151,13 @@ class ReceivableWorkplaceActionResponse(BaseModel):
     item: ReceivableWorkplaceItem
     event: dict[str, Any]
     cache_status: dict[str, ReceivableWorkplaceCacheComponent] = Field(default_factory=dict)
+
+
+class ReceivableSupervisorNoteUpsertRequest(BaseModel):
+    comment: str = Field(min_length=1, max_length=5000)
+    action_id: str | None = Field(default=None, max_length=160)
+
+
+class ReceivableSupervisorNoteMutationResponse(BaseModel):
+    note: ReceivableSupervisorNoteItem | None = None
+    event: dict[str, Any]

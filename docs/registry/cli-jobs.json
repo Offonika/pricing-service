@@ -74,6 +74,16 @@
       "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
       "remove_after": null
     },
+    "evaluate_competitor_matching_policy.py": {
+      "owner": "matching",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "read_only",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/competitor-matching-ui-v1.md",
+      "remove_after": null
+    },
     "report_competitor_items_needs_compat_review.py": {
       "owner": "matching",
       "kind": "report",
@@ -120,6 +130,26 @@
       "side_effect_level": "db_write",
       "spec": "docs/specs/pricing-service-architecture-hardening.md",
       "remove_after": "2026-10-31"
+    },
+    "backfill_procurement_order_product_media.py": {
+      "owner": "procurement",
+      "kind": "backfill",
+      "dry_run": "supported",
+      "idempotency": "verified_by_payload_and_version",
+      "side_effect_level": "db_write",
+      "db_access": "application_write",
+      "spec": "docs/specs/procurement-order-formation-smart-process.md",
+      "remove_after": "2026-11-30"
+    },
+    "backfill_procurement_order_metrics.py": {
+      "owner": "procurement",
+      "kind": "backfill",
+      "dry_run": "supported",
+      "idempotency": "verified_by_run_id_and_manifest",
+      "side_effect_level": "mixed",
+      "db_access": "mixed",
+      "spec": "docs/specs/procurement-order-formation-smart-process.md",
+      "remove_after": "2026-11-30"
     },
     "backfill_product_classification_sources.py": {
       "owner": "catalog",

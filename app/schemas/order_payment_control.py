@@ -14,6 +14,7 @@ PaymentDecisionReason = Literal[
     "onec_order_deleted",
     "onec_order_ambiguous",
     "onec_order_unposted",
+    "onec_order_closed",
     "onec_amount_invalid",
     "onec_amount_mismatch",
 ]
@@ -47,4 +48,7 @@ class OrderPaymentCheckResponse(BaseModel):
     onec_amount: Decimal | None = None
     onec_document_number: str | None = None
     onec_revision: str | None = None
+    onec_posted: bool | None = None
+    onec_closure_document: str | None = None
+    onec_closure_reason: str | None = None
     checked_at: datetime

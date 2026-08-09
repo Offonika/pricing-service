@@ -19,6 +19,7 @@ from app.infrastructure.db.engines import build_engine
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
 )
+from app.services.onec_stock_availability import merged_interval_days
 from app.services.procurement_b2b_customer_demand import (
     B2BSkuDemandProfile,
     load_b2b_customer_demand_profiles,
@@ -1052,6 +1053,16 @@ STRUCTURAL_FLOOR_QTY = Decimal("13")
 # закреплён строгим анализом, при необходимости можно скорректировать.
 PENSION_CANDIDATE_MIN_DAYS_IN_SALE = Decimal("15")
 
+# Решение 2026-08-09 (возврат предохранителя, который сняли 2026-07-25):
+# если за длинное окно товар был на полке меньше этого числа дней, база для
+# скорости ненадёжна - поправку наличия не применяем вообще (считаем по
+# календарю), а строку с положительным заказом отдаём в ручную проверку.
+# Первоисточник методики (TopControl) считает такой порог обязательным:
+# нормализация по нескольким дням наличия ведёт к заказу неликвида
+# ("шапки пролежали год, разошлись за два дня"). Обсуждение - чат
+# 2026-08-04; фиксация - assortment-status-legacy-rule-inventory.md, раздел 1.
+MIN_RELIABLE_AVAILABILITY_DAYS = Decimal("15")
+
 # off_schedule_signal_policy.stockout_guard, display-auto-order-policy.json:
 # "дней свободного остатка меньше ожидаемого оставшегося срока поставки плюс
 # 10 дней запаса -> создать внеплановую Потребность на заказ или ручную
@@ -1088,46 +1099,60 @@ def fetch_days_in_sale_totals(
     date_to: date,
     windows_days: Sequence[int],
 ) -> dict[str, dict[int, Decimal]]:
+    # Дни наличия = число дней, когда товар был в продаже хотя бы в одной
+    # физической точке. Интервалы точек объединяются (union), а не
+    # суммируются.
+    #
+    # Исправление 2026-08-09. Прежняя версия суммировала точко-дни и делила
+    # на число точек ("средние дни по сети"). В одном числе смешивались
+    # "сколько дней товар был" и "в скольких точках он лежал": товар, весь
+    # период пролежавший в одной точке из одиннадцати, получал W/11 дней и
+    # выглядел отсутствующим. На прогоне 2026-08-09 это было видно прямо в
+    # данных - ни одна из 1517 карточек не набирала полного окна 180 дней,
+    # максимум по каталогу составлял 141 день.
+    #
+    # Расчёт скорости и потребности отдельно по каждой точке (решение
+    # 2026-07-20) этой правкой не выполняется и остаётся отдельной задачей:
+    # он требует продаж в разрезе точек, распределения товара в пути и
+    # правила "сначала перемещение, затем закупка".
     if not codes or not physical_sales_point_codes:
         return {}
-    store_count = Decimal(str(len(physical_sales_point_codes)))
+    windows = sorted({int(window) for window in windows_days if int(window) > 0})
+    if not windows:
+        return {}
     result: dict[str, dict[int, Decimal]] = {code: {} for code in codes}
+    earliest_from = date_to - timedelta(days=max(windows) - 1)
+    intervals: dict[str, list[tuple[date, date]]] = {}
+    sql = text("""
+        SELECT product_code, available_from, available_to
+        FROM onec_stock_availability_interval
+        WHERE product_code IN :codes
+          AND warehouse_code IN :warehouse_codes
+          AND available_from <= :window_to
+          AND available_to >= :window_from
+        """).bindparams(
+        bindparam("codes", value=tuple(codes), expanding=True),
+        bindparam("warehouse_codes", value=tuple(physical_sales_point_codes), expanding=True),
+        bindparam("window_from", value=earliest_from),
+        bindparam("window_to", value=date_to),
+    )
     with engine.connect() as conn:
-        for window_days in sorted(set(windows_days)):
-            window_from = date_to - timedelta(days=window_days - 1)
-            sql = text("""
-                SELECT product_code,
-                    SUM(
-                        GREATEST(
-                            0,
-                            (
-                                LEAST(available_to, :window_to)
-                                - GREATEST(available_from, :window_from)
-                            ) + 1
-                        )
-                    ) AS available_point_days
-                FROM onec_stock_availability_interval
-                WHERE product_code IN :codes
-                  AND warehouse_code IN :warehouse_codes
-                  AND available_from <= :window_to
-                  AND available_to >= :window_from
-                GROUP BY product_code
-                """).bindparams(
-                bindparam("codes", value=tuple(codes), expanding=True),
-                bindparam(
-                    "warehouse_codes",
-                    value=tuple(physical_sales_point_codes),
-                    expanding=True,
-                ),
-                bindparam("window_from", value=window_from),
-                bindparam("window_to", value=date_to),
-            )
-            for row in conn.execute(sql).mappings():
-                code = str(row["product_code"])
-                if code not in result:
-                    continue
-                available_days = Decimal(str(row["available_point_days"] or 0))
-                result[code][window_days] = available_days / store_count
+        for row in conn.execute(sql).mappings():
+            code = str(row["product_code"])
+            if code not in result:
+                continue
+            intervals.setdefault(code, []).append((row["available_from"], row["available_to"]))
+    for window_days in windows:
+        window_from = date_to - timedelta(days=window_days - 1)
+        for code, code_intervals in intervals.items():
+            clipped = [
+                (max(start, window_from), min(end, date_to))
+                for start, end in code_intervals
+                if end >= window_from and start <= date_to
+            ]
+            if not clipped:
+                continue
+            result[code][window_days] = Decimal(str(merged_interval_days(clipped)))
     return result
 
 
@@ -1417,26 +1442,56 @@ def build_dry_run_rows(
         # окна занижает спрос, если товара часть окна не было на полке -
         # карточка выглядит "медленной", хотя реально просто голодала
         # (подтверждено на РБ000064721: 0.1222 шт/день по календарю против
-        # честных 14.2/90 дней в продаже). days_in_sale - среднее по 11
-        # реальным точкам продаж (fetch_days_in_sale_totals), НЕ может быть
-        # больше календарного окна - поправка поэтому только повышает
-        # скорость или оставляет как есть, никогда не занижает. Если данных
-        # нет (старый вызов/фикстура теста) - откат на календарный день,
-        # прежнее поведение.
+        # честных 14.2/90 дней в продаже).
+        #
+        # Решение 2026-08-09: используется МЯГКАЯ поправка - та же формула,
+        # что в app/services/assortment_lifecycle.py и в каноне
+        # docs/specs/assortment-lifecycle-policy.md. Дни без товара
+        # достраиваются по базовой (календарной) скорости:
+        #
+        #   base_rate = продажи / окно
+        #   virtual   = дни_без_товара * base_rate
+        #   rate      = (продажи + virtual) / окно
+        #
+        # Потолок поправки - x2 к календарной скорости. Прежняя ЖЁСТКАЯ
+        # формула (продажи / дни_наличия) отменена: на текущем знаменателе
+        # она не компенсирует дефицит, а умножает продажи на число точек, где
+        # товара не было (days_in_sale = сумма точко-дней / число точек, см.
+        # fetch_days_in_sale_totals) - прогон 2026-08-01 дал рост дневного
+        # заказа с 2183 до 39359 шт, медиана x2.06, максимум x180.
+        #
+        # Знаменатель по-прежнему неточный: расчёт по каждой точке отдельно
+        # (решение 2026-07-20) не реализован - отдельная задача, см. раздел 1
+        # инвентаризации. Если данных нет (старый вызов/фикстура теста) -
+        # откат на календарную скорость, прежнее поведение.
         days_in_sale = facts.get("days_in_sale", {}).get(code, {})
+        observed_days_long = days_in_sale.get(sales_window_days)
+        availability_history_too_short = (
+            observed_days_long is not None and observed_days_long < MIN_RELIABLE_AVAILABILITY_DAYS
+        )
 
         def _availability_rate(
-            net_qty: Decimal, calendar_days: int, *, days_in_sale: dict[int, Decimal] = days_in_sale
+            net_qty: Decimal,
+            calendar_days: int,
+            *,
+            days_in_sale: dict[int, Decimal] = days_in_sale,
+            history_too_short: bool = availability_history_too_short,
         ) -> Decimal:
             if calendar_days <= 0:
                 return Decimal("0")
+            window = Decimal(str(calendar_days))
+            base_rate = net_qty / window
             available_days = days_in_sale.get(calendar_days)
-            divisor = (
-                max(available_days, Decimal("1"))
-                if available_days is not None and available_days > 0
-                else Decimal(str(calendar_days))
-            )
-            return net_qty / divisor
+            if available_days is None or available_days <= 0:
+                return base_rate
+            if history_too_short:
+                # Меньше MIN_RELIABLE_AVAILABILITY_DAYS дней наблюдения за
+                # длинное окно: по такой базе нельзя судить о скорости,
+                # виртуальные продажи не достраиваем ни в одном окне.
+                return base_rate
+            days_without_stock = max(Decimal("0"), window - min(available_days, window))
+            virtual_qty = days_without_stock * base_rate
+            return (net_qty + virtual_qty) / window
 
         rate_long = _availability_rate(net_sales_qty, sales_window_days)
         # Раздел 9.1 (п.2) спеки "Дорогие/маржинальные медленные карточки":
@@ -1753,6 +1808,7 @@ def build_dry_run_rows(
                 "blockers": "; ".join(blockers),
                 "warnings": "; ".join(warnings),
                 "data_sources": _data_sources(demand_rule=demand_rule),
+                "_availability_history_too_short": availability_history_too_short,
             }
         )
     apply_independent_speed_tier(
@@ -1802,6 +1858,29 @@ def build_dry_run_rows(
             row["recommended_order_qty_raw"] = "0"
             row["recommended_order_qty"] = "0"
             row["dry_run_decision"] = "manual_review"
+
+    # Предохранитель короткой истории наличия (решение 2026-08-09, см.
+    # MIN_RELIABLE_AVAILABILITY_DAYS): скорость по нескольким дням наблюдения
+    # не доказана, автозаказ по ней запрещён - строка уходит человеку.
+    # Здесь, в самом конце, чтобы ни один шаг конвейера не вернул заказ
+    # такой строке (тот же принцип, что и барьер blockers выше).
+    for row in rows:
+        if not row.get("_availability_history_too_short"):
+            continue
+        if _clean(row.get("dry_run_decision")) != "order":
+            continue
+        computed_qty = _clean(row.get("recommended_order_qty")) or "0"
+        row["recommended_order_qty_raw"] = "0"
+        row["recommended_order_qty"] = "0"
+        row["dry_run_decision"] = "manual_review"
+        _append_warning(row, "availability_history_too_short")
+        observed = _clean(row.get("days_in_sale_long")) or "0"
+        row["reason_ru"] = (
+            f"Мало данных о наличии: товар был на полке {observed} дн. из "
+            f"{sales_window_days} (порог {MIN_RELIABLE_AVAILABILITY_DAYS}). Поправку "
+            f"наличия не применяли, расчёт по календарю давал {computed_qty} шт - "
+            "по такой короткой базе автозаказ запрещён, нужна ручная проверка."
+        )
 
     # stockout_guard (off_schedule_signal_policy) - см. константу выше.
     # Считается здесь, в самом конце, на уже окончательно устоявшемся

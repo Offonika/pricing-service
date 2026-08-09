@@ -512,7 +512,18 @@ def _demand_stage(item: AssortmentLifecycleInput) -> tuple[AssortmentStatus, str
 
     if proven_demand:
         if trend == "declining":
-            if _was_really_on_shelf(item):
+            days_on_shelf = _to_optional_decimal(item.days_in_sale_medium)
+            if days_on_shelf is None:
+                return (
+                    previous_status or AssortmentStatus.SALE,
+                    "availability_data_missing",
+                    (
+                        f"Продажи падают ({trend_text}), но дней наличия по товару нет "
+                        "в данных — присутствие на полке не доказано. Понижать статус "
+                        "нельзя: это может быть дефицит, а не спад спроса."
+                    ),
+                )
+            if days_on_shelf >= DECLINE_MIN_DAYS_IN_SALE:
                 return (
                     AssortmentStatus.WORKING,
                     "demand_declining",
@@ -657,18 +668,6 @@ def _soft_availability_rate(
     days_without_stock = max(Decimal("0"), window - min(available_days, window))
     virtual_qty = days_without_stock * base_rate
     return (qty + virtual_qty) / window
-
-
-def _was_really_on_shelf(item: AssortmentLifecycleInput) -> bool:
-    """Был ли товар на полке достаточно, чтобы спаду можно было верить.
-
-    Нет данных о днях наличия — считаем, что был: иначе отсутствие витрины
-    наличия молча заморозило бы все переходы в «Поддерживаем».
-    """
-    days_in_sale = _to_optional_decimal(item.days_in_sale_medium)
-    if days_in_sale is None:
-        return True
-    return days_in_sale >= DECLINE_MIN_DAYS_IN_SALE
 
 
 def _previous_status(value: AssortmentStatus | str | None) -> AssortmentStatus | None:

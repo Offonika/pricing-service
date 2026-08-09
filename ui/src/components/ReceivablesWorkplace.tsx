@@ -1,21 +1,37 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import toast from "react-hot-toast";
 import { resolveBitrixPortalUrl } from "../api/bitrix";
 import { clearApiAuthToken, setApiAuthToken } from "../api/client";
+import { receivableStatusTone } from "../receivableStatusTone";
 import {
+  deleteReceivableSupervisorNote,
   fetchCounterpartyFolderRecommendations,
   fetchReceivableWorkplace,
   fetchReceivableWorkplaceMeta,
   buildReceivableWorkplaceActionPayload,
   receivablesErrorMessage,
+  upsertReceivableSupervisorNote,
   updateReceivableWorkplaceItem,
   type CounterpartyFolderRecommendation,
+  type CounterpartyFolderQueue,
   type ReceivableCacheComponent,
   type ReceivableDepartmentOption,
   type ReceivableStatusOption,
+  type ReceivableWorkplaceSortBy,
+  type ReceivableWorkplaceSortDir,
   type ReceivableWorkplaceEditState,
   type ReceivableWorkplaceItem,
   type ReceivableWorkplaceSummary,
+  type SupervisorNoteVisibility,
 } from "../api/receivables";
 
 const RECEIVABLES_TOKEN_SESSION_KEY = "pricing.receivables.session_token.v1";
@@ -24,6 +40,7 @@ const RECEIVABLES_TOKEN_LEGACY_KEY = "pricing.receivables.token.v1";
 type EditState = ReceivableWorkplaceEditState;
 
 type QuickFilter = "" | "call_today" | "no_phone" | "overdue_30" | "overdue_90" | "postponed";
+type MinimumDebtFilter = "" | "500" | "1000";
 type ReceivablesTab = "work" | "folders";
 
 const emptySummary: ReceivableWorkplaceSummary = {
@@ -44,8 +61,19 @@ type ReceivablesWorkplaceProps = {
   departmentRefs?: string[];
 };
 
+function moscowDateIso(value = new Date()) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Europe/Moscow",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+  const byType = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+  return `${byType.year}-${byType.month}-${byType.day}`;
+}
+
 function todayIso() {
-  return new Date().toISOString().slice(0, 10);
+  return moscowDateIso();
 }
 
 function readInitialDate() {
@@ -85,6 +113,92 @@ function getErrorStatus(error: unknown) {
 
 function dateInput(value?: string | null) {
   return value ? value.slice(0, 10) : "";
+}
+
+function ScrollableTableRegion({
+  ariaLabel,
+  children,
+  className = "",
+}: {
+  ariaLabel: string;
+  children: ReactNode;
+  className?: string;
+}) {
+  const regionRef = useRef<HTMLDivElement>(null);
+  const instructionsId = useId();
+  const [canScrollRight, setCanScrollRight] = useState(false);
+
+  const updateScrollState = useCallback(() => {
+    const region = regionRef.current;
+    if (!region) return;
+    const remaining = region.scrollWidth - region.clientWidth - region.scrollLeft;
+    const scrollbarAllowance = Math.max(1, region.offsetWidth - region.clientWidth + 1);
+    setCanScrollRight(
+      region.scrollWidth > region.clientWidth + scrollbarAllowance &&
+        remaining > scrollbarAllowance,
+    );
+  }, []);
+
+  useEffect(() => {
+    const initialFrame = window.requestAnimationFrame(updateScrollState);
+    const region = regionRef.current;
+    if (!region) {
+      return () => window.cancelAnimationFrame(initialFrame);
+    }
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(updateScrollState);
+    resizeObserver?.observe(region);
+    window.addEventListener("resize", updateScrollState);
+    return () => {
+      window.cancelAnimationFrame(initialFrame);
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", updateScrollState);
+    };
+  }, [children, updateScrollState]);
+
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    if (event.altKey || event.ctrlKey || event.metaKey) return;
+    const region = regionRef.current;
+    if (!region) return;
+    event.preventDefault();
+    const direction = event.key === "ArrowRight" ? 1 : -1;
+    const step = Math.max(80, Math.round(region.clientWidth * 0.2));
+    region.scrollLeft = Math.max(
+      0,
+      Math.min(region.scrollWidth - region.clientWidth, region.scrollLeft + direction * step),
+    );
+    updateScrollState();
+  };
+
+  return (
+    <section
+      className={`receivables__scroll-shell${canScrollRight ? " receivables__scroll-shell--more-right" : ""}${className ? ` ${className}` : ""}`}
+      data-can-scroll-right={canScrollRight ? "true" : "false"}
+    >
+      <div
+        aria-describedby={instructionsId}
+        aria-label={ariaLabel}
+        className="receivables__scroll-region"
+        onKeyDown={handleKeyDown}
+        onScroll={updateScrollState}
+        ref={regionRef}
+        role="region"
+        tabIndex={0}
+      >
+        {children}
+      </div>
+      <span className="visually-hidden" id={instructionsId}>
+        Используйте горизонтальную полосу прокрутки или стрелки влево и вправо, чтобы увидеть остальные столбцы.
+      </span>
+      <span aria-hidden="true" className="receivables__scroll-hint" hidden={!canScrollRight}>
+        Прокрутите вправо →
+      </span>
+    </section>
+  );
 }
 
 function formatMoney(value: string | number | null | undefined) {
@@ -137,6 +251,7 @@ function initialEdit(item: ReceivableWorkplaceItem): EditState {
 
 function debtRuleLabel(value?: string | null) {
   const labels: Record<string, string> = {
+    onec_canonical_continuous_balance_origin: "Подтверждено непрерывным балансом 1С",
     statement_direct_payment_match: "закрыто ближайшей оплатой",
     statement_multi_sale_payment_match: "группа закрыта одной оплатой",
     statement_bottom_up_balance_cutoff: "подбор от текущего остатка",
@@ -144,7 +259,7 @@ function debtRuleLabel(value?: string | null) {
     statement_structure_confirmed_open: "подтверждено структурой 1С",
     confirmed_open: "подтверждено структурой 1С",
   };
-  return value ? labels[value] || value : "расчет по открытым документам";
+  return value ? labels[value] || "Неизвестное правило" : "расчет по открытым документам";
 }
 
 function folderStatusLabel(value?: string | null) {
@@ -161,6 +276,10 @@ function folderReviewReasonLabel(value?: string | null) {
   const labels: Record<string, string> = {
     department_folder_missing: "не найдена папка подразделения",
     open_structure_document_not_found: "не найден открытый документ по структуре 1С",
+    open_debt_statement_missing: "в ведомости нет документов для подтверждения долга",
+    open_debt_structure_unconfirmed: "структура документов 1С не подтверждена",
+    open_debt_document_total_below_balance: "сумма найденных накладных меньше долга",
+    open_debt_document_total_above_balance: "сумма найденных накладных больше долга",
     origin_document_structure_confirmed_manual_review: "исходная накладная требует ручной сверки",
     spb_cross_folder_manual_review: "СПБ: нужна ручная проверка между папками",
   };
@@ -208,7 +327,7 @@ function ReceivableSummary({
 }) {
   const metrics = [
     ["Общая дебиторка", formatMoney(summary.total_receivable)],
-    ["Общая просрочка", formatMoney(summary.total_overdue)],
+    ["Просроченная дебиторка в выборке", formatMoney(summary.total_overdue)],
     ["> 30 дней", formatMoney(summary.overdue_over_30_amount)],
     ["> 90 дней", formatMoney(summary.overdue_over_90_amount)],
     ["Позвонить сегодня", formatMoney(summary.need_call_today_amount)],
@@ -217,13 +336,153 @@ function ReceivableSummary({
     ["Показано", `${visibleCount} из ${totalCount}`],
   ];
   return (
-    <section className="receivables__summary">
-      {metrics.map(([label, value]) => (
-        <div className="receivables__metric" key={label}>
-          <span>{label}</span>
-          <strong>{value}</strong>
+    <>
+      <section className="receivables__summary">
+        {metrics.map(([label, value]) => (
+          <div className="receivables__metric" key={label}>
+            <span>{label}</span>
+            <strong>{value}</strong>
+          </div>
+        ))}
+      </section>
+      <p className="receivables__summary-hint">
+        Сумма учитывает доступы, подразделение, статус и порог долга и рассчитывается до применения limit.
+      </p>
+    </>
+  );
+}
+
+function SupervisorNotesPanel({
+  canWrite,
+  date,
+  item,
+  onChange,
+}: {
+  canWrite: boolean;
+  date: string;
+  item: ReceivableWorkplaceItem;
+  onChange: (notes: ReceivableWorkplaceItem["supervisor_notes"]) => void;
+}) {
+  const [visibility, setVisibility] = useState<SupervisorNoteVisibility>(
+    canWrite ? "personal" : "shared"
+  );
+  const notes = item.supervisor_notes || [];
+  const visibleNotes = notes.filter((note) => note.visibility === visibility);
+  const editableNote = visibleNotes.find((note) => note.can_edit);
+  const [draft, setDraft] = useState(editableNote?.comment || "");
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setDraft(editableNote?.comment || "");
+  }, [editableNote?.comment, editableNote?.id, visibility]);
+
+  async function saveNote() {
+    const comment = draft.trim();
+    if (!comment) {
+      toast.error("Введите текст заметки");
+      return;
+    }
+    setBusy(true);
+    try {
+      const response = await upsertReceivableSupervisorNote(
+        date,
+        item.counterparty_ref,
+        visibility,
+        comment,
+        newActionId()
+      );
+      const savedNote = response.note;
+      if (savedNote) {
+        onChange([...notes.filter((note) => note.id !== savedNote.id), savedNote]);
+      }
+      toast.success(visibility === "personal" ? "Личная заметка сохранена" : "Общая заметка сохранена");
+    } catch (error: unknown) {
+      toast.error(receivablesErrorMessage(error, "Не удалось сохранить заметку"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function deleteNote() {
+    if (!editableNote) return;
+    setBusy(true);
+    try {
+      await deleteReceivableSupervisorNote(
+        date,
+        item.counterparty_ref,
+        visibility,
+        newActionId()
+      );
+      onChange(notes.filter((note) => note.id !== editableNote.id));
+      setDraft("");
+      toast.success("Заметка удалена");
+    } catch (error: unknown) {
+      toast.error(receivablesErrorMessage(error, "Не удалось удалить заметку"));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="receivables__supervisor-notes">
+      <div className="receivables__supervisor-notes-head">
+        <strong>Заметки руководителя</strong>
+        <div className="receivables__note-switch" role="group" aria-label="Видимость заметки">
+          {canWrite && (
+            <button
+              className={visibility === "personal" ? "btn btn--compact" : "btn btn--compact btn--ghost"}
+              onClick={() => setVisibility("personal")}
+              type="button"
+            >
+              Личная
+            </button>
+          )}
+          <button
+            className={visibility === "shared" ? "btn btn--compact" : "btn btn--compact btn--ghost"}
+            onClick={() => setVisibility("shared")}
+            type="button"
+          >
+            Коллегам
+          </button>
         </div>
-      ))}
+      </div>
+      <div className="receivables__note-list">
+        {visibleNotes.map((note) => (
+          <article className="receivables__note-card" key={note.id}>
+            <p>{note.comment}</p>
+            <small>
+              {note.author_name} · {formatDateTime(note.updated_at)}
+              {note.can_edit ? " · ваша заметка" : ""}
+            </small>
+          </article>
+        ))}
+        {!visibleNotes.length && (
+          <small>{visibility === "personal" ? "Личной заметки пока нет." : "Общих заметок пока нет."}</small>
+        )}
+      </div>
+      {canWrite && (
+        <div className="receivables__note-editor">
+          <textarea
+            aria-label={visibility === "personal" ? "Личная заметка руководителя" : "Заметка коллегам"}
+            className="receivables__comment receivables__comment--expanded"
+            maxLength={5000}
+            onChange={(event) => setDraft(event.target.value)}
+            placeholder={visibility === "personal" ? "Видна только вам" : "Видна коллегам с доступом к клиенту"}
+            value={draft}
+          />
+          <div className="receivables__comment-editor-actions">
+            {editableNote && (
+              <button className="btn btn--ghost" disabled={busy} onClick={() => void deleteNote()} type="button">
+                Удалить заметку
+              </button>
+            )}
+            <button className="btn" disabled={busy} onClick={() => void saveNote()} type="button">
+              {busy ? "Сохраняем..." : "Сохранить заметку"}
+            </button>
+          </div>
+        </div>
+      )}
+      {!canWrite && <small>Общие заметки доступны только для чтения.</small>}
     </section>
   );
 }
@@ -240,6 +499,9 @@ function ReceivableRow({
   onToggleComment,
   onEdit,
   onSave,
+  canWriteSupervisorNotes,
+  date,
+  onSupervisorNotesChange,
 }: {
   item: ReceivableWorkplaceItem;
   index: number;
@@ -252,6 +514,9 @@ function ReceivableRow({
   onToggleComment: () => void;
   onEdit: (patch: Partial<EditState>) => void;
   onSave: () => void;
+  canWriteSupervisorNotes: boolean;
+  date: string;
+  onSupervisorNotesChange: (notes: ReceivableWorkplaceItem["supervisor_notes"]) => void;
 }) {
   const isPyatigorsk = (item.department_name || "").toLocaleLowerCase("ru-RU").includes("пятигор");
   const rowStatusOptions = statusOptions.filter(
@@ -306,8 +571,8 @@ function ReceivableRow({
         <td className={item.no_phone_marker ? "receivables__phone receivables__phone--missing" : "receivables__phone"}>
           {item.phone || "нет"}
         </td>
-        <td>{formatMoney(item.current_balance)}</td>
-        <td>{item.effective_overdue_days || 0} дн.</td>
+        <td className="receivables__nowrap">{formatMoney(item.current_balance)}</td>
+        <td className="receivables__nowrap">{item.effective_overdue_days || 0} дн.</td>
         <td>
           <input
             className="receivables__input"
@@ -340,7 +605,7 @@ function ReceivableRow({
         </td>
         <td>
           <select
-            className="receivables__select"
+            className={`receivables__select receivables__status-select receivables__status-select--${receivableStatusTone(edit.status)}`}
             value={edit.status}
             onChange={(event) => onEdit({ status: event.target.value })}
           >
@@ -350,6 +615,11 @@ function ReceivableRow({
               </option>
             ))}
           </select>
+          {edit.status === "paid" && (
+            <small className="receivables__paid-warning" role="alert">
+              Комментарий менеджера очистится после успешного сохранения.
+            </small>
+          )}
         </td>
         <td>
           <input
@@ -380,18 +650,13 @@ function ReceivableRow({
             {edit.comment || "Добавить комментарий"}
           </button>
         </td>
-        <td>
-          <button className="btn" disabled={saving} onClick={onSave} type="button">
-            {saving ? "..." : "Сохранить"}
-          </button>
-        </td>
       </tr>
       {commentExpanded && (
         <tr className="receivables__comment-editor-row">
-          <td colSpan={15}>
+          <td colSpan={14}>
             <div className="receivables__comment-editor">
               <label>
-                <strong>Комментарий по {item.counterparty_name || item.counterparty_ref}</strong>
+                <strong>Комментарий менеджера по {item.counterparty_name || item.counterparty_ref}</strong>
                 <textarea
                   autoFocus
                   className="receivables__comment receivables__comment--expanded"
@@ -407,13 +672,19 @@ function ReceivableRow({
                   {saving ? "Сохраняем..." : "Сохранить комментарий"}
                 </button>
               </div>
+              <SupervisorNotesPanel
+                canWrite={canWriteSupervisorNotes}
+                date={date}
+                item={item}
+                onChange={onSupervisorNotesChange}
+              />
             </div>
           </td>
         </tr>
       )}
       {expanded && (
         <tr className="receivables__details">
-          <td colSpan={15}>
+          <td colSpan={14}>
             <div className="receivables__documents">
               <div className="receivables__documents-head">
                 <strong>Накладные</strong>
@@ -436,34 +707,39 @@ function ReceivableRow({
                   </tr>
                 </thead>
                 <tbody>
-                  {item.documents.map((document) => (
-                    <tr key={`${document.document_ref || document.document_number}-${document.document_date || ""}`}>
-                      <td>{document.document_number || ""}</td>
-                      <td>{formatDate(document.document_date)}</td>
-                      <td>{formatMoney(document.amount)}</td>
-                      <td>{formatMoney(document.open_amount || document.amount)}</td>
-                      <td>
-                        <span className="receivables__debt-rule">
-                          {debtRuleLabel(document.selection_rule || document.document_structure_status)}
-                        </span>
-                        {document.closing_amount && (
-                          <small>Закрыто: {formatMoney(document.closing_amount)}</small>
-                        )}
-                        {document.return_amount && (
-                          <small>Возврат: {formatMoney(document.return_amount)}</small>
-                        )}
-                        {document.statement_balance_after && (
-                          <small>Баланс: {formatMoney(document.statement_balance_after)}</small>
-                        )}
-                        {document.match_details?.length > 0 && (
-                          <small>{matchDetailsText(document.match_details)}</small>
-                        )}
-                      </td>
-                      <td>{formatDate(document.due_date)}</td>
-                      <td>{document.overdue_days || 0} дн.</td>
-                      <td>{document.manager_name || ""}</td>
-                    </tr>
-                  ))}
+                  {item.documents.map((document) => {
+                    const ruleValue = document.selection_rule || document.document_structure_status;
+                    return (
+                      <tr key={`${document.document_ref || document.document_number}-${document.document_date || ""}`}>
+                        <td>{document.document_number || ""}</td>
+                        <td className="receivables__nowrap">{formatDate(document.document_date)}</td>
+                        <td className="receivables__nowrap">{formatMoney(document.amount)}</td>
+                        <td className="receivables__nowrap">
+                          {formatMoney(document.open_amount || document.amount)}
+                        </td>
+                        <td>
+                          <span className="receivables__debt-rule" title={ruleValue || undefined}>
+                            {debtRuleLabel(ruleValue)}
+                          </span>
+                          {document.closing_amount && (
+                            <small>Закрыто: {formatMoney(document.closing_amount)}</small>
+                          )}
+                          {document.return_amount && (
+                            <small>Возврат: {formatMoney(document.return_amount)}</small>
+                          )}
+                          {document.statement_balance_after && (
+                            <small>Баланс: {formatMoney(document.statement_balance_after)}</small>
+                          )}
+                          {document.match_details?.length > 0 && (
+                            <small>{matchDetailsText(document.match_details)}</small>
+                          )}
+                        </td>
+                        <td className="receivables__nowrap">{formatDate(document.due_date)}</td>
+                        <td className="receivables__nowrap">{document.overdue_days || 0} дн.</td>
+                        <td>{document.manager_name || ""}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -479,23 +755,26 @@ function FolderRecommendations({
   loading,
   summary,
   sourceStatus,
+  queue,
+  onQueueChange,
 }: {
   items: CounterpartyFolderRecommendation[];
   loading: boolean;
   summary: Record<string, unknown>;
   sourceStatus: string;
+  queue: CounterpartyFolderQueue;
+  onQueueChange: (queue: CounterpartyFolderQueue) => void;
 }) {
   if (loading) return <div className="receivables__state">Загрузка вкладки контроля папок...</div>;
   const sourceStale = sourceStatus === "source_stale";
   const computedAt = typeof summary.computed_at === "string" ? summary.computed_at : "";
-  if (!items.length) {
-    return (
-      <div className="receivables__state">
-        По текущей дате рекомендаций нет.
-        {sourceStatus && <span> Источник: {sourceStatus}.</span>}
-      </div>
-    );
-  }
+  const queueOptions: Array<[CounterpartyFolderQueue, string]> = [
+    ["actionable", "Требует действия"],
+    ["business_review", "Бизнес-проверка"],
+    ["data_quality", "Проверка данных"],
+    ["excluded", "Исключённые"],
+    ["all", "Все"],
+  ];
   return (
     <section className="receivables__folder-tab">
       {sourceStale && (
@@ -503,59 +782,86 @@ function FolderRecommendations({
           Источник накладных устарел. Номера накладных скрыты, автоматические переносы отключены.
         </div>
       )}
+      <div className="receivables__folder-queues" role="group" aria-label="Очередь контроля папок">
+        {queueOptions.map(([value, label]) => (
+          <button
+            className={queue === value ? "btn btn--compact" : "btn btn--compact btn--ghost"}
+            key={value}
+            onClick={() => onQueueChange(value)}
+            type="button"
+          >
+            {label}
+          </button>
+        ))}
+      </div>
       <div className="receivables__folder-summary">
         <span>Строк: {String(summary.total_count ?? items.length)}</span>
         <span>К пересмотру: {String(summary.needs_review_count ?? 0)}</span>
         <span>Источник: {sourceStatus || "ready"}</span>
         {computedAt && <span>Расчет: {formatDateTime(computedAt)}</span>}
       </div>
-      <table>
-        <thead>
-          <tr>
-            <th>Код 1С</th>
-            <th>Клиент</th>
-            <th>Текущая папка</th>
-            <th>Рекомендованная папка</th>
-            <th>Долгообразующая накладная</th>
-            <th>Долг</th>
-            <th>Статус</th>
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((item) => {
-            const recommendedFolder =
-              item.recommended_folder_display_name || item.recommended_folder_name || "";
-            const debtInvoiceNumber = sourceStale
-              ? ""
-              : item.debt_document_number || item.origin_document_number || "";
-            const debtInvoiceDate = sourceStale
-              ? ""
-              : item.debt_document_date || item.origin_document_date || "";
-            const reviewReason = folderReviewReasonLabel(item.review_reason);
-            return (
-              <tr key={item.counterparty_ref}>
-                <td className="mono">{item.counterparty_code || ""}</td>
-                <td>{item.counterparty_name || item.counterparty_ref}</td>
-                <td title={item.current_folder_name || ""}>
-                  {item.current_folder_display_name || item.current_folder_name || ""}
-                </td>
-                <td title={item.recommended_folder_name || ""}>
-                  {recommendedFolder || "—"}
-                </td>
-                <td title={debtInvoiceNumber}>
-                  {debtInvoiceNumber || "—"}
-                  {debtInvoiceDate && <small>{formatDate(debtInvoiceDate)}</small>}
-                </td>
-                <td>{formatMoney(item.current_balance)}</td>
-                <td>
-                  {folderStatusLabel(item.status)}
-                  {reviewReason && <small>{reviewReason}</small>}
-                </td>
+      {!items.length && (
+        <div className="receivables__state">
+          В выбранной очереди строк нет.
+          {sourceStatus && <span> Источник: {sourceStatus}.</span>}
+        </div>
+      )}
+      {items.length > 0 && (
+        <ScrollableTableRegion
+          ariaLabel="Таблица контроля папок контрагентов"
+          className="receivables__folder-table-wrap"
+        >
+          <table>
+            <thead>
+              <tr>
+                <th>Код 1С</th>
+                <th>Клиент</th>
+                <th>Текущая папка</th>
+                <th>Рекомендованная папка</th>
+                <th>Долгообразующая накладная</th>
+                <th>Долг</th>
+                <th>Статус</th>
               </tr>
-            );
-          })}
-        </tbody>
-      </table>
+            </thead>
+            <tbody>
+              {items.map((item) => {
+                const recommendedFolder =
+                  item.recommended_folder_display_name || item.recommended_folder_name || "";
+                const debtInvoiceNumber = sourceStale
+                  ? ""
+                  : item.debt_document_number || item.origin_document_number || "";
+                const debtInvoiceDate = sourceStale
+                  ? ""
+                  : item.debt_document_date || item.origin_document_date || "";
+                const reviewReason = folderReviewReasonLabel(
+                  item.exclusion_reason || item.business_review_reason || item.review_reason
+                );
+                return (
+                  <tr key={item.counterparty_ref}>
+                    <td className="mono">{item.counterparty_code || ""}</td>
+                    <td>{item.counterparty_name || item.counterparty_ref}</td>
+                    <td title={item.current_folder_name || ""}>
+                      {item.current_folder_display_name || item.current_folder_name || ""}
+                    </td>
+                    <td title={item.recommended_folder_name || ""}>
+                      {recommendedFolder || "—"}
+                    </td>
+                    <td title={debtInvoiceNumber}>
+                      {debtInvoiceNumber || "—"}
+                      {debtInvoiceDate && <small>{formatDate(debtInvoiceDate)}</small>}
+                    </td>
+                    <td className="receivables__nowrap">{formatMoney(item.current_balance)}</td>
+                    <td>
+                      {folderStatusLabel(item.status)}
+                      {reviewReason && <small>{reviewReason}</small>}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </ScrollableTableRegion>
+      )}
     </section>
   );
 }
@@ -569,6 +875,9 @@ export function ReceivablesWorkplace({
   const [date, setDate] = useState(readInitialDate);
   const [departmentRef, setDepartmentRef] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [minimumDebt, setMinimumDebt] = useState<MinimumDebtFilter>("");
+  const [sortBy, setSortBy] = useState<ReceivableWorkplaceSortBy>("balance");
+  const [sortDir, setSortDir] = useState<ReceivableWorkplaceSortDir>("desc");
   const [quickFilter, setQuickFilter] = useState<QuickFilter>("");
   const [items, setItems] = useState<ReceivableWorkplaceItem[]>([]);
   const [summary, setSummary] = useState<ReceivableWorkplaceSummary>(emptySummary);
@@ -589,7 +898,9 @@ export function ReceivablesWorkplace({
   const [folderSummary, setFolderSummary] = useState<Record<string, unknown>>({});
   const [folderSourceStatus, setFolderSourceStatus] = useState("");
   const [foldersLoading, setFoldersLoading] = useState(false);
+  const [folderQueue, setFolderQueue] = useState<CounterpartyFolderQueue>("actionable");
   const [metaLoaded, setMetaLoaded] = useState(false);
+  const [latestSnapshotDate, setLatestSnapshotDate] = useState<string | null>(null);
   const dashboardReturnUrl = useMemo(readDashboardReturnUrl, []);
   const normalizedToken = token.trim();
   const hasToken = bitrixMode || normalizedToken.length > 0;
@@ -617,7 +928,10 @@ export function ReceivablesWorkplace({
         setMetaLoaded(true);
         setDepartmentOptions(data.department_options);
         setCacheStatus(data.cache_status || {});
-        if (!metaLoaded && data.latest_snapshot_date) setDate(data.latest_snapshot_date);
+        if (!metaLoaded) {
+          setLatestSnapshotDate(data.latest_snapshot_date || null);
+          if (data.latest_snapshot_date) setDate(data.latest_snapshot_date);
+        }
       })
       .catch((error: unknown) => {
         if (cancelled) return;
@@ -660,6 +974,9 @@ export function ReceivablesWorkplace({
       const data = await fetchReceivableWorkplace({
         date,
         department_ref: departmentRef,
+        min_debt: minimumDebt ? Number(minimumDebt) : undefined,
+        sort_by: sortBy,
+        sort_dir: sortDir,
         status: statusFilter,
       });
       const payload = data.payload || [];
@@ -679,7 +996,7 @@ export function ReceivablesWorkplace({
     } finally {
       setLoading(false);
     }
-  }, [date, departmentRef, hasToken, statusFilter]);
+  }, [date, departmentRef, hasToken, minimumDebt, sortBy, sortDir, statusFilter]);
 
   const loadFolders = useCallback(async () => {
     if (!hasToken || !date) {
@@ -688,7 +1005,7 @@ export function ReceivablesWorkplace({
     }
     setFoldersLoading(true);
     try {
-      const data = await fetchCounterpartyFolderRecommendations(date);
+      const data = await fetchCounterpartyFolderRecommendations(date, folderQueue);
       setFolderItems(data.payload);
       setFolderSummary(data.summary || {});
       setFolderSourceStatus(data.source_status);
@@ -697,7 +1014,7 @@ export function ReceivablesWorkplace({
     } finally {
       setFoldersLoading(false);
     }
-  }, [date, hasToken]);
+  }, [date, folderQueue, hasToken]);
 
   useEffect(() => {
     void loadWorkplace();
@@ -738,6 +1055,9 @@ export function ReceivablesWorkplace({
   };
 
   const openDebtComputedAt = cacheStatus.open_debt?.computed_at;
+  const latestSnapshotIsStale = Boolean(
+    latestSnapshotDate && latestSnapshotDate.slice(0, 10) < moscowDateIso(),
+  );
 
   return (
     <div className="app receivables">
@@ -766,6 +1086,31 @@ export function ReceivablesWorkplace({
             </option>
           ))}
         </select>
+        <select
+          className="app__select"
+          value={minimumDebt}
+          onChange={(event) => setMinimumDebt(event.target.value as MinimumDebtFilter)}
+        >
+          <option value="">Любая сумма долга</option>
+          <option value="500">Долг &gt; 500 ₽</option>
+          <option value="1000">Долг &gt; 1 000 ₽</option>
+        </select>
+        <select
+          className="app__select"
+          value={sortBy}
+          onChange={(event) => setSortBy(event.target.value as ReceivableWorkplaceSortBy)}
+        >
+          <option value="balance">По сумме</option>
+          <option value="overdue_days">По дням просрочки</option>
+        </select>
+        <select
+          className="app__select"
+          value={sortDir}
+          onChange={(event) => setSortDir(event.target.value as ReceivableWorkplaceSortDir)}
+        >
+          <option value="desc">По убыванию</option>
+          <option value="asc">По возрастанию</option>
+        </select>
         {!bitrixMode && (
           <input
             className="app__search receivables__token"
@@ -784,6 +1129,11 @@ export function ReceivablesWorkplace({
           <span>Дата витрины: {date || "не выбрана"}</span>
           <span>Источник: {sourceStatus || cacheStatus.open_debt?.source_status || "ожидает загрузки"}</span>
           {openDebtComputedAt && <span>Долг рассчитан: {formatDateTime(openDebtComputedAt)}</span>}
+        </div>
+      )}
+      {hasToken && latestSnapshotIsStale && (
+        <div className="receivables__stale-warning" role="alert">
+          Показаны последние проверенные данные за {latestSnapshotDate}. Снимок за текущий московский день ещё не подтверждён.
         </div>
       )}
       {hasToken && cacheStatus.open_debt?.source_status === "source_stale" && (
@@ -824,7 +1174,10 @@ export function ReceivablesWorkplace({
       </nav>
       {message && <div className="products-table__state products-table__state--error">{message}</div>}
       {hasToken && tab === "work" && (
-        <section className="receivables__table-wrap">
+        <ScrollableTableRegion
+          ariaLabel="Рабочий список дебиторской задолженности"
+          className="receivables__table-wrap"
+        >
           {loading ? (
             <div className="receivables__state">Загрузка рабочего списка...</div>
           ) : (
@@ -845,12 +1198,13 @@ export function ReceivablesWorkplace({
                   <th>Следующий контакт</th>
                   <th>Перенес</th>
                   <th>Комментарий</th>
-                  <th></th>
                 </tr>
               </thead>
               <tbody>
                 {displayedItems.map((item, index) => (
                   <ReceivableRow
+                    canWriteSupervisorNotes={bitrixMode && accessLevel === "full"}
+                    date={date}
                     key={item.counterparty_ref}
                     edit={edits[item.counterparty_ref] || initialEdit(item)}
                     expanded={expanded.has(item.counterparty_ref)}
@@ -867,6 +1221,15 @@ export function ReceivablesWorkplace({
                       }))
                     }
                     onSave={() => void saveItem(item)}
+                    onSupervisorNotesChange={(supervisorNotes) =>
+                      setItems((prev) =>
+                        prev.map((row) =>
+                          row.counterparty_ref === item.counterparty_ref
+                            ? { ...row, supervisor_notes: supervisorNotes }
+                            : row
+                        )
+                      )
+                    }
                     onToggleComment={() =>
                       setCommentsExpanded((prev) => {
                         const next = new Set(prev);
@@ -891,7 +1254,7 @@ export function ReceivablesWorkplace({
             </table>
           )}
           {!loading && !displayedItems.length && <div className="receivables__state">На выбранную дату строк нет.</div>}
-        </section>
+        </ScrollableTableRegion>
       )}
       {hasToken && tab === "folders" && (
         <FolderRecommendations
@@ -899,6 +1262,8 @@ export function ReceivablesWorkplace({
           loading={foldersLoading}
           sourceStatus={folderSourceStatus}
           summary={folderSummary}
+          queue={folderQueue}
+          onQueueChange={setFolderQueue}
         />
       )}
       <footer className="receivables__legend">

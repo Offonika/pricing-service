@@ -31,10 +31,20 @@ def _operation(**overrides: object) -> ReceivableCreditDecisionOperation:
         "counterparty_guid": "a7d9b21e-222e-11ed-8fda-0025901e48ee",
         "counterparty_code": "РБ030337",
         "counterparty_name": "Тестовый контрагент",
+        "contract_ref": "0X8266002590803DAF11F143B8070BC34D",
+        "contract_guid": "070bc34d-43b8-11f1-8266-002590803daf",
+        "contract_code": "РБ0058149",
+        "contract_name": "Основной договор1",
+        "contract_organization_ref": "0X44445555555555553333222211111111",
+        "contract_organization_guid": "11111111-2222-3333-4444-555555555555",
+        "contract_organization_code": "000000001",
+        "contract_organization_name": "MASTER MOBILE",
         "expected_current_limit": Decimal("100000"),
         "expected_current_depth": 7,
+        "expected_current_debt_control_enabled": True,
         "proposed_limit": Decimal("150000"),
         "proposed_depth": 14,
+        "proposed_debt_control_enabled": True,
         "currency": "RUB",
         "reason": "Утверждено",
         "approved_by": "115204",
@@ -168,3 +178,96 @@ def test_migration_upgrade_and_downgrade(tmp_path: Path) -> None:
             )
     finally:
         engine.dispose()
+
+
+def test_contract_identity_migration_preserves_legacy_rows(tmp_path: Path) -> None:
+    versions = Path(__file__).resolve().parents[1] / "alembic/versions"
+    base_path = versions / "e2b3c4d5e6f8_add_receivable_credit_decision_operation.py"
+    contract_path = versions / "d5e6f7a8b9c1_add_credit_decision_contract_identity.py"
+    base_spec = importlib.util.spec_from_file_location("credit_decision_base", base_path)
+    contract_spec = importlib.util.spec_from_file_location(
+        "credit_decision_contract", contract_path
+    )
+    base_module = importlib.util.module_from_spec(base_spec)
+    contract_module = importlib.util.module_from_spec(contract_spec)
+    assert base_spec and base_spec.loader and contract_spec and contract_spec.loader
+    base_spec.loader.exec_module(base_module)
+    contract_spec.loader.exec_module(contract_module)
+
+    engine = create_engine(f"sqlite:///{tmp_path / 'contract-migration.db'}")
+    try:
+        with engine.begin() as connection:
+            operations = Operations(MigrationContext.configure(connection))
+            base_module.op = operations
+            contract_module.op = operations
+            base_module.upgrade()
+            connection.exec_driver_sql(
+                """
+                INSERT INTO receivable_credit_decision_operation (
+                    bitrix_entity_type_id, bitrix_item_id, bitrix_stage_id,
+                    bitrix_revision, moved_by_user_id, decision_id, decision_hash,
+                    counterparty_key, counterparty_ref, counterparty_guid,
+                    counterparty_code, counterparty_name, expected_current_limit,
+                    expected_current_depth, proposed_limit, proposed_depth, currency,
+                    reason, approved_by, approved_at, state, dry_run_attempts,
+                    apply_attempts, readback_attempts, bitrix_sync_pending,
+                    source_payload
+                ) VALUES (
+                    1200, 'legacy', 'APPROVED', '1', '115204', 'legacy',
+                    :decision_hash, 'counterparty', 'ref', 'guid', 'code', 'name',
+                    0, 0, 0, 0, 'RUB', 'legacy', '115204', '2026-08-03',
+                    'failed', 0, 0, 0, 0, '{}'
+                )
+                """,
+                {"decision_hash": "a" * 64},
+            )
+            contract_module.upgrade()
+            columns = {
+                item["name"]: item
+                for item in inspect(connection).get_columns("receivable_credit_decision_operation")
+            }
+            for name in (
+                "contract_ref",
+                "contract_guid",
+                "contract_organization_guid",
+                "expected_current_debt_control_enabled",
+                "proposed_debt_control_enabled",
+                "readback_debt_control_enabled",
+            ):
+                assert columns[name]["nullable"]
+            legacy = connection.exec_driver_sql(
+                "SELECT contract_guid FROM receivable_credit_decision_operation "
+                "WHERE bitrix_item_id = 'legacy'"
+            ).one()
+            assert legacy[0] is None
+            contract_module.downgrade()
+            assert "contract_guid" not in {
+                item["name"]
+                for item in inspect(connection).get_columns("receivable_credit_decision_operation")
+            }
+            base_module.downgrade()
+    finally:
+        engine.dispose()
+
+
+def test_credit_decision_migrations_merge_with_production_head() -> None:
+    versions = Path(__file__).resolve().parents[1] / "alembic/versions"
+    migration_paths = {
+        "base": versions / "e2b3c4d5e6f8_add_receivable_credit_decision_operation.py",
+        "contract": versions / "d5e6f7a8b9c1_add_credit_decision_contract_identity.py",
+        "merge": versions / "f9a0b1c2d3e4_merge_task_2494_with_production_head.py",
+    }
+    modules = {}
+    for name, path in migration_paths.items():
+        spec = importlib.util.spec_from_file_location(f"credit_decision_{name}", path)
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(module)
+        modules[name] = module
+
+    assert modules["base"].down_revision == "d1a2b3c4e5f7"
+    assert modules["contract"].down_revision == modules["base"].revision
+    assert modules["merge"].down_revision == (
+        "c8d9e0f1a2b3",
+        modules["contract"].revision,
+    )

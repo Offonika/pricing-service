@@ -4,12 +4,9 @@ import argparse
 import json
 from datetime import date
 
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
-
-from app.core.config import get_settings
+from app.infrastructure.db.session import get_application_session_factory
 from app.services.executive_management_balance import (
-    build_and_persist_management_balance_snapshot,
+    build_management_balance_snapshot_command,
 )
 
 
@@ -23,39 +20,36 @@ def _parse_args() -> argparse.Namespace:
         choices=("operational", "closed"),
         default="operational",
     )
+    parser.add_argument(
+        "--trigger",
+        choices=("cron", "manual"),
+        default="manual",
+    )
     return parser.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
-    settings = get_settings()
-    engine = create_engine(settings.database_url, pool_pre_ping=True)
-    try:
-        with Session(engine) as session:
-            snapshot = build_and_persist_management_balance_snapshot(
-                session,
-                balance_date=args.balance_date,
-                view=args.view,
-                actor="system:management-balance-snapshot",
-            )
-        print(
-            json.dumps(
-                {
-                    "status": "ok",
-                    "month": snapshot.period_month.strftime("%Y-%m"),
-                    "balance_date": snapshot.balance_date.isoformat(),
-                    "view": snapshot.view_mode,
-                    "version": snapshot.version,
-                    "source_status": snapshot.source_status,
-                    "can_close": not snapshot.validation_errors,
-                    "validation_errors": snapshot.validation_errors,
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
+    session_factory = get_application_session_factory()
+    with session_factory() as session:
+        result = build_management_balance_snapshot_command(
+            session,
+            balance_date=args.balance_date,
+            view=args.view,
+            actor="system:management-balance-snapshot",
+            trigger=args.trigger,
         )
-    finally:
-        engine.dispose()
+    print(
+        json.dumps(
+            {
+                "status": "ok",
+                "outcome": result.outcome,
+                "version": result.snapshot.version,
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
+    )
 
 
 if __name__ == "__main__":

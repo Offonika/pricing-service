@@ -1,11 +1,18 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.infrastructure.db.engines import build_application_engine
+from app.infrastructure.db.session import session_scope
 from app.infrastructure.db.unit_of_work import SqlAlchemyUnitOfWork
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
 
 
 def _factory():
@@ -13,6 +20,15 @@ def _factory():
     with engine.begin() as connection:
         connection.execute(text("CREATE TABLE event (id INTEGER PRIMARY KEY, value TEXT)"))
     return engine, sessionmaker(bind=engine, class_=Session, expire_on_commit=False)
+
+
+def test_alembic_graph_has_single_head() -> None:
+    config = Config(str(REPO_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(REPO_ROOT / "alembic"))
+
+    heads = ScriptDirectory.from_config(config).get_heads()
+
+    assert len(heads) == 1, f"expected one Alembic head, found: {heads}"
 
 
 def test_unit_of_work_commits_complete_command() -> None:
@@ -45,3 +61,31 @@ def test_application_engine_enables_pre_ping_without_forcing_pool_overrides(tmp_
         assert engine.pool._pre_ping is True
     finally:
         engine.dispose()
+
+
+def test_read_only_session_scope_rolls_back_accidental_write(monkeypatch) -> None:
+    engine, factory = _factory()
+    monkeypatch.setattr(
+        "app.infrastructure.db.session.get_application_session_factory",
+        lambda: factory,
+    )
+
+    with session_scope(read_only=True) as session:
+        session.execute(text("INSERT INTO event (id, value) VALUES (1, 'must rollback')"))
+
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT COUNT(*) FROM event")).scalar_one() == 0
+
+
+def test_write_session_scope_commits_complete_command(monkeypatch) -> None:
+    engine, factory = _factory()
+    monkeypatch.setattr(
+        "app.infrastructure.db.session.get_application_session_factory",
+        lambda: factory,
+    )
+
+    with session_scope() as session:
+        session.execute(text("INSERT INTO event (id, value) VALUES (1, 'committed')"))
+
+    with engine.connect() as connection:
+        assert connection.execute(text("SELECT value FROM event")).scalar_one() == "committed"

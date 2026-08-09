@@ -11,11 +11,11 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, joinedload
 
-from app.core.config import get_settings
-from app.models import CompetitorItem, Product
+from app.infrastructure.db import session_scope
+from app.models import CompetitorItem, Product, ProductCompetitorItemDecision
 from app.models.competitor_item_compatibility import CompetitorItemCompatibility
 from app.models.competitor_item_match import CompetitorItemMatch, CompetitorItemMatchStatus
 from app.services.matching_guardrails import catalog_family, competitor_item_requires_compatibility
@@ -210,6 +210,7 @@ def _review_row(
     min_score: float,
     min_gap: float,
     alternatives_limit: int,
+    training_examples: int,
 ) -> dict[str, Any]:
     rationale = match.rationale_json or {}
     candidates = _candidate_summary(
@@ -232,6 +233,35 @@ def _review_row(
     )
     effective_item_type = _effective_item_type(item)
     bucket = _review_bucket(reasons=reasons, item_type=effective_item_type)
+    stock_quantity = int(product.stock.quantity) if product.stock else 0
+    uncertainty_score = round(
+        (1.0 - min(max(score or 0.0, 0.0), 1.0))
+        + (0.5 if gap is None else max(0.0, min_gap - gap) * 10)
+        + (0.25 if _status_value(match.status) == "ambiguous" else 0.0),
+        4,
+    )
+    business_value_score = round(
+        min(max(stock_quantity, 0), 100) / 100
+        + (0.75 if item.availability else 0.0)
+        + (0.25 if item.price_roz is not None or item.price_opt is not None else 0.0),
+        4,
+    )
+    training_scarcity_score = round(1.0 / (1 + training_examples), 4)
+    family_label = (
+        item.attrs_model
+        or item.parsed_device_model
+        or item.category_group
+        or item.category
+        or catalog_family(item.name or item.normalized_title or "")
+        or "unknown"
+    )
+    family_group = ":".join(
+        (item.competitor or "unknown", effective_item_type or "unknown", str(family_label).lower())
+    )
+    queue_priority_score = round(
+        business_value_score * 3 + uncertainty_score * 2 + training_scarcity_score,
+        4,
+    )
 
     return {
         "match_id": match.id,
@@ -239,6 +269,12 @@ def _review_row(
         "method": match.method.value if hasattr(match.method, "value") else str(match.method),
         "review_bucket": bucket,
         "review_priority": _review_priority(bucket),
+        "queue_priority_score": queue_priority_score,
+        "business_value_score": business_value_score,
+        "uncertainty_score": uncertainty_score,
+        "training_examples": training_examples,
+        "training_scarcity_score": training_scarcity_score,
+        "family_group": family_group,
         "reason_codes": reasons,
         "score": score,
         "gap": gap,
@@ -290,7 +326,7 @@ def build_review_queue(
         select(CompetitorItemMatch)
         .options(
             joinedload(CompetitorItemMatch.competitor_item),
-            joinedload(CompetitorItemMatch.product),
+            joinedload(CompetitorItemMatch.product).joinedload(Product.stock),
         )
         .join(CompetitorItem, CompetitorItem.id == CompetitorItemMatch.competitor_item_id)
         .where(CompetitorItemMatch.status.in_(enum_statuses))
@@ -304,6 +340,22 @@ def build_review_queue(
     )
 
     matches = session.execute(query).scalars().all()
+    training_counts: Counter[tuple[str, str]] = Counter()
+    training_items = session.execute(
+        select(CompetitorItem)
+        .join(
+            ProductCompetitorItemDecision,
+            ProductCompetitorItemDecision.competitor_item_id == CompetitorItem.id,
+        )
+        .where(ProductCompetitorItemDecision.action.in_(("accept", "reject", "revoke")))
+    ).scalars()
+    for training_item in training_items:
+        training_counts[
+            (
+                (training_item.competitor or "unknown").lower(),
+                _effective_item_type(training_item) or "unknown",
+            )
+        ] += 1
     item_ids = [match.competitor_item_id for match in matches]
     item_ids_with_compatibility: set[int] = set()
     if item_ids:
@@ -324,21 +376,40 @@ def build_review_queue(
             min_score=min_score,
             min_gap=min_gap,
             alternatives_limit=alternatives_limit,
+            training_examples=training_counts[
+                (
+                    (match.competitor_item.competitor or "unknown").lower(),
+                    _effective_item_type(match.competitor_item) or "unknown",
+                )
+            ],
         )
         for match in matches
         if match.competitor_item and match.product
     ]
     status_priority = {"needs_review": 0, "ambiguous": 1, "suggested": 2}
-    rows.sort(
-        key=lambda row: (
-            row["review_priority"],
-            status_priority.get(str(row["status"]), 9),
-            -len(row["reason_codes"]),
-            -(row["score"] or 0),
-            row["competitor"] or "",
-            row["external_id"] or "",
-        )
+    grouped_rows: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped_rows.setdefault(str(row["family_group"]), []).append(row)
+    ordered_groups = sorted(
+        grouped_rows.values(),
+        key=lambda group: (
+            -max(float(row["queue_priority_score"]) for row in group),
+            min(int(row["review_priority"]) for row in group),
+            str(group[0]["family_group"]),
+        ),
     )
+    rows = []
+    for group in ordered_groups:
+        group.sort(
+            key=lambda row: (
+                -float(row["queue_priority_score"]),
+                status_priority.get(str(row["status"]), 9),
+                -len(row["reason_codes"]),
+                -(row["score"] or 0),
+                row["external_id"] or "",
+            )
+        )
+        rows.extend(group)
     if limit:
         rows = rows[:limit]
 
@@ -346,11 +417,13 @@ def build_review_queue(
     status_counts = Counter(str(row["status"]) for row in rows)
     bucket_counts = Counter(str(row["review_bucket"]) for row in rows)
     priority_counts = Counter(str(row["review_priority"]) for row in rows)
+    family_counts = Counter(str(row["family_group"]) for row in rows)
     return {
         "total": len(rows),
         "status_counts": dict(status_counts),
         "bucket_counts": dict(bucket_counts),
         "priority_counts": dict(priority_counts),
+        "family_counts": dict(family_counts),
         "reason_counts": dict(reason_counts),
         "items": rows,
     }
@@ -387,6 +460,12 @@ def _write_csv(path: Path, rows: list[dict[str, Any]], *, alternatives_limit: in
         "method",
         "review_bucket",
         "review_priority",
+        "queue_priority_score",
+        "business_value_score",
+        "uncertainty_score",
+        "training_examples",
+        "training_scarcity_score",
+        "family_group",
         "reason_codes",
         "score",
         "gap",
@@ -453,9 +532,7 @@ def main() -> None:
     parser.add_argument("--report-csv", help="Write CSV report")
     args = parser.parse_args()
 
-    settings = get_settings()
-    engine = create_engine(settings.database_url)
-    with Session(engine) as session:
+    with session_scope(read_only=True) as session:
         payload = build_review_queue(
             session,
             first_seen_after=args.first_seen_after,

@@ -3,7 +3,7 @@ spec_id: "display-auto-order-project-brief"
 title: "Display Auto Order Project Brief"
 doc_type: spec
 domain: "procurement"
-status: draft
+status: superseded
 owner: "operations"
 source_of_truth: false
 related_code:
@@ -18,16 +18,22 @@ related_tests:
   - tests/test_build_display_auto_order_dry_run_task.py
   - tests/test_report_display_auto_order_adaptive_lead_time_comparison_task.py
   - tests/test_report_display_supplier_lead_time_history_task.py
-contracts:
-  - docs/specs/procurement-decision-contract-roadmap.md
-depends_on:
-  - docs/specs/procurement-decision-contract-roadmap.md
+contracts: []
+depends_on: []
 supersedes: []
-rollout_required: true
-updated_at: "2026-07-05"
+rollout_required: false
+updated_at: "2026-08-05"
 ---
 
 # Автозаказ дисплеев: краткий документ проекта
+
+> **Исторический brief, не использовать для разработки.** Актуальные статусы,
+> правила расчёта и место хранения определены в
+> `docs/specs/assortment-lifecycle-policy.md`; актуальная рабочая поверхность и
+> создание заказа — в `docs/specs/procurement-order-formation-smart-process.md`.
+
+<details>
+<summary>Исторический срез проекта на 2026-07-05</summary>
 
 - **Статус:** рабочий brief после пилотного dry-run
 - **Дата среза:** 2026-07-05
@@ -143,3 +149,5 @@ updated_at: "2026-07-05"
 ## Критерий развития
 
 Следующая доработка полезна, если она увеличивает долю безопасного автозаказа без раздувания склада. Если доработка не помогает принять решение "заказать / не заказать / проверить руками", ее надо отложить или вынести в соседний контур.
+
+</details>

@@ -3,6 +3,7 @@ from __future__ import annotations
 import inspect
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import create_engine, select, text
@@ -41,6 +42,54 @@ from app.workers.receivables import (
     run_receivable_read_model_rebuild,
 )
 from tests.test_receivables import _setup_onec_source
+
+
+class _CanonicalQueryResult:
+    def __init__(self, *, scalar=None, rows=()):
+        self._scalar = scalar
+        self._rows = list(rows)
+
+    def scalar_one_or_none(self):
+        return self._scalar
+
+    def mappings(self):
+        return self._rows
+
+
+class _CanonicalQueryConnection:
+    def __init__(self, engine):
+        self.engine = engine
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def execute(self, statement, params=None):
+        sql = str(statement)
+        self.engine.calls.append((sql, dict(params or {})))
+        if "SELECT MAX(t._Period)" in sql:
+            if self.engine.fail_stage == "opening":
+                raise RuntimeError("opening SQL failed")
+            return _CanonicalQueryResult(scalar=self.engine.opening_period)
+        if self.engine.fail_stage == "balances":
+            raise RuntimeError("balance SQL failed")
+        return _CanonicalQueryResult(rows=self.engine.rows)
+
+
+class _CanonicalQueryEngine:
+    dialect = SimpleNamespace(name="mssql")
+
+    def __init__(self, *, opening_period, rows=(), fail_stage=None):
+        self.opening_period = opening_period
+        self.rows = list(rows)
+        self.fail_stage = fail_stage
+        self.calls = []
+
+    def connect(self):
+        return _CanonicalQueryConnection(self)
+
 
 REGULAR_OPENING_LAYER_SQL = """
 SELECT
@@ -629,6 +678,64 @@ def test_run_receivable_read_model_rebuild_uses_authoritative_balance_rows(monke
         assert employee_case.current_balance == 33
 
 
+def test_read_model_rebuild_keeps_verified_snapshot_when_source_sql_fails(monkeypatch) -> None:
+    app_engine = create_engine("sqlite:///:memory:")
+    Base.metadata.create_all(app_engine)
+    snapshot_date = date(2026, 8, 4)
+    with Session(app_engine) as session:
+        session.add(
+            ReceivableBalanceSnapshot(
+                snapshot_date=snapshot_date,
+                counterparty_ref="verified-cp",
+                counterparty_name="Последний проверенный контрагент",
+                current_balance=Decimal("100.00"),
+                is_overdue=False,
+                aged_bucket="unknown",
+                activity_segment="active",
+            )
+        )
+        session.commit()
+
+    monkeypatch.setattr(
+        receivables_worker,
+        "_resolve_employee_counterparty_refs",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        receivables_worker,
+        "_resolve_buyer_counterparty_refs",
+        lambda *_args, **_kwargs: (),
+    )
+    monkeypatch.setattr(
+        receivables_worker,
+        "_resolve_buyer_counterparty_departments",
+        lambda *_args, **_kwargs: {},
+    )
+    monkeypatch.setattr(
+        receivables_worker,
+        "_resolve_authoritative_balance_rows",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("balance SQL failed")),
+    )
+
+    with pytest.raises(RuntimeError, match="balance SQL failed"):
+        run_receivable_read_model_rebuild(
+            snapshot_date=snapshot_date,
+            staff_rows=[],
+            onec_engine=object(),
+            app_engine=app_engine,
+        )
+
+    with Session(app_engine) as session:
+        snapshots = session.scalars(
+            select(ReceivableBalanceSnapshot).where(
+                ReceivableBalanceSnapshot.snapshot_date == snapshot_date
+            )
+        ).all()
+        assert [(row.counterparty_ref, row.current_balance) for row in snapshots] == [
+            ("verified-cp", Decimal("100.00"))
+        ]
+
+
 def test_fetch_current_balances_from_onec_uses_onec_daily_extractor(monkeypatch) -> None:
     onec_engine = create_engine("sqlite:///:memory:")
     _setup_layered_onec_source(onec_engine)
@@ -716,10 +823,195 @@ def test_canonical_summary_uses_full_mutual_statement_register() -> None:
     source = inspect.getsource(_fetch_canonical_summary_current_balance_rows_from_onec)
     assert "_AccumRgT7009" in source
     assert "_AccumRg7002" in source
+    assert "SELECT MAX(t._Period)" in source
     assert "r._Fld7008" in source
     assert "r._Fld7621" not in source
     assert "_AccumRg7614" not in source
     assert "_fetch_open_debt_managers_from_onec" in source
+
+
+def _canonical_balance_result_row(
+    *,
+    counterparty_ref: str | None = "cp-a",
+    current_balance: Decimal = Decimal("1.00"),
+    opening_row_count: int = 1,
+    movement_row_count: int = 1,
+    balance_row_count: int = 1,
+) -> dict[str, object]:
+    return {
+        "counterparty_ref": counterparty_ref,
+        "counterparty_name": counterparty_ref,
+        "current_balance": current_balance,
+        "current_manager_ref": None,
+        "current_manager_name": None,
+        "opening_row_count": opening_row_count,
+        "daily_movement_row_count": movement_row_count,
+        "balance_row_count": balance_row_count,
+    }
+
+
+def _allow_canonical_opening_lag(monkeypatch, *, max_lag_days: int = 45) -> None:
+    monkeypatch.setattr(
+        "app.services.receivables.get_settings",
+        lambda: SimpleNamespace(
+            receivable_canonical_opening_max_lag_days=max_lag_days,
+        ),
+    )
+    monkeypatch.setattr(
+        "app.services.receivables._fetch_open_debt_managers_from_onec",
+        lambda *_args, **_kwargs: {},
+    )
+
+
+def test_canonical_summary_uses_actual_opening_period_for_contiguous_window(
+    monkeypatch,
+) -> None:
+    _allow_canonical_opening_lag(monkeypatch)
+    engine = _CanonicalQueryEngine(
+        opening_period=datetime(2026, 7, 1),
+        rows=[
+            _canonical_balance_result_row(
+                counterparty_ref="РБ035035",
+                current_balance=Decimal("-272.00"),
+                opening_row_count=2,
+                movement_row_count=2,
+                balance_row_count=2,
+            ),
+            _canonical_balance_result_row(
+                counterparty_ref="РБ002611",
+                current_balance=Decimal("-35.00"),
+                opening_row_count=2,
+                movement_row_count=2,
+                balance_row_count=2,
+            ),
+        ],
+    )
+
+    rows, meta = _fetch_canonical_summary_current_balance_rows_from_onec(
+        engine,
+        snapshot_date=date(2026, 8, 4),
+    )
+
+    assert {row.counterparty_ref: row.current_balance for row in rows} == {
+        "РБ035035": Decimal("-272.00"),
+        "РБ002611": Decimal("-35.00"),
+    }
+    assert meta["canonical_requested_opening_period"] == date(2026, 8, 1)
+    assert meta["canonical_actual_opening_period"] == date(2026, 7, 1)
+    assert meta["canonical_opening_lag_days"] == 31
+    assert meta["canonical_movement_start"] == datetime(2026, 7, 1)
+    assert meta["canonical_movement_end"] == datetime(2026, 8, 5)
+    assert meta["canonical_continuity_confirmed"] is True
+    assert meta["opening_balance_dates"] == [date(2026, 7, 1)]
+
+    balance_sql, balance_params = engine.calls[1]
+    assert "r._Period >= :movement_start" in balance_sql
+    assert "r._Period < :movement_end" in balance_sql
+    assert balance_params["opening_period"] == datetime(2026, 7, 1)
+    assert balance_params["movement_start"] == datetime(2026, 7, 1)
+    assert balance_params["movement_end"] == datetime(2026, 8, 5)
+
+
+@pytest.mark.parametrize(
+    ("actual_opening_period", "expected_lag_days"),
+    [
+        (datetime(2026, 8, 1), 0),
+        (datetime(2026, 6, 17), 45),
+    ],
+)
+def test_canonical_summary_allows_exact_and_45_day_opening_periods(
+    monkeypatch,
+    actual_opening_period,
+    expected_lag_days,
+) -> None:
+    _allow_canonical_opening_lag(monkeypatch)
+    engine = _CanonicalQueryEngine(
+        opening_period=actual_opening_period,
+        rows=[_canonical_balance_result_row(current_balance=Decimal("10.00"))],
+    )
+
+    _, meta = _fetch_canonical_summary_current_balance_rows_from_onec(
+        engine,
+        snapshot_date=date(2026, 8, 4),
+    )
+
+    assert meta["canonical_opening_lag_days"] == expected_lag_days
+    assert meta["canonical_movement_start"] == actual_opening_period
+
+
+@pytest.mark.parametrize(
+    ("opening_period", "message"),
+    [
+        (None, "actual_opening_period=missing"),
+        (datetime(2026, 6, 16), "reason=opening_period_too_old"),
+        (datetime(2026, 8, 2), "reason=future_period"),
+    ],
+)
+def test_canonical_summary_rejects_missing_stale_or_future_opening_period(
+    monkeypatch,
+    opening_period,
+    message,
+) -> None:
+    _allow_canonical_opening_lag(monkeypatch)
+    engine = _CanonicalQueryEngine(
+        opening_period=opening_period,
+        rows=[_canonical_balance_result_row()],
+    )
+
+    with pytest.raises(ValueError, match=message):
+        _fetch_canonical_summary_current_balance_rows_from_onec(
+            engine,
+            snapshot_date=date(2026, 8, 4),
+        )
+
+    assert len(engine.calls) == 1
+
+
+@pytest.mark.parametrize(
+    ("opening_row_count", "balance_row_count"),
+    [(0, 1), (1, 0)],
+)
+def test_canonical_summary_rejects_empty_opening_or_final_source(
+    monkeypatch,
+    opening_row_count,
+    balance_row_count,
+) -> None:
+    _allow_canonical_opening_lag(monkeypatch)
+    engine = _CanonicalQueryEngine(
+        opening_period=datetime(2026, 7, 1),
+        rows=[
+            _canonical_balance_result_row(
+                counterparty_ref=None,
+                opening_row_count=opening_row_count,
+                balance_row_count=balance_row_count,
+            )
+        ],
+    )
+
+    with pytest.raises(ValueError, match="reason=empty_source"):
+        _fetch_canonical_summary_current_balance_rows_from_onec(
+            engine,
+            snapshot_date=date(2026, 8, 4),
+        )
+
+
+@pytest.mark.parametrize("fail_stage", ["opening", "balances"])
+def test_canonical_summary_reports_sql_error_without_publishing_result(
+    monkeypatch,
+    fail_stage,
+) -> None:
+    _allow_canonical_opening_lag(monkeypatch)
+    engine = _CanonicalQueryEngine(
+        opening_period=datetime(2026, 7, 1),
+        rows=[_canonical_balance_result_row()],
+        fail_stage=fail_stage,
+    )
+
+    with pytest.raises(RuntimeError, match="continuity_confirmed=false"):
+        _fetch_canonical_summary_current_balance_rows_from_onec(
+            engine,
+            snapshot_date=date(2026, 8, 4),
+        )
 
 
 def test_open_debt_manager_uses_sale_that_opened_current_positive_balance() -> None:

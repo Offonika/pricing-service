@@ -23,8 +23,6 @@ from app.services.exporters.ut103_nomenclature_properties import (
     NomenclaturePropertyUpdateMessage,
     NomenclaturePropertyUpdateRow,
     PropertyUpdateExchangeResult,
-    build_nomenclature_property_updates_xml,
-    write_nomenclature_property_updates_message,
 )
 from app.services.exporters.ut103_procurement_orders import (
     OneCReference,
@@ -131,12 +129,15 @@ def serialize_order(order: ProcurementOrderFormation) -> dict[str, Any]:
         "total_amount": total_amount,
         "lines": line_payloads,
         "manual_status_options": MANUAL_STATUS_LABELS,
+        "supplier_profile": supplier_profile(order),
     }
 
 
 def serialize_line(line: ProcurementOrderFormationLine) -> dict[str, Any]:
     latest = latest_classification_proposal(line)
     effective_status = effective_assortment_status(line)
+    payload = dict(line.payload or {})
+    photos = _line_photos(payload)
     return {
         "id": line.id,
         "line_number": line.line_number,
@@ -162,11 +163,126 @@ def serialize_line(line: ProcurementOrderFormationLine) -> dict[str, Any]:
         "quality": line.quality,
         "procurement_profile": line.procurement_profile,
         "manual_minimum": line.manual_minimum,
-        "payload": dict(line.payload or {}),
+        "payload": payload,
         "removed": line.removed,
         "effective_assortment_status": effective_status,
         "effective_assortment_status_label": status_label(effective_status),
         "latest_classification": serialize_proposal(latest) if latest else None,
+        "photo_thumbnail_url": _photo_url(photos, "thumbnail") or _photo_url(photos, "original"),
+        "photo_original_url": _photo_url(photos, "original"),
+        "product_card_url": _safe_media_url(payload.get("product_card_url")) or None,
+        "photo_source": _payload_text(payload, "photo_source"),
+        "photo_count": len(photos),
+        "profitability_pct": _payload_decimal(
+            payload,
+            "profitability_pct",
+            "gross_margin_pct",
+            "margin_pct",
+        ),
+        "profitability_status": _payload_text(payload, "profitability_status"),
+        "profitability_source": _payload_text(payload, "profitability_source"),
+        "profitability_explanation": (
+            "Себестоимость за период отсутствует или равна нулю"
+            if _payload_text(payload, "profitability_status") == "cost_missing"
+            else None
+        ),
+        "metrics_as_of": _payload_text(payload, "metrics_as_of"),
+        "metrics_window_days": _payload_int(payload, "metrics_window_days"),
+        "product_defect_pct": _payload_decimal(payload, "product_defect_pct"),
+        "product_defect_history_units": _payload_int(payload, "product_defect_history_units"),
+        "product_defect_confidence": _payload_text(payload, "product_defect_confidence"),
+        "product_defect_source": _payload_text(payload, "product_defect_source"),
+        "supplier_defect_pct": _payload_decimal(
+            payload,
+            "supplier_defect_pct",
+            "defect_pct",
+        ),
+        "supplier_defect_history_units": _payload_int(
+            payload,
+            "supplier_defect_history_units",
+            "defect_history_units",
+        ),
+        "supplier_defect_confidence": _payload_text(payload, "supplier_defect_confidence"),
+        "supplier_defect_attribution": _payload_text(payload, "supplier_defect_attribution"),
+        "supplier_defect_source_status": _payload_text(payload, "supplier_defect_source_status"),
+        "price_change_pct": _payload_decimal(payload, "price_change_pct"),
+        "price_change_status": _payload_text(payload, "price_change_status"),
+        "price_history_count": _payload_int(payload, "price_history_count"),
+        "price_history_currency_ref": _payload_text(payload, "price_history_currency_ref"),
+        "price_history_expected_currency": _payload_text(
+            payload, "price_history_expected_currency"
+        ),
+        "price_history_available_currencies": _payload_list(
+            payload, "price_history_available_currencies"
+        ),
+        "supplier_prepare_days": _payload_int(
+            payload,
+            "supplier_prepare_days",
+            "recommended_supplier_prepare_days",
+        ),
+        "logistics_days": _payload_int(
+            payload,
+            "logistics_days",
+            "recommended_logistics_days",
+        ),
+        "lead_time_days": _payload_int(payload, "lead_time_days"),
+        "lead_time_source_level": _payload_text(
+            payload,
+            "lead_time_source_level",
+            "lead_time_match_level",
+        ),
+        "lead_time_confidence": _payload_text(payload, "lead_time_confidence"),
+        "delivery_days": _payload_int(
+            payload,
+            "delivery_days",
+            "recommended_supplier_prepare_days",
+        ),
+    }
+
+
+def supplier_profile(order: ProcurementOrderFormation) -> dict[str, Any]:
+    payload = dict(order.payload or {})
+    raw = payload.get("supplier_profile")
+    profile = dict(raw) if isinstance(raw, dict) else {}
+    advantages = profile.get("advantages")
+    if isinstance(advantages, str):
+        advantages = [item.strip() for item in advantages.split(";") if item.strip()]
+    elif not isinstance(advantages, list):
+        advantages = []
+    qualification_class = _payload_text(
+        profile,
+        "qualification_class",
+        "supplier_class",
+    )
+    data_values = [
+        qualification_class,
+        _payload_text(profile, "qualification_label"),
+        _payload_decimal(profile, "profitability_pct"),
+        _payload_decimal(profile, "defect_pct"),
+        _payload_int(profile, "defect_history_units"),
+        _payload_decimal(profile, "on_time_pct"),
+        _payload_text(profile, "payment_terms"),
+        _payload_int(profile, "credit_days"),
+        _payload_decimal(profile, "credit_limit"),
+        _payload_int(profile, "history_order_count"),
+        _payload_text(profile, "updated_at"),
+        *advantages,
+    ]
+    populated = sum(value not in (None, "") for value in data_values)
+    return {
+        "qualification_class": qualification_class.upper() if qualification_class else None,
+        "qualification_label": _payload_text(profile, "qualification_label"),
+        "profitability_pct": _payload_decimal(profile, "profitability_pct"),
+        "defect_pct": _payload_decimal(profile, "defect_pct"),
+        "defect_history_units": _payload_int(profile, "defect_history_units"),
+        "on_time_pct": _payload_decimal(profile, "on_time_pct"),
+        "payment_terms": _payload_text(profile, "payment_terms"),
+        "credit_days": _payload_int(profile, "credit_days"),
+        "credit_limit": _payload_decimal(profile, "credit_limit"),
+        "advantages": [str(item).strip() for item in advantages if str(item).strip()],
+        "history_order_count": _payload_int(profile, "history_order_count"),
+        "updated_at": _payload_text(profile, "updated_at") or None,
+        "data_status": "ready" if populated >= 5 else "partial" if populated else "missing",
     }
 
 
@@ -187,6 +303,10 @@ def serialize_proposal(proposal: ProcurementClassificationProposal) -> dict[str,
         "approved_at": proposal.approved_at,
         "approved_by_bitrix_user_id": proposal.approved_by_bitrix_user_id,
         "approved_by_name": proposal.approved_by_name,
+        "rejected_at": proposal.rejected_at,
+        "rejected_by_bitrix_user_id": proposal.rejected_by_bitrix_user_id,
+        "rejected_by_name": proposal.rejected_by_name,
+        "rejection_reason": proposal.rejection_reason,
         "onec_status": proposal.onec_status,
         "onec_message_id": proposal.onec_message_id,
         "onec_error": proposal.onec_error,
@@ -339,6 +459,7 @@ def approve_classification_proposal(
     session: ProcurementOrderFormationSession,
     *,
     settings: Settings | None = None,
+    commit: bool = True,
 ) -> tuple[ProcurementOrderFormation, ProcurementClassificationProposal, str, str, Path | None]:
     settings = settings or get_settings()
     ensure_classification_approver(session.user_id, settings=settings)
@@ -360,27 +481,94 @@ def approve_classification_proposal(
     proposal.approved_by_actor = session.actor
     proposal.approved_by_bitrix_user_id = session.user_id
     proposal.approved_by_name = session.user_name or session.actor
-    mode = "apply" if settings.procurement_order_formation_property_apply_enabled else "dry_run"
-    message = build_classification_update_message(proposal, line=line, mode=mode)
-    xml_preview = build_nomenclature_property_updates_xml(message).decode("windows-1251")
+    # Ручные статусы являются внутренним решением pricing-service. Исторический
+    # общий флаг property apply больше не может превратить это решение в XML для
+    # УТ 10.3: иначе снова появятся два источника жизненного статуса.
+    mode = "internal"
+    xml_preview = ""
     written_path: Path | None = None
-    proposal.onec_message_id = message.message_id
-    proposal.onec_status = "dry_run"
+    proposal.onec_message_id = None
+    proposal.onec_status = "not_applicable"
     proposal.status = "approved"
-    proposal.payload = {**(proposal.payload or {}), "xml_preview": xml_preview}
-    if mode == "apply":
-        exchange_root = resolve_ut103_exchange_root(None)
-        written_path = write_nomenclature_property_updates_message(exchange_root, message)
-        proposal.onec_status = "pending"
-        proposal.status = "sent_to_1c"
+    proposal.payload = {
+        **(proposal.payload or {}),
+        "storage": "pricing-service",
+        "legacy_onec_export_disabled": True,
+    }
+    line.version += 1
     invalidate_order_approval(order)
-    db.commit()
+    if commit:
+        db.commit()
+    else:
+        db.flush()
     refreshed_order = get_order(db, order_id)
     refreshed_line = _line_from_order(refreshed_order, line_id)
     refreshed_proposal = next(
         item for item in refreshed_line.classification_proposals if item.id == proposal_id
     )
     return refreshed_order, refreshed_proposal, mode, xml_preview, written_path
+
+
+def reject_classification_proposal(
+    db: Session,
+    order_id: int,
+    line_id: int,
+    proposal_id: int,
+    values: dict[str, Any],
+    session: ProcurementOrderFormationSession,
+    *,
+    settings: Settings | None = None,
+    commit: bool = True,
+) -> tuple[ProcurementOrderFormation, ProcurementClassificationProposal]:
+    settings = settings or get_settings()
+    ensure_classification_approver(session.user_id, settings=settings)
+    order = get_order(db, order_id)
+    ensure_order_editable(order)
+    line = _line_from_order(order, line_id)
+    expected_order_version = int(values.get("expected_order_version") or 0)
+    expected_line_version = int(values.get("expected_line_version") or 0)
+    if order.version != expected_order_version:
+        raise VersionConflictError("order version changed; refresh the order")
+    if line.version != expected_line_version:
+        raise VersionConflictError("order line version changed; refresh the order")
+    proposal = next(
+        (item for item in line.classification_proposals if item.id == proposal_id),
+        None,
+    )
+    if proposal is None:
+        raise LookupError("classification proposal was not found")
+    if proposal.status != "proposed":
+        raise ValueError("only proposed classification can be rejected")
+    if str(proposal.requested_by_bitrix_user_id) == str(session.user_id):
+        raise PermissionError("classification proposal cannot be self-rejected")
+    reason = str(values.get("reason") or "").strip()
+    if not reason:
+        raise ValueError("classification rejection reason is required")
+    proposal.status = "rejected"
+    proposal.rejected_at = datetime.now(UTC).replace(tzinfo=None)
+    proposal.rejected_by_actor = session.actor
+    proposal.rejected_by_bitrix_user_id = session.user_id
+    proposal.rejected_by_name = session.user_name or session.actor
+    proposal.rejection_reason = reason
+    proposal.onec_status = "not_sent"
+    proposal.onec_message_id = None
+    proposal.onec_error = None
+    proposal.payload = {
+        **(proposal.payload or {}),
+        "rejection": {"reason": reason, "onec_write": False},
+    }
+    line.version += 1
+    invalidate_order_approval(order)
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+    refreshed_order = get_order(db, order_id)
+    refreshed_line = _line_from_order(refreshed_order, line_id)
+    refreshed_proposal = next(
+        item for item in refreshed_line.classification_proposals if item.id == proposal_id
+    )
+    return refreshed_order, refreshed_proposal
 
 
 def approve_order(
@@ -702,6 +890,19 @@ def line_blockers(line: ProcurementOrderFormationLine) -> list[str]:
         blockers.append("quantity_must_be_positive")
     if line.purchase_price <= 0:
         blockers.append("purchase_price_must_be_positive")
+    price_change = _payload_decimal(line.payload or {}, "price_change_pct")
+    if price_change is not None and abs(price_change) > Decimal("10"):
+        blockers.append("purchase_price_change_over_10_pct")
+    supplier_defect = _payload_decimal(line.payload or {}, "supplier_defect_pct")
+    supplier_defect_basis = _payload_int(line.payload or {}, "supplier_defect_history_units")
+    supplier_defect_attribution = _payload_text(line.payload or {}, "supplier_defect_attribution")
+    if (
+        supplier_defect_attribution == "supplier_exact"
+        and supplier_defect is not None
+        and supplier_defect > Decimal("10")
+        and (supplier_defect_basis or 0) >= 100
+    ):
+        blockers.append("supplier_defect_over_10_pct_reliable")
     latest = latest_classification_proposal(line)
     if latest and latest.status == "proposed":
         blockers.append("classification_approval_pending")
@@ -834,6 +1035,100 @@ def _order_statement():
             ProcurementOrderFormationLine.classification_proposals
         )
     )
+
+
+def _line_photos(payload: dict[str, Any]) -> list[dict[str, str]]:
+    raw_photos = payload.get("photos") or payload.get("product_photos") or []
+    if not isinstance(raw_photos, list):
+        raw_photos = [raw_photos]
+    photos: list[dict[str, str]] = []
+    for raw in raw_photos:
+        if isinstance(raw, str):
+            url = _safe_media_url(raw)
+            if url:
+                photos.append({"thumbnail": url, "original": url})
+            continue
+        if not isinstance(raw, dict):
+            continue
+        thumbnail = _safe_media_url(
+            raw.get("thumbnail") or raw.get("thumbnail_url") or raw.get("preview_url")
+        )
+        original = _safe_media_url(raw.get("original") or raw.get("original_url") or raw.get("url"))
+        if thumbnail or original:
+            photos.append(
+                {
+                    "thumbnail": thumbnail or original,
+                    "original": original,
+                }
+            )
+    if not photos:
+        thumbnail = _safe_media_url(
+            payload.get("photo_thumbnail_url")
+            or payload.get("preview_image_url")
+            or payload.get("image_url")
+        )
+        original = _safe_media_url(
+            payload.get("photo_original_url")
+            or payload.get("detail_image_url")
+            or payload.get("photo_url")
+            or payload.get("image_url")
+        )
+        if thumbnail or original:
+            photos.append(
+                {
+                    "thumbnail": thumbnail or original,
+                    "original": original,
+                }
+            )
+    return photos
+
+
+def _photo_url(photos: list[dict[str, str]], kind: str) -> str | None:
+    if not photos:
+        return None
+    return photos[0].get(kind) or None
+
+
+def _safe_media_url(value: Any) -> str:
+    text = str(value or "").strip()
+    if text.startswith(("https://", "http://", "/")):
+        return text
+    return ""
+
+
+def _payload_text(payload: dict[str, Any], *keys: str) -> str | None:
+    for key in keys:
+        value = payload.get(key)
+        if value not in (None, ""):
+            return str(value).strip() or None
+    return None
+
+
+def _payload_list(payload: dict[str, Any], key: str) -> list[str]:
+    value = payload.get(key)
+    if not isinstance(value, list):
+        return []
+    return [text for item in value if (text := str(item or "").strip())]
+
+
+def _payload_decimal(payload: dict[str, Any], *keys: str) -> Decimal | None:
+    value = _payload_text(payload, *keys)
+    if value is None:
+        return None
+    try:
+        return Decimal(value.replace(" ", "").replace(",", "."))
+    except (ValueError, ArithmeticError):
+        return None
+
+
+def _payload_int(payload: dict[str, Any], *keys: str) -> int | None:
+    value = _payload_decimal(payload, *keys)
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (ValueError, ArithmeticError):
+        return None
 
 
 def _money(value: Decimal) -> Decimal:

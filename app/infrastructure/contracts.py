@@ -54,33 +54,52 @@ def read_json_contract(
     if not isinstance(payload, dict):
         raise ContractIntegrityError("contract root must be a JSON object")
 
+    validate_json_contract_manifest(
+        path,
+        actual_content_sha256=hashlib.sha256(content).hexdigest(),
+        policy=policy,
+        now=now,
+        require_schema_sha256=require_schema_sha256,
+    )
+    return payload
+
+
+def validate_json_contract_manifest(
+    path: Path,
+    *,
+    actual_content_sha256: str,
+    policy: ContractPolicy | None = None,
+    now: datetime | None = None,
+    require_schema_sha256: bool | None = None,
+) -> dict[str, Any] | None:
+    """Validate manifest metadata without reading the contract artifact again."""
+
     manifest_path = path.with_suffix(path.suffix + ".manifest.json")
     require_manifest = path.is_absolute() and path.resolve().is_relative_to(CONTRACT_ROOT.resolve())
     if not manifest_path.exists():
         if require_manifest:
             raise ContractIntegrityError(f"contract manifest is missing: {manifest_path}")
-        return payload
+        return None
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     if not isinstance(manifest, dict):
         raise ContractIntegrityError("contract manifest root must be a JSON object")
 
     expected_sha256 = str(manifest.get("content_sha256") or "")
-    actual_sha256 = hashlib.sha256(content).hexdigest()
-    if expected_sha256 != actual_sha256:
+    if expected_sha256 != actual_content_sha256:
         raise ContractIntegrityError("contract content hash does not match manifest")
     if str(manifest.get("artifact") or "") != path.name:
         raise ContractIntegrityError("contract artifact name does not match manifest")
 
     selected_policy = policy or (_policy_for(path) if require_manifest else None)
     if selected_policy is None:
-        return payload
+        return manifest
     _validate_manifest_policy(
         manifest,
         selected_policy,
         now=now,
         require_schema_sha256=require_schema_sha256,
     )
-    return payload
+    return manifest
 
 
 def _validate_manifest_policy(

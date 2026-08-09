@@ -74,6 +74,12 @@ export interface ProcurementClassificationProposal {
   approved_at?: string | null;
   approved_by_bitrix_user_id?: string | null;
   approved_by_name?: string | null;
+  rejected_at?: string | null;
+  rejected_by_bitrix_user_id?: string | null;
+  rejected_by_name?: string | null;
+  rejection_reason?: string | null;
+  can_approve?: boolean;
+  can_reject?: boolean;
   onec_status: string;
   onec_message_id?: string | null;
 }
@@ -130,6 +136,73 @@ export interface ProcurementOrderFormationLine {
   effective_assortment_status?: string | null;
   effective_assortment_status_label?: string | null;
   latest_classification?: ProcurementClassificationProposal | null;
+  photo_thumbnail_url?: string | null;
+  photo_original_url?: string | null;
+  product_card_url?: string | null;
+  photo_source?: string | null;
+  photo_count?: number;
+  profitability_pct?: string | null;
+  profitability_status?: string | null;
+  profitability_source?: string | null;
+  profitability_explanation?: string | null;
+  metrics_as_of?: string | null;
+  metrics_window_days?: number | null;
+  product_defect_pct?: string | null;
+  product_defect_history_units?: number | null;
+  product_defect_confidence?: string | null;
+  product_defect_source?: string | null;
+  supplier_defect_pct?: string | null;
+  supplier_defect_history_units?: number | null;
+  supplier_defect_confidence?: string | null;
+  supplier_defect_attribution?: string | null;
+  supplier_defect_source_status?: string | null;
+  price_change_pct?: string | null;
+  price_change_status?: string | null;
+  price_history_count?: number | null;
+  price_history_currency_ref?: string | null;
+  price_history_expected_currency?: string | null;
+  price_history_available_currencies?: string[];
+  supplier_prepare_days?: number | null;
+  logistics_days?: number | null;
+  lead_time_days?: number | null;
+  lead_time_source_level?: string | null;
+  lead_time_confidence?: string | null;
+  delivery_days?: number | null;
+}
+
+export interface ProcurementSupplierProfile {
+  supplier_ref?: string | null;
+  supplier_code?: string | null;
+  supplier_name?: string | null;
+  version?: number;
+  qualification_class?: string | null;
+  qualification_label?: string | null;
+  class_description?: string | null;
+  profitability_pct?: string | null;
+  defect_pct?: string | null;
+  defect_history_units?: number | null;
+  defect_confidence?: string | null;
+  defect_attribution?: string | null;
+  on_time_pct?: string | null;
+  payment_terms?: string | null;
+  credit_days?: number | null;
+  credit_limit?: string | null;
+  terms_source?: string | null;
+  terms_status?: string | null;
+  advantages: string[];
+  internal_note?: string | null;
+  history_order_count?: number | null;
+  supplier_prepare_days?: number | null;
+  logistics_days?: number | null;
+  lead_time_days?: number | null;
+  lead_time_confidence?: string | null;
+  price_history_count?: number | null;
+  facts_updated_at?: string | null;
+  manual_updated_at?: string | null;
+  manual_updated_by_name?: string | null;
+  updated_at?: string | null;
+  data_status: "ready" | "partial" | "missing" | string;
+  can_edit?: boolean;
 }
 
 export interface ProcurementOrderFormation {
@@ -138,7 +211,11 @@ export interface ProcurementOrderFormation {
   status: string;
   version: number;
   bitrix_item_id?: string | null;
+  supplier_ref?: string | null;
+  supplier_code?: string | null;
   supplier_name: string;
+  contract_ref?: string | null;
+  contract_code?: string | null;
   contract_name: string;
   currency: string;
   warehouse_name: string;
@@ -158,6 +235,29 @@ export interface ProcurementOrderFormation {
   total_amount: string;
   lines: ProcurementOrderFormationLine[];
   manual_status_options: Record<string, string>;
+  supplier_profile?: ProcurementSupplierProfile;
+}
+
+export interface ProcurementOrderAssistant {
+  updated_at?: string | null;
+  summary: {
+    lines: number;
+    ready_lines: number;
+    supplier_missing_lines: number;
+    price_changed_lines: number;
+    low_profitability_lines: number;
+    high_defect_lines: number;
+    photo_missing_lines: number;
+    orders: number;
+  };
+  orders: ProcurementOrderFormation[];
+}
+
+export interface ProcurementOrderAssistantAssembleResponse {
+  approved: number;
+  blocked: number;
+  stale: number;
+  items: Array<{ order_id: number; status: string; message: string }>;
 }
 
 export interface ProcurementDashboardCard {
@@ -396,11 +496,14 @@ export async function approveProcurementLifecycleTransitions(
   return data;
 }
 
-export async function fetchProcurementOrders(params: {
+export interface ProcurementOrderFilters {
   search?: string;
   status?: string;
   supplier?: string;
   blockers?: "all" | "with" | "without";
+}
+
+export async function fetchProcurementOrders(params: ProcurementOrderFilters & {
   page?: number;
   page_size?: number;
 } = {}) {
@@ -409,6 +512,44 @@ export async function fetchProcurementOrders(params: {
     { params }
   );
   return data;
+}
+
+export async function fetchProcurementOrderAssistant() {
+  const { data } = await api.get<ProcurementOrderAssistant>(
+    "/procurement-order-formation/assistant"
+  );
+  return data;
+}
+
+export async function assembleProcurementOrderProjects(
+  orders: ProcurementOrderFormation[]
+) {
+  const { data } = await api.post<ProcurementOrderAssistantAssembleResponse>(
+    "/procurement-order-formation/assistant/assemble",
+    {
+      idempotency_key: `ui-${crypto.randomUUID()}`,
+      items: orders.map((order) => ({
+        order_id: order.id,
+        expected_version: order.version,
+      })),
+    }
+  );
+  return data;
+}
+
+export async function exportProcurementOrdersExcel(
+  params: ProcurementOrderFilters = {}
+) {
+  const response = await api.get<Blob>(
+    "/procurement-order-formation/orders/export.xlsx",
+    { params, responseType: "blob" }
+  );
+  const disposition = String(response.headers["content-disposition"] || "");
+  const filenameMatch = disposition.match(/filename="?([^";]+)"?/i);
+  return {
+    blob: response.data,
+    filename: filenameMatch?.[1] || "procurement-orders.xlsx",
+  };
 }
 
 export async function fetchProcurementClassifications(params: {
@@ -488,6 +629,43 @@ export async function approveProcurementClassification(
   }>(
     `/procurement-order-formation/orders/${orderId}/lines/${lineId}/classification/${proposalId}/approve`,
     {}
+  );
+  return data;
+}
+
+export async function rejectProcurementClassification(
+  orderId: number,
+  lineId: number,
+  proposalId: number,
+  payload: {
+    expected_order_version: number;
+    expected_line_version: number;
+    reason: string;
+  }
+) {
+  const { data } = await api.post<{
+    order: ProcurementOrderFormation;
+    proposal: ProcurementClassificationProposal;
+  }>(
+    `/procurement-order-formation/orders/${orderId}/lines/${lineId}/classification/${proposalId}/reject`,
+    payload
+  );
+  return data;
+}
+
+export async function updateProcurementSupplierProfile(
+  supplierRef: string,
+  payload: {
+    expected_version: number;
+    qualification_class?: string | null;
+    qualification_label?: string | null;
+    advantages: string[];
+    internal_note?: string | null;
+  }
+) {
+  const { data } = await api.patch<ProcurementSupplierProfile>(
+    `/procurement-order-formation/suppliers/${encodeURIComponent(supplierRef)}/profile`,
+    payload
   );
   return data;
 }

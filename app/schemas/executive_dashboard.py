@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from datetime import date, datetime
+import re
+from datetime import UTC, date, datetime, time, timedelta
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 ExecutiveAccessLevel = Literal["full", "domain"]
 ExecutiveManagementBalanceView = Literal["closed", "operational"]
@@ -83,6 +84,365 @@ class ExecutiveDashboardActionsResponse(BaseModel):
     payload: list[ExecutiveDashboardAction]
 
 
+ExecutiveInstrumentLifecycle = Literal[
+    "planned",
+    "procurement",
+    "inventory_pending",
+    "active",
+    "draining",
+    "decommissioned",
+    "unknown",
+]
+ExecutiveInstrumentHealth = Literal[
+    "ready",
+    "warning",
+    "critical",
+    "not_monitored",
+    "maintenance",
+    "decommissioned",
+]
+ExecutiveInstrumentConnectivity = Literal[
+    "online",
+    "offline",
+    "channel_unavailable",
+    "not_monitored",
+    "maintenance",
+    "not_applicable",
+]
+ExecutiveInstrumentComponentStatus = Literal[
+    "ready",
+    "warning",
+    "critical",
+    "not_monitored",
+    "not_configured",
+    "running",
+    "stopped",
+    "degraded",
+    "unknown",
+]
+ExecutiveInstrumentSourceStatus = Literal[
+    "ready", "partial", "stale", "source_missing", "source_error"
+]
+ExecutiveInstrumentFreshnessStatus = Literal["fresh", "stale", "missing", "error"]
+
+
+class ExecutiveInstrumentStrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+
+class ExecutiveInstrumentMetrics(ExecutiveInstrumentStrictModel):
+    cpu_used_pct: float | None = Field(default=None, ge=0, le=100)
+    memory_used_pct: float | None = Field(default=None, ge=0, le=100)
+    disk_free_pct: float | None = Field(default=None, ge=0, le=100)
+    disk_free_gib: float | None = Field(default=None, ge=0)
+    latency_ms: int | None = Field(default=None, ge=0)
+    vcpu: int | None = Field(default=None, ge=0)
+    uptime_seconds: int | None = Field(default=None, ge=0)
+
+
+class ExecutiveInstrumentService(ExecutiveInstrumentStrictModel):
+    service_key: str
+    name: str
+    component_kind: Literal[
+        "windows",
+        "sql_server",
+        "sql_agent",
+        "onec_cluster",
+        "onec_database",
+        "onec_publication",
+        "integration",
+        "disk",
+        "service",
+    ] = "service"
+    status: ExecutiveInstrumentComponentStatus
+    criticality: Literal["critical", "standard"] = "standard"
+    last_verified_at: date | datetime | None = None
+    last_success_at: date | datetime | None = None
+    source_project: str | None = None
+
+
+class ExecutiveInstrumentBackup(ExecutiveInstrumentStrictModel):
+    status: Literal["ready", "warning", "critical", "not_configured"] = "not_configured"
+    protected_datastores: int = Field(default=0, ge=0)
+    unprotected_datastores: int = Field(default=0, ge=0)
+    rpo_minutes: int | None = Field(default=None, ge=1)
+    lag_minutes: int | None = Field(default=None, ge=0)
+    last_backup_at: date | datetime | None = None
+    last_full_backup_at: date | datetime | None = None
+    last_differential_backup_at: date | datetime | None = None
+    last_log_backup_at: date | datetime | None = None
+    last_restore_test_at: date | datetime | None = None
+    off_host_verified: bool = False
+    readback_verified: bool = False
+
+
+class ExecutiveInstrumentIntegration(ExecutiveInstrumentStrictModel):
+    status: ExecutiveInstrumentComponentStatus = "not_configured"
+    count: int = Field(default=0, ge=0)
+    last_success_at: date | datetime | None = None
+
+
+class ExecutiveInstrumentAccess(ExecutiveInstrumentStrictModel):
+    status: Literal["ready", "warning", "not_configured"] = "not_configured"
+    active_grants: int = Field(default=0, ge=0)
+    pending_grants: int = Field(default=0, ge=0)
+    review_required_grants: int = Field(default=0, ge=0)
+    overdue_review_grants: int = Field(default=0, ge=0)
+    mfa_review_count: int = Field(default=0, ge=0)
+    unowned_credentials: int = Field(default=0, ge=0)
+    attention_grant_count: int = Field(default=0, ge=0)
+    next_review_at: date | None = None
+
+
+ExecutiveInstrumentExchangeStatus = Literal[
+    "ready",
+    "warning",
+    "critical",
+    "not_configured",
+]
+ExecutiveInstrumentExchangeQueueStatus = Literal[
+    "ready",
+    "warning",
+    "critical",
+    "not_configured",
+]
+ExecutiveInstrumentExchangeStage = Literal[
+    "checkauth",
+    "init",
+    "file",
+    "import",
+    "none",
+]
+ExecutiveInstrumentExchangeSourceStatus = Literal["ready", "partial", "not_configured"]
+
+
+class ExecutiveInstrumentExchange(ExecutiveInstrumentStrictModel):
+    status: ExecutiveInstrumentExchangeStatus = "not_configured"
+    queue_items: int | None = Field(default=None, ge=0, strict=True)
+    queue_status: ExecutiveInstrumentExchangeQueueStatus | None = None
+    last_success_at: datetime | None = None
+    last_error_at: datetime | None = None
+    consecutive_failures: int | None = Field(default=None, ge=0, strict=True)
+    active_job_seconds: int | None = Field(default=None, ge=0, strict=True)
+    stage_last: ExecutiveInstrumentExchangeStage | None = None
+    stage_file_missing_cycles: int | None = Field(default=None, ge=0, strict=True)
+    platform_cpu_pct: float | None = Field(
+        default=None,
+        ge=0,
+        le=100,
+        allow_inf_nan=False,
+        strict=True,
+    )
+    source_status: ExecutiveInstrumentExchangeSourceStatus = "not_configured"
+
+    @field_validator("last_success_at", "last_error_at", mode="before")
+    @classmethod
+    def require_rfc3339_utc(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        if isinstance(value, datetime):
+            if value.tzinfo is None or value.utcoffset() != timedelta(0):
+                raise ValueError("exchange timestamp must be timezone-aware UTC")
+            return value
+        if not isinstance(value, str) or not re.fullmatch(
+            r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|\+00:00)",
+            value,
+        ):
+            raise ValueError("exchange timestamp must be RFC3339 UTC")
+        return value
+
+    @model_validator(mode="after")
+    def preserve_not_configured_status(self) -> ExecutiveInstrumentExchange:
+        if self.source_status == "not_configured" and self.status != "not_configured":
+            raise ValueError("not-configured exchange source cannot raise exchange severity")
+        return self
+
+
+class ExecutiveInstrumentProblem(ExecutiveInstrumentStrictModel):
+    problem_key: str
+    category: Literal[
+        "connectivity",
+        "resources",
+        "service",
+        "backup",
+        "access",
+        "monitoring",
+        "configuration",
+    ]
+    severity: Literal["critical", "warning", "info"]
+    title: str
+    evidence: list[str] = Field(default_factory=list)
+    started_at: datetime | None = None
+    recommended_action: str
+
+
+class ExecutiveInstrumentDevice(ExecutiveInstrumentStrictModel):
+    device_key: str
+    name: str
+    kind: str
+    lifecycle_status: ExecutiveInstrumentLifecycle
+    health_status: ExecutiveInstrumentHealth
+    connectivity_status: ExecutiveInstrumentConnectivity
+    criticality: Literal["critical", "standard"] = "standard"
+    location: str
+    purpose: list[str] = Field(default_factory=list)
+    technical_owner_ids: list[str] = Field(default_factory=list)
+    technical_owners: list[str] = Field(default_factory=list)
+    business_owner: str | None = None
+    last_attempted_at: datetime | None = None
+    last_success_at: datetime | None = None
+    incident_started_at: datetime | None = None
+    outage_duration_seconds: int | None = Field(default=None, ge=0)
+    availability_24h_pct: float | None = Field(default=None, ge=0, le=100)
+    availability_30d_pct: float | None = Field(default=None, ge=0, le=100)
+    monitoring_coverage_24h_pct: float | None = Field(default=None, ge=0, le=100)
+    monitoring_coverage_30d_pct: float | None = Field(default=None, ge=0, le=100)
+    metrics: ExecutiveInstrumentMetrics = Field(default_factory=ExecutiveInstrumentMetrics)
+    services: list[ExecutiveInstrumentService] = Field(default_factory=list)
+    backup: ExecutiveInstrumentBackup = Field(default_factory=ExecutiveInstrumentBackup)
+    integrations: ExecutiveInstrumentIntegration = Field(
+        default_factory=ExecutiveInstrumentIntegration
+    )
+    access: ExecutiveInstrumentAccess = Field(default_factory=ExecutiveInstrumentAccess)
+    exchange: ExecutiveInstrumentExchange = Field(default_factory=ExecutiveInstrumentExchange)
+    problems: list[ExecutiveInstrumentProblem] = Field(default_factory=list)
+    issue: str | None = None
+    recommended_action: str | None = None
+
+
+class ExecutiveInstrumentsSummary(ExecutiveInstrumentStrictModel):
+    total_count: int = Field(default=0, ge=0)
+    online_count: int = Field(default=0, ge=0)
+    critical_count: int = Field(default=0, ge=0)
+    warning_count: int = Field(default=0, ge=0)
+    not_monitored_count: int = Field(default=0, ge=0)
+    backup_gap_count: int = Field(default=0, ge=0)
+    access_review_count: int = Field(default=0, ge=0)
+    monitoring_coverage_24h_pct: float | None = Field(default=None, ge=0, le=100)
+
+
+class ExecutiveInstrumentCapabilities(ExecutiveInstrumentStrictModel):
+    access_governance: Literal["read_only"] = "read_only"
+    access_mutations: Literal[False] = False
+    network_scanning: Literal[False] = False
+
+
+class ExecutiveInstrumentsResponse(ExecutiveInstrumentStrictModel):
+    schema_version: Literal[2, 3, 4] = 2
+    generated_at: datetime
+    source_status: ExecutiveInstrumentSourceStatus
+    freshness_status: ExecutiveInstrumentFreshnessStatus
+    summary: ExecutiveInstrumentsSummary = Field(default_factory=ExecutiveInstrumentsSummary)
+    devices: list[ExecutiveInstrumentDevice] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    capabilities: ExecutiveInstrumentCapabilities = Field(
+        default_factory=ExecutiveInstrumentCapabilities
+    )
+    note: str | None = None
+
+    @model_validator(mode="after")
+    def validate_device_grain_and_summary(self) -> ExecutiveInstrumentsResponse:
+        device_keys = [device.device_key for device in self.devices]
+        if len(device_keys) != len(set(device_keys)):
+            raise ValueError("duplicate device_key in infrastructure snapshot")
+        for device in self.devices:
+            problem_keys = [problem.problem_key for problem in device.problems]
+            if len(problem_keys) != len(set(problem_keys)):
+                raise ValueError(f"duplicate infrastructure problem_key: {device.device_key}")
+            if not device.problems and device.issue:
+                device.problems.append(
+                    ExecutiveInstrumentProblem(
+                        problem_key="configuration:legacy-issue",
+                        category=(
+                            "monitoring"
+                            if device.health_status == "not_monitored"
+                            else "configuration"
+                        ),
+                        severity=("critical" if device.health_status == "critical" else "warning"),
+                        title=device.issue,
+                        started_at=device.incident_started_at,
+                        recommended_action=(
+                            device.recommended_action
+                            or "Проверить техническую диагностику в управляющем контуре"
+                        ),
+                    )
+                )
+        expected = {
+            "total_count": len(self.devices),
+            "online_count": sum(device.connectivity_status == "online" for device in self.devices),
+            "critical_count": sum(device.health_status == "critical" for device in self.devices),
+            "warning_count": sum(device.health_status == "warning" for device in self.devices),
+            "not_monitored_count": sum(
+                device.health_status == "not_monitored" for device in self.devices
+            ),
+            "backup_gap_count": sum(
+                device.backup.status in {"warning", "critical"} for device in self.devices
+            ),
+            "access_review_count": sum(
+                device.access.status == "warning" for device in self.devices
+            ),
+        }
+        for field_name, expected_value in expected.items():
+            if getattr(self.summary, field_name) != expected_value:
+                raise ValueError(f"infrastructure summary mismatch: {field_name}")
+        coverage_values = [
+            device.monitoring_coverage_24h_pct
+            for device in self.devices
+            if device.monitoring_coverage_24h_pct is not None
+            and device.health_status not in {"maintenance", "decommissioned"}
+        ]
+        expected_coverage = (
+            round(sum(coverage_values) / len(coverage_values), 1) if coverage_values else None
+        )
+        if self.summary.monitoring_coverage_24h_pct != expected_coverage:
+            raise ValueError("infrastructure summary mismatch: monitoring coverage")
+
+        generated_at = self.generated_at
+        if generated_at.tzinfo is None:
+            generated_at = generated_at.replace(tzinfo=UTC)
+        generated_at_utc = generated_at.astimezone(UTC)
+        latest_allowed = generated_at_utc + timedelta(minutes=5)
+
+        def observed_at(value: date | datetime | None) -> datetime | None:
+            if value is None:
+                return None
+            if isinstance(value, datetime):
+                return value.replace(tzinfo=value.tzinfo or UTC).astimezone(UTC)
+            return datetime.combine(value, time.min, UTC)
+
+        for device in self.devices:
+            exchange_timestamps = [
+                device.exchange.last_success_at,
+                device.exchange.last_error_at,
+            ]
+            if any(
+                timestamp is not None and timestamp > generated_at_utc
+                for value in exchange_timestamps
+                if (timestamp := observed_at(value)) is not None
+            ):
+                raise ValueError("future exchange timestamp in infrastructure snapshot")
+            timestamps: list[date | datetime | None] = [
+                device.last_attempted_at,
+                device.last_success_at,
+                device.incident_started_at,
+                device.backup.last_backup_at,
+                device.backup.last_full_backup_at,
+                device.backup.last_differential_backup_at,
+                device.backup.last_log_backup_at,
+                device.backup.last_restore_test_at,
+                device.integrations.last_success_at,
+            ]
+            for service in device.services:
+                timestamps.extend([service.last_verified_at, service.last_success_at])
+            if any(
+                timestamp is not None and timestamp > latest_allowed
+                for value in timestamps
+                if (timestamp := observed_at(value)) is not None
+            ):
+                raise ValueError("future observation timestamp in infrastructure snapshot")
+        return self
+
+
 class ExecutiveManagementBalanceLineItem(BaseModel):
     key: str
     label: str
@@ -125,6 +485,72 @@ class ExecutiveManagementBalanceResponse(BaseModel):
     source_summary: dict[str, Any] = Field(default_factory=dict)
     available_months: list[str] = Field(default_factory=list)
     note: str | None = None
+
+
+class ExecutiveManagementBalanceTurnoverLine(BaseModel):
+    key: str
+    label: str
+    section: Literal["asset", "liability", "equity"]
+    opening_balance: Decimal | None = None
+    debit_turnover: Decimal | None = None
+    credit_turnover: Decimal | None = None
+    closing_balance: Decimal | None = None
+    reconciliation_difference: Decimal | None = None
+    turnover_method: Literal["net_change_from_snapshots", "gross_cashflow_movements"] = (
+        "net_change_from_snapshots"
+    )
+    source_key: str
+    source_status: str
+    source_as_of: date | None = None
+    note: str | None = None
+
+
+class ExecutiveManagementBalanceTurnoverTotal(BaseModel):
+    section: Literal["asset", "liability", "equity"]
+    label: str
+    opening_balance: Decimal = Decimal("0")
+    debit_turnover: Decimal = Decimal("0")
+    credit_turnover: Decimal = Decimal("0")
+    closing_balance: Decimal = Decimal("0")
+    reconciliation_difference: Decimal = Decimal("0")
+    unknown_line_count: int = 0
+
+
+class ExecutiveManagementBalanceTurnoverResponse(BaseModel):
+    month: str
+    date_from: date
+    date_to: date
+    opening_balance_date: date
+    view: ExecutiveManagementBalanceView
+    opening_version: int
+    closing_version: int
+    opening_status: str
+    closing_status: str
+    opening_validation_error_count: int = 0
+    opening_content_sha256: str
+    closing_content_sha256: str
+    turnover_method: Literal["mixed_gross_cashflow_and_net_change"] = (
+        "mixed_gross_cashflow_and_net_change"
+    )
+    source_scope: Literal["onec_ut_10_3_plus_bp_accrued_taxes"] = (
+        "onec_ut_10_3_plus_bp_accrued_taxes"
+    )
+    source_status: str
+    currency: str = "RUB"
+    lines: list[ExecutiveManagementBalanceTurnoverLine] = Field(default_factory=list)
+    totals: list[ExecutiveManagementBalanceTurnoverTotal] = Field(default_factory=list)
+    excluded_lines: list[dict[str, Any]] = Field(default_factory=list)
+    opening_imbalance_amount: Decimal = Decimal("0")
+    closing_imbalance_amount: Decimal = Decimal("0")
+    opening_scope_imbalance_amount: Decimal = Decimal("0")
+    closing_scope_imbalance_amount: Decimal = Decimal("0")
+    unknown_line_count: int = 0
+    available_months: list[str] = Field(default_factory=list)
+    available_period_starts: list[str] = Field(default_factory=list)
+    available_period_ends: list[str] = Field(default_factory=list)
+    selected_month_from: str
+    selected_month_to: str
+    note: str
 
 
 class ExecutiveManagementBalanceCloseRequest(BaseModel):

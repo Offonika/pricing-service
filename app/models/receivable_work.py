@@ -6,6 +6,7 @@ from typing import Any, Optional
 
 from sqlalchemy import (
     JSON,
+    CheckConstraint,
     Date,
     DateTime,
     ForeignKey,
@@ -95,6 +96,10 @@ class ReceivableWorkItem(Base):
         cascade="all, delete-orphan",
     )
     sms_logs: Mapped[list[ReceivableSmsLog]] = relationship(back_populates="work_item")
+    supervisor_notes: Mapped[list[ReceivableSupervisorNote]] = relationship(
+        back_populates="work_item",
+        cascade="all, delete-orphan",
+    )
 
 
 class ReceivableWorkEvent(Base):
@@ -117,6 +122,42 @@ class ReceivableWorkEvent(Base):
     idempotency_key: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     work_item: Mapped[ReceivableWorkItem] = relationship(back_populates="events")
+
+
+class ReceivableSupervisorNote(Base):
+    __tablename__ = "receivable_supervisor_note"
+    __table_args__ = (
+        CheckConstraint(
+            "visibility IN ('personal', 'shared')",
+            name="ck_receivable_supervisor_note_visibility",
+        ),
+        UniqueConstraint(
+            "work_item_id",
+            "author_bitrix_user_id",
+            "visibility",
+            name="uq_receivable_supervisor_note_author_visibility",
+        ),
+        Index("ix_receivable_supervisor_note_work_item_id", "work_item_id"),
+        Index("ix_receivable_supervisor_note_author", "author_bitrix_user_id"),
+        Index("ix_receivable_supervisor_note_visibility", "visibility"),
+    )
+
+    work_item_id: Mapped[int] = mapped_column(
+        ForeignKey("receivable_work_item.id", ondelete="CASCADE"), nullable=False
+    )
+    author_bitrix_user_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    author_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    visibility: Mapped[str] = mapped_column(String(16), nullable=False)
+    comment: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+    deleted_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    work_item: Mapped[ReceivableWorkItem] = relationship(back_populates="supervisor_notes")
 
 
 class ReceivableSmsLog(Base):

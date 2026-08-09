@@ -27,19 +27,13 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.counterparty_duplicate_case import CounterpartyDuplicateCase
     from app.models.counterparty_folder_snapshot import CounterpartyFolderSnapshot
     from app.models.counterparty_manager_assignment import CounterpartyManagerAssignment
-    from app.models.customer_settlement import (
-        CustomerSettlementAssertionJti,
-        CustomerSettlementBalance,
-        CustomerSettlementMappingEntry,
-        CustomerSettlementMappingRevision,
-        CustomerSettlementPilotAccess,
-        CustomerSettlementRevision,
-    )
     from app.models.customer_price_type import (
         CustomerPriceTypeCase,
         CustomerPriceTypeCaseEvent,
         CustomerPriceTypeProfile,
         CustomerPriceTypeQualitySample,
+        CustomerPriceTypeReviewBatch,
+        CustomerPriceTypeReviewBatchItem,
         CustomerPriceTypeRun,
         CustomerPriceTypeSnapshot,
     )
@@ -98,6 +92,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         ProcurementOrderFormation,
         ProcurementOrderFormationEvent,
         ProcurementOrderFormationLine,
+        ProcurementSupplierProfile,
     )
     from app.models.product import Product
     from app.models.product_compatibility import ProductCompatibility
@@ -116,6 +111,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.receivable_reconciliation_snapshot import ReceivableReconciliationSnapshot
     from app.models.receivable_work import (
         ReceivableSmsLog,
+        ReceivableSupervisorNote,
         ReceivableWorkEvent,
         ReceivableWorkItem,
     )
@@ -158,6 +154,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "ProcurementOrderFormationLine",
         "ProcurementOrderFormationEvent",
         "ProcurementClassificationProposal",
+        "ProcurementSupplierProfile",
         "ProcurementLifecycleTransitionProposal",
         "ProductCompatibility",
         "Competitor",
@@ -167,18 +164,14 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "CardBalanceReconciliationEvent",
         "CounterpartyDuplicateCase",
         "CounterpartyFolderSnapshot",
-        "CustomerSettlementRevision",
-        "CustomerSettlementBalance",
-        "CustomerSettlementMappingRevision",
-        "CustomerSettlementMappingEntry",
-        "CustomerSettlementPilotAccess",
-        "CustomerSettlementAssertionJti",
         "CustomerPriceTypeProfile",
         "CustomerPriceTypeRun",
         "CustomerPriceTypeSnapshot",
         "CustomerPriceTypeCase",
         "CustomerPriceTypeCaseEvent",
         "CustomerPriceTypeQualitySample",
+        "CustomerPriceTypeReviewBatch",
+        "CustomerPriceTypeReviewBatchItem",
         "CompetitorFtpFile",
         "CompetitorFtpRawRow",
         "CompetitorFtpRecord",
@@ -270,6 +263,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "ReceivableWorkItem",
         "ReceivableWorkEvent",
         "ReceivableSmsLog",
+        "ReceivableSupervisorNote",
         "ReceivableOpenDebtCache",
         "ReceivableFolderRecommendationCache",
         "ReceivableBitrixUserAccess",

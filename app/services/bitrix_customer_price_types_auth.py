@@ -24,11 +24,14 @@ from typing import Any
 
 from fastapi import HTTPException, Security
 from fastapi.security import HTTPAuthorizationCredentials
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.api.dependencies import security
 from app.core.config import Settings, get_settings
 from app.domains.customer_price_types import CustomerPriceTypeAccessScope
+from app.models.customer_price_type import CustomerPriceTypeProfile
+from app.models.telephony import TelephonyUserLineSnapshot
 from app.services.bitrix_receivables_auth import resolve_receivable_department_refs_by_names
 from app.services.receivable_department_aliases import expand_receivable_department_refs
 
@@ -276,6 +279,57 @@ def resolve_customer_price_type_department_refs(
     )
 
 
+def resolve_customer_price_type_manager_owner_ref(
+    session: Session,
+    *,
+    bitrix_user_id: str,
+) -> str | None:
+    """Resolve one Bitrix user to one current 1C owner reference.
+
+    The telephony snapshot is the existing production identity bridge between
+    Bitrix users and 1C users. Fail closed when the current snapshot is absent
+    or ambiguous, and only grant the manager scope when that 1C user actually
+    owns at least one customer price-type profile.
+    """
+    user_id = str(bitrix_user_id).strip()
+    if not user_id:
+        return None
+    active_user = or_(
+        TelephonyUserLineSnapshot.employment_status.is_(None),
+        TelephonyUserLineSnapshot.employment_status != "fired",
+    )
+    latest_snapshot_date = session.scalar(
+        select(func.max(TelephonyUserLineSnapshot.snapshot_date)).where(
+            TelephonyUserLineSnapshot.bitrix_user_id == user_id,
+            TelephonyUserLineSnapshot.is_marked.is_(False),
+            active_user,
+        )
+    )
+    if latest_snapshot_date is None:
+        return None
+    owner_refs = {
+        str(value).strip().lower()
+        for value in session.scalars(
+            select(TelephonyUserLineSnapshot.user_ref_hex).where(
+                TelephonyUserLineSnapshot.snapshot_date == latest_snapshot_date,
+                TelephonyUserLineSnapshot.bitrix_user_id == user_id,
+                TelephonyUserLineSnapshot.is_marked.is_(False),
+                active_user,
+            )
+        )
+        if value and str(value).strip()
+    }
+    if len(owner_refs) != 1:
+        return None
+    owner_ref = next(iter(owner_refs))
+    owns_profiles = session.scalar(
+        select(CustomerPriceTypeProfile.id)
+        .where(func.lower(CustomerPriceTypeProfile.owner_ref) == owner_ref)
+        .limit(1)
+    )
+    return owner_ref if owns_profiles is not None else None
+
+
 def _load_access_rules(settings: Settings) -> list[dict[str, Any]]:
     raw = settings.customer_price_type_access_rules_json
     if not raw:
@@ -308,6 +362,7 @@ def resolve_customer_price_type_access(
     department_ids: tuple[str, ...] | list[str] = (),
     headed_department_ids: tuple[str, ...] | list[str] = (),
     headed_department_refs: tuple[str, ...] | list[str] = (),
+    manager_owner_ref: str | None = None,
     settings: Settings | None = None,
 ) -> CustomerPriceTypeAccessScope:
     """Map a Bitrix user to a read-only scope by ORG POSITION, not by a user list.
@@ -315,11 +370,12 @@ def resolve_customer_price_type_access(
     v1 grants access only to management roles: executive / network head (heads a
     configured Bitrix department), department head (heads a mapped Bitrix
     department), finance / master_data / quality (member of the matching
-    department). The legacy network-head membership rule remains supported for
-    backwards compatibility. A small break-glass full-access user list is still
-    honoured for rollout / IT admins. Regular members without a management
-    position get 403. Access follows Bitrix staffing automatically, so no
-    per-person list needs maintaining.
+    department). A regular manager is mapped through the current telephony
+    identity snapshot to one 1C owner reference and only sees profiles owned by
+    that reference. The legacy network-head membership rule remains supported
+    for backwards compatibility. A small break-glass full-access user list is
+    still honoured for rollout / IT admins. Access follows Bitrix staffing
+    automatically, so no per-person list needs maintaining.
     """
     settings = settings or get_settings()
     user_id = str(bitrix_user_id).strip()
@@ -393,6 +449,15 @@ def resolve_customer_price_type_access(
                 role=role,
                 can_view_money=bool(rule.get("can_view_money", role in _MONEY_ROLES)),
             )
+
+    normalized_owner_ref = str(manager_owner_ref or "").strip().lower()
+    if normalized_owner_ref:
+        return CustomerPriceTypeAccessScope(
+            actor=actor,
+            role="manager",
+            owner_ref=normalized_owner_ref,
+            can_view_money=False,
+        )
 
     raise HTTPException(status_code=403, detail="Нет доступа к витрине типов цен")
 

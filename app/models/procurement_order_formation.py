@@ -71,7 +71,6 @@ class ProcurementOrderFormation(Base):
     approved_by_actor: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     approved_by_bitrix_user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     approved_by_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
-
     onec_status: Mapped[str] = mapped_column(String(32), nullable=False, default="not_sent")
     onec_message_id: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
     onec_document_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
@@ -194,6 +193,11 @@ class ProcurementClassificationProposal(Base):
     approved_by_actor: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     approved_by_bitrix_user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     approved_by_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    rejected_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    rejected_by_actor: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    rejected_by_bitrix_user_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    rejected_by_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    rejection_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
     onec_message_id: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)
@@ -212,6 +216,56 @@ class ProcurementClassificationProposal(Base):
 
     line: Mapped[ProcurementOrderFormationLine] = relationship(
         back_populates="classification_proposals"
+    )
+
+
+class ProcurementSupplierProfile(Base):
+    __tablename__ = "procurement_supplier_profile"
+    __table_args__ = (
+        UniqueConstraint("supplier_ref", name="uq_proc_supplier_profile_ref"),
+        Index("ix_proc_supplier_profile_code", "supplier_code"),
+        Index("ix_proc_supplier_profile_class", "qualification_class"),
+    )
+
+    supplier_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    supplier_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    supplier_name: Mapped[str] = mapped_column(String(500), nullable=False)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+
+    qualification_class: Mapped[Optional[str]] = mapped_column(String(1), nullable=True)
+    qualification_label: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    advantages: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
+    internal_note: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+
+    payment_terms: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    credit_days: Mapped[Optional[int]] = mapped_column(nullable=True)
+    credit_limit: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2), nullable=True)
+    terms_source: Mapped[str] = mapped_column(String(64), nullable=False, default="onec_contract")
+    terms_status: Mapped[str] = mapped_column(String(32), nullable=False, default="missing")
+
+    history_order_count: Mapped[Optional[int]] = mapped_column(nullable=True)
+    supplier_prepare_days: Mapped[Optional[int]] = mapped_column(nullable=True)
+    logistics_days: Mapped[Optional[int]] = mapped_column(nullable=True)
+    lead_time_days: Mapped[Optional[int]] = mapped_column(nullable=True)
+    lead_time_confidence: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    price_history_count: Mapped[Optional[int]] = mapped_column(nullable=True)
+    supplier_defect_pct: Mapped[Optional[Decimal]] = mapped_column(Numeric(7, 3), nullable=True)
+    supplier_defect_history_units: Mapped[Optional[int]] = mapped_column(nullable=True)
+    supplier_defect_confidence: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    facts_payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    facts_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+
+    manual_updated_by_actor: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    manual_updated_by_bitrix_user_id: Mapped[Optional[str]] = mapped_column(
+        String(64), nullable=True
+    )
+    manual_updated_by_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    manual_updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
     )
 
 

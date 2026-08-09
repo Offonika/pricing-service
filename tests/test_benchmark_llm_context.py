@@ -9,6 +9,11 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
+WORKSPACE_ROOT = Path("/opt/MM")
+WORKSPACE_ROUTER = WORKSPACE_ROOT / "scripts/mm_context.py"
+WORKSPACE_ROUTER_AVAILABLE = WORKSPACE_ROUTER.is_file() and ROOT.resolve().is_relative_to(
+    WORKSPACE_ROOT
+)
 SPEC = importlib.util.spec_from_file_location(
     "benchmark_llm_context",
     ROOT / "scripts/benchmark_llm_context.py",
@@ -58,6 +63,10 @@ def test_router_prompt_uses_lightweight_worktree_context() -> None:
 
 
 @pytest.mark.parametrize(("query", "expected_document"), ROUTING_CASES)
+@pytest.mark.skipif(
+    not WORKSPACE_ROUTER_AVAILABLE,
+    reason="requires the hydrated /opt/MM workspace router",
+)
 def test_problem_routes_return_canonical_document_first(
     query: str,
     expected_document: str,
@@ -65,7 +74,7 @@ def test_problem_routes_return_canonical_document_first(
     completed = subprocess.run(
         [
             sys.executable,
-            "/opt/MM/scripts/mm_context.py",
+            str(WORKSPACE_ROUTER),
             "--query",
             query,
             "--project",

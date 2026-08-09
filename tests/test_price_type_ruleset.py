@@ -20,7 +20,8 @@ import yaml
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-from scripts.build_bronze_monthly_inventory import classify_client  # noqa: E402
+from scripts.build_bronze_monthly_inventory import _bucket, classify_client  # noqa: E402
+from scripts.build_customer_price_type_blueprint import build_blueprint  # noqa: E402
 from scripts.build_customer_returns_portrait import (  # noqa: E402
     _behavior_group,
     _period_mismatch,
@@ -30,9 +31,7 @@ RULESET = yaml.safe_load(
     (REPO_ROOT / "config/price_types/ruleset.yaml").read_text(encoding="utf-8")
 )
 LEVELS = RULESET["levels"]
-BLUEPRINT = json.loads(
-    (REPO_ROOT / "build/bitrix/customer_price_type_blueprint.json").read_text(encoding="utf-8")
-)
+BLUEPRINT = build_blueprint()
 
 
 @pytest.mark.parametrize("level_key", list(LEVELS.keys()))
@@ -67,6 +66,13 @@ def test_silver_client_not_measured_by_bronze_threshold() -> None:
         hold_threshold=Decimal(str(silver["hold_last_month"])),
     )
     assert bucket == "изолятор_1м"
+
+
+def test_excluded_never_purchased_cards_are_not_labeled_as_service_cards() -> None:
+    assert (
+        _bucket("excluded_without_sales_history", excluded=True) == "исключено_без_истории_продаж"
+    )
+    assert _bucket("excluded_service_card", excluded=True) == "служебная_карточка"
 
 
 def test_blueprint_rulebook_matches_ruleset() -> None:
@@ -122,9 +128,19 @@ def test_returns_over_window_sales_flagged() -> None:
     assert _period_mismatch(Decimal("10000"), Decimal("1500")) == ""
 
 
-def test_linter_passes() -> None:
+def test_linter_passes(tmp_path: Path) -> None:
+    blueprint_path = tmp_path / "customer_price_type_blueprint.json"
+    blueprint_path.write_text(
+        json.dumps(BLUEPRINT, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
     result = subprocess.run(
-        [sys.executable, str(REPO_ROOT / "scripts/validate_price_type_ruleset.py")],
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts/validate_price_type_ruleset.py"),
+            "--blueprint-json",
+            str(blueprint_path),
+        ],
         capture_output=True,
         text=True,
         check=False,

@@ -10,10 +10,10 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.services.manual_matching_bitrix_tasks import (
     DEFAULT_CREATED_BY_ID,
     DEFAULT_GROUP_ID,
@@ -95,7 +95,7 @@ def main(
     args = parse_args(argv)
     target_date = date.fromisoformat(args.report_date) if args.report_date else report_date_today()
     database_url = args.database_url or get_settings().database_url
-    engine = create_engine(database_url, pool_pre_ping=True)
+    engine = build_engine(database_url, pool_pre_ping=True)
     report_path = DEFAULT_REPORT_DIR / f"{target_date.isoformat()}.md"
 
     with Session(engine) as session:

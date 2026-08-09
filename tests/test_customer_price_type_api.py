@@ -21,7 +21,12 @@ from app.domains.customer_price_types import (
 )
 from app.main import app
 from app.models import Base
-from app.models.customer_price_type import CustomerPriceTypeProfile
+from app.models.customer_price_type import (
+    CustomerPriceTypeProfile,
+    CustomerPriceTypeReviewBatch,
+    CustomerPriceTypeReviewBatchItem,
+    CustomerPriceTypeSnapshot,
+)
 from app.services.customer_price_types import (
     CustomerPriceTypeQualityConflict,
     CustomerPriceTypeQualityService,
@@ -137,6 +142,7 @@ def test_read_only_api_and_scopes(tmp_path: Path) -> None:
         assert detail.json()["events"][0]["event_type"] == "case_created"
         assert profile.status_code == 200
         assert profile.json()["latest_snapshot"]["total_3m"] == "300.00"
+        assert profile.json()["case_history"][0]["id"] == case_id
         assert run_response.status_code == 200
         assert run_response.json()["status"] == "completed"
         assert client.post("/api/customer-price-types/cases").status_code == 405
@@ -225,6 +231,128 @@ def test_conflicting_price_levels_detail_explains_manager_action(tmp_path: Path)
         assert "согласовать единый уровень" in payload["guidance"]["recommended_action"]
         assert "не выбирается автоматически" in payload["guidance"]["expected_price_type"]
         assert len(payload["guidance"]["manager_attention"]) == 6
+    finally:
+        app.dependency_overrides = {}
+        engine.dispose()
+
+
+def test_detail_marks_usable_contract_and_price_type_change_target(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'usable-contract.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    fact = replace(
+        _facts(21, owner="manager-21", department="department-21"),
+        contracts=(
+            ContractFact(
+                contract_ref=_ref(1021),
+                contract_name="Основной договор",
+                price_type_name=None,
+                price_type_missing=True,
+            ),
+            ContractFact(
+                contract_ref=_ref(2021),
+                contract_name="Договор с покупателем",
+                price_type_name="2.Бронзовый",
+                sale_document_count_12m=1,
+                is_working=True,
+            ),
+        ),
+    )
+    CustomerPriceTypeRunService(factory).execute(
+        [fact],
+        source_statuses={"contracts": "ready"},
+    )
+    full = CustomerPriceTypeAccessScope(
+        actor="test",
+        role="internal",
+        can_view_money=True,
+    )
+    app.dependency_overrides = {
+        get_db: _override_db(factory),
+        require_customer_price_type_access: lambda: full,
+    }
+    try:
+        client = TestClient(app)
+        cases = client.get("/api/customer-price-types/cases").json()["payload"]
+        assert len(cases) == 1
+        assert cases[0]["case_type"] == "isolate"
+
+        detail = client.get(f"/api/customer-price-types/cases/{cases[0]['id']}").json()
+        contracts = {
+            item["contract_name"]: item for item in detail["snapshot"]["contract_candidates"]
+        }
+
+        assert detail["snapshot"]["current_price_type"] == "2.Бронзовый"
+        assert detail["snapshot"]["recommended_price_type"] == "Розница"
+        assert contracts["Основной договор"]["used_for_calculation"] is False
+        assert contracts["Основной договор"]["ignored_reason"] == "price_type_missing"
+        assert contracts["Договор с покупателем"]["used_for_calculation"] is True
+        assert contracts["Договор с покупателем"]["price_type_change_target"] is True
+    finally:
+        app.dependency_overrides = {}
+        engine.dispose()
+
+
+def test_closed_case_is_hidden_from_cases_and_kept_in_profile_history(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'closed-case-history.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    service = CustomerPriceTypeRunService(factory)
+    base = _facts(22, owner="manager-22", department="department-22")
+    conflicting = replace(
+        base,
+        contracts=(
+            ContractFact(
+                contract_ref=_ref(1022),
+                contract_name="Бронзовый",
+                price_type_name="2.Бронзовый",
+                sale_document_count_12m=2,
+                is_working=True,
+            ),
+            ContractFact(
+                contract_ref=_ref(2022),
+                contract_name="Розничный",
+                price_type_name="Розница",
+                sale_document_count_12m=1,
+                is_working=True,
+            ),
+        ),
+    )
+    service.execute([conflicting], source_statuses={"contracts": "ready"}, run_key="conflict")
+    resolved = replace(
+        base,
+        contracts=(
+            ContractFact(
+                contract_ref=_ref(1022),
+                contract_name="Бронзовый",
+                price_type_name="2.Бронзовый",
+                sale_document_count_12m=2,
+                is_working=True,
+            ),
+        ),
+        monthly_sales={
+            **base.monthly_sales,
+            "2026-04": Decimal("4000"),
+            "2026-05": Decimal("4000"),
+            "2026-06": Decimal("4000"),
+        },
+        direct_onec_total_3m=Decimal("12000"),
+        ledger_total_3m=Decimal("12000"),
+    )
+    service.execute([resolved], source_statuses={"contracts": "ready"}, run_key="resolved")
+
+    full = CustomerPriceTypeAccessScope(actor="test", role="internal", can_view_money=True)
+    app.dependency_overrides = {
+        get_db: _override_db(factory),
+        require_customer_price_type_access: lambda: full,
+    }
+    try:
+        client = TestClient(app)
+        assert client.get("/api/customer-price-types/cases").json()["total"] == 0
+        profile = client.get(f"/api/customer-price-types/profiles/{_ref(22)}").json()
+        assert profile["open_case"] is None
+        assert len(profile["case_history"]) == 1
+        assert profile["case_history"][0]["stage"] == "CLOSED_KEEP"
     finally:
         app.dependency_overrides = {}
         engine.dispose()
@@ -354,6 +482,180 @@ def test_role_scopes_filters_and_pagination(tmp_path: Path) -> None:
         engine.dispose()
 
 
+def test_reviewed_portfolio_reproduces_50_and_32_without_overriding_engine(
+    tmp_path: Path,
+) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'portfolio.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+
+    def priced(value: int, price_type: str) -> CustomerPriceTypeFacts:
+        fact = _facts(value, owner="manager-1", department="department-1")
+        return replace(
+            fact,
+            contracts=(
+                ContractFact(
+                    contract_ref=_ref(1000 + value),
+                    contract_name="Основной",
+                    price_type_name=price_type,
+                    sale_document_count_12m=2,
+                    sales_amount_12m=Decimal("2500"),
+                    last_sale_at=date(2026, 5, 20),
+                    is_working=True,
+                ),
+            ),
+        )
+
+    facts = [priced(value, "2.Бронзовый") for value in range(1, 51)]
+    facts.extend(priced(value, "Розница") for value in range(51, 69))
+    facts.extend(priced(value, "2.Бронзовый бн") for value in range(69, 72))
+    facts.append(priced(72, "3.Серебряный"))
+    facts.append(priced(73, "4.Золотой"))
+    for value in range(74, 83):
+        fact = priced(value, "2.Бронзовый")
+        facts.append(
+            replace(
+                fact,
+                contracts=(
+                    *fact.contracts,
+                    ContractFact(
+                        contract_ref=_ref(2000 + value),
+                        contract_name="Другой рабочий",
+                        price_type_name="Розница",
+                        sale_document_count_12m=1,
+                        sales_amount_12m=Decimal("1000"),
+                        last_sale_at=date(2026, 4, 15),
+                        is_working=True,
+                    ),
+                ),
+            )
+        )
+    run = CustomerPriceTypeRunService(factory).execute(
+        facts,
+        source_statuses={
+            "contracts": "ready",
+            "sales_history": "ready",
+            "ledger_reconciliation": "ready",
+            "master_data": "ready",
+        },
+    )
+    assert run.status == "partial"
+
+    expected_types = {
+        **{value: "2.Бронзовый" for value in range(1, 51)},
+        **{value: "Розница" for value in range(51, 69)},
+        **{value: "2.Бронзовый бн" for value in range(69, 72)},
+        72: "3.Серебряный",
+        73: "4.Золотой",
+    }
+    with Session(engine) as session:
+        batch = CustomerPriceTypeReviewBatch(
+            batch_key="reviewed-working-contracts-2026-07",
+            label="Пакет 82",
+            source_sha256="a" * 64,
+            source_files=["working.csv", "review.csv"],
+            expected_counts={"working_bronze": 50, "review_queue": 32},
+            status="ready",
+        )
+        session.add(batch)
+        session.flush()
+        session.add_all(
+            [
+                CustomerPriceTypeReviewBatchItem(
+                    batch_id=batch.id,
+                    counterparty_ref=_ref(value),
+                    counterparty_code=f"РБ{value:06d}",
+                    expected_bucket=("working_bronze" if value <= 50 else "review_queue"),
+                    expected_price_type=expected_types.get(value),
+                    source_name="working.csv" if value <= 50 else "review.csv",
+                    source_row=value + 1,
+                )
+                for value in range(1, 83)
+            ]
+        )
+        session.commit()
+
+    full = CustomerPriceTypeAccessScope(actor="test", role="internal", can_view_money=True)
+    app.dependency_overrides = {
+        get_db: _override_db(factory),
+        require_customer_price_type_access: lambda: full,
+    }
+    try:
+        client = TestClient(app)
+        working = client.get(
+            "/api/customer-price-types/portfolio",
+            params={"bucket": "working_bronze", "limit": 100},
+        )
+        review = client.get(
+            "/api/customer-price-types/portfolio",
+            params={"bucket": "review_queue", "limit": 100},
+        )
+        assert working.status_code == 200
+        assert working.json()["total"] == 50
+        assert working.json()["counts"] == {
+            "working_bronze": 50,
+            "review_queue": 32,
+            "total": 82,
+        }
+        assert working.json()["mismatch_count"] == 0
+        assert working.json()["review_status_counts"] == {
+            "ready": 73,
+            "business_conflict": 9,
+            "technical_incomplete": 0,
+            "missing_snapshot": 0,
+        }
+        assert len(working.json()["payload"][0]["working_contracts"]) == 1
+        assert working.json()["payload"][0]["working_contracts"][0]["sale_document_count_12m"] == 2
+        assert review.status_code == 200
+        assert review.json()["total"] == 32
+        review_rows = review.json()["payload"]
+        assert sum(row["current_price_type"] == "Розница" for row in review_rows) == 18
+        assert sum(row["current_price_type"] == "2.Бронзовый бн" for row in review_rows) == 3
+        assert sum(row["current_price_type"] == "3.Серебряный" for row in review_rows) == 1
+        assert sum(row["current_price_type"] == "4.Золотой" for row in review_rows) == 1
+        assert sum(row["current_price_type"] is None for row in review_rows) == 9
+        assert all(row["reconciliation_status"] == "match" for row in review_rows)
+
+        with Session(engine) as session:
+            incomplete = session.scalar(
+                select(CustomerPriceTypeSnapshot).where(
+                    CustomerPriceTypeSnapshot.counterparty_ref == _ref(1)
+                )
+            )
+            assert incomplete is not None
+            incomplete.source_status = "partial"
+            incomplete.system_recommendation = "data_check"
+            incomplete.reasons = ["partial_source"]
+            incomplete.stop_factors = ["source_contracts_missing"]
+            business_conflict_with_missing_source = session.scalar(
+                select(CustomerPriceTypeSnapshot).where(
+                    CustomerPriceTypeSnapshot.counterparty_ref == _ref(74)
+                )
+            )
+            assert business_conflict_with_missing_source is not None
+            business_conflict_with_missing_source.source_statuses = {
+                **business_conflict_with_missing_source.source_statuses,
+                "master_data": "missing",
+            }
+            session.commit()
+        incomplete_response = client.get(
+            "/api/customer-price-types/portfolio",
+            params={"bucket": "working_bronze", "limit": 100},
+        ).json()
+        assert incomplete_response["counts"]["working_bronze"] == 50
+        assert incomplete_response["mismatch_count"] == 2
+        assert incomplete_response["review_status_counts"]["technical_incomplete"] == 2
+        assert incomplete_response["review_status_counts"]["business_conflict"] == 8
+        incomplete_row = next(
+            row for row in incomplete_response["payload"] if row["counterparty_ref"] == _ref(1)
+        )
+        assert incomplete_row["reconciliation_status"] == "mismatch"
+        assert incomplete_row["review_status"] == "technical_incomplete"
+    finally:
+        app.dependency_overrides = {}
+        engine.dispose()
+
+
 def test_empty_collections_and_authentication(tmp_path: Path, monkeypatch) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'empty.db'}")
     Base.metadata.create_all(engine)
@@ -410,6 +712,7 @@ def test_storage_failures_and_openapi_read_only_contract(tmp_path: Path) -> None
     try:
         client = TestClient(app)
         assert client.get("/api/customer-price-types/summary").status_code == 503
+        assert client.get("/api/customer-price-types/portfolio").status_code == 503
         assert client.get("/api/customer-price-types/cases").status_code == 503
         assert client.get("/api/customer-price-types/runs/1").status_code == 503
 
@@ -421,6 +724,7 @@ def test_storage_failures_and_openapi_read_only_contract(tmp_path: Path) -> None
         for path in (
             "/api/customer-price-types/summary",
             "/api/customer-price-types/worklists",
+            "/api/customer-price-types/portfolio",
             "/api/customer-price-types/cases",
             "/api/customer-price-types/cases/{case_id}",
             "/api/customer-price-types/profiles/{counterparty_ref}",

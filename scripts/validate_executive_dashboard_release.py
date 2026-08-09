@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
+import argparse
 import json
 import re
 import sys
 from pathlib import Path
+from typing import Sequence
+
+sys.dont_write_bytecode = True
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -19,24 +23,46 @@ REQUIRED_ROUTES = {
     ("GET", "/api/management/executive-dashboard/profit-loss-period"),
     ("GET", "/api/management/executive-dashboard/sales-period"),
     ("GET", "/api/management/executive-dashboard/management-balance"),
+    ("GET", "/api/management/executive-dashboard/management-balance-turnover"),
     ("POST", "/api/management/executive-dashboard/management-balance/{month}/close"),
     ("GET", "/api/management/executive-dashboard/service-accruals"),
 }
 ASSET_RE = re.compile(r"(?:src|href)=[\"'](?:\./|/)?assets/([^\"']+)[\"']")
 
 
-def main() -> None:
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--skip-database-revision",
+        action="store_true",
+        help="check database connectivity but defer revision equality until migration",
+    )
+    return parser.parse_args(argv)
+
+
+def _migration_revision_error(
+    database_head: str | None,
+    code_head: str | None,
+    *,
+    skip_database_revision: bool,
+) -> str | None:
+    if not skip_database_revision and database_head is not None and database_head != code_head:
+        return f"database revision {database_head} does not match code head {code_head}"
+    return None
+
+
+def main(argv: Sequence[str] | None = None) -> None:
+    args = _parse_args(argv)
     from alembic.config import Config
     from alembic.runtime.migration import MigrationContext
     from alembic.script import ScriptDirectory
-    from sqlalchemy import create_engine
 
     from app.core.config import get_settings
     from app.infrastructure.contracts import ContractIntegrityError, read_json_contract
+    from app.infrastructure.db.engines import get_application_engine
     from app.main import app
     from app.services.executive_dashboard import (
         _resolve_cashflow_period_cache_path,
-        _resolve_owner_cash_control_snapshot_path,
         _resolve_sales_plan_snapshot_path,
         _resolve_snapshot_path,
         _resolve_warehouse_snapshot_path,
@@ -77,7 +103,6 @@ def main() -> None:
         ("finance snapshot", _resolve_snapshot_path()),
         ("cashflow cache", _resolve_cashflow_period_cache_path()),
         ("warehouse snapshot", _resolve_warehouse_snapshot_path()),
-        ("owner cash control snapshot", _resolve_owner_cash_control_snapshot_path()),
         ("frozen sales plan snapshot", _resolve_sales_plan_snapshot_path()),
         (
             "employee payroll balance snapshot",
@@ -114,14 +139,17 @@ def main() -> None:
     code_head = script.get_current_head()
     database_head = None
     try:
-        engine = create_engine(settings.database_url)
+        engine = get_application_engine()
         with engine.connect() as connection:
             database_head = MigrationContext.configure(connection).get_current_revision()
-        engine.dispose()
     except Exception as exc:  # pragma: no cover - operational diagnostic
         errors.append(f"database migration check failed: {type(exc).__name__}: {exc}")
-    if database_head is not None and database_head != code_head:
-        errors.append(f"database revision {database_head} does not match code head {code_head}")
+    if revision_error := _migration_revision_error(
+        database_head,
+        code_head,
+        skip_database_revision=args.skip_database_revision,
+    ):
+        errors.append(revision_error)
 
     result = {
         "status": "ok" if not errors else "failed",
@@ -130,6 +158,7 @@ def main() -> None:
         "required_route_count": len(REQUIRED_ROUTES),
         "code_migration_head": code_head,
         "database_migration_head": database_head,
+        "database_revision_checked": not args.skip_database_revision,
         "errors": errors,
     }
     print(json.dumps(result, ensure_ascii=False, indent=2))

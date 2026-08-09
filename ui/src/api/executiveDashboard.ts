@@ -126,6 +126,66 @@ export interface ExecutiveManagementBalanceResponse {
   note?: string | null;
 }
 
+export interface ExecutiveManagementBalanceTurnoverLine {
+  key: string;
+  label: string;
+  section: "asset" | "liability" | "equity";
+  opening_balance?: string | null;
+  debit_turnover?: string | null;
+  credit_turnover?: string | null;
+  closing_balance?: string | null;
+  reconciliation_difference?: string | null;
+  turnover_method: "net_change_from_snapshots" | "gross_cashflow_movements";
+  source_key: string;
+  source_status: string;
+  source_as_of?: string | null;
+  note?: string | null;
+}
+
+export interface ExecutiveManagementBalanceTurnoverTotal {
+  section: "asset" | "liability" | "equity";
+  label: string;
+  opening_balance: string;
+  debit_turnover: string;
+  credit_turnover: string;
+  closing_balance: string;
+  reconciliation_difference: string;
+  unknown_line_count: number;
+}
+
+export interface ExecutiveManagementBalanceTurnoverResponse {
+  month: string;
+  date_from: string;
+  date_to: string;
+  opening_balance_date: string;
+  view: ExecutiveManagementBalanceView;
+  opening_version: number;
+  closing_version: number;
+  opening_status: string;
+  closing_status: string;
+  opening_validation_error_count: number;
+  opening_content_sha256: string;
+  closing_content_sha256: string;
+  turnover_method: "mixed_gross_cashflow_and_net_change";
+  source_scope: "onec_ut_10_3_plus_bp_accrued_taxes";
+  source_status: string;
+  currency: string;
+  lines: ExecutiveManagementBalanceTurnoverLine[];
+  totals: ExecutiveManagementBalanceTurnoverTotal[];
+  excluded_lines: Array<Record<string, unknown>>;
+  opening_imbalance_amount: string;
+  closing_imbalance_amount: string;
+  opening_scope_imbalance_amount: string;
+  closing_scope_imbalance_amount: string;
+  unknown_line_count: number;
+  available_months?: string[];
+  available_period_starts?: string[];
+  available_period_ends?: string[];
+  selected_month_from?: string;
+  selected_month_to?: string;
+  note: string;
+}
+
 export interface ExecutiveCashflowRatio {
   key: string;
   label: string;
@@ -531,6 +591,147 @@ export interface ExecutiveOnlineStorePeriodResponse {
   landing_pages: ExecutiveOnlineStoreLandingPageRow[];
 }
 
+export interface ExecutiveInstrumentMetrics {
+  cpu_used_pct?: number | null;
+  memory_used_pct?: number | null;
+  disk_free_pct?: number | null;
+  disk_free_gib?: number | null;
+  latency_ms?: number | null;
+  vcpu?: number | null;
+  uptime_seconds?: number | null;
+}
+
+export interface ExecutiveInstrumentService {
+  service_key: string;
+  name: string;
+  component_kind: string;
+  status: string;
+  criticality: string;
+  last_verified_at?: string | null;
+  last_success_at?: string | null;
+  source_project?: string | null;
+}
+
+export type ExecutiveInstrumentProblemCategory =
+  | "connectivity"
+  | "resources"
+  | "service"
+  | "backup"
+  | "access"
+  | "monitoring"
+  | "configuration";
+
+export interface ExecutiveInstrumentProblem {
+  problem_key: string;
+  category: ExecutiveInstrumentProblemCategory;
+  severity: "critical" | "warning" | "info";
+  title: string;
+  evidence: string[];
+  started_at?: string | null;
+  recommended_action: string;
+}
+
+export interface ExecutiveInstrumentExchange {
+  status:
+    | "ready"
+    | "warning"
+    | "critical"
+    | "not_configured";
+  queue_items: number | null;
+  queue_status: "ready" | "warning" | "critical" | "not_configured" | null;
+  last_success_at?: string | null;
+  last_error_at?: string | null;
+  consecutive_failures: number | null;
+  active_job_seconds: number | null;
+  stage_last: "checkauth" | "init" | "file" | "import" | "none" | null;
+  stage_file_missing_cycles: number | null;
+  platform_cpu_pct?: number | null;
+  source_status: "ready" | "partial" | "not_configured";
+}
+
+export interface ExecutiveInstrumentDevice {
+  device_key: string;
+  name: string;
+  kind: string;
+  lifecycle_status: string;
+  health_status: string;
+  connectivity_status: string;
+  criticality: string;
+  location: string;
+  purpose: string[];
+  technical_owner_ids: string[];
+  technical_owners: string[];
+  business_owner?: string | null;
+  last_attempted_at?: string | null;
+  last_success_at?: string | null;
+  incident_started_at?: string | null;
+  outage_duration_seconds?: number | null;
+  availability_24h_pct?: number | null;
+  availability_30d_pct?: number | null;
+  monitoring_coverage_24h_pct?: number | null;
+  monitoring_coverage_30d_pct?: number | null;
+  metrics: ExecutiveInstrumentMetrics;
+  services: ExecutiveInstrumentService[];
+  backup: {
+    status: string;
+    protected_datastores: number;
+    unprotected_datastores: number;
+    rpo_minutes?: number | null;
+    lag_minutes?: number | null;
+    last_backup_at?: string | null;
+    last_full_backup_at?: string | null;
+    last_differential_backup_at?: string | null;
+    last_log_backup_at?: string | null;
+    last_restore_test_at?: string | null;
+    off_host_verified: boolean;
+    readback_verified: boolean;
+  };
+  integrations: {
+    status: string;
+    count: number;
+    last_success_at?: string | null;
+  };
+  access: {
+    status: string;
+    active_grants: number;
+    pending_grants: number;
+    review_required_grants: number;
+    mfa_review_count: number;
+    unowned_credentials: number;
+    attention_grant_count: number;
+    next_review_at?: string | null;
+  };
+  exchange?: ExecutiveInstrumentExchange | null;
+  problems?: ExecutiveInstrumentProblem[];
+  issue?: string | null;
+  recommended_action?: string | null;
+}
+
+export interface ExecutiveInstrumentsResponse {
+  schema_version: 2 | 3 | 4;
+  generated_at: string;
+  source_status: string;
+  freshness_status: string;
+  summary: {
+    total_count: number;
+    online_count: number;
+    critical_count: number;
+    warning_count: number;
+    not_monitored_count: number;
+    backup_gap_count: number;
+    access_review_count: number;
+    monitoring_coverage_24h_pct?: number | null;
+  };
+  devices: ExecutiveInstrumentDevice[];
+  warnings: string[];
+  capabilities: {
+    access_governance: "read_only";
+    access_mutations: false;
+    network_scanning: false;
+  };
+  note?: string | null;
+}
+
 export async function fetchExecutiveDashboard(date?: string) {
   const response = await api.get<ExecutiveDashboardResponse>("/management/executive-dashboard", {
     params: { date: date || undefined },
@@ -547,6 +748,26 @@ export async function fetchExecutiveManagementBalance(params?: {
     {
       params: {
         month: params?.month || undefined,
+        view: params?.view || undefined,
+      },
+    }
+  );
+  return response.data;
+}
+
+export async function fetchExecutiveManagementBalanceTurnover(params?: {
+  month?: string;
+  monthFrom?: string;
+  monthTo?: string;
+  view?: ExecutiveManagementBalanceView;
+}) {
+  const response = await api.get<ExecutiveManagementBalanceTurnoverResponse>(
+    "/management/executive-dashboard/management-balance-turnover",
+    {
+      params: {
+        month: params?.month || undefined,
+        month_from: params?.monthFrom || undefined,
+        month_to: params?.monthTo || undefined,
         view: params?.view || undefined,
       },
     }
@@ -628,6 +849,13 @@ export async function fetchExecutiveOnlineStorePeriod(params: {
         date_to: params.date_to || undefined,
       },
     }
+  );
+  return response.data;
+}
+
+export async function fetchExecutiveInstruments() {
+  const response = await api.get<ExecutiveInstrumentsResponse>(
+    "/management/executive-dashboard/instruments"
   );
   return response.data;
 }

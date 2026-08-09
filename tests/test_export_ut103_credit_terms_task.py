@@ -18,10 +18,20 @@ def _input_payload() -> dict[str, object]:
         "counterparty_guid": "a7d9b21e-222e-11ed-8fda-0025901e48ee",
         "counterparty_code": "РБ030337",
         "counterparty_name": "Тестовый контрагент",
+        "contract_ref": "0X8266002590803DAF11F143B8070BC34D",
+        "contract_guid": "070bc34d-43b8-11f1-8266-002590803daf",
+        "contract_code": "РБ0058149",
+        "contract_name": "Основной договор1",
+        "contract_organization_ref": "0X44445555555555553333222211111111",
+        "contract_organization_guid": "11111111-2222-3333-4444-555555555555",
+        "contract_organization_code": "000000001",
+        "contract_organization_name": "MASTER MOBILE",
         "expected_current_limit": "100000.00",
         "expected_current_depth": 7,
+        "expected_current_debt_control_enabled": True,
         "new_limit": "150000.00",
         "new_depth": 14,
+        "new_debt_control_enabled": True,
         "currency": "RUB",
         "reason": "Утверждено",
         "approved_by": "115204",
@@ -61,8 +71,12 @@ def test_export_credit_terms_task_writes_atomic_ready_xml(tmp_path: Path) -> Non
     )
     root = ET.fromstring(output.read_bytes())
     assert root.findtext("Commands/Command/CommandType") == "set_credit_terms"
+    assert root.findtext("Commands/Command/ContractGuid") == (
+        "070bc34d-43b8-11f1-8266-002590803daf"
+    )
     assert root.findtext("Commands/Command/NewLimit") == "150000.00"
     assert root.findtext("Commands/Command/NewDepth") == "14"
+    assert root.findtext("Commands/Command/NewDebtControlEnabled") == "true"
 
 
 def test_export_credit_terms_task_rejects_fractional_depth(tmp_path: Path) -> None:

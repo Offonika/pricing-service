@@ -10,13 +10,13 @@ from xml.etree import ElementTree as ET
 
 def _json_row() -> dict[str, str]:
     return {
-        "idempotency_key": "nom-prop:РБ000074721:Статус ассортимента:2026-06-23:r1",
+        "idempotency_key": "nom-prop:РБ000074721:Предмет:2026-06-23:r1",
         "nomenclature_code": "РБ000074721",
-        "property_name": "Статус ассортимента",
+        "property_name": "Предмет",
         "value_type": "property_value",
-        "new_value_name": "Новинка",
-        "new_value_tag": "new_item",
-        "reason": "Первый заказ поставщику сдан в cargo",
+        "new_value_name": "дисплей",
+        "new_value_tag": "display",
+        "reason": "Автоклассификация пустого свойства Предмет",
     }
 
 
@@ -55,8 +55,8 @@ def test_export_ut103_nomenclature_properties_task_writes_ready_xml_from_json(
     assert root.findtext("Header/Schema") == "nomenclature_property_updates.v1"
     assert root.findtext("Header/Mode") == "dry_run"
     assert root.findtext("Items/Item/NomenclatureCode") == "РБ000074721"
-    assert root.findtext("Items/Item/PropertyName") == "Статус ассортимента"
-    assert root.findtext("Items/Item/NewValueTag") == "new_item"
+    assert root.findtext("Items/Item/PropertyName") == "Предмет"
+    assert root.findtext("Items/Item/NewValueTag") == "display"
 
 
 def test_export_ut103_nomenclature_properties_task_uses_exchange_root_env(
@@ -99,9 +99,9 @@ def test_export_ut103_nomenclature_properties_task_dry_run_from_csv_does_not_wri
             [
                 "IdempotencyKey,NomenclatureCode,PropertyName,ValueType,NewValueName,NewValueTag,Reason",
                 (
-                    "nom-prop:РБ000074721:Статус ассортимента:2026-06-23:r1,"
-                    "РБ000074721,Статус ассортимента,property_value,"
-                    "Новинка,new_item,Первый заказ сдан в cargo"
+                    "nom-prop:РБ000074721:Предмет:2026-06-23:r1,"
+                    "РБ000074721,Предмет,property_value,"
+                    "дисплей,display,Автоклассификация пустого свойства Предмет"
                 ),
             ]
         ),
@@ -127,8 +127,45 @@ def test_export_ut103_nomenclature_properties_task_dry_run_from_csv_does_not_wri
     )
 
     assert "<Schema>nomenclature_property_updates.v1</Schema>" in result.stdout
-    assert "<NewValueTag>new_item</NewValueTag>" in result.stdout
+    assert "<NewValueTag>display</NewValueTag>" in result.stdout
     assert not (tmp_path / "exchange" / "to_1c").exists()
+
+
+def test_export_ut103_nomenclature_properties_task_rejects_lifecycle_property(
+    tmp_path: Path,
+) -> None:
+    row = _json_row()
+    row.update(
+        {
+            "idempotency_key": ("nom-prop:РБ000074721:Статус ассортимента:2026-06-23:r1"),
+            "property_name": "Статус ассортимента",
+            "new_value_name": "Новинка",
+            "new_value_tag": "new_item",
+        }
+    )
+    input_path = tmp_path / "property-updates.json"
+    input_path.write_text(json.dumps([row], ensure_ascii=False), encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tasks.export_ut103_nomenclature_properties",
+            "--exchange-root",
+            str(tmp_path / "exchange"),
+            "--message-id",
+            "lifecycle-export-must-fail",
+            "--input-json",
+            str(input_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode != 0
+    assert "lifecycle property export to UT 10.3 is disabled" in result.stderr
+    assert not list((tmp_path / "exchange" / "to_1c").rglob("*.xml"))
 
 
 def test_export_ut103_nomenclature_properties_task_lists_results(tmp_path: Path) -> None:

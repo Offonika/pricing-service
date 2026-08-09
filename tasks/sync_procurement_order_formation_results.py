@@ -3,10 +3,10 @@ from __future__ import annotations
 import argparse
 import json
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.services.bitrix_order_formation import (
     create_or_update_bitrix_card,
     reflect_classifications_from_bitrix,
@@ -50,7 +50,7 @@ def main() -> int:
     args = parse_args()
     settings = get_settings()
     exchange_root = resolve_ut103_exchange_root(args.exchange_root)
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
     order_ids: list[int] = []
     property_ids: list[int] = []
     transition_ids: list[int] = []

@@ -8,7 +8,6 @@ import json
 import sys
 from pathlib import Path
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +15,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from app.core.config import get_settings  # noqa: E402
+from app.infrastructure.db.engines import build_engine  # noqa: E402
 from app.services.site_defect_archive import import_archive_export  # noqa: E402
 
 
@@ -40,7 +40,7 @@ def main() -> int:
     if args.apply_bitrix and dry_run:
         raise SystemExit("--apply-bitrix can be used only together with --apply")
     settings = get_settings()
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
     with Session(engine) as session:
         summary = import_archive_export(
             session,

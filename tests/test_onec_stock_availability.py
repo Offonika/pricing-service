@@ -299,3 +299,14 @@ def test_migration_upgrade_and_downgrade(tmp_path: Path) -> None:
             assert INTERVAL_TABLE.name not in remaining
     finally:
         engine.dispose()
+
+
+def test_cron_uses_active_release_symlink() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    wrapper = (repo_root / "infra/cron/onec_stock_availability.sh").read_text(encoding="utf-8")
+    cron = (repo_root / "infra/cron/onec_stock_availability.cron").read_text(encoding="utf-8")
+
+    active_release = "/opt/MM/pricing-service-task43-current"
+    assert f'REPO_DIR="${{REPO_DIR:-{active_release}}}"' in wrapper
+    assert f"{active_release}/infra/cron/onec_stock_availability.sh nightly" in cron
+    assert f"{active_release}/infra/cron/onec_stock_availability.sh weekly" in cron

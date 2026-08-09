@@ -19,12 +19,19 @@ from app.api.procurement_labels import (
 )
 from app.core.config import get_settings
 from app.domains.customer_price_types import CustomerPriceTypeAccessScope
-from app.infrastructure.customer_price_types import SqlAlchemyCustomerPriceTypeRepository
+from app.infrastructure.customer_price_types import (
+    SqlAlchemyCustomerPriceTypeRepository,
+    review_batch_item_matches,
+    review_batch_snapshot_status,
+)
 from app.schemas.customer_price_types import (
     CustomerPriceTypeCaseDetailResponse,
     CustomerPriceTypeCaseEventResponse,
     CustomerPriceTypeCaseItem,
     CustomerPriceTypeCaseListResponse,
+    CustomerPriceTypePortfolioBucket,
+    CustomerPriceTypePortfolioItem,
+    CustomerPriceTypePortfolioResponse,
     CustomerPriceTypeProfileResponse,
     CustomerPriceTypeQualityGroup,
     CustomerPriceTypeQualityMetricsResponse,
@@ -50,6 +57,7 @@ from app.services.bitrix_customer_price_types_auth import (
     load_bitrix_headed_departments,
     resolve_customer_price_type_access,
     resolve_customer_price_type_department_refs,
+    resolve_customer_price_type_manager_owner_ref,
     verify_customer_price_type_session,
 )
 from app.services.customer_price_types import (
@@ -121,11 +129,16 @@ def create_customer_price_type_session(
         db,
         department_names={item.name for item in headed_departments},
     )
+    manager_owner_ref = resolve_customer_price_type_manager_owner_ref(
+        db,
+        bitrix_user_id=user.user_id,
+    )
     access = resolve_customer_price_type_access(
         bitrix_user_id=user.user_id,
         department_ids=user.department_ids,
         headed_department_ids=tuple(item.department_id for item in headed_departments),
         headed_department_refs=headed_refs,
+        manager_owner_ref=manager_owner_ref,
         settings=settings,
     )
     token, expires_at_ts = create_customer_price_type_session_token(
@@ -162,6 +175,12 @@ def _month(value: str | None) -> date | None:
 
 def _snapshot_payload(row, access: CustomerPriceTypeAccessScope) -> dict:
     money = access.can_view_money
+    contract_candidates = []
+    for item in row.contract_candidates:
+        candidate = dict(item)
+        if not money:
+            candidate["sales_amount_12m"] = None
+        contract_candidates.append(candidate)
     return {
         "id": row.id,
         "run_id": row.run_id,
@@ -171,7 +190,7 @@ def _snapshot_payload(row, access: CustomerPriceTypeAccessScope) -> dict:
         "current_price_type": row.current_price_type,
         "current_level": row.current_level,
         "price_type_variant": row.price_type_variant,
-        "contract_candidates": row.contract_candidates,
+        "contract_candidates": contract_candidates,
         "monthly_sales": row.monthly_sales if money else None,
         "total_3m": row.total_3m if money else None,
         "last_month": row.last_month if money else None,
@@ -220,6 +239,10 @@ def _redact_monetary(value: Any) -> Any:
 
 
 def _case_payload(case, profile, snapshot) -> dict:
+    external_control_active = (
+        case.onec_export_status == "exported"
+        or case.onec_readback_status in {"pending", "mismatch", "error"}
+    )
     return {
         "id": case.id,
         "case_key": case.case_key,
@@ -240,9 +263,65 @@ def _case_payload(case, profile, snapshot) -> dict:
         "recommended_price_type": case.recommended_price_type,
         "human_final_decision": case.human_final_decision,
         "approval_status": case.approval_status,
-        "action_required": snapshot.action_required,
+        "action_required": bool(snapshot.action_required or external_control_active),
         "snapshot_hash": snapshot.snapshot_hash,
         "version": case.version,
+    }
+
+
+def _portfolio_payload(item, profile, snapshot, case, access) -> dict:
+    if snapshot is None:
+        actual_bucket = "review_queue"
+        reconciliation_status = "missing_snapshot"
+        working_contracts = []
+    else:
+        actual_bucket = (
+            "working_bronze" if snapshot.current_price_type == "2.Бронзовый" else "review_queue"
+        )
+        reconciliation_status = "match" if review_batch_item_matches(item, snapshot) else "mismatch"
+        working_contracts = []
+        for raw in snapshot.contract_candidates:
+            if not raw.get("is_working"):
+                continue
+            candidate = dict(raw)
+            if not access.can_view_money:
+                candidate["sales_amount_12m"] = None
+            working_contracts.append(candidate)
+    return {
+        "counterparty_ref": profile.counterparty_ref,
+        "counterparty_code": item.counterparty_code,
+        "counterparty_name": profile.counterparty_name,
+        "department_name": profile.department_name,
+        "owner_name": profile.owner_name,
+        "bucket": actual_bucket,
+        "expected_bucket": item.expected_bucket,
+        "expected_price_type": item.expected_price_type,
+        "current_price_type": snapshot.current_price_type if snapshot else None,
+        "price_type_variant": snapshot.price_type_variant if snapshot else None,
+        "working_contracts": working_contracts,
+        "action_required": (
+            bool(
+                snapshot.action_required
+                or (
+                    case is not None
+                    and (
+                        case.onec_export_status == "exported"
+                        or case.onec_readback_status in {"pending", "mismatch", "error"}
+                    )
+                )
+            )
+            if snapshot
+            else False
+        ),
+        "system_recommendation": snapshot.system_recommendation if snapshot else None,
+        "recommended_price_type": snapshot.recommended_price_type if snapshot else None,
+        "source_status": snapshot.source_status if snapshot else "missing",
+        "stop_factors": list(snapshot.stop_factors) if snapshot else [],
+        "review_status": review_batch_snapshot_status(snapshot),
+        "case_id": case.id if case else None,
+        "case_type": case.case_type if case else None,
+        "case_stage": case.stage if case else None,
+        "reconciliation_status": reconciliation_status,
     }
 
 
@@ -310,6 +389,64 @@ def get_customer_price_type_worklists(
         raise HTTPException(
             status_code=503, detail="customer price-type storage unavailable"
         ) from exc
+
+
+@router.get("/portfolio", response_model=CustomerPriceTypePortfolioResponse)
+def list_customer_price_type_portfolio(
+    access: Access,
+    batch_key: str = Query(default="reviewed-working-contracts-2026-07", max_length=128),
+    snapshot_month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    bucket: CustomerPriceTypePortfolioBucket = "all",
+    current_price_type: str | None = Query(default=None, max_length=255),
+    action_required: bool | None = None,
+    search: str | None = Query(default=None, max_length=255),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> CustomerPriceTypePortfolioResponse:
+    repository = SqlAlchemyCustomerPriceTypeRepository(db)
+    try:
+        batch = repository.get_review_batch(batch_key)
+        if batch is None:
+            raise HTTPException(status_code=404, detail="customer price-type batch not found")
+        requested_month = _month(snapshot_month)
+        run = repository.latest_run(requested_month)
+        rows, total, counts, review_status_counts, mismatch_count = repository.list_portfolio(
+            batch=batch,
+            access=access,
+            run_id=run.id if run else None,
+            bucket=bucket,
+            current_price_type=current_price_type,
+            action_required=action_required,
+            search=search,
+            limit=limit,
+            offset=offset,
+        )
+    except HTTPException:
+        raise
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503, detail="customer price-type storage unavailable"
+        ) from exc
+    return CustomerPriceTypePortfolioResponse(
+        run_id=run.id if run else None,
+        snapshot_month=run.snapshot_month if run else _month(snapshot_month),
+        ruleset_version=run.ruleset_version if run else None,
+        source_status=run.status if run else "missing",
+        batch_key=batch.batch_key,
+        batch_label=batch.label,
+        expected_counts={str(key): int(value) for key, value in batch.expected_counts.items()},
+        counts=counts,
+        review_status_counts=review_status_counts,
+        mismatch_count=mismatch_count,
+        total=total,
+        limit=limit,
+        offset=offset,
+        payload=[
+            CustomerPriceTypePortfolioItem.model_validate(_portfolio_payload(*row, access))
+            for row in rows
+        ],
+    )
 
 
 @router.get("/cases", response_model=CustomerPriceTypeCaseListResponse)
@@ -440,6 +577,7 @@ def get_customer_price_type_profile(
             if profile.open_case_id
             else None
         )
+        case_history = repository.profile_cases(profile.id, access=access)
     except ValueError as exc:
         raise HTTPException(
             status_code=404, detail="customer price-type profile not found"
@@ -474,6 +612,9 @@ def get_customer_price_type_profile(
             if open_case_row
             else None
         ),
+        case_history=[
+            CustomerPriceTypeCaseItem.model_validate(_case_payload(*item)) for item in case_history
+        ],
         history=[
             CustomerPriceTypeSnapshotResponse.model_validate(_snapshot_payload(item, access))
             for item in history

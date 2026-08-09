@@ -9,9 +9,10 @@ from datetime import date
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy import create_engine, func, select
+from sqlalchemy import func, select
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
 )
@@ -78,7 +79,7 @@ def main() -> int:
     args = _parse_args()
     settings = get_settings()
     database_url = args.database_url or os.environ.get("DATABASE_URL") or settings.database_url
-    engine = create_engine(database_url, pool_pre_ping=True)
+    engine = build_engine(database_url, pool_pre_ping=True)
     try:
         rows = load_sale_rows(engine, folder=args.folder)
     finally:

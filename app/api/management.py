@@ -33,8 +33,10 @@ from app.schemas.executive_dashboard import (
     ExecutiveCashflowPeriodResponse,
     ExecutiveDashboardActionsResponse,
     ExecutiveDashboardResponse,
+    ExecutiveInstrumentsResponse,
     ExecutiveManagementBalanceCloseRequest,
     ExecutiveManagementBalanceResponse,
+    ExecutiveManagementBalanceTurnoverResponse,
     ExecutiveOnlineStorePeriodResponse,
     ExecutiveProfitLossPeriodResponse,
     ExecutiveSalesPeriodResponse,
@@ -80,6 +82,11 @@ from app.services.bitrix_executive_dashboard_auth import (
     require_executive_dashboard_access,
 )
 from app.services.counterparty_folder_recommendations import (
+    QUEUE_ACTIONABLE,
+    QUEUE_ALL,
+    QUEUE_BUSINESS_REVIEW,
+    QUEUE_DATA_QUALITY,
+    QUEUE_EXCLUDED,
     STATUS_MOVE_RECOMMENDED,
     STATUS_NEEDS_REVIEW,
     STATUS_NO_OVERDUE,
@@ -101,11 +108,13 @@ from app.services.executive_dashboard import (
     build_executive_profit_loss_period_response,
     build_executive_sales_period_response,
 )
+from app.services.executive_instruments import load_executive_instruments_snapshot
 from app.services.executive_management_balance import (
     ManagementBalanceCloseError,
     ManagementBalanceNotFoundError,
     close_management_balance,
     get_management_balance,
+    get_management_balance_turnover,
     month_end,
 )
 from app.services.executive_online_store import (
@@ -171,6 +180,18 @@ def get_executive_dashboard(
 
 
 @router.get(
+    "/executive-dashboard/instruments",
+    response_model=ExecutiveInstrumentsResponse,
+)
+def get_executive_dashboard_instruments(
+    access: ExecutiveDashboardAuthContext = Depends(require_executive_dashboard_access),
+) -> ExecutiveInstrumentsResponse:
+    if not access.allows_block("infrastructure"):
+        raise HTTPException(status_code=403, detail="Нет доступа к инфраструктурной витрине")
+    return load_executive_instruments_snapshot()
+
+
+@router.get(
     "/executive-dashboard/management-balance",
     response_model=ExecutiveManagementBalanceResponse,
 )
@@ -188,6 +209,35 @@ def get_executive_management_balance(
         return get_management_balance(
             db,
             month=month,
+            view=view,
+            access_context=access,
+        )
+    except (ManagementBalanceNotFoundError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get(
+    "/executive-dashboard/management-balance-turnover",
+    response_model=ExecutiveManagementBalanceTurnoverResponse,
+)
+def get_executive_management_balance_turnover(
+    month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    month_from: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    month_to: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    view: Literal["closed", "operational"] | None = Query(default=None),
+    db: Session = Depends(get_db),
+    access: ExecutiveDashboardAuthContext = Depends(require_executive_dashboard_access),
+) -> ExecutiveManagementBalanceTurnoverResponse:
+    if not access.allows_block("creditors_payables") or not access.can_view_money_block(
+        "creditors_payables"
+    ):
+        raise HTTPException(status_code=403, detail="Нет доступа к управленческой ОСВ")
+    try:
+        return get_management_balance_turnover(
+            db,
+            month=month,
+            month_from=month_from,
+            month_to=month_to,
             view=view,
             access_context=access,
         )
@@ -649,6 +699,13 @@ def get_counterparty_folder_recommendations(
             f"^({STATUS_MOVE_RECOMMENDED}|{STATUS_OK}|{STATUS_NO_OVERDUE}|{STATUS_NEEDS_REVIEW})$"
         ),
     ),
+    queue: str = Query(
+        default=QUEUE_ALL,
+        pattern=(
+            f"^({QUEUE_ACTIONABLE}|{QUEUE_BUSINESS_REVIEW}|{QUEUE_DATA_QUALITY}|"
+            f"{QUEUE_EXCLUDED}|{QUEUE_ALL})$"
+        ),
+    ),
     limit: int | None = Query(default=None, ge=1, le=10000),
     db: Session = Depends(get_db),
     _: str = Depends(require_management_internal_token),
@@ -661,6 +718,7 @@ def get_counterparty_folder_recommendations(
             snapshot_date=date_value,
             limit=limit,
             status=status,
+            queue=queue,
         )
     except ValueError as error:
         raise HTTPException(status_code=400, detail=str(error)) from error
@@ -896,7 +954,7 @@ def ingest_weekly_kpi_snapshot_batch(
         min_length=8,
         max_length=255,
     ),
-    unit_of_work: SqlAlchemyUnitOfWork = Depends(get_uow),
+    unit_of_work: SqlAlchemyUnitOfWork = Depends(get_uow, scope="function"),
     _: str = Depends(require_weekly_kpi_ingest_token),
 ) -> WeeklyKpiSnapshotIngestResponse:
     if unit_of_work.session is None:

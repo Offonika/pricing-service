@@ -1,0 +1,173 @@
+{
+  "version": 1,
+  "defaults": {
+    "owner": "pricing-platform",
+    "kind": "permanent_cli",
+    "dry_run": "not_verified",
+    "idempotency": "not_verified",
+    "side_effect_level": "mixed",
+    "spec": "docs/specs/pricing-service-architecture-hardening.md",
+    "remove_after": null
+  },
+  "rules": [
+    {
+      "glob": "report_*.py",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "read_only",
+      "side_effect_level": "artifact_write"
+    },
+    {
+      "glob": "compare_*.py",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "read_only",
+      "side_effect_level": "artifact_write"
+    },
+    {
+      "glob": "check_*.py",
+      "kind": "maintenance",
+      "dry_run": "not_applicable",
+      "idempotency": "read_only",
+      "side_effect_level": "read_only"
+    },
+    {
+      "glob": "export_*.py",
+      "kind": "export",
+      "dry_run": "not_applicable",
+      "idempotency": "read_only",
+      "side_effect_level": "artifact_write"
+    },
+    {
+      "glob": "backfill_*.py",
+      "kind": "backfill"
+    }
+  ],
+  "commands": {
+    "competitor_matching_watchdog.py": {
+      "owner": "matching",
+      "kind": "permanent_cli",
+      "dry_run": "supported",
+      "idempotency": "read_only_with_optional_repeatable_alert",
+      "side_effect_level": "mixed",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
+    "compute_embeddings.py": {
+      "owner": "matching",
+      "kind": "permanent_cli",
+      "dry_run": "not_supported",
+      "idempotency": "artifact_rebuild_by_content_hash",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
+    "export_competitor_match_review_queue.py": {
+      "owner": "matching",
+      "kind": "export",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
+    "evaluate_competitor_matching_policy.py": {
+      "owner": "matching",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "read_only",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/competitor-matching-ui-v1.md",
+      "remove_after": null
+    },
+    "report_competitor_items_needs_compat_review.py": {
+      "owner": "matching",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
+    "report_competitor_matching_quality.py": {
+      "owner": "matching",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
+    "backfill_competitor_items.py": {
+      "owner": "matching",
+      "kind": "backfill",
+      "dry_run": "supported",
+      "idempotency": "not_verified",
+      "side_effect_level": "db_write",
+      "spec": "docs/specs/pricing-service-architecture-hardening.md",
+      "remove_after": "2026-10-31"
+    },
+    "backfill_expertise_completion_outcomes.py": {
+      "owner": "expertise",
+      "kind": "backfill",
+      "dry_run": "supported",
+      "idempotency": "verified_by_upsert",
+      "side_effect_level": "db_write",
+      "spec": "docs/specs/pricing-service-architecture-hardening.md",
+      "remove_after": "2026-10-31"
+    },
+    "backfill_phone_model_links.py": {
+      "owner": "catalog",
+      "kind": "backfill",
+      "dry_run": "supported",
+      "idempotency": "verified_by_update",
+      "side_effect_level": "db_write",
+      "spec": "docs/specs/pricing-service-architecture-hardening.md",
+      "remove_after": "2026-10-31"
+    },
+    "backfill_procurement_order_product_media.py": {
+      "owner": "procurement",
+      "kind": "backfill",
+      "dry_run": "supported",
+      "idempotency": "verified_by_payload_and_version",
+      "side_effect_level": "db_write",
+      "db_access": "application_write",
+      "spec": "docs/specs/procurement-order-formation-smart-process.md",
+      "remove_after": "2026-11-30"
+    },
+    "backfill_procurement_order_metrics.py": {
+      "owner": "procurement",
+      "kind": "backfill",
+      "dry_run": "supported",
+      "idempotency": "verified_by_run_id_and_manifest",
+      "side_effect_level": "mixed",
+      "db_access": "mixed",
+      "spec": "docs/specs/procurement-order-formation-smart-process.md",
+      "remove_after": "2026-11-30"
+    },
+    "backfill_product_classification_sources.py": {
+      "owner": "catalog",
+      "kind": "backfill",
+      "dry_run": "supported",
+      "idempotency": "verified_by_update",
+      "side_effect_level": "db_write",
+      "spec": "docs/specs/pricing-service-architecture-hardening.md",
+      "remove_after": "2026-10-31"
+    },
+    "backfill_receivable_history.py": {
+      "owner": "receivables",
+      "kind": "backfill",
+      "dry_run": "supported",
+      "idempotency": "verified_by_upsert",
+      "side_effect_level": "db_write",
+      "spec": "docs/specs/pricing-service-architecture-hardening.md",
+      "remove_after": "2026-10-31"
+    }
+  }
+}

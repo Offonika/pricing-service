@@ -6,10 +6,25 @@ export TZ="${TZ:-Europe/Moscow}"
 REPO_DIR="${REPO_DIR:-/opt/MM/pricing-service}"
 ENV_FILE="${REPO_DIR}/.env"
 ENV_LOADER="${REPO_DIR}/infra/cron/load_env.sh"
+PYTHON_BIN="${REPO_DIR}/.venv/bin/python"
+
+if [[ -f "${ENV_FILE}" ]]; then
+  # shellcheck disable=SC1090
+  source "${ENV_LOADER}"
+  load_env_file_preserve_json "${ENV_FILE}"
+fi
+
+if [[ ! -x "${PYTHON_BIN}" ]]; then
+  if command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python3)"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="$(command -v python)"
+  fi
+fi
+
 LOG_DIR="${LOG_DIR:-/var/log/pricing}"
 LOG_FILE="${LOG_DIR}/competitor_matching_nightly.log"
 REPORT_DIR="${REPORT_DIR:-${REPO_DIR}/build/logs}"
-PYTHON_BIN="${REPO_DIR}/.venv/bin/python"
 LOCK_FILE="${COMPETITOR_MATCHING_LOCK_FILE:-/var/run/pricing_competitor_matching_nightly.lock}"
 LATEST_REPORT="${REPORT_DIR}/competitor_matching_nightly_latest.json"
 
@@ -19,6 +34,7 @@ EMBED_EXPECTED_DIM="${COMPETITOR_MATCHING_EMBED_EXPECTED_DIM:-1536}"
 EMBEDDINGS_ENABLED="${COMPETITOR_MATCHING_EMBEDDINGS_ENABLED:-1}"
 CHAT_LLM_ENABLED="${COMPETITOR_MATCHING_CHAT_LLM_ENABLED:-0}"
 FTP_LLM_LIMIT="${COMPETITOR_MATCHING_FTP_LLM_LIMIT:-0}"
+FTP_MAX_LAG_DAYS="${COMPETITOR_MATCHING_FTP_MAX_LAG_DAYS:-1}"
 COMPAT_LLM_LIMIT="${COMPETITOR_MATCHING_COMPAT_LLM_LIMIT:-0}"
 LLM_ARBITER_ENABLED="${COMPETITOR_MATCHING_LLM_ARBITER_ENABLED:-0}"
 MATCH_FTP_LATEST_ONLY="${COMPETITOR_MATCHING_FTP_LATEST_ONLY:-1}"
@@ -42,24 +58,11 @@ FORCE_RUN="${COMPETITOR_MATCHING_FORCE_RUN:-0}"
 mkdir -p "${LOG_DIR}" "${REPORT_DIR}"
 cd "${REPO_DIR}"
 
-if [[ -f "${ENV_FILE}" ]]; then
-  # shellcheck disable=SC1090
-  source "${ENV_LOADER}"
-  load_env_file_preserve_json "${ENV_FILE}"
-fi
-
-if [[ ! -x "${PYTHON_BIN}" ]]; then
-  if command -v python3 >/dev/null 2>&1; then
-    PYTHON_BIN="$(command -v python3)"
-  elif command -v python >/dev/null 2>&1; then
-    PYTHON_BIN="$(command -v python)"
-  fi
-fi
-
 first_seen_after="${COMPETITOR_MATCHING_FIRST_SEEN_AFTER:-$(date -d "${LOOKBACK_DAYS} days ago" +%F)}"
 run_id="$(date +%Y%m%d_%H%M%S)"
 overall_status="running"
 embedding_status="not_checked"
+ftp_status="not_checked"
 current_step="init"
 finished=0
 
@@ -87,6 +90,7 @@ payload = {
     "current_step": "${current_step}",
     "embedding_status": "${embedding_status}",
     "embeddings_enabled": "${EMBEDDINGS_ENABLED}",
+    "ftp_status": "${ftp_status}",
     "chat_llm_enabled": "${CHAT_LLM_ENABLED}",
     "product_backfill_enabled": "${PRODUCT_BACKFILL_ENABLED}",
     "lookback_days": int("${LOOKBACK_DAYS}"),
@@ -146,7 +150,7 @@ if [[ "${FORCE_RUN}" != "1" ]] && already_succeeded_today; then
   overall_status="skipped_success_today"
   current_step="skipped"
   finished=1
-  echo "[$(date -Iseconds)] competitor matching nightly already succeeded today; skipping retry" >> "${LOG_FILE}"
+  echo "[$(date -Iseconds)] competitor matching nightly already completed today; skipping retry" >> "${LOG_FILE}"
   exit 0
 fi
 
@@ -201,11 +205,40 @@ if run_step "sync_onec_product_catalog" \
   fi
 else
   product_refresh_ok=0
-  echo "[$(date -Iseconds)] product refresh failed; FTP catalog refresh will continue, matching will be skipped" >> "${LOG_FILE}"
+  echo "[$(date -Iseconds)] product refresh failed; HTTPS catalog refresh will continue, matching will be skipped" >> "${LOG_FILE}"
 fi
 
-run_step "import_competitor_ftp" \
-  "${PYTHON_BIN}" -m tasks.import_competitor_ftp
+run_step "import_competitor_http" \
+  "${PYTHON_BIN}" -m tasks.import_competitor_http
+
+current_step="check_competitor_ftp_freshness"
+set +e
+"${PYTHON_BIN}" -m tasks.competitor_matching_watchdog \
+  --ftp-only \
+  --max-ftp-lag-days "${FTP_MAX_LAG_DAYS}" \
+  --no-telegram \
+  >> "${LOG_FILE}" 2>&1
+ftp_freshness_exit=$?
+set -e
+case "${ftp_freshness_exit}" in
+  0)
+    ftp_status="fresh"
+    echo "[$(date -Iseconds)] competitor data quality check finished: ftp=fresh" >> "${LOG_FILE}"
+    ;;
+  3)
+    ftp_status="stale"
+    overall_status="blocked_source_stale"
+    current_step="check_competitor_ftp_freshness"
+    echo "[$(date -Iseconds)] competitor data is stale; matching and cache refresh are blocked" >> "${LOG_FILE}"
+    write_latest_report "3"
+    finished=1
+    exit 3
+    ;;
+  *)
+    echo "[$(date -Iseconds)] competitor FTP freshness check failed technically (status=${ftp_freshness_exit})" >> "${LOG_FILE}"
+    exit "${ftp_freshness_exit}"
+    ;;
+esac
 
 match_ftp_args=(
   -m tasks.match_competitor_ftp

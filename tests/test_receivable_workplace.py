@@ -5,6 +5,7 @@ from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -21,13 +22,14 @@ from app.models import (
     ReceivableFolderRecommendationCache,
     ReceivableLedgerEvent,
     ReceivableOpenDebtCache,
+    ReceivableSupervisorNote,
     ReceivableWorkEvent,
     ReceivableWorkItem,
     StaffMember,
     TelephonyUserLineSnapshot,
 )
 from app.schemas.receivable_workplace import ReceivableWorkplaceActionRequest
-from app.services import bitrix_receivables_auth
+from app.services import bitrix_receivables_auth, receivable_workplace_cache
 from app.services import receivable_workplace as receivable_workplace_service
 from app.services.bitrix_receivables_auth import (
     ReceivablesAccess,
@@ -41,13 +43,67 @@ from app.services.receivable_department_aliases import (
     TEPLY_STAN_STAFF_DEPARTMENT_REF,
     TEPLY_STAN_TELEPHONY_STORE_REF,
 )
-from app.services.receivable_workflow import stable_key_for_counterparty, sync_receivable_workflow
+from app.services.receivable_workflow import (
+    debt_key_for_case,
+    stable_key_for_counterparty,
+    sync_receivable_workflow,
+)
 from app.services.receivable_workplace import (
     apply_receivable_workplace_action,
     build_receivable_workplace,
 )
 from app.services.receivables import CASE_BUYERS, CASE_OVERDUE
 from tests.test_receivable_workflow import _settings
+
+
+def test_receivable_workplace_build_slot_rejects_when_busy(monkeypatch) -> None:
+    class BusySemaphore:
+        def acquire(self, *, timeout: float) -> bool:
+            assert timeout == receivable_workplace_api._WORKPLACE_BUILD_ACQUIRE_TIMEOUT_SECONDS
+            return False
+
+        def release(self) -> None:
+            raise AssertionError("busy slot must not be released")
+
+    monkeypatch.setattr(
+        receivable_workplace_api,
+        "_WORKPLACE_BUILD_SEMAPHORE",
+        BusySemaphore(),
+    )
+
+    with pytest.raises(HTTPException) as error:
+        with receivable_workplace_api._receivable_workplace_build_slot():
+            raise AssertionError("busy slot must not enter the guarded block")
+
+    assert error.value.status_code == 503
+    assert "повторите запрос" in str(error.value.detail)
+
+
+def test_receivable_workplace_build_slot_releases_after_failure(monkeypatch) -> None:
+    events: list[str] = []
+
+    class AvailableSemaphore:
+        def acquire(self, *, timeout: float) -> bool:
+            events.append(f"acquire:{timeout}")
+            return True
+
+        def release(self) -> None:
+            events.append("release")
+
+    monkeypatch.setattr(
+        receivable_workplace_api,
+        "_WORKPLACE_BUILD_SEMAPHORE",
+        AvailableSemaphore(),
+    )
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with receivable_workplace_api._receivable_workplace_build_slot():
+            raise RuntimeError("boom")
+
+    assert events == [
+        f"acquire:{receivable_workplace_api._WORKPLACE_BUILD_ACQUIRE_TIMEOUT_SECONDS}",
+        "release",
+    ]
 
 
 def _ledger_event(
@@ -264,6 +320,11 @@ def test_receivable_workplace_uses_default_credit_depth_without_onec_write(
     assert item.no_phone_marker is True
     assert item.staff_options[0].staff_ref == "staff-1"
     assert item.documents[0].document_number == "РБГУ0001"
+    status_options = {option.value: option.label for option in result.status_options}
+    assert status_options["not_ours_transfer"] == (
+        "Не наш, прошу перенести ответственным "
+        "(необходимо указать долгообразующую РТУ, если возможно)"
+    )
 
 
 def test_receivable_workplace_action_survives_daily_workflow_sync(db_session: Session) -> None:
@@ -277,7 +338,7 @@ def test_receivable_workplace_action_survives_daily_workflow_sync(db_session: Se
         ]
     )
     payload = ReceivableWorkplaceActionRequest(
-        status="waiting_payment",
+        status="not_ours_transfer",
         contacted_staff_ref="staff-1",
         promised_payment_date=date(2026, 6, 25),
         next_action_date=date(2026, 6, 24),
@@ -294,7 +355,7 @@ def test_receivable_workplace_action_survives_daily_workflow_sync(db_session: Se
     db_session.commit()
 
     assert response is not None
-    assert response.item.status == "waiting_payment"
+    assert response.item.status == "not_ours_transfer"
     assert response.item.contacted_staff_name == "Менеджер 1"
     assert response.item.payment_postponed is False
     assert response.item.payment_postponed_count == 1
@@ -316,7 +377,7 @@ def test_receivable_workplace_action_survives_daily_workflow_sync(db_session: Se
 
     item = db_session.scalar(select(ReceivableWorkItem))
     assert item is not None
-    assert item.status == "waiting_payment"
+    assert item.status == "not_ours_transfer"
     assert item.last_contact_comment == "Клиент обещал оплатить завтра."
     assert item.payload is not None
     assert item.payload["contacted_staff_ref"] == "staff-1"
@@ -524,6 +585,103 @@ def test_payment_postponed_action_id_is_idempotent(db_session: Session) -> None:
     assert len(events) == 1
 
 
+def test_paid_action_clears_manager_comment_but_keeps_audit_and_supervisor_notes(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 6, 23)
+    case = _case(snapshot_date=as_of)
+    item = ReceivableWorkItem(
+        stable_key=stable_key_for_counterparty(case.counterparty_ref),
+        counterparty_ref=case.counterparty_ref,
+        counterparty_name=case.counterparty_name,
+        status="waiting_payment",
+        current_debt_key=debt_key_for_case(case),
+        current_balance=case.current_balance,
+        last_contact_comment="Ожидаем перевод до вечера.",
+    )
+    db_session.add_all([case, item, _staff_member()])
+    db_session.flush()
+    note = ReceivableSupervisorNote(
+        work_item=item,
+        author_bitrix_user_id="42",
+        author_name="Руководитель",
+        visibility="shared",
+        comment="Проверить крупный платёж.",
+    )
+    db_session.add(note)
+    payload = ReceivableWorkplaceActionRequest(action_id="paid-once", status="paid")
+
+    first = apply_receivable_workplace_action(
+        db_session,
+        snapshot_date=as_of,
+        counterparty_ref=case.counterparty_ref,
+        payload=payload,
+        viewer_user_id="42",
+        viewer_can_edit_supervisor_notes=True,
+    )
+    second = apply_receivable_workplace_action(
+        db_session,
+        snapshot_date=as_of,
+        counterparty_ref=case.counterparty_ref,
+        payload=payload,
+        viewer_user_id="42",
+        viewer_can_edit_supervisor_notes=True,
+    )
+    db_session.flush()
+
+    manager_events = db_session.scalars(
+        select(ReceivableWorkEvent).where(ReceivableWorkEvent.event_type == "manager_update")
+    ).all()
+    assert first is not None
+    assert second is not None
+    assert first.item.comment is None
+    assert first.item.supervisor_notes[0].comment == "Проверить крупный платёж."
+    assert second.event["idempotent"] is True
+    assert item.last_contact_comment is None
+    assert note.deleted_at is None
+    assert note.comment == "Проверить крупный платёж."
+    assert len(manager_events) == 1
+    assert manager_events[0].comment == "Ожидаем перевод до вечера."
+    assert manager_events[0].payload["manager_comment_cleared"] is True
+
+
+def test_paid_action_keeps_newly_submitted_comment_only_in_audit(db_session: Session) -> None:
+    as_of = date(2026, 6, 23)
+    case = _case(snapshot_date=as_of)
+    item = ReceivableWorkItem(
+        stable_key=stable_key_for_counterparty(case.counterparty_ref),
+        counterparty_ref=case.counterparty_ref,
+        counterparty_name=case.counterparty_name,
+        status="waiting_payment",
+        current_debt_key=debt_key_for_case(case),
+        current_balance=case.current_balance,
+        last_contact_comment="Старый комментарий.",
+    )
+    db_session.add_all([case, item])
+
+    response = apply_receivable_workplace_action(
+        db_session,
+        snapshot_date=as_of,
+        counterparty_ref=case.counterparty_ref,
+        payload=ReceivableWorkplaceActionRequest(
+            action_id="paid-with-comment",
+            status="paid",
+            comment="Платёж подтверждён.",
+        ),
+    )
+    db_session.flush()
+
+    event = db_session.scalar(
+        select(ReceivableWorkEvent).where(ReceivableWorkEvent.event_type == "manager_update")
+    )
+    assert response is not None
+    assert response.item.comment is None
+    assert item.last_contact_comment is None
+    assert event is not None
+    assert event.comment == "Платёж подтверждён."
+    assert event.payload["manager_comment_cleared"] is True
+
+
 def test_last_contact_at_is_separate_from_any_manager_save(db_session: Session) -> None:
     as_of = date(2026, 6, 23)
     db_session.add_all([_case(snapshot_date=as_of), _staff_member()])
@@ -576,6 +734,158 @@ def test_receivable_workplace_summary_uses_full_filtered_set_not_visible_limit(
     assert result.summary.row_count == 2
     assert result.summary.total_receivable == Decimal("3000.00")
     assert {item.department_ref for item in result.department_options} == {"dep-1", "dep-2"}
+
+
+def test_receivable_workplace_min_debt_filters_before_limit_and_summary(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 6, 23)
+    db_session.add_all(
+        [
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-500",
+                counterparty_name="Ровно 500",
+                balance=Decimal("500.00"),
+            ),
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-500-plus",
+                counterparty_name="Больше 500",
+                balance=Decimal("500.01"),
+            ),
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-1000",
+                counterparty_name="Ровно 1000",
+                balance=Decimal("1000.00"),
+            ),
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-1000-plus",
+                counterparty_name="Больше 1000",
+                balance=Decimal("1000.01"),
+            ),
+        ]
+    )
+
+    over_500 = build_receivable_workplace(
+        db_session,
+        snapshot_date=as_of,
+        min_debt=Decimal("500"),
+        limit=1,
+    )
+    over_1000 = build_receivable_workplace(
+        db_session,
+        snapshot_date=as_of,
+        min_debt=Decimal("1000"),
+    )
+
+    assert over_500.total_count == 3
+    assert over_500.visible_count == 1
+    assert over_500.summary.row_count == 3
+    assert over_500.summary.total_receivable == Decimal("2500.02")
+    assert [item.counterparty_ref for item in over_500.payload] == ["cp-1000-plus"]
+    assert over_1000.total_count == 1
+    assert over_1000.summary.total_receivable == Decimal("1000.01")
+    assert [item.counterparty_ref for item in over_1000.payload] == ["cp-1000-plus"]
+
+
+def test_receivable_workplace_api_forwards_min_debt_to_service(
+    monkeypatch: pytest.MonkeyPatch,
+    db_session: Session,
+) -> None:
+    expected_response = object()
+    captured: dict[str, object] = {}
+
+    def fake_build_receivable_workplace(session: Session, **kwargs):
+        captured["session"] = session
+        captured.update(kwargs)
+        return expected_response
+
+    monkeypatch.setattr(
+        receivable_workplace_api,
+        "build_receivable_workplace",
+        fake_build_receivable_workplace,
+    )
+    access = receivable_workplace_api.ReceivableWorkplaceAuthContext(
+        actor="internal:test",
+        source="internal",
+        access_level="full",
+    )
+
+    response = receivable_workplace_api.get_receivable_workplace(
+        date_value=date(2026, 6, 23),
+        department_ref="dep-1",
+        status="new_debt",
+        min_debt=Decimal("500"),
+        limit=100,
+        sort_by="balance",
+        sort_dir="desc",
+        db=db_session,
+        access=access,
+    )
+
+    assert response is expected_response
+    assert captured["session"] is db_session
+    assert captured["department_ref"] == "dep-1"
+    assert captured["status"] == "new_debt"
+    assert captured["min_debt"] == Decimal("500")
+    assert captured["limit"] == 100
+    assert captured["sort_by"] == "balance"
+    assert captured["sort_dir"] == "desc"
+    assert captured["allowed_department_refs"] is None
+
+
+def test_receivable_workplace_can_sort_by_overdue_days_before_limit(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 6, 23)
+    db_session.add_all(
+        [
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-big",
+                counterparty_name="Крупный долг",
+                balance=Decimal("9000"),
+                due_date=datetime(2026, 6, 20, 0, 0),
+            ),
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-old",
+                counterparty_name="Старый долг",
+                balance=Decimal("1000"),
+                due_date=datetime(2026, 5, 24, 0, 0),
+            ),
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-mid",
+                counterparty_name="Средний долг",
+                balance=Decimal("5000"),
+                due_date=datetime(2026, 6, 10, 0, 0),
+            ),
+        ]
+    )
+
+    by_balance = build_receivable_workplace(db_session, snapshot_date=as_of, limit=1)
+    by_days = build_receivable_workplace(
+        db_session,
+        snapshot_date=as_of,
+        limit=1,
+        sort_by="overdue_days",
+        sort_dir="desc",
+    )
+    by_days_asc = build_receivable_workplace(
+        db_session,
+        snapshot_date=as_of,
+        limit=1,
+        sort_by="overdue_days",
+        sort_dir="asc",
+    )
+
+    assert by_balance.payload[0].counterparty_ref == "cp-big"
+    assert by_days.payload[0].counterparty_ref == "cp-old"
+    assert by_days_asc.payload[0].counterparty_ref == "cp-big"
 
 
 def test_receivable_workplace_uses_open_debt_cache_for_effective_overdue(
@@ -641,6 +951,97 @@ def test_open_debt_source_freshness_accepts_recent_ledger(
     assert freshness.source_lag_days == 1
 
 
+def test_rebuild_open_debt_cache_reports_diagnostics_and_removes_extra_rows(
+    monkeypatch: pytest.MonkeyPatch,
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 7, 13)
+    snapshots = [
+        ReceivableBalanceSnapshot(
+            snapshot_date=as_of,
+            counterparty_ref=counterparty_ref,
+            counterparty_name=counterparty_ref,
+            current_balance=balance,
+            department_ref="dep-1",
+            aged_bucket="1-30",
+            activity_segment="active",
+            is_overdue=True,
+        )
+        for counterparty_ref, balance in (
+            ("cp-match", Decimal("100.00")),
+            ("cp-missing", Decimal("200.00")),
+        )
+    ]
+    db_session.add_all(
+        [
+            *snapshots,
+            _ledger_event(
+                document_date=datetime(2026, 7, 12, 18, 0),
+                business_key="fresh-source",
+            ),
+            ReceivableOpenDebtCache(
+                snapshot_date=as_of,
+                counterparty_ref="cp-extra",
+                department_ref="dep-1",
+                source_status="ready",
+                documents=[{"open_amount": "999.00"}],
+            ),
+        ]
+    )
+    db_session.flush()
+
+    def fake_build(*args, diagnostics=None, **kwargs):  # noqa: ANN001, ANN002, ANN003, ANN202
+        diagnostics["statement_sale_counts"] = {"cp-match": 1, "cp-missing": 0}
+        return {
+            "cp-match": [
+                {
+                    "document_ref": "sale-match",
+                    "document_number": "РТУ-100",
+                    "document_date": datetime(2026, 7, 10, 9, 0),
+                    "document_structure_status": "confirmed_open",
+                    "open_amount": Decimal("100.00"),
+                }
+            ]
+        }
+
+    monkeypatch.setattr(
+        receivable_workplace_cache,
+        "build_open_debt_documents_by_counterparty",
+        fake_build,
+    )
+
+    result = receivable_workplace_cache.rebuild_open_debt_cache(
+        db_session,
+        snapshot_date=as_of,
+    )
+    db_session.flush()
+
+    rows = db_session.scalars(
+        select(ReceivableOpenDebtCache).where(ReceivableOpenDebtCache.snapshot_date == as_of)
+    ).all()
+    rows_by_ref = {row.counterparty_ref: row for row in rows}
+    assert result["document_diagnostic_counts"] == {
+        "matched": 1,
+        "statement_missing": 1,
+    }
+    assert result["document_mismatch_count"] == 1
+    assert result["revealed_document_mismatch_count"] == 0
+    assert result["deleted_count"] == 1
+    assert result["extra_cache_rows"] == 0
+    assert set(rows_by_ref) == {"cp-match", "cp-missing"}
+    assert rows_by_ref["cp-match"].source_status == "ready"
+    assert rows_by_ref["cp-match"].documents[0]["open_amount"] == "100.00"
+    assert rows_by_ref["cp-missing"].source_status == "document_mismatch"
+    assert rows_by_ref["cp-missing"].documents == []
+    cached = receivable_workplace_cache.load_cached_open_debt_documents(
+        db_session,
+        snapshot_date=as_of,
+        counterparty_refs=["cp-match", "cp-missing"],
+    )
+    assert cached.document_mismatch_counterparty_refs == frozenset({"cp-missing"})
+    assert cached.hidden_counterparty_refs == frozenset({"cp-missing"})
+
+
 def test_receivable_workplace_hides_documents_from_stale_cache(
     db_session: Session,
 ) -> None:
@@ -676,17 +1077,48 @@ def test_receivable_workplace_hides_documents_from_stale_cache(
     assert result.payload[0].documents == []
 
 
-def test_receivable_workplace_keeps_debt_visible_for_document_amount_mismatch(
+def test_receivable_workplace_excludes_document_mismatch_from_overdue_queue(
     db_session: Session,
 ) -> None:
-    as_of = date(2026, 7, 13)
+    as_of = date(2026, 7, 31)
+    case = _case(
+        snapshot_date=as_of,
+        balance=Decimal("11960.00"),
+        origin_date=datetime(2026, 7, 10, 12, 59, 36),
+    )
+    case.chain_documents = [
+        {
+            "event_type": "sale",
+            "document_ref": "sale-closed",
+            "document_number": "РБГУ0314426",
+            "document_date": "2026-07-10T12:59:36",
+            "amount_delta": "1390.00",
+        },
+        {
+            "event_type": "sale",
+            "document_ref": "sale-fresh-1",
+            "document_number": "РБГУ0350595",
+            "document_date": "2026-07-29T14:41:23",
+            "amount_delta": "4050.00",
+        },
+        {
+            "event_type": "sale",
+            "document_ref": "sale-fresh-2",
+            "document_number": "РБГУ0352723",
+            "document_date": "2026-07-30T15:10:30",
+            "amount_delta": "4090.00",
+        },
+        {
+            "event_type": "sale",
+            "document_ref": "sale-fresh-3",
+            "document_number": "РБГУ0352726",
+            "document_date": "2026-07-30T15:11:11",
+            "amount_delta": "3810.00",
+        },
+    ]
     db_session.add_all(
         [
-            _case(
-                snapshot_date=as_of,
-                due_date=datetime(2026, 7, 1, 12, 0),
-                overdue_days=12,
-            ),
+            case,
             ReceivableOpenDebtCache(
                 snapshot_date=as_of,
                 counterparty_ref="cp-1",
@@ -694,14 +1126,38 @@ def test_receivable_workplace_keeps_debt_visible_for_document_amount_mismatch(
                 source_status="document_mismatch",
                 documents=[],
             ),
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-stale",
+                counterparty_name="Клиент с устаревшим кешем",
+                balance=Decimal("5000.00"),
+                origin_date=datetime(2026, 7, 1, 12, 0),
+            ),
+            ReceivableOpenDebtCache(
+                snapshot_date=as_of,
+                counterparty_ref="cp-stale",
+                department_ref="dep-1",
+                source_status="source_stale",
+                documents=[],
+            ),
         ]
     )
 
     result = build_receivable_workplace(db_session, snapshot_date=as_of)
 
-    assert result.source_status == "cache_ready"
-    assert result.payload[0].current_balance == Decimal("12500.00")
-    assert result.payload[0].documents == []
+    assert result.source_status == "source_stale"
+    assert result.total_count == 1
+    assert result.visible_count == 1
+    assert result.summary.row_count == 1
+    assert result.summary.total_receivable == Decimal("5000.00")
+    assert result.summary.total_overdue == Decimal("5000.00")
+    assert [item.counterparty_ref for item in result.payload] == ["cp-stale"]
+    stored_case = db_session.scalar(
+        select(ReceivableCase).where(ReceivableCase.counterparty_ref == "cp-1")
+    )
+    assert stored_case is not None
+    assert stored_case.current_balance == Decimal("11960.00")
+    assert stored_case.origin_document_date == datetime(2026, 7, 10, 12, 59, 36)
 
 
 def test_receivable_workplace_current_balance_uses_cached_open_debt_documents(
@@ -1406,6 +1862,55 @@ def test_receivable_workplace_api_requires_token_and_returns_payload(
         assert payload["summary"]["row_count"] == 1
         assert payload["payload"][0]["counterparty_ref"] == "cp-1"
         assert payload["payload"][0]["bitrix_detail_url"] == "/crm/type/187/details/555/"
+    finally:
+        app.dependency_overrides = {}
+        get_settings.cache_clear()
+
+
+def test_receivable_workplace_api_accepts_sort_params(
+    monkeypatch,
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 6, 23)
+    db_session.add_all(
+        [
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-big",
+                counterparty_name="Крупный долг",
+                balance=Decimal("9000"),
+                due_date=datetime(2026, 6, 20, 0, 0),
+            ),
+            _case(
+                snapshot_date=as_of,
+                counterparty_ref="cp-old",
+                counterparty_name="Старый долг",
+                balance=Decimal("1000"),
+                due_date=datetime(2026, 5, 24, 0, 0),
+            ),
+        ]
+    )
+    db_session.commit()
+
+    def override_db():
+        yield db_session
+
+    monkeypatch.setenv("MANAGEMENT_INTERNAL_API_TOKEN", "secret-token")
+    get_settings.cache_clear()
+    app.dependency_overrides = {get_db: override_db}
+    client = TestClient(app)
+    try:
+        response = client.get(
+            "/api/receivables/workplace",
+            params={
+                "date": as_of.isoformat(),
+                "sort_by": "overdue_days",
+                "sort_dir": "desc",
+            },
+            headers={"Authorization": "Bearer secret-token"},
+        )
+        assert response.status_code == 200
+        assert response.json()["payload"][0]["counterparty_ref"] == "cp-old"
     finally:
         app.dependency_overrides = {}
         get_settings.cache_clear()
@@ -2191,7 +2696,9 @@ def test_receivables_folder_recommendations_use_cache_without_onec(
                     "current_balance": "1000.00",
                     "snapshot_department_ref": "dep-1",
                     "debt_department_ref": "dep-1",
-                    "is_overdue": True,
+                    "open_debt_source_status": "document_mismatch",
+                    "review_reason": "open_debt_statement_missing",
+                    "is_overdue": False,
                     "status": "needs_review",
                 }
             ],
@@ -2228,4 +2735,203 @@ def test_receivables_folder_recommendations_use_cache_without_onec(
     body = response.json()
     assert body["source_status"] == "cache_ready"
     assert body["report_revision"] == "cached-1"
+    assert body["summary"]["document_mismatch_count"] == 1
     assert body["payload"][0]["counterparty_ref"] == "cp-1"
+    assert body["payload"][0]["origin_document_date"] is None
+    assert body["payload"][0]["effective_due_date"] is None
+    assert body["payload"][0]["effective_overdue_days"] is None
+    assert body["payload"][0]["is_overdue"] is False
+
+
+def test_cached_folder_queue_is_enriched_and_filtered_before_limit(
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 8, 5)
+    db_session.add(
+        ReceivableFolderRecommendationCache(
+            snapshot_date=as_of,
+            status_scope="all",
+            report_revision="queue-test",
+            summary={"source_snapshot_count": 2},
+            payload=[
+                {
+                    "counterparty_ref": "cp-excluded",
+                    "current_balance": "1000.00",
+                    "status": "no_overdue",
+                    "review_reason": "excluded_supplier_folder",
+                },
+                {
+                    "counterparty_ref": "cp-actionable",
+                    "current_balance": "1000.00",
+                    "current_folder_ref": "folder-old",
+                    "recommended_folder_ref": "folder-new",
+                    "debt_document_ref": "sale-1",
+                    "is_overdue": True,
+                    "status": "needs_review",
+                    "review_reason": "origin_document_structure_confirmed_manual_review",
+                },
+            ],
+        )
+    )
+    db_session.commit()
+
+    report = receivable_workplace_cache.load_cached_folder_recommendation_report(
+        db_session,
+        snapshot_date=as_of,
+        queue="actionable",
+        limit=1,
+    )
+
+    assert report is not None
+    assert [item["counterparty_ref"] for item in report["payload"]] == ["cp-actionable"]
+    assert report["summary"]["actionable_count"] == 1
+    assert report["summary"]["excluded_count"] == 1
+
+
+def test_supervisor_notes_enforce_privacy_permissions_idempotency_and_audit(
+    monkeypatch: pytest.MonkeyPatch,
+    db_session: Session,
+) -> None:
+    as_of = date(2026, 8, 5)
+    db_session.add(_case(snapshot_date=as_of, counterparty_ref="cp-notes"))
+    db_session.commit()
+    settings = _bitrix_settings()
+    _override_receivables_settings(monkeypatch, settings)
+    full_42 = _bitrix_token(
+        settings,
+        user_id="42",
+        access=ReceivablesAccess(access_level="full", department_refs=frozenset()),
+    )
+    full_43 = _bitrix_token(
+        settings,
+        user_id="43",
+        access=ReceivablesAccess(access_level="full", department_refs=frozenset()),
+    )
+    department_42 = _bitrix_token(
+        settings,
+        user_id="42",
+        access=ReceivablesAccess(
+            access_level="department",
+            department_refs=frozenset({"dep-1"}),
+        ),
+    )
+
+    def override_db():
+        yield db_session
+
+    app.dependency_overrides = {get_db: override_db}
+    client = TestClient(app)
+    try:
+        personal = client.put(
+            "/api/receivables/workplace/cp-notes/supervisor-notes/personal",
+            params={"date": as_of.isoformat()},
+            json={"comment": "Личная заметка 42", "action_id": "personal-1"},
+            headers={"Authorization": f"Bearer {full_42}"},
+        )
+        shared = client.put(
+            "/api/receivables/workplace/cp-notes/supervisor-notes/shared",
+            params={"date": as_of.isoformat()},
+            json={"comment": "Общая заметка 42", "action_id": "shared-1"},
+            headers={"Authorization": f"Bearer {full_42}"},
+        )
+        retry = client.put(
+            "/api/receivables/workplace/cp-notes/supervisor-notes/shared",
+            params={"date": as_of.isoformat()},
+            json={"comment": "Не должна заменить", "action_id": "shared-1"},
+            headers={"Authorization": f"Bearer {full_42}"},
+        )
+        department_write = client.put(
+            "/api/receivables/workplace/cp-notes/supervisor-notes/shared",
+            params={"date": as_of.isoformat()},
+            json={"comment": "Запрещено", "action_id": "department-write"},
+            headers={"Authorization": f"Bearer {department_42}"},
+        )
+        internal_write = client.put(
+            "/api/receivables/workplace/cp-notes/supervisor-notes/shared",
+            params={"date": as_of.isoformat()},
+            json={"comment": "Запрещено", "action_id": "internal-write"},
+            headers={"Authorization": "Bearer secret-token"},
+        )
+        author_view = client.get(
+            "/api/receivables/workplace",
+            params={"date": as_of.isoformat()},
+            headers={"Authorization": f"Bearer {full_42}"},
+        )
+        other_full_view = client.get(
+            "/api/receivables/workplace",
+            params={"date": as_of.isoformat()},
+            headers={"Authorization": f"Bearer {full_43}"},
+        )
+        department_view = client.get(
+            "/api/receivables/workplace",
+            params={"date": as_of.isoformat()},
+            headers={"Authorization": f"Bearer {department_42}"},
+        )
+        other_shared = client.put(
+            "/api/receivables/workplace/cp-notes/supervisor-notes/shared",
+            params={"date": as_of.isoformat()},
+            json={"comment": "Общая заметка 43", "action_id": "shared-43"},
+            headers={"Authorization": f"Bearer {full_43}"},
+        )
+        manager_update = client.patch(
+            "/api/receivables/workplace/cp-notes",
+            params={"date": as_of.isoformat()},
+            json={"comment": "Комментарий менеджера", "action_id": "manager-comment"},
+            headers={"Authorization": f"Bearer {full_42}"},
+        )
+        deleted = client.delete(
+            "/api/receivables/workplace/cp-notes/supervisor-notes/personal",
+            params={"date": as_of.isoformat(), "action_id": "personal-delete"},
+            headers={"Authorization": f"Bearer {full_42}"},
+        )
+    finally:
+        app.dependency_overrides = {}
+
+    assert personal.status_code == 200
+    assert personal.json()["note"]["can_edit"] is True
+    assert shared.status_code == 200
+    assert retry.status_code == 200
+    assert retry.json()["event"]["idempotent"] is True
+    assert retry.json()["note"]["comment"] == "Общая заметка 42"
+    assert department_write.status_code == 403
+    assert internal_write.status_code == 403
+
+    author_notes = author_view.json()["payload"][0]["supervisor_notes"]
+    assert {(note["visibility"], note["comment"]) for note in author_notes} == {
+        ("personal", "Личная заметка 42"),
+        ("shared", "Общая заметка 42"),
+    }
+    assert all(note["can_edit"] for note in author_notes)
+    other_notes = other_full_view.json()["payload"][0]["supervisor_notes"]
+    assert [(note["visibility"], note["comment"], note["can_edit"]) for note in other_notes] == [
+        ("shared", "Общая заметка 42", False)
+    ]
+    department_notes = department_view.json()["payload"][0]["supervisor_notes"]
+    assert [(note["visibility"], note["can_edit"]) for note in department_notes] == [
+        ("shared", False)
+    ]
+    assert other_shared.status_code == 200
+    assert manager_update.status_code == 200
+    assert manager_update.json()["item"]["comment"] == "Комментарий менеджера"
+    assert len(manager_update.json()["item"]["supervisor_notes"]) == 3
+    assert deleted.status_code == 200
+
+    notes = db_session.execute(select(ReceivableSupervisorNote)).scalars().all()
+    assert len(notes) == 3
+    assert sum(note.deleted_at is None for note in notes) == 2
+    note_events = (
+        db_session.execute(
+            select(ReceivableWorkEvent).where(
+                ReceivableWorkEvent.event_type.in_(
+                    {"supervisor_note_upserted", "supervisor_note_deleted"}
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    assert len(note_events) == 4
+    assert all(event.comment is None for event in note_events)
+    assert all("Личная заметка 42" not in json.dumps(event.payload) for event in note_events)
+    assert all("action_id" not in (event.payload or {}) for event in note_events)
+    assert all("Личная заметка 42" not in str(event.idempotency_key or "") for event in note_events)

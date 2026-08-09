@@ -31,7 +31,8 @@ def test_build_credit_profiles_includes_active_buyer_without_debt_and_debtor(
         counterparty_ref="cp-zero",
         counterparty_name="Активный без долга",
         current_balance=Decimal("0"),
-        overdue_days=0,
+        overdue_days=999,
+        credit_depth_days=999,
     )
     _add_snapshot(
         db_session,
@@ -77,6 +78,10 @@ def test_build_credit_profiles_includes_active_buyer_without_debt_and_debtor(
     by_ref = {profile.counterparty_ref: profile for profile in profiles}
     assert set(by_ref) == {"cp-debt", "cp-zero"}
     assert by_ref["cp-zero"].current_balance == Decimal("0.00")
+    assert by_ref["cp-zero"].credit_depth_days is None
+    assert by_ref["cp-zero"].payment_behavior_group == "no_current_debt"
+    assert by_ref["cp-zero"].credit_discipline_grade not in {"D", "E"}
+    assert by_ref["cp-zero"].recommended_decision != "stop_shipment"
     assert by_ref["cp-zero"].recommended_credit_limit > Decimal("0.00")
     assert by_ref["cp-zero"].recommended_first_payment_amount == Decimal("0.00")
     assert by_ref["cp-zero"].activity_reason == "active_90"
@@ -149,6 +154,7 @@ def _add_snapshot(
     counterparty_name: str,
     current_balance: Decimal,
     overdue_days: int,
+    credit_depth_days: int | None = None,
 ) -> None:
     session.add(
         ReceivableBalanceSnapshot(
@@ -161,6 +167,7 @@ def _add_snapshot(
             current_manager_name="Менеджер",
             department_ref="dept-1",
             department_name="Покупатели",
+            credit_depth_days=credit_depth_days,
             due_date=datetime.combine(SNAPSHOT_DATE - timedelta(days=overdue_days), time.min),
             overdue_days=overdue_days,
             is_overdue=overdue_days > 0,

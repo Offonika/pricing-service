@@ -79,11 +79,24 @@ class ReceivableCreditDecisionOperation(Base):
     counterparty_guid: Mapped[str] = mapped_column(String(36), nullable=False)
     counterparty_code: Mapped[str] = mapped_column(String(32), nullable=False)
     counterparty_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Nullable only for backward compatibility with operations persisted before
+    # the exact-contract contract was introduced. New operations require all
+    # of these fields before they can be exported to 1C.
+    contract_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    contract_guid: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    contract_code: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    contract_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    contract_organization_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    contract_organization_guid: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    contract_organization_code: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    contract_organization_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     expected_current_limit: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     expected_current_depth: Mapped[int] = mapped_column(nullable=False)
+    expected_current_debt_control_enabled: Mapped[Optional[bool]] = mapped_column(nullable=True)
     proposed_limit: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     proposed_depth: Mapped[int] = mapped_column(nullable=False)
+    proposed_debt_control_enabled: Mapped[Optional[bool]] = mapped_column(nullable=True)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="RUB")
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     approved_by: Mapped[str] = mapped_column(String(32), nullable=False)
@@ -105,6 +118,7 @@ class ReceivableCreditDecisionOperation(Base):
     applied_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     readback_limit: Mapped[Optional[Decimal]] = mapped_column(Numeric(18, 2), nullable=True)
     readback_depth: Mapped[Optional[int]] = mapped_column(nullable=True)
+    readback_debt_control_enabled: Mapped[Optional[bool]] = mapped_column(nullable=True)
     bitrix_sync_pending: Mapped[bool] = mapped_column(nullable=False, default=False)
     source_payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(

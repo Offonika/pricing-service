@@ -255,8 +255,6 @@ def _validate_order(
     _validate_reference(order.supplier, "supplier")
     _validate_reference(order.contract, "contract")
     _validate_reference(order.warehouse, "warehouse")
-    if not order.bitrix_item_url.strip():
-        raise ValueError("bitrix_item_url is required")
     if not order.confirmation_id.strip():
         raise ValueError("confirmation_id is required")
     if not order.calculation_id.strip():

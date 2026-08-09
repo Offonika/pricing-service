@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
+import threading
 from collections import defaultdict
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
@@ -12,7 +15,11 @@ from sqlalchemy import Select, false, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
-from app.infrastructure.contracts import ContractIntegrityError, read_json_contract
+from app.infrastructure.contracts import (
+    ContractIntegrityError,
+    read_json_contract,
+    validate_json_contract_manifest,
+)
 from app.infrastructure.db.engines import DatabaseNotConfiguredError, get_onec_engine
 from app.models import (
     ExecutiveActionItem,
@@ -93,6 +100,24 @@ _SEVERITY_RANK = {
     "medium": 3,
     "low": 4,
 }
+
+
+@dataclass(frozen=True)
+class _CashflowPeriodCacheRevision:
+    path: str
+    artifact_inode: int
+    artifact_size: int
+    artifact_mtime_ns: int
+    artifact_ctime_ns: int
+    manifest_sha256: str | None
+    manifest_size: int | None
+    manifest_mtime_ns: int | None
+    content_sha256: str | None
+
+
+_cashflow_period_cache_lock = threading.Lock()
+_cashflow_period_cache_revision: _CashflowPeriodCacheRevision | None = None
+_cashflow_period_cache_result: tuple[dict[str, Any], str, str] | None = None
 
 
 def _decimal(value: Any) -> Decimal:
@@ -237,6 +262,49 @@ def _freshness_for_date(
     return "fresh" if lag_days <= allowed_lag else "stale"
 
 
+def _cache_period_coverage(
+    *,
+    requested_from: date,
+    requested_to: date,
+    cache_from: date | None,
+    cache_to: date | None,
+) -> Literal["covered", "partial", "stale"]:
+    """Classify cache coverage without rejecting an allowed right-edge lag."""
+    if cache_from is None or cache_to is None or requested_from < cache_from:
+        return "stale"
+    if requested_to <= cache_to:
+        return "covered"
+    if (
+        _freshness_for_date(
+            requested_date=requested_to,
+            source_as_of=cache_to,
+        )
+        == "fresh"
+    ):
+        return "partial"
+    return "stale"
+
+
+def _cache_period_note(
+    *,
+    coverage: Literal["covered", "partial", "stale"],
+    cache_from: date | None,
+    cache_to: date | None,
+) -> str | None:
+    if coverage == "covered":
+        return None
+    cache_range = (
+        f"{cache_from.isoformat() if cache_from else '?'}.."
+        f"{cache_to.isoformat() if cache_to else '?'}"
+    )
+    if coverage == "partial":
+        return (
+            f"Кэш покрывает период {cache_range}; текущая правая граница еще не закрыта, "
+            "но дата кэша находится в пределах допустимого лага."
+        )
+    return f"Запрошенный период выходит за кэш {cache_range}."
+
+
 def _apply_date_freshness(
     source_status: str,
     *,
@@ -313,17 +381,78 @@ def _resolve_cashflow_period_cache_path() -> Path:
     return _resolve_shared_path(get_settings().executive_dashboard_cashflow_period_cache_path)
 
 
+def _cashflow_period_cache_file_revision(path: Path) -> _CashflowPeriodCacheRevision:
+    artifact_stat = path.stat()
+    manifest_path = path.with_suffix(path.suffix + ".manifest.json")
+    manifest_sha256: str | None = None
+    manifest_size: int | None = None
+    manifest_mtime_ns: int | None = None
+    content_sha256: str | None = None
+    if manifest_path.exists():
+        manifest_content = manifest_path.read_bytes()
+        manifest_stat = manifest_path.stat()
+        manifest_sha256 = hashlib.sha256(manifest_content).hexdigest()
+        manifest_size = manifest_stat.st_size
+        manifest_mtime_ns = manifest_stat.st_mtime_ns
+        manifest = json.loads(manifest_content.decode("utf-8"))
+        if isinstance(manifest, dict):
+            content_sha256 = str(manifest.get("content_sha256") or "") or None
+    return _CashflowPeriodCacheRevision(
+        path=str(path.resolve()),
+        artifact_inode=artifact_stat.st_ino,
+        artifact_size=artifact_stat.st_size,
+        artifact_mtime_ns=artifact_stat.st_mtime_ns,
+        artifact_ctime_ns=artifact_stat.st_ctime_ns,
+        manifest_sha256=manifest_sha256,
+        manifest_size=manifest_size,
+        manifest_mtime_ns=manifest_mtime_ns,
+        content_sha256=content_sha256,
+    )
+
+
 def _load_cashflow_period_cache() -> tuple[dict[str, Any] | None, str, str]:
+    global _cashflow_period_cache_result, _cashflow_period_cache_revision
+
     path = _resolve_cashflow_period_cache_path()
     if not path.exists():
         return None, "source_missing", f"cashflow period cache is not found: {path}"
     try:
-        payload = read_json_contract(path)
+        revision = _cashflow_period_cache_file_revision(path)
     except (OSError, json.JSONDecodeError, ContractIntegrityError) as exc:
         return None, "source_error", f"cashflow period cache is not readable: {exc}"
-    if not isinstance(payload, dict):
-        return None, "source_error", "cashflow period cache root must be an object"
-    return payload, str(payload.get("source_status") or "ready"), str(path)
+
+    with _cashflow_period_cache_lock:
+        if (
+            _cashflow_period_cache_revision == revision
+            and _cashflow_period_cache_result is not None
+        ):
+            cached_result = _cashflow_period_cache_result
+        else:
+            _cashflow_period_cache_revision = None
+            _cashflow_period_cache_result = None
+            try:
+                payload = read_json_contract(path)
+            except (OSError, json.JSONDecodeError, ContractIntegrityError) as exc:
+                return None, "source_error", f"cashflow period cache is not readable: {exc}"
+            if not isinstance(payload, dict):
+                return None, "source_error", "cashflow period cache root must be an object"
+            cached_result = (
+                payload,
+                str(payload.get("source_status") or "ready"),
+                str(path),
+            )
+            _cashflow_period_cache_revision = revision
+            _cashflow_period_cache_result = cached_result
+
+    if revision.content_sha256 is not None:
+        try:
+            validate_json_contract_manifest(
+                path,
+                actual_content_sha256=revision.content_sha256,
+            )
+        except (OSError, json.JSONDecodeError, ContractIntegrityError) as exc:
+            return None, "source_error", f"cashflow period cache is not readable: {exc}"
+    return cached_result
 
 
 def _resolve_warehouse_snapshot_path() -> Path:
@@ -340,23 +469,6 @@ def _load_warehouse_snapshot() -> tuple[dict[str, Any] | None, str, str]:
         return None, "source_error", f"warehouse snapshot is not readable: {exc}"
     if not isinstance(payload, dict):
         return None, "source_error", "warehouse snapshot root must be an object"
-    return payload, str(payload.get("source_status") or "ready"), str(path)
-
-
-def _resolve_owner_cash_control_snapshot_path() -> Path:
-    return _resolve_shared_path(get_settings().executive_dashboard_owner_cash_control_snapshot_path)
-
-
-def _load_owner_cash_control_snapshot() -> tuple[dict[str, Any] | None, str, str]:
-    path = _resolve_owner_cash_control_snapshot_path()
-    if not path.exists():
-        return None, "source_missing", f"owner cash control snapshot is not found: {path}"
-    try:
-        payload = read_json_contract(path)
-    except (OSError, json.JSONDecodeError, ContractIntegrityError) as exc:
-        return None, "source_error", f"owner cash control snapshot is not readable: {exc}"
-    if not isinstance(payload, dict):
-        return None, "source_error", "owner cash control snapshot root must be an object"
     return payload, str(payload.get("source_status") or "ready"), str(path)
 
 
@@ -418,8 +530,11 @@ def _profit_loss_expenses_from_cashflow_cache(
     cache_period = payload.get("period") if isinstance(payload.get("period"), dict) else {}
     cache_from = _as_date(cache_period.get("date_from"))
     cache_to = _as_date(cache_period.get("date_to"))
-    period_outside_cache = bool(
-        cache_from is None or cache_to is None or date_from < cache_from or date_to > cache_to
+    cache_coverage = _cache_period_coverage(
+        requested_from=date_from,
+        requested_to=date_to,
+        cache_from=cache_from,
+        cache_to=cache_to,
     )
     rows_source = payload.get("rows") if isinstance(payload.get("rows"), list) else []
     rows = [
@@ -642,20 +757,24 @@ def _profit_loss_expenses_from_cashflow_cache(
         expense_status = "partial"
     if accrual_summary["source_status"] == "partial":
         expense_status = "partial"
-    if period_outside_cache:
+    if cache_coverage == "stale":
         expense_status = "stale"
+    elif cache_coverage == "partial" and expense_status == "ready":
+        expense_status = "partial"
+
+    expense_freshness = _freshness_from_status(expense_status)
+    if cache_coverage == "partial" and expense_status == "partial":
+        expense_freshness = "fresh"
 
     return {
         "source_status": expense_status,
-        "freshness_status": _freshness_from_status(expense_status),
+        "freshness_status": expense_freshness,
         "note": (
             "Расходы определены по исходящим оплатам ДДС; договоры с активными "
             "правилами заменены управленческими начислениями без двойного учета."
             + (
-                f" Запрошенный период выходит за кэш "
-                f"{cache_from.isoformat() if cache_from else '?'}.."
-                f"{cache_to.isoformat() if cache_to else '?'}."
-                if period_outside_cache
+                f" {_cache_period_note(coverage=cache_coverage, cache_from=cache_from, cache_to=cache_to)}"
+                if cache_coverage != "covered"
                 else ""
             )
         ),
@@ -1359,6 +1478,7 @@ TECHNICAL_STORE_NAME_PATTERNS = (
     re.compile(r"\bтранзит\w*\b", re.IGNORECASE),
     re.compile(r"\bсдэк\b", re.IGNORECASE),
 )
+RETAIL_WEB_STORE_NAMES = {"сайт", "склад сайт"}
 
 
 def _is_retail_sales_row(row: OneCSalesDailyKpi) -> bool:
@@ -1367,6 +1487,8 @@ def _is_retail_sales_row(row: OneCSalesDailyKpi) -> bool:
     normalized_name = " ".join(str(row.store_name or "").split()).strip().lower()
     if not normalized_name:
         return False
+    if normalized_name in RETAIL_WEB_STORE_NAMES:
+        return True
     return not any(pattern.search(normalized_name) for pattern in TECHNICAL_STORE_NAME_PATTERNS)
 
 
@@ -3850,23 +3972,18 @@ def _settlement_group_amount(
 ) -> Decimal | None:
     for group in section.get("groups") or []:
         if isinstance(group, dict) and group.get("key") == group_key:
-            # Assets and liabilities are gross balances by counterparty. They
-            # must not be netted between different employees, suppliers or
-            # organizations. Legacy total_payable is used only as a fallback
-            # for contracts that do not yet publish both gross sides.
-            liability = group.get("liability_amount", group.get("gross_payable"))
-            asset = group.get("asset_amount", group.get("reverse_balance"))
-            if liability not in (None, "") and asset not in (None, ""):
-                return _decimal(asset if side == "asset" else liability)
             total = group.get("total_payable")
-            if total in (None, ""):
-                return None
-            net_liability = _decimal(total)
-            return (
-                max(-net_liability, Decimal("0"))
-                if side == "asset"
-                else max(net_liability, Decimal("0"))
-            )
+            if total not in (None, ""):
+                net_liability = _decimal(total)
+            else:
+                liability = group.get("liability_amount", group.get("gross_payable"))
+                asset = group.get("asset_amount", group.get("reverse_balance"))
+                if liability in (None, "") or asset in (None, ""):
+                    return None
+                net_liability = _decimal(liability) - _decimal(asset)
+            if side == "asset":
+                return max(-net_liability, Decimal("0"))
+            return max(net_liability, Decimal("0"))
     return None
 
 
@@ -3924,12 +4041,12 @@ def _settlement_group_signed_rows(section: dict[str, Any], *, group_key: str) ->
 def _build_management_balance_block(
     session: Session,
     finance_payload: dict[str, Any] | None,
-    owner_cash_control_payload: dict[str, Any] | None,
     inventory_cost: OneCInventoryCostSnapshot | None,
     inventory_note: str,
     *,
     requested_date: date,
     money_block: ExecutiveDashboardBlock,
+    receivables_block: ExecutiveDashboardBlock,
     access_context: ExecutiveDashboardAuthContext,
 ) -> ExecutiveDashboardBlock:
     section = _finance_section(finance_payload, "creditors_payables")
@@ -3938,12 +4055,12 @@ def _build_management_balance_block(
     cash_status = (
         cash_metric.source_status if cash_metric is not None else money_block.source_status
     )
-    owner_status = str((owner_cash_control_payload or {}).get("source_status") or "source_missing")
     inventory_status = (
         inventory_cost.source_status if inventory_cost is not None else "source_missing"
     )
+    buyer_receivables_status = receivables_block.source_status
     source_status = _combine_source_status_strings(
-        [cash_status, payables_status, owner_status, inventory_status]
+        [cash_status, payables_status, inventory_status, buyer_receivables_status]
     )
     masked = any(
         _mask_finance(block_key, access_context)
@@ -3957,6 +4074,14 @@ def _build_management_balance_block(
         if cash_metric is not None and _source_available_for_metric(cash_status)
         else None
     )
+    buyer_receivables_metric = _metric_by_key(receivables_block, "total_receivable")
+    buyer_receivables_amount = (
+        _decimal(buyer_receivables_metric.value)
+        if buyer_receivables_metric is not None
+        and _source_available_for_metric(buyer_receivables_status)
+        else None
+    )
+    buyer_receivables_as_of = receivables_block.as_of
     supplier_receivable = _settlement_group_amount(
         section,
         group_key="suppliers",
@@ -3997,37 +4122,6 @@ def _build_management_balance_block(
         group_key="owners",
         side="liability",
     )
-    owner_summary = (
-        owner_cash_control_payload.get("summary")
-        if isinstance(owner_cash_control_payload, dict)
-        and isinstance(owner_cash_control_payload.get("summary"), dict)
-        else {}
-    )
-    owner_source_available = owner_cash_control_payload is not None
-    owner_as_of = _as_date((owner_cash_control_payload or {}).get("as_of"))
-    owner_cash_in_transit = (
-        _decimal(owner_summary.get("money_in_transit_asset")) if owner_source_available else None
-    )
-    owner_related_party_asset = (
-        _decimal(owner_summary.get("unresolved_related_party_asset"))
-        if owner_source_available
-        else None
-    )
-    owner_related_party_liability = (
-        _decimal(owner_summary.get("unresolved_related_party_liability"))
-        if owner_source_available
-        else None
-    )
-    owner_unclassified_funds = (
-        _decimal(owner_summary.get("unclassified_owner_funds_liability"))
-        if owner_source_available
-        else None
-    )
-    dividends_ytd = _decimal(owner_summary.get("dividends_ytd")) if owner_source_available else None
-    dividends_month = (
-        _decimal(owner_summary.get("dividends_current_month")) if owner_source_available else None
-    )
-    dividend_warning_count = int(owner_summary.get("dividend_comment_warning_count") or 0)
     legal_entity_rows = _settlement_group_signed_rows(
         section,
         group_key="legal_entities",
@@ -4041,14 +4135,6 @@ def _build_management_balance_block(
         adjusted_legal_rows[counterparty_ref] = adjusted_legal_rows.get(
             counterparty_ref, Decimal("0")
         ) - _decimal(amount)
-    service_advances_raw = sum(
-        (max(amount, Decimal("0")) for amount in legal_entity_rows.values()),
-        Decimal("0"),
-    )
-    service_advances_adjusted = sum(
-        (max(amount, Decimal("0")) for amount in adjusted_legal_rows.values()),
-        Decimal("0"),
-    )
     accrued_service_liability = sum(
         (max(-amount, Decimal("0")) for amount in adjusted_legal_rows.values()),
         Decimal("0"),
@@ -4157,6 +4243,15 @@ def _build_management_balance_block(
             ),
         ),
         _balance_line(
+            key="receivables",
+            label="Дебиторка покупателей",
+            amount=buyer_receivables_amount,
+            source_status=buyer_receivables_status,
+            as_of=buyer_receivables_as_of,
+            masked=masked,
+            note="Положительная дебиторка buyers-сегмента УТ 10.3",
+        ),
+        _balance_line(
             key="supplier_receivables",
             label="Дебиторка поставщиков",
             amount=supplier_receivable,
@@ -4188,24 +4283,6 @@ def _build_management_balance_block(
             as_of=payables_as_of,
             masked=masked,
         ),
-        _balance_line(
-            key="owner_cash_in_transit",
-            label="Деньги в пути через собственника",
-            amount=owner_cash_in_transit,
-            source_status=owner_status,
-            as_of=owner_as_of,
-            masked=masked,
-            note="Незакрытые исходящие переводы ПП → карта собственника → ПКО",
-        ),
-        _balance_line(
-            key="owner_related_party_unresolved",
-            label="Неразобранные расчёты со связанными сторонами",
-            amount=owner_related_party_asset,
-            source_status=owner_status,
-            as_of=owner_as_of,
-            masked=masked,
-            note="Включает спорный остаток по ИП Ахмедову",
-        ),
     ]
     liabilities = [
         _balance_line(
@@ -4232,56 +4309,8 @@ def _build_management_balance_block(
             as_of=payables_as_of,
             masked=masked,
         ),
-        _balance_line(
-            key="owner_funds_unclassified",
-            label="Средства собственника, назначение не определено",
-            amount=(
-                None
-                if owner_unclassified_funds is None or owner_related_party_liability is None
-                else owner_unclassified_funds + owner_related_party_liability
-            ),
-            source_status=owner_status,
-            as_of=owner_as_of,
-            masked=masked,
-            note="Незакрытые входящие ПКО и кредитовые остатки связанных сторон",
-        ),
     ]
     if has_service_settlements:
-        assets[2:2] = [
-            _balance_line(
-                key="service_supplier_advances_1c",
-                label="Авансы поставщикам услуг по данным 1С",
-                amount=service_advances_raw,
-                source_status=payables_status,
-                as_of=payables_as_of,
-                masked=masked,
-                include_in_total=False,
-            ),
-            _balance_line(
-                key="service_accruals_without_documents",
-                label="Минус: услуги, признанные без документов",
-                amount=-accrual_amount,
-                source_status=str(accrual_adjustments["source_status"]),
-                as_of=requested_date,
-                masked=masked,
-                include_in_total=False,
-                recognition_method="approved_fixed_monthly_rule",
-                estimated_count=int(accrual_adjustments["estimated_count"]),
-            ),
-            _balance_line(
-                key="service_supplier_advances",
-                label="Остаток авансов поставщикам услуг",
-                amount=service_advances_adjusted,
-                source_status=str(accrual_adjustments["source_status"]),
-                as_of=requested_date,
-                masked=masked,
-                source_amount=str(service_advances_raw),
-                adjustment_amount=str(-accrual_amount),
-                adjusted_amount=str(service_advances_adjusted),
-                recognition_method="accrual",
-                estimated_count=int(accrual_adjustments["estimated_count"]),
-            ),
-        ]
         liabilities.insert(
             0,
             _balance_line(
@@ -4301,13 +4330,11 @@ def _build_management_balance_block(
             for amount in (
                 cash_amount,
                 inventory_cost.amount if inventory_cost is not None else None,
-                service_advances_adjusted,
+                buyer_receivables_amount,
                 supplier_receivable,
                 employee_receivable,
                 other_receivable,
                 owner_receivable,
-                owner_cash_in_transit,
-                owner_related_party_asset,
             )
             if amount is not None
         ),
@@ -4321,8 +4348,6 @@ def _build_management_balance_block(
                 accrued_service_liability,
                 employee_payable,
                 other_payable,
-                owner_unclassified_funds,
-                owner_related_party_liability,
             )
             if amount is not None
         ),
@@ -4333,7 +4358,7 @@ def _build_management_balance_block(
         for value in (
             cash_as_of,
             payables_as_of,
-            owner_as_of,
+            buyer_receivables_as_of,
             inventory_cost.as_of if inventory_cost is not None else None,
         )
         if value
@@ -4372,37 +4397,6 @@ def _build_management_balance_block(
             recognition_method="management_profit_loss_ytd",
         ),
     ]
-    # The opening-equity contract uses accounts 80/82/83 and a frozen
-    # management residual. Neither includes post-baseline cash dividends.
-    accounting_includes_dividends = False
-    if dividends_ytd or owner_status != "ready":
-        warning_note = (
-            f"; {dividend_warning_count} РКО имеют комментарий «Зарплата»"
-            if dividend_warning_count
-            else ""
-        )
-        equity_lines.append(
-            _balance_line(
-                key="dividends_paid_ytd",
-                label="Выплаченные дивиденды",
-                amount=-dividends_ytd if dividends_ytd is not None else None,
-                source_status=owner_status,
-                as_of=owner_as_of,
-                masked=masked,
-                include_in_total=not accounting_includes_dividends,
-                adjustment_amount=(str(-dividends_month) if dividends_month is not None else None),
-                note=(
-                    "Накопительно с начала года; выплата месяца "
-                    f"{dividends_month or Decimal('0')} ₽{warning_note}"
-                    + (
-                        "; информационно — капитал уже берётся из КА/БП"
-                        if accounting_includes_dividends
-                        else ""
-                    )
-                ),
-                recognition_method="equity_distribution",
-            )
-        )
     if has_service_settlements and net_profit_ytd is None:
         equity_lines.append(
             _balance_line(
@@ -5014,14 +5008,7 @@ def _quality_issues_for_period(
         )
     issues: list[ExecutiveCashflowQualityIssue] = []
     for item in raw_issues if isinstance(raw_issues, list) else []:
-        if not isinstance(item, dict):
-            continue
-        issue_type = str(item.get("issue_type") or "manual_review")
-        is_open_owner_control = str(item.get("status") or "open") in {"open", "pending"} and (
-            issue_type.startswith("owner_transfer_")
-            or issue_type == "owner_related_party_unresolved"
-        )
-        if not is_open_owner_control and not _date_in_range(
+        if not isinstance(item, dict) or not _date_in_range(
             item, date_from=date_from, date_to=date_to
         ):
             continue
@@ -5031,7 +5018,7 @@ def _quality_issues_for_period(
         issues.append(
             ExecutiveCashflowQualityIssue(
                 issue_key=str(item.get("issue_key") or ""),
-                issue_type=issue_type,
+                issue_type=str(item.get("issue_type") or "manual_review"),
                 issue_label=str(
                     item.get("issue_label") or item.get("issue_type") or "Ручная проверка"
                 ),
@@ -5041,16 +5028,6 @@ def _quality_issues_for_period(
                 description=item.get("description") or item.get("description_ru"),
                 proposed_action=item.get("proposed_action") or item.get("proposed_action_ru"),
                 status=str(item.get("status") or "open"),
-                document_number=(
-                    str(item.get("document_number")) if item.get("document_number") else None
-                ),
-                bitrix_task_id=(
-                    str(item.get("bitrix_task_id")) if item.get("bitrix_task_id") else None
-                ),
-                task_status=(str(item.get("task_status")) if item.get("task_status") else None),
-                drilldown_url=(
-                    str(item.get("drilldown_url")) if item.get("drilldown_url") else None
-                ),
             )
         )
     return issues
@@ -5119,16 +5096,17 @@ def build_executive_cashflow_period_response(
     cache_period = payload.get("period") if isinstance(payload.get("period"), dict) else {}
     cache_from = _as_date(cache_period.get("date_from"))
     cache_to = _as_date(cache_period.get("date_to"))
-    period_note = None
-    period_outside_cache = bool(
-        cache_from is None or cache_to is None or date_from < cache_from or date_to > cache_to
+    cache_coverage = _cache_period_coverage(
+        requested_from=date_from,
+        requested_to=date_to,
+        cache_from=cache_from,
+        cache_to=cache_to,
     )
-    if period_outside_cache:
-        period_note = (
-            "Запрошенный период выходит за кэш "
-            f"{cache_from.isoformat() if cache_from else '?'}.."
-            f"{cache_to.isoformat() if cache_to else '?'}."
-        )
+    period_note = _cache_period_note(
+        coverage=cache_coverage,
+        cache_from=cache_from,
+        cache_to=cache_to,
+    )
     if not rows and not period_note:
         period_note = "В кэше нет движений ДДС по выбранным фильтрам."
     totals = _cashflow_totals(rows)
@@ -5148,27 +5126,13 @@ def build_executive_cashflow_period_response(
     effective_status = str(payload.get("source_status") or source_status or "ready")
     if not rows:
         effective_status = "source_missing" if effective_status == "ready" else effective_status
-    elif period_outside_cache:
+    elif cache_coverage == "stale":
         effective_status = "stale"
-    owner_control_issues = [
-        issue
-        for issue in issues
-        if issue.status in {"open", "pending"}
-        and (
-            issue.issue_type.startswith("owner_transfer_")
-            or issue.issue_type == "owner_related_party_unresolved"
-            or issue.issue_type == "owner_transfer_control_pending"
-        )
-    ]
-    if effective_status == "ready" and any(
-        issue.severity in {"high", "critical"}
-        or issue.issue_type == "owner_transfer_control_pending"
-        for issue in owner_control_issues
-    ):
+    elif cache_coverage == "partial" and effective_status == "ready":
         effective_status = "partial"
-    effective_freshness = (
-        "stale" if period_outside_cache and rows else _freshness_from_status(effective_status)
-    )
+    effective_freshness = _freshness_from_status(effective_status)
+    if rows and cache_coverage == "partial" and effective_status == "partial":
+        effective_freshness = "fresh"
     return ExecutiveCashflowPeriodResponse(
         date_from=date_from,
         date_to=date_to,
@@ -5557,7 +5521,6 @@ def build_executive_dashboard(
     )
     finance_payload, finance_source_status, finance_note = _load_finance_snapshot()
     warehouse_payload, warehouse_source_status, warehouse_note = _load_warehouse_snapshot()
-    owner_payload, owner_source_status, owner_note = _load_owner_cash_control_snapshot()
     inventory_cost, inventory_note = _load_onec_inventory_cost(requested_date)
     persisted = _latest_persisted_snapshot(session, requested_date=requested_date)
     persisted_actions = list_executive_actions(
@@ -5606,11 +5569,11 @@ def build_executive_dashboard(
         _build_management_balance_block(
             session,
             finance_payload,
-            owner_payload,
             inventory_cost,
             inventory_note,
             requested_date=requested_date,
             money_block=money_today_block,
+            receivables_block=debtors_block,
             access_context=context,
         ),
         _build_procurement_block(finance_payload, access_context=context),
@@ -5629,11 +5592,6 @@ def build_executive_dashboard(
             }:
                 block.summary["finance_snapshot_status"] = finance_source_status
                 block.summary["finance_snapshot_note"] = finance_note
-    if owner_payload is None:
-        balance = next((block for block in blocks if block.key == "creditors_payables"), None)
-        if balance is not None:
-            balance.summary["owner_cash_control_status"] = owner_source_status
-            balance.summary["owner_cash_control_note"] = owner_note
     if warehouse_payload is None:
         for block in blocks:
             if block.key == "warehouse_operations":

@@ -9,6 +9,7 @@ import {
   fetchProcurementLifecycleTransitions,
   fetchProcurementOrder,
   fetchProcurementOrders,
+  exportProcurementOrdersExcel,
   type ProcurementClassificationQueue,
   type ProcurementDashboard,
   type ProcurementEventList,
@@ -19,13 +20,14 @@ import {
   type ProcurementOrderList,
 } from "../api/procurementAssortment";
 import { procurementRiskLabel } from "../utils/procurementRiskLabels";
+import { ProcurementOrderAssistant } from "./ProcurementOrderAssistant";
 import { ProcurementOrderFormationApp } from "./ProcurementOrderFormationApp";
 
 interface Props {
   bitrixUserName?: string | null;
 }
 
-type WorkspaceTab = "dashboard" | "orders" | "properties" | "history";
+type WorkspaceTab = "dashboard" | "assistant" | "orders" | "properties" | "history";
 const LIFECYCLE_READINESS = ["all", "ready", "review", "blocked", "stale"] as const;
 type LifecycleReadiness = (typeof LIFECYCLE_READINESS)[number];
 
@@ -42,6 +44,7 @@ type WorkspaceRoute =
 
 const TAB_LABELS: Record<WorkspaceTab, string> = {
   dashboard: "Витрина",
+  assistant: "Помощник",
   orders: "Заказы",
   properties: "Свойства",
   history: "История",
@@ -63,6 +66,7 @@ const ORDER_STATUS_LABELS: Record<string, string> = {
   transmitting: "Передача в 1С",
   transmitted: "Передан в 1С",
   deferred: "Отложен",
+  superseded: "Заменён новым расчётом",
   error: "Ошибка",
 };
 
@@ -93,6 +97,7 @@ const EVENT_LABELS: Record<string, string> = {
   classification_approved: "Изменение свойства утверждено",
   lifecycle_transitions_approved: "Утверждён пакет переходов",
   lifecycle_transition_auto_applied: "Жизненный статус изменён автоматически",
+  assistant_order_assembled: "Проект заказа собран помощником",
 };
 
 function errorText(error: unknown) {
@@ -163,6 +168,7 @@ function routeFromLocation(): WorkspaceRoute {
   }
   const orderMatch = relative.match(/^\/orders\/(\d+)$/);
   if (orderMatch) return { kind: "order", orderId: Number(orderMatch[1]) };
+  if (relative === "/assistant") return { kind: "tab", tab: "assistant" };
   if (relative === "/orders") return { kind: "tab", tab: "orders" };
   if (relative === "/properties") return { kind: "tab", tab: "properties" };
   if (relative === "/history") return { kind: "tab", tab: "history" };
@@ -192,9 +198,15 @@ function AppShell({
   onNavigate: (route: WorkspaceRoute) => void;
   children: React.ReactNode;
 }) {
+  const today = new Date();
+  const todayLabel = new Intl.DateTimeFormat("ru-RU", {
+    day: "2-digit",
+    month: "2-digit",
+    year: "numeric",
+  }).format(today);
   return (
     <div className="order-workspace">
-      <header className="order-workspace__header">
+      <header className={`order-workspace__header${activeTab === "assistant" ? " order-workspace__header--assistant" : ""}`}>
         <div>
           <h1>Формирование заказа</h1>
           <p>Дисплеи · ответственный Омар · данные и факты из 1С</p>
@@ -212,7 +224,14 @@ function AppShell({
             </button>
           ))}
         </nav>
-        {bitrixUserName && <span className="order-workspace__user">{bitrixUserName}</span>}
+        {activeTab === "assistant" ? (
+          <div className="order-workspace__assistant-meta">
+            <time dateTime={today.toISOString().slice(0, 10)}>{todayLabel}</time>
+            {bitrixUserName && <span className="order-workspace__user">{bitrixUserName}</span>}
+          </div>
+        ) : bitrixUserName ? (
+          <span className="order-workspace__user">{bitrixUserName}</span>
+        ) : null}
       </header>
       {children}
     </div>
@@ -750,6 +769,7 @@ function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number) => voi
   const [search, setSearch] = useState("");
   const [status, setStatus] = useState("");
   const [blockers, setBlockers] = useState<"all" | "with" | "without">("all");
+  const [downloading, setDownloading] = useState(false);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
@@ -768,6 +788,30 @@ function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number) => voi
       .catch((requestError) => { if (!cancelled) setError(errorText(requestError)); });
     return () => { cancelled = true; };
   }, [blockers, search, status]);
+
+  const downloadExcel = async () => {
+    setDownloading(true);
+    try {
+      const { blob, filename } = await exportProcurementOrdersExcel({
+        search,
+        status,
+        blockers,
+      });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      toast.success("Расчёт заказа скачан");
+    } catch (requestError) {
+      toast.error(errorText(requestError));
+    } finally {
+      setDownloading(false);
+    }
+  };
 
   if (error) return <ErrorState message={error} onRetry={() => void load()} />;
   if (!data) return <LoadingState message="Загрузка заказов..." />;
@@ -790,6 +834,9 @@ function OrdersRegistry({ onOpenOrder }: { onOpenOrder: (orderId: number) => voi
           <option value="without">Без блокеров</option>
           <option value="with">С блокерами</option>
         </select>
+        <button className="btn btn--ghost" disabled={downloading || data.total === 0} onClick={() => void downloadExcel()} type="button">
+          {downloading ? "Скачивание..." : "Скачать Excel"}
+        </button>
       </section>
       {data.items.length === 0 ? <div className="order-workspace__empty">Заказы не сформированы.</div> : (
         <div className="order-workspace__table-wrap">
@@ -1031,6 +1078,7 @@ export function ProcurementOrderFormationWorkspace({ bitrixUserName }: Props) {
             : <LoadingState message="Загрузка витрины..." />
       )}
       {route.tab === "orders" && <OrdersRegistry onOpenOrder={(orderId) => navigate({ kind: "order", orderId })} />}
+      {route.tab === "assistant" && <ProcurementOrderAssistant onOpenOrder={(orderId) => navigate({ kind: "order", orderId })} />}
       {route.tab === "properties" && <ClassificationQueue />}
       {route.tab === "history" && <EventHistory />}
     </AppShell>

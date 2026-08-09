@@ -57,10 +57,20 @@ class ApprovedDecision:
     counterparty_guid: str
     counterparty_code: str
     counterparty_name: str
+    contract_ref: str
+    contract_guid: str
+    contract_code: str
+    contract_name: str
+    contract_organization_ref: str
+    contract_organization_guid: str
+    contract_organization_code: str
+    contract_organization_name: str
     expected_current_limit: Decimal
     expected_current_depth: int
+    expected_current_debt_control_enabled: bool
     proposed_limit: Decimal
     proposed_depth: int
+    proposed_debt_control_enabled: bool
     reason: str
     decision_hash: str
     card_decision_hash: str
@@ -74,10 +84,20 @@ def calculate_decision_hash(
     counterparty_ref: str,
     counterparty_guid: str,
     counterparty_code: str,
+    contract_ref: str,
+    contract_guid: str,
+    contract_code: str,
+    contract_name: str,
+    contract_organization_ref: str,
+    contract_organization_guid: str,
+    contract_organization_code: str,
+    contract_organization_name: str,
     expected_current_limit: Decimal,
     expected_current_depth: int,
+    expected_current_debt_control_enabled: bool,
     proposed_limit: Decimal,
     proposed_depth: int,
+    proposed_debt_control_enabled: bool,
     reason: str,
     approved_by: str,
     approved_at: datetime,
@@ -89,8 +109,18 @@ def calculate_decision_hash(
         "counterparty_code": str(counterparty_code).strip(),
         "counterparty_guid": str(counterparty_guid).strip().lower(),
         "counterparty_ref": str(counterparty_ref).strip().upper(),
+        "contract_code": str(contract_code).strip(),
+        "contract_guid": str(contract_guid).strip().lower(),
+        "contract_name": str(contract_name).strip(),
+        "contract_organization_code": str(contract_organization_code).strip(),
+        "contract_organization_guid": str(contract_organization_guid).strip().lower(),
+        "contract_organization_name": str(contract_organization_name).strip(),
+        "contract_organization_ref": str(contract_organization_ref).strip().upper(),
+        "contract_ref": str(contract_ref).strip().upper(),
+        "expected_current_debt_control_enabled": expected_current_debt_control_enabled,
         "expected_current_depth": expected_current_depth,
         "expected_current_limit": _canonical_money(expected_current_limit),
+        "proposed_debt_control_enabled": proposed_debt_control_enabled,
         "proposed_depth": proposed_depth,
         "proposed_limit": _canonical_money(proposed_limit),
         "reason": str(reason).strip(),
@@ -145,6 +175,22 @@ def parse_approved_decision(
     counterparty_guid = str(_mapped_value(item, fields, "counterparty_guid") or "").strip().lower()
     counterparty_code = str(_mapped_value(item, fields, "counterparty_code") or "").strip()
     counterparty_name = str(_mapped_value(item, fields, "counterparty_name") or "").strip()
+    contract_ref = str(_mapped_value(item, fields, "contract_ref") or "").strip()
+    contract_guid = str(_mapped_value(item, fields, "contract_guid") or "").strip().lower()
+    contract_code = str(_mapped_value(item, fields, "contract_code") or "").strip()
+    contract_name = str(_mapped_value(item, fields, "contract_name") or "").strip()
+    contract_organization_ref = str(
+        _mapped_value(item, fields, "contract_organization_ref") or ""
+    ).strip()
+    contract_organization_guid = (
+        str(_mapped_value(item, fields, "contract_organization_guid") or "").strip().lower()
+    )
+    contract_organization_code = str(
+        _mapped_value(item, fields, "contract_organization_code") or ""
+    ).strip()
+    contract_organization_name = str(
+        _mapped_value(item, fields, "contract_organization_name") or ""
+    ).strip()
     reason = str(_mapped_value(item, fields, "reason") or "").strip()
     moved_by = str(
         approved_by if approved_by is not None else (_item_value(item, "movedBy") or "")
@@ -163,6 +209,14 @@ def parse_approved_decision(
             "counterparty_guid": counterparty_guid,
             "counterparty_code": counterparty_code,
             "counterparty_name": counterparty_name,
+            "contract_ref": contract_ref,
+            "contract_guid": contract_guid,
+            "contract_code": contract_code,
+            "contract_name": contract_name,
+            "contract_organization_ref": contract_organization_ref,
+            "contract_organization_guid": contract_organization_guid,
+            "contract_organization_code": contract_organization_code,
+            "contract_organization_name": contract_organization_name,
             "reason": reason,
             "movedBy": moved_by,
         }.items()
@@ -179,6 +233,14 @@ def parse_approved_decision(
         "counterparty_guid": (counterparty_guid, 36),
         "counterparty_code": (counterparty_code, 32),
         "counterparty_name": (counterparty_name, 255),
+        "contract_ref": (contract_ref, 64),
+        "contract_guid": (contract_guid, 36),
+        "contract_code": (contract_code, 32),
+        "contract_name": (contract_name, 255),
+        "contract_organization_ref": (contract_organization_ref, 64),
+        "contract_organization_guid": (contract_organization_guid, 36),
+        "contract_organization_code": (contract_organization_code, 32),
+        "contract_organization_name": (contract_organization_name, 255),
         "movedBy": (moved_by, 32),
     }
     too_long = [
@@ -189,20 +251,44 @@ def parse_approved_decision(
     expected_guid = one_c_guid_from_counterparty_ref(counterparty_ref)
     if counterparty_guid != expected_guid:
         raise ValueError("counterparty_guid does not match counterparty_ref")
+    expected_contract_guid = one_c_guid_from_counterparty_ref(contract_ref)
+    if contract_guid != expected_contract_guid:
+        raise ValueError("contract_guid does not match contract_ref")
+    expected_organization_guid = one_c_guid_from_counterparty_ref(contract_organization_ref)
+    if contract_organization_guid != expected_organization_guid:
+        raise ValueError("contract_organization_guid does not match contract_organization_ref")
     current_limit = _parse_money(_mapped_value(item, fields, "current_limit"), "current_limit")
     current_depth = _parse_depth(_mapped_value(item, fields, "current_depth"), "current_depth")
+    current_debt_control_enabled = _parse_bool(
+        _mapped_value(item, fields, "current_debt_control_enabled"),
+        "current_debt_control_enabled",
+    )
     proposed_limit = _parse_money(_mapped_value(item, fields, "proposed_limit"), "proposed_limit")
     proposed_depth = _parse_depth(_mapped_value(item, fields, "proposed_depth"), "proposed_depth")
+    proposed_debt_control_enabled = _parse_bool(
+        _mapped_value(item, fields, "proposed_debt_control_enabled"),
+        "proposed_debt_control_enabled",
+    )
     decision_hash = calculate_decision_hash(
         bitrix_item_id=item_id,
         revision=revision,
         counterparty_ref=counterparty_ref,
         counterparty_guid=counterparty_guid,
         counterparty_code=counterparty_code,
+        contract_ref=contract_ref,
+        contract_guid=contract_guid,
+        contract_code=contract_code,
+        contract_name=contract_name,
+        contract_organization_ref=contract_organization_ref,
+        contract_organization_guid=contract_organization_guid,
+        contract_organization_code=contract_organization_code,
+        contract_organization_name=contract_organization_name,
         expected_current_limit=current_limit,
         expected_current_depth=current_depth,
+        expected_current_debt_control_enabled=current_debt_control_enabled,
         proposed_limit=proposed_limit,
         proposed_depth=proposed_depth,
+        proposed_debt_control_enabled=proposed_debt_control_enabled,
         reason=reason,
         approved_by=moved_by,
         approved_at=approved_time,
@@ -217,10 +303,20 @@ def parse_approved_decision(
         counterparty_guid=counterparty_guid,
         counterparty_code=counterparty_code,
         counterparty_name=counterparty_name,
+        contract_ref=contract_ref,
+        contract_guid=contract_guid,
+        contract_code=contract_code,
+        contract_name=contract_name,
+        contract_organization_ref=contract_organization_ref,
+        contract_organization_guid=contract_organization_guid,
+        contract_organization_code=contract_organization_code,
+        contract_organization_name=contract_organization_name,
         expected_current_limit=current_limit,
         expected_current_depth=current_depth,
+        expected_current_debt_control_enabled=current_debt_control_enabled,
         proposed_limit=proposed_limit,
         proposed_depth=proposed_depth,
+        proposed_debt_control_enabled=proposed_debt_control_enabled,
         reason=reason,
         decision_hash=decision_hash,
         card_decision_hash=str(_mapped_value(item, fields, "decision_hash") or "").strip(),
@@ -455,10 +551,20 @@ def _ingest_item(
         counterparty_guid=decision.counterparty_guid,
         counterparty_code=decision.counterparty_code,
         counterparty_name=decision.counterparty_name,
+        contract_ref=decision.contract_ref,
+        contract_guid=decision.contract_guid,
+        contract_code=decision.contract_code,
+        contract_name=decision.contract_name,
+        contract_organization_ref=decision.contract_organization_ref,
+        contract_organization_guid=decision.contract_organization_guid,
+        contract_organization_code=decision.contract_organization_code,
+        contract_organization_name=decision.contract_organization_name,
         expected_current_limit=decision.expected_current_limit,
         expected_current_depth=decision.expected_current_depth,
+        expected_current_debt_control_enabled=(decision.expected_current_debt_control_enabled),
         proposed_limit=decision.proposed_limit,
         proposed_depth=decision.proposed_depth,
+        proposed_debt_control_enabled=decision.proposed_debt_control_enabled,
         currency="RUB",
         reason=decision.reason,
         approved_by=decision.moved_by_user_id,
@@ -505,6 +611,29 @@ def _advance_operation(
     if operation.state in {"failed", "cancelled"}:
         if operation.bitrix_sync_pending:
             _sync_error_to_bitrix(db, operation, mapping=mapping, caller=caller)
+        return
+
+    if not _operation_has_exact_contract(operation):
+        message = (
+            "Операция создана до введения точной идентичности договора; "
+            "нужна новая согласованная ревизия"
+        )
+        if operation.state in {"apply_sent", "applying"}:
+            _mark_apply_ambiguous(
+                db,
+                operation,
+                message,
+                mapping=mapping,
+                caller=caller,
+            )
+        else:
+            _mark_failed(
+                db,
+                operation,
+                message,
+                mapping=mapping,
+                caller=caller,
+            )
         return
 
     if operation.state == "pending_dry_run":
@@ -714,6 +843,29 @@ def _consume_dry_run_result(
             caller=caller,
         )
         return
+    if item.status == "already_actual":
+        expected_limit = operation.proposed_limit
+        expected_depth = operation.proposed_depth
+        expected_debt_control = operation.proposed_debt_control_enabled
+    else:
+        expected_limit = operation.expected_current_limit
+        expected_depth = operation.expected_current_depth
+        expected_debt_control = operation.expected_current_debt_control_enabled
+    if (
+        item.readback_limit != expected_limit
+        or item.readback_contract_limit != expected_limit
+        or item.readback_depth != expected_depth
+        or item.readback_debt_control_enabled is not expected_debt_control
+    ):
+        _mark_failed(
+            db,
+            operation,
+            "dry_run readback не совпал с ожидаемыми договорным лимитом, "
+            "глубиной или флагом контроля",
+            mapping=mapping,
+            caller=caller,
+        )
+        return
     operation.state = "dry_run_ok"
     operation.last_error = None
     db.commit()
@@ -812,12 +964,15 @@ def _consume_apply_if_available(
         return
     if (
         item.readback_limit != operation.proposed_limit
+        or item.readback_contract_limit != operation.proposed_limit
         or item.readback_depth != operation.proposed_depth
+        or item.readback_debt_control_enabled is not operation.proposed_debt_control_enabled
     ):
         _mark_apply_ambiguous(
             db,
             operation,
-            "Readback 1С не совпал с утвержденной парой лимит/глубина; "
+            "Readback 1С не совпал с утвержденными лимитом, глубиной или "
+            "флагом контроля договора; "
             "блокировка контрагента сохранена до recovery readback",
             mapping=mapping,
             caller=caller,
@@ -829,6 +984,7 @@ def _consume_apply_if_available(
         operation,
         readback_limit=item.readback_limit,
         readback_depth=item.readback_depth,
+        readback_debt_control_enabled=item.readback_debt_control_enabled,
         mapping=mapping,
         caller=caller,
         now=now,
@@ -910,13 +1066,16 @@ def _consume_recovery_readback_result(
         result.ok
         and item.status == "already_actual"
         and item.readback_limit == operation.proposed_limit
+        and item.readback_contract_limit == operation.proposed_limit
         and item.readback_depth == operation.proposed_depth
+        and item.readback_debt_control_enabled is operation.proposed_debt_control_enabled
     ):
         _mark_applied_from_readback(
             db,
             operation,
             readback_limit=item.readback_limit,
             readback_depth=item.readback_depth,
+            readback_debt_control_enabled=item.readback_debt_control_enabled,
             mapping=mapping,
             caller=caller,
             now=now,
@@ -935,12 +1094,14 @@ def _mark_applied_from_readback(
     *,
     readback_limit: Decimal,
     readback_depth: int,
+    readback_debt_control_enabled: bool,
     mapping: dict[str, Any],
     caller: BitrixCaller,
     now: datetime,
 ) -> None:
     operation.readback_limit = readback_limit
     operation.readback_depth = readback_depth
+    operation.readback_debt_control_enabled = readback_debt_control_enabled
     operation.state = "applied"
     operation.applied_at = _as_naive_utc(now)
     operation.active_counterparty_key = None
@@ -995,6 +1156,7 @@ def _sync_applied_to_bitrix(
                     "connector_error": message,
                     "readback_limit": _canonical_money(operation.readback_limit),
                     "readback_depth": operation.readback_depth,
+                    "readback_debt_control_enabled": (operation.readback_debt_control_enabled),
                 },
             )
             operation.bitrix_sync_pending = False
@@ -1011,6 +1173,7 @@ def _sync_applied_to_bitrix(
                 "connector_error": "",
                 "readback_limit": _canonical_money(operation.readback_limit),
                 "readback_depth": operation.readback_depth,
+                "readback_debt_control_enabled": (operation.readback_debt_control_enabled),
             },
         )
     except RuntimeError as error:
@@ -1108,6 +1271,21 @@ def _verified_result_item(
         raise ValueError("result CounterpartyGuid does not match durable operation")
     if item.counterparty_code != operation.counterparty_code:
         raise ValueError("result CounterpartyCode does not match durable operation")
+    if item.contract_ref != operation.contract_ref:
+        raise ValueError("result ContractRef does not match durable operation")
+    if item.contract_guid.lower() != str(operation.contract_guid or "").lower():
+        raise ValueError("result ContractGuid does not match durable operation")
+    if item.contract_code != operation.contract_code:
+        raise ValueError("result ContractCode does not match durable operation")
+    if item.contract_organization_ref != operation.contract_organization_ref:
+        raise ValueError("result ContractOrganizationRef does not match durable operation")
+    if (
+        item.contract_organization_guid.lower()
+        != str(operation.contract_organization_guid or "").lower()
+    ):
+        raise ValueError("result ContractOrganizationGuid does not match durable operation")
+    if item.contract_organization_code != operation.contract_organization_code:
+        raise ValueError("result ContractOrganizationCode does not match durable operation")
     return item
 
 
@@ -1117,6 +1295,28 @@ def _message_for_operation(
     mode: str,
     recovery: bool = False,
 ) -> CreditTermsMessage:
+    contract_fields = {
+        "contract_ref": operation.contract_ref,
+        "contract_guid": operation.contract_guid,
+        "contract_code": operation.contract_code,
+        "contract_name": operation.contract_name,
+        "contract_organization_ref": operation.contract_organization_ref,
+        "contract_organization_guid": operation.contract_organization_guid,
+        "contract_organization_code": operation.contract_organization_code,
+        "contract_organization_name": operation.contract_organization_name,
+    }
+    missing_contract_fields = [
+        name for name, value in contract_fields.items() if not str(value or "").strip()
+    ]
+    if (
+        missing_contract_fields
+        or operation.expected_current_debt_control_enabled is None
+        or operation.proposed_debt_control_enabled is None
+    ):
+        raise RuntimeError(
+            "Persisted credit decision predates the exact-contract contract; "
+            "create a new approved revision"
+        )
     message_id = (
         operation.readback_message_id
         if recovery
@@ -1137,20 +1337,52 @@ def _message_for_operation(
                 counterparty_guid=operation.counterparty_guid,
                 counterparty_code=operation.counterparty_code,
                 counterparty_name=operation.counterparty_name,
+                contract_ref=operation.contract_ref,
+                contract_guid=operation.contract_guid,
+                contract_code=operation.contract_code,
+                contract_name=operation.contract_name,
+                contract_organization_ref=operation.contract_organization_ref,
+                contract_organization_guid=operation.contract_organization_guid,
+                contract_organization_code=operation.contract_organization_code,
+                contract_organization_name=operation.contract_organization_name,
                 expected_current_limit=(
                     operation.proposed_limit if recovery else operation.expected_current_limit
                 ),
                 expected_current_depth=(
                     operation.proposed_depth if recovery else operation.expected_current_depth
                 ),
+                expected_current_debt_control_enabled=(
+                    operation.proposed_debt_control_enabled
+                    if recovery
+                    else operation.expected_current_debt_control_enabled
+                ),
                 new_limit=operation.proposed_limit,
                 new_depth=operation.proposed_depth,
+                new_debt_control_enabled=operation.proposed_debt_control_enabled,
                 currency=operation.currency,
                 reason=operation.reason,
                 approved_by=operation.approved_by,
                 approved_at=_as_aware_utc(operation.approved_at),
             ),
         ),
+    )
+
+
+def _operation_has_exact_contract(operation: ReceivableCreditDecisionOperation) -> bool:
+    contract_values = (
+        operation.contract_ref,
+        operation.contract_guid,
+        operation.contract_code,
+        operation.contract_name,
+        operation.contract_organization_ref,
+        operation.contract_organization_guid,
+        operation.contract_organization_code,
+        operation.contract_organization_name,
+    )
+    return (
+        all(str(value or "").strip() for value in contract_values)
+        and operation.expected_current_debt_control_enabled is not None
+        and operation.proposed_debt_control_enabled is not None
     )
 
 
@@ -1400,10 +1632,20 @@ def _validate_mapping(mapping: dict[str, Any]) -> None:
             "counterparty_guid",
             "counterparty_code",
             "counterparty_name",
+            "contract_ref",
+            "contract_guid",
+            "contract_code",
+            "contract_name",
+            "contract_organization_ref",
+            "contract_organization_guid",
+            "contract_organization_code",
+            "contract_organization_name",
             "current_limit",
             "current_depth",
+            "current_debt_control_enabled",
             "proposed_limit",
             "proposed_depth",
+            "proposed_debt_control_enabled",
             "reason",
             "decision_revision",
             "decision_hash",
@@ -1469,6 +1711,19 @@ def _parse_depth(value: Any, field_name: str) -> int:
     ):
         raise ValueError(f"{field_name} must be a non-negative integer")
     return int(parsed_decimal)
+
+
+def _parse_bool(value: Any, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int) and value in {0, 1}:
+        return bool(value)
+    normalized = str(value or "").strip().lower()
+    if normalized in {"true", "1", "yes", "да"}:
+        return True
+    if normalized in {"false", "0", "no", "нет"}:
+        return False
+    raise ValueError(f"{field_name} must be boolean")
 
 
 def _parse_datetime(value: Any) -> datetime:

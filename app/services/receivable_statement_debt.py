@@ -78,6 +78,10 @@ class _SaleLayer:
         value = self.open_amount - self.return_amount
         return _money(value if value > Decimal("0.00") else Decimal("0.00"))
 
+    @property
+    def structure_authoritative(self) -> bool:
+        return self.selection_rule == STATEMENT_RULE_STRUCTURE_OPEN
+
 
 def _money(value: Any) -> Decimal:
     return Decimal(str(value or 0)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
@@ -184,6 +188,7 @@ def _apply_nearby_returns(
             sale
             for sale in sale_layers
             if not sale.closed
+            and not sale.structure_authoritative
             and sale.match_amount > Decimal("0.00")
             and _distance(sale.row_index, ret.row_index) <= NEARBY_PAYMENT_ROW_WINDOW
         ]
@@ -211,7 +216,7 @@ def _apply_direct_payment_matches(
     payment_layers: list[_ClosingLayer],
 ) -> None:
     for sale in sale_layers:
-        if sale.closed or sale.match_amount <= Decimal("0.00"):
+        if sale.closed or sale.structure_authoritative or sale.match_amount <= Decimal("0.00"):
             continue
         candidates = [
             payment
@@ -262,6 +267,7 @@ def _apply_multi_sale_payment_matches(
             index
             for index, sale in enumerate(sale_layers)
             if not sale.closed
+            and not sale.structure_authoritative
             and sale.match_amount > Decimal("0.00")
             and _distance(sale.row_index, payment.row_index) <= MULTI_SALE_ROW_WINDOW
         ]
@@ -482,6 +488,11 @@ def resolve_open_debt_documents_by_statement(
         segment_end_row=segment_end_row,
     )
 
+    structure_confirmed_sales = [
+        sale
+        for sale in sale_layers
+        if not sale.closed and sale.structure_authoritative and sale.open_amount > Decimal("0.00")
+    ]
     open_sales = [
         sale
         for sale in sale_layers
@@ -489,9 +500,16 @@ def resolve_open_debt_documents_by_statement(
         and sale.match_amount > Decimal("0.00")
         and sale.row_index >= segment_start_row
     ]
-    selected_sales = _select_open_sales_by_balance(
-        open_sales,
-        current_balance=_money(current_balance),
+    selected_sales = (
+        sorted(
+            structure_confirmed_sales,
+            key=lambda item: (item.event.document_date, item.event.document_ref),
+        )
+        if structure_confirmed_sales
+        else _select_open_sales_by_balance(
+            open_sales,
+            current_balance=_money(current_balance),
+        )
     )
 
     documents: list[ReceivableStatementOpenDocument] = []

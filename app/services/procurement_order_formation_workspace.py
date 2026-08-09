@@ -1,13 +1,16 @@
 from __future__ import annotations
 
 import json
-import uuid
 from collections import Counter
 from datetime import UTC, date, datetime
 from decimal import Decimal
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterable, Mapping
 
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill
+from openpyxl.utils import get_column_letter
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
@@ -30,13 +33,10 @@ from app.services.assortment_lifecycle_classification_store import (
 from app.services.bitrix_procurement_order_formation_auth import (
     ProcurementOrderFormationSession,
 )
-from app.services.exporters.ut103_exchange import resolve_ut103_exchange_root
 from app.services.exporters.ut103_nomenclature_properties import (
     NomenclaturePropertyUpdateMessage,
     NomenclaturePropertyUpdateRow,
     PropertyUpdateExchangeResult,
-    build_nomenclature_property_updates_xml,
-    write_nomenclature_property_updates_message,
 )
 from app.services.procurement_order_formation import (
     PROPERTY_UPDATE_SOURCE,
@@ -45,12 +45,20 @@ from app.services.procurement_order_formation import (
     STATUS_PROPERTY_NAME,
     STATUS_REASON_PROPERTY_NAME,
     STATUS_SOURCE_PROPERTY_NAME,
+    approve_order,
     effective_assortment_status,
+    get_order,
     normalize_guid,
     normalize_status,
     order_blockers,
+    serialize_order,
     serialize_proposal,
     status_label,
+)
+from app.services.procurement_supplier_profiles import (
+    empty_supplier_profile,
+    serialize_supplier_profile,
+    supplier_profiles_by_ref,
 )
 
 DISPLAY_FOLDER = "дисплеи"
@@ -82,6 +90,32 @@ MANUAL_STATUS_LABELS = {
     "do_not_order": "Не закупать",
     "review": "Review / разбор",
 }
+ORDER_STATUS_LABELS = {
+    "draft": "На подтверждении",
+    "review": "На проверке",
+    "approved": "Проверен",
+    "transmitting": "Передача в 1С",
+    "transmitted": "Передан в 1С",
+    "deferred": "Отложен",
+    "superseded": "Заменён новым расчётом",
+}
+ORDER_CALCULATION_EXPORT_HEADERS = (
+    "Предмет",
+    "Категория",
+    "Группа",
+    "Номенклатура",
+    "Артикул",
+    "Поставщик",
+    "Договор",
+    "Склад",
+    "Количество",
+    "Закупочная цена",
+    "Сумма",
+    "Валюта",
+    "Статус",
+    "Партия",
+    "Дата заказа",
+)
 MANUAL_STATUS_RECOMMENDATIONS = {
     "matrix": "Проверить матрицу и минимальный запас",
     "on_demand": "Проверить явную клиентскую потребность",
@@ -530,34 +564,25 @@ def approve_lifecycle_transitions(
                 continue
         approved.append(proposal)
 
-    mode = "apply" if settings.procurement_order_formation_property_apply_enabled else "dry_run"
+    mode = "internal"
     message_id: str | None = None
     xml_preview = ""
     written_path: Path | None = None
     if approved:
-        message_id = f"proc-lifecycle-{uuid.uuid5(uuid.NAMESPACE_URL, idempotency_key).hex}"
-        message = _build_transition_message(
-            approved,
-            message_id=message_id,
-            mode=mode,
-            approved_by=session.user_name or session.actor,
-        )
-        xml_preview = build_nomenclature_property_updates_xml(message).decode("windows-1251")
-        if mode == "apply":
-            written_path = write_nomenclature_property_updates_message(
-                resolve_ut103_exchange_root(None),
-                message,
-            )
         approved_at = datetime.now(UTC).replace(tzinfo=None)
         for proposal in approved:
-            proposal.status = "sent_to_1c" if mode == "apply" else "approved"
+            proposal.status = "approved"
             proposal.approved_at = approved_at
             proposal.approved_by_actor = session.actor
             proposal.approved_by_bitrix_user_id = session.user_id
             proposal.approved_by_name = session.user_name or session.actor
-            proposal.onec_message_id = message_id
-            proposal.onec_status = "pending" if mode == "apply" else "dry_run"
-            proposal.payload = {**(proposal.payload or {}), "xml_preview": xml_preview}
+            proposal.onec_message_id = None
+            proposal.onec_status = "not_applicable"
+            proposal.payload = {
+                **(proposal.payload or {}),
+                "storage": "pricing-service",
+                "legacy_onec_export_disabled": True,
+            }
             results.append(_approval_result(proposal.id, "approved", "Переход утверждён"))
 
     summary = {key: 0 for key in APPROVAL_RESULT_KEYS}
@@ -596,6 +621,341 @@ def list_orders(
     page: int = 1,
     page_size: int = 50,
 ) -> dict[str, Any]:
+    filtered = _filtered_orders(
+        db,
+        search=search,
+        status=status,
+        supplier=supplier,
+        blockers=blockers,
+    )
+    summary = _orders_summary(filtered)
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 100)
+    start = (page - 1) * page_size
+    return {
+        "total": len(filtered),
+        "page": page,
+        "page_size": page_size,
+        "summary": summary,
+        "items": [serialize_order_list_item(item) for item in filtered[start : start + page_size]],
+    }
+
+
+def build_order_assistant(
+    db: Session,
+    *,
+    session: ProcurementOrderFormationSession | None = None,
+    settings: Settings | None = None,
+) -> dict[str, Any]:
+    orders = list(db.scalars(_order_list_statement()).unique().all())
+    orders = [
+        order
+        for order in orders
+        if order.status in {"draft", "review", "error"}
+        and order.onec_status not in {"pending", "transmitted"}
+    ]
+    orders.sort(key=lambda item: (item.order_date, item.updated_at), reverse=True)
+    profiles = supplier_profiles_by_ref(db, (order.supplier_ref for order in orders))
+    serialized_orders = []
+    approver_ids = {
+        str(value).strip()
+        for value in (
+            settings or get_settings()
+        ).procurement_order_formation_classification_approver_user_ids
+        if str(value).strip()
+    }
+    for order in orders:
+        serialized = serialize_order(order)
+        normalized_ref = str(order.supplier_ref or "").strip().lower()
+        profile = profiles.get(normalized_ref)
+        if profile is not None:
+            serialized["supplier_profile"] = serialize_supplier_profile(profile)
+        elif serialized.get("supplier_profile", {}).get("data_status") != "missing":
+            serialized["supplier_profile"] = {
+                **empty_supplier_profile(
+                    supplier_ref=normalized_ref or None,
+                    supplier_code=order.supplier_code,
+                    supplier_name=order.supplier_name,
+                ),
+                **serialized["supplier_profile"],
+            }
+        else:
+            serialized["supplier_profile"] = empty_supplier_profile(
+                supplier_ref=normalized_ref or None,
+                supplier_code=order.supplier_code,
+                supplier_name=order.supplier_name,
+            )
+        serialized["supplier_profile"]["can_edit"] = bool(
+            session and str(session.user_id) in approver_ids
+        )
+        for line in serialized["lines"]:
+            proposal = line.get("latest_classification")
+            if not isinstance(proposal, dict):
+                continue
+            can_decide = bool(
+                session
+                and proposal.get("status") == "proposed"
+                and str(session.user_id) in approver_ids
+                and str(proposal.get("requested_by_bitrix_user_id") or "") != str(session.user_id)
+            )
+            proposal["can_approve"] = can_decide
+            proposal["can_reject"] = can_decide
+        serialized_orders.append(serialized)
+    lines = [line for order in serialized_orders for line in order["lines"] if not line["removed"]]
+    ready_order_ids = {
+        int(order["id"])
+        for order in serialized_orders
+        if not order["blockers"]
+        and (active_lines := [line for line in order["lines"] if not line["removed"]])
+        and all(_assistant_line_ready(line) for line in active_lines)
+    }
+    ready_lines = [
+        line
+        for order in serialized_orders
+        if int(order["id"]) in ready_order_ids
+        for line in order["lines"]
+        if not line["removed"]
+    ]
+    updated_values = [order.updated_at for order in orders if order.updated_at is not None]
+    return {
+        "updated_at": max(updated_values) if updated_values else None,
+        "summary": {
+            "lines": len(lines),
+            "ready_lines": len(ready_lines),
+            "supplier_missing_lines": sum(
+                1
+                for order in orders
+                for line in order.lines
+                if not line.removed
+                if not (order.supplier_ref or order.supplier_code)
+            ),
+            "price_changed_lines": sum(
+                _assistant_decimal(line.get("price_change_pct")) not in {None, Decimal("0")}
+                for line in lines
+            ),
+            "low_profitability_lines": sum(
+                (value := _assistant_decimal(line.get("profitability_pct"))) is not None
+                and value < Decimal("20")
+                for line in lines
+            ),
+            "high_defect_lines": sum(
+                (value := _assistant_decimal(line.get("supplier_defect_pct"))) is not None
+                and value > Decimal("10")
+                and (line.get("supplier_defect_attribution") == "supplier_exact")
+                and int(line.get("supplier_defect_history_units") or 0) >= 100
+                for line in lines
+            ),
+            "photo_missing_lines": sum(not line.get("photo_original_url") for line in lines),
+            "orders": len(orders),
+        },
+        "orders": serialized_orders,
+    }
+
+
+def assemble_assistant_orders(
+    db: Session,
+    *,
+    items: list[Mapping[str, Any]],
+    idempotency_key: str,
+    session: ProcurementOrderFormationSession,
+) -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+    for item in items:
+        order_id = int(item["order_id"])
+        expected_version = int(item["expected_version"])
+        event_key = f"assistant-assemble:{idempotency_key}:{order_id}"
+        existing_event = db.scalar(
+            select(ProcurementOrderFormationEvent).where(
+                ProcurementOrderFormationEvent.idempotency_key == event_key
+            )
+        )
+        if existing_event is not None:
+            results.append({"order_id": order_id, "status": "approved", "message": "Уже собрано"})
+            continue
+        try:
+            order = get_order(db, order_id)
+        except LookupError:
+            results.append(
+                {"order_id": order_id, "status": "blocked", "message": "Заказ не найден"}
+            )
+            continue
+        if order.status == "approved":
+            results.append({"order_id": order_id, "status": "approved", "message": "Уже собрано"})
+            continue
+        if order.status not in {"draft", "review", "error"} or order.onec_status in {
+            "pending",
+            "transmitted",
+        }:
+            results.append(
+                {
+                    "order_id": order_id,
+                    "status": "blocked",
+                    "message": "Заказ уже вышел из очереди помощника",
+                }
+            )
+            continue
+        if order.version != expected_version:
+            results.append(
+                {
+                    "order_id": order_id,
+                    "status": "stale",
+                    "message": "Версия изменилась — обновите помощник",
+                }
+            )
+            continue
+        serialized_lines = {int(line["id"]): line for line in serialize_order(order)["lines"]}
+        missing_photo_lines = [
+            line.line_number
+            for line in order.lines
+            if not line.removed
+            and not serialized_lines.get(int(line.id or 0), {}).get("photo_original_url")
+        ]
+        missing_card_lines = [
+            line.line_number
+            for line in order.lines
+            if not line.removed
+            and not serialized_lines.get(int(line.id or 0), {}).get("product_card_url")
+        ]
+        blockers = order_blockers(order)
+        if missing_photo_lines:
+            blockers.append(
+                "Нет исходного фото: строки " + ", ".join(map(str, missing_photo_lines))
+            )
+        if missing_card_lines:
+            blockers.append(
+                "Нет подтверждённой карточки товара: строки "
+                + ", ".join(map(str, missing_card_lines))
+            )
+        if blockers:
+            results.append(
+                {
+                    "order_id": order_id,
+                    "status": "blocked",
+                    "message": "; ".join(blockers),
+                }
+            )
+            continue
+        approved = approve_order(db, order_id, session)
+        record_event(
+            db,
+            order_id=order_id,
+            entity_type="order",
+            entity_id=order_id,
+            event_type="assistant_order_assembled",
+            session=session,
+            after=serialize_order(approved),
+            idempotency_key=event_key,
+        )
+        db.commit()
+        results.append(
+            {
+                "order_id": order_id,
+                "status": "approved",
+                "message": "Проект заказа собран",
+            }
+        )
+    return {
+        "approved": sum(item["status"] == "approved" for item in results),
+        "blocked": sum(item["status"] == "blocked" for item in results),
+        "stale": sum(item["status"] == "stale" for item in results),
+        "items": results,
+    }
+
+
+def build_order_calculation_excel(
+    db: Session,
+    *,
+    search: str = "",
+    status: str = "",
+    supplier: str = "",
+    blockers: str = "all",
+) -> bytes:
+    orders = _filtered_orders(
+        db,
+        search=search,
+        status=status,
+        supplier=supplier,
+        blockers=blockers,
+    )
+    active_lines = [line for order in orders for line in order.lines if not line.removed]
+    nomenclature_codes = {line.nomenclature_code for line in active_lines if line.nomenclature_code}
+    classification_by_code: dict[str, Mapping[str, Any]] = {}
+    if nomenclature_codes:
+        rows = db.execute(
+            select(
+                ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.nomenclature_code,
+                ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.subject_1c,
+                ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.category_1c,
+                ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.folder,
+                ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.article,
+            ).where(
+                ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.nomenclature_code.in_(
+                    nomenclature_codes
+                )
+            )
+        ).mappings()
+        classification_by_code = {str(row["nomenclature_code"]): row for row in rows}
+
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Расчёт заказа"
+    worksheet.freeze_panes = "A2"
+    worksheet.append(ORDER_CALCULATION_EXPORT_HEADERS)
+
+    for order in orders:
+        for line in order.lines:
+            if line.removed:
+                continue
+            classification = classification_by_code.get(str(line.nomenclature_code or ""), {})
+            worksheet.append(
+                (
+                    classification.get("subject_1c") or "",
+                    classification.get("category_1c") or "",
+                    classification.get("folder") or "",
+                    line.nomenclature_name,
+                    classification.get("article") or "",
+                    order.supplier_name,
+                    order.contract_name,
+                    order.warehouse_name,
+                    line.final_quantity,
+                    line.purchase_price,
+                    line.amount,
+                    line.currency,
+                    ORDER_STATUS_LABELS.get(order.status, order.status),
+                    order.batch_id,
+                    order.order_date,
+                )
+            )
+
+    header_fill = PatternFill(fill_type="solid", fgColor="D9EAF7")
+    for cell in worksheet[1]:
+        cell.font = Font(bold=True)
+        cell.fill = header_fill
+    worksheet.auto_filter.ref = worksheet.dimensions
+    for row in worksheet.iter_rows(min_row=2):
+        row[8].number_format = "0.000"
+        row[9].number_format = "#,##0.0000"
+        row[10].number_format = "#,##0.00"
+        row[14].number_format = "DD.MM.YYYY"
+    for column_number, column_cells in enumerate(worksheet.columns, start=1):
+        width = max(len(str(cell.value or "")) for cell in column_cells)
+        worksheet.column_dimensions[get_column_letter(column_number)].width = min(
+            max(width + 2, 12), 45
+        )
+
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
+
+
+def _filtered_orders(
+    db: Session,
+    *,
+    search: str = "",
+    status: str = "",
+    supplier: str = "",
+    blockers: str = "all",
+) -> list[ProcurementOrderFormation]:
     statement = _order_list_statement()
     orders = list(db.scalars(statement).unique().all())
     search_key = search.strip().casefold()
@@ -603,6 +963,8 @@ def list_orders(
     filtered: list[ProcurementOrderFormation] = []
     for order in orders:
         order_blocker_list = order_blockers(order)
+        if not status and order.status == "superseded":
+            continue
         if status and order.status != status:
             continue
         if supplier_key and supplier_key not in order.supplier_name.casefold():
@@ -624,17 +986,7 @@ def list_orders(
                 continue
         filtered.append(order)
     filtered.sort(key=lambda item: (item.order_date, item.updated_at), reverse=True)
-    summary = _orders_summary(filtered)
-    page = max(page, 1)
-    page_size = min(max(page_size, 1), 100)
-    start = (page - 1) * page_size
-    return {
-        "total": len(filtered),
-        "page": page,
-        "page_size": page_size,
-        "summary": summary,
-        "items": [serialize_order_list_item(item) for item in filtered[start : start + page_size]],
-    }
+    return filtered
 
 
 def list_classification_proposals(
@@ -1397,3 +1749,21 @@ def _jsonable(value: Any) -> Any:
     except TypeError:
         return str(value)
     return value
+
+
+def _assistant_line_ready(line: Mapping[str, Any]) -> bool:
+    return bool(
+        not line.get("removed")
+        and not line.get("blockers")
+        and line.get("product_card_url")
+        and line.get("photo_original_url")
+    )
+
+
+def _assistant_decimal(value: Any) -> Decimal | None:
+    if value in (None, ""):
+        return None
+    try:
+        return Decimal(str(value).replace(" ", "").replace(",", "."))
+    except (ValueError, ArithmeticError):
+        return None

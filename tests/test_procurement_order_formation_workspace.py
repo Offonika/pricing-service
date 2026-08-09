@@ -1,15 +1,20 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+from decimal import Decimal
+from io import BytesIO
 
 import pytest
+from openpyxl import load_workbook
 from sqlalchemy import func, select
 
 import app.services.bitrix_order_formation as bitrix_order_service
 from app.core.config import Settings
 from app.models.procurement_order_formation import (
     ProcurementLifecycleTransitionProposal,
+    ProcurementOrderFormation,
     ProcurementOrderFormationEvent,
+    ProcurementOrderFormationLine,
 )
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_METADATA,
@@ -24,6 +29,7 @@ from app.services.procurement_order_formation_workspace import (
     LIFECYCLE_ORDER,
     approve_lifecycle_transitions,
     build_dashboard,
+    build_order_calculation_excel,
     list_lifecycle_transitions,
     sync_lifecycle_transition_proposals,
 )
@@ -166,6 +172,153 @@ def _approval_item(proposal: ProcurementLifecycleTransitionProposal) -> dict[str
         "expected_current_status": proposal.current_status,
         "facts_hash": proposal.facts_hash,
     }
+
+
+def test_order_calculation_excel_contains_classification_and_active_filtered_lines(
+    lifecycle_db,
+    sqlite_engine,
+) -> None:
+    now = datetime(2026, 8, 1, 9, 30)
+    rows = build_classification_rows(
+        records=[
+            {
+                "nomenclature_code": "DISPLAY-1",
+                "article": "ART-001",
+                "subject_1c": "Запчасти для телефонов",
+                "category_1c": "Дисплеи",
+            }
+        ],
+        summaries=[
+            {
+                "nomenclature_code": "DISPLAY-1",
+                "name": "Дисплей тестовый",
+                "folder": "Дисплеи Apple",
+                "status": "working",
+                "status_label": "Рабочий",
+            }
+        ],
+        source="test",
+        classified_at=now,
+    )
+    persist_classification_rows(
+        sqlite_engine,
+        rows=rows,
+        run_key="excel-export-test",
+        folder="дисплеи",
+        source="test",
+        started_at=now,
+        finished_at=now,
+    )
+
+    active_order = ProcurementOrderFormation(
+        stable_key="excel:active",
+        status="draft",
+        supplier_name="Поставщик Excel",
+        contract_name="Основной договор",
+        warehouse_name="Центральный склад",
+        currency="RUB",
+        route="ordinary",
+        batch_id="2026-08-01",
+        order_date=date(2026, 8, 1),
+        calculation_id="excel-calculation",
+    )
+    active_order.lines = [
+        ProcurementOrderFormationLine(
+            stable_key="excel:line:active",
+            line_number=1,
+            bitrix_product_xml_id="display-guid-1",
+            nomenclature_ref="display-ref-1",
+            nomenclature_code="DISPLAY-1",
+            nomenclature_name="Дисплей iPhone тестовый",
+            recommended_quantity=Decimal("3"),
+            final_quantity=Decimal("3"),
+            purchase_price=Decimal("1250.50"),
+            amount=Decimal("3751.50"),
+            currency="RUB",
+        ),
+        ProcurementOrderFormationLine(
+            stable_key="excel:line:removed",
+            line_number=2,
+            bitrix_product_xml_id="display-guid-2",
+            nomenclature_ref="display-ref-2",
+            nomenclature_code="DISPLAY-2",
+            nomenclature_name="Удалённая строка",
+            final_quantity=Decimal("1"),
+            purchase_price=Decimal("10"),
+            amount=Decimal("10"),
+            currency="RUB",
+            removed=True,
+        ),
+    ]
+    superseded_order = ProcurementOrderFormation(
+        stable_key="excel:superseded",
+        status="superseded",
+        supplier_name="Старый поставщик",
+        contract_name="Старый договор",
+        warehouse_name="Старый склад",
+        currency="RUB",
+        route="ordinary",
+        batch_id="2026-07-31",
+        order_date=date(2026, 7, 31),
+        calculation_id="old-calculation",
+    )
+    superseded_order.lines = [
+        ProcurementOrderFormationLine(
+            stable_key="excel:line:superseded",
+            line_number=1,
+            bitrix_product_xml_id="old-guid",
+            nomenclature_ref="old-ref",
+            nomenclature_code="OLD-1",
+            nomenclature_name="Строка старого расчёта",
+            final_quantity=Decimal("2"),
+            purchase_price=Decimal("100"),
+            amount=Decimal("200"),
+            currency="RUB",
+        )
+    ]
+    lifecycle_db.add_all([active_order, superseded_order])
+    lifecycle_db.commit()
+
+    workbook = load_workbook(BytesIO(build_order_calculation_excel(lifecycle_db)))
+    worksheet = workbook["Расчёт заказа"]
+    exported_rows = list(worksheet.values)
+
+    assert exported_rows[0][:5] == (
+        "Предмет",
+        "Категория",
+        "Группа",
+        "Номенклатура",
+        "Артикул",
+    )
+    assert len(exported_rows) == 2
+    assert exported_rows[1][:5] == (
+        "Запчасти для телефонов",
+        "Дисплеи",
+        "Дисплеи Apple",
+        "Дисплей iPhone тестовый",
+        "ART-001",
+    )
+    assert exported_rows[1][5:15] == (
+        "Поставщик Excel",
+        "Основной договор",
+        "Центральный склад",
+        3,
+        1250.5,
+        3751.5,
+        "RUB",
+        "На подтверждении",
+        "2026-08-01",
+        datetime(2026, 8, 1),
+    )
+    assert worksheet.freeze_panes == "A2"
+    assert worksheet.auto_filter.ref == worksheet.dimensions
+
+    superseded_workbook = load_workbook(
+        BytesIO(build_order_calculation_excel(lifecycle_db, status="superseded"))
+    )
+    superseded_rows = list(superseded_workbook["Расчёт заказа"].values)
+    assert len(superseded_rows) == 2
+    assert superseded_rows[1][3] == "Строка старого расчёта"
 
 
 def test_dashboard_keeps_lifecycle_order_and_nests_newborn_need(
@@ -435,7 +588,9 @@ def test_batch_approval_returns_partial_result_and_is_idempotent(
         settings=_settings(),
     )
 
-    assert first["mode"] == "dry_run"
+    assert first["mode"] == "internal"
+    assert first["xml_preview"] == ""
+    assert first["written_path"] is None
     assert first["summary"]["approved"] == 1
     assert first["summary"]["blocked"] == 1
     assert second == first

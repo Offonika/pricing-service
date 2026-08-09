@@ -6,10 +6,10 @@ import json
 from datetime import date
 from pathlib import Path
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.services.manual_matching_feedback import (
     build_manual_matching_feedback_report,
     render_manual_matching_feedback_markdown,
@@ -72,7 +72,7 @@ def main(argv: list[str] | None = None) -> dict:
     args = parse_args(argv)
     as_of = date.fromisoformat(args.as_of) if args.as_of else None
     database_url = args.database_url or get_settings().database_url
-    engine = create_engine(database_url, pool_pre_ping=True)
+    engine = build_engine(database_url, pool_pre_ping=True)
 
     with Session(engine) as session:
         report, dataset_rows = build_manual_matching_feedback_report(

@@ -46,15 +46,10 @@ class Settings(BaseSettings):
     zenlogs_sources: str | None = None
     zenlogs_http_timeout_sec: float = 30.0
     zenlogs_verify_ssl: bool = True
-    competitor_ftp_import_enabled: bool = False
-    competitor_ftp_host: str | None = None
-    competitor_ftp_port: int = 21
-    competitor_ftp_user: str | None = None
-    competitor_ftp_password: str | None = None
-    competitor_ftp_tls: bool = False
-    competitor_ftp_timeout_sec: float = 30.0
-    competitor_ftp_sources: str | None = None  # name:directory:pattern with {date}, comma-separated
-    competitor_ftp_max_files_per_source: int = 2
+    competitor_http_import_enabled: bool = False
+    competitor_http_sources: str | None = None  # name:https-url-with-{date}, comma-separated
+    competitor_http_timeout_sec: float = 30.0
+    competitor_http_max_files_per_source: int = 2
     captcha_provider: str = "2captcha"
     captcha_api_key: str | None = None
 
@@ -184,6 +179,12 @@ class Settings(BaseSettings):
     card_balance_ocr_timeout_seconds: float = 60.0
     card_balance_ocr_max_image_bytes: int = 10 * 1024 * 1024
     order_fulfillment_internal_api_token: str | None = None
+    order_payment_control_internal_api_token: str | None = None
+    order_payment_control_require_posted: bool = False
+    order_payment_control_closure_blocks_payment: bool = True
+    order_payment_control_closure_allowed_reasons: Annotated[list[str], NoDecode] = Field(
+        default_factory=lambda: ["Исполнение заказа", "Частичное исполнение заказа"]
+    )
     order_fulfillment_bitrix_webhook_url: str | None = None
     order_fulfillment_artifact_dir: str = ".local/order-fulfillment-pilot"
     order_fulfillment_site_chat_dialog_id: str = "chat733"
@@ -231,6 +232,7 @@ class Settings(BaseSettings):
     bank_payments_own_bank_bic: str = ""
     bank_payments_own_bank_correspondent_account: str = ""
     receivable_ledger_window_chunk_days: int = 1
+    receivable_canonical_opening_max_lag_days: int = Field(default=45, ge=0)
     receivable_workflow_enabled: bool = False
     receivable_bitrix_webhook_url: str | None = None
     receivable_bitrix_entity_type_id: int | None = None
@@ -281,34 +283,6 @@ class Settings(BaseSettings):
     receivable_workplace_bitrix_session_secret: str | None = None
     receivable_workplace_bitrix_session_ttl_seconds: int = 3600
     receivable_workplace_bitrix_rest_timeout_seconds: float = 6.0
-    customer_settlements_enabled: bool = False
-    customer_settlements_shadow_enabled: bool = True
-    customer_settlements_organization_ref: str | None = None
-    customer_settlements_opening_organization_field: str | None = None
-    customer_settlements_movement_organization_field: str | None = None
-    customer_settlements_source_mode: str = "onec_canonical_mutual_statement_7002"
-    customer_settlements_source_validated: bool = False
-    customer_settlements_query_timeout_seconds: int = 30
-    customer_settlements_stale_after_seconds: int = 2 * 60 * 60
-    customer_settlements_hide_after_seconds: int = 6 * 60 * 60
-    customer_settlements_mapping_stale_after_seconds: int = 2 * 60 * 60
-    customer_settlements_success_retention_days: int = 30
-    customer_settlements_failed_retention_days: int = 7
-    customer_settlements_jti_retention_hours: int = 24
-    customer_settlements_assertion_issuer: str = "master-mobile.ru"
-    customer_settlements_assertion_audience: str = "pricing-service:customer-settlements"
-    customer_settlements_assertion_active_kid: str | None = None
-    customer_settlements_assertion_active_secret: str | None = None
-    customer_settlements_assertion_previous_kid: str | None = None
-    customer_settlements_assertion_previous_secret: str | None = None
-    customer_settlements_assertion_ttl_seconds: int = 60
-    customer_settlements_assertion_clock_skew_seconds: int = 30
-    customer_settlements_allowed_source_ips: Annotated[list[str], NoDecode] = Field(
-        default_factory=list
-    )
-    customer_settlements_correlation_salt: str | None = None
-    customer_settlements_crm_webhook_url: str | None = None
-    customer_settlements_crm_timeout_seconds: float = 6.0
     executive_dashboard_finance_snapshot_path: str = (
         "/var/lib/mm-data-contracts/executive-dashboard/finance_snapshot.json"
     )
@@ -318,6 +292,10 @@ class Settings(BaseSettings):
     executive_dashboard_warehouse_snapshot_path: str = (
         "/var/lib/mm-data-contracts/executive-dashboard/warehouse_snapshot.json"
     )
+    executive_dashboard_instruments_snapshot_path: str = (
+        "/var/lib/mm-data-contracts/executive-dashboard/infrastructure_snapshot.json"
+    )
+    executive_dashboard_instruments_max_lag_minutes: int = 30
     executive_dashboard_owner_cash_control_snapshot_path: str = (
         "/var/lib/mm-data-contracts/executive-dashboard/owner_cash_transit_snapshot.json"
     )
@@ -511,6 +489,10 @@ class Settings(BaseSettings):
     procurement_order_formation_display_responsible_user_id: str = "130757"
     procurement_order_formation_property_apply_enabled: bool = False
     procurement_order_formation_onec_apply_enabled: bool = False
+    master_mobile_catalog_base_url: str = "https://master-mobile.ru"
+    master_mobile_catalog_timeout_seconds: float = 15.0
+    master_mobile_catalog_max_attempts: int = 3
+    master_mobile_catalog_max_workers: int = 4
 
     model_config = SettingsConfigDict(
         env_file=".env", env_prefix="", env_nested_delimiter="__", extra="ignore"
@@ -585,13 +567,13 @@ class Settings(BaseSettings):
         "telephony_review_line_ids",
         "bank_payments_own_accounts",
         "card_balance_pilot_cashbox_codes",
+        "order_payment_control_closure_allowed_reasons",
         "order_fulfillment_known_raw_deliveries",
         "receivable_workflow_department_refs",
         "receivable_workflow_department_names",
         "receivable_workplace_bitrix_allowed_domains",
         "receivable_workplace_bitrix_allowed_member_ids",
         "receivable_workplace_bitrix_full_access_user_ids",
-        "customer_settlements_allowed_source_ips",
         "receivable_credit_decision_approver_user_ids",
         "receivable_credit_decision_pilot_counterparty_codes",
         "executive_dashboard_bitrix_allowed_domains",

@@ -139,23 +139,43 @@ class PaginatedCandidates(BaseModel):
     facets: CandidateFacets | None = None
 
 
+MatchingDecisionReasonCode = Literal[
+    "legacy_unspecified",
+    "wrong_model",
+    "wrong_item_type",
+    "wrong_quality",
+    "wrong_color",
+    "wrong_frame",
+    "wrong_part_number",
+    "wrong_capacity",
+    "duplicate_or_irrelevant",
+    "confirmed_exact_code",
+    "confirmed_attributes",
+    "auto_false_positive",
+    "other",
+]
+
+
 class MatchRequest(BaseModel):
     competitor_item_id: int | None = None
     competitor_id: int | None = None
     confidence: float | None = None
     mode: str | None = None
     reason: str | None = None
+    reason_code: MatchingDecisionReasonCode | None = None
 
 
 class RejectRequest(BaseModel):
     competitor_item_id: int | None = None
     competitor_id: int | None = None
     reason: str | None = None
+    reason_code: MatchingDecisionReasonCode | None = None
 
 
 class BulkRejectRequest(BaseModel):
     competitor_item_ids: list[int] = Field(default_factory=list)
     reason: str | None = None
+    reason_code: MatchingDecisionReasonCode | None = None
 
 
 class BulkRejectItemResult(BaseModel):
@@ -174,6 +194,7 @@ class BulkRejectResponse(BaseModel):
 class RevokeRequest(BaseModel):
     competitor_item_id: int
     reason: str | None = None
+    reason_code: MatchingDecisionReasonCode | None = None
 
 
 class MatchingActionResponse(BaseModel):
@@ -190,10 +211,15 @@ class DecisionHistoryItem(BaseModel):
     name: str | None = None
     action: Literal["accept", "reject", "revoke"]
     reason: str | None = None
+    reason_code: MatchingDecisionReasonCode = "legacy_unspecified"
     created_by: str | None = None
     created_at: datetime
     previous_product_id: int | None = None
     previous_status: str | None = None
+    snapshot_schema_version: int | None = None
+    snapshot_score: float | None = None
+    snapshot_rank: int | None = None
+    snapshot_top_k_count: int = 0
 
 
 class DecisionHistoryResponse(BaseModel):

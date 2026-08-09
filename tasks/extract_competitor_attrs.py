@@ -11,10 +11,11 @@ from typing import Any
 
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
-from sqlalchemy import create_engine, func, or_, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models.competitor_item import CompetitorItem, CompetitorItemParseStatus
 from app.services.display_normalization import (
     normalize_display_construction,
@@ -646,7 +647,7 @@ def main() -> None:
         else settings.matching_min_llm_confidence
     )
 
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
     total_stats = {
         "processed": 0,
         "updated": 0,

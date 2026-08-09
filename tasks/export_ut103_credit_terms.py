@@ -107,10 +107,22 @@ def _command_from_mapping(item: dict[str, Any]) -> CreditTermsCommand:
         counterparty_guid=str(_field(item, "counterparty_guid")),
         counterparty_code=str(_field(item, "counterparty_code")),
         counterparty_name=str(_field(item, "counterparty_name")),
+        contract_ref=str(_field(item, "contract_ref")),
+        contract_guid=str(_field(item, "contract_guid")),
+        contract_code=str(_field(item, "contract_code")),
+        contract_name=str(_field(item, "contract_name")),
+        contract_organization_ref=str(_field(item, "contract_organization_ref")),
+        contract_organization_guid=str(_field(item, "contract_organization_guid")),
+        contract_organization_code=str(_field(item, "contract_organization_code")),
+        contract_organization_name=str(_field(item, "contract_organization_name")),
         expected_current_limit=Decimal(str(_field(item, "expected_current_limit"))),
         expected_current_depth=_depth_field(item, "expected_current_depth"),
+        expected_current_debt_control_enabled=_bool_field(
+            item, "expected_current_debt_control_enabled"
+        ),
         new_limit=Decimal(str(_field(item, "new_limit"))),
         new_depth=_depth_field(item, "new_depth"),
+        new_debt_control_enabled=_bool_field(item, "new_debt_control_enabled"),
         currency=str(_field(item, "currency")),
         reason=str(_field(item, "reason")),
         approved_by=str(_field(item, "approved_by")),
@@ -136,6 +148,18 @@ def _depth_field(item: dict[str, Any], name: str) -> int:
     return int(value)
 
 
+def _bool_field(item: dict[str, Any], name: str) -> bool:
+    raw = _field(item, name)
+    if isinstance(raw, bool):
+        return raw
+    normalized = str(raw).strip().lower()
+    if normalized in {"true", "1"}:
+        return True
+    if normalized in {"false", "0"}:
+        return False
+    raise SystemExit(f"{name} must be boolean")
+
+
 def _exchange_root_or_exit(explicit: str | Path | None) -> str:
     try:
         return resolve_ut103_exchange_root(explicit)
@@ -158,18 +182,36 @@ def _result_to_json(result: Any) -> dict[str, Any]:
                 "decision_id": item.decision_id,
                 "decision_hash": item.decision_hash,
                 "counterparty_code": item.counterparty_code,
+                "contract_guid": item.contract_guid,
+                "contract_code": item.contract_code,
                 "status": item.status,
                 "message": item.message,
                 "old_limit": str(item.old_limit) if item.old_limit is not None else None,
+                "old_contract_limit": (
+                    str(item.old_contract_limit) if item.old_contract_limit is not None else None
+                ),
                 "old_depth": item.old_depth,
+                "old_debt_control_enabled": item.old_debt_control_enabled,
                 "requested_limit": (
                     str(item.requested_limit) if item.requested_limit is not None else None
                 ),
+                "requested_contract_limit": (
+                    str(item.requested_contract_limit)
+                    if item.requested_contract_limit is not None
+                    else None
+                ),
                 "requested_depth": item.requested_depth,
+                "requested_debt_control_enabled": (item.requested_debt_control_enabled),
                 "readback_limit": (
                     str(item.readback_limit) if item.readback_limit is not None else None
                 ),
+                "readback_contract_limit": (
+                    str(item.readback_contract_limit)
+                    if item.readback_contract_limit is not None
+                    else None
+                ),
                 "readback_depth": item.readback_depth,
+                "readback_debt_control_enabled": (item.readback_debt_control_enabled),
             }
             for item in result.command_results
         ],

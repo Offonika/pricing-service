@@ -45,11 +45,20 @@ def test_blueprint_contains_atomic_pair_and_readback_fields() -> None:
     assert {
         "current_limit",
         "current_depth",
+        "current_debt_control_enabled",
         "proposed_limit",
         "proposed_depth",
+        "proposed_debt_control_enabled",
+        "contract_ref",
+        "contract_guid",
+        "contract_code",
+        "contract_name",
+        "contract_organization_ref",
+        "contract_organization_guid",
         "decision_hash",
         "readback_limit",
         "readback_depth",
+        "readback_debt_control_enabled",
         "connector_error",
     } <= fields
 
@@ -63,6 +72,7 @@ def test_blueprint_requires_technical_fields_reset_before_worker_enable() -> Non
         "approved_at",
         "readback_limit",
         "readback_depth",
+        "readback_debt_control_enabled",
         "connector_state",
         "connector_error",
     }

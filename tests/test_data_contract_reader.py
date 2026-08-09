@@ -13,6 +13,7 @@ from app.infrastructure.contracts import (
     ContractIntegrityError,
     ContractStaleError,
     read_json_contract,
+    validate_json_contract_manifest,
 )
 
 
@@ -34,6 +35,30 @@ def test_contract_reader_verifies_present_manifest(tmp_path: Path) -> None:
     path.write_text('{"source_status":"changed"}\n', encoding="utf-8")
     with pytest.raises(ContractIntegrityError):
         read_json_contract(path)
+
+
+def test_contract_manifest_can_be_revalidated_without_reading_artifact(tmp_path: Path) -> None:
+    path = tmp_path / "snapshot.json"
+    content = b'{"source_status":"ready"}\n'
+    content_sha256 = hashlib.sha256(content).hexdigest()
+    path.write_bytes(content)
+    path.with_suffix(".json.manifest.json").write_text(
+        json.dumps(
+            {
+                "content_sha256": content_sha256,
+                "artifact": "snapshot.json",
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    manifest = validate_json_contract_manifest(
+        path,
+        actual_content_sha256=content_sha256,
+    )
+
+    assert manifest is not None
+    assert manifest["artifact"] == "snapshot.json"
 
 
 def _write_policy_contract(root: Path, *, generated_at: datetime) -> tuple[Path, ContractPolicy]:

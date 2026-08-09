@@ -7,10 +7,11 @@ import json
 import logging
 
 import httpx
-from sqlalchemy import create_engine, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import CompetitorItem
 from app.services.llm_fallback import FallbackChatClient
 from app.services.prompts import get_llm_item_type_prompt
@@ -437,7 +438,7 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = get_settings()
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
     with Session(engine) as session:
         stats = normalize_item_types(
             session,

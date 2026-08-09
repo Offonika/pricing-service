@@ -13,6 +13,13 @@ related_code:
   - app/services/procurement_order_formation_workspace.py
   - app/services/bitrix_procurement_order_formation_auth.py
   - app/services/bitrix_order_formation.py
+  - app/services/master_mobile_catalog.py
+  - app/services/procurement_order_metrics.py
+  - app/services/procurement_order_metrics_backfill.py
+  - app/services/procurement_order_product_media.py
+  - app/services/procurement_supplier_profiles.py
+  - tasks/backfill_procurement_order_metrics.py
+  - tasks/backfill_procurement_order_product_media.py
   - tasks/build_procurement_order_formation_dry_run.py
   - tasks/sync_procurement_order_formation_results.py
   - ui/src/components/ProcurementOrderFormationApp.tsx
@@ -22,18 +29,24 @@ related_tests:
   - tests/test_procurement_order_formation_workspace.py
   - tests/test_procurement_order_formation_api.py
   - tests/test_procurement_order_formation_dry_run.py
+  - tests/test_master_mobile_catalog.py
+  - tests/test_procurement_order_metrics.py
+  - tests/test_procurement_order_metrics_backfill.py
+  - tests/test_procurement_order_product_media.py
+  - tests/test_procurement_supplier_profiles.py
 contracts:
   - openapi.yaml
 depends_on:
   - docs/specs/assortment-status-contour-plan.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-16"
+updated_at: "2026-08-02"
 ---
 
 # Приложение Bitrix24 «Формирование заказа»
 
-Статус: implemented locally, pilot disabled.
+Статус: production-интерфейс активен, пилотная сборка внутри сервиса выполнена,
+запись заказов и свойств в 1С выключена.
 
 Это главный технический источник по рабочей поверхности, API, правам и обмену
 приложения. Канонический порядок дальнейших работ находится в
@@ -41,15 +54,37 @@ updated_at: "2026-07-16"
 
 Файл сохраняет старое имя только для совместимости ссылок. Рабочий интерфейс больше не использует смарт-процесс.
 
+## Production rollout 2026-08-02
+
+- Активный release-controller релиз:
+  `procurement-order-assistant-panel-option2-20260802-1186af8`, source commit
+  `1186af82a3c4f9a826c79d2e706b1d4c4217489b`.
+- Production readback после публикации: `46` активных строк, `8` открытых
+  проектов, `5` полностью готовых проектов и `2` строки без исходного фото.
+- Пилотный проект `#14` собран внутри `pricing-service`: одна строка,
+  `10` штук по `61` RUB, сумма `610` RUB. Статус проекта `approved`, статус 1С
+  `not_sent`; событие `assistant_order_assembled` записано в журнал.
+- Пакет поставщику для проекта `#14` проверен: CSV содержит поставщика, артикул,
+  название, количество, цену, валюту, карточку товара и прямой URL оригинального
+  фото. Внутренний класс, рентабельность и статистика брака в пакет не входят.
+- Обе production-настройки записи остаются выключены:
+  `PROCUREMENT_ORDER_FORMATION_PROPERTY_APPLY_ENABLED=false` и
+  `PROCUREMENT_ORDER_FORMATION_ONEC_APPLY_ENABLED=false`.
+- Следующий риск-гейт — отдельное явное подтверждение пользователя перед любой
+  передачей проекта в 1С. Повторно собирать проект `#14` не требуется.
+
 ## Итоговая архитектура
 
 - Единственная рабочая точка входа — OAuth-приложение Bitrix24 по маршруту `/bitrix/procurement-order-formation`.
-- Разделы приложения: `Витрина`, `Заказы`, `Свойства`, `История`.
+- Разделы приложения: `Витрина`, `Помощник`, `Заказы`, `Свойства`, `История`.
 - Смарт-процесс `1136`, старые стадии и тестовые карточки не участвуют в работе; они сохраняются скрытыми только для отката пилота.
 - `pricing-service` хранит заказы, строки, версии, переходы, предложения свойств и журнал событий.
 - 1С остаётся источником товарных фактов и получает только непроведённые черновики `ЗаказПоставщику` с `draft_only=true`.
 - Товар связывается только по нормализованному `XML_ID = GUID номенклатуры 1С`.
 - Розничная цена каталога не читается и не изменяется. Закупочная цена хранится только в строке заказа.
+- `BitrixItemUrl` в пакете 1С необязателен для проектов OAuth-приложения без
+  legacy-карточки; контроль подтверждения сохраняют обязательные
+  `ConfirmationId`, `CalculationId` и `ApprovedBy`.
 
 ## OAuth и права
 
@@ -98,6 +133,98 @@ updated_at: "2026-07-16"
 - Режим dry-run/apply задаётся только серверным флагом; браузер не отправляет `apply`.
 - Повторная отправка той же версии возвращает тот же `message_id` и не создаёт дубликат.
 - После успешной передачи заказ доступен только для просмотра.
+- Реестр выгружает все строки, соответствующие текущим фильтрам, в Excel по кнопке
+  `Скачать Excel`; пагинация интерфейса выгрузку не ограничивает.
+- Первые колонки выгрузки фиксированы: `Предмет`, `Категория`, `Группа`,
+  `Номенклатура`, `Артикул`. Классификация и артикул читаются из актуальной
+  витрины `assortment_lifecycle_classification` по коду номенклатуры; отсутствие
+  классификации не блокирует скачивание и даёт пустые значения.
+
+### Автоматическое формирование из расчёта дисплеев
+
+Штатный `display_auto_order_sync.sh` после расчёта и адаптивного сравнения
+формирует заказы через `tasks.build_procurement_order_formation_dry_run`.
+Прямая запись результатов автозаказа в legacy-смарт-процесс не используется.
+
+- Каталог Bitrix проверяется пакетно по нормализованным `XML_ID` номенклатуры 1С.
+- Один заказ группирует строки по поставщику, договору, валюте, складу, маршруту
+  и партии.
+- По умолчанию cron создаёт только JSON/CSV dry-run. Запись в БД приложения
+  включается отдельным флагом `DISPLAY_AUTO_ORDER_FORMATION_PERSIST_DB=true`.
+- При наличии хотя бы одного блокера пакет не сохраняется в БД.
+- Повтор одного расчёта обновляет тот же открытый пакет без дублей и снимает
+  прежнее подтверждение при изменении строк.
+- Новый расчёт помечает прежние открытые автоматические пакеты статусом
+  `superseded`; они доступны по фильтру, но не входят в обычную сводку.
+- Заказы со статусом передачи или подтверждённой передачей в 1С не изменяются.
+  Для новой потребности создаётся отдельная ревизия заказа.
+- События создания, обновления и замены пакета фиксируются в общей истории.
+
+Разовый безопасный запуск состоит из двух фаз: сначала команда без
+`--persist-db`, затем после нулевого числа блокеров та же команда с
+`--persist-db --supersede-open-batches`. Оба режима не создают документы 1С;
+передача непроведённого черновика по-прежнему требует действия ответственного
+в интерфейсе.
+
+## Помощник формирования заказов
+
+`Помощник` находится между автоматическим расчётом и реестром заказов. Расчёт
+создаёт предварительно сгруппированные проекты в БД `pricing-service`, но не
+подтверждает их и не передаёт в 1С. Закупщик проверяет строки в помощнике и
+командой `Собрать проекты заказов` переводит полностью выбранные готовые проекты
+в статус `approved`. Передача в 1С остаётся отдельным ручным действием в
+разделе `Заказы`.
+
+Рабочая таблица содержит исходное фото, потребность, поставщика, закупочную цену
+и её изменение, рентабельность, процент брака и объём исторической базы, срок
+поставки и решение по строке. Колонки `Что мешает` нет: блокировки показываются
+через недоступность сборки и адресные сообщения.
+
+Оригинальное фото обязательно для серверной сборки проекта. Миниатюра используется
+только для быстрого просмотра; пакеты `Список + фото` и `Фото отдельно` содержат
+URL исходного изображения без повторного сжатия.
+
+Карточка и исходное фото разрешаются read-only через публичный каталог
+`https://master-mobile.ru/catalog/?q=<артикул>`. Автоматически принимается только
+единственное точное совпадение артикула с повторной проверкой на canonical-карточке;
+сопоставление по названию запрещено. В `payload` строки сохраняются
+`product_card_url`, `photos[0].thumbnail`, `photos[0].original` и
+`photo_source=master_mobile_site`, а API отдельно отдаёт ссылку карточки и источник
+фото. Backfill по умолчанию работает как dry-run, затрагивает только открытые строки
+помощника и при apply создаёт rollback-manifest, повышает версии и пишет событие,
+не меняя количество, цену, поставщика, статус, Bitrix24 или 1С.
+Если строка содержит внутренний код 1С вида `РБ...`, публичный артикул определяется
+только через точное соответствие `code_1c -> article` локального каталога; несколько
+разных артикулов для одного кода считаются неоднозначностью и не применяются.
+Повтор apply с тем же committed `--output-json` возвращает сохранённый результат без
+обращения к БД и не может перезаписать rollback-manifest.
+
+Правая панель использует версионируемый профиль по точному `supplier_ref` 1С.
+Класс `A/B/C`, преимущества и внутренний комментарий вводятся согласующим вручную;
+число заказов, сроки, история цен и подтверждённый брак обновляются read-only из
+1С. Официальные условия оплаты относятся только к точному договору поставщика.
+Если реквизит договора не заполнен, API возвращает `terms_status=missing`, а UI
+показывает «Не заполнено в 1С» без использования клиентских кредитных полей.
+При обогащении дополнительно подтверждаются точный `contract_ref` и его владелец
+`supplier_ref`; реквизиты контроля клиентской задолженности не считаются условиями
+поставщика и намеренно не читаются как отсрочка или кредитный лимит.
+
+Метрики строки считаются за 180 дней. Рентабельность равна
+`(чистая выручка − себестоимость) / себестоимость × 100`; при нулевой
+себестоимости значение пустое и сопровождается причиной. Изменение цены берётся
+по двум последним проведённым заказам одинаковых `поставщик + SKU + валюта`.
+Срок разделён на сборку у поставщика, логистику и общий срок, с уровнем источника
+`sku|display_group` и уверенностью; legacy `delivery_days` остаётся в контракте,
+но UI его не использует. Если последние закупки есть только в другой валюте,
+процент не рассчитывается: API возвращает `price_change_status=currency_mismatch`,
+ожидаемую и доступные валюты, а UI показывает эту причину без ложного блокера.
+
+Брак товара считается только по возвратам с причиной брак/качество/дефект.
+`supplier_defect_pct` появляется только при доказанной связи с поставкой или
+партией конкретного поставщика; иначе UI показывает отдельный брак товара с
+пометкой «поставщик не подтверждён». База `<30` — `weak`, `30–99` — `warning`,
+`>=100` — `reliable`. Сборку блокируют только изменение цены более 10% по модулю
+и подтверждённый брак поставщика более 10% на базе не менее 100 штук.
 
 ## Ручные свойства
 
@@ -117,6 +244,11 @@ updated_at: "2026-07-16"
 - `GET /api/procurement-order-formation/lifecycle/transitions`
 - `POST /api/procurement-order-formation/lifecycle/transitions/approve`
 - `GET /api/procurement-order-formation/orders`
+- `GET /api/procurement-order-formation/assistant`
+- `POST /api/procurement-order-formation/assistant/assemble`
+- `GET|PATCH /api/procurement-order-formation/suppliers/{supplier_ref}/profile`
+- `POST /api/procurement-order-formation/orders/{id}/lines/{line_id}/classification/{proposal_id}/reject`
+- `GET /api/procurement-order-formation/orders/export.xlsx`
 - `GET /api/procurement-order-formation/orders/{id}`
 - `PATCH /api/procurement-order-formation/orders/{id}`
 - `PATCH /api/procurement-order-formation/orders/{id}/lines/{line_id}`
@@ -131,10 +263,12 @@ Legacy-маршрут `/bitrix/procurement-assortment` и чтение по `bit
 - `procurement_order_formation` — шапка и версия заказа.
 - `procurement_order_formation_line` — товарные строки.
 - `procurement_classification_proposal` — ручные изменения свойств.
+- `procurement_supplier_profile` — ручной класс и read-only факты поставщика.
 - `procurement_lifecycle_transition_proposal` — очередь жизненных переходов и readback.
 - `procurement_order_formation_event` — единый журнал действий и обмена.
 
-Миграции: `7a8b9c0d1e23`, затем `8b9c0d1e2f34`.
+Миграции: `7a8b9c0d1e23`, `8b9c0d1e2f34`, затем
+`f3a4b5c6d7e9` для профиля поставщика и аудита отклонения классификации.
 
 ## Безопасный запуск
 
@@ -168,6 +302,9 @@ PROCUREMENT_ORDER_FORMATION_ONEC_APPLY_ENABLED=false
   tests/test_procurement_order_formation_workspace.py \
   tests/test_procurement_order_formation_api.py \
   tests/test_procurement_order_formation_dry_run.py \
+  tests/test_procurement_order_metrics.py \
+  tests/test_procurement_order_metrics_backfill.py \
+  tests/test_procurement_supplier_profiles.py \
   tests/test_ut103_procurement_orders_exporter.py -q
 cd ui && npm run lint && npm run build
 ```
@@ -190,6 +327,11 @@ cd ui && npm run lint && npm run build
 - [x] Устаревшие версии и изменённые строки блокируются до повторного подтверждения.
 - [x] 1С получает только `draft_only` payload; браузер не может включить apply.
 - [x] Действующие API, workspace и dry-run сценарии покрыты тестами.
+- [x] Расчёт заказов скачивается в Excel с классификацией и текущими фильтрами.
+- [x] Метрики содержат период, источник, надёжность и честное разделение брака.
+- [x] Профиль поставщика защищён optimistic version и правами согласующего.
+- [x] Автор не может принять или отклонить своё предложение; причина отклонения обязательна.
+- [x] Backfill метрик поддерживает dry-run, apply, повторный запуск и rollback-manifest.
 
 # Source of Truth
 
@@ -221,6 +363,9 @@ cd ui && npm run lint && npm run build
 - `tests/test_procurement_order_formation_workspace.py` — workspace read model.
 - `tests/test_procurement_order_formation_api.py` — HTTP и права.
 - `tests/test_procurement_order_formation_dry_run.py` — dry-run и payload.
+- `tests/test_procurement_order_metrics.py` — формулы и атрибуция брака.
+- `tests/test_procurement_order_metrics_backfill.py` — безопасный backfill/rollback.
+- `tests/test_procurement_supplier_profiles.py` — версии и права профиля.
 
 # Rollout
 

@@ -119,6 +119,12 @@ class ExecutiveManagementBalanceSnapshot(Base):
             "version",
             name="uq_executive_management_balance_period_view_version",
         ),
+        UniqueConstraint(
+            "balance_date",
+            "view_mode",
+            "content_sha256",
+            name="uq_executive_management_balance_date_view_content",
+        ),
         Index(
             "ix_executive_management_balance_period_status",
             "period_month",
@@ -142,6 +148,7 @@ class ExecutiveManagementBalanceSnapshot(Base):
     validation_errors: Mapped[list[dict[str, Any]]] = mapped_column(
         JSON, nullable=False, default=list
     )
+    content_sha256: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     generated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
     closed_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
     closed_by: Mapped[Optional[str]] = mapped_column(String(160), nullable=True)

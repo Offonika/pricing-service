@@ -1,9 +1,53 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  refreshBitrixAuth,
   refreshBitrixReceivablesSession,
   type BitrixReceivablesSessionResponse,
 } from "./bitrix";
+
+const originalBX24 = window.BX24;
+
+afterEach(() => {
+  window.BX24 = originalBX24;
+});
+
+describe("refreshBitrixAuth", () => {
+  it("asks the SDK to renew auth before reading the access token", async () => {
+    const freshAuth = {
+      access_token: "fresh-access-token",
+      domain: "example.bitrix24.ru",
+      member_id: "member-1",
+    };
+    const getAuth = vi.fn(() => freshAuth);
+    const refreshAuth = vi.fn((callback: () => void) => callback());
+    window.BX24 = {
+      init: vi.fn(),
+      getAuth,
+      refreshAuth,
+      callMethod: vi.fn(),
+    };
+
+    await expect(refreshBitrixAuth()).resolves.toEqual(freshAuth);
+    expect(refreshAuth).toHaveBeenCalledTimes(1);
+    expect(getAuth).toHaveBeenCalledTimes(1);
+    expect(refreshAuth.mock.invocationCallOrder[0]).toBeLessThan(
+      getAuth.mock.invocationCallOrder[0]
+    );
+  });
+
+  it("fails clearly when the loaded SDK cannot renew auth", async () => {
+    window.BX24 = {
+      init: vi.fn(),
+      getAuth: vi.fn(() => false as const),
+      callMethod: vi.fn(),
+    };
+
+    await expect(refreshBitrixAuth()).rejects.toThrow(
+      "Bitrix24 SDK не поддерживает обновление OAuth-сессии"
+    );
+  });
+});
 
 describe("refreshBitrixReceivablesSession", () => {
   it("shares one refresh between parallel requests", async () => {

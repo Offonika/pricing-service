@@ -126,6 +126,11 @@ class CounterpartyFolderRecommendationItem(BaseModel):
     effective_overdue_days: int | None = None
     status: str
     review_reason: str | None = None
+    exclusion_reason: str | None = None
+    business_review_reason: str | None = None
+    signal_key: str | None = None
+    queue: str = "data_quality"
+    action_required: bool = False
     document_structure_status: str | None = None
     document_structure_open_amount: Decimal | None = None
     document_structure_sale_amount: Decimal | None = None

@@ -3,7 +3,8 @@ from __future__ import annotations
 from datetime import UTC, datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, ForeignKey, Integer, String
+from sqlalchemy import JSON, DateTime, ForeignKey, Integer, String
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.models.base import Base
@@ -20,6 +21,12 @@ class ProductCompetitorItemDecision(Base):
     )
     action: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
     reason: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)
+    reason_code: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="legacy_unspecified", index=True
+    )
+    snapshot_json: Mapped[Optional[dict]] = mapped_column(
+        JSON().with_variant(JSONB, "postgresql"), nullable=True
+    )
     created_by: Mapped[Optional[str]] = mapped_column(String(100), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False, index=True

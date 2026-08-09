@@ -79,7 +79,7 @@ documents:
     title: Pricing Service Architecture Hardening
     doc_type: spec
     domain: architecture
-    status: accepted
+    status: implemented
     owner: engineering
     source_of_truth: true
     related_code:
@@ -87,13 +87,42 @@ documents:
       - app/core/config.py
       - app/main.py
       - infra/cron/competitor_matching_nightly.sh
-      - tasks/import_topcontrol_products_db.py
       - scripts/export_openapi.py
     related_tests:
       - tests/test_architecture_boundaries.py
       - tests/test_database_infrastructure.py
       - tests/test_import_onec_products.py
+      - tests/test_product_compatibility.py
+      - tests/test_weekly_kpi_reports_api.py
     keywords: [architecture, modular-monolith, onec, database, contracts, cron, hardening, dependencies, boundaries, оздоровление]
+  - path: docs/specs/pricing-service-db-cli-cron-hardening.md
+    title: Pricing Service DB, CLI And Cron Hardening
+    doc_type: spec
+    domain: architecture
+    status: accepted
+    owner: engineering
+    source_of_truth: true
+    related_code:
+      - app/infrastructure/db/
+      - tasks/
+      - infra/cron/
+      - scripts/validate_cli_registry.py
+      - docs/registry/cli-jobs.json
+    related_tests:
+      - tests/test_architecture_boundaries.py
+      - tests/test_cli_registry.py
+      - tests/test_database_infrastructure.py
+    keywords: [architecture, database, cli, cron, unit-of-work, read-only]
+  - path: docs/registry/cli-jobs.json
+    title: Pricing CLI And Backfill Registry
+    doc_type: registry
+    domain: architecture
+    status: active
+    owner: engineering
+    source_of_truth: true
+    related_code: [tasks/, scripts/validate_cli_registry.py, infra/cron/]
+    related_tests: [tests/test_cli_registry.py]
+    keywords: [cli, backfill, dry-run, idempotency, side-effects]
   - path: .github/workflows/docs-manifest.yml
     title: Docs Manifest Workflow
     doc_type: ci
@@ -134,9 +163,9 @@ documents:
     title: Procurement Decision Contract And Roadmap
     doc_type: spec
     domain: procurement
-    status: draft
+    status: superseded
     owner: operations
-    source_of_truth: true
+    source_of_truth: false
     related_code:
       - scripts/ensure_procurement_bitrix_process.py
       - scripts/import_onec_supplier_order_to_procurement.py
@@ -186,6 +215,30 @@ documents:
       - tests/test_ut103_procurement_orders_exporter.py
       - tests/test_export_ut103_procurement_supplier_orders_task.py
     keywords: [procurement, supplier-order, decision-contract, roadmap, wechat, bitrix24, onec, akb]
+  - path: docs/specs/assortment-lifecycle-policy.md
+    title: Assortment Lifecycle Policy
+    doc_type: spec
+    domain: procurement
+    status: accepted
+    owner: operations
+    source_of_truth: true
+    related_code:
+      - app/services/assortment_lifecycle.py
+      - app/services/assortment_lifecycle_facts.py
+      - app/services/assortment_lifecycle_classification_store.py
+      - tasks/build_assortment_lifecycle_facts.py
+      - tasks/build_assortment_lifecycle_updates.py
+      - tasks/refresh_assortment_lifecycle_classification.py
+      - tasks/diff_assortment_lifecycle_classification.py
+      - tasks/build_display_auto_order_dry_run.py
+    related_tests:
+      - tests/test_assortment_lifecycle.py
+      - tests/test_assortment_lifecycle_facts.py
+      - tests/test_build_assortment_lifecycle_facts_task.py
+      - tests/test_build_assortment_lifecycle_updates_task.py
+      - tests/test_refresh_assortment_lifecycle_classification_task.py
+      - tests/test_diff_assortment_lifecycle_classification.py
+    keywords: [assortment, lifecycle, status-policy, demand, availability, hysteresis, растим, поддерживаем, допродаём]
   - path: docs/specs/assortment-status-contour-plan.md
     title: Assortment Status Contour Canonical Plan
     doc_type: spec
@@ -310,7 +363,7 @@ documents:
     title: Display Auto Order Project Brief
     doc_type: spec
     domain: procurement
-    status: draft
+    status: superseded
     owner: operations
     source_of_truth: false
     related_code:
@@ -338,6 +391,16 @@ documents:
     related_code: [app/api/order_fulfillment.py, app/models/site_order_fulfillment.py, app/schemas/order_fulfillment.py, app/services/site_order_fulfillment.py, infra/cron/order_fulfillment_sync.py, scripts/apply_order_fulfillment_stage_outbox.py, scripts/build_order_fulfillment_stage_outbox.py, scripts/ensure_site_order_deal_stages.py]
     related_tests: [tests/test_ensure_site_order_deal_stages.py, tests/test_order_fulfillment_api.py, tests/test_order_fulfillment_parser.py, tests/test_order_fulfillment_stage_apply.py, tests/test_order_fulfillment_sync.py]
     keywords: [site-orders, order-flow, pickup, courier, bitrix-chat, bitrix24, logistics]
+  - path: docs/specs/order-payment-control-api.md
+    title: Order Payment Control API
+    doc_type: spec
+    domain: order_flow
+    status: implemented
+    owner: engineering
+    source_of_truth: true
+    related_code: [app/api/order_payment_control.py, app/schemas/order_payment_control.py, app/services/order_payment_control.py]
+    related_tests: [tests/test_order_payment_control.py]
+    keywords: [site-orders, payments, cloudpayments, onec, read-only, amount-control, bitrix-task-1414]
   - path: docs/specs/site-defect-archive-search.md
     title: Site Defect Archive Search
     doc_type: spec
@@ -428,15 +491,6 @@ documents:
       - app/services/exporters/ut103_forecast.py
       - app/services/exporters/ut103_nomenclature_properties.py
       - app/services/exporters/ut103_procurement_orders.py
-      - app/services/exporters/ut103_credit_terms.py
-      - app/services/receivable_credit_decisions.py
-      - app/models/receivable_credit_decision.py
-      - tasks/export_ut103_credit_terms.py
-      - tasks/run_receivable_credit_decision_worker.py
-      - scripts/ensure_receivable_credit_decision_process.py
-      - alembic/versions/e2b3c4d5e6f8_add_receivable_credit_decision_operation.py
-      - infra/cron/receivable_credit_decision_worker.sh
-      - infra/cron/receivable_credit_decision_worker.cron
       - tasks/build_assortment_lifecycle_facts.py
       - tasks/build_assortment_lifecycle_updates.py
       - tasks/refresh_assortment_lifecycle_classification.py
@@ -451,11 +505,6 @@ documents:
       - tests/test_build_assortment_lifecycle_updates_task.py
       - tests/test_ut103_nomenclature_properties_exporter.py
       - tests/test_ut103_procurement_orders_exporter.py
-      - tests/test_ut103_credit_terms_exporter.py
-      - tests/test_export_ut103_credit_terms_task.py
-      - tests/test_receivable_credit_decision_model.py
-      - tests/test_receivable_credit_decision_worker.py
-      - tests/test_receivable_credit_decision_process.py
       - tests/test_export_ut103_forecast_task.py
       - tests/test_export_ut103_nomenclature_properties_task.py
       - tests/test_export_ut103_procurement_supplier_orders_task.py
@@ -484,6 +533,7 @@ documents:
       - app/schemas/executive_dashboard.py
       - app/services/bitrix_executive_dashboard_auth.py
       - app/services/executive_dashboard.py
+      - app/services/executive_instruments.py
       - app/services/executive_management_balance.py
       - tasks/build_executive_management_balance_snapshot.py
       - tasks/export_executive_management_balance_components.py
@@ -493,8 +543,9 @@ documents:
       - ui/src/components/ExecutiveDashboard.tsx
     related_tests:
       - tests/test_executive_dashboard.py
+      - tests/test_executive_instruments.py
       - tests/test_executive_management_balance.py
-    keywords: [management, executive-dashboard, management-balance, monthly-close, bitrix24, finance, payables, receivables]
+    keywords: [management, executive-dashboard, management-balance, monthly-close, bitrix24, finance, payables, receivables, infrastructure, instruments]
   - path: docs/specs/weekly-manager-sales-online-demand.md
     title: Weekly Manager Sales Online Demand Block
     doc_type: spec
@@ -539,7 +590,7 @@ documents:
     title: Procurement Management Contour Onepage
     doc_type: onepager
     domain: procurement
-    status: draft
+    status: active
     owner: operations
     source_of_truth: false
     related_code:
@@ -660,6 +711,16 @@ documents:
     related_code: [tasks/]
     related_tests: [tests/]
     keywords: [llm, embeddings, matching]
+  - path: docs/runbooks/scheduled-jobs-inventory.md
+    title: Scheduled Jobs Inventory
+    doc_type: runbook
+    domain: operations
+    status: active
+    owner: pricing-platform
+    source_of_truth: true
+    related_code: [infra/cron/]
+    related_tests: []
+    keywords: [cron, расписание, задания, релиз, рабочая-папка, операции]
   - path: docs/competitor-matching-nightly-audit-2026-05-02.md
     title: Competitor Matching Nightly Audit 2026-05-02
     doc_type: audit

@@ -5,6 +5,7 @@ import type {
   ExecutiveDashboardAction,
   ExecutiveDashboardBlock,
   ExecutiveDashboardResponse,
+  ExecutiveInstrumentsResponse,
   ExecutiveOnlineStorePeriodResponse,
   ExecutiveProfitLossInventoryLoss,
   ExecutiveProfitLossPeriodResponse,
@@ -13,7 +14,9 @@ import type {
 import {
   fetchExecutiveDashboard,
   fetchExecutiveDashboardActions,
+  fetchExecutiveInstruments,
   fetchExecutiveManagementBalance,
+  fetchExecutiveManagementBalanceTurnover,
   fetchExecutiveOnlineStorePeriod,
   fetchExecutiveProfitLossPeriod,
   fetchExecutiveSalesPeriod,
@@ -24,7 +27,9 @@ vi.mock("../api/executiveDashboard", () => ({
   fetchExecutiveCashflowPeriod: vi.fn(),
   fetchExecutiveDashboard: vi.fn(),
   fetchExecutiveDashboardActions: vi.fn(),
+  fetchExecutiveInstruments: vi.fn(),
   fetchExecutiveManagementBalance: vi.fn(),
+  fetchExecutiveManagementBalanceTurnover: vi.fn(),
   fetchExecutiveOnlineStorePeriod: vi.fn(),
   fetchExecutiveProfitLossPeriod: vi.fn(),
   fetchExecutiveSalesPeriod: vi.fn(),
@@ -34,6 +39,7 @@ import {
   ActionDetail,
   ActionTable,
   ExecutiveDashboard,
+  InstrumentsPanel,
   InventoryLossPanel,
   ManagementBalanceBlockCard,
   MonthlyManagementBalance,
@@ -521,6 +527,7 @@ describe("executive management balance", () => {
   afterEach(() => {
     cleanup();
     vi.mocked(fetchExecutiveManagementBalance).mockReset();
+    vi.mocked(fetchExecutiveManagementBalanceTurnover).mockReset();
   });
 
   it("renders the balance separately from the KPI cards", () => {
@@ -611,6 +618,168 @@ describe("executive management balance", () => {
     expect(screen.getByText(/Неподтверждено:/)).toHaveTextContent(/4\s*301\s*900 ₽/);
     expect(screen.getByText(/Неподтверждено:/)).toHaveTextContent("в итог баланса не включено");
     expect(screen.getByText(/Неподтверждено:/)).toHaveTextContent("Сопоставлено сотрудников: 0%");
+  });
+
+  it("shows a trial balance scoped to UT 10.3 and accrued BP taxes", async () => {
+    vi.mocked(fetchExecutiveManagementBalance).mockResolvedValue({
+      month: "2026-06",
+      balance_date: "2026-06-30",
+      view: "closed",
+      version: 2,
+      status: "closed",
+      source_status: "ready",
+      freshness_status: "fresh",
+      generated_at: "2026-06-30T10:00:00+03:00",
+      currency: "RUB",
+      assets: [],
+      liabilities: [],
+      equity: [],
+      assets_total: "120.00",
+      liabilities_total: "85.00",
+      equity_total: "35.00",
+      liabilities_and_equity_total: "120.00",
+      imbalance_amount: "0.00",
+      can_close: false,
+      validation_errors: [],
+      source_summary: {},
+      available_months: ["2026-06"],
+      note: "Закрытый месяц",
+    });
+    vi.mocked(fetchExecutiveManagementBalanceTurnover).mockResolvedValue({
+      month: "2026-06",
+      date_from: "2026-01-01",
+      date_to: "2026-06-30",
+      opening_balance_date: "2026-01-01",
+      view: "closed",
+      opening_version: 1,
+      closing_version: 2,
+      opening_status: "closed",
+      closing_status: "closed",
+      opening_validation_error_count: 0,
+      opening_content_sha256: "a".repeat(64),
+      closing_content_sha256: "b".repeat(64),
+      turnover_method: "mixed_gross_cashflow_and_net_change",
+      source_scope: "onec_ut_10_3_plus_bp_accrued_taxes",
+      source_status: "ready",
+      currency: "RUB",
+      lines: [
+        {
+          key: "cash",
+          label: "Денежные средства",
+          section: "asset",
+          opening_balance: "100.00",
+          debit_turnover: "40.00",
+          credit_turnover: "20.00",
+          closing_balance: "120.00",
+          reconciliation_difference: "0.00",
+          turnover_method: "gross_cashflow_movements",
+          source_key: "onec_cash_position",
+          source_status: "ready",
+        },
+        {
+          key: "taxes_payable",
+          label: "Начисленные налоги",
+          section: "liability",
+          opening_balance: "10.00",
+          debit_turnover: "0.00",
+          credit_turnover: "5.00",
+          closing_balance: "15.00",
+          reconciliation_difference: "0.00",
+          turnover_method: "net_change_from_snapshots",
+          source_key: "onec_bp_tax_accounting",
+          source_status: "ready",
+        },
+      ],
+      totals: [
+        {
+          section: "asset",
+          label: "Итого активы",
+          opening_balance: "100.00",
+          debit_turnover: "20.00",
+          credit_turnover: "0.00",
+          closing_balance: "120.00",
+          reconciliation_difference: "0.00",
+          unknown_line_count: 0,
+        },
+        {
+          section: "liability",
+          label: "Итого обязательства",
+          opening_balance: "10.00",
+          debit_turnover: "0.00",
+          credit_turnover: "5.00",
+          closing_balance: "15.00",
+          reconciliation_difference: "0.00",
+          unknown_line_count: 0,
+        },
+        {
+          section: "equity",
+          label: "Итого собственные средства",
+          opening_balance: "0.00",
+          debit_turnover: "0.00",
+          credit_turnover: "0.00",
+          closing_balance: "0.00",
+          reconciliation_difference: "0.00",
+          unknown_line_count: 0,
+        },
+      ],
+      excluded_lines: [
+        {
+          key: "fixed_assets_net",
+          source_key: "onec_bp_fixed_assets",
+          reason: "В БП для ОСВ разрешена только строка начисленных налогов",
+        },
+      ],
+      opening_imbalance_amount: "0.00",
+      closing_imbalance_amount: "0.00",
+      opening_scope_imbalance_amount: "90.00",
+      closing_scope_imbalance_amount: "105.00",
+      unknown_line_count: 0,
+      available_months: ["2026-06", "2026-07"],
+      available_period_starts: ["2026-01", "2026-07"],
+      available_period_ends: ["2026-06", "2026-07"],
+      selected_month_from: "2026-01",
+      selected_month_to: "2026-06",
+      note:
+        "Диапазон применяется ко всей ОСВ. По денежным средствам показаны валовые движения УТ 10.3.",
+    });
+
+    render(<MonthlyManagementBalance canCloseMonth={false} refreshNonce={0} />);
+
+    expect(await screen.findByText("Оборотно-сальдовая ведомость")).toBeVisible();
+    expect(screen.getByText(/Диапазон применяется ко всей ОСВ/)).toBeVisible();
+    expect(screen.getByLabelText("Начальный месяц оборотно-сальдовой ведомости")).toHaveValue(
+      "2026-01"
+    );
+    expect(screen.getByLabelText("Конечный месяц оборотно-сальдовой ведомости")).toHaveValue(
+      "2026-06"
+    );
+    fireEvent.change(screen.getByLabelText("Конечный месяц оборотно-сальдовой ведомости"), {
+      target: { value: "2026-07" },
+    });
+    fireEvent.change(screen.getByLabelText("Начальный месяц оборотно-сальдовой ведомости"), {
+      target: { value: "2026-07" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Показать ОСВ" }));
+    await waitFor(() =>
+      expect(fetchExecutiveManagementBalanceTurnover).toHaveBeenLastCalledWith({
+        month: "2026-06",
+        monthFrom: "2026-07",
+        monthTo: "2026-07",
+        view: "closed",
+      })
+    );
+    const table = screen.getByRole("table", {
+      name: "Оборотно-сальдовая ведомость по статьям баланса",
+    });
+    const cashRow = within(table).getByText("Денежные средства").closest("tr");
+    expect(cashRow).toHaveTextContent(/100 ₽/);
+    expect(cashRow).toHaveTextContent(/40 ₽/);
+    expect(cashRow).toHaveTextContent("Валовые обороты 1С");
+    expect(within(table).getByText("Начисленные налоги").closest("tr")).toHaveTextContent(
+      /10 ₽/
+    );
+    expect(screen.getByText(/Не включено строк БП: 1/)).toBeVisible();
+    expect(screen.getByText("Итоги ограниченного контура не равны")).toBeVisible();
   });
 });
 
@@ -1211,6 +1380,18 @@ describe("executive sales period", () => {
     ).toHaveLength(4);
   });
 
+  it("shows a fully collected forecast period as complete", async () => {
+    const response = salesPeriodResponse();
+    await renderSalesTab({
+      ...response,
+      forecast_status: "complete",
+      forecast_note: "Период полностью закрыт фактическими данными.",
+    });
+
+    expect(screen.getByText("период закрыт")).toBeVisible();
+    expect(screen.queryByText("месяц закрыт")).not.toBeInTheDocument();
+  });
+
   it("renders an info tooltip on the sales KPI cards", async () => {
     await renderSalesTab();
 
@@ -1416,6 +1597,330 @@ describe("executive online store tab", () => {
     });
     expect(fetchExecutiveDashboardActions).not.toHaveBeenCalled();
     expect(screen.getByLabelText("Начало периода интернет-магазина")).toBeVisible();
+    expect(screen.queryByLabelText("Дата управленческой витрины")).not.toBeInTheDocument();
+  });
+});
+
+function instrumentsResponse(): ExecutiveInstrumentsResponse {
+  return {
+    schema_version: 3,
+    generated_at: "2026-07-31T09:00:00Z",
+    source_status: "partial",
+    freshness_status: "fresh",
+    summary: {
+      total_count: 2,
+      online_count: 1,
+      critical_count: 0,
+      warning_count: 1,
+      not_monitored_count: 1,
+      backup_gap_count: 1,
+      access_review_count: 1,
+      monitoring_coverage_24h_pct: 100,
+    },
+    devices: [
+      {
+        device_key: "onec-ka-bp-zup-win",
+        name: "Офисный Windows-сервер новой 1С КА/БП/ЗУП",
+        kind: "server",
+        lifecycle_status: "active",
+        health_status: "warning",
+        connectivity_status: "online",
+        criticality: "critical",
+        location: "RU/Москва",
+        purpose: ["1С КА 2, Бухгалтерия предприятия и ЗУП"],
+        technical_owner_ids: ["115204"],
+        technical_owners: ["Технический владелец"],
+        business_owner: "Эльдар Ахмедов",
+        last_attempted_at: "2026-07-31T09:00:00Z",
+        last_success_at: "2026-07-31T09:00:00Z",
+        availability_24h_pct: 99.9,
+        availability_30d_pct: 99.5,
+        monitoring_coverage_24h_pct: 100,
+        monitoring_coverage_30d_pct: 99,
+        metrics: { cpu_used_pct: 35, memory_used_pct: 50, disk_free_pct: 42, latency_ms: 120 },
+        services: [
+          {
+            service_key: "onec-ka-bp-zup",
+            name: "1С КА 2, Бухгалтерия предприятия и ЗУП",
+            component_kind: "service",
+            status: "warning",
+            criticality: "critical",
+            source_project: "1C_Dev_Workflow",
+          },
+        ],
+        backup: {
+          status: "warning",
+          protected_datastores: 0,
+          unprotected_datastores: 1,
+          last_backup_at: null,
+          last_restore_test_at: null,
+          off_host_verified: false,
+          readback_verified: false,
+        },
+        integrations: { status: "warning", count: 1, last_success_at: "2026-07-31" },
+        access: {
+          status: "warning",
+          active_grants: 1,
+          pending_grants: 0,
+          review_required_grants: 1,
+          mfa_review_count: 0,
+          unowned_credentials: 0,
+          attention_grant_count: 1,
+          next_review_at: "2026-08-31",
+        },
+        problems: [
+          {
+            problem_key: "backup:unprotected-datastores",
+            category: "backup",
+            severity: "warning",
+            title: "Резервирование требует настройки или проверки",
+            evidence: ["Не защищено хранилищ: 1"],
+            started_at: "2026-07-30T09:00:00Z",
+            recommended_action: "Проверить копию и выполнить restore-test",
+          },
+          {
+            problem_key: "access:review-required",
+            category: "access",
+            severity: "warning",
+            title: "Требуется ревизия доступов",
+            evidence: ["Назначений на ревизию: 1"],
+            recommended_action: "Проверить владельца и актуальность доступа",
+          },
+        ],
+        issue: "Резервирование требует настройки или проверки",
+        recommended_action: "Проверить копию и выполнить restore-test",
+      },
+      {
+        device_key: "unmonitored-device",
+        name: "Устройство без мониторинга",
+        kind: "workstation",
+        lifecycle_status: "inventory_pending",
+        health_status: "not_monitored",
+        connectivity_status: "not_monitored",
+        criticality: "standard",
+        location: "RU",
+        purpose: [],
+        technical_owner_ids: [],
+        technical_owners: [],
+        metrics: {},
+        services: [],
+        backup: {
+          status: "not_configured",
+          protected_datastores: 0,
+          unprotected_datastores: 0,
+          off_host_verified: false,
+          readback_verified: false,
+        },
+        integrations: { status: "not_configured", count: 0 },
+        access: {
+          status: "not_configured",
+          active_grants: 0,
+          pending_grants: 0,
+          review_required_grants: 0,
+          mfa_review_count: 0,
+          unowned_credentials: 0,
+          attention_grant_count: 0,
+        },
+        problems: [
+          {
+            problem_key: "monitoring:not-configured",
+            category: "monitoring",
+            severity: "warning",
+            title: "Мониторинг не настроен",
+            evidence: ["Нет успешных автоматических проверок"],
+            recommended_action: "Подключить устройство к безопасному мониторингу",
+          },
+        ],
+      },
+    ],
+    warnings: [],
+    capabilities: {
+      access_governance: "read_only",
+      access_mutations: false,
+      network_scanning: false,
+    },
+  };
+}
+
+describe("executive instruments tab", () => {
+  beforeEach(() => {
+    vi.mocked(fetchExecutiveDashboard).mockReset();
+    vi.mocked(fetchExecutiveDashboardActions).mockReset();
+    vi.mocked(fetchExecutiveInstruments).mockReset();
+  });
+
+  afterEach(cleanup);
+
+  it("shows attention by default and opens detailed read-only diagnostics", () => {
+    render(<InstrumentsPanel data={instrumentsResponse()} message="" status="ready" />);
+
+    expect(screen.getByRole("button", { name: /Требуют внимания\s*2/ })).toHaveAttribute("aria-pressed", "true");
+    expect(screen.getByRole("button", { name: /Проблемы backup\s*1/ })).toBeVisible();
+    expect(within(screen.getByLabelText("Список приборов")).getByText("Офисный Windows-сервер новой 1С КА/БП/ЗУП")).toBeVisible();
+    expect(screen.getByText(/источник частично|источник partial/i)).toBeVisible();
+
+    fireEvent.click(screen.getAllByRole("button", { name: "Подробнее: Офисный Windows-сервер новой 1С КА/БП/ЗУП" })[0]);
+
+    expect(screen.getByRole("dialog", { name: "Офисный Windows-сервер новой 1С КА/БП/ЗУП" })).toBeVisible();
+    expect(screen.getByText("Что сейчас не так")).toBeVisible();
+    expect(screen.getByText("Restore-test")).toBeVisible();
+    expect(screen.getByText("Мониторинг и проверки")).toBeVisible();
+    expect(screen.getByText(/Выдача и отзыв доступов отключены/)).toBeVisible();
+    expect(new URLSearchParams(window.location.search).get("device")).toBe("onec-ka-bp-zup-win");
+  });
+
+  it("combines KPI, search and kind filters", () => {
+    render(<InstrumentsPanel data={instrumentsResponse()} message="" status="ready" />);
+
+    fireEvent.click(screen.getByRole("button", { name: /Все\s*2/ }));
+    fireEvent.change(screen.getByLabelText("Поиск прибора"), { target: { value: "мониторинг" } });
+
+    const list = within(screen.getByLabelText("Список приборов"));
+    expect(list.getByText("Устройство без мониторинга")).toBeVisible();
+    expect(list.queryByText("Офисный Windows-сервер новой 1С КА/БП/ЗУП")).not.toBeInTheDocument();
+    expect(screen.getByText("Показано 1 из 2")).toBeVisible();
+  });
+
+  it("shows missing source and snapshot freshness explicitly", () => {
+    const missing = instrumentsResponse();
+    missing.source_status = "source_missing";
+    missing.freshness_status = "missing";
+    missing.note = "Снимок инфраструктуры ещё не опубликован.";
+    missing.devices = [];
+    missing.summary = {
+      total_count: 0,
+      online_count: 0,
+      critical_count: 0,
+      warning_count: 0,
+      not_monitored_count: 0,
+      backup_gap_count: 0,
+      access_review_count: 0,
+      monitoring_coverage_24h_pct: null,
+    };
+
+    render(<InstrumentsPanel data={missing} message="" status="ready" />);
+
+    expect(screen.getByText("Снимок инфраструктуры ещё не опубликован.")).toBeVisible();
+    expect(screen.getByText(/источник нет источника|источник source_missing/i)).toBeVisible();
+    expect(screen.getByText(/свежесть нет источника|свежесть missing/i)).toBeVisible();
+  });
+
+  it("shows a compact read-only site exchange block for a v4 device", () => {
+    const data = instrumentsResponse();
+    data.schema_version = 4;
+    data.devices[0].exchange = {
+      status: "critical",
+      queue_items: 3600,
+      queue_status: "critical",
+      last_success_at: "2026-07-31T07:00:00Z",
+      last_error_at: "2026-07-31T09:00:00Z",
+      consecutive_failures: 3,
+      active_job_seconds: 960,
+      stage_last: "init",
+      stage_file_missing_cycles: 2,
+      platform_cpu_pct: 96.5,
+      source_status: "partial",
+    };
+
+    render(<InstrumentsPanel data={data} message="" status="ready" />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Подробнее: / })[0]);
+
+    const exchange = within(screen.getAllByLabelText("Обмен с сайтом")[0]);
+    expect(exchange.getByText("Обмен с сайтом: критично")).toBeVisible();
+    expect(exchange.getByText(/Очередь: 3.?600/)).toBeVisible();
+    expect(exchange.getByText(/Стадия: инициализация/)).toBeVisible();
+    expect(exchange.getByText(/CPU платформы 8.2: 96,50%/)).toBeVisible();
+    expect(exchange.queryByRole("button")).not.toBeInTheDocument();
+  });
+
+  it("defaults legacy exchange to not configured", () => {
+    render(<InstrumentsPanel data={instrumentsResponse()} message="" status="ready" />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Подробнее: / })[0]);
+
+    expect(screen.getAllByLabelText("Обмен с сайтом")[0]).toHaveTextContent(
+      "Обмен с сайтом: не настроено"
+    );
+  });
+
+  it("does not render unknown exchange counters as zero", () => {
+    const data = instrumentsResponse();
+    data.schema_version = 4;
+    data.devices[0].exchange = {
+      status: "warning",
+      queue_items: null,
+      queue_status: null,
+      last_success_at: null,
+      last_error_at: null,
+      consecutive_failures: null,
+      active_job_seconds: null,
+      stage_last: null,
+      stage_file_missing_cycles: null,
+      platform_cpu_pct: null,
+      source_status: "partial",
+    };
+
+    render(<InstrumentsPanel data={data} message="" status="ready" />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Подробнее: / })[0]);
+
+    const exchange = screen.getAllByLabelText("Обмен с сайтом")[0];
+    expect(exchange).toHaveTextContent("Очередь: — · —");
+    expect(exchange).toHaveTextContent("Ошибок подряд: —");
+    expect(exchange).toHaveTextContent("циклов без файла: —");
+  });
+
+  it("keeps exchange not configured while showing available platform CPU", () => {
+    const data = instrumentsResponse();
+    data.schema_version = 4;
+    data.devices[0].exchange = {
+      status: "not_configured",
+      queue_items: null,
+      queue_status: null,
+      last_success_at: null,
+      last_error_at: null,
+      consecutive_failures: null,
+      active_job_seconds: null,
+      stage_last: null,
+      stage_file_missing_cycles: null,
+      platform_cpu_pct: 70,
+      source_status: "not_configured",
+    };
+
+    render(<InstrumentsPanel data={data} message="" status="ready" />);
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Подробнее: / })[0]);
+
+    const exchange = screen.getAllByLabelText("Обмен с сайтом")[0];
+    expect(exchange).toHaveTextContent("Обмен с сайтом: не настроено");
+    expect(exchange).toHaveTextContent("CPU платформы 8.2: 70,00%");
+    expect(exchange).toHaveTextContent("источник обмена: не настроено");
+  });
+
+  it("loads the tab from access policy without action requests", async () => {
+    window.history.pushState({}, "", "?tab=infrastructure&date=2026-07-31");
+    vi.mocked(fetchExecutiveDashboard).mockResolvedValue({
+      as_of: "2026-07-31",
+      generated_at: "2026-07-31T09:00:00Z",
+      freshness_status: "fresh",
+      source_status: "ready",
+      access_level: "full",
+      roles: ["full"],
+      allowed_blocks: ["infrastructure"],
+      allowed_action_domains: [],
+      blocks: [],
+      source_freshness: [],
+      top_actions: [],
+      summary: {},
+    });
+    vi.mocked(fetchExecutiveInstruments).mockResolvedValue(instrumentsResponse());
+
+    render(<ExecutiveDashboard />);
+
+    expect(await screen.findByRole("heading", { name: "Серверы и устройства" })).toBeVisible();
+    expect(fetchExecutiveInstruments).toHaveBeenCalledTimes(1);
+    expect(fetchExecutiveDashboardActions).not.toHaveBeenCalled();
     expect(screen.queryByLabelText("Дата управленческой витрины")).not.toBeInTheDocument();
   });
 });

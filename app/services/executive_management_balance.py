@@ -5,13 +5,14 @@ import hashlib
 import json
 import os
 import tempfile
-from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from dataclasses import dataclass, replace
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Literal
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
@@ -24,15 +25,22 @@ from app.models.executive_dashboard import (
 from app.schemas.executive_dashboard import (
     ExecutiveManagementBalanceLineItem,
     ExecutiveManagementBalanceResponse,
+    ExecutiveManagementBalanceTurnoverLine,
+    ExecutiveManagementBalanceTurnoverResponse,
+    ExecutiveManagementBalanceTurnoverTotal,
 )
 from app.services.bitrix_executive_dashboard_auth import (
     ExecutiveDashboardAuthContext,
     full_executive_dashboard_context,
 )
-from app.services.executive_dashboard import build_executive_dashboard
+from app.services.executive_dashboard import (
+    _load_cashflow_period_cache,
+    build_executive_dashboard,
+)
 
 BalanceView = Literal["closed", "operational"]
 BalanceSection = Literal["asset", "liability", "equity"]
+BalanceTrigger = Literal["cron", "manual"]
 MONEY = Decimal("0.01")
 OPENING_EQUITY_BASELINE_DATE = date(2026, 1, 1)
 
@@ -64,6 +72,12 @@ class BalanceLineDraft:
     estimated_count: int = 0
 
 
+@dataclass(frozen=True)
+class ManagementBalanceSnapshotBuildResult:
+    snapshot: ExecutiveManagementBalanceSnapshot
+    outcome: Literal["inserted", "noop"]
+
+
 _ACCOUNTING_LINES: tuple[tuple[BalanceSection, str, str, int], ...] = (
     ("asset", "fixed_assets_net", "Основные средства за вычетом амортизации", 70),
     ("asset", "tax_receivables", "Налоги к возмещению", 80),
@@ -76,6 +90,7 @@ _ACCOUNTING_LINES: tuple[tuple[BalanceSection, str, str, int], ...] = (
     ("equity", "prior_period_adjustments", "Корректировки прошлых периодов", 25),
     ("equity", "current_period_result", "Результат текущего периода", 30),
 )
+
 
 _BP_BALANCE_LINE_LAYOUT: tuple[tuple[BalanceSection, str, str, int], ...] = (
     ("asset", "fixed_assets_net", "Основные средства за вычетом амортизации", 70),
@@ -848,6 +863,10 @@ def _build_draft_lines(
             )
         )
 
+    cash_position_summary = _apply_exact_cash_position(
+        lines=lines,
+        balance_date=balance_date,
+    )
     settings = get_settings()
     salary_lines, salary_summary = _load_salary_reconciliation_lines(
         balance_date=balance_date,
@@ -871,19 +890,13 @@ def _build_draft_lines(
     bp_balance_summary: dict[str, Any] = {
         "configured": False,
         "status": "not_loaded",
+        "note": "По принятой методике из БП подключаются только начисленные налоги",
     }
     opening_equity_summary: dict[str, Any] = {
         "configured": False,
         "status": "not_loaded",
     }
     if include_contract_enrichment:
-        bp_balance_lines, bp_balance_summary = _load_bp_balance_lines(
-            balance_date=balance_date,
-            snapshot_path=settings.executive_management_balance_bp_snapshot_path,
-        )
-        for line in bp_balance_lines:
-            lines = [existing for existing in lines if existing.key != line.key]
-            lines.append(line)
         opening_equity_lines, opening_equity_summary = _load_opening_equity_lines(
             balance_date=balance_date,
             snapshot_path=(settings.executive_management_balance_opening_equity_snapshot_path),
@@ -921,6 +934,11 @@ def _build_draft_lines(
             )
         )
 
+    trade_lines = [line for line in lines if line.source_key == "onec_counterparty_settlements"]
+    trade_as_of = max(
+        (line.source_as_of for line in trade_lines if line.source_as_of is not None),
+        default=None,
+    )
     inventory_item = next(
         (
             item
@@ -975,10 +993,16 @@ def _build_draft_lines(
 
     source_summary = {
         "trade_detail": {
-            "status": compact.source_status if compact is not None else "source_missing",
-            "as_of": compact.as_of.isoformat() if compact and compact.as_of else None,
+            "status": (
+                next(
+                    (line.source_status for line in trade_lines),
+                    "source_missing",
+                )
+            ),
+            "as_of": trade_as_of.isoformat() if trade_as_of else None,
         },
         "inventory": inventory_summary,
+        "cash_position": cash_position_summary,
         "accounting": {
             "configured": (
                 accounting_configured
@@ -996,18 +1020,9 @@ def _build_draft_lines(
             ),
             "as_of": bp_balance_summary.get("as_of") or bp_tax_summary.get("as_of"),
             "note": (
-                bp_balance_summary.get("note")
-                or (
-                    "Балансовые статьи БП подключены; прочие обязательства "
-                    "остаются неподтверждёнными до сверки с УТ"
-                    if bp_balance_summary.get("status") == "partial"
-                    else (
-                        "Налоги к уплате подтверждены из БП; остальные статьи "
-                        "КА/БП ещё не подключены"
-                        if bp_tax_summary.get("status") == "ready"
-                        else bp_tax_summary.get("note") or accounting_note
-                    )
-                )
+                "Налоги к уплате подтверждены из БП; управленческие остатки " "берутся из УТ 10.3"
+                if bp_tax_summary.get("status") == "ready"
+                else (bp_tax_summary.get("note") or "Из БП подключаются только начисленные налоги")
             ),
             "bp_balance": bp_balance_summary,
         },
@@ -1059,6 +1074,63 @@ def _build_draft_lines(
             "equity_bridge_total": str(bridge_total),
         }
     return lines, source_summary
+
+
+def _apply_exact_cash_position(
+    *,
+    lines: list[BalanceLineDraft],
+    balance_date: date,
+) -> dict[str, Any]:
+    payload, cache_status, cache_note = _load_cashflow_period_cache()
+    position = (
+        _cash_position_balance(
+            payload,
+            snapshot_date=balance_date,
+            cache_status=cache_status,
+        )
+        if payload is not None
+        else None
+    )
+    if position is not None:
+        amount, source_status, source_as_of = position
+        for index, line in enumerate(lines):
+            if line.section == "asset" and line.key == "cash":
+                lines[index] = replace(
+                    line,
+                    amount=amount,
+                    source_key="onec_cash_position",
+                    source_status=source_status,
+                    source_as_of=source_as_of,
+                    note=("Точный рублёвый остаток на дату из " "finance.fact_cash_position_daily"),
+                )
+                break
+        return {
+            "status": source_status,
+            "as_of": source_as_of.isoformat(),
+            "method": "fact_cash_position_daily_exact_date",
+        }
+
+    if balance_date < date.today():
+        for index, line in enumerate(lines):
+            if line.section == "asset" and line.key == "cash":
+                lines[index] = replace(
+                    line,
+                    amount=None,
+                    source_key="onec_cash_position",
+                    source_status="source_missing",
+                    source_as_of=None,
+                    note=(
+                        "Нет точного рублёвого остатка "
+                        f"finance.fact_cash_position_daily на {balance_date:%d.%m.%Y}"
+                    ),
+                )
+                break
+    return {
+        "status": "source_missing",
+        "as_of": None,
+        "method": "fact_cash_position_daily_exact_date",
+        "note": cache_note,
+    }
 
 
 def _validation_errors(
@@ -1183,6 +1255,77 @@ def _totals(
     return assets, liabilities, equity, (assets - liabilities - equity).quantize(MONEY)
 
 
+def _canonical_hash_value(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, dict):
+        return {
+            str(key): _canonical_hash_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_canonical_hash_value(item) for item in value]
+    return value
+
+
+def _management_balance_content_sha256(
+    *,
+    balance_date: date,
+    view: BalanceView,
+    lines: list[BalanceLineDraft],
+    assets: Decimal,
+    liabilities: Decimal,
+    equity: Decimal,
+    imbalance: Decimal,
+    source_summary: dict[str, Any],
+    validation_errors: list[dict[str, Any]],
+) -> str:
+    ordered_lines = sorted(lines, key=lambda line: (line.section, line.order, line.key))
+    payload = {
+        "balance_date": balance_date,
+        "view_mode": view,
+        "lines": [
+            {
+                "section": line.section,
+                "key": line.key,
+                "label": line.label,
+                "amount": line.amount,
+                "order": line.order,
+                "source_key": line.source_key,
+                "source_status": line.source_status,
+                "source_as_of": line.source_as_of,
+                "note": line.note,
+                "include_in_total": line.include_in_total,
+                "source_amount": line.source_amount,
+                "adjustment_amount": line.adjustment_amount,
+                "adjusted_amount": line.adjusted_amount,
+                "recognition_method": line.recognition_method,
+                "estimated_count": line.estimated_count,
+            }
+            for line in ordered_lines
+        ],
+        "totals": {
+            "assets": assets,
+            "liabilities": liabilities,
+            "equity": equity,
+            "imbalance": imbalance,
+        },
+        "source_summary": source_summary,
+        "validation_errors": validation_errors,
+    }
+    canonical = json.dumps(
+        _canonical_hash_value(payload),
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
 def build_management_balance_components_export(
     session: Session,
     *,
@@ -1259,13 +1402,14 @@ def atomic_write_management_balance_components(
         raise
 
 
-def build_and_persist_management_balance_snapshot(
+def build_management_balance_snapshot_command(
     session: Session,
     *,
     balance_date: date | None = None,
     view: BalanceView = "operational",
     actor: str = "system:daily",
-) -> ExecutiveManagementBalanceSnapshot:
+    trigger: BalanceTrigger = "manual",
+) -> ManagementBalanceSnapshotBuildResult:
     today = date.today()
     actual_date = balance_date or today
     period_month = actual_date.replace(day=1)
@@ -1294,6 +1438,26 @@ def build_and_persist_management_balance_snapshot(
                 "message": f"Расхождение сторон {imbalance} ₽ превышает допуск {tolerance} ₽",
             }
         )
+    content_sha256 = _management_balance_content_sha256(
+        balance_date=actual_date,
+        view=view,
+        lines=lines,
+        assets=assets,
+        liabilities=liabilities,
+        equity=equity,
+        imbalance=imbalance,
+        source_summary=source_summary,
+        validation_errors=errors,
+    )
+    existing = session.scalar(
+        select(ExecutiveManagementBalanceSnapshot).where(
+            ExecutiveManagementBalanceSnapshot.balance_date == actual_date,
+            ExecutiveManagementBalanceSnapshot.view_mode == view,
+            ExecutiveManagementBalanceSnapshot.content_sha256 == content_sha256,
+        )
+    )
+    if existing is not None:
+        return ManagementBalanceSnapshotBuildResult(snapshot=existing, outcome="noop")
     version = (
         session.scalar(
             select(func.max(ExecutiveManagementBalanceSnapshot.version)).where(
@@ -1318,6 +1482,7 @@ def build_and_persist_management_balance_snapshot(
         imbalance_amount=imbalance,
         source_summary=source_summary,
         validation_errors=errors,
+        content_sha256=content_sha256,
         generated_at=generated_at,
     )
     session.add(snapshot)
@@ -1356,12 +1521,49 @@ def build_and_persist_management_balance_snapshot(
             snapshot_id=snapshot.id,
             action="generated",
             actor=actor,
-            payload={"view": view, "balance_date": actual_date.isoformat()},
+            payload={
+                "view": view,
+                "balance_date": actual_date.isoformat(),
+                "trigger": trigger,
+            },
         )
     )
-    session.commit()
+    try:
+        session.commit()
+    except IntegrityError:
+        session.rollback()
+        existing = session.scalar(
+            select(ExecutiveManagementBalanceSnapshot).where(
+                ExecutiveManagementBalanceSnapshot.balance_date == actual_date,
+                ExecutiveManagementBalanceSnapshot.view_mode == view,
+                ExecutiveManagementBalanceSnapshot.content_sha256 == content_sha256,
+            )
+        )
+        if existing is not None:
+            return ManagementBalanceSnapshotBuildResult(snapshot=existing, outcome="noop")
+        raise
+    except BaseException:
+        session.rollback()
+        raise
     session.refresh(snapshot)
-    return snapshot
+    return ManagementBalanceSnapshotBuildResult(snapshot=snapshot, outcome="inserted")
+
+
+def build_and_persist_management_balance_snapshot(
+    session: Session,
+    *,
+    balance_date: date | None = None,
+    view: BalanceView = "operational",
+    actor: str = "system:daily",
+    trigger: BalanceTrigger = "manual",
+) -> ExecutiveManagementBalanceSnapshot:
+    return build_management_balance_snapshot_command(
+        session,
+        balance_date=balance_date,
+        view=view,
+        actor=actor,
+        trigger=trigger,
+    ).snapshot
 
 
 def _latest_snapshot(
@@ -1508,13 +1710,13 @@ def _response(
     )
 
 
-def get_management_balance(
+def _get_management_balance_snapshot(
     session: Session,
     *,
     month: str | None,
     view: BalanceView | None,
     access_context: ExecutiveDashboardAuthContext,
-) -> ExecutiveManagementBalanceResponse:
+) -> ExecutiveManagementBalanceSnapshot:
     if month is None and view in (None, "closed"):
         latest_closed = session.scalar(
             select(ExecutiveManagementBalanceSnapshot)
@@ -1526,7 +1728,7 @@ def get_management_balance(
             .limit(1)
         )
         if latest_closed is not None:
-            return _response(session, latest_closed)
+            return latest_closed
 
     period_month = parse_month(month) if month else date.today().replace(day=1)
     requested_view: BalanceView = view or "operational"
@@ -1550,7 +1752,556 @@ def get_management_balance(
         raise ManagementBalanceNotFoundError(
             f"Нет снимка баланса за {period_month:%Y-%m} в режиме {requested_view}"
         )
-    return _response(session, snapshot)
+    return snapshot
+
+
+def get_management_balance(
+    session: Session,
+    *,
+    month: str | None,
+    view: BalanceView | None,
+    access_context: ExecutiveDashboardAuthContext,
+) -> ExecutiveManagementBalanceResponse:
+    return _response(
+        session,
+        _get_management_balance_snapshot(
+            session,
+            month=month,
+            view=view,
+            access_context=access_context,
+        ),
+    )
+
+
+def _snapshot_lines(
+    session: Session,
+    snapshot: ExecutiveManagementBalanceSnapshot,
+) -> list[ExecutiveManagementBalanceLine]:
+    return list(
+        session.scalars(
+            select(ExecutiveManagementBalanceLine)
+            .where(ExecutiveManagementBalanceLine.snapshot_id == snapshot.id)
+            .order_by(
+                ExecutiveManagementBalanceLine.section,
+                ExecutiveManagementBalanceLine.display_order,
+                ExecutiveManagementBalanceLine.id,
+            )
+        )
+    )
+
+
+def _opening_management_balance_snapshot(
+    session: Session,
+) -> ExecutiveManagementBalanceSnapshot:
+    snapshot = session.scalar(
+        select(ExecutiveManagementBalanceSnapshot)
+        .where(
+            ExecutiveManagementBalanceSnapshot.balance_date == OPENING_EQUITY_BASELINE_DATE,
+            ExecutiveManagementBalanceSnapshot.status == "closed",
+        )
+        .order_by(ExecutiveManagementBalanceSnapshot.version.desc())
+        .limit(1)
+    )
+    if snapshot is None:
+        snapshot = session.scalar(
+            select(ExecutiveManagementBalanceSnapshot)
+            .where(
+                ExecutiveManagementBalanceSnapshot.balance_date == OPENING_EQUITY_BASELINE_DATE,
+                ExecutiveManagementBalanceSnapshot.view_mode == "closed",
+            )
+            .order_by(ExecutiveManagementBalanceSnapshot.version.desc())
+            .limit(1)
+        )
+    if snapshot is None:
+        raise ManagementBalanceNotFoundError("Нет начального баланса на 01.01.2026")
+    return snapshot
+
+
+def _turnover_amounts(
+    *,
+    section: BalanceSection,
+    opening_balance: Decimal | None,
+    closing_balance: Decimal | None,
+) -> tuple[Decimal | None, Decimal | None, Decimal | None]:
+    if opening_balance is None or closing_balance is None:
+        return None, None, None
+    change = (closing_balance - opening_balance).quantize(MONEY)
+    if section == "asset":
+        debit = max(change, Decimal("0.00"))
+        credit = max(-change, Decimal("0.00"))
+        expected_closing = opening_balance + debit - credit
+    else:
+        debit = max(-change, Decimal("0.00"))
+        credit = max(change, Decimal("0.00"))
+        expected_closing = opening_balance + credit - debit
+    difference = (closing_balance - expected_closing).quantize(MONEY)
+    return debit.quantize(MONEY), credit.quantize(MONEY), difference
+
+
+def _turnover_line_in_source_scope(line: ExecutiveManagementBalanceLine) -> bool:
+    source_key = line.source_key.lower()
+    if source_key == "onec_bp_tax_accounting":
+        return line.line_key == "taxes_payable"
+    return not (
+        source_key.startswith("onec_bp_")
+        or source_key.startswith("ka_bp_")
+        or source_key.startswith("ut_bp_")
+        or source_key == "ka_bp_accounting"
+    )
+
+
+def _next_month(period_month: date) -> date:
+    if period_month.month == 12:
+        return date(period_month.year + 1, 1, 1)
+    return date(period_month.year, period_month.month + 1, 1)
+
+
+def _turnover_period_options(session: Session) -> tuple[list[str], list[str]]:
+    snapshots = list(
+        session.scalars(
+            select(ExecutiveManagementBalanceSnapshot).order_by(
+                ExecutiveManagementBalanceSnapshot.balance_date,
+                ExecutiveManagementBalanceSnapshot.version,
+            )
+        )
+    )
+    starts = {OPENING_EQUITY_BASELINE_DATE}
+    ends: set[date] = set()
+    current_month = date.today().replace(day=1)
+    for snapshot in snapshots:
+        if snapshot.balance_date > snapshot.period_month or (
+            snapshot.period_month == current_month and snapshot.view_mode == "operational"
+        ):
+            ends.add(snapshot.period_month)
+        if snapshot.balance_date == month_end(snapshot.period_month):
+            starts.add(_next_month(snapshot.period_month))
+    return (
+        [
+            item.strftime("%Y-%m")
+            for item in sorted(item for item in starts if item <= current_month)
+        ],
+        [item.strftime("%Y-%m") for item in sorted(item for item in ends if item <= current_month)],
+    )
+
+
+def _turnover_opening_snapshot(
+    session: Session,
+    *,
+    period_month: date,
+) -> ExecutiveManagementBalanceSnapshot:
+    if period_month == OPENING_EQUITY_BASELINE_DATE:
+        return _opening_management_balance_snapshot(session)
+    boundary_date = period_month - timedelta(days=1)
+    statement = select(ExecutiveManagementBalanceSnapshot).where(
+        ExecutiveManagementBalanceSnapshot.balance_date == boundary_date
+    )
+    snapshot = session.scalar(
+        statement.where(ExecutiveManagementBalanceSnapshot.status == "closed")
+        .order_by(ExecutiveManagementBalanceSnapshot.version.desc())
+        .limit(1)
+    )
+    if snapshot is None:
+        snapshot = session.scalar(
+            statement.where(ExecutiveManagementBalanceSnapshot.view_mode == "closed")
+            .order_by(ExecutiveManagementBalanceSnapshot.version.desc())
+            .limit(1)
+        )
+    if snapshot is None:
+        raise ManagementBalanceNotFoundError(
+            f"Нет сохранённого начального остатка на {boundary_date:%d.%m.%Y}"
+        )
+    return snapshot
+
+
+def _turnover_closing_snapshot(
+    session: Session,
+    *,
+    period_month: date,
+    view: BalanceView | None,
+    access_context: ExecutiveDashboardAuthContext,
+) -> ExecutiveManagementBalanceSnapshot:
+    requested_view = view or (
+        "operational" if period_month == date.today().replace(day=1) else "closed"
+    )
+    snapshot = _latest_snapshot(
+        session,
+        period_month=period_month,
+        view=requested_view,
+    )
+    if snapshot is None:
+        fallback_view: BalanceView = "closed" if requested_view == "operational" else "operational"
+        snapshot = _latest_snapshot(
+            session,
+            period_month=period_month,
+            view=fallback_view,
+        )
+    if snapshot is None and period_month == date.today().replace(day=1):
+        snapshot = build_and_persist_management_balance_snapshot(
+            session,
+            balance_date=date.today(),
+            view="operational",
+            actor=access_context.actor,
+        )
+    if snapshot is None:
+        raise ManagementBalanceNotFoundError(
+            f"Нет сохранённого конечного остатка за {period_month:%Y-%m}"
+        )
+    return snapshot
+
+
+def _gross_cash_turnover(
+    *,
+    payload: dict[str, Any],
+    cache_status: str,
+    date_from: date,
+    date_to: date,
+) -> tuple[Decimal, Decimal, str, str] | None:
+    cache_period = payload.get("period") if isinstance(payload.get("period"), dict) else {}
+    cache_from = _as_date(cache_period.get("date_from"))
+    cache_to = _as_date(cache_period.get("date_to"))
+    if cache_from is None or cache_to is None or cache_from > date_from or cache_to < date_to:
+        return None
+    inflow = Decimal("0.00")
+    outflow = Decimal("0.00")
+    raw_rows = payload.get("rows") if isinstance(payload.get("rows"), list) else []
+    for raw_row in raw_rows:
+        if not isinstance(raw_row, dict):
+            continue
+        business_date = _as_date(raw_row.get("business_date"))
+        if business_date is None or not date_from <= business_date <= date_to:
+            continue
+        inflow += _money(raw_row.get("inflow_amount")) or Decimal("0.00")
+        outflow += _money(raw_row.get("outflow_amount")) or Decimal("0.00")
+    return (
+        inflow.quantize(MONEY),
+        outflow.quantize(MONEY),
+        str(payload.get("source_status") or cache_status or "ready"),
+        (
+            "Валовые обороты УТ 10.3 в управленческих рублях за выбранный период; "
+            "внутренние перемещения включены в дебет и кредит"
+        ),
+    )
+
+
+def _cash_position_balance(
+    payload: dict[str, Any],
+    *,
+    snapshot_date: date,
+    cache_status: str,
+) -> tuple[Decimal, str, date] | None:
+    cash_position = (
+        payload.get("cash_position") if isinstance(payload.get("cash_position"), dict) else {}
+    )
+    raw_positions = cash_position.get("rows") if isinstance(cash_position.get("rows"), list) else []
+    for raw_position in raw_positions:
+        if not isinstance(raw_position, dict):
+            continue
+        position_date = _as_date(raw_position.get("snapshot_date"))
+        if position_date != snapshot_date:
+            continue
+        amount = _money(
+            raw_position.get("total_balance_rub")
+            if raw_position.get("total_balance_rub") is not None
+            else raw_position.get("total_balance")
+        )
+        if amount is None:
+            return None
+        return (
+            amount.quantize(MONEY),
+            str(raw_position.get("source_status") or cache_status or "ready"),
+            position_date,
+        )
+    return None
+
+
+def get_management_balance_turnover(
+    session: Session,
+    *,
+    month: str | None,
+    view: BalanceView | None,
+    access_context: ExecutiveDashboardAuthContext,
+    month_from: str | None = None,
+    month_to: str | None = None,
+) -> ExecutiveManagementBalanceTurnoverResponse:
+    selected_from = parse_month(month_from) if month_from else OPENING_EQUITY_BASELINE_DATE
+    if month_to or month:
+        selected_to = parse_month(month_to or month or "")
+    else:
+        selected_to = None
+    if selected_from < OPENING_EQUITY_BASELINE_DATE:
+        raise ValueError("Начальный месяц ОСВ не может быть раньше 01.01.2026")
+    if selected_to is not None and selected_to < selected_from:
+        raise ValueError("Конечный месяц ОСВ не может быть раньше начального")
+    if selected_to is not None:
+        closing_snapshot = _turnover_closing_snapshot(
+            session,
+            period_month=selected_to,
+            view=view,
+            access_context=access_context,
+        )
+    else:
+        closing_snapshot = _get_management_balance_snapshot(
+            session,
+            month=None,
+            view=view,
+            access_context=access_context,
+        )
+        selected_to = closing_snapshot.period_month
+    available_period_starts, available_period_ends = _turnover_period_options(session)
+    selected_from_key = selected_from.strftime("%Y-%m")
+    selected_to_key = selected_to.strftime("%Y-%m")
+    if month_from and selected_from_key not in available_period_starts:
+        raise ManagementBalanceNotFoundError(
+            f"Нет сохранённого начального остатка для периода {selected_from_key}"
+        )
+    if month_to and selected_to_key not in available_period_ends:
+        raise ManagementBalanceNotFoundError(
+            f"Нет сохранённого конечного остатка для периода {selected_to_key}"
+        )
+    opening_snapshot = _turnover_opening_snapshot(
+        session,
+        period_month=selected_from,
+    )
+    if closing_snapshot.balance_date < selected_from:
+        raise ValueError("Конечная дата ОСВ не может быть раньше начальной")
+
+    opening_lines = _snapshot_lines(session, opening_snapshot)
+    closing_lines = _snapshot_lines(session, closing_snapshot)
+    excluded_lines: list[dict[str, Any]] = []
+    for snapshot_role, snapshot_lines in (
+        ("opening", opening_lines),
+        ("closing", closing_lines),
+    ):
+        for line in snapshot_lines:
+            if _turnover_line_in_source_scope(line):
+                continue
+            excluded_lines.append(
+                {
+                    "snapshot": snapshot_role,
+                    "section": line.section,
+                    "key": line.line_key,
+                    "label": line.label,
+                    "source_key": line.source_key,
+                    "reason": "В БП для ОСВ разрешена только строка начисленных налогов",
+                }
+            )
+    opening_by_key = {
+        (line.section, line.line_key): line
+        for line in opening_lines
+        if _turnover_line_in_source_scope(line)
+    }
+    closing_by_key = {
+        (line.section, line.line_key): line
+        for line in closing_lines
+        if _turnover_line_in_source_scope(line)
+    }
+    cashflow_payload, cashflow_cache_status, _cashflow_cache_note = _load_cashflow_period_cache()
+    gross_cash_turnover = (
+        _gross_cash_turnover(
+            payload=cashflow_payload,
+            cache_status=cashflow_cache_status,
+            date_from=selected_from,
+            date_to=closing_snapshot.balance_date,
+        )
+        if cashflow_payload
+        else None
+    )
+    opening_cash_position = (
+        _cash_position_balance(
+            cashflow_payload,
+            snapshot_date=selected_from - timedelta(days=1),
+            cache_status=cashflow_cache_status,
+        )
+        if cashflow_payload and selected_from > OPENING_EQUITY_BASELINE_DATE
+        else None
+    )
+    closing_cash_position = (
+        _cash_position_balance(
+            cashflow_payload,
+            snapshot_date=closing_snapshot.balance_date,
+            cache_status=cashflow_cache_status,
+        )
+        if cashflow_payload
+        else None
+    )
+    line_keys = set(opening_by_key) | set(closing_by_key)
+    section_order = {"asset": 0, "liability": 1, "equity": 2}
+
+    def sort_key(key: tuple[str, str]) -> tuple[int, int, str]:
+        line = closing_by_key.get(key) or opening_by_key[key]
+        return section_order[line.section], line.display_order, line.line_key
+
+    turnover_lines: list[ExecutiveManagementBalanceTurnoverLine] = []
+    for line_key in sorted(line_keys, key=sort_key):
+        opening_line = opening_by_key.get(line_key)
+        closing_line = closing_by_key.get(line_key)
+        anchor = closing_line or opening_line
+        assert anchor is not None
+        opening_balance = opening_line.amount if opening_line is not None else Decimal("0.00")
+        closing_balance = closing_line.amount if closing_line is not None else Decimal("0.00")
+        is_cash = anchor.section == "asset" and anchor.line_key == "cash"
+        cash_position_notes: list[str] = []
+        cash_position_statuses: list[str] = []
+        cash_source_as_of = anchor.source_as_of
+        if is_cash and opening_cash_position is not None:
+            opening_balance, position_status, position_date = opening_cash_position
+            cash_position_statuses.append(position_status)
+            cash_position_notes.append(
+                f"Начальный остаток на {position_date:%d.%m.%Y}: "
+                "рублёвый snapshot fact_cash_position_daily"
+            )
+        if is_cash and closing_cash_position is not None:
+            closing_balance, position_status, position_date = closing_cash_position
+            cash_position_statuses.append(position_status)
+            cash_source_as_of = position_date
+            cash_position_notes.append(
+                f"Конечный остаток на {position_date:%d.%m.%Y}: "
+                "рублёвый snapshot fact_cash_position_daily"
+            )
+        debit, credit, difference = _turnover_amounts(
+            section=anchor.section,  # type: ignore[arg-type]
+            opening_balance=opening_balance,
+            closing_balance=closing_balance,
+        )
+        turnover_method: Literal["net_change_from_snapshots", "gross_cashflow_movements"] = (
+            "net_change_from_snapshots"
+        )
+        notes = [
+            note
+            for note in (
+                opening_line.note if opening_line is not None else None,
+                closing_line.note if closing_line is not None else None,
+            )
+            if note
+        ]
+        notes.extend(cash_position_notes)
+        if opening_line is None:
+            notes.append(
+                f"На {selected_from:%d.%m.%Y} статья отсутствовала; "
+                "начальное сальдо принято равным 0"
+            )
+        if closing_line is None:
+            notes.append("В конечном снимке статья отсутствует; конечное сальдо принято равным 0")
+        missing_side = opening_line is None or closing_line is None
+        line_source_statuses = {
+            line.source_status for line in (opening_line, closing_line) if line is not None
+        }
+        line_source_status = anchor.source_status
+        if missing_side or line_source_statuses != {"ready"}:
+            line_source_status = "partial"
+        if is_cash and gross_cash_turnover is not None:
+            debit, credit, cash_status, cash_note = gross_cash_turnover
+            expected_closing = opening_balance + debit - credit
+            difference = (closing_balance - expected_closing).quantize(MONEY)
+            turnover_method = "gross_cashflow_movements"
+            notes.append(cash_note)
+            cash_position_statuses.append(cash_status)
+            if any(status != "ready" for status in cash_position_statuses):
+                line_source_status = "partial"
+        turnover_lines.append(
+            ExecutiveManagementBalanceTurnoverLine(
+                key=anchor.line_key,
+                label=anchor.label,
+                section=anchor.section,  # type: ignore[arg-type]
+                opening_balance=opening_balance,
+                debit_turnover=debit,
+                credit_turnover=credit,
+                closing_balance=closing_balance,
+                reconciliation_difference=difference,
+                turnover_method=turnover_method,
+                source_key=anchor.source_key,
+                source_status=line_source_status,
+                source_as_of=cash_source_as_of,
+                note="; ".join(dict.fromkeys(notes)) or None,
+            )
+        )
+
+    totals: list[ExecutiveManagementBalanceTurnoverTotal] = []
+    total_labels = {
+        "asset": "Итого активы",
+        "liability": "Итого обязательства",
+        "equity": "Итого собственные средства",
+    }
+    for section in ("asset", "liability", "equity"):
+        section_lines = [line for line in turnover_lines if line.section == section]
+        totals.append(
+            ExecutiveManagementBalanceTurnoverTotal(
+                section=section,  # type: ignore[arg-type]
+                label=total_labels[section],
+                opening_balance=sum(
+                    (line.opening_balance or Decimal("0.00")) for line in section_lines
+                ).quantize(MONEY),
+                debit_turnover=sum(
+                    (line.debit_turnover or Decimal("0.00")) for line in section_lines
+                ).quantize(MONEY),
+                credit_turnover=sum(
+                    (line.credit_turnover or Decimal("0.00")) for line in section_lines
+                ).quantize(MONEY),
+                closing_balance=sum(
+                    (line.closing_balance or Decimal("0.00")) for line in section_lines
+                ).quantize(MONEY),
+                reconciliation_difference=sum(
+                    (line.reconciliation_difference or Decimal("0.00")) for line in section_lines
+                ).quantize(MONEY),
+                unknown_line_count=sum(
+                    1
+                    for line in section_lines
+                    if line.opening_balance is None or line.closing_balance is None
+                ),
+            )
+        )
+
+    unknown_line_count = sum(
+        1 for line in turnover_lines if line.opening_balance is None or line.closing_balance is None
+    )
+    source_status = closing_snapshot.source_status
+    if unknown_line_count or any(line.source_status == "partial" for line in turnover_lines):
+        source_status = "partial"
+    totals_by_section = {total.section: total for total in totals}
+    opening_scope_imbalance = (
+        totals_by_section["asset"].opening_balance
+        - totals_by_section["liability"].opening_balance
+        - totals_by_section["equity"].opening_balance
+    ).quantize(MONEY)
+    closing_scope_imbalance = (
+        totals_by_section["asset"].closing_balance
+        - totals_by_section["liability"].closing_balance
+        - totals_by_section["equity"].closing_balance
+    ).quantize(MONEY)
+    return ExecutiveManagementBalanceTurnoverResponse(
+        month=closing_snapshot.period_month.strftime("%Y-%m"),
+        date_from=selected_from,
+        date_to=closing_snapshot.balance_date,
+        opening_balance_date=opening_snapshot.balance_date,
+        view=closing_snapshot.view_mode,  # type: ignore[arg-type]
+        opening_version=opening_snapshot.version,
+        closing_version=closing_snapshot.version,
+        opening_status=opening_snapshot.status,
+        closing_status=closing_snapshot.status,
+        opening_validation_error_count=len(opening_snapshot.validation_errors or []),
+        opening_content_sha256=opening_snapshot.content_sha256,
+        closing_content_sha256=closing_snapshot.content_sha256,
+        source_status=source_status,
+        lines=turnover_lines,
+        totals=totals,
+        excluded_lines=excluded_lines,
+        opening_imbalance_amount=opening_snapshot.imbalance_amount,
+        closing_imbalance_amount=closing_snapshot.imbalance_amount,
+        opening_scope_imbalance_amount=opening_scope_imbalance,
+        closing_scope_imbalance_amount=closing_scope_imbalance,
+        unknown_line_count=unknown_line_count,
+        available_months=available_period_ends,
+        available_period_starts=available_period_starts,
+        available_period_ends=available_period_ends,
+        selected_month_from=selected_from_key,
+        selected_month_to=selected_to_key,
+        note=(
+            "Управленческий контур: УТ 10.3; из БП включены только начисленные налоги. "
+            "Диапазон применяется ко всей ОСВ. По денежным средствам показаны валовые "
+            "движения УТ 10.3; по остальным статьям — чистое изменение между "
+            "сохранёнными снимками до подключения валовых оборотов регистров."
+        ),
+    )
 
 
 def close_management_balance(

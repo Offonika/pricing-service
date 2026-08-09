@@ -11,27 +11,16 @@ related_code:
   - app/services/exporters/ut103_forecast.py
   - app/services/exporters/ut103_nomenclature_properties.py
   - app/services/exporters/ut103_procurement_orders.py
-  - app/services/exporters/ut103_credit_terms.py
-  - app/services/receivable_credit_decisions.py
-  - app/models/receivable_credit_decision.py
   - tasks/build_assortment_lifecycle_updates.py
   - tasks/export_ut103_forecast.py
   - tasks/export_ut103_nomenclature_properties.py
   - tasks/export_ut103_procurement_supplier_orders.py
-  - tasks/export_ut103_credit_terms.py
-  - tasks/run_receivable_credit_decision_worker.py
-  - alembic/versions/e2b3c4d5e6f8_add_receivable_credit_decision_operation.py
 related_tests:
   - tests/test_ut103_exchange.py
   - tests/test_ut103_forecast_exporter.py
   - tests/test_build_assortment_lifecycle_updates_task.py
   - tests/test_ut103_nomenclature_properties_exporter.py
   - tests/test_ut103_procurement_orders_exporter.py
-  - tests/test_ut103_credit_terms_exporter.py
-  - tests/test_export_ut103_credit_terms_task.py
-  - tests/test_receivable_credit_decision_model.py
-  - tests/test_receivable_credit_decision_worker.py
-  - tests/test_receivable_credit_decision_process.py
   - tests/test_export_ut103_forecast_task.py
   - tests/test_export_ut103_nomenclature_properties_task.py
   - tests/test_export_ut103_procurement_supplier_orders_task.py
@@ -40,12 +29,11 @@ contracts:
   - app/services/exporters/ut103_forecast.py
   - app/services/exporters/ut103_nomenclature_properties.py
   - app/services/exporters/ut103_procurement_orders.py
-  - app/services/exporters/ut103_credit_terms.py
 depends_on:
   - docs/specs/counterparty-folder-recommendations.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-29"
+updated_at: "2026-07-05"
 ---
 
 # Назначение
@@ -64,7 +52,7 @@ updated_at: "2026-07-29"
 - ответы 1С в `from_1c/new`;
 - режимы `dry_run` и `apply`;
 - идемпотентность по `message_id` и `idempotency_key`;
-- атомарная команда `set_credit_terms` для лимита и глубины;
+- команды `set_credit_depth`, `set_credit_limit`;
 - задел на команду `move_counterparty_folder` после отдельного acceptance.
 
 Не входит:
@@ -171,85 +159,72 @@ CLI-задачи `tasks.export_ut103_forecast` и
 UT103_EXCHANGE_ROOT/
   to_1c/
     new/
-      onec_commands_<message_id>.ready.xml
+      bot_commands_<message_id>.ready.xml
   from_1c/
     new/
-      onec_commands_<message_id>.result.xml
+      bot_commands_<message_id>.result.xml
 ```
 
 Новые подпапки под лимиты, глубину кредита или перенос папок не создаем.
 
 ## XML Команд `onec_commands.v1`
 
-Для задачи №2494 лимит и глубина передаются только одной атомарной командой
-`set_credit_terms`. Две независимые команды для этих реквизитов запрещены.
+Черновой формат:
 
 ```xml
 <?xml version="1.0" encoding="windows-1251"?>
 <ExchangeMessage>
   <Header>
-    <MessageId>rcd-1200-2494-7902699be42c-aaaaaaaaaaaa-dry-run</MessageId>
+    <MessageId>bot-commands-20260529-001</MessageId>
     <Schema>onec_commands.v1</Schema>
-    <CreatedAt>2026-07-28T10:00:00+03:00</CreatedAt>
+    <CreatedAt>2026-05-29T10:00:00+03:00</CreatedAt>
     <Source>pricing-service</Source>
     <Target>1c_ut_10_3</Target>
     <Mode>dry_run</Mode>
+    <ReportRevision>abc123</ReportRevision>
   </Header>
   <Commands>
     <Command>
-      <IdempotencyKey>receivable-decision:1200:2494:7</IdempotencyKey>
-      <CommandType>set_credit_terms</CommandType>
-      <DecisionId>2494</DecisionId>
-      <DecisionHash>64-symbol-lowercase-sha256</DecisionHash>
-      <ReportRevision>7</ReportRevision>
+      <IdempotencyKey>credit-depth:cp-ref:r1</IdempotencyKey>
+      <CommandType>set_credit_depth</CommandType>
       <CounterpartyRef>0x...</CounterpartyRef>
-      <CounterpartyGuid>00000000-0000-0000-0000-000000000000</CounterpartyGuid>
-      <CounterpartyCode>РБ030337</CounterpartyCode>
-      <CounterpartyName>Тестовый контрагент</CounterpartyName>
-      <ExpectedCurrentLimit>100000.00</ExpectedCurrentLimit>
-      <ExpectedCurrentDepth>7</ExpectedCurrentDepth>
-      <NewLimit>150000.00</NewLimit>
-      <NewDepth>14</NewDepth>
-      <Currency>RUB</Currency>
-      <Reason>Утвержденные кредитные условия</Reason>
-      <ApprovedBy>115204</ApprovedBy>
-      <ApprovedAt>2026-07-28T09:55:00+03:00</ApprovedAt>
+      <CounterpartyCode>РБ0000001</CounterpartyCode>
+      <ExpectedCurrentValue>7</ExpectedCurrentValue>
+      <NewValue>14</NewValue>
+      <Reason>Просрочка по правилу кредитного контроля</Reason>
+      <ApprovedBy></ApprovedBy>
     </Command>
   </Commands>
 </ExchangeMessage>
 ```
 
 Обязательные поля:
-
-- `MessageId` - единый ASCII-идентификатор длиной не более 120:
-  `rcd-<entity>-<item>-<revision_hash12>-<decision_hash12>-<suffix>`;
+- `MessageId` - уникальный пакет команд;
 - `Schema=onec_commands.v1`;
 - `Mode=dry_run|apply`;
 - `IdempotencyKey` - уникальный ключ команды;
-- `CommandType=set_credit_terms`;
-- `DecisionId`, `DecisionHash`, `ReportRevision`;
-- ref, GUID, код и имя контрагента;
-- ожидаемая и новая пара лимит/глубина;
-- `Currency=RUB`, основание, согласующий и время согласования.
+- `CommandType`;
+- `CounterpartyRef` или `CounterpartyCode`;
+- `NewValue`;
+- `Reason`;
+- `ReportRevision` - ревизия отчета/правила, из которого создана команда.
 
-Суффиксы: `dry-run`, `apply`, `readback`. `revision_hash12` — первые 12
-hex-символов SHA-256 UTF-8 строки ревизии, `decision_hash12` — первые 12
-символов полного `DecisionHash`. Python, БД и 1С используют идентификатор
-дословно: обрезание, замена символов и дополнительная нормализация запрещены.
-Один файл кредитных условий содержит ровно одну атомарную команду.
+Рекомендуемые поля:
+- `ExpectedCurrentValue` - защита от применения к уже измененной карточке;
+- `ApprovedBy` - обязателен для `apply`;
+- `CounterpartyName` - только для читаемости результата.
 
 ## Типы Команд
 
-`set_credit_terms`:
+`set_credit_depth`:
+- меняет поле глубины кредита у контрагента;
+- `NewValue` - целое число дней;
+- `ExpectedCurrentValue` желателен.
 
-- одновременно меняет кредитный лимит и глубину;
-- любое несовпадение expected current блокирует обе записи;
-- нулевые значения допустимы;
-- пустые/отрицательные значения, дробная глубина, сумма точнее двух знаков и
-  валюта не `RUB` отклоняются;
-- сумма ограничена типом `Число(18,2)`, глубина — `Число(5,0)`;
-- `apply` возвращает старую, запрошенную и прочитанную обратно пару;
-- повтор уже примененного решения возвращает `already_actual`.
+`set_credit_limit`:
+- меняет кредитный лимит у контрагента;
+- `NewValue` - сумма в рублях;
+- `ExpectedCurrentValue` желателен.
 
 `move_counterparty_folder`:
 - в v1 только `dry_run`;
@@ -375,12 +350,12 @@ python -m tasks.export_ut103_procurement_supplier_orders \
 
 ## XML Результата
 
-Формат:
+Черновой формат:
 
 ```xml
 <?xml version="1.0" encoding="windows-1251"?>
 <ExchangeResult>
-  <MessageId>rcd-1200-2494-7902699be42c-aaaaaaaaaaaa-dry-run</MessageId>
+  <MessageId>bot-commands-20260529-001</MessageId>
   <Schema>onec_commands.v1</Schema>
   <Status>success</Status>
   <ProcessedAt>29.05.2026 10:05:00</ProcessedAt>
@@ -389,17 +364,11 @@ python -m tasks.export_ut103_procurement_supplier_orders \
   <Errors></Errors>
   <CommandResults>
     <CommandResult>
-      <IdempotencyKey>receivable-decision:1200:2494:7</IdempotencyKey>
-      <DecisionId>2494</DecisionId>
-      <DecisionHash>64-symbol-lowercase-sha256</DecisionHash>
+      <IdempotencyKey>credit-depth:cp-ref:r1</IdempotencyKey>
       <Status>validated</Status>
-      <OldLimit>100000.00</OldLimit>
-      <OldDepth>7</OldDepth>
-      <RequestedLimit>150000.00</RequestedLimit>
-      <RequestedDepth>14</RequestedDepth>
-      <ReadbackLimit>100000.00</ReadbackLimit>
-      <ReadbackDepth>7</ReadbackDepth>
-      <Message>Пара проверена; запись не выполнялась</Message>
+      <CurrentValue>7</CurrentValue>
+      <NewValue>14</NewValue>
+      <Message>dry_run: изменение возможно</Message>
     </CommandResult>
   </CommandResults>
 </ExchangeResult>
@@ -409,6 +378,7 @@ python -m tasks.export_ut103_procurement_supplier_orders \
 - `validated` - dry-run прошел, изменение возможно;
 - `applied` - команда применена;
 - `already_actual` - в 1С уже стоит нужное значение;
+- `skipped` - команда пропущена без ошибки;
 - `needs_review` - нужен ручной разбор;
 - `failed` - ошибка применения или валидации.
 
@@ -416,23 +386,9 @@ python -m tasks.export_ut103_procurement_supplier_orders \
 
 - Используем только существующий `UT103_EXCHANGE_ROOT`.
 - Python-контур не пишет напрямую в SQL 1С.
-- `set_credit_terms` всегда начинает с `dry_run`.
-- `apply` требует allowlist согласующего, повторное чтение карточки, feature flag
-  и pilot allowlist.
-- durable operation уникальна по `Bitrix entity + item + revision`; повторное
-  использование ревизии с другим hash отклоняется.
-- параллельные решения одного GUID контрагента блокируются nullable unique-lock.
+- В v1 все новые команды запускаются в `dry_run`.
+- `apply` требует `ApprovedBy` и отдельного включения.
 - Повторный `IdempotencyKey` не должен применять действие второй раз.
-- Неопределенный исход `apply` запрещает слепую повторную отправку до
-  result/readback.
-- Новая ревизия не отменяет `apply_sent/applying` и не освобождает lock
-  контрагента до доказанного result/readback.
-- Recovery `readback` повторяет безопасный `dry_run` с тем же `MessageId` не
-  более трех раз; `apply` всегда имеет ровно одну попытку публикации.
-- Worker читает result только из `from_1c/new` и после проверки переносит его в
-  `from_1c/archive`.
-- После успешного 1С-result карточка Bitrix читается повторно: измененная
-  карточка получает `Ошибка 1С`, а доказанный факт `applied` сохраняется в БД.
 - Для `move_counterparty_folder` автоприменение запрещено до отдельного acceptance.
 - Обработка 1С должна писать результат по каждой команде, даже если весь пакет
   завершился с ошибкой.
@@ -444,7 +400,7 @@ python -m tasks.export_ut103_procurement_supplier_orders \
 # Errors / Edge Cases
 
 - Контрагент не найден по `CounterpartyRef/CounterpartyCode`: `needs_review`.
-- Текущая пара не совпала с `ExpectedCurrentLimit/Depth`: `needs_review`, без
+- Текущее значение не совпало с `ExpectedCurrentValue`: `needs_review`, без
   изменения.
 - Неизвестный `CommandType`: `failed`.
 - `Mode=apply`, но `ApprovedBy` пустой: `failed`.
@@ -454,25 +410,16 @@ python -m tasks.export_ut103_procurement_supplier_orders \
 
 # Tests
 
-Автоматические проверки:
+До реализации:
 - unit: генерация XML `onec_commands.v1` в `windows-1251`;
 - unit: генерация XML `nomenclature_property_updates.v1` в `windows-1251`;
 - unit: генерация XML `procurement_onec_file_exchange.v1` в `windows-1251`;
 - unit: атомарная запись `*.ready.xml` в `to_1c/new`;
 - unit: парсинг `*.result.xml` из `from_1c/new`;
-- unit: лимит+глубина находятся в одной команде;
-- unit: валидация RUB, нулевых, отрицательных и дробной глубины;
-- unit: allowlist, decision hash, дедупликация и конкурентный lock;
-- unit: уникальность `Bitrix item + revision` и границы типов `18.2 / 5.0`;
-- unit: запрет apply при изменении карточки после dry-run;
-- unit: потерянный apply-result не вызывает повторную отправку;
-- unit: recovery readback ограничен тремя попытками с тем же MessageId;
-- unit: result после проверки архивируется и не читается повторно из archive;
-- unit: изменение карточки во время apply не дает ложную стадию `Применено`;
-- unit: pending-синхронизация Bitrix повторяется для `failed` и `applied`;
+- unit: запрет `apply` без `ApprovedBy`;
 - unit: запрет повторного `IdempotencyKey`;
 - smoke в тестовой 1С: dry-run для 1-2 контрагентов без изменений;
-- smoke в тестовой 1С: apply для `set_credit_terms` на `РБ030337`;
+- smoke в тестовой 1С: apply для `set_credit_depth` на тестовом контрагенте;
 - manual acceptance: оператор видит понятный отчет по примененным и отклоненным
   командам.
 
@@ -481,25 +428,20 @@ python -m tasks.export_ut103_procurement_supplier_orders \
 1. Утвердить этот spec как единый канал команд бота в УТ 10.3.
 2. Реализовать Python exporter/parser рядом с `ut103_forecast.py`, используя тот
    же `UT103_EXCHANGE_ROOT`.
-3. Установить `MMOneCCommandsImport`, регистр утвержденных условий и legacy
-   guards в `Ekama_Test_Arsen`.
-4. Запустить `set_credit_terms` только в `dry_run` на `РБ030337`.
+3. Подготовить внешнюю обработку или регламентное задание 1С для
+   `onec_commands.v1`.
+4. Запустить только `dry_run` в `Ekama_Test_Arsen`.
 5. Для `nomenclature_property_updates.v1` после тестового `dry_run/apply`
    отключить тестовый планировщик, переключить `run_nomenclature_properties_import.vbs`
    на боевую базу и повторить боевой `dry_run` на одном товаре.
-6. После приемки включить `set_credit_terms apply` только для `РБ030337` и
-   наблюдать не менее одного рабочего дня.
-7. Расширять pilot allowlist без разделения лимита и глубины.
+6. После приемки включить `apply` сначала для одной утвержденной строки
+   номенклатуры или для `set_credit_depth`, в зависимости от активного контура.
+7. Затем отдельно включать `set_credit_limit`.
 8. `move_counterparty_folder` оставить отдельным этапом после проверки отчетов по
    папкам контрагентов и решения по автопереносу.
 
 # Changelog
 
-- 2026-07-29 - aligned durable uniqueness with `Bitrix item + revision`, switched
-  the active counterparty lock to GUID and added strict result identity and
-  `Numeric(18,2) / Numeric(5,0)` bounds.
-- 2026-07-28 - implemented atomic `set_credit_terms`, result readback and durable
-  Bitrix worker contract for task #2494; live rollout remains gated.
 - 2026-07-05 - added `procurement_onec_file_exchange.v1` exporter/CLI for
   draft supplier-order creation through the existing `UT103_EXCHANGE_ROOT`.
 - 2026-06-26 - clarified production cutover: reuse `E:\MMExchange\UT103` after

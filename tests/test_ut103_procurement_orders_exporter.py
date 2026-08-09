@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import stat
+from dataclasses import replace
 from datetime import date
 from pathlib import Path
 from xml.etree import ElementTree as ET
@@ -101,6 +102,23 @@ def test_build_procurement_supplier_orders_xml_rejects_non_draft_order() -> None
     )
     with pytest.raises(ValueError, match="draft_only"):
         build_procurement_supplier_orders_xml(message)
+
+
+def test_build_procurement_supplier_orders_xml_allows_oauth_order_without_legacy_bitrix_url() -> (
+    None
+):
+    order = replace(_supplier_order(), bitrix_item_url="")
+    message = ProcurementSupplierOrderMessage(
+        message_id="procurement-supplier-orders-oauth-001",
+        mode="apply",
+        approved_by="Production pilot",
+        orders=(order,),
+    )
+
+    root = ET.fromstring(build_procurement_supplier_orders_xml(message))
+
+    assert root.find("SupplierOrders/SupplierOrder/BitrixItemUrl") is not None
+    assert root.findtext("SupplierOrders/SupplierOrder/ConfirmationId") == ("bitrix-approval-777")
 
 
 def test_write_procurement_supplier_orders_message_places_ready_xml_atomically(

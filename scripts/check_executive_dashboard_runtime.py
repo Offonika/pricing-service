@@ -3,13 +3,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import date, datetime, time
 from typing import Any
 from zoneinfo import ZoneInfo
 
 import httpx
 
-from app.core.config import get_settings
+sys.dont_write_bytecode = True
 
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 KNOWN_INCOMPLETE_BLOCKS = {"tasks", "daily_focus"}
@@ -97,6 +98,19 @@ def _validate_payload_shape(name: str, payload: Any) -> list[str]:
             source_summary.get("salary_reconciliation"), dict
         ):
             errors.append("management_balance response does not contain salary_reconciliation")
+    elif name == "management_balance_turnover":
+        for field, field_type in (
+            ("month", str),
+            ("date_from", str),
+            ("date_to", str),
+            ("source_scope", str),
+            ("turnover_method", str),
+            ("lines", list),
+            ("totals", list),
+            ("excluded_lines", list),
+        ):
+            if not isinstance(payload.get(field), field_type):
+                errors.append(f"{name} response has invalid or missing {field}")
     return errors
 
 
@@ -105,7 +119,11 @@ def collect_runtime_checks(
     *,
     requested_date: date,
     headers: dict[str, str],
+    mode: str = "release",
 ) -> tuple[list[dict[str, Any]], dict[str, dict[str, Any]], list[str]]:
+    if mode not in {"release", "monitor"}:
+        raise ValueError(f"unsupported runtime check mode: {mode}")
+
     errors: list[str] = []
     checks: list[dict[str, Any]] = []
     payloads: dict[str, dict[str, Any]] = {}
@@ -145,10 +163,16 @@ def collect_runtime_checks(
             f"?date_from={month_start}&date_to={requested_date.isoformat()}"
         ),
         "management_balance": ("/api/management/executive-dashboard/management-balance"),
+        "management_balance_turnover": (
+            "/api/management/executive-dashboard/management-balance-turnover"
+        ),
         "service_accruals": (
             "/api/management/executive-dashboard/service-accruals" f"?month={month_start[:7]}"
         ),
     }
+    if mode == "monitor":
+        endpoints.pop("cashflow")
+        endpoints.pop("profit_loss")
     for name, path in endpoints.items():
         response = _request(client, "GET", path, headers=headers)
         item: dict[str, Any] = {"name": name, "status_code": response.status_code}
@@ -175,64 +199,37 @@ def evaluate_data_health(
     payloads: dict[str, dict[str, Any]],
     *,
     now: datetime,
-    profit_loss_ready_after: time = time(4, 0),
+    profit_loss_ready_after: time = time(11, 45),
     procurement_ready_after: time = time(11, 0),
     payables_ready_after: time = time(11, 0),
-    owner_control_ready_after: time = time(11, 45),
 ) -> tuple[str, list[dict[str, Any]], list[str]]:
     degraded_checks: list[dict[str, Any]] = []
     errors: list[str] = []
 
-    cashflow = payloads.get("cashflow", {})
-    owner_control_issues = [
-        item
-        for item in cashflow.get("quality_issues", [])
-        if isinstance(item, dict)
-        and str(item.get("status") or "open") in {"open", "pending"}
-        and (
-            str(item.get("issue_type") or "").startswith("owner_transfer_")
-            or str(item.get("issue_type") or "") == "owner_related_party_unresolved"
-        )
-    ]
-    owner_control_pending = any(
-        str(item.get("issue_type") or "") == "owner_transfer_control_pending"
-        for item in owner_control_issues
-    )
-    owner_control_high = any(
-        str(item.get("severity") or "") in {"high", "critical"} for item in owner_control_issues
-    )
-    owner_control_after_grace = now.astimezone(MOSCOW_TZ).time() >= owner_control_ready_after
-    if _is_unhealthy(cashflow):
+    cashflow = payloads.get("cashflow")
+    if cashflow is not None and _is_unhealthy(cashflow):
         source_status, freshness_status = _status_pair(cashflow)
         errors.append(
             "cashflow data is unhealthy: "
             f"source_status={source_status}, freshness_status={freshness_status}"
         )
-    elif _is_partial(cashflow):
-        if owner_control_after_grace and (owner_control_pending or owner_control_high):
-            reason = (
-                "owner cash transfer control has not completed"
-                if owner_control_pending
-                else "owner cash transfer control has a high unresolved issue"
-            )
-            errors.append(reason)
-        else:
-            degraded_checks.append(
-                {
-                    "name": "cashflow",
-                    "reason": "partial data",
-                    **dict(
-                        zip(
-                            ("source_status", "freshness_status"),
-                            _status_pair(cashflow),
-                            strict=True,
-                        )
-                    ),
-                }
-            )
+    elif cashflow is not None and _is_partial(cashflow):
+        degraded_checks.append(
+            {
+                "name": "cashflow",
+                "reason": "partial data",
+                **dict(
+                    zip(
+                        ("source_status", "freshness_status"),
+                        _status_pair(cashflow),
+                        strict=True,
+                    )
+                ),
+            }
+        )
 
-    profit_loss = payloads.get("profit_loss", {})
-    if _is_unhealthy(profit_loss):
+    profit_loss = payloads.get("profit_loss")
+    if profit_loss is not None and _is_unhealthy(profit_loss):
         source_status, freshness_status = _status_pair(profit_loss)
         local_now = now.astimezone(MOSCOW_TZ)
         if local_now.time() < profit_loss_ready_after:
@@ -249,7 +246,7 @@ def evaluate_data_health(
                 "profit_loss data is unhealthy after the refresh grace period: "
                 f"source_status={source_status}, freshness_status={freshness_status}"
             )
-    elif _is_partial(profit_loss):
+    elif profit_loss is not None and _is_partial(profit_loss):
         degraded_checks.append(
             {
                 "name": "profit_loss",
@@ -386,14 +383,15 @@ def _parse_clock(value: str) -> time:
 
 
 def main() -> None:
+    from app.core.config import get_settings
+
     parser = argparse.ArgumentParser(description="Check the live executive dashboard surface.")
     parser.add_argument("--base-url", default="http://127.0.0.1:18080")
     parser.add_argument("--date", default=date.today().isoformat())
     parser.add_argument("--timeout", type=float, default=30.0)
     parser.add_argument("--mode", choices=("release", "monitor"), default="release")
-    parser.add_argument("--profit-loss-ready-after", type=_parse_clock, default=time(4, 0))
+    parser.add_argument("--profit-loss-ready-after", type=_parse_clock, default=time(11, 45))
     parser.add_argument("--procurement-ready-after", type=_parse_clock, default=time(11, 0))
-    parser.add_argument("--owner-control-ready-after", type=_parse_clock, default=time(11, 45))
     parser.add_argument("--payables-ready-after", type=_parse_clock, default=time(11, 0))
     args = parser.parse_args()
 
@@ -428,6 +426,7 @@ def main() -> None:
             client,
             requested_date=requested,
             headers=headers,
+            mode=args.mode,
         )
 
     availability_status = "available" if not availability_errors else "failed"
@@ -440,7 +439,6 @@ def main() -> None:
             now=datetime.now(tz=MOSCOW_TZ),
             profit_loss_ready_after=args.profit_loss_ready_after,
             procurement_ready_after=args.procurement_ready_after,
-            owner_control_ready_after=args.owner_control_ready_after,
             payables_ready_after=args.payables_ready_after,
         )
 

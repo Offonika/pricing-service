@@ -5,10 +5,11 @@ from __future__ import annotations
 import argparse
 import json
 
-from sqlalchemy import create_engine, or_, select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import Product
 
 
@@ -51,7 +52,7 @@ def main() -> None:
     args = parser.parse_args()
 
     settings = get_settings()
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
     with Session(engine) as session:
         report = build_report(session, limit=args.limit)
     print(json.dumps(report, ensure_ascii=False, indent=2))

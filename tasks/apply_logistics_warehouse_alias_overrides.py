@@ -6,10 +6,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.services.logistics_onec import apply_warehouse_alias_overrides
 
 
@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     overrides = load_overrides(args.json_path)
-    engine = create_engine(get_settings().database_url, pool_pre_ping=True)
+    engine = build_engine(get_settings().database_url, pool_pre_ping=True)
     with Session(engine) as session:
         result = apply_warehouse_alias_overrides(
             session,

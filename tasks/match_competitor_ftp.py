@@ -6,10 +6,10 @@ import logging
 import sys
 from datetime import date, timedelta
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.services.competitor_matching import LlmParseClient, match_competitor_ftp_records
 
 
@@ -72,7 +72,7 @@ def main() -> None:
             logging.info("LLM enabled with provider fallback: %s", llm_client.provider_names)
 
     settings = get_settings()
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
     with Session(engine) as session:
         result = match_competitor_ftp_records(
             session,

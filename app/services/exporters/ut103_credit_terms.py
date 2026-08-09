@@ -44,10 +44,20 @@ class CreditTermsCommand:
     counterparty_guid: str
     counterparty_code: str
     counterparty_name: str
+    contract_ref: str
+    contract_guid: str
+    contract_code: str
+    contract_name: str
+    contract_organization_ref: str
+    contract_organization_guid: str
+    contract_organization_code: str
+    contract_organization_name: str
     expected_current_limit: Decimal
     expected_current_depth: int
+    expected_current_debt_control_enabled: bool
     new_limit: Decimal
     new_depth: int
+    new_debt_control_enabled: bool
     reason: str
     approved_by: str
     approved_at: datetime
@@ -74,14 +84,26 @@ class CreditTermsCommandResult:
     counterparty_ref: str
     counterparty_guid: str
     counterparty_code: str
+    contract_ref: str
+    contract_guid: str
+    contract_code: str
+    contract_organization_ref: str
+    contract_organization_guid: str
+    contract_organization_code: str
     status: str
     message: str
     old_limit: Decimal | None
+    old_contract_limit: Decimal | None
     old_depth: int | None
+    old_debt_control_enabled: bool | None
     requested_limit: Decimal | None
+    requested_contract_limit: Decimal | None
     requested_depth: int | None
+    requested_debt_control_enabled: bool | None
     readback_limit: Decimal | None
+    readback_contract_limit: Decimal | None
     readback_depth: int | None
+    readback_debt_control_enabled: bool | None
 
     @property
     def ok(self) -> bool:
@@ -136,10 +158,28 @@ def build_credit_terms_xml(message: CreditTermsMessage) -> bytes:
         _add_text(node, "CounterpartyGuid", command.counterparty_guid)
         _add_text(node, "CounterpartyCode", command.counterparty_code)
         _add_text(node, "CounterpartyName", command.counterparty_name)
+        _add_text(node, "ContractRef", command.contract_ref)
+        _add_text(node, "ContractGuid", command.contract_guid)
+        _add_text(node, "ContractCode", command.contract_code)
+        _add_text(node, "ContractName", command.contract_name)
+        _add_text(node, "ContractOrganizationRef", command.contract_organization_ref)
+        _add_text(node, "ContractOrganizationGuid", command.contract_organization_guid)
+        _add_text(node, "ContractOrganizationCode", command.contract_organization_code)
+        _add_text(node, "ContractOrganizationName", command.contract_organization_name)
         _add_text(node, "ExpectedCurrentLimit", _format_decimal(command.expected_current_limit))
         _add_text(node, "ExpectedCurrentDepth", str(command.expected_current_depth))
+        _add_text(
+            node,
+            "ExpectedCurrentDebtControlEnabled",
+            _format_bool(command.expected_current_debt_control_enabled),
+        )
         _add_text(node, "NewLimit", _format_decimal(command.new_limit))
         _add_text(node, "NewDepth", str(command.new_depth))
+        _add_text(
+            node,
+            "NewDebtControlEnabled",
+            _format_bool(command.new_debt_control_enabled),
+        )
         _add_text(node, "Currency", command.currency)
         _add_text(node, "Reason", command.reason)
         _add_text(node, "ApprovedBy", command.approved_by)
@@ -285,6 +325,14 @@ def _validate_command(command: CreditTermsCommand, *, mode: str) -> None:
         "counterparty_guid": command.counterparty_guid,
         "counterparty_code": command.counterparty_code,
         "counterparty_name": command.counterparty_name,
+        "contract_ref": command.contract_ref,
+        "contract_guid": command.contract_guid,
+        "contract_code": command.contract_code,
+        "contract_name": command.contract_name,
+        "contract_organization_ref": command.contract_organization_ref,
+        "contract_organization_guid": command.contract_organization_guid,
+        "contract_organization_code": command.contract_organization_code,
+        "contract_organization_name": command.contract_organization_name,
         "reason": command.reason,
         "approved_by": command.approved_by,
     }
@@ -299,6 +347,14 @@ def _validate_command(command: CreditTermsCommand, *, mode: str) -> None:
         "counterparty_guid": (command.counterparty_guid, 36),
         "counterparty_code": (command.counterparty_code, 32),
         "counterparty_name": (command.counterparty_name, 255),
+        "contract_ref": (command.contract_ref, 64),
+        "contract_guid": (command.contract_guid, 36),
+        "contract_code": (command.contract_code, 32),
+        "contract_name": (command.contract_name, 255),
+        "contract_organization_ref": (command.contract_organization_ref, 64),
+        "contract_organization_guid": (command.contract_organization_guid, 36),
+        "contract_organization_code": (command.contract_organization_code, 32),
+        "contract_organization_name": (command.contract_organization_name, 255),
         "approved_by": (command.approved_by, 32),
     }
     too_long = [
@@ -317,12 +373,23 @@ def _validate_command(command: CreditTermsCommand, *, mode: str) -> None:
     expected_guid = one_c_guid_from_counterparty_ref(command.counterparty_ref)
     if command.counterparty_guid.strip().lower() != expected_guid:
         raise ValueError("counterparty_guid does not match counterparty_ref")
+    expected_contract_guid = one_c_guid_from_counterparty_ref(command.contract_ref)
+    if command.contract_guid.strip().lower() != expected_contract_guid:
+        raise ValueError("contract_guid does not match contract_ref")
+    expected_organization_guid = one_c_guid_from_counterparty_ref(command.contract_organization_ref)
+    if command.contract_organization_guid.strip().lower() != expected_organization_guid:
+        raise ValueError("contract_organization_guid does not match contract_organization_ref")
     if command.currency != "RUB":
         raise ValueError("currency must be RUB")
     _validate_money(command.expected_current_limit, "expected_current_limit")
     _validate_money(command.new_limit, "new_limit")
     _validate_depth(command.expected_current_depth, "expected_current_depth")
     _validate_depth(command.new_depth, "new_depth")
+    _validate_bool(
+        command.expected_current_debt_control_enabled,
+        "expected_current_debt_control_enabled",
+    )
+    _validate_bool(command.new_debt_control_enabled, "new_debt_control_enabled")
     if command.approved_at.tzinfo is None:
         raise ValueError("approved_at must include timezone")
     if mode == "apply" and not command.approved_by.strip():
@@ -351,6 +418,11 @@ def _validate_depth(value: int, field_name: str) -> None:
         raise ValueError(f"{field_name} exceeds Numeric(5,0)")
 
 
+def _validate_bool(value: bool, field_name: str) -> None:
+    if not isinstance(value, bool):
+        raise ValueError(f"{field_name} must be boolean")
+
+
 def _parse_command_result(node: ET.Element) -> CreditTermsCommandResult:
     status = _required_node_text(node, "Status")
     if status not in VALID_RESULT_STATUSES:
@@ -362,14 +434,40 @@ def _parse_command_result(node: ET.Element) -> CreditTermsCommandResult:
         counterparty_ref=_node_text(node, "CounterpartyRef"),
         counterparty_guid=_node_text(node, "CounterpartyGuid"),
         counterparty_code=_node_text(node, "CounterpartyCode"),
+        contract_ref=_node_text(node, "ContractRef"),
+        contract_guid=_node_text(node, "ContractGuid"),
+        contract_code=_node_text(node, "ContractCode"),
+        contract_organization_ref=_node_text(node, "ContractOrganizationRef"),
+        contract_organization_guid=_node_text(node, "ContractOrganizationGuid"),
+        contract_organization_code=_node_text(node, "ContractOrganizationCode"),
         status=status,
         message=_node_text(node, "Message"),
         old_limit=_optional_decimal(_node_text(node, "OldLimit"), "OldLimit"),
+        old_contract_limit=_optional_decimal(
+            _node_text(node, "OldContractLimit"), "OldContractLimit"
+        ),
         old_depth=_optional_int(_node_text(node, "OldDepth"), "OldDepth"),
+        old_debt_control_enabled=_optional_bool(
+            _node_text(node, "OldDebtControlEnabled"), "OldDebtControlEnabled"
+        ),
         requested_limit=_optional_decimal(_node_text(node, "RequestedLimit"), "RequestedLimit"),
+        requested_contract_limit=_optional_decimal(
+            _node_text(node, "RequestedContractLimit"), "RequestedContractLimit"
+        ),
         requested_depth=_optional_int(_node_text(node, "RequestedDepth"), "RequestedDepth"),
+        requested_debt_control_enabled=_optional_bool(
+            _node_text(node, "RequestedDebtControlEnabled"),
+            "RequestedDebtControlEnabled",
+        ),
         readback_limit=_optional_decimal(_node_text(node, "ReadbackLimit"), "ReadbackLimit"),
+        readback_contract_limit=_optional_decimal(
+            _node_text(node, "ReadbackContractLimit"), "ReadbackContractLimit"
+        ),
         readback_depth=_optional_int(_node_text(node, "ReadbackDepth"), "ReadbackDepth"),
+        readback_debt_control_enabled=_optional_bool(
+            _node_text(node, "ReadbackDebtControlEnabled"),
+            "ReadbackDebtControlEnabled",
+        ),
     )
 
 
@@ -387,6 +485,10 @@ def _format_datetime(value: datetime | None) -> str:
 
 def _format_decimal(value: Decimal) -> str:
     return format(value, "f")
+
+
+def _format_bool(value: bool) -> str:
+    return "true" if value else "false"
 
 
 def _safe_filename_part(value: str) -> str:
@@ -450,6 +552,17 @@ def _parse_int(value: str, field_name: str) -> int:
 
 def _optional_int(value: str, field_name: str) -> int | None:
     return None if value == "" else _parse_int(value, field_name)
+
+
+def _optional_bool(value: str, field_name: str) -> bool | None:
+    if value == "":
+        return None
+    normalized = value.strip().lower()
+    if normalized == "true":
+        return True
+    if normalized == "false":
+        return False
+    raise ValueError(f"{field_name} must be true or false, got: {value}")
 
 
 def _optional_decimal(value: str, field_name: str) -> Decimal | None:

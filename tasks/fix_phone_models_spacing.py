@@ -4,10 +4,11 @@ import json
 import logging
 import re
 
-from sqlalchemy import and_, create_engine
+from sqlalchemy import and_
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.models import PhoneModel
 
 logger = logging.getLogger("app.fix_phone_models_spacing")
@@ -65,7 +66,7 @@ def fix_spacing(session: Session, brand: str | None = None) -> dict:
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     settings = get_settings()
-    engine = create_engine(settings.database_url)
+    engine = build_engine(settings.database_url)
     with Session(engine) as session:
         result = fix_spacing(session, brand="apple")
     logger.info("spacing fix completed", extra=result)

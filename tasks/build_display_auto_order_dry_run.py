@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import argparse
 import csv
-import hashlib
 import json
 import os
 import re
@@ -11,11 +10,12 @@ from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta
 from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Iterable, Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
-from sqlalchemy import bindparam, create_engine, func, select, text
+from sqlalchemy import bindparam, func, select, text
 
 from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
 )
@@ -79,11 +79,30 @@ CSV_COLUMNS = [
     "incoming_qty",
     "incoming_order_count",
     "sales_qty_window",
+    "sales_qty_window_medium",
+    "sales_qty_window_short",
     "return_qty_window",
+    "batch_error_return_qty",
+    "batch_error_share_pct",
+    "batch_error_suspected",
+    "defect_return_qty",
+    "defect_share_pct",
+    "defect_rate_suspected",
     "net_sales_qty_window",
+    "non_marketplace_net_sales_qty",
+    "marketplace_net_sales_qty",
+    "marketplace_share_pct",
+    "sales_doc_count_marketplace",
+    "marketplace_order_impact_qty",
+    "marketplace_risk_code",
+    "marketplace_risk_ru",
     "sales_doc_count",
     "sales_warehouse_count",
     "last_sale_at",
+    "sales_speed_trend",
+    "days_in_sale_short",
+    "days_in_sale_medium",
+    "days_in_sale_long",
     "base_avg_daily_sales_qty",
     "avg_daily_sales_qty",
     "speed_tier",
@@ -119,6 +138,7 @@ CSV_COLUMNS = [
     "delivery_days",
     "supplier_delay_buffer_days",
     "receiving_buffer_days",
+    "distribution_to_shelf_days",
     "safety_stock_days",
     "lead_time_days",
     "effective_target_days",
@@ -144,6 +164,9 @@ CSV_COLUMNS = [
     "pipeline_cargo_handoff_qty",
     "pipeline_supplier_processing_qty",
     "dry_run_decision",
+    "stockout_guard_triggered",
+    "stockout_guard_days_remaining",
+    "stockout_guard_required_days",
     "reason_ru",
     "blockers",
     "warnings",
@@ -297,6 +320,7 @@ class AutoOrderPolicy:
     logistics_days: int = 0
     supplier_delay_buffer_days: int = 0
     receiving_buffer_days: int = 0
+    distribution_to_shelf_days: int = 0
     safety_stock_days: int = 0
     min_display_qty: int = 0
     min_order_qty: int = 1
@@ -323,6 +347,7 @@ class AutoOrderPolicy:
             + self.lead_time_days
             + self.supplier_delay_buffer_days
             + self.receiving_buffer_days
+            + self.distribution_to_shelf_days
         )
 
     @property
@@ -338,6 +363,7 @@ class AutoOrderPolicy:
             "logistics_days": self.logistics_days,
             "supplier_delay_buffer_days": self.supplier_delay_buffer_days,
             "receiving_buffer_days": self.receiving_buffer_days,
+            "distribution_to_shelf_days": self.distribution_to_shelf_days,
             "safety_stock_days": self.safety_stock_days,
             "min_display_qty": self.min_display_qty,
             "min_order_qty": self.min_order_qty,
@@ -383,6 +409,7 @@ class AutoOrderPolicy:
             "logistics_days",
             "supplier_delay_buffer_days",
             "receiving_buffer_days",
+            "distribution_to_shelf_days",
             "safety_stock_days",
             "min_display_qty",
         ]:
@@ -400,6 +427,7 @@ def main() -> int:
         logistics_days=args.logistics_days,
         supplier_delay_buffer_days=args.supplier_delay_buffer_days,
         receiving_buffer_days=args.receiving_buffer_days,
+        distribution_to_shelf_days=args.distribution_to_shelf_days,
         safety_stock_days=args.safety_stock_days,
         min_display_qty=args.min_display_qty,
         min_order_qty=args.min_order_qty,
@@ -414,7 +442,7 @@ def main() -> int:
         or settings.onec_database_url
         or ""
     )
-    app_engine = create_engine(database_url, pool_pre_ping=True)
+    app_engine = build_engine(database_url, pool_pre_ping=True)
     try:
         items, run_id = load_auto_order_items(
             app_engine,
@@ -448,7 +476,7 @@ def main() -> int:
         except Exception as exc:  # noqa: BLE001 - optional advisory must not block base dry-run.
             b2b_customer_demand_error = f"{type(exc).__name__}: {exc}"
     if onec_database_url:
-        onec_engine = create_engine(onec_database_url, pool_pre_ping=True)
+        onec_engine = build_engine(onec_database_url, pool_pre_ping=True)
         try:
             scoped_candidate_tokens = auto_order_policy.onec_catalog_analog_candidate_model_tokens
             include_catalog_analog_candidates = args.include_onec_catalog_analog_candidates or bool(
@@ -495,6 +523,26 @@ def main() -> int:
             source_errors["onec"] = f"{type(exc).__name__}: {exc}"
         finally:
             onec_engine.dispose()
+
+        days_in_sale_engine = build_engine(database_url, pool_pre_ping=True)
+        try:
+            facts["days_in_sale"] = fetch_days_in_sale_totals(
+                days_in_sale_engine,
+                codes=codes,
+                physical_sales_point_codes=policy.sellable_codes,
+                date_to=args.as_of,
+                windows_days=(
+                    TREND_WINDOW_SHORT_DAYS,
+                    TREND_WINDOW_MEDIUM_DAYS,
+                    auto_order_policy.sales_window_days,
+                ),
+            )
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - days-in-sale correction is best-effort, must not block dry-run.
+            source_errors["days_in_sale"] = f"{type(exc).__name__}: {exc}"
+        finally:
+            days_in_sale_engine.dispose()
     else:
         source_errors["onec"] = "ONEC_DATABASE_URL is not configured"
 
@@ -508,6 +556,7 @@ def main() -> int:
         logistics_days=auto_order_policy.logistics_days,
         supplier_delay_buffer_days=auto_order_policy.supplier_delay_buffer_days,
         receiving_buffer_days=auto_order_policy.receiving_buffer_days,
+        distribution_to_shelf_days=auto_order_policy.distribution_to_shelf_days,
         safety_stock_days=auto_order_policy.safety_stock_days,
         min_display_qty=auto_order_policy.min_display_qty,
         min_order_qty=auto_order_policy.min_order_qty,
@@ -654,6 +703,7 @@ def load_auto_order_policy(path: Path) -> AutoOrderPolicy:
         logistics_days=_int_value(raw.get("logistics_days") or raw.get("delivery_days"), 0),
         supplier_delay_buffer_days=_int_value(raw.get("supplier_delay_buffer_days"), 0),
         receiving_buffer_days=_int_value(raw.get("receiving_buffer_days"), 0),
+        distribution_to_shelf_days=_int_value(raw.get("distribution_to_shelf_days"), 0),
         safety_stock_days=_int_value(raw.get("safety_stock_days"), 0),
         min_display_qty=_int_value(raw.get("min_display_qty"), 0),
         min_order_qty=_int_value(raw.get("min_order_qty"), 1),
@@ -678,17 +728,31 @@ def load_auto_order_policy(path: Path) -> AutoOrderPolicy:
     )
 
 
+# Найдено и подтверждено пользователем 2026-07-31: реквизит "Роль склада"
+# (тот же генерик-механизм _InfoRg6309+_Chrc401+_Reference42, что уже
+# используется для маркетплейса выше) явно расставлен на ВСЕХ 36 складах в
+# базе. Остаток качества "Новый" на складах с ролью "Резерв"/"Производства"/
+# "Брак" (Уценка, утерянный карго, оборудование для переклейки и т.п.) не
+# готов к продаже, хотя формально проходил старый фильтр только по качеству.
+# "Точка продаж"/"Транзит"/"Центральный" остаются в свободном остатке как и
+# раньше (подтверждено ранее: товар в пути с центрального склада уже
+# практически в наличии).
+WAREHOUSE_ROLE_PROPERTY_REF = "0xb55d002590803daf11f182171ce63dc8"
+SELLABLE_WAREHOUSE_ROLE_NAMES = ("Точка продаж", "Транзит", "Центральный")
+
+
 def fetch_stock_totals(
     engine, *, codes: Sequence[str], policy: WarehousePolicy
 ) -> dict[str, dict[str, Any]]:
     if not codes:
         return {}
     sql = _expanding_text(
-        """
+        f"""
         SELECT
             NULLIF(LTRIM(RTRIM(product._Code)), N'') AS code,
             SUM(CASE WHEN NULLIF(LTRIM(RTRIM(quality._Description)), N'')
                     IN :usable_stock_quality_names
+                    AND sellable_role.warehouse_ref IS NOT NULL
                 THEN CAST(stock._Fld7743 AS decimal(18, 3)) ELSE 0 END) AS sellable_stock_qty,
             SUM(CASE WHEN NULLIF(LTRIM(RTRIM(quality._Description)), N'')
                     IN :usable_stock_quality_names
@@ -702,6 +766,16 @@ def fetch_stock_totals(
             ON quality._IDRRef = stock._Fld7741RRef
         JOIN dbo._Reference80 AS warehouse WITH (NOLOCK)
             ON warehouse._IDRRef = stock._Fld7742RRef
+        LEFT JOIN (
+            SELECT DISTINCT role_reg._Fld6310_RRRef AS warehouse_ref
+            FROM dbo._InfoRg6309 AS role_reg WITH (NOLOCK)
+            JOIN dbo._Reference42 AS role_value WITH (NOLOCK)
+                ON role_value._IDRRef = role_reg._Fld6312_RRRef
+            WHERE role_reg._Fld6311RRef = {WAREHOUSE_ROLE_PROPERTY_REF}
+              AND NULLIF(LTRIM(RTRIM(role_value._Description)), N'')
+                  IN :sellable_warehouse_role_names
+        ) AS sellable_role
+            ON sellable_role.warehouse_ref = warehouse._IDRRef
         WHERE stock._Fld7743 <> 0
           AND stock._Period = :balance_period
           AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
@@ -709,6 +783,7 @@ def fetch_stock_totals(
         """,
         codes=codes,
         usable_stock_quality_names=policy.usable_stock_quality_names,
+        sellable_warehouse_role_names=SELLABLE_WAREHOUSE_ROLE_NAMES,
         central_codes=policy.central_codes or ("__none__",),
     ).bindparams(bindparam("balance_period", value=OPEN_SUPPLIER_ORDER_BALANCE_PERIOD))
     with engine.connect() as conn:
@@ -804,6 +879,39 @@ def fetch_incoming_totals(
         return {_clean(row["code"]): dict(row) for row in conn.execute(sql).mappings()}
 
 
+TREND_WINDOW_MEDIUM_DAYS = 90
+TREND_WINDOW_SHORT_DAYS = 30
+
+# Решение 2026-07-31 (карточка РБ000064147): строгое "каждое окно чуть
+# больше предыдущего" ловило шум на маленьких числах (0.1485/0.1341/0.1161 -
+# формально по возрастанию, реально плоско, пользователь свою систему сверил
+# - там ускорения не видно). Порог значимости - 20% роста на каждом шаге,
+# не любая формальная разница.
+ACCELERATING_MIN_GROWTH_MULTIPLIER = Decimal("1.2")
+
+# Раздел 2 assortment-status-legacy-rule-inventory.md +
+# procurement-order-auto-order-unified-contour.md ("Разрезы спроса по типу
+# покупателя"). Реквизит найден и подтвержден на реальных данных 2026-07-30:
+# _Reference54._Fld619RRef (Основной вид деятельности контрагента) ->
+# _Reference23, значение "Маркетплейс" = РБ0000021. Продажи через маркетплейс
+# идут через ТЕ ЖЕ физические магазины (проверено), поэтому фильтр по
+# sellable_codes здесь не убирается - маркетплейс считается внутри того же
+# среза точек продаж, не отдельным каналом склада.
+MARKETPLACE_ACTIVITY_REF = "0x9e78002590803daf11efe0a59c93966e"
+
+# Пороги из procurement-order-auto-order-unified-contour.md ("Разрезы спроса
+# по типу покупателя") и уточнения 2026-07-25 (assortment-status-legacy-
+# rule-inventory.md, раздел 2): 30-50% - складываем магазинную и
+# маркетплейсную потребность (не выбор), 50-70% и 70%+ - строго ручное
+# решение, автосумма не действует.
+MARKETPLACE_WATCH_SHARE_PCT = Decimal("10")
+MARKETPLACE_MEDIUM_SHARE_PCT = Decimal("30")
+MARKETPLACE_HIGH_SHARE_PCT = Decimal("50")
+MARKETPLACE_CRITICAL_SHARE_PCT = Decimal("70")
+MARKETPLACE_MEDIUM_MIN_DOC_COUNT = 7
+MARKETPLACE_WATCH_MIN_ORDER_IMPACT_QTY = Decimal("10")
+
+
 def fetch_sales_totals(
     engine,
     *,
@@ -811,14 +919,31 @@ def fetch_sales_totals(
     sellable_codes: Sequence[str],
     date_from: date,
     date_to: date,
+    trend_window_medium_days: int = TREND_WINDOW_MEDIUM_DAYS,
+    trend_window_short_days: int = TREND_WINDOW_SHORT_DAYS,
+    marketplace_activity_ref: str = MARKETPLACE_ACTIVITY_REF,
 ) -> dict[str, dict[str, Any]]:
     if not codes:
         return {}
+    window_medium_from = datetime.combine(date_to, time.min) - timedelta(
+        days=trend_window_medium_days
+    )
+    window_short_from = datetime.combine(date_to, time.min) - timedelta(
+        days=trend_window_short_days
+    )
     sql = _expanding_text(
-        """
+        f"""
         SELECT
             NULLIF(LTRIM(RTRIM(product._Code)), N'') AS code,
             SUM(CAST(rtu_line._Fld4971 AS decimal(18, 3))) AS sales_qty_window,
+            SUM(CASE WHEN rtu._Date_Time >= :window_medium_from
+                THEN CAST(rtu_line._Fld4971 AS decimal(18, 3)) ELSE 0 END) AS sales_qty_window_medium,
+            SUM(CASE WHEN rtu._Date_Time >= :window_short_from
+                THEN CAST(rtu_line._Fld4971 AS decimal(18, 3)) ELSE 0 END) AS sales_qty_window_short,
+            SUM(CASE WHEN counterparty._Fld619RRef = {marketplace_activity_ref}
+                THEN CAST(rtu_line._Fld4971 AS decimal(18, 3)) ELSE 0 END) AS sales_qty_window_marketplace,
+            COUNT(DISTINCT CASE WHEN counterparty._Fld619RRef = {marketplace_activity_ref}
+                THEN CONVERT(varchar(34), rtu._IDRRef, 1) END) AS sales_doc_count_marketplace,
             COUNT(DISTINCT CONVERT(varchar(34), rtu._IDRRef, 1)) AS sales_doc_count,
             COUNT(DISTINCT NULLIF(LTRIM(RTRIM(warehouse._Code)), N'')) AS sales_warehouse_count,
             MAX(rtu._Date_Time) AS last_sale_at
@@ -835,6 +960,8 @@ def fetch_sales_totals(
                     ELSE rtu._Fld4940RRef
                 END
             )
+        JOIN dbo._Reference54 AS counterparty WITH (NOLOCK)
+            ON counterparty._IDRRef = rtu._Fld4942RRef
         WHERE rtu._Marked = 0x00
           AND rtu._Posted = 0x01
           AND rtu._Date_Time >= :date_from
@@ -849,9 +976,159 @@ def fetch_sales_totals(
     ).bindparams(
         bindparam("date_from", value=datetime.combine(date_from, time.min)),
         bindparam("date_to", value=datetime.combine(date_to, time.min)),
+        bindparam("window_medium_from", value=window_medium_from),
+        bindparam("window_short_from", value=window_short_from),
     )
     with engine.connect() as conn:
         return {_clean(row["code"]): dict(row) for row in conn.execute(sql).mappings()}
+
+
+# Раздел 5.1 assortment-status-legacy-rule-inventory.md, "ранний триггер
+# партийной ошибки" (пересорт/ревизия/версия детали): возвратов качества
+# "Новый" >=5 шт за скользящее окно 90 дней И доля этих возвратов от продаж
+# за то же окно >=40% -> продажа/автозаказ карточки останавливается
+# немедленно. Качество возврата - _Document109_VT1698._Fld1715RRef ->
+# _Reference48 (подтверждено на реальных данных: 582505 "Новый" / 166087
+# "Брак" по всей базе). Окно для новых карточек без 90 дней истории должно
+# быть открытым от даты первой продажи - это упрощение пока считает всех
+# по фиксированному 90-дневному окну, открытый вариант не реализован.
+BATCH_ERROR_RETURN_QUALITY_NAME = "Новый"
+BATCH_ERROR_WINDOW_DAYS = TREND_WINDOW_MEDIUM_DAYS
+BATCH_ERROR_MIN_RETURN_QTY = Decimal("5")
+BATCH_ERROR_MIN_SHARE_PCT = Decimal("40")
+
+# Настоящий брак - отдельный показатель от раннего триггера пересорта выше.
+# Правило 5.1 сознательно смотрит на качество "Новый" (возврат "не подошло" ->
+# признак пересорта/неверной ревизии детали). Возвраты качества "Брак" до
+# 2026-08-01 не считались нигде вообще: карточка с 11 бракованными из 51
+# проданной (РБ000059304) показывала batch_error_share_pct = 0%, то есть
+# "претензий нет". Здесь считается именно доля возвратов качества "Брак".
+#
+# Окно намеренно объявлено отдельной константой, а не ссылкой на
+# TREND_WINDOW_MEDIUM_DAYS: окно тренда скорости и окно контроля качества -
+# разные по смыслу величины, их изменение не должно тянуть друг друга.
+#
+# Пороги откалиброваны на реальных данных 2026-08-01 по ВСЕМУ каталогу
+# дисплеев (1313 карточек прогона, окно 90 дней): средний уровень брака ~3.6%.
+# Матрица срабатываний считалась по сетке порогов, выбран вариант 5% + 5 шт
+# (29 карточек из 1313). Связка не произвольная: чем ниже порог доли, тем
+# больше должен быть минимум штук, иначе процент считается на слишком малой
+# базе. При 5% минимум 5 шт означает базу от 100 продаж - 5 возвратов против
+# ожидаемых 3.6 уже осмысленная разница. Вариант 5% + 3 шт отклонён: давал 66
+# карточек, из них заметная часть - шум на 60 продажах.
+DEFECT_RETURN_QUALITY_NAME = "Брак"
+DEFECT_RATE_WINDOW_DAYS = 90
+DEFECT_RATE_MIN_RETURN_QTY = Decimal("5")
+DEFECT_RATE_MIN_SHARE_PCT = Decimal("5")
+
+# Решение 2026-07-31 (карточки РБ000064721/РБ000057817, раздел 9 assortment-
+# status-legacy-rule-inventory.md): у тира "slow" (review_only) заказ
+# зануляется БЕЗУСЛОВНО для всей группы, даже если у карточки остаток по
+# сети равен нулю - цель (target_stock_qty) при этом всё равно честно
+# считается выше по конвейеру, просто результат выбрасывается. Структурный
+# пол - 11 активных точек продаж (active_store_count,
+# display-warehouse-policy.json) + Сайт (тоже "Точка продаж" в 1С,
+# подтверждено скринами) + 1 буфер на СДЭК складе = 13. Карточка ниже этого
+# порога получает стартовый заказ по уже посчитанной цели вместо занулени,
+# независимо от тира. Второе исключение: если тренд скорости "accelerating"
+# (растёт, см. sales_speed_trend) - тоже не зануляем, даже если остаток
+# выше 13, карточка не должна тормозиться ручным review, пока спрос реально
+# растёт.
+STRUCTURAL_FLOOR_QTY = Decimal("13")
+
+# Решение 2026-07-31 (карточка РБ000029831, "гейт Пенсии"): структурный пол
+# выше не должен слепо давать стартовый заказ любой медленной карточке ниже
+# 13 шт - нужно сначала проверить, БЫЛ ли у неё честный шанс продаваться.
+# Если товар реально стоял на полке достаточно дней (days_in_sale_medium >=
+# порог) и даже тогда скорость не растёт (не accelerating) - это не
+# голодание, это угасающий спрос: карточка не получает автозаказ, уходит на
+# ручную проверку как кандидат на статус "Пенсия" ("вывод из активной
+# работы", задокументирован в спеках, не реализован как отдельный код-
+# статус - см. Changelog). Если честных дней в продаже почти не было
+# (карточка реально голодала, как РБ000064721 до этой сессии) - природа
+# низкой скорости неизвестна, действует исключение, стартовый заказ
+# сохраняется. Порог 15 дней из 90 - примерно две недели реального
+# присутствия на полке, достаточно для честного суждения о тренде, не
+# закреплён строгим анализом, при необходимости можно скорректировать.
+PENSION_CANDIDATE_MIN_DAYS_IN_SALE = Decimal("15")
+
+# off_schedule_signal_policy.stockout_guard, display-auto-order-policy.json:
+# "дней свободного остатка меньше ожидаемого оставшегося срока поставки плюс
+# 10 дней запаса -> создать внеплановую Потребность на заказ или ручную
+# задачу до обычного дня графика". Раньше это было только в JSON, в коде не
+# читалось вообще (0 упоминаний off_schedule_signal_policy в этом файле до
+# 2026-07-31). Реализовано КАК СИГНАЛ (v1): помечает карточки, где текущий
+# расчёт решил "заказ не нужен", а честный остаток запаса времени
+# (свободный остаток / скорость) меньше срока полного цикла довоза + буфер -
+# то есть решение "не заказывать" рискует обернуться пустой полкой раньше,
+# чем придёт следующий заказ. Сознательно НЕ меняет recommended_order_qty
+# в этой версии - только явный флаг и текст тревоги, чтобы не повторить
+# сценарий двух утечек этой же сессии (правило molча меняющее количество в
+# ещё одном месте конвейера). Вопрос "должен ли сигнал ещё и создавать заказ
+# сам" - открытый, требует отдельного qty-diff гейта на реальных данных
+# перед включением.
+STOCKOUT_GUARD_BUFFER_DAYS = 10
+
+
+# Раздел 1 assortment-status-legacy-rule-inventory.md ("Дни эффективного
+# наличия") - методология (честное среднее по реальным точкам продаж,
+# onec_stock_availability_interval, НЕ "сеть-любая точка") уже реализована
+# и работает в app/services/onec_stock_availability.py, но там report_only -
+# используется только assortment_lifecycle_facts.py для отчётности, в сам
+# автозаказ (этот файл) никогда не подключалась. Подтверждено вручную на
+# РБ000064721 (0/30, 14.2/90, 51.1/180 дней в продаже) и РБ000057817
+# 2026-07-31 - без этой поправки скорость занижается для карточек, которые
+# просто были без остатка часть окна, а не потеряли реальный спрос. Здесь -
+# первое подключение к формуле скорости.
+def fetch_days_in_sale_totals(
+    engine: Any,
+    *,
+    codes: Sequence[str],
+    physical_sales_point_codes: Sequence[str],
+    date_to: date,
+    windows_days: Sequence[int],
+) -> dict[str, dict[int, Decimal]]:
+    if not codes or not physical_sales_point_codes:
+        return {}
+    store_count = Decimal(str(len(physical_sales_point_codes)))
+    result: dict[str, dict[int, Decimal]] = {code: {} for code in codes}
+    with engine.connect() as conn:
+        for window_days in sorted(set(windows_days)):
+            window_from = date_to - timedelta(days=window_days - 1)
+            sql = text("""
+                SELECT product_code,
+                    SUM(
+                        GREATEST(
+                            0,
+                            (
+                                LEAST(available_to, :window_to)
+                                - GREATEST(available_from, :window_from)
+                            ) + 1
+                        )
+                    ) AS available_point_days
+                FROM onec_stock_availability_interval
+                WHERE product_code IN :codes
+                  AND warehouse_code IN :warehouse_codes
+                  AND available_from <= :window_to
+                  AND available_to >= :window_from
+                GROUP BY product_code
+                """).bindparams(
+                bindparam("codes", value=tuple(codes), expanding=True),
+                bindparam(
+                    "warehouse_codes",
+                    value=tuple(physical_sales_point_codes),
+                    expanding=True,
+                ),
+                bindparam("window_from", value=window_from),
+                bindparam("window_to", value=date_to),
+            )
+            for row in conn.execute(sql).mappings():
+                code = str(row["product_code"])
+                if code not in result:
+                    continue
+                available_days = Decimal(str(row["available_point_days"] or 0))
+                result[code][window_days] = available_days / store_count
+    return result
 
 
 def fetch_return_totals(
@@ -861,14 +1138,30 @@ def fetch_return_totals(
     sellable_codes: Sequence[str],
     date_from: date,
     date_to: date,
+    batch_error_window_days: int = BATCH_ERROR_WINDOW_DAYS,
+    defect_rate_window_days: int = DEFECT_RATE_WINDOW_DAYS,
 ) -> dict[str, dict[str, Any]]:
     if not codes:
         return {}
+    batch_error_window_from = datetime.combine(date_to, time.min) - timedelta(
+        days=batch_error_window_days
+    )
+    defect_rate_window_from = datetime.combine(date_to, time.min) - timedelta(
+        days=defect_rate_window_days
+    )
     sql = _expanding_text(
         """
         SELECT
             NULLIF(LTRIM(RTRIM(product._Code)), N'') AS code,
-            SUM(CAST(return_line._Fld1701 AS decimal(18, 3))) AS return_qty_window
+            SUM(CAST(return_line._Fld1701 AS decimal(18, 3))) AS return_qty_window,
+            SUM(CASE WHEN customer_return._Date_Time >= :batch_error_window_from
+                    AND NULLIF(LTRIM(RTRIM(quality._Description)), N'') = :batch_error_return_quality_name
+                THEN CAST(return_line._Fld1701 AS decimal(18, 3)) ELSE 0 END)
+                AS batch_error_return_qty,
+            SUM(CASE WHEN customer_return._Date_Time >= :defect_rate_window_from
+                    AND NULLIF(LTRIM(RTRIM(quality._Description)), N'') = :defect_return_quality_name
+                THEN CAST(return_line._Fld1701 AS decimal(18, 3)) ELSE 0 END)
+                AS defect_return_qty
         FROM dbo._Document109 AS customer_return WITH (NOLOCK)
         JOIN dbo._Document109_VT1698 AS return_line WITH (NOLOCK)
             ON return_line._Document109_IDRRef = customer_return._IDRRef
@@ -876,6 +1169,8 @@ def fetch_return_totals(
             ON product._IDRRef = return_line._Fld1700RRef
         JOIN dbo._Reference80 AS warehouse WITH (NOLOCK)
             ON warehouse._IDRRef = return_line._Fld1716RRef
+        LEFT JOIN dbo._Reference48 AS quality WITH (NOLOCK)
+            ON quality._IDRRef = return_line._Fld1715RRef
         WHERE customer_return._Marked = 0x00
           AND customer_return._Posted = 0x01
           AND customer_return._Date_Time >= :date_from
@@ -890,6 +1185,10 @@ def fetch_return_totals(
     ).bindparams(
         bindparam("date_from", value=datetime.combine(date_from, time.min)),
         bindparam("date_to", value=datetime.combine(date_to, time.min)),
+        bindparam("batch_error_window_from", value=batch_error_window_from),
+        bindparam("batch_error_return_quality_name", value=BATCH_ERROR_RETURN_QUALITY_NAME),
+        bindparam("defect_rate_window_from", value=defect_rate_window_from),
+        bindparam("defect_return_quality_name", value=DEFECT_RETURN_QUALITY_NAME),
     )
     with engine.connect() as conn:
         return {_clean(row["code"]): dict(row) for row in conn.execute(sql).mappings()}
@@ -1001,6 +1300,7 @@ def build_dry_run_rows(
     logistics_days: int = 0,
     supplier_delay_buffer_days: int = 0,
     receiving_buffer_days: int = 0,
+    distribution_to_shelf_days: int = 0,
     safety_stock_days: int = 0,
     min_display_qty: int = 0,
     min_order_qty: int = 1,
@@ -1030,6 +1330,7 @@ def build_dry_run_rows(
         + lead_time_days
         + supplier_delay_buffer_days
         + receiving_buffer_days
+        + distribution_to_shelf_days
     )
     effective_target_days = planning_horizon_days + safety_stock_days
     for item in items:
@@ -1055,7 +1356,13 @@ def build_dry_run_rows(
             incoming.get("pipeline_supplier_processing_qty")
         )
         sales_qty = _decimal(sales.get("sales_qty_window"))
+        sales_qty_medium = _decimal(sales.get("sales_qty_window_medium"))
+        sales_qty_short = _decimal(sales.get("sales_qty_window_short"))
+        sales_qty_marketplace = _decimal(sales.get("sales_qty_window_marketplace"))
+        sales_doc_count_marketplace = int(sales.get("sales_doc_count_marketplace") or 0)
         return_qty = _decimal(returns.get("return_qty_window"))
+        batch_error_return_qty = _decimal(returns.get("batch_error_return_qty"))
+        defect_return_qty = _decimal(returns.get("defect_return_qty"))
         latest_purchase_price = _decimal(purchase.get("latest_purchase_price"))
         # Спрос брутто: возвраты не вычитаются из базы расчёта количества.
         # 82.6% возвратов дисплеев — причина "Не понадобился" (качество "Новый"),
@@ -1064,19 +1371,107 @@ def build_dry_run_rows(
         # (+19.7%). return_qty остаётся в выводе как отдельная информационная
         # колонка (return_qty_window), просто больше не уменьшает net_sales_qty.
         net_sales_qty = max(Decimal("0"), sales_qty)
-        base_avg_daily_sales_qty = (
-            net_sales_qty / Decimal(str(sales_window_days))
-            if sales_window_days > 0
+        net_sales_qty_medium = max(Decimal("0"), sales_qty_medium)
+        net_sales_qty_short = max(Decimal("0"), sales_qty_short)
+        # Раздел 5.1: доля возвратов качества "Новый" от продаж за то же
+        # 90-дневное окно (BATCH_ERROR_WINDOW_DAYS). Без вычитания возвратов
+        # из net_sales_qty (спрос брутто) - это отдельная, самостоятельная
+        # проверка, не связана с формулой количества.
+        batch_error_share_pct = (
+            (batch_error_return_qty / net_sales_qty_medium * Decimal("100"))
+            if net_sales_qty_medium > 0
             else Decimal("0")
         )
+        batch_error_suspected = (
+            batch_error_return_qty >= BATCH_ERROR_MIN_RETURN_QTY
+            and batch_error_share_pct >= BATCH_ERROR_MIN_SHARE_PCT
+        )
+        # Доля возвратов качества "Брак" от продаж за то же окно. Отдельно от
+        # batch_error выше: тот считает "Новый" (пересорт), этот - настоящие
+        # претензии к качеству товара. Раздел 5.1 спеки требует, чтобы
+        # статистически значимый брак уводил строку в Review, а не изображал
+        # отсутствие проблемы - с 2026-08-01 сигнал блокирует автозаказ
+        # (порог утверждён пользователем на матрице по всему каталогу).
+        defect_share_pct = (
+            (defect_return_qty / net_sales_qty_medium * Decimal("100"))
+            if net_sales_qty_medium > 0
+            else Decimal("0")
+        )
+        defect_rate_suspected = (
+            defect_return_qty >= DEFECT_RATE_MIN_RETURN_QTY
+            and defect_share_pct >= DEFECT_RATE_MIN_SHARE_PCT
+        )
+        # Раздел 2 + procurement-order-auto-order-unified-contour.md
+        # ("Разрезы спроса по типу покупателя"): маркетплейс-спрос не должен
+        # молча доказывать нужность в матрице магазинов. min(...) на случай,
+        # если сумма по маркетплейсу почему-то превысит общую (не должно
+        # происходить при текущем SQL, но не должно и падать, если произойдёт).
+        marketplace_net_sales_qty = min(max(Decimal("0"), sales_qty_marketplace), net_sales_qty)
+        non_marketplace_net_sales_qty = net_sales_qty - marketplace_net_sales_qty
+        marketplace_share_pct = (
+            (marketplace_net_sales_qty / net_sales_qty * Decimal("100"))
+            if net_sales_qty > 0
+            else Decimal("0")
+        )
+        # Раздел 1 ("Дни эффективного наличия"): скорость по календарным дням
+        # окна занижает спрос, если товара часть окна не было на полке -
+        # карточка выглядит "медленной", хотя реально просто голодала
+        # (подтверждено на РБ000064721: 0.1222 шт/день по календарю против
+        # честных 14.2/90 дней в продаже). days_in_sale - среднее по 11
+        # реальным точкам продаж (fetch_days_in_sale_totals), НЕ может быть
+        # больше календарного окна - поправка поэтому только повышает
+        # скорость или оставляет как есть, никогда не занижает. Если данных
+        # нет (старый вызов/фикстура теста) - откат на календарный день,
+        # прежнее поведение.
+        days_in_sale = facts.get("days_in_sale", {}).get(code, {})
+
+        def _availability_rate(
+            net_qty: Decimal, calendar_days: int, *, days_in_sale: dict[int, Decimal] = days_in_sale
+        ) -> Decimal:
+            if calendar_days <= 0:
+                return Decimal("0")
+            available_days = days_in_sale.get(calendar_days)
+            divisor = (
+                max(available_days, Decimal("1"))
+                if available_days is not None and available_days > 0
+                else Decimal(str(calendar_days))
+            )
+            return net_qty / divisor
+
+        rate_long = _availability_rate(net_sales_qty, sales_window_days)
+        # Раздел 9.1 (п.2) спеки "Дорогие/маржинальные медленные карточки":
+        # скорость считаем на трёх окнах 180/90/30 дней и сравниваем тренд.
+        # Карточка разгоняется (30д быстрее 90д быстрее 180д) -> берём
+        # максимум из трёх (последний месяц). Иначе (тормозит/плоско) ->
+        # берём среднее из трёх. Раньше здесь было одно плоское окно
+        # sales_window_days (180) без сравнения тренда — занижало скорость
+        # для растущих карточек. Найдено и исправлено 2026-07-30 на реальном
+        # примере РБ000064965 (май 5 -> июнь 6 -> июль 11 шт).
+        # trend_data_available=False (окна 90/30 не переданы источником,
+        # например старый вызов/фикстура теста) -> откат к плоскому окну
+        # sales_window_days, чтобы не путать "нет данных" с "0 продаж".
+        trend_data_available = (
+            "sales_qty_window_medium" in sales and "sales_qty_window_short" in sales
+        )
+        if trend_data_available:
+            rate_medium = _availability_rate(net_sales_qty_medium, TREND_WINDOW_MEDIUM_DAYS)
+            rate_short = _availability_rate(net_sales_qty_short, TREND_WINDOW_SHORT_DAYS)
+            accelerating = (
+                rate_short >= rate_medium * ACCELERATING_MIN_GROWTH_MULTIPLIER
+                and rate_medium >= rate_long * ACCELERATING_MIN_GROWTH_MULTIPLIER
+            )
+            base_avg_daily_sales_qty = (
+                max(rate_short, rate_medium, rate_long)
+                if accelerating
+                else (rate_short + rate_medium + rate_long) / 3
+            )
+        else:
+            accelerating = False
+            base_avg_daily_sales_qty = rate_long
         demand_rule = _demand_uplift_rule_for_item(item, demand_uplift_rules)
         demand_multiplier = demand_rule.demand_multiplier if demand_rule else Decimal("1")
         adjusted_net_sales_qty = net_sales_qty * demand_multiplier
-        avg_daily_sales_qty = (
-            adjusted_net_sales_qty / Decimal(str(sales_window_days))
-            if sales_window_days > 0
-            else Decimal("0")
-        )
+        avg_daily_sales_qty = base_avg_daily_sales_qty * demand_multiplier
         forecast_qty = (
             _ceil_decimal(avg_daily_sales_qty * Decimal(str(planning_horizon_days)))
             if net_sales_qty > 0
@@ -1102,6 +1497,23 @@ def build_dry_run_rows(
             recommended_order_qty_raw,
             order_rounding_rules,
         )
+        marketplace_has_exposure = total_stock_qty > 0 or incoming_qty > 0
+        non_marketplace_target_stock_qty = (
+            target_stock_qty * (non_marketplace_net_sales_qty / net_sales_qty)
+            if net_sales_qty > 0
+            else target_stock_qty
+        )
+        marketplace_order_impact_qty = recommended_order_qty_raw - _ceil_decimal(
+            max(Decimal("0"), non_marketplace_target_stock_qty - free_stock_qty - incoming_qty)
+        )
+        marketplace_risk_code, marketplace_risk_ru = _classify_marketplace_risk(
+            net_sales_qty=net_sales_qty,
+            marketplace_net_sales_qty=marketplace_net_sales_qty,
+            marketplace_share_pct=marketplace_share_pct,
+            marketplace_doc_count=sales_doc_count_marketplace,
+            has_exposure=marketplace_has_exposure,
+            order_impact_qty=marketplace_order_impact_qty,
+        )
         blockers: list[str] = []
         warnings: list[str] = []
         if source_errors:
@@ -1118,9 +1530,43 @@ def build_dry_run_rows(
             warnings.append("incoming_deducted_from_need")
         if demand_rule and net_sales_qty > 0 and demand_multiplier > Decimal("1"):
             warnings.append("stockout_demand_uplift_applied")
+        if marketplace_risk_code:
+            warnings.append(marketplace_risk_code)
+        if marketplace_risk_code in (
+            "critical_marketplace_refusal_nonliquid_risk",
+            "high_marketplace_refusal_risk",
+        ):
+            # Раздел 2 / procurement-order-auto-order-unified-contour.md: при
+            # доле маркетплейса 50%+ (или обычного спроса нет) автозаказ
+            # останавливается - решение только ручное, не автосумма.
+            recommended_order_qty_raw = Decimal("0")
+            recommended_order_qty = Decimal("0")
+        if batch_error_suspected:
+            # Раздел 5.1: ранний триггер партийной ошибки (пересорт/ревизия/
+            # версия детали) - >=5 шт возвратов качества "Новый" за 90 дней И
+            # доля этих возвратов от продаж за то же окно >=40%. Продажа/
+            # автозаказ карточки останавливается немедленно, задача в Bitrix
+            # закупщику - срочная (создание самой Bitrix-задачи - отдельный
+            # sync-шаг, не этот dry-run).
+            blockers.append("batch_error_suspected")
+            recommended_order_qty_raw = Decimal("0")
+            recommended_order_qty = Decimal("0")
+        if defect_rate_suspected:
+            # Раздел 5.1: подтверждённый брак выше порога снимает карточку с
+            # автозаказа и уводит в ручную проверку - как и пересорт выше.
+            # Отдельный блокер, не сливать с batch_error: причины разные
+            # (качество товара против неверной ревизии), решения тоже.
+            blockers.append("defect_rate_suspected")
+            recommended_order_qty_raw = Decimal("0")
+            recommended_order_qty = Decimal("0")
         decision = (
             "manual_review"
             if blockers
+            or marketplace_risk_code
+            in (
+                "critical_marketplace_refusal_nonliquid_risk",
+                "high_marketplace_refusal_risk",
+            )
             else "order" if recommended_order_qty > 0 else "do_not_order"
         )
         reason = _reason(
@@ -1137,6 +1583,7 @@ def build_dry_run_rows(
             logistics_days=logistics_days,
             supplier_delay_buffer_days=supplier_delay_buffer_days,
             receiving_buffer_days=receiving_buffer_days,
+            distribution_to_shelf_days=distribution_to_shelf_days,
             safety_stock_days=safety_stock_days,
             effective_target_days=effective_target_days,
             sales_window_days=sales_window_days,
@@ -1146,6 +1593,29 @@ def build_dry_run_rows(
             blockers=blockers,
             warnings=warnings,
         )
+        if marketplace_risk_code in (
+            "critical_marketplace_refusal_nonliquid_risk",
+            "high_marketplace_refusal_risk",
+        ):
+            reason = marketplace_risk_ru
+        if batch_error_suspected:
+            reason = (
+                f"ТРЕВОГА: подозрение на партийную ошибку (пересорт/ревизия/версия "
+                f"детали) - {_out_decimal(batch_error_return_qty)} шт возвратов "
+                f"качества «Новый» за {BATCH_ERROR_WINDOW_DAYS} дней, "
+                f"{_out_decimal(batch_error_share_pct, places=1)}% от продаж за то "
+                f"же окно. Автозаказ остановлен, нужна срочная проверка поставщика."
+            )
+        if defect_rate_suspected:
+            warnings.append("defect_rate_above_threshold")
+            reason = (
+                f"ТРЕВОГА (качество): {_out_decimal(defect_return_qty)} шт возвратов "
+                f"качества «Брак» за {DEFECT_RATE_WINDOW_DAYS} дней, "
+                f"{_out_decimal(defect_share_pct, places=1)}% от продаж за то же окно "
+                f"(порог {_out_decimal(DEFECT_RATE_MIN_SHARE_PCT)}% и "
+                f"{_out_decimal(DEFECT_RATE_MIN_RETURN_QTY)} шт). Автозаказ остановлен, "
+                f"нужна проверка партии и поставщика."
+            )
         rows.append(
             {
                 "nomenclature_code": code,
@@ -1184,11 +1654,46 @@ def build_dry_run_rows(
                 "incoming_qty": _out_decimal(incoming_qty),
                 "incoming_order_count": int(incoming.get("incoming_order_count") or 0),
                 "sales_qty_window": _out_decimal(sales_qty),
+                "sales_qty_window_medium": _out_decimal(sales_qty_medium),
+                "sales_qty_window_short": _out_decimal(sales_qty_short),
                 "return_qty_window": _out_decimal(return_qty),
+                "batch_error_return_qty": _out_decimal(batch_error_return_qty),
+                "batch_error_share_pct": _out_decimal(batch_error_share_pct, places=1),
+                "batch_error_suspected": "yes" if batch_error_suspected else "",
+                "defect_return_qty": _out_decimal(defect_return_qty),
+                "defect_share_pct": _out_decimal(defect_share_pct, places=1),
+                "defect_rate_suspected": "yes" if defect_rate_suspected else "",
                 "net_sales_qty_window": _out_decimal(net_sales_qty),
+                "non_marketplace_net_sales_qty": _out_decimal(non_marketplace_net_sales_qty),
+                "marketplace_net_sales_qty": _out_decimal(marketplace_net_sales_qty),
+                "marketplace_share_pct": _out_decimal(marketplace_share_pct, places=1),
+                "sales_doc_count_marketplace": sales_doc_count_marketplace,
+                "marketplace_order_impact_qty": _out_decimal(marketplace_order_impact_qty),
+                "marketplace_risk_code": marketplace_risk_code,
+                "marketplace_risk_ru": marketplace_risk_ru,
                 "sales_doc_count": int(sales.get("sales_doc_count") or 0),
                 "sales_warehouse_count": int(sales.get("sales_warehouse_count") or 0),
                 "last_sale_at": _date_text(sales.get("last_sale_at")),
+                "sales_speed_trend": (
+                    "accelerating"
+                    if accelerating
+                    else "flat_or_slowing" if trend_data_available else "n/a_flat_window_fallback"
+                ),
+                "days_in_sale_short": (
+                    _out_decimal(days_in_sale[TREND_WINDOW_SHORT_DAYS], places=1)
+                    if TREND_WINDOW_SHORT_DAYS in days_in_sale
+                    else ""
+                ),
+                "days_in_sale_medium": (
+                    _out_decimal(days_in_sale[TREND_WINDOW_MEDIUM_DAYS], places=1)
+                    if TREND_WINDOW_MEDIUM_DAYS in days_in_sale
+                    else ""
+                ),
+                "days_in_sale_long": (
+                    _out_decimal(days_in_sale[sales_window_days], places=1)
+                    if sales_window_days in days_in_sale
+                    else ""
+                ),
                 "base_avg_daily_sales_qty": _out_decimal(
                     base_avg_daily_sales_qty,
                     places=4,
@@ -1211,6 +1716,7 @@ def build_dry_run_rows(
                 "delivery_days": logistics_days,
                 "supplier_delay_buffer_days": supplier_delay_buffer_days,
                 "receiving_buffer_days": receiving_buffer_days,
+                "distribution_to_shelf_days": distribution_to_shelf_days,
                 "safety_stock_days": safety_stock_days,
                 "lead_time_days": lead_time_days,
                 "effective_target_days": effective_target_days,
@@ -1249,20 +1755,19 @@ def build_dry_run_rows(
                 "data_sources": _data_sources(demand_rule=demand_rule),
             }
         )
-    apply_analog_group_decisions(
+    apply_independent_speed_tier(
         rows,
         min_order_qty=min_order_qty,
         max_order_qty=max_order_qty,
         order_rounding_rules=order_rounding_rules,
         speed_horizon_rules=speed_horizon_rules,
+        distribution_to_shelf_days=distribution_to_shelf_days,
     )
-    apply_supported_analog_and_price_batch_policies(
+    apply_price_batch_policy(
         rows,
-        supported_analog_policy=supported_analog_policy,
         price_batch_rules=price_batch_rules,
         price_batch_applies_to_statuses=price_batch_applies_to_statuses,
         price_batch_applies_to_analog_roles=price_batch_applies_to_analog_roles,
-        as_of=as_of,
         min_order_qty=min_order_qty,
         max_order_qty=max_order_qty,
         order_rounding_rules=order_rounding_rules,
@@ -1286,97 +1791,82 @@ def build_dry_run_rows(
         max_order_qty=max_order_qty,
         order_rounding_rules=order_rounding_rules,
     )
+    # Финальный барьер, не обойти ни одним из шагов выше (apply_analog_group_
+    # decisions/_mark_analog_winner уже проверяли blockers по отдельности, но
+    # на реальном прогоне 2026-07-31 нашлось ЕЩЁ ДВЕ утечки в других шагах
+    # конвейера - апстрим-фиксы легко пропустить при следующей правке.
+    # Инвариант "есть blockers -> заказ 0, ручная проверка" гарантируется
+    # здесь один раз, для всех строк, независимо от того, что случилось выше.
+    for row in rows:
+        if _clean(row.get("blockers")):
+            row["recommended_order_qty_raw"] = "0"
+            row["recommended_order_qty"] = "0"
+            row["dry_run_decision"] = "manual_review"
+
+    # stockout_guard (off_schedule_signal_policy) - см. константу выше.
+    # Считается здесь, в самом конце, на уже окончательно устоявшемся
+    # решении - только для строк, где итог "заказ не нужен" и блокеров нет
+    # (блокер уже сам по себе объясняет заказ=0, тревога здесь не добавляет
+    # смысла).
+    for row in rows:
+        if _clean(row.get("blockers")) or _clean(row.get("dry_run_decision")) != "do_not_order":
+            continue
+        avg_daily_sales_qty = _decimal(row.get("avg_daily_sales_qty"))
+        if avg_daily_sales_qty <= 0:
+            continue
+        free_stock_qty = _decimal(row.get("free_stock_qty"))
+        days_of_stock_remaining = free_stock_qty / avg_daily_sales_qty
+        required_days = (
+            _decimal(row.get("lead_time_days"))
+            + _decimal(row.get("distribution_to_shelf_days"))
+            + Decimal(str(STOCKOUT_GUARD_BUFFER_DAYS))
+        )
+        if days_of_stock_remaining >= required_days:
+            continue
+        row["stockout_guard_triggered"] = "true"
+        row["stockout_guard_days_remaining"] = _out_decimal(days_of_stock_remaining, places=1)
+        row["stockout_guard_required_days"] = _out_decimal(required_days)
+        _append_warning(row, "stockout_guard_triggered")
+        row["reason_ru"] = (
+            "ТРЕВОГА (stockout_guard): расчёт решил, что заказ сейчас не нужен, но при "
+            f"текущей скорости остатка хватит на {_out_decimal(days_of_stock_remaining, places=1)} "
+            f"дней, а полный цикл довоза (путь + буфер) занимает {_out_decimal(required_days)} "
+            "дней - есть риск пустой полки раньше следующего планового пересмотра. "
+            f"{row.get('reason_ru', '')}"
+        ).strip()
     return rows
 
 
-def apply_supported_analog_and_price_batch_policies(
+def apply_price_batch_policy(
     rows: list[dict[str, Any]],
     *,
-    supported_analog_policy: SupportedAnalogPolicy,
     price_batch_rules: Sequence[PriceBatchRule],
     price_batch_applies_to_statuses: Sequence[str],
     price_batch_applies_to_analog_roles: Sequence[str],
-    as_of: date | None,
     min_order_qty: int,
     max_order_qty: int | None,
     order_rounding_rules: Sequence[OrderRoundingRule],
 ) -> None:
-    if not supported_analog_policy.enabled and not price_batch_rules:
+    # Раздел 4: раньше эта функция сначала сводила группу аналогов к
+    # "победителю" (через уже удалённый apply_independent_speed_tier-
+    # предшественник) и только внутри победителя/поддерживаемых аналогов
+    # применяла минимальную партию по цене (price_batch_rules). "Поддержи-
+    # ваемые аналоги" (supported_analog_policy, одобрено 2026-07-11) решали
+    # проблему "проигравший цветовой вариант обнуляется навсегда, держим ему
+    # сетевой минимум" - раз теперь каждая карточка (включая любой цветовой
+    # вариант) считается независимо и никогда не обнуляется группировкой,
+    # самой проблемы больше нет, поддержка стала не нужна. Убрано 2026-07-31
+    # вместе с консолидацией по аналогам (тот же qty-diff гейт: раньше
+    # карточки внутри группы аналогов молча пропускали ценовое округление
+    # целиком - реальный найденный побочный баг, не только упрощение).
+    # Ценовое округление (price_segment × speed_tier) теперь применяется к
+    # каждой карточке по отдельности - price_segment уже независимая
+    # per-SKU характеристика (квартиль цены внутри своей группы сравнения,
+    # см. _price_segment в assortment_lifecycle_facts.py), группировка по
+    # аналогам ей не требовалась и раньше.
+    if not price_batch_rules:
         return
-
-    grouped_row_ids: set[int] = set()
-    for group_rows in _analog_groups(rows):
-        if len(group_rows) < 2:
-            continue
-        grouped_row_ids.update(id(row) for row in group_rows)
-        primary = next(
-            (row for row in group_rows if _clean(row.get("analog_role")) == "primary_analog"),
-            None,
-        )
-        if primary is None:
-            continue
-
-        original_group_raw = max(
-            (_decimal(row.get("analog_group_recommended_order_qty_raw")) for row in group_rows),
-            default=Decimal("0"),
-        )
-        supported_rows: list[dict[str, Any]] = []
-        support_floor_by_id: dict[int, Decimal] = {}
-        if supported_analog_policy.enabled:
-            for row in group_rows:
-                if row is primary or not _is_supported_analog_candidate(
-                    row,
-                    primary=primary,
-                    policy=supported_analog_policy,
-                    as_of=as_of,
-                ):
-                    continue
-                floor_need = _ceil_decimal(
-                    max(
-                        Decimal("0"),
-                        Decimal(str(supported_analog_policy.min_network_stock_qty))
-                        - _decimal(row.get("free_stock_qty"))
-                        - _decimal(row.get("incoming_qty")),
-                    )
-                )
-                row["analog_role"] = "supported_analog"
-                row["supported_analog_min_stock_qty"] = (
-                    supported_analog_policy.min_network_stock_qty
-                )
-                row["supported_analog_floor_need_qty"] = _out_decimal(floor_need)
-                row["supported_analog_rule_applied"] = "yes"
-                _remove_warning(row, "analog_transition_to_better_item")
-                _append_warning(row, "supported_analog_network_minimum")
-                _append_data_source(row, "config:supported_analog_policy")
-                supported_rows.append(row)
-                support_floor_by_id[id(row)] = floor_need
-
-        total_support_floor = sum(support_floor_by_id.values(), Decimal("0"))
-        group_raw = max(original_group_raw, total_support_floor)
-        allocations: dict[int, Decimal] = {
-            id(row): support_floor_by_id.get(id(row), Decimal("0")) for row in group_rows
-        }
-        allocations[id(primary)] = max(Decimal("0"), group_raw - total_support_floor)
-
-        _apply_allocations_and_price_batch(
-            group_rows,
-            allocations=allocations,
-            supported_rows=supported_rows,
-            group_target_stock_qty=_decimal(primary.get("analog_group_target_stock_qty")),
-            group_free_stock_qty=_decimal(primary.get("analog_group_free_stock_qty")),
-            group_incoming_qty=_decimal(primary.get("analog_group_incoming_qty")),
-            group_avg_daily_sales_qty=_decimal(primary.get("speed_group_avg_daily_sales_qty")),
-            price_batch_rules=price_batch_rules,
-            price_batch_applies_to_statuses=price_batch_applies_to_statuses,
-            price_batch_applies_to_analog_roles=price_batch_applies_to_analog_roles,
-            min_order_qty=min_order_qty,
-            max_order_qty=max_order_qty,
-            order_rounding_rules=order_rounding_rules,
-        )
-
     for row in rows:
-        if id(row) in grouped_row_ids:
-            continue
         if _clean(row.get("dry_run_decision")) != "order":
             continue
         raw_qty = _decimal(row.get("recommended_order_qty_raw"))
@@ -1397,55 +1887,6 @@ def apply_supported_analog_and_price_batch_policies(
             max_order_qty=max_order_qty,
             order_rounding_rules=order_rounding_rules,
         )
-
-
-def _is_supported_analog_candidate(
-    row: Mapping[str, Any],
-    *,
-    primary: Mapping[str, Any],
-    policy: SupportedAnalogPolicy,
-    as_of: date | None,
-) -> bool:
-    configured_statuses = {status.casefold() for status in policy.applies_to_statuses}
-    row_statuses = {
-        _clean(row.get("_assortment_status")).casefold(),
-        _clean(row.get("status_label")).casefold(),
-    }
-    if not configured_statuses.intersection(row_statuses):
-        return False
-    if _clean(row.get("blockers")):
-        return False
-    row_quality = _clean(row.get("quality_normalized") or row.get("quality_raw")).casefold()
-    primary_quality = _clean(
-        primary.get("quality_normalized") or primary.get("quality_raw")
-    ).casefold()
-    if row_quality != primary_quality:
-        return False
-    row_variant_key = _supported_variant_key(row.get("name"))
-    if not row_variant_key or row_variant_key != _supported_variant_key(primary.get("name")):
-        return False
-    if _decimal(row.get("net_sales_qty_window")) < policy.min_recent_sales_qty:
-        return False
-    last_sale_at = _date_value(row.get("last_sale_at"))
-    if as_of is not None:
-        if last_sale_at is None:
-            return False
-        days_since_last_sale = (as_of - last_sale_at).days
-        if days_since_last_sale < 0 or days_since_last_sale > policy.max_days_since_last_sale:
-            return False
-    return True
-
-
-def _supported_variant_key(value: Any) -> str:
-    text_value = _clean(value).casefold().replace("ё", "е")
-
-    def remove_color_parentheses(match: re.Match[str]) -> str:
-        content = match.group(1)
-        return " " if SUPPORTED_VARIANT_COLOR_RE.search(content) else match.group(0)
-
-    text_value = re.sub(r"\(([^()]*)\)", remove_color_parentheses, text_value)
-    text_value = SUPPORTED_VARIANT_COLOR_RE.sub(" ", text_value)
-    return re.sub(r"[^a-zа-я0-9]+", " ", text_value).strip()
 
 
 def _apply_allocations_and_price_batch(
@@ -1582,12 +2023,20 @@ def _apply_allocations_and_price_batch(
             final_group_excess_days,
             places=2,
         )
+        # Раньше здесь стояла безусловная ветка "speed_tier == slow ->
+        # manual_review" (price_batch_decision="manual_review_slow"). До
+        # структурного пола/растущей скорости (2026-07-31) это было мёртвым
+        # кодом по построению - медленная карточка никогда не попадала сюда
+        # с dry_run_decision=="order" (apply_price_batch_policy фильтрует
+        # только "order" на входе), review_only зануляла её раньше. После
+        # фикса slow-карточки ЛЕГИТИМНО доходят досюда через новое
+        # исключение - вторая утечка (тот же класс бага, что и блокеры):
+        # эта ветка молча откатывала их обратно в manual_review, обнуляя
+        # только что выданный стартовый заказ. Убрано - слово "slow" тут
+        # больше не должно ничего решать, только review_by_id (реальный
+        # избыток при округлении) и _auto_order_allowed.
         if id(row) in review_by_id:
             row["dry_run_decision"] = "manual_review"
-        elif _clean(row.get("speed_tier")) == "slow":
-            row["dry_run_decision"] = "manual_review"
-            row["price_batch_decision"] = "manual_review_slow"
-            _append_warning(row, "speed_tier_manual_review")
         elif id(row) in supported_ids or bool(row.get("_auto_order_allowed")):
             row["dry_run_decision"] = "order"
         if id(row) in supported_ids:
@@ -1647,87 +2096,18 @@ def apply_b2b_final_order_policies(
     max_order_qty: int | None,
     order_rounding_rules: Sequence[OrderRoundingRule],
 ) -> None:
+    # Раздел 4: раньше эта функция сначала пыталась свести b2b-прогноз
+    # ГРУППЫ аналогов к "победителю" (primary_analog) - тот же принцип
+    # консолидации, что отменён и удалён 2026-07-31. Раз победителя больше
+    # не существует (см. apply_independent_speed_tier), групповая ветка
+    # всегда находила primary=None и молча пропускала карточки, попавшие в
+    # группу по токенам - реальный побочный баг, тот же класс, что уже
+    # нашли и исправили в apply_price_batch_policy. Теперь каждая карточка
+    # с client-прогнозом обрабатывается независимо, без группировки.
     if not any(_clean(row.get("b2b_replacement_decision")) for row in rows):
         return
 
-    grouped_row_ids: set[int] = set()
-    for group_rows in _analog_groups(rows):
-        if len(group_rows) < 2:
-            continue
-        if not any(_clean(row.get("b2b_replacement_decision")) for row in group_rows):
-            continue
-        grouped_row_ids.update(id(row) for row in group_rows)
-        primary = next(
-            (row for row in group_rows if _clean(row.get("analog_role")) == "primary_analog"),
-            None,
-        )
-        if primary is None:
-            continue
-        group_target = max(
-            (_decimal(row.get("b2b_replacement_target_stock_qty")) for row in group_rows),
-            default=Decimal("0"),
-        )
-        group_free = sum((_decimal(row.get("free_stock_qty")) for row in group_rows), Decimal("0"))
-        group_incoming = sum(
-            (_decimal(row.get("incoming_qty")) for row in group_rows), Decimal("0")
-        )
-        group_raw = _ceil_decimal(max(Decimal("0"), group_target - group_free - group_incoming))
-        supported_rows = [
-            row for row in group_rows if _clean(row.get("analog_role")) == "supported_analog"
-        ]
-        support_floor = {
-            _clean(row.get("nomenclature_code")): _decimal(
-                row.get("supported_analog_floor_need_qty")
-            )
-            for row in supported_rows
-        }
-        total_support_floor = sum(support_floor.values(), Decimal("0"))
-        total_raw = max(group_raw, total_support_floor)
-
-        temp_rows = [dict(row) for row in group_rows]
-        temp_by_code = {_clean(row.get("nomenclature_code")): row for row in temp_rows}
-        temp_primary = temp_by_code[_clean(primary.get("nomenclature_code"))]
-        temp_supported = [
-            temp_by_code[_clean(row.get("nomenclature_code"))] for row in supported_rows
-        ]
-        allocations = {
-            id(temp): support_floor.get(_clean(temp.get("nomenclature_code")), Decimal("0"))
-            for temp in temp_rows
-        }
-        allocations[id(temp_primary)] = max(Decimal("0"), total_raw - total_support_floor)
-        _apply_allocations_and_price_batch(
-            temp_rows,
-            allocations=allocations,
-            supported_rows=temp_supported,
-            group_target_stock_qty=group_target,
-            group_free_stock_qty=group_free,
-            group_incoming_qty=group_incoming,
-            group_avg_daily_sales_qty=_decimal(primary.get("speed_group_avg_daily_sales_qty")),
-            price_batch_rules=price_batch_rules,
-            price_batch_applies_to_statuses=price_batch_applies_to_statuses,
-            price_batch_applies_to_analog_roles=price_batch_applies_to_analog_roles,
-            min_order_qty=min_order_qty,
-            max_order_qty=max_order_qty,
-            order_rounding_rules=order_rounding_rules,
-        )
-        for row in group_rows:
-            temp = temp_by_code[_clean(row.get("nomenclature_code"))]
-            qty = _decimal(temp.get("recommended_order_qty"))
-            decision = _clean(temp.get("dry_run_decision"))
-            row["b2b_replacement_recommended_order_qty"] = _out_decimal(qty)
-            row["b2b_replacement_decision"] = decision
-            row["b2b_order_delta_qty"] = _out_decimal(
-                qty - _decimal(row.get("recommended_order_qty"))
-            )
-            row["b2b_reason_ru"] = (
-                _clean(row.get("b2b_reason_ru"))
-                + " После клиентского прогноза повторно применены сетевой минимум "
-                "поддерживаемого аналога и ценовое округление."
-            ).strip()
-
     for row in rows:
-        if id(row) in grouped_row_ids:
-            continue
         if _clean(row.get("b2b_replacement_decision")) != "order":
             continue
         raw_qty = _ceil_decimal(
@@ -2011,194 +2391,46 @@ def apply_b2b_customer_demand_advisory(
             )
 
 
-def apply_analog_group_decisions(
+def apply_independent_speed_tier(
+    # Раздел 4 (assortment-status-legacy-rule-inventory.md): консолидация по
+    # аналогам была ОТМЕНЕНА решением пользователя 2026-07-26 ("не нужен
+    # вообще никакой механизм консолидации по аналогам, ни автоматический,
+    # ни ручной... каждая карточка (SKU) рассчитывается и заказывается
+    # независимо") и УДАЛЕНА из кода 2026-07-31 после qty-diff гейта
+    # (реальный прогон по каталогу: +2765 шт, 236 карточек изменили заказ -
+    # см. Changelog). Было apply_analog_group_decisions: сводило группу
+    # аналогов к одному "победителю" (_mark_analog_winner/_mark_analog_
+    # loser), суммируя спрос группы и обнуляя заказ у "проигравших". Причина
+    # отмены - карточки внутри группы аналогов почти всегда разное КАЧЕСТВО
+    # одного товара для разных покупателей, а не дубли с общим спросом.
+    #
+    # Осталось только то, что и было задумано изначально - тир скорости
+    # (super_fast/fast/normal/slow) назначается КАЖДОЙ карточке по ЕЁ
+    # СОБСТВЕННОЙ скорости, не по сумме группы. _analog_groups/
+    # _analog_model_tokens не удалены - от них по-прежнему зависят
+    # apply_supported_analog_and_price_batch_policies и apply_b2b_final_
+    # order_policies (отдельные, НЕ отменённые механизмы).
     rows: list[dict[str, Any]],
     *,
     min_order_qty: int,
     max_order_qty: int | None,
     order_rounding_rules: Sequence[OrderRoundingRule],
     speed_horizon_rules: Sequence[SpeedHorizonRule],
+    distribution_to_shelf_days: int = 0,
 ) -> None:
-    for group_rows in _analog_groups(rows):
-        group_avg_daily_sales_qty = sum(
-            (_decimal(row.get("avg_daily_sales_qty")) for row in group_rows),
-            Decimal("0"),
-        )
-        speed_rule = _speed_horizon_rule_for_group(
-            group_avg_daily_sales_qty,
-            speed_horizon_rules,
-        )
+    for row in rows:
+        own_speed = _decimal(row.get("avg_daily_sales_qty"))
+        speed_rule = _speed_horizon_rule_for_group(own_speed, speed_horizon_rules)
         _apply_speed_horizon_rule(
-            group_rows,
+            [row],
             speed_rule=speed_rule,
-            group_avg_daily_sales_qty=group_avg_daily_sales_qty,
+            group_avg_daily_sales_qty=own_speed,
             min_order_qty=min_order_qty,
             max_order_qty=max_order_qty,
             order_rounding_rules=order_rounding_rules,
+            distribution_to_shelf_days=distribution_to_shelf_days,
         )
-        min_price = _min_positive_decimal(row.get("latest_purchase_price") for row in group_rows)
-        for row in group_rows:
-            row["analog_score"] = _out_decimal(_analog_score(row, min_price), places=2)
-        if len(group_rows) < 2:
-            _mark_single_sku_review_only_if_needed(group_rows[0])
-            continue
-
-        winner = max(group_rows, key=lambda row: _analog_sort_key(row, min_price))
-        group_id = _analog_group_id(group_rows)
-        group_net_sales_qty = sum(
-            (_decimal(row.get("net_sales_qty_window")) for row in group_rows), Decimal("0")
-        )
-        group_free_stock_qty = sum(
-            (_decimal(row.get("free_stock_qty")) for row in group_rows), Decimal("0")
-        )
-        group_incoming_qty = sum(
-            (_decimal(row.get("incoming_qty")) for row in group_rows), Decimal("0")
-        )
-        group_target_stock_qty = sum(
-            (_decimal(row.get("target_stock_qty")) for row in group_rows), Decimal("0")
-        )
-        if speed_rule is not None and speed_rule.review_only:
-            group_order_qty_raw = Decimal("0")
-            group_order_qty = Decimal("0")
-            group_order_rounding_rule = None
-        else:
-            group_order_qty_raw = _ceil_decimal(
-                max(
-                    Decimal("0"),
-                    group_target_stock_qty - group_free_stock_qty - group_incoming_qty,
-                )
-            )
-            group_order_qty = rounded_order_qty(
-                group_order_qty_raw,
-                min_order_qty=min_order_qty,
-                max_order_qty=max_order_qty,
-                order_rounding_rules=order_rounding_rules,
-            )
-            group_order_rounding_rule = _order_rounding_rule_for_qty(
-                group_order_qty_raw,
-                order_rounding_rules,
-            )
-        winner_score = _clean(winner.get("analog_score"))
-        demand_adjustment_note = _analog_group_demand_adjustment_note(group_rows)
-
-        for row in group_rows:
-            row["analog_group_id"] = group_id
-            row["analog_group_size"] = len(group_rows)
-            row["preferred_replacement_code"] = winner["nomenclature_code"]
-            row["preferred_replacement_name"] = winner["name"]
-            row["analog_winner_score"] = winner_score
-            row["analog_group_net_sales_qty"] = _out_decimal(group_net_sales_qty)
-            row["analog_group_free_stock_qty"] = _out_decimal(group_free_stock_qty)
-            row["analog_group_incoming_qty"] = _out_decimal(group_incoming_qty)
-            row["analog_group_target_stock_qty"] = _out_decimal(group_target_stock_qty)
-            row["analog_group_recommended_order_qty_raw"] = _out_decimal(group_order_qty_raw)
-            row["analog_group_recommended_order_qty"] = _out_decimal(group_order_qty)
-            row["order_rounding_rule"] = _order_rounding_rule_text(group_order_rounding_rule)
-            row["order_rounding_multiple"] = (
-                group_order_rounding_rule.round_to if group_order_rounding_rule else ""
-            )
-
-        for row in group_rows:
-            if row is winner:
-                _mark_analog_winner(
-                    row,
-                    group_size=len(group_rows),
-                    group_order_qty_raw=group_order_qty_raw,
-                    group_order_qty=group_order_qty,
-                    group_order_rounding_rule=group_order_rounding_rule,
-                    speed_horizon_rule=speed_rule,
-                    group_target_stock_qty=group_target_stock_qty,
-                    group_free_stock_qty=group_free_stock_qty,
-                    group_incoming_qty=group_incoming_qty,
-                    demand_adjustment_note=demand_adjustment_note,
-                )
-            else:
-                _mark_analog_loser(row, winner=winner)
-
-
-def _mark_analog_winner(
-    row: dict[str, Any],
-    *,
-    group_size: int,
-    group_order_qty_raw: Decimal,
-    group_order_qty: Decimal,
-    group_order_rounding_rule: OrderRoundingRule | None,
-    speed_horizon_rule: SpeedHorizonRule | None,
-    group_target_stock_qty: Decimal,
-    group_free_stock_qty: Decimal,
-    group_incoming_qty: Decimal,
-    demand_adjustment_note: str,
-) -> None:
-    row["analog_role"] = "primary_analog"
-    _remove_warning(row, "order_qty_capped")
-    _append_warning(row, "analog_group_consolidated")
-    if group_order_qty_raw > group_order_qty:
-        _append_warning(row, "order_qty_capped")
-    if group_order_qty > group_order_qty_raw:
-        _append_warning(row, "order_qty_rounded_to_multiple")
-    if _clean(row.get("blockers")):
-        row["recommended_order_qty_raw"] = "0"
-        row["recommended_order_qty"] = "0"
-        row["dry_run_decision"] = "manual_review"
-        row["analog_decision_reason_ru"] = (
-            "Основной аналог группы, но есть блокер источника данных; нужен ручной разбор."
-        )
-        row["reason_ru"] = row["analog_decision_reason_ru"]
-        return
-    if speed_horizon_rule is not None and speed_horizon_rule.review_only:
-        row["recommended_order_qty_raw"] = "0"
-        row["recommended_order_qty"] = "0"
-        row["dry_run_decision"] = "manual_review"
-        _append_warning(row, "speed_tier_manual_review")
-        row["analog_decision_reason_ru"] = _speed_review_reason(speed_horizon_rule, group_size)
-        row["reason_ru"] = row["analog_decision_reason_ru"]
-        return
-    if group_order_qty <= 0:
-        row["recommended_order_qty_raw"] = "0"
-        row["recommended_order_qty"] = "0"
-        row["dry_run_decision"] = "do_not_order"
-        row["analog_decision_reason_ru"] = (
-            f"Основной аналог группы из {group_size} SKU, но заказ не нужен: цель группы "
-            f"{group_target_stock_qty} шт. закрыта свободным остатком {group_free_stock_qty} шт. "
-            f"и товаром в пути {group_incoming_qty} шт."
-        )
-        row["reason_ru"] = row["analog_decision_reason_ru"]
-        return
-    if not bool(row.get("_auto_order_allowed")):
-        row["recommended_order_qty_raw"] = "0"
-        row["recommended_order_qty"] = "0"
-        row["dry_run_decision"] = "manual_review"
-        _append_warning(row, "analog_winner_not_auto_order_allowed")
-        row["analog_decision_reason_ru"] = (
-            f"Лучший аналог группы из {group_size} SKU, расчетная потребность "
-            f"{group_order_qty} шт., но автозаказ по карточке еще не разрешен."
-        )
-        row["reason_ru"] = row["analog_decision_reason_ru"]
-        return
-
-    row["recommended_order_qty_raw"] = _out_decimal(group_order_qty_raw)
-    row["recommended_order_qty"] = _out_decimal(group_order_qty)
-    row["dry_run_decision"] = "order"
-    row["analog_decision_reason_ru"] = (
-        f"Основной аналог группы из {group_size} SKU: заказ переносим сюда. "
-        f"Цель группы {group_target_stock_qty} шт., свободно {group_free_stock_qty} шт., "
-        f"в пути {group_incoming_qty} шт."
-    )
-    if demand_adjustment_note:
-        row["analog_decision_reason_ru"] += f" {demand_adjustment_note}"
-    rounding_note = _order_rounding_note(group_order_rounding_rule)
-    if rounding_note:
-        row["analog_decision_reason_ru"] += f" {rounding_note}"
-    row["reason_ru"] = (
-        f"Рекомендуем {group_order_qty} шт. по группе аналогов: цель "
-        f"{group_target_stock_qty} шт., свободно {group_free_stock_qty} шт., "
-        f"в пути {group_incoming_qty} шт.; основной аналог выбран по продажам, "
-        "качеству, возвратам, наличию и закупочной цене."
-    )
-    if demand_adjustment_note:
-        row["reason_ru"] += f" {demand_adjustment_note}"
-    if rounding_note:
-        row["reason_ru"] += f" {rounding_note}"
+        _mark_single_sku_review_only_if_needed(row)
 
 
 def _mark_single_sku_review_only_if_needed(row: dict[str, Any]) -> None:
@@ -2217,42 +2449,6 @@ def _mark_single_sku_review_only_if_needed(row: dict[str, Any]) -> None:
     row["reason_ru"] = row["analog_decision_reason_ru"]
 
 
-def _mark_analog_loser(row: dict[str, Any], *, winner: Mapping[str, Any]) -> None:
-    row["analog_role"] = "transition_to_better_analog"
-    _remove_warning(row, "order_qty_capped")
-    row["recommended_order_qty_raw"] = "0"
-    row["recommended_order_qty"] = "0"
-    if not _clean(row.get("blockers")):
-        row["dry_run_decision"] = "do_not_order"
-    _append_warning(row, "analog_transition_to_better_item")
-    row["analog_decision_reason_ru"] = (
-        f"Переход на лучший аналог {winner['nomenclature_code']}: "
-        f"{winner['name']}. Текущую карточку не заказывать, остаток допродавать."
-    )
-    row["reason_ru"] = row["analog_decision_reason_ru"]
-
-
-def _analog_group_demand_adjustment_note(group_rows: Sequence[Mapping[str, Any]]) -> str:
-    rule_rows = [
-        row
-        for row in group_rows
-        if _clean(row.get("demand_adjustment_rule_id"))
-        and _decimal(row.get("demand_adjustment_multiplier")) > Decimal("1")
-    ]
-    if not rule_rows:
-        return ""
-    strongest = max(
-        rule_rows,
-        key=lambda row: _decimal(row.get("demand_adjustment_multiplier")),
-    )
-    multiplier = _decimal(strongest.get("demand_adjustment_multiplier"))
-    reason = _clean(strongest.get("demand_adjustment_reason_ru"))
-    note = f"Для группы применена поправка скрытого спроса x{_out_decimal(multiplier, places=2)}"
-    if reason:
-        note += f": {reason}"
-    return note + "."
-
-
 def _apply_speed_horizon_rule(
     group_rows: Sequence[dict[str, Any]],
     *,
@@ -2261,6 +2457,7 @@ def _apply_speed_horizon_rule(
     min_order_qty: int,
     max_order_qty: int | None,
     order_rounding_rules: Sequence[OrderRoundingRule],
+    distribution_to_shelf_days: int = 0,
 ) -> None:
     if speed_rule is None:
         return
@@ -2282,6 +2479,67 @@ def _apply_speed_horizon_rule(
 
     if speed_rule.review_only:
         for row in group_rows:
+            if _clean(row.get("blockers")):
+                row["recommended_order_qty_raw"] = "0"
+                row["recommended_order_qty"] = "0"
+                row["dry_run_decision"] = "manual_review"
+                _append_warning(row, "speed_tier_manual_review")
+                row["reason_ru"] = _speed_review_reason(speed_rule, len(group_rows))
+                continue
+            free_stock_qty = _decimal(row.get("free_stock_qty"))
+            below_structural_floor = free_stock_qty < STRUCTURAL_FLOOR_QTY
+            accelerating_speed = row.get("sales_speed_trend") == "accelerating"
+            days_in_sale_medium = _decimal(row.get("days_in_sale_medium"))
+            had_genuine_availability = days_in_sale_medium >= PENSION_CANDIDATE_MIN_DAYS_IN_SALE
+            pension_candidate = (
+                below_structural_floor and not accelerating_speed and had_genuine_availability
+            )
+            if pension_candidate:
+                row["recommended_order_qty_raw"] = "0"
+                row["recommended_order_qty"] = "0"
+                row["dry_run_decision"] = "manual_review"
+                _append_warning(row, "pension_candidate_flat_despite_availability")
+                row["reason_ru"] = (
+                    f"Кандидат на 'Пенсию': товар реально был на полке "
+                    f"{_out_decimal(days_in_sale_medium, places=1)} из {TREND_WINDOW_MEDIUM_DAYS} "
+                    "дней, но скорость не растёт даже с честной поправкой на наличие - это не "
+                    "голодание, это угасающий спрос. Структурный пол не применяем, нужна ручная "
+                    "проверка."
+                )
+                continue
+            if below_structural_floor or accelerating_speed:
+                target_stock_qty = _decimal(row.get("target_stock_qty"))
+                incoming_qty = _decimal(row.get("incoming_qty"))
+                recommended_order_qty_raw = _ceil_decimal(
+                    max(Decimal("0"), target_stock_qty - free_stock_qty - incoming_qty)
+                )
+                recommended_order_qty = rounded_order_qty(
+                    recommended_order_qty_raw,
+                    min_order_qty=min_order_qty,
+                    max_order_qty=max_order_qty,
+                    order_rounding_rules=order_rounding_rules,
+                )
+                row["recommended_order_qty_raw"] = _out_decimal(recommended_order_qty_raw)
+                row["recommended_order_qty"] = _out_decimal(recommended_order_qty)
+                row["dry_run_decision"] = "order" if recommended_order_qty > 0 else "do_not_order"
+                if below_structural_floor:
+                    _append_warning(row, "structural_floor_starter_order")
+                    reason = (
+                        f"Структурный пол: остаток по сети {_out_decimal(free_stock_qty)} шт "
+                        f"ниже {_out_decimal(STRUCTURAL_FLOOR_QTY)} шт (11 точек продаж + Сайт + "
+                        "буфер СДЭК). Медленная группа не блокирует стартовый заказ: "
+                        f"рекомендуем {_out_decimal(recommended_order_qty)} шт по уже посчитанной цели "
+                        f"{_out_decimal(target_stock_qty)} шт."
+                    )
+                else:
+                    _append_warning(row, "speed_tier_accelerating_override")
+                    reason = (
+                        "Медленная группа, но скорость растёт (accelerating) - не зануляем: "
+                        f"рекомендуем {_out_decimal(recommended_order_qty)} шт по цели "
+                        f"{_out_decimal(target_stock_qty)} шт."
+                    )
+                row["reason_ru"] = reason
+                continue
             row["recommended_order_qty_raw"] = "0"
             row["recommended_order_qty"] = "0"
             row["dry_run_decision"] = "manual_review"
@@ -2289,8 +2547,28 @@ def _apply_speed_horizon_rule(
             row["reason_ru"] = _speed_review_reason(speed_rule, len(group_rows))
         return
 
-    forecast_days = max(0, speed_rule.max_effective_target_days - speed_rule.safety_stock_days)
+    # distribution_to_shelf_days (найдено 2026-07-30: дата поступления заказа
+    # поставщику - это дата приёмки на центральном узле, не дата на полке)
+    # добавляется к тирам той же логикой, что и к базовой формуле - см.
+    # planning_horizon_days выше и Changelog.
+    forecast_days = max(
+        0,
+        speed_rule.max_effective_target_days
+        - speed_rule.safety_stock_days
+        + distribution_to_shelf_days,
+    )
+    effective_target_days = speed_rule.max_effective_target_days + distribution_to_shelf_days
     for row in group_rows:
+        # Найдено на реальном прогоне 2026-07-31: карточка с уже
+        # сработавшим блокером (partийная ошибка, маркетплейс-риск) молча
+        # получала здесь свежий ненулевой заказ - тир пересчитывал
+        # recommended_order_qty с нуля, не глядя на уже выставленный
+        # blockers/qty=0 выше по конвейеру. dry_run_decision оставался
+        # "manual_review" правильно, но само число заказа утекало обратно.
+        # Раз блокер уже стоит - тир только помечает метаданные, количество
+        # не трогает.
+        if _clean(row.get("blockers")):
+            continue
         avg_daily_sales_qty = _decimal(row.get("avg_daily_sales_qty"))
         net_sales_qty = _decimal(row.get("net_sales_qty_window"))
         forecast_qty = (
@@ -2324,7 +2602,8 @@ def _apply_speed_horizon_rule(
         )
 
         row["safety_stock_days"] = speed_rule.safety_stock_days
-        row["effective_target_days"] = speed_rule.max_effective_target_days
+        row["distribution_to_shelf_days"] = distribution_to_shelf_days
+        row["effective_target_days"] = effective_target_days
         row["forecast_qty"] = _out_decimal(forecast_qty)
         row["safety_stock_qty"] = _out_decimal(safety_stock_qty)
         row["target_stock_qty"] = _out_decimal(target_stock_qty)
@@ -2346,6 +2625,7 @@ def _apply_speed_horizon_rule(
         row["reason_ru"] = _speed_horizon_reason(
             row,
             speed_rule=speed_rule,
+            effective_target_days=effective_target_days,
             recommended_order_qty=recommended_order_qty,
             recommended_order_qty_raw=recommended_order_qty_raw,
             target_stock_qty=target_stock_qty,
@@ -2371,6 +2651,7 @@ def _speed_horizon_reason(
     row: Mapping[str, Any],
     *,
     speed_rule: SpeedHorizonRule,
+    effective_target_days: int,
     recommended_order_qty: Decimal,
     recommended_order_qty_raw: Decimal,
     target_stock_qty: Decimal,
@@ -2380,7 +2661,7 @@ def _speed_horizon_reason(
 ) -> str:
     label = speed_rule.label_ru or speed_rule.tier
     base = (
-        f"Правило скорости {label}: максимум {speed_rule.max_effective_target_days} дней "
+        f"Правило скорости {label}: максимум {effective_target_days} дней "
         f"покрытия, страховой запас {speed_rule.safety_stock_days} дней. "
     )
     if _clean(row.get("blockers")):
@@ -2534,6 +2815,61 @@ def write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> Path:
     return path
 
 
+def _classify_marketplace_risk(
+    *,
+    net_sales_qty: Decimal,
+    marketplace_net_sales_qty: Decimal,
+    marketplace_share_pct: Decimal,
+    marketplace_doc_count: int,
+    has_exposure: bool,
+    order_impact_qty: Decimal,
+) -> tuple[str, str]:
+    if marketplace_net_sales_qty <= 0:
+        # Без единой маркетплейс-продажи это не маркетплейс-риск - карточки с
+        # нулевым спросом вообще (не только без маркетплейса) уже покрыты
+        # отдельным предупреждением no_recent_net_sales, метку сюда не ставим.
+        return "", ""
+    non_marketplace_qty = net_sales_qty - marketplace_net_sales_qty
+    if has_exposure and (
+        non_marketplace_qty <= 0 or marketplace_share_pct >= MARKETPLACE_CRITICAL_SHARE_PCT
+    ):
+        return (
+            "critical_marketplace_refusal_nonliquid_risk",
+            "Критично: обычного спроса (без маркетплейса) нет, или маркетплейс "
+            "занимает 70%+ продаж, а остаток/путь товара есть - риск неликвида "
+            "при отказе маркетплейс-покупателя. Автозаказ остановлен, нужно "
+            "ручное решение.",
+        )
+    if has_exposure and marketplace_share_pct >= MARKETPLACE_HIGH_SHARE_PCT:
+        return (
+            "high_marketplace_refusal_risk",
+            "Высокий риск: маркетплейс 50-70% продаж, а остаток/путь товара "
+            "есть. Автозаказ остановлен, нужно вручную разделить магазинную и "
+            "маркетплейсную потребность.",
+        )
+    if (
+        has_exposure
+        and marketplace_share_pct >= MARKETPLACE_MEDIUM_SHARE_PCT
+        and marketplace_doc_count >= MARKETPLACE_MEDIUM_MIN_DOC_COUNT
+    ):
+        return (
+            "medium_channel_split_required",
+            "Маркетплейс 30-50% продаж (минимум 7 продаж маркетплейса). "
+            "Магазинная и маркетплейсная потребность складываются "
+            "автоматически, показ раздельно - только для прозрачности риска.",
+        )
+    if (
+        marketplace_share_pct >= MARKETPLACE_WATCH_SHARE_PCT
+        and order_impact_qty >= MARKETPLACE_WATCH_MIN_ORDER_IMPACT_QTY
+    ):
+        return (
+            "watch_order_impact",
+            f"Маркетплейс 10-30% продаж и заметно влияет на заказ (оценка "
+            f"без маркетплейса ниже минимум на {_out_decimal(order_impact_qty)} шт).",
+        )
+    return "", ""
+
+
 def _reason(
     *,
     decision: str,
@@ -2549,6 +2885,7 @@ def _reason(
     logistics_days: int,
     supplier_delay_buffer_days: int,
     receiving_buffer_days: int,
+    distribution_to_shelf_days: int,
     safety_stock_days: int,
     effective_target_days: int,
     sales_window_days: int,
@@ -2565,6 +2902,7 @@ def _reason(
         logistics_days=logistics_days,
         supplier_delay_buffer_days=supplier_delay_buffer_days,
         receiving_buffer_days=receiving_buffer_days,
+        distribution_to_shelf_days=distribution_to_shelf_days,
         safety_stock_days=safety_stock_days,
         effective_target_days=effective_target_days,
     )
@@ -2607,6 +2945,7 @@ def _horizon_text(
     logistics_days: int,
     supplier_delay_buffer_days: int,
     receiving_buffer_days: int,
+    distribution_to_shelf_days: int,
     safety_stock_days: int,
     effective_target_days: int,
 ) -> str:
@@ -2621,6 +2960,8 @@ def _horizon_text(
         components.append(f"буфер {supplier_delay_buffer_days}")
     if receiving_buffer_days:
         components.append(f"приемка {receiving_buffer_days}")
+    if distribution_to_shelf_days:
+        components.append(f"на полку {distribution_to_shelf_days}")
     if safety_stock_days:
         components.append(f"страховой запас {safety_stock_days}")
     return f"на {effective_target_days} дней ({' + '.join(components)})"
@@ -2776,6 +3117,11 @@ def _normalize_brand(value: str) -> str:
     return normalized
 
 
+# Группировка по аналогам сама по себе НЕ отменена - используется
+# apply_supported_analog_and_price_batch_policies и apply_b2b_final_order_
+# policies (отдельные, не связанные с уже удалённой 2026-07-31 винер-
+# консолидацией функции). Не путать с apply_independent_speed_tier выше,
+# которая больше НЕ группирует карточки для расчёта заказа.
 def _analog_groups(rows: Sequence[dict[str, Any]]) -> list[list[dict[str, Any]]]:
     parent = list(range(len(rows)))
 
@@ -2848,76 +3194,6 @@ def _data_sources(*, demand_rule: DemandUpliftRule | None = None) -> str:
     return "; ".join(sources)
 
 
-def _analog_group_id(group_rows: Sequence[Mapping[str, Any]]) -> str:
-    tokens = sorted({token for row in group_rows for token in _row_analog_tokens(row)})
-    digest = hashlib.sha1("||".join(tokens).encode("utf-8")).hexdigest()[:12]
-    return f"analog-{digest}"
-
-
-def _analog_sort_key(row: Mapping[str, Any], min_price: Decimal) -> tuple[Any, ...]:
-    sales_qty = _decimal(row.get("net_sales_qty_window"))
-    quality_rank = Decimal(str(_quality_rank(row)))
-    return_rate = _return_rate(row)
-    availability = max(Decimal("0"), _decimal(row.get("free_stock_qty"))) + max(
-        Decimal("0"), _decimal(row.get("incoming_qty"))
-    )
-    price = _decimal(row.get("latest_purchase_price"))
-    price_sort = price if price > 0 else Decimal("999999")
-    return (
-        sales_qty,
-        quality_rank,
-        -return_rate,
-        availability,
-        -price_sort,
-        _clean(row.get("nomenclature_code")),
-    )
-
-
-def _analog_score(row: Mapping[str, Any], min_price: Decimal) -> Decimal:
-    sales_qty = _decimal(row.get("net_sales_qty_window"))
-    doc_count = _decimal(row.get("sales_doc_count"))
-    quality_rank = Decimal(str(_quality_rank(row)))
-    availability = max(Decimal("0"), _decimal(row.get("free_stock_qty"))) + max(
-        Decimal("0"), _decimal(row.get("incoming_qty"))
-    )
-    price = _decimal(row.get("latest_purchase_price"))
-    price_penalty = Decimal("0")
-    if price > 0 and min_price > 0 and price > min_price:
-        price_penalty = ((price - min_price) / min_price) * Decimal("10")
-    return (
-        sales_qty
-        + (doc_count * Decimal("2"))
-        + quality_rank
-        + (availability / Decimal("10"))
-        - (_return_rate(row) * Decimal("100"))
-        - price_penalty
-    )
-
-
-def _quality_rank(row: Mapping[str, Any]) -> int:
-    text = " ".join(
-        [
-            _clean(row.get("quality_raw")),
-            _clean(row.get("quality_normalized")),
-            _clean(row.get("name")),
-        ]
-    ).casefold()
-    compact = re.sub(r"[^a-zа-я0-9]+", "", text)
-    if any(token in compact for token in ("orig100", "or100", "original", "ориг100")):
-        return 100
-    if any(token in compact for token in ("orig", "ориг", "oem")):
-        return 90
-    if any(token in compact for token in ("premium", "high", "aaa", "премиум")):
-        return 80
-    if any(token in compact for token in ("optima", "standard", "std", "средн")):
-        return 65
-    if any(token in compact for token in ("medium", "analog", "аналог")):
-        return 55
-    if any(token in compact for token in ("low", "econom", "cheap", "эконом")):
-        return 25
-    return 50
-
-
 def _quality_from_name(value: str) -> str:
     text = value.casefold()
     compact = re.sub(r"[^a-zа-я0-9]+", "", text)
@@ -2934,18 +3210,6 @@ def _quality_from_name(value: str) -> str:
     if any(token in compact for token in ("low", "econom", "эконом")):
         return "Low"
     return ""
-
-
-def _return_rate(row: Mapping[str, Any]) -> Decimal:
-    sales_qty = _decimal(row.get("sales_qty_window"))
-    if sales_qty <= 0:
-        return Decimal("0")
-    return _decimal(row.get("return_qty_window")) / sales_qty
-
-
-def _min_positive_decimal(values: Iterable[Any]) -> Decimal:
-    positive = [_decimal(value) for value in values if _decimal(value) > 0]
-    return min(positive) if positive else Decimal("0")
 
 
 def _append_warning(row: dict[str, Any], warning: str) -> None:
@@ -3364,6 +3628,11 @@ def _parse_args() -> argparse.Namespace:
         "--receiving-buffer-days",
         type=int,
         default=_optional_env_int("DISPLAY_AUTO_ORDER_RECEIVING_BUFFER_DAYS"),
+    )
+    parser.add_argument(
+        "--distribution-to-shelf-days",
+        type=int,
+        default=_optional_env_int("DISPLAY_AUTO_ORDER_DISTRIBUTION_TO_SHELF_DAYS"),
     )
     parser.add_argument(
         "--safety-stock-days",

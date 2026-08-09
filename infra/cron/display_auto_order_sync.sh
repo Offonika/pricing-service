@@ -46,7 +46,9 @@ APPLY="${DISPLAY_AUTO_ORDER_APPLY:-false}"
 REPORT_DIR="${DISPLAY_AUTO_ORDER_REPORT_DIR:-${REPO_DIR}/reports/assortment_lifecycle/${AS_OF}}"
 OUTPUT_CSV="${DISPLAY_AUTO_ORDER_OUTPUT_CSV:-${REPORT_DIR}/display-auto-order-dry-run.csv}"
 OUTPUT_JSON="${DISPLAY_AUTO_ORDER_OUTPUT_JSON:-${REPORT_DIR}/display-auto-order-dry-run-summary.json}"
-RESULT_PATH="${DISPLAY_AUTO_ORDER_RESULT_PATH:-${REPO_DIR}/build/bitrix/display_auto_order_candidates_result.json}"
+ORDER_FORMATION_OUTPUT_JSON="${DISPLAY_AUTO_ORDER_FORMATION_OUTPUT_JSON:-${REPORT_DIR}/procurement-order-formation-dry-run.json}"
+ORDER_FORMATION_OUTPUT_CSV="${DISPLAY_AUTO_ORDER_FORMATION_OUTPUT_CSV:-${REPORT_DIR}/procurement-order-formation-lines-dry-run.csv}"
+ORDER_FORMATION_PERSIST_DB="${DISPLAY_AUTO_ORDER_FORMATION_PERSIST_DB:-false}"
 USE_ADAPTIVE_LEAD_TIME="${DISPLAY_AUTO_ORDER_USE_ADAPTIVE_LEAD_TIME:-true}"
 ADAPTIVE_REQUIRED="${DISPLAY_AUTO_ORDER_ADAPTIVE_REQUIRED:-true}"
 LEAD_TIME_CSV="${DISPLAY_AUTO_ORDER_LEAD_TIME_CSV:-${REPORT_DIR}/display-supplier-lead-time-history.csv}"
@@ -79,7 +81,7 @@ cleanup() {
 trap cleanup EXIT
 
 timestamp="$(date -Iseconds)"
-echo "[$timestamp] starting display auto-order sync folder=${FOLDER} as_of=${AS_OF} policy=${AUTO_ORDER_POLICY_JSON} target=${TARGET_DAYS:-policy} cadence=${ORDER_CADENCE_DAYS:-policy} prepare=${SUPPLIER_PREPARE_DAYS:-policy} logistics=${LOGISTICS_DAYS:-policy} max_qty=${MAX_ORDER_QTY:-policy} assigned=${ASSIGNED_BY_ID} apply=${APPLY} adaptive=${USE_ADAPTIVE_LEAD_TIME}" >> "${LOG_FILE}"
+echo "[$timestamp] starting display auto-order sync folder=${FOLDER} as_of=${AS_OF} policy=${AUTO_ORDER_POLICY_JSON} target=${TARGET_DAYS:-policy} cadence=${ORDER_CADENCE_DAYS:-policy} prepare=${SUPPLIER_PREPARE_DAYS:-policy} logistics=${LOGISTICS_DAYS:-policy} max_qty=${MAX_ORDER_QTY:-policy} assigned=${ASSIGNED_BY_ID} legacy_apply=${APPLY} formation_persist_db=${ORDER_FORMATION_PERSIST_DB} adaptive=${USE_ADAPTIVE_LEAD_TIME}" >> "${LOG_FILE}"
 echo "[$timestamp] python interpreter: ${PYTHON_BIN}" >> "${LOG_FILE}"
 
 mkdir -p "${REPORT_DIR}"
@@ -174,25 +176,31 @@ if is_truthy "${USE_ADAPTIVE_LEAD_TIME}"; then
   fi
 fi
 
-sync_cmd=(
+formation_cmd=(
   "${PYTHON_BIN}"
-  scripts/sync_display_auto_order_candidates_to_bitrix.py
+  -m tasks.build_procurement_order_formation_dry_run
   --input-csv "${SYNC_INPUT_CSV}"
-  --summary-json "${OUTPUT_JSON}"
-  --result-path "${RESULT_PATH}"
-  --assigned-by-id "${ASSIGNED_BY_ID}"
+  --lead-time-csv "${LEAD_TIME_CSV}"
+  --source-summary-json "${OUTPUT_JSON}"
+  --batch-id "${AS_OF}"
+  --order-date "${AS_OF}"
+  --responsible-bitrix-user-id "${ASSIGNED_BY_ID}"
+  --output-json "${ORDER_FORMATION_OUTPUT_JSON}"
+  --output-csv "${ORDER_FORMATION_OUTPUT_CSV}"
+  --fail-on-blockers
+  --json
 )
-if is_truthy "${APPLY}"; then
-  sync_cmd+=(--apply)
+if is_truthy "${ORDER_FORMATION_PERSIST_DB}"; then
+  formation_cmd+=(--persist-db --supersede-open-batches)
 fi
 
 set +e
-"${sync_cmd[@]}" > "${tmp_output}" 2>&1
+"${formation_cmd[@]}" > "${tmp_output}" 2>&1
 exit_code=$?
 set -e
 cat "${tmp_output}" >> "${LOG_FILE}"
 
 timestamp="$(date -Iseconds)"
-echo "[$timestamp] finished display auto-order sync (status=${exit_code})" >> "${LOG_FILE}"
+echo "[$timestamp] finished order-formation sync (status=${exit_code}, persist_db=${ORDER_FORMATION_PERSIST_DB})" >> "${LOG_FILE}"
 
 exit "${exit_code}"

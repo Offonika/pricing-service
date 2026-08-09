@@ -2,6 +2,11 @@
 
 Дата аудита: 2026-05-02.
 
+> Исторический срез: факты и рекомендации до раздела обновлений относятся только к
+> состоянию на 2026-05-02 и не описывают текущий production. С 2026-07-15 транспорт
+> работает по HTTPS, а актуальный item-level contract находится в
+> `docs/specs/competitor-matching-ui-v1.md`.
+
 ## Что проверено
 
 - Источник FTP-прайсов конкурентов `moba` и `liberti`.
@@ -118,3 +123,34 @@
    - обязательный: FTP, catalog, item_type rules, embeddings, matcher;
    - тяжёлый: LLM attrs, rerun `only_bad`, LLM arbiter, отчёты качества.
 7. Согласовать статусную модель главной таблицы: сейчас `status` отражает сохранённые `CompetitorItemMatch`, а `live_candidate_count` отражает живой поиск. Это правильно, но в UI стоит явно различать “сохранённые кандидаты” и “есть live-кандидаты”.
+
+## Hotfix постоянного runtime-состояния 2026-07-14
+
+- Индексы `embeddings` подключаются к immutable release как внешний runtime-каталог,
+  поэтому переключение release больше не вызывает полную повторную генерацию индексов.
+- Nightly загружает `.env` до вычисления feature flags; nightly и watchdog используют
+  одно значение `COMPETITOR_MATCHING_EMBEDDINGS_ENABLED`.
+- После импорта отдельная read-only проверка контролирует максимальную дату файла.
+  Устаревший источник завершает pipeline со статусом `degraded_source_stale`, а не
+  маскируется статусом `success`; техническая ошибка проверки по-прежнему завершает job
+  ошибкой.
+
+## Переход на HTTPS 2026-07-15
+
+- Активный источник MOBA и Liberti переключён на прямые HTTPS XLSX.
+- Scheduled-run `04:10` обработал файлы за `2026-07-15` без ошибок и брака;
+  watchdog `05:20` подтвердил свежесть обоих источников.
+- FTP task, worker, runtime settings и секреты удалены. Исторические разделы выше
+  сохранены как аудит состояния на дату `2026-05-02`.
+- Повторный запуск в 04:45 пропускает уже завершённый за день pipeline как для
+  `success`, так и для `degraded_source_stale`.
+
+## Recovery nightly 2026-07-31
+
+- HTTP worker переведён с отсутствующего runtime-пакета `requests` на зафиксированный
+  в lock-файле `httpx`.
+- Release preflight импортирует все nightly-модули до переключения active release.
+- При ошибке импорта или устаревшем источнике pipeline завершается fail-closed и не
+  запускает compatibility, embeddings, matcher, auto-accept и live-cache refresh.
+- Имена `competitor_ftp_*` и поле watchdog `ftp` остаются совместимыми внутренними
+  именами и не означают наличие сетевого FTP-транспорта.

@@ -32,6 +32,20 @@ def _load_quality_migration():
     return module
 
 
+def _load_review_batch_migration():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "alembic/versions/e2f3a4b5c6d8_add_customer_price_type_review_batches.py"
+    )
+    spec = importlib.util.spec_from_file_location(
+        "customer_price_type_review_batch_migration", path
+    )
+    module = importlib.util.module_from_spec(spec)
+    assert spec and spec.loader
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_migration_upgrade_and_downgrade_with_circular_foreign_keys(tmp_path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'migration.db'}")
     migration = _load_migration()
@@ -92,5 +106,32 @@ def test_quality_sample_migration_upgrade_and_downgrade(tmp_path) -> None:
             quality.downgrade()
             assert "customer_price_type_quality_sample" not in inspect(connection).get_table_names()
             core.downgrade()
+    finally:
+        engine.dispose()
+
+
+def test_review_batch_migration_upgrade_and_downgrade(tmp_path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'review-batch-migration.db'}")
+    migration = _load_review_batch_migration()
+    try:
+        with engine.begin() as connection:
+            migration.op = Operations(MigrationContext.configure(connection))
+            migration.upgrade()
+            inspector = inspect(connection)
+            assert {
+                "customer_price_type_review_batch",
+                "customer_price_type_review_batch_item",
+            } <= set(inspector.get_table_names())
+            assert {
+                "counterparty_ref",
+                "counterparty_code",
+                "expected_bucket",
+                "expected_price_type",
+            } <= {
+                item["name"]
+                for item in inspector.get_columns("customer_price_type_review_batch_item")
+            }
+            migration.downgrade()
+            assert "customer_price_type_review_batch" not in inspect(connection).get_table_names()
     finally:
         engine.dispose()

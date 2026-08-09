@@ -30,10 +30,20 @@ MAPPING = {
         "counterparty_guid": "counterpartyGuid",
         "counterparty_code": "counterpartyCode",
         "counterparty_name": "counterpartyName",
+        "contract_ref": "contractRef",
+        "contract_guid": "contractGuid",
+        "contract_code": "contractCode",
+        "contract_name": "contractName",
+        "contract_organization_ref": "contractOrganizationRef",
+        "contract_organization_guid": "contractOrganizationGuid",
+        "contract_organization_code": "contractOrganizationCode",
+        "contract_organization_name": "contractOrganizationName",
         "current_limit": "currentLimit",
         "current_depth": "currentDepth",
+        "current_debt_control_enabled": "currentDebtControlEnabled",
         "proposed_limit": "proposedLimit",
         "proposed_depth": "proposedDepth",
+        "proposed_debt_control_enabled": "proposedDebtControlEnabled",
         "reason": "reason",
         "decision_revision": "decisionRevision",
         "decision_hash": "decisionHash",
@@ -43,6 +53,7 @@ MAPPING = {
         "connector_error": "connectorError",
         "readback_limit": "readbackLimit",
         "readback_depth": "readbackDepth",
+        "readback_debt_control_enabled": "readbackDebtControlEnabled",
     },
 }
 NOW = datetime(2026, 7, 28, 12, 0, tzinfo=timezone.utc)
@@ -95,10 +106,20 @@ def _item() -> dict[str, object]:
         "counterpartyGuid": "a7d9b21e-222e-11ed-8fda-0025901e48ee",
         "counterpartyCode": "РБ030337",
         "counterpartyName": "Тестовый контрагент",
+        "contractRef": "0X8266002590803DAF11F143B8070BC34D",
+        "contractGuid": "070bc34d-43b8-11f1-8266-002590803daf",
+        "contractCode": "РБ0058149",
+        "contractName": "Основной договор1",
+        "contractOrganizationRef": "0X44445555555555553333222211111111",
+        "contractOrganizationGuid": "11111111-2222-3333-4444-555555555555",
+        "contractOrganizationCode": "000000001",
+        "contractOrganizationName": "MASTER MOBILE",
         "currentLimit": "100000.00",
         "currentDepth": "7",
+        "currentDebtControlEnabled": True,
         "proposedLimit": "150000.00",
         "proposedDepth": "14",
+        "proposedDebtControlEnabled": True,
         "reason": "Утверждено финансовым директором",
         "decisionRevision": "7",
         "decisionHash": "",
@@ -145,6 +166,7 @@ def _write_result(
     status: str,
     readback_limit: str = "150000.00",
     readback_depth: int = 14,
+    readback_debt_control_enabled: bool = True,
 ) -> Path:
     message_id = {
         "dry_run": operation.dry_run_message_id,
@@ -155,12 +177,18 @@ def _write_result(
     result_dir = root / "from_1c" / "new"
     result_dir.mkdir(parents=True, exist_ok=True)
     path = result_dir / f"onec_commands_{message_id}.result.xml"
+    if mode == "dry_run" and status == "validated":
+        readback_limit = "100000.00"
+        readback_depth = 7
+        readback_debt_control_enabled = True
     readback = (
-        ""
-        if mode == "dry_run"
-        else f"""
+        f"""
       <ReadbackLimit>{readback_limit}</ReadbackLimit>
-      <ReadbackDepth>{readback_depth}</ReadbackDepth>"""
+      <ReadbackContractLimit>{readback_limit}</ReadbackContractLimit>
+      <ReadbackDepth>{readback_depth}</ReadbackDepth>
+      <ReadbackDebtControlEnabled>{str(readback_debt_control_enabled).lower()}</ReadbackDebtControlEnabled>"""
+        if status in {"validated", "applied", "already_actual"}
+        else ""
     )
     path.write_text(
         f"""<?xml version="1.0" encoding="windows-1251"?>
@@ -177,6 +205,12 @@ def _write_result(
     <CounterpartyRef>{operation.counterparty_ref}</CounterpartyRef>
     <CounterpartyGuid>{operation.counterparty_guid}</CounterpartyGuid>
     <CounterpartyCode>РБ030337</CounterpartyCode>
+    <ContractRef>{operation.contract_ref}</ContractRef>
+    <ContractGuid>{operation.contract_guid}</ContractGuid>
+    <ContractCode>{operation.contract_code}</ContractCode>
+    <ContractOrganizationRef>{operation.contract_organization_ref}</ContractOrganizationRef>
+    <ContractOrganizationGuid>{operation.contract_organization_guid}</ContractOrganizationGuid>
+    <ContractOrganizationCode>{operation.contract_organization_code}</ContractOrganizationCode>
     <Status>{status}</Status>
     <Message>ok</Message>{readback}
   </CommandResult></CommandResults>
@@ -205,6 +239,18 @@ def test_worker_runs_dry_run_then_apply_and_recovers_bitrix_update(
     assert first["created"] == 1
     assert operation.state == "dry_run_sent"
     assert operation.dry_run_attempts == 1
+    assert operation.contract_guid == "070bc34d-43b8-11f1-8266-002590803daf"
+    assert operation.contract_organization_guid == ("11111111-2222-3333-4444-555555555555")
+    assert operation.expected_current_debt_control_enabled is True
+    ready_path = (
+        tmp_path / "to_1c" / "new" / f"onec_commands_{operation.dry_run_message_id}.ready.xml"
+    )
+    ready_xml = ready_path.read_text(encoding="windows-1251")
+    assert "<ContractGuid>070bc34d-43b8-11f1-8266-002590803daf</ContractGuid>" in ready_xml
+    assert (
+        "<ExpectedCurrentDebtControlEnabled>true"
+        "</ExpectedCurrentDebtControlEnabled>" in ready_xml
+    )
 
     _write_result(tmp_path, operation, mode="dry_run", status="validated")
     second = run_credit_decision_worker_once(
@@ -264,6 +310,7 @@ def test_worker_runs_dry_run_then_apply_and_recovers_bitrix_update(
     assert bitrix.item["stageId"] == MAPPING["stage_map"]["applied"]
     assert bitrix.item["readbackLimit"] == "150000.00"
     assert bitrix.item["readbackDepth"] == 14
+    assert bitrix.item["readbackDebtControlEnabled"] is True
 
 
 def test_worker_stops_after_dry_run_when_auto_apply_is_disabled(db_session, tmp_path: Path) -> None:
@@ -766,6 +813,51 @@ def test_apply_readback_mismatch_keeps_counterparty_lock_for_recovery(
         tmp_path / "from_1c" / "archive" / f"onec_commands_{operation.apply_message_id}.result.xml"
     ).exists()
 
+
+def test_apply_debt_control_mismatch_keeps_counterparty_lock(db_session, tmp_path: Path) -> None:
+    bitrix = FakeBitrix()
+    settings = _settings()
+    run_credit_decision_worker_once(
+        db_session,
+        exchange_root=tmp_path,
+        settings=settings,
+        mapping=MAPPING,
+        bitrix_caller=bitrix,
+        now=NOW,
+    )
+    operation = db_session.scalar(select(ReceivableCreditDecisionOperation))
+    assert operation is not None
+    _write_result(tmp_path, operation, mode="dry_run", status="validated")
+    run_credit_decision_worker_once(
+        db_session,
+        exchange_root=tmp_path,
+        settings=settings,
+        mapping=MAPPING,
+        bitrix_caller=bitrix,
+        now=NOW + timedelta(seconds=10),
+    )
+    _write_result(
+        tmp_path,
+        operation,
+        mode="apply",
+        status="applied",
+        readback_debt_control_enabled=False,
+    )
+
+    run_credit_decision_worker_once(
+        db_session,
+        exchange_root=tmp_path,
+        settings=settings,
+        mapping=MAPPING,
+        bitrix_caller=bitrix,
+        now=NOW + timedelta(seconds=20),
+    )
+    db_session.refresh(operation)
+
+    assert operation.state == "applying"
+    assert operation.active_counterparty_key == operation.counterparty_key
+    assert operation.readback_debt_control_enabled is None
+
     run_credit_decision_worker_once(
         db_session,
         exchange_root=tmp_path,
@@ -897,4 +989,12 @@ def test_approval_time_requires_explicit_timezone() -> None:
     item["movedTime"] = "2026-07-28T12:00:00"
 
     with pytest.raises(ValueError, match="timezone"):
+        parse_approved_decision(item, mapping=MAPPING)
+
+
+def test_exact_contract_ref_and_guid_must_match() -> None:
+    item = _item()
+    item["contractGuid"] = "00000000-0000-0000-0000-000000000000"
+
+    with pytest.raises(ValueError, match="contract_guid does not match contract_ref"):
         parse_approved_decision(item, mapping=MAPPING)

@@ -779,10 +779,12 @@ def test_display_auto_order_dry_run_uses_soft_availability_correction() -> None:
     assert rows[0]["days_in_sale_long"] == "90"
 
 
-def test_display_auto_order_dry_run_soft_correction_never_exceeds_double() -> None:
-    # Край: товара почти не было (1 день из 180). Мягкая поправка не может
-    # поднять скорость больше чем вдвое: base = 0.1, virtual = 179 * 0.1,
-    # rate = (18 + 17.9)/180 = 0.1994. Жёсткая дала бы 18/1 = 18 шт/день.
+def test_display_auto_order_dry_run_short_history_disables_correction() -> None:
+    # Предохранитель 2026-08-09 (MIN_RELIABLE_AVAILABILITY_DAYS = 15): товар
+    # был на полке 1 день из 180 - по такой базе о скорости судить нельзя,
+    # виртуальные продажи не достраиваются вообще, скорость календарная.
+    # Жёсткая формула дала бы 18/1 = 18 шт/день, мягкая без предохранителя -
+    # 0.1994.
     rows = build_dry_run_rows(
         [
             {
@@ -807,10 +809,51 @@ def test_display_auto_order_dry_run_soft_correction_never_exceeds_double() -> No
         sales_window_days=180,
     )
 
-    calendar_rate = Decimal("18") / Decimal("180")
-    assert rows[0]["avg_daily_sales_qty"] == "0.1994"
-    assert Decimal(rows[0]["avg_daily_sales_qty"]) < 2 * calendar_rate
-    assert Decimal(rows[0]["avg_daily_sales_qty"]) < Decimal("18")
+    assert rows[0]["avg_daily_sales_qty"] == "0.1"
+
+
+def test_display_auto_order_dry_run_short_history_order_goes_to_manual_review() -> None:
+    # Вторая половина предохранителя: если строка с короткой историей наличия
+    # всё же получает положительный заказ (здесь - через структурный пол),
+    # финальный гейт переводит её в ручную проверку и обнуляет количество.
+    rows = build_dry_run_rows(
+        [
+            {
+                "nomenclature_code": "RB-SHORT-HIST",
+                "name": "Дисплей, мало дней наблюдения",
+                "status": "working",
+                "status_label": "Поддерживаем",
+                "auto_order_allowed": True,
+                "quality_raw": "Medium",
+            }
+        ],
+        facts={
+            "stock": {"RB-SHORT-HIST": {"sellable_stock_qty": Decimal("0")}},
+            "reserve": {},
+            "incoming": {},
+            "sales": {"RB-SHORT-HIST": {"sales_qty_window": Decimal("18")}},
+            "returns": {},
+            "days_in_sale": {
+                "RB-SHORT-HIST": {30: Decimal("5"), 90: Decimal("10"), 180: Decimal("10")}
+            },
+        },
+        source_errors={},
+        target_days=14,
+        sales_window_days=180,
+        speed_horizon_rules=(
+            SpeedHorizonRule(
+                tier="slow",
+                min_group_avg_daily_sales_qty=Decimal("0"),
+                review_only=True,
+                label_ru="медленная группа",
+            ),
+        ),
+    )
+
+    assert rows[0]["dry_run_decision"] == "manual_review"
+    assert rows[0]["recommended_order_qty"] == "0"
+    assert "availability_history_too_short" in rows[0]["warnings"]
+    assert "Мало данных о наличии" in rows[0]["reason_ru"]
 
 
 def test_display_auto_order_dry_run_slow_group_flat_despite_availability_is_pension_candidate() -> (

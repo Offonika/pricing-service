@@ -1053,6 +1053,16 @@ STRUCTURAL_FLOOR_QTY = Decimal("13")
 # закреплён строгим анализом, при необходимости можно скорректировать.
 PENSION_CANDIDATE_MIN_DAYS_IN_SALE = Decimal("15")
 
+# Решение 2026-08-09 (возврат предохранителя, который сняли 2026-07-25):
+# если за длинное окно товар был на полке меньше этого числа дней, база для
+# скорости ненадёжна - поправку наличия не применяем вообще (считаем по
+# календарю), а строку с положительным заказом отдаём в ручную проверку.
+# Первоисточник методики (TopControl) считает такой порог обязательным:
+# нормализация по нескольким дням наличия ведёт к заказу неликвида
+# ("шапки пролежали год, разошлись за два дня"). Обсуждение - чат
+# 2026-08-04; фиксация - assortment-status-legacy-rule-inventory.md, раздел 1.
+MIN_RELIABLE_AVAILABILITY_DAYS = Decimal("15")
+
 # off_schedule_signal_policy.stockout_guard, display-auto-order-policy.json:
 # "дней свободного остатка меньше ожидаемого оставшегося срока поставки плюс
 # 10 дней запаса -> создать внеплановую Потребность на заказ или ручную
@@ -1455,9 +1465,17 @@ def build_dry_run_rows(
         # инвентаризации. Если данных нет (старый вызов/фикстура теста) -
         # откат на календарную скорость, прежнее поведение.
         days_in_sale = facts.get("days_in_sale", {}).get(code, {})
+        observed_days_long = days_in_sale.get(sales_window_days)
+        availability_history_too_short = (
+            observed_days_long is not None and observed_days_long < MIN_RELIABLE_AVAILABILITY_DAYS
+        )
 
         def _availability_rate(
-            net_qty: Decimal, calendar_days: int, *, days_in_sale: dict[int, Decimal] = days_in_sale
+            net_qty: Decimal,
+            calendar_days: int,
+            *,
+            days_in_sale: dict[int, Decimal] = days_in_sale,
+            history_too_short: bool = availability_history_too_short,
         ) -> Decimal:
             if calendar_days <= 0:
                 return Decimal("0")
@@ -1465,6 +1483,11 @@ def build_dry_run_rows(
             base_rate = net_qty / window
             available_days = days_in_sale.get(calendar_days)
             if available_days is None or available_days <= 0:
+                return base_rate
+            if history_too_short:
+                # Меньше MIN_RELIABLE_AVAILABILITY_DAYS дней наблюдения за
+                # длинное окно: по такой базе нельзя судить о скорости,
+                # виртуальные продажи не достраиваем ни в одном окне.
                 return base_rate
             days_without_stock = max(Decimal("0"), window - min(available_days, window))
             virtual_qty = days_without_stock * base_rate
@@ -1785,6 +1808,7 @@ def build_dry_run_rows(
                 "blockers": "; ".join(blockers),
                 "warnings": "; ".join(warnings),
                 "data_sources": _data_sources(demand_rule=demand_rule),
+                "_availability_history_too_short": availability_history_too_short,
             }
         )
     apply_independent_speed_tier(
@@ -1834,6 +1858,29 @@ def build_dry_run_rows(
             row["recommended_order_qty_raw"] = "0"
             row["recommended_order_qty"] = "0"
             row["dry_run_decision"] = "manual_review"
+
+    # Предохранитель короткой истории наличия (решение 2026-08-09, см.
+    # MIN_RELIABLE_AVAILABILITY_DAYS): скорость по нескольким дням наблюдения
+    # не доказана, автозаказ по ней запрещён - строка уходит человеку.
+    # Здесь, в самом конце, чтобы ни один шаг конвейера не вернул заказ
+    # такой строке (тот же принцип, что и барьер blockers выше).
+    for row in rows:
+        if not row.get("_availability_history_too_short"):
+            continue
+        if _clean(row.get("dry_run_decision")) != "order":
+            continue
+        computed_qty = _clean(row.get("recommended_order_qty")) or "0"
+        row["recommended_order_qty_raw"] = "0"
+        row["recommended_order_qty"] = "0"
+        row["dry_run_decision"] = "manual_review"
+        _append_warning(row, "availability_history_too_short")
+        observed = _clean(row.get("days_in_sale_long")) or "0"
+        row["reason_ru"] = (
+            f"Мало данных о наличии: товар был на полке {observed} дн. из "
+            f"{sales_window_days} (порог {MIN_RELIABLE_AVAILABILITY_DAYS}). Поправку "
+            f"наличия не применяли, расчёт по календарю давал {computed_qty} шт - "
+            "по такой короткой базе автозаказ запрещён, нужна ручная проверка."
+        )
 
     # stockout_guard (off_schedule_signal_policy) - см. константу выше.
     # Считается здесь, в самом конце, на уже окончательно устоявшемся

@@ -31,12 +31,10 @@ related_tests:
   - tests/test_report_display_auto_order_adaptive_lead_time_comparison_task.py
   - tests/test_report_display_supplier_lead_time_history_task.py
 contracts:
-  - build/bitrix/procurement_order_mapping.json
   - docs/specs/procurement-decision-contract-roadmap.md
 depends_on:
   - docs/specs/procurement-decision-contract-roadmap.md
   - docs/specs/display-auto-order-project-brief.md
-  - reports/assortment_lifecycle/2026-07-05/procurement-order-prelaunch-audit.md
 supersedes: []
 rollout_required: false
 updated_at: "2026-08-05"

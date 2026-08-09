@@ -590,7 +590,7 @@ documents:
     title: Procurement Management Contour Onepage
     doc_type: onepager
     domain: procurement
-    status: draft
+    status: active
     owner: operations
     source_of_truth: false
     related_code:

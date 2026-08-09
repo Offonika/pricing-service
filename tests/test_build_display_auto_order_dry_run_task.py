@@ -14,6 +14,7 @@ from tasks.build_display_auto_order_dry_run import (
     SpeedHorizonRule,
     build_dry_run_rows,
     build_summary,
+    fetch_days_in_sale_totals,
     fetch_reserved_totals,
     fetch_sales_totals,
     fetch_stock_totals,
@@ -651,6 +652,165 @@ def test_display_auto_order_dry_run_slow_group_below_structural_floor_gets_start
     assert Decimal(rows[0]["recommended_order_qty"]) > 0
     assert "structural_floor_starter_order" in rows[0]["warnings"]
     assert "Структурный пол" in rows[0]["reason_ru"]
+
+
+class _IntervalRowsResult:
+    def __init__(self, rows) -> None:
+        self._rows = rows
+
+    def mappings(self):
+        return self._rows
+
+
+class _IntervalConnection:
+    def __init__(self, rows) -> None:
+        self._rows = rows
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args) -> None:
+        return None
+
+    def execute(self, _statement):
+        return _IntervalRowsResult(self._rows)
+
+
+class _IntervalEngine:
+    def __init__(self, rows) -> None:
+        self._rows = rows
+
+    def connect(self):
+        return _IntervalConnection(self._rows)
+
+
+def test_days_in_sale_merges_point_intervals_instead_of_averaging() -> None:
+    # Исправление 2026-08-09: дни наличия - это дни, когда товар был хотя бы
+    # в одной точке (объединение интервалов), а не сумма точко-дней,
+    # делённая на число точек. Две точки: 01-31 июля (31 день) и
+    # 15 июля - 09 августа (26 дней). Объединение = 01 июля - 09 августа =
+    # 40 дней. Прежняя формула дала бы (31 + 26) / 2 = 28.5 дня.
+    engine = _IntervalEngine(
+        [
+            {
+                "product_code": "RB1",
+                "available_from": date(2026, 7, 1),
+                "available_to": date(2026, 7, 31),
+            },
+            {
+                "product_code": "RB1",
+                "available_from": date(2026, 7, 15),
+                "available_to": date(2026, 8, 9),
+            },
+        ]
+    )
+
+    totals = fetch_days_in_sale_totals(
+        engine,
+        codes=["RB1"],
+        physical_sales_point_codes=("SALE-A", "SALE-B"),
+        date_to=date(2026, 8, 9),
+        windows_days=(180,),
+    )
+
+    assert totals["RB1"][180] == Decimal("40")
+
+
+def test_days_in_sale_clips_intervals_to_the_requested_window() -> None:
+    # Интервал шире окна обрезается его границами: окно 30 дней до 09.08
+    # начинается 11.07, значит из интервала 01.06-09.08 в окно попадает
+    # ровно 30 дней.
+    engine = _IntervalEngine(
+        [
+            {
+                "product_code": "RB1",
+                "available_from": date(2026, 6, 1),
+                "available_to": date(2026, 8, 9),
+            }
+        ]
+    )
+
+    totals = fetch_days_in_sale_totals(
+        engine,
+        codes=["RB1"],
+        physical_sales_point_codes=("SALE-A",),
+        date_to=date(2026, 8, 9),
+        windows_days=(30, 90),
+    )
+
+    assert totals["RB1"][30] == Decimal("30")
+    assert totals["RB1"][90] == Decimal("70")
+
+
+def test_display_auto_order_dry_run_uses_soft_availability_correction() -> None:
+    # Решение 2026-08-09: дни без товара достраиваются МЯГКО, по календарной
+    # скорости, а не делением продаж на дни наличия. Окно 180, продажи 18,
+    # дни в продаже 90: base = 18/180 = 0.1; virtual = 90 * 0.1 = 9;
+    # rate = (18 + 9)/180 = 0.15. Жёсткая формула дала бы 18/90 = 0.2.
+    # Потолок мягкой поправки - x2 к календарной скорости.
+    rows = build_dry_run_rows(
+        [
+            {
+                "nomenclature_code": "RB-SOFT-RATE",
+                "name": "Дисплей, половину окна не было на полке",
+                "status": "working",
+                "status_label": "Поддерживаем",
+                "auto_order_allowed": True,
+                "quality_raw": "Medium",
+            }
+        ],
+        facts={
+            "stock": {"RB-SOFT-RATE": {"sellable_stock_qty": Decimal("0")}},
+            "reserve": {},
+            "incoming": {},
+            "sales": {"RB-SOFT-RATE": {"sales_qty_window": Decimal("18")}},
+            "returns": {},
+            "days_in_sale": {"RB-SOFT-RATE": {180: Decimal("90")}},
+        },
+        source_errors={},
+        target_days=14,
+        sales_window_days=180,
+    )
+
+    # base_avg_daily_sales_qty - это уже скорость с поправкой наличия
+    # (demand_multiplier здесь 1, поэтому avg равен base).
+    assert rows[0]["base_avg_daily_sales_qty"] == "0.15"
+    assert rows[0]["avg_daily_sales_qty"] == "0.15"
+    assert rows[0]["days_in_sale_long"] == "90"
+
+
+def test_display_auto_order_dry_run_soft_correction_never_exceeds_double() -> None:
+    # Край: товара почти не было (1 день из 180). Мягкая поправка не может
+    # поднять скорость больше чем вдвое: base = 0.1, virtual = 179 * 0.1,
+    # rate = (18 + 17.9)/180 = 0.1994. Жёсткая дала бы 18/1 = 18 шт/день.
+    rows = build_dry_run_rows(
+        [
+            {
+                "nomenclature_code": "RB-SOFT-EDGE",
+                "name": "Дисплей, был на полке один день",
+                "status": "working",
+                "status_label": "Поддерживаем",
+                "auto_order_allowed": True,
+                "quality_raw": "Medium",
+            }
+        ],
+        facts={
+            "stock": {"RB-SOFT-EDGE": {"sellable_stock_qty": Decimal("0")}},
+            "reserve": {},
+            "incoming": {},
+            "sales": {"RB-SOFT-EDGE": {"sales_qty_window": Decimal("18")}},
+            "returns": {},
+            "days_in_sale": {"RB-SOFT-EDGE": {180: Decimal("1")}},
+        },
+        source_errors={},
+        target_days=14,
+        sales_window_days=180,
+    )
+
+    calendar_rate = Decimal("18") / Decimal("180")
+    assert rows[0]["avg_daily_sales_qty"] == "0.1994"
+    assert Decimal(rows[0]["avg_daily_sales_qty"]) < 2 * calendar_rate
+    assert Decimal(rows[0]["avg_daily_sales_qty"]) < Decimal("18")
 
 
 def test_display_auto_order_dry_run_slow_group_flat_despite_availability_is_pension_candidate() -> (

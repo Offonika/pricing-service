@@ -540,8 +540,8 @@ def fetch_effective_availability_shadow(
         point_rows = [
             {
                 "warehouse_code": warehouse_code,
-                "available_days": _merged_interval_days(point_intervals),
-                "out_of_stock_days": max(0, observed_days - _merged_interval_days(point_intervals)),
+                "available_days": merged_interval_days(point_intervals),
+                "out_of_stock_days": max(0, observed_days - merged_interval_days(point_intervals)),
             }
             for warehouse_code, point_intervals in sorted(points.items())
         ]
@@ -744,7 +744,7 @@ def _append_interval(
     )
 
 
-def _merged_interval_days(intervals: Sequence[tuple[date, date]]) -> int:
+def merged_interval_days(intervals: Sequence[tuple[date, date]]) -> int:
     merged: list[tuple[date, date]] = []
     for start, end in sorted(intervals):
         if not merged or start > merged[-1][1] + timedelta(days=1):

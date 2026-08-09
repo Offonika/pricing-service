@@ -9,6 +9,10 @@
   },
   "order_creation_schedule": {
     "description": "Документ Потребность на заказ создаем по графику статуса/скорости, а данные обновляем ежедневно.",
+    "status": "approved",
+    "implementation_status": "not_wired",
+    "implementation_note": "Правило графика в коде не исполняется: due-gate (is_due / next_due_at) не реализован, ежедневный пересчёт создаёт строки независимо от дня расписания. Раздел 6 docs/specs/assortment-status-legacy-rule-inventory.md.",
+    "status_labels_note": "Названия статусов историчные. Действующие: ПРОДАЖА = Растим (sale), Рабочий = Поддерживаем (working), Новинка = Завезли (new_item), Плод = Рассматриваем (fruit), Пенсия = Допродаём (pension). Канон - docs/specs/assortment-lifecycle-policy.md.",
     "rules": [
       {
         "status": "ПРОДАЖА",

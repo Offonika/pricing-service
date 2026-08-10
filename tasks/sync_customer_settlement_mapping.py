@@ -8,9 +8,12 @@ from app.workers.customer_settlements import run_customer_settlement_mapping_syn
 def main() -> int:
     result = run_customer_settlement_mapping_sync()
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-    return (
-        0 if result.get("status") in {"activated", "unchanged", "skipped_lock", "disabled"} else 1
-    )
+    status = result.get("status")
+    if status in {"activated", "unchanged", "skipped_lock", "disabled"}:
+        return 0
+    if status == "error":
+        return 1
+    return 2
 
 
 if __name__ == "__main__":

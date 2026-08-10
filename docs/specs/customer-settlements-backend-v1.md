@@ -39,7 +39,7 @@ depends_on:
   - docs/BI.Receivables.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-30"
+updated_at: "2026-08-10"
 ---
 
 # Назначение
@@ -400,6 +400,8 @@ Read-only проверка CRM подтвердила все пять service fi
   принудительное завершение через 5 секунд.
 - Точный повтор payload идемпотентен.
 - Финансовый cron повторяет только `error`; `blocked/disabled` не запускают retry.
+- CRM mapping cron после `error` или внешнего process timeout выполняет один повтор
+  через 600 секунд; `blocked`, `disabled` и `skipped_lock` повтор не запускают.
 - После 2 часов financial health — `warning`, после 6 — `critical`; API скрывает сумму.
 - Stale/missing mapping имеет `critical` health.
 - Health probe возвращает exit code `0/1/2`, чтобы внешний мониторинг мог
@@ -476,10 +478,15 @@ PostgreSQL advisory lock, partial indexes, транзакции и конкур�
    сохранив клиентский feature flag выключенным.
 6. Выполнить 72-часовой shadow-run.
 7. Сверить всех пилотов с допуском `0.01 RUB`.
-8. Провести security/cache isolation review.
-9. Получить письменную бухгалтерскую приёмку.
-10. Отдельно разрешить установку server-side Bitrix adapter.
-11. После backend readiness gate поставить frontend-задачу.
+8. Подготовить чистый backend release candidate от актуальной production-base;
+   до прохождения readiness gate сохранять `CUSTOMER_SETTLEMENTS_ENABLED=false`.
+9. Провести security/cache isolation review.
+10. Получить письменную бухгалтерскую приёмку.
+11. Первое подключение server-side Bitrix adapter выполнить на
+    `test.master-mobile.ru`; основной `master-mobile.ru` не изменять.
+12. После успешной проверки тестового магазина отдельно разрешить подключение
+    основного `master-mobile.ru`.
+13. После backend readiness gate поставить frontend-задачу.
 
 Rollback:
 
@@ -498,3 +505,6 @@ Rollback:
 - 2026-07-30 — бухгалтерская сверка 10/10 завершена без расхождений, PostgreSQL
   staging и whitelist из 10 пилотов подготовлены; клиентский feature flag выключен,
   shadow-run ожидает отдельный read-only staging webhook CRM.
+- 2026-08-10 — согласовано добавить один retry CRM mapping через 600 секунд,
+  подготовить чистый backend release candidate с выключенным клиентским флагом и
+  первым подключить `test.master-mobile.ru`, не изменяя основной магазин.

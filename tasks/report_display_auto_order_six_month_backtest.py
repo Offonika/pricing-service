@@ -72,6 +72,10 @@ DEFAULT_DATE_TO = date(2026, 7, 31)
 DEFAULT_HISTORY_START = date(2025, 1, 1)
 DEFAULT_LEAD_TIME_DAYS = 52
 DEFAULT_SENSITIVITY_DAYS = (45, 52, 59)
+LAUNCH_PROFILE_OBSERVATION_DAYS = 30
+LAUNCH_PROFILE_MIN_AVAILABILITY_DAYS = 7
+DEFAULT_LAUNCH_PROFILE_MIN_SAMPLES = 8
+STAGE_MODEL_SCENARIO_NAMES = ("legacy", "conservative", "typical", "service")
 
 
 @dataclass(frozen=True)
@@ -89,6 +93,54 @@ class PurchaseLine:
 class ReceiptLine:
     received_at: date
     qty: Decimal
+
+
+@dataclass(frozen=True)
+class StageModelScenario:
+    name: str
+    launch_quantile: Decimal | None
+    use_sales_start_min_max: bool
+    protected_working_safety_days: int = 0
+
+
+@dataclass(frozen=True)
+class LaunchObservation:
+    nomenclature_code: str
+    launch_at: date
+    complete_at: date
+    brand: str
+    quality: str
+    price_segment: str
+    sales_qty: Decimal
+    available_days: int
+    normalized_demand_qty: Decimal
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "nomenclature_code": self.nomenclature_code,
+            "launch_at": self.launch_at.isoformat(),
+            "complete_at": self.complete_at.isoformat(),
+            "brand": self.brand,
+            "quality": self.quality,
+            "price_segment": self.price_segment,
+            "observation_days": LAUNCH_PROFILE_OBSERVATION_DAYS,
+            "sales_qty": str(self.sales_qty),
+            "available_days": self.available_days,
+            "normalized_demand_qty": str(self.normalized_demand_qty),
+        }
+
+
+@dataclass(frozen=True)
+class LaunchProfile:
+    scenario: str
+    group_level: str
+    group_key: str
+    sample_count: int
+    quantile: Decimal
+    demand_qty_30d: Decimal
+    min_qty: Decimal
+    max_qty: Decimal
+    confidence: str
 
 
 @dataclass
@@ -624,6 +676,214 @@ def item_active_as_of(item: Mapping[str, Any], *, as_of: date) -> bool:
     return created_at is None or created_at <= as_of
 
 
+def stage_model_scenario(name: str) -> StageModelScenario:
+    scenarios = {
+        "legacy": StageModelScenario(
+            name="legacy",
+            launch_quantile=None,
+            use_sales_start_min_max=False,
+        ),
+        "conservative": StageModelScenario(
+            name="conservative",
+            launch_quantile=Decimal("0.25"),
+            use_sales_start_min_max=True,
+        ),
+        "typical": StageModelScenario(
+            name="typical",
+            launch_quantile=Decimal("0.50"),
+            use_sales_start_min_max=True,
+        ),
+        "service": StageModelScenario(
+            name="service",
+            launch_quantile=Decimal("0.75"),
+            use_sales_start_min_max=True,
+            protected_working_safety_days=7,
+        ),
+    }
+    try:
+        return scenarios[name]
+    except KeyError as exc:
+        raise ValueError(f"unknown stage model scenario: {name}") from exc
+
+
+def _profile_text(item: Mapping[str, Any], field: str) -> str:
+    return _clean(item.get(field) or _source_record(item).get(field)).casefold()
+
+
+def _launch_group_keys(item: Mapping[str, Any]) -> tuple[tuple[str, str, str, str], ...]:
+    brand = _profile_text(item, "brand_compatibility")
+    quality = _profile_text(item, "quality_normalized")
+    price_segment = _profile_text(item, "price_segment")
+    candidates = (
+        ("brand_quality_price", brand, quality, price_segment),
+        ("brand_price", brand, "", price_segment),
+        ("price", "", "", price_segment),
+        ("all_displays", "", "", ""),
+    )
+    result: list[tuple[str, str, str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for level, group_brand, group_quality, group_price in candidates:
+        value_key = (group_brand, group_quality, group_price)
+        if level != "all_displays" and not any(value_key):
+            continue
+        if value_key in seen:
+            continue
+        seen.add(value_key)
+        result.append((level, group_brand, group_quality, group_price))
+    return tuple(result)
+
+
+def build_launch_observations(
+    *,
+    items: Sequence[Mapping[str, Any]],
+    sales_by_code: Mapping[str, Mapping[date, Decimal]],
+    availability_by_code: Mapping[str, set[date]],
+    receipt_history: Mapping[str, Sequence[ReceiptLine]],
+    history_start: date,
+) -> list[LaunchObservation]:
+    """Build first-30-day launch observations without using phone sales.
+
+    A launch starts at the first receipt or first proven positive physical
+    availability.  Left-censored rows at the history boundary and rows with
+    fewer than seven proven availability days are excluded from the profile.
+    """
+
+    observations: list[LaunchObservation] = []
+    for item in items:
+        code = _clean(item.get("nomenclature_code"))
+        if not code:
+            continue
+        receipt_dates = [row.received_at for row in receipt_history.get(code, ())]
+        available_dates = sorted(availability_by_code.get(code, set()))
+        launch_dates = receipt_dates + available_dates[:1]
+        if not launch_dates:
+            continue
+        launch_at = min(launch_dates)
+        if launch_at <= history_start:
+            continue
+        complete_at = launch_at + timedelta(days=LAUNCH_PROFILE_OBSERVATION_DAYS - 1)
+        window_dates = set(_daterange(launch_at, complete_at))
+        proven_available = len(window_dates.intersection(available_dates))
+        if proven_available < LAUNCH_PROFILE_MIN_AVAILABILITY_DAYS:
+            continue
+        sales_qty = sum(
+            (
+                qty
+                for business_date, qty in sales_by_code.get(code, {}).items()
+                if launch_at <= business_date <= complete_at
+            ),
+            ZERO,
+        )
+        normalized = (
+            sales_qty * Decimal(LAUNCH_PROFILE_OBSERVATION_DAYS) / Decimal(proven_available)
+        )
+        observations.append(
+            LaunchObservation(
+                nomenclature_code=code,
+                launch_at=launch_at,
+                complete_at=complete_at,
+                brand=_profile_text(item, "brand_compatibility"),
+                quality=_profile_text(item, "quality_normalized"),
+                price_segment=_profile_text(item, "price_segment"),
+                sales_qty=sales_qty,
+                available_days=proven_available,
+                normalized_demand_qty=normalized,
+            )
+        )
+    observations.sort(key=lambda row: (row.complete_at, row.nomenclature_code))
+    return observations
+
+
+def build_launch_profile_snapshot(
+    observations: Sequence[LaunchObservation],
+    *,
+    as_of: date,
+) -> dict[tuple[str, str, str], tuple[Decimal, ...]]:
+    """Return launch samples fully observable before one decision date."""
+
+    grouped: dict[tuple[str, str, str], list[Decimal]] = defaultdict(list)
+    for row in observations:
+        if row.complete_at >= as_of:
+            continue
+        keys = (
+            (row.brand, row.quality, row.price_segment),
+            (row.brand, "", row.price_segment),
+            ("", "", row.price_segment),
+            ("", "", ""),
+        )
+        for key in dict.fromkeys(keys):
+            grouped[key].append(row.normalized_demand_qty)
+    return {key: tuple(sorted(values)) for key, values in grouped.items()}
+
+
+def _nearest_rank_quantile(values: Sequence[Decimal], quantile: Decimal) -> Decimal:
+    if not values:
+        return ZERO
+    ordered = sorted(values)
+    rank = max(1, math.ceil(quantile * Decimal(len(ordered))))
+    return ordered[rank - 1]
+
+
+def select_launch_profile(
+    *,
+    item: Mapping[str, Any],
+    snapshot: Mapping[tuple[str, str, str], Sequence[Decimal]],
+    scenario: StageModelScenario,
+    policy: AutoOrderPolicy,
+    min_samples: int = DEFAULT_LAUNCH_PROFILE_MIN_SAMPLES,
+) -> LaunchProfile | None:
+    if scenario.launch_quantile is None:
+        return None
+    selected_level = ""
+    selected_key: tuple[str, str, str] | None = None
+    selected_values: Sequence[Decimal] = ()
+    group_keys = _launch_group_keys(item)
+    for level, brand, quality, price_segment in group_keys:
+        values = snapshot.get((brand, quality, price_segment), ())
+        if len(values) >= min_samples:
+            selected_level = level
+            selected_key = (brand, quality, price_segment)
+            selected_values = values
+            break
+    if not selected_values:
+        fallback = snapshot.get(("", "", ""), ())
+        if not fallback:
+            return None
+        selected_level = "all_displays_low_sample"
+        selected_key = ("", "", "")
+        selected_values = fallback
+    demand_qty = _nearest_rank_quantile(selected_values, scenario.launch_quantile)
+    planning_days = (
+        policy.order_cadence_days
+        + policy.supplier_prepare_days
+        + policy.logistics_days
+        + policy.supplier_delay_buffer_days
+        + policy.receiving_buffer_days
+        + policy.distribution_to_shelf_days
+    )
+    daily_rate = demand_qty / Decimal(LAUNCH_PROFILE_OBSERVATION_DAYS)
+    min_qty = _ceil(daily_rate * Decimal(LAUNCH_PROFILE_OBSERVATION_DAYS))
+    max_qty = _ceil(daily_rate * Decimal(planning_days))
+    sample_count = len(selected_values)
+    confidence = (
+        "high"
+        if selected_level == "brand_quality_price" and sample_count >= 20
+        else "medium" if sample_count >= min_samples else "low"
+    )
+    assert selected_key is not None
+    return LaunchProfile(
+        scenario=scenario.name,
+        group_level=selected_level,
+        group_key="|".join(selected_key),
+        sample_count=sample_count,
+        quantile=scenario.launch_quantile,
+        demand_qty_30d=demand_qty,
+        min_qty=min_qty,
+        max_qty=max_qty,
+        confidence=confidence,
+    )
+
+
 def _dated_values(values: Any, *, as_of: date) -> tuple[date, ...]:
     if not isinstance(values, (list, tuple, set)):
         values = (values,)
@@ -881,20 +1141,41 @@ def stage_recommendation(
     free_stock: Decimal,
     incoming_qty: Decimal,
     policy: AutoOrderPolicy,
+    item: Mapping[str, Any] | None = None,
+    stage_scenario: StageModelScenario | None = None,
+    launch_profile: LaunchProfile | None = None,
 ) -> tuple[Decimal, Decimal, str, str, Decimal]:
     """Apply the approved quantity mode for the historical lifecycle stage."""
 
     status = lifecycle.status
+    scenario = stage_scenario or stage_model_scenario("legacy")
     if status in {
         AssortmentStatus.FRUIT,
         AssortmentStatus.NEWBORN,
         AssortmentStatus.NEWBORN_NEED,
-        AssortmentStatus.NEW_ITEM,
         AssortmentStatus.PENSION,
         AssortmentStatus.NONLIQUID,
         AssortmentStatus.DO_NOT_ORDER,
     }:
         return ZERO, ZERO, "do_not_order", f"stage_{status.value}", ZERO
+
+    if status is AssortmentStatus.NEW_ITEM:
+        speed_tier = f"stage_{status.value}_{scenario.name}"
+        if launch_profile is None or launch_profile.max_qty <= ZERO:
+            return ZERO, ZERO, "do_not_order", speed_tier, ZERO
+        inventory_position = free_stock + incoming_qty
+        if inventory_position > launch_profile.min_qty:
+            return ZERO, launch_profile.max_qty, "do_not_order", speed_tier, ZERO
+        raw = _ceil(max(ZERO, launch_profile.max_qty - inventory_position))
+        rounded = rounded_order_qty(
+            raw,
+            min_order_qty=policy.min_order_qty,
+            max_order_qty=policy.max_order_qty,
+            order_rounding_rules=policy.order_rounding_rules,
+        )
+        if rounded <= ZERO:
+            return ZERO, launch_profile.max_qty, "do_not_order", speed_tier, raw
+        return rounded, launch_profile.max_qty, "manual_review", speed_tier, raw
 
     if status is AssortmentStatus.SALE:
         return _recommendation(
@@ -916,13 +1197,25 @@ def stage_recommendation(
         + policy.distribution_to_shelf_days
     )
     target = _ceil(rate * Decimal(planning_days)) if rate > ZERO else ZERO
-    speed_tier = f"stage_{status.value}"
+    speed_tier = f"stage_{status.value}_{scenario.name}"
     if status is AssortmentStatus.SALES_START:
-        remaining_test_qty = max(
-            ZERO,
-            SALE_MIN_SALES_QTY - _decimal(evidence.get("sales_180")),
-        )
-        target = min(target, remaining_test_qty)
+        if scenario.use_sales_start_min_max:
+            reorder_days = max(1, planning_days - policy.order_cadence_days)
+            min_target = _ceil(rate * Decimal(reorder_days)) if rate > ZERO else ZERO
+            if free_stock + incoming_qty > min_target:
+                return ZERO, target, "do_not_order", speed_tier, ZERO
+        else:
+            remaining_test_qty = max(
+                ZERO,
+                SALE_MIN_SALES_QTY - _decimal(evidence.get("sales_180")),
+            )
+            target = min(target, remaining_test_qty)
+    if (
+        status is AssortmentStatus.WORKING
+        and scenario.protected_working_safety_days > 0
+        and (trend == "accelerating" or bool(_clean((item or {}).get("expensive_profile"))))
+    ):
+        target += _ceil(rate * Decimal(scenario.protected_working_safety_days))
     raw = _ceil(max(ZERO, target - free_stock - incoming_qty))
     rounded = rounded_order_qty(
         raw,
@@ -953,6 +1246,9 @@ def run_simulation(
     receipt_history: Mapping[str, Sequence[ReceiptLine]] | None = None,
     history_start: date | None = None,
     use_historical_lifecycle: bool = False,
+    stage_scenario: StageModelScenario | None = None,
+    launch_observations: Sequence[LaunchObservation] = (),
+    launch_profile_min_samples: int = DEFAULT_LAUNCH_PROFILE_MIN_SAMPLES,
 ) -> SimulationResult:
     codes = [_clean(item.get("nomenclature_code")) for item in items]
     item_by_code = {_clean(item.get("nomenclature_code")): item for item in items}
@@ -989,6 +1285,7 @@ def run_simulation(
             "forecast_abs_error_qty_7d": ZERO,
         }
     )
+    active_stage_scenario = stage_scenario or stage_model_scenario("legacy")
     summary = SimulationSummary(scenario=scenario, lead_time_days=lead_time_days)
     receipts_by_code = receipt_history or {}
     previous_statuses: dict[str, str] = {}
@@ -1084,6 +1381,10 @@ def run_simulation(
         if business_date not in decisions:
             continue
         summary.decision_points += 1
+        launch_snapshot = build_launch_profile_snapshot(
+            launch_observations,
+            as_of=business_date,
+        )
         for code in codes:
             item = item_by_code[code]
             if not item_active_as_of(item, as_of=business_date):
@@ -1095,6 +1396,13 @@ def run_simulation(
                 demand_multiplier=_demand_multiplier(item, policy),
             )
             incoming = sum((lot.qty for lot in pipeline.get(code, ())), ZERO)
+            launch_profile = select_launch_profile(
+                item=item,
+                snapshot=launch_snapshot,
+                scenario=active_stage_scenario,
+                policy=policy,
+                min_samples=launch_profile_min_samples,
+            )
             if use_historical_lifecycle:
                 lifecycle = lifecycle_by_code[code]
                 recommended, target, decision, speed_tier, raw = stage_recommendation(
@@ -1105,6 +1413,9 @@ def run_simulation(
                     free_stock=stock[code],
                     incoming_qty=incoming,
                     policy=policy,
+                    item=item,
+                    stage_scenario=active_stage_scenario,
+                    launch_profile=launch_profile,
                 )
             else:
                 lifecycle = None
@@ -1176,6 +1487,28 @@ def run_simulation(
                         ),
                         "auto_order_allowed_current": int(bool(item.get("auto_order_allowed"))),
                         "speed_tier": speed_tier,
+                        "stage_model_scenario": active_stage_scenario.name,
+                        "launch_profile_group_level": (
+                            launch_profile.group_level if launch_profile else ""
+                        ),
+                        "launch_profile_group_key": (
+                            launch_profile.group_key if launch_profile else ""
+                        ),
+                        "launch_profile_sample_count": (
+                            launch_profile.sample_count if launch_profile else 0
+                        ),
+                        "launch_profile_confidence": (
+                            launch_profile.confidence if launch_profile else ""
+                        ),
+                        "launch_profile_demand_qty_30d": (
+                            str(launch_profile.demand_qty_30d) if launch_profile else ""
+                        ),
+                        "launch_profile_min_qty": (
+                            str(launch_profile.min_qty) if launch_profile else ""
+                        ),
+                        "launch_profile_max_qty": (
+                            str(launch_profile.max_qty) if launch_profile else ""
+                        ),
                         "trend": trend,
                         "sales_180": str(evidence["sales_180"]),
                         "sales_90": str(evidence["sales_90"]),
@@ -1222,6 +1555,10 @@ def run_simulation(
     )
     summary.ending_stock_qty = sum(stock.values(), ZERO)
 
+    ending_launch_snapshot = build_launch_profile_snapshot(
+        launch_observations,
+        as_of=date_to,
+    )
     for code in codes:
         rate, trend, evidence = forecast_rate(
             sales_by_code.get(code, {}),
@@ -1230,6 +1567,13 @@ def run_simulation(
             demand_multiplier=_demand_multiplier(item_by_code[code], policy),
         )
         if use_historical_lifecycle and code in lifecycle_by_code:
+            ending_launch_profile = select_launch_profile(
+                item=item_by_code[code],
+                snapshot=ending_launch_snapshot,
+                scenario=active_stage_scenario,
+                policy=policy,
+                min_samples=launch_profile_min_samples,
+            )
             _recommended, target, _decision, _tier, _raw = stage_recommendation(
                 lifecycle=lifecycle_by_code[code],
                 rate=rate,
@@ -1238,6 +1582,9 @@ def run_simulation(
                 free_stock=ZERO,
                 incoming_qty=ZERO,
                 policy=policy,
+                item=item_by_code[code],
+                stage_scenario=active_stage_scenario,
+                launch_profile=ending_launch_profile,
             )
         else:
             _recommended, target, _decision, _tier, _raw = _recommendation(
@@ -1396,6 +1743,17 @@ def _parse_args() -> argparse.Namespace:
         nargs="+",
         default=list(DEFAULT_SENSITIVITY_DAYS),
     )
+    parser.add_argument(
+        "--stage-model-scenarios",
+        choices=STAGE_MODEL_SCENARIO_NAMES,
+        nargs="+",
+        default=list(STAGE_MODEL_SCENARIO_NAMES),
+    )
+    parser.add_argument(
+        "--launch-profile-min-samples",
+        type=int,
+        default=DEFAULT_LAUNCH_PROFILE_MIN_SAMPLES,
+    )
     args = parser.parse_args()
     if args.date_from > args.date_to:
         raise SystemExit("date-from must not exceed date-to")
@@ -1403,6 +1761,8 @@ def _parse_args() -> argparse.Namespace:
         raise SystemExit("history-start must provide at least 365 days of warm-up")
     if any(days <= 0 for days in args.lead_time_days):
         raise SystemExit("lead-time-days must be positive")
+    if args.launch_profile_min_samples <= 0:
+        raise SystemExit("launch-profile-min-samples must be positive")
     return args
 
 
@@ -1512,33 +1872,50 @@ def main() -> int:
         source_rows["supplier_order_rows"],
         source_rows["receipt_rows"],
     )
+    launch_observations = build_launch_observations(
+        items=items,
+        sales_by_code=sales,
+        availability_by_code=availability,
+        receipt_history=receipts,
+        history_start=args.history_start,
+    )
     all_detail: list[dict[str, Any]] = []
     all_monthly: list[dict[str, Any]] = []
     summaries: list[dict[str, Any]] = []
     lifecycle_rows: list[dict[str, Any]] = []
-    for lead_time in sorted(set(args.lead_time_days)):
-        scenario = f"lead_time_{lead_time}d"
-        result = run_simulation(
-            items=items,
-            sales_by_code=sales,
-            availability_by_code=availability,
-            actual_stock_by_day=stock_by_day,
-            purchase_history=purchases,
-            initial_pipeline_by_code=starting_pipeline,
-            policy=auto_policy,
-            date_from=args.date_from,
-            date_to=args.date_to,
-            lead_time_days=lead_time,
-            scenario=scenario,
-            receipt_history=receipts,
-            history_start=args.history_start,
-            use_historical_lifecycle=True,
-        )
-        summaries.append(result.summary.as_dict())
-        all_detail.extend(result.decision_rows)
-        all_monthly.extend(result.monthly_rows)
-        if lead_time == DEFAULT_LEAD_TIME_DAYS:
-            lifecycle_rows = result.lifecycle_rows
+    base_stage_scenario = (
+        "typical" if "typical" in args.stage_model_scenarios else args.stage_model_scenarios[0]
+    )
+    for stage_scenario_name in dict.fromkeys(args.stage_model_scenarios):
+        active_stage_scenario = stage_model_scenario(stage_scenario_name)
+        for lead_time in sorted(set(args.lead_time_days)):
+            scenario = f"{stage_scenario_name}_lead_time_{lead_time}d"
+            result = run_simulation(
+                items=items,
+                sales_by_code=sales,
+                availability_by_code=availability,
+                actual_stock_by_day=stock_by_day,
+                purchase_history=purchases,
+                initial_pipeline_by_code=starting_pipeline,
+                policy=auto_policy,
+                date_from=args.date_from,
+                date_to=args.date_to,
+                lead_time_days=lead_time,
+                scenario=scenario,
+                receipt_history=receipts,
+                history_start=args.history_start,
+                use_historical_lifecycle=True,
+                stage_scenario=active_stage_scenario,
+                launch_observations=launch_observations,
+                launch_profile_min_samples=args.launch_profile_min_samples,
+            )
+            summary_row = result.summary.as_dict()
+            summary_row["stage_model_scenario"] = stage_scenario_name
+            summaries.append(summary_row)
+            all_detail.extend(result.decision_rows)
+            all_monthly.extend(result.monthly_rows)
+            if lead_time == DEFAULT_LEAD_TIME_DAYS and stage_scenario_name == base_stage_scenario:
+                lifecycle_rows = result.lifecycle_rows
 
     actual = actual_purchase_summary(
         purchases,
@@ -1558,13 +1935,43 @@ def main() -> int:
     _write_csv(output / "monthly-summary.csv", all_monthly)
     _write_csv(output / "scenario-summary.csv", summaries)
     _write_csv(output / "lifecycle-history.csv", lifecycle_rows)
+    _write_csv(
+        output / "launch-observation-history.csv",
+        [row.as_dict() for row in launch_observations],
+    )
     payload = {
-        "schema": "display_auto_order_six_month_backtest.v1",
+        "schema": "display_auto_order_six_month_backtest.v2",
         "status": "share_with_caveats",
         "date_from": args.date_from.isoformat(),
         "date_to": args.date_to.isoformat(),
         "history_start": args.history_start.isoformat(),
         "decision_cadence_days": auto_policy.order_cadence_days,
+        "stage_model": {
+            "scenarios": list(dict.fromkeys(args.stage_model_scenarios)),
+            "scenario_parameters": [
+                {
+                    "name": scenario_name,
+                    "launch_quantile": (
+                        str(stage_model_scenario(scenario_name).launch_quantile)
+                        if stage_model_scenario(scenario_name).launch_quantile is not None
+                        else None
+                    ),
+                    "use_sales_start_min_max": stage_model_scenario(
+                        scenario_name
+                    ).use_sales_start_min_max,
+                    "protected_working_safety_days": stage_model_scenario(
+                        scenario_name
+                    ).protected_working_safety_days,
+                }
+                for scenario_name in dict.fromkeys(args.stage_model_scenarios)
+            ],
+            "base_scenario": base_stage_scenario,
+            "launch_profile_observation_days": LAUNCH_PROFILE_OBSERVATION_DAYS,
+            "launch_profile_min_availability_days": LAUNCH_PROFILE_MIN_AVAILABILITY_DAYS,
+            "launch_profile_min_samples": args.launch_profile_min_samples,
+            "launch_observation_count": len(launch_observations),
+            "phone_sales_used": False,
+        },
         "cohort": {
             "classification_run_id": run_id,
             "sku_count": len(codes),
@@ -1597,12 +2004,15 @@ def main() -> int:
             "Historical incoming quantity is reconstructed from the 1C open-supplier-order register; expected arrival dates still depend on the supplier-order document and may be missing or stale.",
             "Supplier selection is approximated by the latest supplier and purchase price known on each decision date.",
             "Observed sales are used as demand; model stockouts expose unmet observed sales but cannot fully recover latent demand.",
+            "Launch profiles exclude left-censored launches and rows with fewer than seven proven availability days; brand, quality and price-segment grouping comes from the classification snapshot.",
+            "Phone sales and installed-base estimates are not used because the company does not sell phones.",
         ],
         "outputs": {
             "decision_detail_csv": "decision-detail.csv",
             "monthly_summary_csv": "monthly-summary.csv",
             "scenario_summary_csv": "scenario-summary.csv",
             "lifecycle_history_csv": "lifecycle-history.csv",
+            "launch_observation_history_csv": "launch-observation-history.csv",
         },
     }
     output.mkdir(parents=True, exist_ok=True)

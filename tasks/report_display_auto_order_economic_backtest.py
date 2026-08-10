@@ -33,17 +33,25 @@ from tasks.report_display_auto_order_six_month_backtest import (
     DEFAULT_DATE_FROM,
     DEFAULT_DATE_TO,
     DEFAULT_HISTORY_START,
+    DEFAULT_LAUNCH_PROFILE_MIN_SAMPLES,
     DEFAULT_LEAD_TIME_DAYS,
     DEFAULT_RECEIPT_MAPPING_JSON,
     DEFAULT_SUPPLIER_ORDER_MAPPING_JSON,
+    LAUNCH_PROFILE_MIN_AVAILABILITY_DAYS,
+    LAUNCH_PROFILE_OBSERVATION_DAYS,
+    STAGE_MODEL_SCENARIO_NAMES,
+    LaunchObservation,
     PipelineLot,
     PurchaseLine,
     ReceiptLine,
+    StageModelScenario,
     _chunks,
     _clean,
     _demand_multiplier,
     _expanding_text,
     _latest_purchase,
+    build_launch_observations,
+    build_launch_profile_snapshot,
     fetch_daily_sales,
     fetch_historical_open_supplier_pipeline,
     forecast_rate,
@@ -52,6 +60,8 @@ from tasks.report_display_auto_order_six_month_backtest import (
     load_backtest_items,
     normalize_purchase_history,
     reconstruct_historical_stock,
+    select_launch_profile,
+    stage_model_scenario,
     stage_recommendation,
     warmup_lifecycle_statuses,
 )
@@ -121,6 +131,7 @@ class StrategyResult:
     strategy: str
     demand_factor: Decimal
     review_mode: str = "actual"
+    stage_model_scenario: str = "actual"
     sku: dict[str, SkuAccumulator] = field(default_factory=dict)
     daily_rows: list[dict[str, Any]] = field(default_factory=list)
     decision_rows: list[dict[str, Any]] = field(default_factory=list)
@@ -421,6 +432,10 @@ def simulate_model_strategy(
     review_mode: str,
     keep_daily_rows: bool,
     history_start: date,
+    initial_previous_statuses: Mapping[str, str] | None = None,
+    stage_scenario: StageModelScenario | None = None,
+    launch_observations: Sequence[LaunchObservation] = (),
+    launch_profile_min_samples: int = DEFAULT_LAUNCH_PROFILE_MIN_SAMPLES,
 ) -> StrategyResult:
     codes = [_clean(item.get("nomenclature_code")) for item in items]
     item_by_code = {_clean(item.get("nomenclature_code")): item for item in items}
@@ -446,21 +461,25 @@ def simulate_model_strategy(
             for business_date in actual_availability_by_code.get(code, set())
             if business_date < date_from
         )
+    active_stage_scenario = stage_scenario or stage_model_scenario("legacy")
     result = StrategyResult(
         strategy="model",
         demand_factor=demand_factor,
         review_mode=review_mode,
+        stage_model_scenario=active_stage_scenario.name,
     )
     result.sku = {code: SkuAccumulator() for code in codes}
-    previous_statuses = warmup_lifecycle_statuses(
-        items=items,
-        sales_by_code=model_sales,
-        availability_by_code=model_availability,
-        purchase_history=purchase_history,
-        receipt_history=receipt_history,
-        date_from=history_start,
-        date_to=date_from - timedelta(days=1),
-    )
+    previous_statuses = dict(initial_previous_statuses or {})
+    if initial_previous_statuses is None:
+        previous_statuses = warmup_lifecycle_statuses(
+            items=items,
+            sales_by_code=model_sales,
+            availability_by_code=model_availability,
+            purchase_history=purchase_history,
+            receipt_history=receipt_history,
+            date_from=history_start,
+            date_to=date_from - timedelta(days=1),
+        )
     lifecycle_by_code = {}
     lifecycle_evidence_by_code: dict[str, dict[str, Any]] = {}
     decision_dates = {
@@ -571,6 +590,10 @@ def simulate_model_strategy(
             result.daily_rows.append(_json_value(daily))
         if business_date not in decision_dates:
             continue
+        launch_snapshot = build_launch_profile_snapshot(
+            launch_observations,
+            as_of=business_date,
+        )
         for code in codes:
             item = item_by_code[code]
             if not item_active_as_of(item, as_of=business_date):
@@ -583,6 +606,13 @@ def simulate_model_strategy(
             )
             incoming = sum((lot.qty for lot in pipeline.get(code, ())), ZERO)
             lifecycle = lifecycle_by_code[code]
+            launch_profile = select_launch_profile(
+                item=item,
+                snapshot=launch_snapshot,
+                scenario=active_stage_scenario,
+                policy=policy,
+                min_samples=launch_profile_min_samples,
+            )
             recommended, target, decision, speed_tier, raw = stage_recommendation(
                 lifecycle=lifecycle,
                 rate=rate,
@@ -591,6 +621,9 @@ def simulate_model_strategy(
                 free_stock=stock[code],
                 incoming_qty=incoming,
                 policy=policy,
+                item=item,
+                stage_scenario=active_stage_scenario,
+                launch_profile=launch_profile,
             )
             scheduled = ZERO
             price = ZERO
@@ -620,6 +653,7 @@ def simulate_model_strategy(
                     {
                         "demand_factor": str(demand_factor),
                         "review_mode": review_mode,
+                        "stage_model_scenario": active_stage_scenario.name,
                         "decision_date": business_date.isoformat(),
                         "nomenclature_code": code,
                         "name": _clean(item.get("name")),
@@ -634,6 +668,27 @@ def simulate_model_strategy(
                         "scheduled_order_qty": str(scheduled),
                         "decision": decision,
                         "speed_tier": speed_tier,
+                        "launch_profile_group_level": (
+                            launch_profile.group_level if launch_profile else ""
+                        ),
+                        "launch_profile_group_key": (
+                            launch_profile.group_key if launch_profile else ""
+                        ),
+                        "launch_profile_sample_count": (
+                            launch_profile.sample_count if launch_profile else 0
+                        ),
+                        "launch_profile_confidence": (
+                            launch_profile.confidence if launch_profile else ""
+                        ),
+                        "launch_profile_demand_qty_30d": (
+                            str(launch_profile.demand_qty_30d) if launch_profile else ""
+                        ),
+                        "launch_profile_min_qty": (
+                            str(launch_profile.min_qty) if launch_profile else ""
+                        ),
+                        "launch_profile_max_qty": (
+                            str(launch_profile.max_qty) if launch_profile else ""
+                        ),
                         "supplier": supplier,
                         "purchase_price": str(price),
                     }
@@ -697,6 +752,7 @@ def _strategy_summary(
     return {
         "strategy": result.strategy,
         "review_mode": result.review_mode,
+        "stage_model_scenario": result.stage_model_scenario,
         "demand_factor": str(result.demand_factor),
         "observed_demand_qty": str(total.observed_demand_qty),
         "estimated_hidden_demand_qty": str(total.hidden_demand_qty),
@@ -944,6 +1000,17 @@ def _parse_args() -> argparse.Namespace:
         default=list(DEFAULT_REVIEW_MODES),
     )
     parser.add_argument(
+        "--stage-model-scenarios",
+        choices=STAGE_MODEL_SCENARIO_NAMES,
+        nargs="+",
+        default=list(STAGE_MODEL_SCENARIO_NAMES),
+    )
+    parser.add_argument(
+        "--launch-profile-min-samples",
+        type=int,
+        default=DEFAULT_LAUNCH_PROFILE_MIN_SAMPLES,
+    )
+    parser.add_argument(
         "--auto-order-policy-json",
         type=Path,
         default=Path("config/assortment/display-auto-order-policy.json"),
@@ -963,6 +1030,8 @@ def _parse_args() -> argparse.Namespace:
         raise SystemExit("lead-time-days must be positive")
     if any(value < ZERO for value in args.demand_factors):
         raise SystemExit("demand-factors must be non-negative")
+    if args.launch_profile_min_samples <= 0:
+        raise SystemExit("launch-profile-min-samples must be positive")
     return args
 
 
@@ -1059,6 +1128,13 @@ def main() -> int:
         source_rows["supplier_order_rows"],
         source_rows["receipt_rows"],
     )
+    launch_observations = build_launch_observations(
+        items=items,
+        sales_by_code=sales,
+        availability_by_code=availability,
+        receipt_history=receipts,
+        history_start=args.history_start,
+    )
     inventory_costs, inventory_cost_sources = build_inventory_unit_costs(
         codes=codes,
         economics=economics,
@@ -1085,11 +1161,39 @@ def main() -> int:
         )
         for code in codes
     }
+    warmup_sales = {
+        code: {
+            business_date: qty
+            for business_date, qty in sales.get(code, {}).items()
+            if business_date < args.date_from
+        }
+        for code in codes
+    }
+    warmup_availability = {
+        code: {
+            business_date
+            for business_date in availability.get(code, set())
+            if business_date < args.date_from
+        }
+        for code in codes
+    }
+    initial_previous_statuses = warmup_lifecycle_statuses(
+        items=items,
+        sales_by_code=warmup_sales,
+        availability_by_code=warmup_availability,
+        purchase_history=purchases,
+        receipt_history=receipts,
+        date_from=args.history_start,
+        date_to=args.date_from - timedelta(days=1),
+    )
     scenario_rows: list[dict[str, Any]] = []
     base_actual: StrategyResult | None = None
     base_model: StrategyResult | None = None
     base_review_mode = "all_recommendations"
     base_factor = Decimal("1")
+    base_stage_scenario = (
+        "typical" if "typical" in args.stage_model_scenarios else args.stage_model_scenarios[0]
+    )
     all_decisions: list[dict[str, Any]] = []
     daily_rows: list[dict[str, Any]] = []
 
@@ -1115,38 +1219,49 @@ def main() -> int:
             period_days=period_days,
         )
         scenario_rows.append({**actual_summary, "comparison_winner": "baseline"})
-        for review_mode in args.review_modes:
-            model = simulate_model_strategy(
-                items=items,
-                sales_by_code=sales,
-                hidden_demand_base=hidden_base,
-                actual_availability_by_code=availability,
-                actual_stock_by_day=stock_by_day,
-                initial_pipeline_by_code=starting_pipeline,
-                purchase_history=purchases,
-                receipt_history=receipts,
-                inventory_unit_costs=inventory_costs,
-                policy=policy,
-                date_from=args.date_from,
-                date_to=args.date_to,
-                lead_time_days=args.lead_time_days,
-                demand_factor=demand_factor,
-                review_mode=review_mode,
-                keep_daily_rows=(demand_factor == base_factor and review_mode == base_review_mode),
-                history_start=args.history_start,
-            )
-            model_summary = _strategy_summary(
-                result=model,
-                economics=economics,
-                period_days=period_days,
-            )
-            winner = _winner(actual_summary, model_summary)
-            scenario_rows.append({**model_summary, "comparison_winner": winner})
-            all_decisions.extend(model.decision_rows)
-            if demand_factor == base_factor and review_mode == base_review_mode:
-                base_actual = actual
-                base_model = model
-                daily_rows = actual.daily_rows + model.daily_rows
+        for stage_scenario_name in dict.fromkeys(args.stage_model_scenarios):
+            active_stage_scenario = stage_model_scenario(stage_scenario_name)
+            for review_mode in args.review_modes:
+                is_base = (
+                    demand_factor == base_factor
+                    and review_mode == base_review_mode
+                    and stage_scenario_name == base_stage_scenario
+                )
+                model = simulate_model_strategy(
+                    items=items,
+                    sales_by_code=sales,
+                    hidden_demand_base=hidden_base,
+                    actual_availability_by_code=availability,
+                    actual_stock_by_day=stock_by_day,
+                    initial_pipeline_by_code=starting_pipeline,
+                    purchase_history=purchases,
+                    receipt_history=receipts,
+                    inventory_unit_costs=inventory_costs,
+                    policy=policy,
+                    date_from=args.date_from,
+                    date_to=args.date_to,
+                    lead_time_days=args.lead_time_days,
+                    demand_factor=demand_factor,
+                    review_mode=review_mode,
+                    keep_daily_rows=is_base,
+                    history_start=args.history_start,
+                    initial_previous_statuses=initial_previous_statuses,
+                    stage_scenario=active_stage_scenario,
+                    launch_observations=launch_observations,
+                    launch_profile_min_samples=args.launch_profile_min_samples,
+                )
+                model_summary = _strategy_summary(
+                    result=model,
+                    economics=economics,
+                    period_days=period_days,
+                )
+                winner = _winner(actual_summary, model_summary)
+                scenario_rows.append({**model_summary, "comparison_winner": winner})
+                all_decisions.extend(model.decision_rows)
+                if is_base:
+                    base_actual = actual
+                    base_model = model
+                    daily_rows = actual.daily_rows + model.daily_rows
 
     if base_actual is None or base_model is None:
         raise SystemExit("demand-factors must include 1 for the base scenario")
@@ -1168,6 +1283,10 @@ def main() -> int:
     _write_csv(output / "economic-daily-summary.csv", daily_rows)
     _write_csv(output / "economic-decision-detail.csv", all_decisions)
     _write_csv(output / "economic-lifecycle-history.csv", base_model.lifecycle_rows)
+    _write_csv(
+        output / "economic-launch-observation-history.csv",
+        [row.as_dict() for row in launch_observations],
+    )
 
     lifecycle_day_counts = Counter(row["status"] for row in base_model.lifecycle_rows)
     final_lifecycle_by_code = {
@@ -1185,14 +1304,41 @@ def main() -> int:
         if row["strategy"] == "model"
         and _decimal(row["demand_factor"]) == base_factor
         and row["review_mode"] == base_review_mode
+        and row["stage_model_scenario"] == base_stage_scenario
     )
     summary = {
-        "schema": "display_auto_order_economic_backtest.v1",
+        "schema": "display_auto_order_economic_backtest.v2",
         "status": "share_with_caveats",
         "date_from": args.date_from,
         "date_to": args.date_to,
         "history_start": args.history_start,
         "lead_time_days": args.lead_time_days,
+        "stage_model": {
+            "scenarios": list(dict.fromkeys(args.stage_model_scenarios)),
+            "scenario_parameters": [
+                {
+                    "name": scenario_name,
+                    "launch_quantile": (
+                        str(stage_model_scenario(scenario_name).launch_quantile)
+                        if stage_model_scenario(scenario_name).launch_quantile is not None
+                        else None
+                    ),
+                    "use_sales_start_min_max": stage_model_scenario(
+                        scenario_name
+                    ).use_sales_start_min_max,
+                    "protected_working_safety_days": stage_model_scenario(
+                        scenario_name
+                    ).protected_working_safety_days,
+                }
+                for scenario_name in dict.fromkeys(args.stage_model_scenarios)
+            ],
+            "base_scenario": base_stage_scenario,
+            "launch_profile_observation_days": LAUNCH_PROFILE_OBSERVATION_DAYS,
+            "launch_profile_min_availability_days": LAUNCH_PROFILE_MIN_AVAILABILITY_DAYS,
+            "launch_profile_min_samples": args.launch_profile_min_samples,
+            "launch_observation_count": len(launch_observations),
+            "phone_sales_used": False,
+        },
         "cohort": {
             "classification_run_id": run_id,
             "sku_count": len(codes),
@@ -1218,6 +1364,7 @@ def main() -> int:
         "base_scenario": {
             "demand_factor": base_factor,
             "review_mode": base_review_mode,
+            "stage_model_scenario": base_stage_scenario,
             "actual": base_actual_summary,
             "model": base_model_summary,
             "winner": base_model_summary["comparison_winner"],
@@ -1258,6 +1405,8 @@ def main() -> int:
             "Historical manual statuses are replayed only when source evidence includes an effective date; undated blockers are not projected backward.",
             "The model uses a fixed 52-day receipt assumption; supplier-specific realized lead times are not replayed.",
             "Inventory capital excludes financing cost, warehouse handling, obsolescence and taxes.",
+            "Launch profiles exclude left-censored launches and rows with fewer than seven proven availability days; brand, quality and price-segment grouping comes from the classification snapshot.",
+            "Phone sales and installed-base estimates are not used because the company does not sell phones.",
         ],
         "outputs": {
             "scenario_comparison_csv": "economic-scenario-comparison.csv",
@@ -1265,6 +1414,7 @@ def main() -> int:
             "daily_summary_csv": "economic-daily-summary.csv",
             "decision_detail_csv": "economic-decision-detail.csv",
             "lifecycle_history_csv": "economic-lifecycle-history.csv",
+            "launch_observation_history_csv": "economic-launch-observation-history.csv",
         },
     }
     (output / "economic-summary.json").write_text(

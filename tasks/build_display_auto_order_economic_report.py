@@ -384,6 +384,7 @@ def build_analysis(economic_dir: Path) -> dict[str, Any]:
     )[:15]
 
     sensitivity_rows = []
+    base_stage_scenario = str(raw_summary.get("base_scenario", {}).get("stage_model_scenario", ""))
     factors = sorted(
         {_decimal(row["demand_factor"]) for row in scenario_rows if row["strategy"] == "actual"}
     )
@@ -398,6 +399,10 @@ def build_analysis(economic_dir: Path) -> dict[str, Any]:
             for row in scenario_rows
             if row["strategy"] == "model"
             and row["review_mode"] == "all_recommendations"
+            and (
+                not base_stage_scenario
+                or row.get("stage_model_scenario", "") == base_stage_scenario
+            )
             and _decimal(row["demand_factor"]) == factor
         )
         sensitivity_rows.append(

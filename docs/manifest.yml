@@ -401,6 +401,16 @@ documents:
     related_code: [app/api/order_payment_control.py, app/schemas/order_payment_control.py, app/services/order_payment_control.py]
     related_tests: [tests/test_order_payment_control.py]
     keywords: [site-orders, payments, cloudpayments, onec, read-only, amount-control, bitrix-task-1414]
+  - path: docs/specs/sms-journal-api.md
+    title: Encrypted SMS Journal API
+    doc_type: spec
+    domain: communications
+    status: draft
+    owner: engineering-and-operations
+    source_of_truth: true
+    related_code: [app/api/sms_journal.py, app/models/sms_journal.py, app/schemas/sms_journal.py, app/services/sms_journal.py, alembic/versions/c3e5a7b9d1f2_add_sms_journal.py]
+    related_tests: [tests/test_sms_journal_api.py]
+    keywords: [sms, megafon, onec, bitrix-task-2662, observability, encryption, idempotency]
   - path: docs/specs/site-defect-archive-search.md
     title: Site Defect Archive Search
     doc_type: spec

@@ -6,16 +6,21 @@ from pathlib import Path
 
 from tasks.build_display_auto_order_dry_run import load_auto_order_policy
 from tasks.report_display_auto_order_six_month_backtest import (
+    LaunchProfile,
     PipelineLot,
     PurchaseLine,
     ReceiptLine,
     actual_purchase_summary,
     actual_stock_summary,
+    build_launch_observations,
+    build_launch_profile_snapshot,
     forecast_rate,
     historical_lifecycle_decision,
     initial_pipeline,
     item_active_as_of,
     run_simulation,
+    select_launch_profile,
+    stage_model_scenario,
     stage_recommendation,
 )
 
@@ -343,7 +348,7 @@ def test_historical_lifecycle_does_not_use_future_sales() -> None:
     assert future_evidence == baseline_evidence
 
 
-def test_stage_recommendation_limits_sales_start_and_removes_working_safety() -> None:
+def test_stage_recommendation_limits_sales_start() -> None:
     policy = load_auto_order_policy(POLICY_PATH)
     as_of = date(2025, 6, 30)
     sales = {as_of - timedelta(days=offset): Decimal("1") for offset in range(5)}
@@ -370,6 +375,189 @@ def test_stage_recommendation_limits_sales_start_and_removes_working_safety() ->
     assert target == Decimal("7")
     assert recommended == Decimal("7")
     assert decision == "manual_review"
+
+
+def test_launch_profile_snapshot_does_not_use_incomplete_future_window() -> None:
+    policy = load_auto_order_policy(POLICY_PATH)
+    launch_at = date(2025, 1, 10)
+    item = {
+        **_historical_item(),
+        "brand_compatibility": "Apple",
+        "quality_normalized": "soft_oled",
+        "price_segment": "premium",
+    }
+    availability = {launch_at + timedelta(days=offset) for offset in range(30)}
+    sales = {business_date: Decimal("1") for business_date in availability}
+    observations = build_launch_observations(
+        items=[item],
+        sales_by_code={"SKU-HISTORY": sales},
+        availability_by_code={"SKU-HISTORY": availability},
+        receipt_history={},
+        history_start=date(2025, 1, 1),
+    )
+
+    assert len(observations) == 1
+    complete_at = observations[0].complete_at
+    assert build_launch_profile_snapshot(observations, as_of=complete_at) == {}
+
+    snapshot = build_launch_profile_snapshot(
+        observations,
+        as_of=complete_at + timedelta(days=1),
+    )
+    profile = select_launch_profile(
+        item=item,
+        snapshot=snapshot,
+        scenario=stage_model_scenario("typical"),
+        policy=policy,
+        min_samples=1,
+    )
+
+    assert profile is not None
+    assert profile.sample_count == 1
+    assert profile.demand_qty_30d == Decimal("30")
+    assert profile.min_qty == Decimal("30")
+    assert profile.max_qty == Decimal("66")
+
+
+def test_stage_recommendation_uses_launch_profile_for_new_item() -> None:
+    policy = load_auto_order_policy(POLICY_PATH)
+    lifecycle, evidence = historical_lifecycle_decision(
+        item=_historical_item(),
+        sales={},
+        availability_dates=set(),
+        purchases=[_historical_purchase()],
+        receipts=[],
+        as_of=date(2025, 6, 30),
+        previous_status=None,
+    )
+    profile = LaunchProfile(
+        scenario="typical",
+        group_level="all_displays",
+        group_key="||",
+        sample_count=20,
+        quantile=Decimal("0.50"),
+        demand_qty_30d=Decimal("3"),
+        min_qty=Decimal("3"),
+        max_qty=Decimal("7"),
+        confidence="medium",
+    )
+
+    recommended, target, decision, _tier, raw = stage_recommendation(
+        lifecycle=lifecycle,
+        rate=Decimal("0"),
+        trend="flat_or_slowing",
+        evidence=evidence,
+        free_stock=Decimal("0"),
+        incoming_qty=Decimal("0"),
+        policy=policy,
+        stage_scenario=stage_model_scenario("typical"),
+        launch_profile=profile,
+    )
+
+    assert lifecycle.status.value == "new_item"
+    assert target == Decimal("7")
+    assert raw == Decimal("7")
+    assert recommended == Decimal("7")
+    assert decision == "manual_review"
+
+
+def test_sales_start_min_max_does_not_use_twelve_minus_sales_cap() -> None:
+    policy = load_auto_order_policy(POLICY_PATH)
+    as_of = date(2025, 6, 30)
+    sales = {as_of - timedelta(days=offset): Decimal("1") for offset in range(5)}
+    lifecycle, evidence = historical_lifecycle_decision(
+        item=_historical_item(),
+        sales=sales,
+        availability_dates=set(sales),
+        purchases=[_historical_purchase()],
+        receipts=[],
+        as_of=as_of,
+        previous_status="new_item",
+    )
+
+    recommended, target, decision, _tier, _raw = stage_recommendation(
+        lifecycle=lifecycle,
+        rate=Decimal("1"),
+        trend="flat_or_slowing",
+        evidence=evidence,
+        free_stock=Decimal("0"),
+        incoming_qty=Decimal("0"),
+        policy=policy,
+        stage_scenario=stage_model_scenario("typical"),
+    )
+
+    assert target == Decimal("66")
+    assert recommended == Decimal("66")
+    assert decision == "manual_review"
+
+
+def test_stage_recommendation_removes_working_safety_stock() -> None:
+    policy = load_auto_order_policy(POLICY_PATH)
+    as_of = date(2026, 6, 30)
+    old_item = _historical_item()
+    old_item["source_record"] = {
+        "created_at": "2024-01-01",
+        "first_sale_at": "2025-06-01",
+    }
+    lifecycle, evidence = historical_lifecycle_decision(
+        item=old_item,
+        sales={},
+        availability_dates=set(),
+        purchases=[_historical_purchase()],
+        receipts=[],
+        as_of=as_of,
+        previous_status="working",
+    )
+    recommended, target, decision, _tier, _raw = stage_recommendation(
+        lifecycle=lifecycle,
+        rate=Decimal("1"),
+        trend="flat_or_slowing",
+        evidence=evidence,
+        free_stock=Decimal("0"),
+        incoming_qty=Decimal("0"),
+        policy=policy,
+    )
+
+    assert lifecycle.status.value == "working"
+    assert target == Decimal("66")
+    assert recommended == Decimal("66")
+    assert decision == "order"
+
+
+def test_service_scenario_protects_expensive_working_item() -> None:
+    policy = load_auto_order_policy(POLICY_PATH)
+    as_of = date(2026, 6, 30)
+    old_item = _historical_item()
+    old_item["expensive_profile"] = "expensive"
+    old_item["source_record"] = {
+        "created_at": "2024-01-01",
+        "first_sale_at": "2025-06-01",
+    }
+    lifecycle, evidence = historical_lifecycle_decision(
+        item=old_item,
+        sales={},
+        availability_dates=set(),
+        purchases=[_historical_purchase()],
+        receipts=[],
+        as_of=as_of,
+        previous_status="working",
+    )
+
+    recommended, target, decision, _tier, _raw = stage_recommendation(
+        lifecycle=lifecycle,
+        rate=Decimal("1"),
+        trend="flat_or_slowing",
+        evidence=evidence,
+        free_stock=Decimal("0"),
+        incoming_qty=Decimal("0"),
+        policy=policy,
+        item=old_item,
+        stage_scenario=stage_model_scenario("service"),
+    )
+
+    assert target == Decimal("73")
+    assert recommended == Decimal("73")
+    assert decision == "order"
 
 
 def test_item_is_not_in_historical_cohort_before_creation() -> None:

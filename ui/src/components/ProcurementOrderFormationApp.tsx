@@ -56,6 +56,8 @@ const ERROR_MESSAGES: Record<string, string> = {
     "Строку уже изменили в другом окне. Карточка обновлена — проверьте данные и повторите.",
   "transmitted order is read-only; create a new version":
     "Заказ уже передан в 1С, его нельзя менять. Создайте новую версию заказа.",
+  "approved order is read-only; create a new revision":
+    "Подтверждённый заказ заморожен. Новый расчёт создаст отдельную ревизию.",
   "classification proposal cannot be self-approved":
     "Своё предложение согласовать нельзя — нужен второй сотрудник.",
   "user cannot approve product classification":
@@ -90,7 +92,11 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
   const [loadingKey, setLoadingKey] = useState("");
 
   const activeLines = useMemo(() => order.lines.filter((line) => !line.removed), [order.lines]);
-  const locked = order.status === "transmitting" || order.status === "transmitted";
+  const visibleLines = useMemo(
+    () => [...order.lines].sort((left, right) => left.line_number - right.line_number),
+    [order.lines]
+  );
+  const locked = ["approved", "transmitting", "transmitted"].includes(order.status);
   const draftTotal = useMemo(
     () => activeLines.reduce((total, line) => {
       const edit = lineEdits[line.id];
@@ -270,13 +276,16 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
               </tr>
             </thead>
             <tbody>
-              {activeLines.map((line) => {
+              {visibleLines.map((line) => {
                 const edit = lineEdit(line);
                 const classification = classificationEdit(line);
                 const proposal = line.latest_classification;
                 const b2bDemand = line.payload?.b2b_customer_demand;
                 return (
-                  <tr key={line.id} className={line.blockers.length ? "order-formation__row--blocked" : ""}>
+                  <tr
+                    key={line.id}
+                    className={line.blockers.length || line.removed ? "order-formation__row--blocked" : ""}
+                  >
                     <td>
                       <strong>{line.nomenclature_name}</strong>
                       <small>1С: {line.nomenclature_code || line.nomenclature_ref}</small>
@@ -290,7 +299,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                       {proposal && <small>Предложение: {proposal.proposed_status_label} · {proposal.status}</small>}
                       <button
                         className="btn btn--ghost btn--small"
-                        disabled={locked}
+                        disabled={locked || line.removed}
                         onClick={() => setOpenedClassification(openedClassification === line.id ? null : line.id)}
                         type="button"
                       >
@@ -309,7 +318,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                       {openedClassification === line.id && (
                         <div className="order-formation__classification">
                           <select
-                            disabled={locked}
+                            disabled={locked || line.removed}
                             value={classification.status}
                             onChange={(event) => setClassificationEdits((current) => ({
                               ...current,
@@ -321,7 +330,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                             ))}
                           </select>
                           <textarea
-                            disabled={locked}
+                            disabled={locked || line.removed}
                             placeholder="Обязательная причина"
                             value={classification.reason}
                             onChange={(event) => setClassificationEdits((current) => ({
@@ -330,7 +339,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                             }))}
                           />
                           <input
-                            disabled={locked}
+                            disabled={locked || line.removed}
                             min="0"
                             placeholder="Ручной минимум"
                             step="0.001"
@@ -342,7 +351,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                             }))}
                           />
                           <input
-                            disabled={locked}
+                            disabled={locked || line.removed}
                             type="date"
                             value={classification.reviewDate}
                             onChange={(event) => setClassificationEdits((current) => ({
@@ -363,6 +372,19 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                     </td>
                     <td>
                       <strong>{line.recommended_quantity}</strong>
+                      {line.removed && (
+                        <small className="is-warning">Потребность исчезла в новом расчёте</small>
+                      )}
+                      {line.payload?.recommendation_discrepancy?.final_quantity && (
+                        <small className="is-warning">
+                          Решение человека: {line.payload.recommendation_discrepancy.final_quantity.manual} · новый расчёт: {line.payload.recommendation_discrepancy.final_quantity.recommended}
+                        </small>
+                      )}
+                      {line.payload?.recommendation_discrepancy?.purchase_price && (
+                        <small className="is-warning">
+                          Цена человека: {line.payload.recommendation_discrepancy.purchase_price.manual} · новая цена: {line.payload.recommendation_discrepancy.purchase_price.recommended}
+                        </small>
+                      )}
                       {line.recommendation_reason && <small>{line.recommendation_reason}</small>}
                       {b2bDemand && (
                         <div className="order-formation__b2b-advisory">
@@ -398,7 +420,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                     <td>
                       <input
                         min="0"
-                        disabled={locked}
+                        disabled={locked || line.removed}
                         step="0.001"
                         type="number"
                         value={edit.quantity}
@@ -411,7 +433,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                     <td>
                       <input
                         min="0"
-                        disabled={locked}
+                        disabled={locked || line.removed}
                         step="0.01"
                         type="number"
                         value={edit.price}
@@ -425,7 +447,7 @@ export function ProcurementOrderFormationApp({ bitrixUserName, initialOrder, onB
                     <td>
                       <button
                         className="btn btn--ghost btn--small"
-                        disabled={Boolean(loadingKey) || locked}
+                        disabled={Boolean(loadingKey) || locked || line.removed}
                         onClick={() => saveLine(line)}
                         type="button"
                       >

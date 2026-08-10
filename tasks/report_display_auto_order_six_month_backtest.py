@@ -701,7 +701,16 @@ def run_simulation(
 ) -> SimulationResult:
     codes = [_clean(item.get("nomenclature_code")) for item in items]
     item_by_code = {_clean(item.get("nomenclature_code")): item for item in items}
-    starting_stock = actual_stock_by_day.get(date_from, {})
+    # reconstruct_historical_stock records the end-of-day balance after applying
+    # that day's movements.  Starting the simulation from date_from would then
+    # subtract date_from sales twice.  Prefer the prior day's closing balance;
+    # retain the date_from fallback for isolated tests and legacy callers that
+    # provide an explicit opening snapshot instead of daily closing balances.
+    prior_date = date_from - timedelta(days=1)
+    starting_stock = actual_stock_by_day.get(
+        prior_date,
+        actual_stock_by_day.get(date_from, {}),
+    )
     stock = {code: _decimal(starting_stock.get(code)) for code in codes}
     pipeline: dict[str, list[PipelineLot]] = {
         code: [PipelineLot(lot.arrival_at, lot.qty, lot.source) for lot in lots]

@@ -158,6 +158,31 @@ def test_simulated_pipeline_prevents_weekly_duplicate_before_arrival() -> None:
     assert result.summary.order_lines == 1
 
 
+def test_simulation_starts_from_prior_day_closing_stock_when_available() -> None:
+    policy = load_auto_order_policy(POLICY_PATH)
+    simulation_day = date(2026, 2, 1)
+    prior_day = simulation_day - timedelta(days=1)
+
+    result = run_simulation(
+        items=[_item()],
+        sales_by_code={"SKU-1": {}},
+        availability_by_code={"SKU-1": set()},
+        actual_stock_by_day={
+            prior_day: {"SKU-1": Decimal("10")},
+            simulation_day: {"SKU-1": Decimal("7")},
+        },
+        purchase_history={},
+        initial_pipeline_by_code={},
+        policy=policy,
+        date_from=simulation_day,
+        date_to=simulation_day,
+        lead_time_days=52,
+        scenario="test",
+    )
+
+    assert result.ending_stock_by_code["SKU-1"] == Decimal("10")
+
+
 def test_simulated_arrival_changes_later_order_state() -> None:
     policy = load_auto_order_policy(POLICY_PATH)
     simulation_from = date(2026, 2, 1)

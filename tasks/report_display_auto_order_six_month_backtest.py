@@ -336,6 +336,124 @@ def reconstruct_historical_stock(
     return stock_by_day, dict(available_days), source_counts
 
 
+def fetch_historical_open_supplier_pipeline(
+    engine: Any,
+    *,
+    codes: Sequence[str],
+    as_of: date,
+    fallback_lead_time_days: int,
+) -> dict[str, list[PipelineLot]]:
+    """Reconstruct the exact register balance at a historical date.
+
+    ``_AccumRgT7160`` provides the opening balance at the first day of the
+    month; ``_AccumRg7147`` provides active movements through ``as_of``.
+    Grouping by supplier-order and SKU preserves the arrival date carried by
+    the order document while avoiding the unreliable receipt-to-order FIFO
+    approximation.
+    """
+
+    opening_at = month_start(as_of)
+    balances: dict[tuple[str, str], dict[str, Any]] = {}
+    for code_chunk in _chunks(sorted(set(codes))):
+        opening_statement = _expanding_text(
+            """
+            SELECT
+                NULLIF(LTRIM(RTRIM(product._Code)), N'') AS code,
+                CONVERT(varchar(34), balance._Fld7149RRef, 1) AS order_ref,
+                supplier_order._Date_Time AS order_created_at,
+                supplier_order._Fld2493 AS expected_receipt_at,
+                SUM(CAST(balance._Fld7156 AS decimal(28, 3))) AS qty
+            FROM dbo._AccumRgT7160 AS balance WITH (NOLOCK)
+            JOIN dbo._Reference62 AS product WITH (NOLOCK)
+              ON product._IDRRef = balance._Fld7151RRef
+            LEFT JOIN dbo._Document133 AS supplier_order WITH (NOLOCK)
+              ON supplier_order._IDRRef = balance._Fld7149RRef
+            WHERE balance._Period = :opening_at
+              AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
+            GROUP BY
+                NULLIF(LTRIM(RTRIM(product._Code)), N''),
+                balance._Fld7149RRef,
+                supplier_order._Date_Time,
+                supplier_order._Fld2493
+            """,
+            codes=code_chunk,
+        ).bindparams(bindparam("opening_at", value=datetime.combine(opening_at, time.min)))
+        movement_statement = _expanding_text(
+            """
+            SELECT
+                NULLIF(LTRIM(RTRIM(product._Code)), N'') AS code,
+                CONVERT(varchar(34), movement._Fld7149RRef, 1) AS order_ref,
+                supplier_order._Date_Time AS order_created_at,
+                supplier_order._Fld2493 AS expected_receipt_at,
+                SUM(CASE WHEN movement._RecordKind = 0
+                    THEN CAST(movement._Fld7156 AS decimal(28, 3))
+                    ELSE -CAST(movement._Fld7156 AS decimal(28, 3)) END) AS qty
+            FROM dbo._AccumRg7147 AS movement WITH (NOLOCK)
+            JOIN dbo._Reference62 AS product WITH (NOLOCK)
+              ON product._IDRRef = movement._Fld7151RRef
+            LEFT JOIN dbo._Document133 AS supplier_order WITH (NOLOCK)
+              ON supplier_order._IDRRef = movement._Fld7149RRef
+            WHERE movement._Active = 0x01
+              AND movement._Period >= :opening_at
+              AND movement._Period < :date_to
+              AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
+            GROUP BY
+                NULLIF(LTRIM(RTRIM(product._Code)), N''),
+                movement._Fld7149RRef,
+                supplier_order._Date_Time,
+                supplier_order._Fld2493
+            """,
+            codes=code_chunk,
+        ).bindparams(
+            bindparam("opening_at", value=datetime.combine(opening_at, time.min)),
+            bindparam(
+                "date_to",
+                value=datetime.combine(as_of + timedelta(days=1), time.min),
+            ),
+        )
+        with engine.connect() as connection:
+            rows = list(connection.execute(opening_statement).mappings()) + list(
+                connection.execute(movement_statement).mappings()
+            )
+        for row in rows:
+            key = (_clean(row.get("code")), _clean(row.get("order_ref")))
+            if not key[0]:
+                continue
+            target = balances.setdefault(
+                key,
+                {
+                    "qty": ZERO,
+                    "order_created_at": _date(row.get("order_created_at")),
+                    "expected_receipt_at": _date(row.get("expected_receipt_at")),
+                },
+            )
+            target["qty"] += _decimal(row.get("qty"))
+            target["order_created_at"] = target["order_created_at"] or _date(
+                row.get("order_created_at")
+            )
+            target["expected_receipt_at"] = target["expected_receipt_at"] or _date(
+                row.get("expected_receipt_at")
+            )
+
+    result: dict[str, list[PipelineLot]] = defaultdict(list)
+    for (code, _order_ref), row in balances.items():
+        qty = _decimal(row.get("qty"))
+        if qty <= ZERO:
+            continue
+        order_created = _date(row.get("order_created_at")) or as_of
+        arrival = _date(row.get("expected_receipt_at")) or (
+            order_created + timedelta(days=fallback_lead_time_days)
+        )
+        result[code].append(
+            PipelineLot(
+                arrival_at=max(as_of + timedelta(days=1), arrival),
+                qty=qty,
+                source="historical_open_order_register",
+            )
+        )
+    return dict(result)
+
+
 def normalize_purchase_history(
     supplier_rows: Sequence[Mapping[str, Any]],
     receipt_rows: Sequence[Mapping[str, Any]],
@@ -875,10 +993,8 @@ def pipeline_summary(pipeline_by_code: Mapping[str, Sequence[PipelineLot]]) -> d
         "sku_count": sum(1 for rows in pipeline_by_code.values() if rows),
         "lot_count": len(lots),
         "qty": str(sum((lot.qty for lot in lots), ZERO)),
-        "latest_arrival_at": (
-            max((lot.arrival_at for lot in lots)).isoformat() if lots else None
-        ),
-        "method": "FIFO same-SKU supplier orders minus posted receipts before start",
+        "latest_arrival_at": (max(lot.arrival_at for lot in lots).isoformat() if lots else None),
+        "method": "historical _AccumRgT7160 opening plus _AccumRg7147 movements",
     }
 
 
@@ -1007,6 +1123,12 @@ def main() -> int:
             date_from=args.history_start,
             date_to=args.date_to,
         )
+        starting_pipeline = fetch_historical_open_supplier_pipeline(
+            onec_engine,
+            codes=codes,
+            as_of=args.date_from - timedelta(days=1),
+            fallback_lead_time_days=DEFAULT_LEAD_TIME_DAYS,
+        )
         supplier_mapping = _load_document_line_mapping(
             DEFAULT_SUPPLIER_ORDER_MAPPING_JSON,
             error_code=SUPPLIER_ORDER_MAPPING_UNRESOLVED,
@@ -1031,16 +1153,6 @@ def main() -> int:
         source_rows["supplier_order_rows"],
         source_rows["receipt_rows"],
     )
-    starting_pipeline_all = initial_pipeline(
-        purchases,
-        receipts,
-        as_of=args.date_from - timedelta(days=1),
-        fallback_lead_time_days=DEFAULT_LEAD_TIME_DAYS,
-    )
-    starting_pipeline = {
-        code: lots for code, lots in starting_pipeline_all.items() if code in set(codes)
-    }
-
     all_detail: list[dict[str, Any]] = []
     all_monthly: list[dict[str, Any]] = []
     summaries: list[dict[str, Any]] = []
@@ -1115,7 +1227,7 @@ def main() -> int:
             "Historical reserves are unavailable and therefore treated as zero; simulated free stock may be overstated and order quantity understated.",
             "Historical quality blockers and return-based stop rules are not replayed.",
             "Opening stock and movements are reconstructed by warehouse but without an explicit quality dimension; defect and non-systematic warehouses are excluded.",
-            "Initial incoming orders are reconstructed by FIFO matching supplier orders to posted same-SKU receipts; this is not a direct subordinate-document link.",
+            "Historical incoming quantity is reconstructed from the 1C open-supplier-order register; expected arrival dates still depend on the supplier-order document and may be missing or stale.",
             "Supplier selection is approximated by the latest supplier and purchase price known on each decision date.",
             "Observed sales are used as demand; model stockouts expose unmet observed sales but cannot fully recover latent demand.",
         ],

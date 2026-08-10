@@ -238,7 +238,7 @@ documents:
       - tests/test_build_assortment_lifecycle_updates_task.py
       - tests/test_refresh_assortment_lifecycle_classification_task.py
       - tests/test_diff_assortment_lifecycle_classification.py
-    keywords: [assortment, lifecycle, status-policy, demand, availability, hysteresis, растим, поддерживаем, допродаём]
+    keywords: [assortment, lifecycle, status-policy, demand, availability, hysteresis, растим, поддерживаем, допродаём, товар, неликвид, снятие, снятие-с-продажи, nonliquid, removal, removal-from-sale]
   - path: docs/specs/assortment-status-contour-plan.md
     title: Assortment Status Contour Canonical Plan
     doc_type: spec
@@ -274,7 +274,7 @@ documents:
     related_tests:
       - tests/test_onec_stock_availability.py
       - tests/test_assortment_lifecycle_facts.py
-    keywords: [1c, stock, availability, daily, assortment, working, procurement, read-only]
+    keywords: [1c, stock, availability, daily, assortment, working, procurement, read-only, остатки, складах, точки, продаж, точки-продаж, warehouse, warehouses, points, sales-points]
   - path: docs/specs/assortment-status-legacy-rule-inventory.md
     title: Assortment Status Legacy Rule Inventory
     doc_type: spec
@@ -358,7 +358,7 @@ documents:
       - tests/test_procurement_order_formation_workspace.py
       - tests/test_procurement_order_formation_api.py
       - tests/test_procurement_order_formation_dry_run.py
-    keywords: [procurement, supplier-order, oauth-app, bitrix24, onec, catalog, lifecycle]
+    keywords: [procurement, supplier-order, oauth-app, bitrix24, onec, catalog, lifecycle, формирование, заказ, поставщик]
   - path: docs/specs/display-auto-order-project-brief.md
     title: Display Auto Order Project Brief
     doc_type: spec
@@ -448,7 +448,7 @@ documents:
       - tests/test_logistics_api.py
       - tests/test_logistics_onec.py
       - tests/test_order_fulfillment_api.py
-    keywords: [logistics, transfer-assistant, onec, reserve, placement, pickup, readonly]
+    keywords: [logistics, transfer-assistant, onec, reserve, placement, pickup, readonly, помощник, перемещения, перемещений, склады, складами, warehouse, warehouses]
   - path: docs/specs/receivables-smart-process-workflow.md
     title: Receivables Workplace And Smart Process Workflow
     doc_type: spec
@@ -468,7 +468,7 @@ documents:
     source_of_truth: true
     related_code: [config/price_types/ruleset.yaml, app/domains/customer_price_types/, app/infrastructure/customer_price_type_sources.py, app/infrastructure/customer_price_types.py, app/services/customer_price_types.py, app/models/customer_price_type.py, app/api/customer_price_types.py, scripts/build_bronze_monthly_inventory.py, scripts/build_customer_returns_portrait.py, scripts/build_customer_price_type_blueprint.py, app/services/exporters/ut103_customer_price_types.py, tasks/export_ut103_customer_price_types.py]
     related_tests: [tests/test_customer_price_type_core.py, tests/test_customer_price_type_sources.py, tests/test_customer_price_type_migration.py, tests/test_customer_price_type_api.py, tests/test_price_type_ruleset.py, tests/test_customer_price_type_blueprint.py, tests/test_ut103_customer_price_type_exporter.py, tests/test_export_ut103_customer_price_types_task.py]
-    keywords: [customer-price-types, onec, bitrix24, embedded-app, smart-process, ruleset, snapshots, actionable-cases]
+    keywords: [customer-price-types, onec, bitrix24, embedded-app, smart-process, ruleset, snapshots, actionable-cases, типы, типы-цен, цен, смарт, процесс, смарт-процесс, битрикс]
   - path: docs/specs/counterparty-folder-recommendations.md
     title: Counterparty Folder Recommendations
     doc_type: spec
@@ -810,7 +810,7 @@ documents:
     source_of_truth: true
     related_code: [app/api/logistics.py, app/telegram/logistics_bot.py]
     related_tests: [tests/]
-    keywords: [logistics, telegram, transfer]
+    keywords: [logistics, telegram, transfer, логистика, телеграм, бот, курьер]
   - path: docs/IntegrationContract.Logistics1C.md
     title: Logistics 1C Integration Contract
     doc_type: integration_contract

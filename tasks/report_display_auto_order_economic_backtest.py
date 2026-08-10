@@ -1021,6 +1021,12 @@ def _parse_args() -> argparse.Namespace:
         default=Path("config/assortment/display-warehouse-policy.json"),
     )
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument(
+        "--preflight-dir",
+        type=Path,
+        required=True,
+        help="Каталог проверенной предварительной таблицы со статусом PASS",
+    )
     args = parser.parse_args()
     if args.date_from > args.date_to:
         raise SystemExit("date-from must not exceed date-to")
@@ -1037,6 +1043,16 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
+    from tasks.display_auto_order_backtest_preflight import validate_preflight_directory
+
+    try:
+        preflight_manifest = validate_preflight_directory(args.preflight_dir)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if preflight_manifest.get("date_from") != args.date_from.isoformat() or preflight_manifest.get(
+        "date_to"
+    ) != args.date_to.isoformat():
+        raise SystemExit("preflight period does not match backtest period")
     settings = get_settings()
     app_url = args.database_url or os.environ.get("DATABASE_URL") or settings.database_url
     onec_url = (
@@ -1312,6 +1328,12 @@ def main() -> int:
         "date_from": args.date_from,
         "date_to": args.date_to,
         "history_start": args.history_start,
+        "preflight": {
+            "directory": str(args.preflight_dir),
+            "schema": preflight_manifest.get("schema"),
+            "status": preflight_manifest.get("preflight_status"),
+            "files": preflight_manifest.get("files"),
+        },
         "lead_time_days": args.lead_time_days,
         "stage_model": {
             "scenarios": list(dict.fromkeys(args.stage_model_scenarios)),

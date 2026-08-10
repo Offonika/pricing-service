@@ -1,0 +1,43 @@
+{
+  "schema": "display_auto_order_backtest_scenarios.v1",
+  "kmp4_weights": [0, 0.5, 1],
+  "kmp4_queue_days": 14,
+  "site_signals_enabled": false,
+  "holding_cost_scenarios": [
+    {
+      "name": "low",
+      "capital_annual_rate": 0.2,
+      "storage_annual_rate": 0.05,
+      "obsolescence_annual_rate": 0.1
+    },
+    {
+      "name": "base",
+      "capital_annual_rate": 0.3,
+      "storage_annual_rate": 0.1,
+      "obsolescence_annual_rate": 0.25
+    },
+    {
+      "name": "high",
+      "capital_annual_rate": 0.4,
+      "storage_annual_rate": 0.15,
+      "obsolescence_annual_rate": 0.4
+    }
+  ],
+  "lead_time": {
+    "fallback_days": 52,
+    "high_confidence_min_samples": 5,
+    "medium_confidence_min_samples": 2,
+    "sensitivity_days": [45, 52, 59]
+  },
+  "economic_safety_stock": {
+    "max_units": 1000,
+    "demand_sample_lookback_days": 365,
+    "demand_sample_step_days": 7,
+    "min_demand_samples": 8
+  },
+  "acceptance": {
+    "quantity_tolerance": 0.001,
+    "gross_profit_tolerance_rub": 1,
+    "fill_rate_tolerance_fraction": 0.0001
+  }
+}

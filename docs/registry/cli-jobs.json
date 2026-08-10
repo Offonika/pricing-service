@@ -104,6 +104,16 @@
       "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
       "remove_after": null
     },
+    "report_display_auto_order_backtest_preflight.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "mixed",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
     "backfill_competitor_items.py": {
       "owner": "matching",
       "kind": "backfill",

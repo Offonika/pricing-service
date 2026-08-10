@@ -114,9 +114,10 @@ class LaunchObservation:
     sales_qty: Decimal
     available_days: int
     normalized_demand_qty: Decimal
+    window_metrics: Mapping[int, tuple[Decimal, int, Decimal]]
 
     def as_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "nomenclature_code": self.nomenclature_code,
             "launch_at": self.launch_at.isoformat(),
             "complete_at": self.complete_at.isoformat(),
@@ -128,6 +129,13 @@ class LaunchObservation:
             "available_days": self.available_days,
             "normalized_demand_qty": str(self.normalized_demand_qty),
         }
+        for days, (sales_qty, available_days, normalized_qty) in sorted(
+            self.window_metrics.items()
+        ):
+            payload[f"sales_qty_{days}d"] = str(sales_qty)
+            payload[f"available_days_{days}d"] = available_days
+            payload[f"normalized_demand_qty_{days}d"] = str(normalized_qty)
+        return payload
 
 
 @dataclass(frozen=True)
@@ -761,22 +769,33 @@ def build_launch_observations(
         launch_at = min(launch_dates)
         if launch_at <= history_start:
             continue
+        window_metrics: dict[int, tuple[Decimal, int, Decimal]] = {}
+        for days in (7, 14, 30, 60, 90):
+            window_end = launch_at + timedelta(days=days - 1)
+            window_dates = set(_daterange(launch_at, window_end))
+            window_available = len(window_dates.intersection(available_dates))
+            window_sales = sum(
+                (
+                    qty
+                    for business_date, qty in sales_by_code.get(code, {}).items()
+                    if launch_at <= business_date <= window_end
+                ),
+                ZERO,
+            )
+            window_normalized = (
+                window_sales * Decimal(days) / Decimal(window_available)
+                if window_available > 0
+                else ZERO
+            )
+            window_metrics[days] = (
+                window_sales,
+                window_available,
+                window_normalized,
+            )
         complete_at = launch_at + timedelta(days=LAUNCH_PROFILE_OBSERVATION_DAYS - 1)
-        window_dates = set(_daterange(launch_at, complete_at))
-        proven_available = len(window_dates.intersection(available_dates))
+        sales_qty, proven_available, normalized = window_metrics[LAUNCH_PROFILE_OBSERVATION_DAYS]
         if proven_available < LAUNCH_PROFILE_MIN_AVAILABILITY_DAYS:
             continue
-        sales_qty = sum(
-            (
-                qty
-                for business_date, qty in sales_by_code.get(code, {}).items()
-                if launch_at <= business_date <= complete_at
-            ),
-            ZERO,
-        )
-        normalized = (
-            sales_qty * Decimal(LAUNCH_PROFILE_OBSERVATION_DAYS) / Decimal(proven_available)
-        )
         observations.append(
             LaunchObservation(
                 nomenclature_code=code,
@@ -788,6 +807,7 @@ def build_launch_observations(
                 sales_qty=sales_qty,
                 available_days=proven_available,
                 normalized_demand_qty=normalized,
+                window_metrics=window_metrics,
             )
         )
     observations.sort(key=lambda row: (row.complete_at, row.nomenclature_code))
@@ -1738,6 +1758,12 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
+        "--preflight-dir",
+        type=Path,
+        required=True,
+        help="Каталог проверенной предварительной таблицы со статусом PASS",
+    )
+    parser.add_argument(
         "--lead-time-days",
         type=int,
         nargs="+",
@@ -1768,6 +1794,16 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
+    from tasks.display_auto_order_backtest_preflight import validate_preflight_directory
+
+    try:
+        preflight_manifest = validate_preflight_directory(args.preflight_dir)
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    if preflight_manifest.get("date_from") != args.date_from.isoformat() or preflight_manifest.get(
+        "date_to"
+    ) != args.date_to.isoformat():
+        raise SystemExit("preflight period does not match backtest period")
     settings = get_settings()
     app_url = args.database_url or os.environ.get("DATABASE_URL") or settings.database_url
     onec_url = (
@@ -1945,6 +1981,12 @@ def main() -> int:
         "date_from": args.date_from.isoformat(),
         "date_to": args.date_to.isoformat(),
         "history_start": args.history_start.isoformat(),
+        "preflight": {
+            "directory": str(args.preflight_dir),
+            "schema": preflight_manifest.get("schema"),
+            "status": preflight_manifest.get("preflight_status"),
+            "files": preflight_manifest.get("files"),
+        },
         "decision_cadence_days": auto_policy.order_cadence_days,
         "stage_model": {
             "scenarios": list(dict.fromkeys(args.stage_model_scenarios)),

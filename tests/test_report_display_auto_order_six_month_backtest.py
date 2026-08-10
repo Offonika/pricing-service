@@ -12,8 +12,11 @@ from tasks.report_display_auto_order_six_month_backtest import (
     actual_purchase_summary,
     actual_stock_summary,
     forecast_rate,
+    historical_lifecycle_decision,
     initial_pipeline,
+    item_active_as_of,
     run_simulation,
+    stage_recommendation,
 )
 
 POLICY_PATH = Path("config/assortment/display-auto-order-policy.json")
@@ -240,3 +243,137 @@ def test_monthly_summary_keeps_calendar_boundaries() -> None:
     )
 
     assert [row["month"] for row in result.monthly_rows] == ["2026-02", "2026-03"]
+
+
+def _historical_item() -> dict[str, object]:
+    return {
+        "nomenclature_code": "SKU-HISTORY",
+        "name": "Дисплей исторический",
+        "source_record": {"created_at": "2025-01-01"},
+    }
+
+
+def _historical_purchase() -> PurchaseLine:
+    return PurchaseLine(
+        created_at=date(2025, 1, 2),
+        qty=Decimal("5"),
+        price=Decimal("100"),
+        supplier_name="Supplier",
+        order_ref="PO-HISTORY",
+        expected_receipt_at=date(2025, 2, 20),
+        cargo_handoff_at=date(2025, 1, 5),
+    )
+
+
+def test_historical_lifecycle_reconstructs_four_active_stages() -> None:
+    as_of = date(2025, 6, 30)
+    purchase = _historical_purchase()
+    no_sales, _ = historical_lifecycle_decision(
+        item=_historical_item(),
+        sales={},
+        availability_dates=set(),
+        purchases=[purchase],
+        receipts=[],
+        as_of=as_of,
+        previous_status=None,
+    )
+    first_sale = {as_of: Decimal("1")}
+    sales_start, _ = historical_lifecycle_decision(
+        item=_historical_item(),
+        sales=first_sale,
+        availability_dates={as_of},
+        purchases=[purchase],
+        receipts=[],
+        as_of=as_of,
+        previous_status=no_sales.status.value,
+    )
+    proven_sales = {as_of - timedelta(days=offset): Decimal("1") for offset in range(12)}
+    growing, _ = historical_lifecycle_decision(
+        item=_historical_item(),
+        sales=proven_sales,
+        availability_dates=set(proven_sales),
+        purchases=[purchase],
+        receipts=[],
+        as_of=as_of,
+        previous_status=sales_start.status.value,
+    )
+    old_item = _historical_item()
+    old_item["source_record"] = {
+        "created_at": "2024-01-01",
+        "first_sale_at": "2024-06-01",
+    }
+    supporting, _ = historical_lifecycle_decision(
+        item=old_item,
+        sales={},
+        availability_dates=set(),
+        purchases=[purchase],
+        receipts=[],
+        as_of=as_of,
+        previous_status=None,
+    )
+
+    assert no_sales.status.value == "new_item"
+    assert sales_start.status.value == "sales_start"
+    assert growing.status.value == "sale"
+    assert supporting.status.value == "working"
+
+
+def test_historical_lifecycle_does_not_use_future_sales() -> None:
+    as_of = date(2025, 6, 30)
+    baseline, baseline_evidence = historical_lifecycle_decision(
+        item=_historical_item(),
+        sales={},
+        availability_dates=set(),
+        purchases=[_historical_purchase()],
+        receipts=[],
+        as_of=as_of,
+        previous_status=None,
+    )
+    with_future, future_evidence = historical_lifecycle_decision(
+        item=_historical_item(),
+        sales={as_of + timedelta(days=1): Decimal("1000")},
+        availability_dates={as_of + timedelta(days=1)},
+        purchases=[_historical_purchase()],
+        receipts=[],
+        as_of=as_of,
+        previous_status=None,
+    )
+
+    assert with_future.status == baseline.status
+    assert future_evidence == baseline_evidence
+
+
+def test_stage_recommendation_limits_sales_start_and_removes_working_safety() -> None:
+    policy = load_auto_order_policy(POLICY_PATH)
+    as_of = date(2025, 6, 30)
+    sales = {as_of - timedelta(days=offset): Decimal("1") for offset in range(5)}
+    lifecycle, evidence = historical_lifecycle_decision(
+        item=_historical_item(),
+        sales=sales,
+        availability_dates=set(sales),
+        purchases=[_historical_purchase()],
+        receipts=[],
+        as_of=as_of,
+        previous_status="new_item",
+    )
+    recommended, target, decision, _tier, _raw = stage_recommendation(
+        lifecycle=lifecycle,
+        rate=Decimal("1"),
+        trend="flat_or_slowing",
+        evidence=evidence,
+        free_stock=Decimal("0"),
+        incoming_qty=Decimal("0"),
+        policy=policy,
+    )
+
+    assert lifecycle.status.value == "sales_start"
+    assert target == Decimal("7")
+    assert recommended == Decimal("7")
+    assert decision == "manual_review"
+
+
+def test_item_is_not_in_historical_cohort_before_creation() -> None:
+    item = _historical_item()
+
+    assert not item_active_as_of(item, as_of=date(2024, 12, 31))
+    assert item_active_as_of(item, as_of=date(2025, 1, 1))

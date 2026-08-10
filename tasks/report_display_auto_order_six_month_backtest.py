@@ -25,10 +25,20 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
-from sqlalchemy import bindparam, text
+from sqlalchemy import bindparam, func, select, text
 
 from app.core.config import get_settings
 from app.infrastructure.db.engines import build_engine
+from app.services.assortment_lifecycle import (
+    SALE_MIN_SALES_QTY,
+    AssortmentLifecycleDecision,
+    AssortmentLifecycleInput,
+    AssortmentStatus,
+    decide_assortment_status,
+)
+from app.services.assortment_lifecycle_classification_store import (
+    ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
+)
 from app.services.onec_stock_availability import (
     MOVEMENT_SQL,
     OPENING_BALANCE_SQL,
@@ -42,7 +52,6 @@ from tasks.build_display_auto_order_dry_run import (
     STRUCTURAL_FLOOR_QTY,
     AutoOrderPolicy,
     WarehousePolicy,
-    load_auto_order_items,
     load_auto_order_policy,
     load_warehouse_policy,
     rounded_order_qty,
@@ -60,7 +69,7 @@ ZERO = Decimal("0")
 ONE = Decimal("1")
 DEFAULT_DATE_FROM = date(2026, 2, 1)
 DEFAULT_DATE_TO = date(2026, 7, 31)
-DEFAULT_HISTORY_START = date(2025, 7, 24)
+DEFAULT_HISTORY_START = date(2025, 1, 1)
 DEFAULT_LEAD_TIME_DAYS = 52
 DEFAULT_SENSITIVITY_DAYS = (45, 52, 59)
 
@@ -73,6 +82,7 @@ class PurchaseLine:
     supplier_name: str
     order_ref: str
     expected_receipt_at: date | None
+    cargo_handoff_at: date | None = None
 
 
 @dataclass(frozen=True)
@@ -123,6 +133,7 @@ class SimulationResult:
     decision_rows: list[dict[str, Any]] = field(default_factory=list)
     monthly_rows: list[dict[str, Any]] = field(default_factory=list)
     ending_stock_by_code: dict[str, Decimal] = field(default_factory=dict)
+    lifecycle_rows: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _clean(value: Any) -> str:
@@ -185,17 +196,34 @@ def _chunks(values: Sequence[str], size: int = 700) -> Iterable[tuple[str, ...]]
 
 
 def load_backtest_items(app_engine: Any, *, folder: str) -> tuple[list[dict[str, Any]], int]:
-    items, run_id = load_auto_order_items(
-        app_engine,
-        folder=folder,
-        include_sale_review_candidates=True,
-    )
-    if run_id is None:
-        return [], 0
-    # load_auto_order_items already applies the canonical current cohort.  A
-    # current snapshot is an explicit survivorship limitation, not historical
-    # status evidence.
-    return items, int(run_id)
+    """Load every display row from one classification run, without status filtering.
+
+    The former backtest called ``load_auto_order_items`` and therefore kept only
+    the current ``sale``/``working`` cohort.  That projected today's eligibility
+    into every historical date.  The historical simulation needs the complete
+    display subject and decides eligibility from events available as of each day.
+    """
+
+    table = ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE
+    with app_engine.connect() as connection:
+        run_id = connection.execute(
+            select(func.max(table.c.last_run_id)).where(table.c.folder.ilike(f"%{folder}%"))
+        ).scalar()
+        if run_id is None:
+            return [], 0
+        rows = (
+            connection.execute(
+                select(table)
+                .where(
+                    table.c.folder.ilike(f"%{folder}%"),
+                    table.c.last_run_id == run_id,
+                )
+                .order_by(table.c.nomenclature_code.asc())
+            )
+            .mappings()
+            .all()
+        )
+    return [dict(row) for row in rows], int(run_id)
 
 
 def fetch_daily_sales(
@@ -473,6 +501,9 @@ def normalize_purchase_history(
                 supplier_name=_clean(row.get("supplier_name")) or "Поставщик не определён",
                 order_ref=_clean(row.get("supplier_order_ref")),
                 expected_receipt_at=_date(row.get("expected_receipt_at")),
+                cargo_handoff_at=_date(
+                    row.get("cargo_handoff_at") or row.get("cargo_handoff_date")
+                ),
             )
         )
     for row in receipt_rows:
@@ -563,6 +594,162 @@ def _availability_rate(qty: Decimal, *, days: int, available_days: int) -> Decim
         return base
     days_without = Decimal(days - min(days, available_days))
     return (qty + days_without * base) / Decimal(days)
+
+
+def _source_record(item: Mapping[str, Any]) -> Mapping[str, Any]:
+    value = item.get("source_record")
+    if isinstance(value, Mapping):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            parsed = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return parsed if isinstance(parsed, Mapping) else {}
+    return {}
+
+
+def _item_created_at(item: Mapping[str, Any]) -> date | None:
+    source = _source_record(item)
+    return _date(
+        source.get("created_at")
+        or source.get("card_created_at")
+        or source.get("onec_novelty_date")
+        or item.get("created_at")
+    )
+
+
+def item_active_as_of(item: Mapping[str, Any], *, as_of: date) -> bool:
+    created_at = _item_created_at(item)
+    return created_at is None or created_at <= as_of
+
+
+def _dated_values(values: Any, *, as_of: date) -> tuple[date, ...]:
+    if not isinstance(values, (list, tuple, set)):
+        values = (values,)
+    return tuple(
+        sorted(
+            {parsed for value in values if (parsed := _date(value)) is not None and parsed <= as_of}
+        )
+    )
+
+
+def historical_lifecycle_decision(
+    *,
+    item: Mapping[str, Any],
+    sales: Mapping[date, Decimal],
+    availability_dates: set[date],
+    purchases: Sequence[PurchaseLine],
+    receipts: Sequence[ReceiptLine],
+    as_of: date,
+    previous_status: str | None,
+) -> tuple[AssortmentLifecycleDecision, dict[str, Any]]:
+    """Classify one SKU using only evidence dated on or before ``as_of``."""
+
+    source = _source_record(item)
+    source_order_at = _date(source.get("first_supplier_order_at"))
+    order_dates = [line.created_at for line in purchases if line.created_at <= as_of]
+    if source_order_at is not None and source_order_at <= as_of:
+        order_dates.append(source_order_at)
+
+    cargo_dates = {
+        line.cargo_handoff_at
+        for line in purchases
+        if line.cargo_handoff_at is not None and line.cargo_handoff_at <= as_of
+    }
+    cargo_dates.update(_dated_values(source.get("supplier_order_cargo_handoff_dates"), as_of=as_of))
+    receipt_dates = {line.received_at for line in receipts if line.received_at <= as_of}
+    receipt_dates.update(_dated_values(source.get("receipt_dates"), as_of=as_of))
+
+    observed_sale_dates = sorted(day for day, qty in sales.items() if day <= as_of and qty > ZERO)
+    source_first_sale = _date(source.get("first_sale_at"))
+    if source_first_sale is not None and source_first_sale <= as_of:
+        observed_sale_dates.append(source_first_sale)
+    source_last_sale = _date(source.get("last_sale_at"))
+    if source_last_sale is not None and source_last_sale <= as_of:
+        observed_sale_dates.append(source_last_sale)
+    first_sale_at = min(observed_sale_dates) if observed_sale_dates else None
+    last_sale_at = max(observed_sale_dates) if observed_sale_dates else None
+
+    sales_short = _window_sum(sales, as_of=as_of, days=30)
+    sales_medium = _window_sum(sales, as_of=as_of, days=90)
+    sales_long = _window_sum(sales, as_of=as_of, days=180)
+    available_short = _available_days(availability_dates, as_of=as_of, days=30)
+    available_medium = _available_days(availability_dates, as_of=as_of, days=90)
+    available_long = _available_days(availability_dates, as_of=as_of, days=180)
+
+    manual_changed_at = _date(source.get("manual_changed_at"))
+    manual_status = (
+        source.get("manual_status") if manual_changed_at and manual_changed_at <= as_of else None
+    )
+    decision = decide_assortment_status(
+        AssortmentLifecycleInput(
+            nomenclature_code=_clean(item.get("nomenclature_code")),
+            created_at=_item_created_at(item),
+            first_supplier_order_at=min(order_dates) if order_dates else None,
+            supplier_order_cargo_handoff_dates=tuple(sorted(cargo_dates)),
+            receipt_dates=tuple(sorted(receipt_dates)),
+            first_sale_at=first_sale_at,
+            last_sale_at=last_sale_at,
+            as_of=as_of,
+            sales_qty_short=sales_short,
+            sales_qty_medium=sales_medium,
+            sales_qty_long=sales_long,
+            days_in_sale_short=available_short,
+            days_in_sale_medium=available_medium,
+            days_in_sale_long=available_long,
+            previous_status=previous_status,
+            manual_status=manual_status,
+            manual_reason=_clean(source.get("manual_reason")) if manual_status else "",
+            manual_approved_by=(_clean(source.get("manual_approved_by")) if manual_status else ""),
+            manual_changed_at=manual_changed_at if manual_status else None,
+        )
+    )
+    evidence = {
+        "sales_30": sales_short,
+        "sales_90": sales_medium,
+        "sales_180": sales_long,
+        "available_30": available_short,
+        "available_90": available_medium,
+        "available_180": available_long,
+        "first_sale_at": first_sale_at,
+        "last_sale_at": last_sale_at,
+        "first_supplier_order_at": min(order_dates) if order_dates else None,
+        "first_cargo_at": min(cargo_dates) if cargo_dates else None,
+        "historical_manual_status_replayed": bool(manual_status),
+    }
+    return decision, evidence
+
+
+def warmup_lifecycle_statuses(
+    *,
+    items: Sequence[Mapping[str, Any]],
+    sales_by_code: Mapping[str, Mapping[date, Decimal]],
+    availability_by_code: Mapping[str, set[date]],
+    purchase_history: Mapping[str, Sequence[PurchaseLine]],
+    receipt_history: Mapping[str, Sequence[ReceiptLine]],
+    date_from: date,
+    date_to: date,
+) -> dict[str, str]:
+    previous: dict[str, str] = {}
+    if date_from > date_to:
+        return previous
+    for business_date in _daterange(date_from, date_to):
+        for item in items:
+            code = _clean(item.get("nomenclature_code"))
+            if not code or not item_active_as_of(item, as_of=business_date):
+                continue
+            decision, _evidence = historical_lifecycle_decision(
+                item=item,
+                sales=sales_by_code.get(code, {}),
+                availability_dates=availability_by_code.get(code, set()),
+                purchases=purchase_history.get(code, ()),
+                receipts=receipt_history.get(code, ()),
+                as_of=business_date,
+                previous_status=previous.get(code),
+            )
+            previous[code] = decision.status.value
+    return previous
 
 
 def forecast_rate(
@@ -685,6 +872,71 @@ def _recommendation(
     return rounded, target, "order", speed_tier, raw
 
 
+def stage_recommendation(
+    *,
+    lifecycle: AssortmentLifecycleDecision,
+    rate: Decimal,
+    trend: str,
+    evidence: Mapping[str, Any],
+    free_stock: Decimal,
+    incoming_qty: Decimal,
+    policy: AutoOrderPolicy,
+) -> tuple[Decimal, Decimal, str, str, Decimal]:
+    """Apply the approved quantity mode for the historical lifecycle stage."""
+
+    status = lifecycle.status
+    if status in {
+        AssortmentStatus.FRUIT,
+        AssortmentStatus.NEWBORN,
+        AssortmentStatus.NEWBORN_NEED,
+        AssortmentStatus.NEW_ITEM,
+        AssortmentStatus.PENSION,
+        AssortmentStatus.NONLIQUID,
+        AssortmentStatus.DO_NOT_ORDER,
+    }:
+        return ZERO, ZERO, "do_not_order", f"stage_{status.value}", ZERO
+
+    if status is AssortmentStatus.SALE:
+        return _recommendation(
+            item={"auto_order_allowed": lifecycle.auto_order_allowed},
+            rate=rate,
+            trend=trend,
+            availability_90=int(evidence.get("available_90") or 0),
+            free_stock=free_stock,
+            incoming_qty=incoming_qty,
+            policy=policy,
+        )
+
+    planning_days = (
+        policy.order_cadence_days
+        + policy.supplier_prepare_days
+        + policy.logistics_days
+        + policy.supplier_delay_buffer_days
+        + policy.receiving_buffer_days
+        + policy.distribution_to_shelf_days
+    )
+    target = _ceil(rate * Decimal(planning_days)) if rate > ZERO else ZERO
+    speed_tier = f"stage_{status.value}"
+    if status is AssortmentStatus.SALES_START:
+        remaining_test_qty = max(
+            ZERO,
+            SALE_MIN_SALES_QTY - _decimal(evidence.get("sales_180")),
+        )
+        target = min(target, remaining_test_qty)
+    raw = _ceil(max(ZERO, target - free_stock - incoming_qty))
+    rounded = rounded_order_qty(
+        raw,
+        min_order_qty=policy.min_order_qty,
+        max_order_qty=policy.max_order_qty,
+        order_rounding_rules=policy.order_rounding_rules,
+    )
+    if rounded <= ZERO:
+        return ZERO, target, "do_not_order", speed_tier, raw
+    if status is AssortmentStatus.SALES_START or not lifecycle.auto_order_allowed:
+        return rounded, target, "manual_review", speed_tier, raw
+    return rounded, target, "order", speed_tier, raw
+
+
 def run_simulation(
     *,
     items: Sequence[Mapping[str, Any]],
@@ -698,6 +950,9 @@ def run_simulation(
     date_to: date,
     lead_time_days: int,
     scenario: str,
+    receipt_history: Mapping[str, Sequence[ReceiptLine]] | None = None,
+    history_start: date | None = None,
+    use_historical_lifecycle: bool = False,
 ) -> SimulationResult:
     codes = [_clean(item.get("nomenclature_code")) for item in items]
     item_by_code = {_clean(item.get("nomenclature_code")): item for item in items}
@@ -735,6 +990,30 @@ def run_simulation(
         }
     )
     summary = SimulationSummary(scenario=scenario, lead_time_days=lead_time_days)
+    receipts_by_code = receipt_history or {}
+    previous_statuses: dict[str, str] = {}
+    lifecycle_by_code: dict[str, AssortmentLifecycleDecision] = {}
+    lifecycle_evidence_by_code: dict[str, dict[str, Any]] = {}
+    lifecycle_rows: list[dict[str, Any]] = []
+    if use_historical_lifecycle:
+        effective_history_start = history_start or min(
+            (
+                business_date
+                for rows in sales_by_code.values()
+                for business_date in rows
+                if business_date < date_from
+            ),
+            default=date_from,
+        )
+        previous_statuses = warmup_lifecycle_statuses(
+            items=items,
+            sales_by_code=sales_by_code,
+            availability_by_code=availability_by_code,
+            purchase_history=purchase_history,
+            receipt_history=receipts_by_code,
+            date_from=effective_history_start,
+            date_to=date_from - timedelta(days=1),
+        )
     demand_active_dates: dict[str, set[date]] = defaultdict(set)
     for code in codes:
         for sale_date, qty in sales_by_code.get(code, {}).items():
@@ -764,11 +1043,51 @@ def run_simulation(
             if stock[code] <= ZERO and business_date in demand_active_dates.get(code, set()):
                 monthly[month_key]["model_stockout_sku_days"] += 1
 
+        if use_historical_lifecycle:
+            for code in codes:
+                item = item_by_code[code]
+                if not item_active_as_of(item, as_of=business_date):
+                    continue
+                previous_status = previous_statuses.get(code)
+                lifecycle, lifecycle_evidence = historical_lifecycle_decision(
+                    item=item,
+                    sales=sales_by_code.get(code, {}),
+                    availability_dates=availability_by_code.get(code, set()),
+                    purchases=purchase_history.get(code, ()),
+                    receipts=receipts_by_code.get(code, ()),
+                    as_of=business_date,
+                    previous_status=previous_status,
+                )
+                previous_statuses[code] = lifecycle.status.value
+                lifecycle_by_code[code] = lifecycle
+                lifecycle_evidence_by_code[code] = lifecycle_evidence
+                lifecycle_rows.append(
+                    {
+                        "business_date": business_date.isoformat(),
+                        "nomenclature_code": code,
+                        "name": _clean(item.get("name")),
+                        "previous_status": previous_status or "",
+                        "status": lifecycle.status.value,
+                        "status_label": lifecycle.status_label,
+                        "reason_codes": "|".join(lifecycle.reason_codes),
+                        "auto_order_allowed": int(lifecycle.auto_order_allowed),
+                        "manual_review_required": int(lifecycle.manual_review_required),
+                        "sales_30": str(lifecycle_evidence["sales_30"]),
+                        "sales_90": str(lifecycle_evidence["sales_90"]),
+                        "sales_180": str(lifecycle_evidence["sales_180"]),
+                        "available_days_30": lifecycle_evidence["available_30"],
+                        "available_days_90": lifecycle_evidence["available_90"],
+                        "available_days_180": lifecycle_evidence["available_180"],
+                    }
+                )
+
         if business_date not in decisions:
             continue
         summary.decision_points += 1
         for code in codes:
             item = item_by_code[code]
+            if not item_active_as_of(item, as_of=business_date):
+                continue
             rate, trend, evidence = forecast_rate(
                 sales_by_code.get(code, {}),
                 availability_by_code.get(code, set()),
@@ -776,15 +1095,28 @@ def run_simulation(
                 demand_multiplier=_demand_multiplier(item, policy),
             )
             incoming = sum((lot.qty for lot in pipeline.get(code, ())), ZERO)
-            recommended, target, decision, speed_tier, raw = _recommendation(
-                item=item,
-                rate=rate,
-                trend=trend,
-                availability_90=int(evidence["available_90"]),
-                free_stock=stock[code],
-                incoming_qty=incoming,
-                policy=policy,
-            )
+            if use_historical_lifecycle:
+                lifecycle = lifecycle_by_code[code]
+                recommended, target, decision, speed_tier, raw = stage_recommendation(
+                    lifecycle=lifecycle,
+                    rate=rate,
+                    trend=trend,
+                    evidence=lifecycle_evidence_by_code[code],
+                    free_stock=stock[code],
+                    incoming_qty=incoming,
+                    policy=policy,
+                )
+            else:
+                lifecycle = None
+                recommended, target, decision, speed_tier, raw = _recommendation(
+                    item=item,
+                    rate=rate,
+                    trend=trend,
+                    availability_90=int(evidence["available_90"]),
+                    free_stock=stock[code],
+                    incoming_qty=incoming,
+                    policy=policy,
+                )
             future_end = min(date_to, business_date + timedelta(days=7))
             future_actual = sum(
                 (
@@ -835,7 +1167,13 @@ def run_simulation(
                         "month": month_key,
                         "nomenclature_code": code,
                         "name": _clean(item.get("name")),
-                        "status": _clean(item.get("status")),
+                        "status": (
+                            lifecycle.status.value if lifecycle else _clean(item.get("status"))
+                        ),
+                        "status_label": lifecycle.status_label if lifecycle else "",
+                        "status_reason_codes": (
+                            "|".join(lifecycle.reason_codes) if lifecycle else ""
+                        ),
                         "auto_order_allowed_current": int(bool(item.get("auto_order_allowed"))),
                         "speed_tier": speed_tier,
                         "trend": trend,
@@ -891,15 +1229,26 @@ def run_simulation(
             as_of=date_to,
             demand_multiplier=_demand_multiplier(item_by_code[code], policy),
         )
-        _recommended, target, _decision, _tier, _raw = _recommendation(
-            item=item_by_code[code],
-            rate=rate,
-            trend=trend,
-            availability_90=int(evidence["available_90"]),
-            free_stock=ZERO,
-            incoming_qty=ZERO,
-            policy=policy,
-        )
+        if use_historical_lifecycle and code in lifecycle_by_code:
+            _recommended, target, _decision, _tier, _raw = stage_recommendation(
+                lifecycle=lifecycle_by_code[code],
+                rate=rate,
+                trend=trend,
+                evidence=lifecycle_evidence_by_code[code],
+                free_stock=ZERO,
+                incoming_qty=ZERO,
+                policy=policy,
+            )
+        else:
+            _recommended, target, _decision, _tier, _raw = _recommendation(
+                item=item_by_code[code],
+                rate=rate,
+                trend=trend,
+                availability_90=int(evidence["available_90"]),
+                free_stock=ZERO,
+                incoming_qty=ZERO,
+                policy=policy,
+            )
         summary.ending_excess_qty += max(ZERO, stock[code] - target)
 
     monthly_rows = []
@@ -919,6 +1268,7 @@ def run_simulation(
         decision_rows=detail,
         monthly_rows=monthly_rows,
         ending_stock_by_code=stock,
+        lifecycle_rows=lifecycle_rows,
     )
 
 
@@ -1049,8 +1399,8 @@ def _parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.date_from > args.date_to:
         raise SystemExit("date-from must not exceed date-to")
-    if (args.date_from - args.history_start).days < 180:
-        raise SystemExit("history-start must provide at least 180 days of warm-up")
+    if (args.date_from - args.history_start).days < 365:
+        raise SystemExit("history-start must provide at least 365 days of warm-up")
     if any(days <= 0 for days in args.lead_time_days):
         raise SystemExit("lead-time-days must be positive")
     return args
@@ -1153,7 +1503,7 @@ def main() -> int:
             as_of=args.date_to,
             supplier_mapping=supplier_mapping,
             receipt_mapping=receipt_mapping,
-            limit=10000,
+            limit=50000,
         )
     finally:
         onec_engine.dispose()
@@ -1165,6 +1515,7 @@ def main() -> int:
     all_detail: list[dict[str, Any]] = []
     all_monthly: list[dict[str, Any]] = []
     summaries: list[dict[str, Any]] = []
+    lifecycle_rows: list[dict[str, Any]] = []
     for lead_time in sorted(set(args.lead_time_days)):
         scenario = f"lead_time_{lead_time}d"
         result = run_simulation(
@@ -1179,10 +1530,15 @@ def main() -> int:
             date_to=args.date_to,
             lead_time_days=lead_time,
             scenario=scenario,
+            receipt_history=receipts,
+            history_start=args.history_start,
+            use_historical_lifecycle=True,
         )
         summaries.append(result.summary.as_dict())
         all_detail.extend(result.decision_rows)
         all_monthly.extend(result.monthly_rows)
+        if lead_time == DEFAULT_LEAD_TIME_DAYS:
+            lifecycle_rows = result.lifecycle_rows
 
     actual = actual_purchase_summary(
         purchases,
@@ -1201,6 +1557,7 @@ def main() -> int:
     _write_csv(output / "decision-detail.csv", all_detail)
     _write_csv(output / "monthly-summary.csv", all_monthly)
     _write_csv(output / "scenario-summary.csv", summaries)
+    _write_csv(output / "lifecycle-history.csv", lifecycle_rows)
     payload = {
         "schema": "display_auto_order_six_month_backtest.v1",
         "status": "share_with_caveats",
@@ -1211,8 +1568,9 @@ def main() -> int:
         "cohort": {
             "classification_run_id": run_id,
             "sku_count": len(codes),
-            "definition": "current working/sale display cohort eligible for calculation",
-            "survivorship_warning": True,
+            "definition": "all display rows from one classification run; daily eligibility is reconstructed from historical events",
+            "current_status_filter": False,
+            "historical_folder_membership_warning": True,
         },
         "source_counts": {
             "daily_sales_sku_count": len(sales),
@@ -1232,9 +1590,9 @@ def main() -> int:
         "initial_supplier_pipeline": pipeline_summary(starting_pipeline),
         "scenarios": summaries,
         "limitations": [
-            "Historical assortment status is unavailable; the current eligible cohort is used (survivorship bias).",
+            "Daily lifecycle status is reconstructed walk-forward; historical folder membership changes are unavailable, so the current display subject defines identity.",
             "Historical reserves are unavailable and therefore treated as zero; simulated free stock may be overstated and order quantity understated.",
-            "Historical quality blockers and return-based stop rules are not replayed.",
+            "Historical manual statuses are replayed only when source evidence includes an effective date; undated quality blockers are not projected backward.",
             "Opening stock and movements are reconstructed by warehouse but without an explicit quality dimension; defect and non-systematic warehouses are excluded.",
             "Historical incoming quantity is reconstructed from the 1C open-supplier-order register; expected arrival dates still depend on the supplier-order document and may be missing or stale.",
             "Supplier selection is approximated by the latest supplier and purchase price known on each decision date.",
@@ -1244,6 +1602,7 @@ def main() -> int:
             "decision_detail_csv": "decision-detail.csv",
             "monthly_summary_csv": "monthly-summary.csv",
             "scenario_summary_csv": "scenario-summary.csv",
+            "lifecycle_history_csv": "lifecycle-history.csv",
         },
     }
     output.mkdir(parents=True, exist_ok=True)

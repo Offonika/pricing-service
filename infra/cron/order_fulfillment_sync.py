@@ -2306,7 +2306,10 @@ def deliver_daily_digest(
     if state.get("last_daily_digest_date") == daily_date:
         result["skipped"].append("daily_digest_already_sent")
         return result
-    if not config.business_user_ids:
+    if not has_notification_recipient(
+        user_ids=config.business_user_ids,
+        dialog_id=config.site_dialog_id,
+    ):
         result["skipped"].append("daily_digest_no_recipients")
         return result
 
@@ -2315,12 +2318,15 @@ def deliver_daily_digest(
         client=client,
         config=config,
         user_ids=config.business_user_ids,
-        dialog_id=None,
+        dialog_id=config.site_dialog_id,
         tag=f"order-fulfillment|daily|{daily_date}",
         message=digest["message"],
     )
     result["errors"].extend(delivery["errors"])
-    if delivery_reached_required_target(delivery, required_dialog_id=None):
+    if delivery_reached_required_target(
+        delivery,
+        required_dialog_id=config.site_dialog_id,
+    ):
         result["sent"].append({"kind": "daily_digest", "count": 1})
         state["last_daily_digest_date"] = daily_date
         state["last_daily_digest_stamp"] = current_stamp

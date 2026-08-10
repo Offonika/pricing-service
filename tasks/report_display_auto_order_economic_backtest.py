@@ -12,7 +12,7 @@ import argparse
 import csv
 import json
 import os
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -38,18 +38,22 @@ from tasks.report_display_auto_order_six_month_backtest import (
     DEFAULT_SUPPLIER_ORDER_MAPPING_JSON,
     PipelineLot,
     PurchaseLine,
+    ReceiptLine,
     _chunks,
     _clean,
     _demand_multiplier,
     _expanding_text,
     _latest_purchase,
-    _recommendation,
     fetch_daily_sales,
     fetch_historical_open_supplier_pipeline,
     forecast_rate,
+    historical_lifecycle_decision,
+    item_active_as_of,
     load_backtest_items,
     normalize_purchase_history,
     reconstruct_historical_stock,
+    stage_recommendation,
+    warmup_lifecycle_statuses,
 )
 from tasks.report_display_supplier_lead_time_history import (
     RECEIPT_MAPPING_UNRESOLVED,
@@ -120,6 +124,7 @@ class StrategyResult:
     sku: dict[str, SkuAccumulator] = field(default_factory=dict)
     daily_rows: list[dict[str, Any]] = field(default_factory=list)
     decision_rows: list[dict[str, Any]] = field(default_factory=list)
+    lifecycle_rows: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _decimal(value: Any) -> Decimal:
@@ -406,6 +411,7 @@ def simulate_model_strategy(
     actual_stock_by_day: Mapping[date, Mapping[str, Decimal]],
     initial_pipeline_by_code: Mapping[str, Sequence[PipelineLot]],
     purchase_history: Mapping[str, Sequence[PurchaseLine]],
+    receipt_history: Mapping[str, Sequence[ReceiptLine]],
     inventory_unit_costs: Mapping[str, Decimal],
     policy: AutoOrderPolicy,
     date_from: date,
@@ -414,6 +420,7 @@ def simulate_model_strategy(
     demand_factor: Decimal,
     review_mode: str,
     keep_daily_rows: bool,
+    history_start: date,
 ) -> StrategyResult:
     codes = [_clean(item.get("nomenclature_code")) for item in items]
     item_by_code = {_clean(item.get("nomenclature_code")): item for item in items}
@@ -445,6 +452,17 @@ def simulate_model_strategy(
         review_mode=review_mode,
     )
     result.sku = {code: SkuAccumulator() for code in codes}
+    previous_statuses = warmup_lifecycle_statuses(
+        items=items,
+        sales_by_code=model_sales,
+        availability_by_code=model_availability,
+        purchase_history=purchase_history,
+        receipt_history=receipt_history,
+        date_from=history_start,
+        date_to=date_from - timedelta(days=1),
+    )
+    lifecycle_by_code = {}
+    lifecycle_evidence_by_code: dict[str, dict[str, Any]] = {}
     decision_dates = {
         date_from + timedelta(days=offset)
         for offset in range(0, (date_to - date_from).days + 1, max(1, policy.order_cadence_days))
@@ -511,12 +529,52 @@ def simulate_model_strategy(
             daily["ending_stock_value_rub"] += stock_value
             daily["stockout_demand_sku_days"] += int(lost > ZERO)
 
+        for code in codes:
+            item = item_by_code[code]
+            if not item_active_as_of(item, as_of=business_date):
+                continue
+            previous_status = previous_statuses.get(code)
+            lifecycle, lifecycle_evidence = historical_lifecycle_decision(
+                item=item,
+                sales=model_sales.get(code, {}),
+                availability_dates=model_availability.get(code, set()),
+                purchases=purchase_history.get(code, ()),
+                receipts=receipt_history.get(code, ()),
+                as_of=business_date,
+                previous_status=previous_status,
+            )
+            previous_statuses[code] = lifecycle.status.value
+            lifecycle_by_code[code] = lifecycle
+            lifecycle_evidence_by_code[code] = lifecycle_evidence
+            if keep_daily_rows:
+                result.lifecycle_rows.append(
+                    {
+                        "business_date": business_date.isoformat(),
+                        "nomenclature_code": code,
+                        "name": _clean(item.get("name")),
+                        "previous_status": previous_status or "",
+                        "status": lifecycle.status.value,
+                        "status_label": lifecycle.status_label,
+                        "reason_codes": "|".join(lifecycle.reason_codes),
+                        "auto_order_allowed": int(lifecycle.auto_order_allowed),
+                        "manual_review_required": int(lifecycle.manual_review_required),
+                        "sales_30": str(lifecycle_evidence["sales_30"]),
+                        "sales_90": str(lifecycle_evidence["sales_90"]),
+                        "sales_180": str(lifecycle_evidence["sales_180"]),
+                        "available_days_30": lifecycle_evidence["available_30"],
+                        "available_days_90": lifecycle_evidence["available_90"],
+                        "available_days_180": lifecycle_evidence["available_180"],
+                    }
+                )
+
         if keep_daily_rows:
             result.daily_rows.append(_json_value(daily))
         if business_date not in decision_dates:
             continue
         for code in codes:
             item = item_by_code[code]
+            if not item_active_as_of(item, as_of=business_date):
+                continue
             rate, trend, evidence = forecast_rate(
                 model_sales.get(code, {}),
                 model_availability.get(code, set()),
@@ -524,11 +582,12 @@ def simulate_model_strategy(
                 demand_multiplier=_demand_multiplier(item, policy),
             )
             incoming = sum((lot.qty for lot in pipeline.get(code, ())), ZERO)
-            recommended, target, decision, speed_tier, raw = _recommendation(
-                item=item,
+            lifecycle = lifecycle_by_code[code]
+            recommended, target, decision, speed_tier, raw = stage_recommendation(
+                lifecycle=lifecycle,
                 rate=rate,
                 trend=trend,
-                availability_90=int(evidence["available_90"]),
+                evidence=lifecycle_evidence_by_code[code],
                 free_stock=stock[code],
                 incoming_qty=incoming,
                 policy=policy,
@@ -564,6 +623,9 @@ def simulate_model_strategy(
                         "decision_date": business_date.isoformat(),
                         "nomenclature_code": code,
                         "name": _clean(item.get("name")),
+                        "status": lifecycle.status.value,
+                        "status_label": lifecycle.status_label,
+                        "status_reason_codes": "|".join(lifecycle.reason_codes),
                         "forecast_rate": str(rate),
                         "free_stock_qty": str(stock[code]),
                         "incoming_qty": str(incoming),
@@ -764,8 +826,17 @@ def build_sku_rows(
     period_days: int,
     sales_by_code: Mapping[str, Mapping[date, Decimal]],
     date_from: date,
+    lifecycle_rows: Sequence[Mapping[str, Any]] = (),
 ) -> list[dict[str, Any]]:
     item_by_code = {_clean(item.get("nomenclature_code")): item for item in items}
+    first_stage_by_code: dict[str, str] = {}
+    final_stage_by_code: dict[str, str] = {}
+    for lifecycle_row in lifecycle_rows:
+        code = _clean(lifecycle_row.get("nomenclature_code"))
+        status = _clean(lifecycle_row.get("status"))
+        if code and status:
+            first_stage_by_code.setdefault(code, status)
+            final_stage_by_code[code] = status
     rows = []
     for code in sorted(actual.sku):
         actual_row = actual.sku[code]
@@ -790,7 +861,9 @@ def build_sku_rows(
             {
                 "nomenclature_code": code,
                 "name": _clean(item_by_code.get(code, {}).get("name")),
-                "status": _clean(item_by_code.get(code, {}).get("status")),
+                "status_at_period_start": first_stage_by_code.get(code, ""),
+                "status_at_period_end": final_stage_by_code.get(code, ""),
+                "status_current_reference": _clean(item_by_code.get(code, {}).get("status")),
                 "actual_served_qty": str(actual_row.served_qty),
                 "model_served_qty": str(model_row.served_qty),
                 "incremental_sales_qty": str(model_row.served_qty - actual_row.served_qty),
@@ -884,8 +957,8 @@ def _parse_args() -> argparse.Namespace:
     args = parser.parse_args()
     if args.date_from > args.date_to:
         raise SystemExit("date-from must not exceed date-to")
-    if (args.date_from - args.history_start).days < 180:
-        raise SystemExit("history-start must provide at least 180 days of warm-up")
+    if (args.date_from - args.history_start).days < 365:
+        raise SystemExit("history-start must provide at least 365 days of warm-up")
     if args.lead_time_days <= 0:
         raise SystemExit("lead-time-days must be positive")
     if any(value < ZERO for value in args.demand_factors):
@@ -971,7 +1044,7 @@ def main() -> int:
             as_of=args.date_to,
             supplier_mapping=supplier_mapping,
             receipt_mapping=receipt_mapping,
-            limit=10000,
+            limit=50000,
         )
         economics = fetch_sku_economics(
             onec_engine,
@@ -982,7 +1055,7 @@ def main() -> int:
     finally:
         onec_engine.dispose()
 
-    purchases, _receipts = normalize_purchase_history(
+    purchases, receipts = normalize_purchase_history(
         source_rows["supplier_order_rows"],
         source_rows["receipt_rows"],
     )
@@ -1051,6 +1124,7 @@ def main() -> int:
                 actual_stock_by_day=stock_by_day,
                 initial_pipeline_by_code=starting_pipeline,
                 purchase_history=purchases,
+                receipt_history=receipts,
                 inventory_unit_costs=inventory_costs,
                 policy=policy,
                 date_from=args.date_from,
@@ -1059,6 +1133,7 @@ def main() -> int:
                 demand_factor=demand_factor,
                 review_mode=review_mode,
                 keep_daily_rows=(demand_factor == base_factor and review_mode == base_review_mode),
+                history_start=args.history_start,
             )
             model_summary = _strategy_summary(
                 result=model,
@@ -1084,6 +1159,7 @@ def main() -> int:
         period_days=period_days,
         sales_by_code=sales,
         date_from=args.date_from,
+        lifecycle_rows=base_model.lifecycle_rows,
     )
     output = args.output_dir
     output.mkdir(parents=True, exist_ok=True)
@@ -1091,6 +1167,12 @@ def main() -> int:
     _write_csv(output / "economic-sku-outcomes.csv", sku_rows)
     _write_csv(output / "economic-daily-summary.csv", daily_rows)
     _write_csv(output / "economic-decision-detail.csv", all_decisions)
+    _write_csv(output / "economic-lifecycle-history.csv", base_model.lifecycle_rows)
+
+    lifecycle_day_counts = Counter(row["status"] for row in base_model.lifecycle_rows)
+    final_lifecycle_by_code = {
+        row["nomenclature_code"]: row["status"] for row in base_model.lifecycle_rows
+    }
 
     base_actual_summary = next(
         row
@@ -1114,8 +1196,16 @@ def main() -> int:
         "cohort": {
             "classification_run_id": run_id,
             "sku_count": len(codes),
-            "definition": "current working/sale display cohort eligible for calculation",
-            "survivorship_warning": True,
+            "definition": "all display rows from one classification run; daily eligibility is reconstructed from historical events",
+            "current_status_filter": False,
+            "historical_folder_membership_warning": True,
+        },
+        "lifecycle": {
+            "method": "daily walk-forward full ladder with previous-day hysteresis",
+            "stage_sku_days": dict(sorted(lifecycle_day_counts.items())),
+            "final_stage_sku_count": dict(
+                sorted(Counter(final_lifecycle_by_code.values()).items())
+            ),
         },
         "metric_definitions": {
             "winner": "higher gross profit with lower average inventory capital dominates; otherwise GMROI and profit trade-off is reported",
@@ -1161,10 +1251,11 @@ def main() -> int:
         },
         "limitations": [
             "Hidden demand is estimated only on actual end-of-day zero-stock dates; it is not an accounting fact.",
-            "A zero end-of-day balance may mean the last unit was sold that day, so hidden demand is shown with 0x/0.5x/1x/1.5x sensitivity.",
+            "A zero end-of-day balance may mean the last unit was sold that day, so hidden demand is shown with 0x/1x/1.5x sensitivity.",
             "Model revenue and margin use historical net unit economics by SKU and assume the historical return/margin rate remains proportional.",
             "Historical reserves are unavailable; model free stock may be overstated and model orders understated.",
-            "Current assortment cohort is used for the historical period, creating survivorship bias.",
+            "Current display subject defines SKU identity because historical folder membership changes are unavailable; current lifecycle status is not used.",
+            "Historical manual statuses are replayed only when source evidence includes an effective date; undated blockers are not projected backward.",
             "The model uses a fixed 52-day receipt assumption; supplier-specific realized lead times are not replayed.",
             "Inventory capital excludes financing cost, warehouse handling, obsolescence and taxes.",
         ],
@@ -1173,6 +1264,7 @@ def main() -> int:
             "sku_outcomes_csv": "economic-sku-outcomes.csv",
             "daily_summary_csv": "economic-daily-summary.csv",
             "decision_detail_csv": "economic-decision-detail.csv",
+            "lifecycle_history_csv": "economic-lifecycle-history.csv",
         },
     }
     (output / "economic-summary.json").write_text(

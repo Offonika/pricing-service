@@ -965,3 +965,45 @@ def test_daily_digest_deduplicates_repeated_cron_summaries(tmp_path: Path) -> No
     assert "Готово к dry-run/apply: 1" in message
     assert "Ручной разбор: 1" in message
     assert "Неизвестные доставки: 2" in message
+
+
+def test_daily_digest_sends_to_site_dialog_without_business_users(tmp_path: Path) -> None:
+    client = FakeNotifyClient()
+    daily_summary = _summary(
+        mode="daily",
+        stamp="20260810-110000",
+        item={
+            "mode": "daily",
+            "unknown_delivery_rows": 0,
+        },
+    )
+    daily_path = tmp_path / "order-fulfillment-sync-summary-20260810-110000.json"
+    daily_path.write_text(json.dumps(daily_summary, ensure_ascii=False), encoding="utf-8")
+    settings = _notify_settings(
+        tmp_path,
+        business_user_ids="",
+        tech_user_ids="",
+        site_dialog_id="chat733",
+    )
+
+    first = sync.deliver_order_fulfillment_notifications(
+        client=client,
+        summary=daily_summary,
+        summary_path=daily_path,
+        output_dir=tmp_path,
+        settings=settings,
+    )
+    second = sync.deliver_order_fulfillment_notifications(
+        client=client,
+        summary=daily_summary,
+        summary_path=daily_path,
+        output_dir=tmp_path,
+        settings=settings,
+    )
+
+    assert first["sent"] == [{"kind": "daily_digest", "count": 1}]
+    assert second["sent"] == []
+    assert second["skipped"] == ["daily_digest_already_sent"]
+    assert len(client.calls) == 1
+    assert client.calls[0]["method"] == "im.message.add"
+    assert client.calls[0]["payload"]["DIALOG_ID"] == "chat733"

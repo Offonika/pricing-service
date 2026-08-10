@@ -373,6 +373,7 @@ def update_order_line(
     if expected_line_version is not None and line.version != int(expected_line_version):
         raise VersionConflictError("order line version changed; refresh the order")
     changed = False
+    manual_overrides = dict((line.payload or {}).get("manual_overrides") or {})
     for field_name in ("final_quantity", "purchase_price"):
         value = values.get(field_name)
         if value is None:
@@ -382,6 +383,7 @@ def update_order_line(
             raise ValueError(f"{field_name} cannot be negative")
         if getattr(line, field_name) != decimal_value:
             setattr(line, field_name, decimal_value)
+            manual_overrides[field_name] = True
             changed = True
     for field_name in ("removed", "explicit_demand"):
         value = values.get(field_name)
@@ -389,6 +391,10 @@ def update_order_line(
             setattr(line, field_name, bool(value))
             changed = True
     if changed:
+        line.payload = {
+            **(line.payload or {}),
+            "manual_overrides": manual_overrides,
+        }
         line.amount = _money(line.final_quantity * line.purchase_price)
         line.version += 1
         invalidate_order_approval(order)
@@ -957,11 +963,16 @@ def invalidate_order_approval(order: ProcurementOrderFormation) -> None:
 
 
 def ensure_order_editable(order: ProcurementOrderFormation) -> None:
-    if order.status in {"transmitting", "transmitted"} or order.onec_status in {
-        "pending",
-        "transmitted",
-    }:
-        raise ValueError("transmitted order is read-only; create a new version")
+    if (
+        order.status in {"approved", "transmitting", "transmitted"}
+        or order.approved_version is not None
+        or order.onec_status
+        in {
+            "pending",
+            "transmitted",
+        }
+    ):
+        raise ValueError("approved order is read-only; create a new revision")
 
 
 def ensure_classification_approver(user_id: str, *, settings: Settings) -> None:

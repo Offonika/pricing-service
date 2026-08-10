@@ -334,7 +334,11 @@ def build_grouped_orders(
             "route": route,
             "batch_id": batch_id,
             "order_date": order_date.isoformat(),
-            "responsible_name": _clean((lead_candidate or {}).get("responsible_name")),
+            "responsible_name": (
+                _clean((lead_candidate or {}).get("responsible_name"))
+                if responsible_bitrix_user_id
+                else ""
+            ),
             "calculation_id": calculation_id,
             "source_run_id": source_run_id,
             "responsible_bitrix_user_id": responsible_bitrix_user_id,
@@ -415,11 +419,14 @@ def build_grouped_orders(
         lines = groups[key]
         stable_source = "|".join(key)
         stable_hash = hashlib.sha256(stable_source.encode("utf-8")).hexdigest()[:20]
+        merge_source = "|".join(key[:-1])
+        merge_hash = hashlib.sha256(merge_source.encode("utf-8")).hexdigest()[:20]
         for index, line in enumerate(lines, start=1):
             line["line_number"] = index
         orders.append(
             {
                 "stable_key": f"proc-order:{batch_id}:{stable_hash}",
+                "merge_key": f"proc-order:{merge_hash}",
                 **header,
                 "lines": lines,
                 "blockers": list(
@@ -641,12 +648,14 @@ def persist_grouped_orders(
     persisted_ids: list[int] = []
     for payload in orders:
         requested_stable_key = str(payload["stable_key"])
+        revision_of: ProcurementOrderFormation | None = None
         order = db.scalar(
             select(ProcurementOrderFormation).where(
                 ProcurementOrderFormation.stable_key == requested_stable_key
             )
         )
         if order is not None and _order_is_immutable(order):
+            revision_of = order
             requested_stable_key = _immutable_revision_stable_key(payload)
             order = db.scalar(
                 select(ProcurementOrderFormation).where(
@@ -656,6 +665,13 @@ def persist_grouped_orders(
             if order is not None and _order_is_immutable(order):
                 persisted_ids.append(order.id)
                 continue
+        if order is None:
+            merge_candidate = _latest_merge_candidate(db, payload)
+            if merge_candidate is not None:
+                if _order_is_immutable(merge_candidate):
+                    revision_of = merge_candidate
+                else:
+                    order = merge_candidate
         created = order is None
         if order is None:
             order = ProcurementOrderFormation(
@@ -683,6 +699,15 @@ def persist_grouped_orders(
                 payload={
                     "dry_run_source": True,
                     "sync_source": "display_auto_order",
+                    "merge_key": _incoming_order_merge_key(payload),
+                    **(
+                        {
+                            "revision_of_order_id": revision_of.id,
+                            "revision_of_stable_key": revision_of.stable_key,
+                        }
+                        if revision_of is not None
+                        else {}
+                    ),
                     **dict(payload.get("payload") or {}),
                 },
             )
@@ -692,6 +717,8 @@ def persist_grouped_orders(
         if not created:
             ensure_order_editable(order)
             header_values = {
+                "batch_id": str(payload["batch_id"]),
+                "order_date": date.fromisoformat(str(payload["order_date"])),
                 "calculation_id": str(payload["calculation_id"]),
                 "source_run_id": payload.get("source_run_id") or None,
                 "responsible_bitrix_user_id": (payload.get("responsible_bitrix_user_id") or None),
@@ -705,17 +732,51 @@ def persist_grouped_orders(
                 **(order.payload or {}),
                 "dry_run_source": True,
                 "sync_source": "display_auto_order",
+                "merge_key": _incoming_order_merge_key(payload),
                 **dict(payload.get("payload") or {}),
             }
             if order.payload != expected_payload:
                 order.payload = expected_payload
                 changed = True
         existing = {line.stable_key: line for line in order.lines}
-        seen: set[str] = set()
-        for line_payload in payload.get("lines", []):
+        existing_by_identity = {_stored_line_identity(line): line for line in order.lines}
+        incoming_lines = list(payload.get("lines", []))
+        incoming_identities = {_incoming_line_identity(item) for item in incoming_lines}
+        next_removed_line_number = max(
+            [len(incoming_lines), *(line.line_number for line in order.lines)],
+            default=0,
+        )
+        for line in order.lines:
+            if _stored_line_identity(line) in incoming_identities:
+                continue
+            if not line.removed:
+                next_removed_line_number += 1
+                line.line_number = next_removed_line_number
+                line.removed = True
+                line.payload = {
+                    **(line.payload or {}),
+                    "need_status": "disappeared",
+                    "disappeared_in_calculation_id": str(payload.get("calculation_id") or ""),
+                }
+                line.version += 1
+                changed = True
+        db.flush()
+        next_temporary_line_number = max(
+            [next_removed_line_number, *(line.line_number for line in order.lines)],
+            default=0,
+        )
+        for line_payload in incoming_lines:
+            line = existing_by_identity.get(_incoming_line_identity(line_payload))
+            if line is None or line.line_number == int(line_payload["line_number"]):
+                continue
+            next_temporary_line_number += 1
+            line.line_number = next_temporary_line_number
+        db.flush()
+        for line_payload in incoming_lines:
             stable_key = str(line_payload["stable_key"])
-            seen.add(stable_key)
-            line = existing.get(stable_key)
+            line = existing.get(stable_key) or existing_by_identity.get(
+                _incoming_line_identity(line_payload)
+            )
             if line is None:
                 line = ProcurementOrderFormationLine(order=order, stable_key=stable_key)
                 db.add(line)
@@ -723,6 +784,49 @@ def persist_grouped_orders(
                 line_changed = False
             else:
                 line_changed = False
+            current_payload = dict(line.payload or {})
+            manual_overrides = dict(current_payload.get("manual_overrides") or {})
+            recommended_final_quantity = Decimal(str(line_payload["final_quantity"]))
+            recommended_purchase_price = Decimal(str(line_payload["purchase_price"]))
+            final_quantity = (
+                line.final_quantity
+                if line.id is not None and manual_overrides.get("final_quantity")
+                else recommended_final_quantity
+            )
+            purchase_price = (
+                line.purchase_price
+                if line.id is not None and manual_overrides.get("purchase_price")
+                else recommended_purchase_price
+            )
+            recommendation_discrepancy: dict[str, dict[str, str]] = {}
+            if (
+                manual_overrides.get("final_quantity")
+                and final_quantity != recommended_final_quantity
+            ):
+                recommendation_discrepancy["final_quantity"] = {
+                    "manual": str(final_quantity),
+                    "recommended": str(recommended_final_quantity),
+                }
+            if (
+                manual_overrides.get("purchase_price")
+                and purchase_price != recommended_purchase_price
+            ):
+                recommendation_discrepancy["purchase_price"] = {
+                    "manual": str(purchase_price),
+                    "recommended": str(recommended_purchase_price),
+                }
+            merged_line_payload = {
+                **dict(line_payload.get("payload") or {}),
+                "automatic_recommendation": {
+                    "final_quantity": str(recommended_final_quantity),
+                    "purchase_price": str(recommended_purchase_price),
+                    "calculation_id": str(payload.get("calculation_id") or ""),
+                },
+            }
+            if manual_overrides:
+                merged_line_payload["manual_overrides"] = manual_overrides
+            if recommendation_discrepancy:
+                merged_line_payload["recommendation_discrepancy"] = recommendation_discrepancy
             values = {
                 "line_number": int(line_payload["line_number"]),
                 "bitrix_product_id": line_payload.get("bitrix_product_id"),
@@ -731,9 +835,9 @@ def persist_grouped_orders(
                 "nomenclature_code": line_payload.get("nomenclature_code"),
                 "nomenclature_name": str(line_payload["nomenclature_name"]),
                 "recommended_quantity": Decimal(str(line_payload["recommended_quantity"])),
-                "final_quantity": Decimal(str(line_payload["final_quantity"])),
-                "purchase_price": Decimal(str(line_payload["purchase_price"])),
-                "amount": Decimal(str(line_payload["amount"])),
+                "final_quantity": final_quantity,
+                "purchase_price": purchase_price,
+                "amount": (final_quantity * purchase_price).quantize(Decimal("0.01")),
                 "currency": str(line_payload["currency"]),
                 "source_kind": str(line_payload["source_kind"]),
                 "explicit_demand": bool(line_payload["explicit_demand"]),
@@ -750,7 +854,7 @@ def persist_grouped_orders(
                     if line_payload.get("manual_minimum") not in (None, "")
                     else None
                 ),
-                "payload": dict(line_payload.get("payload") or {}),
+                "payload": merged_line_payload,
                 "removed": False,
             }
             for field_name, value in values.items():
@@ -760,11 +864,6 @@ def persist_grouped_orders(
                     line_changed = True
             if line_changed and line.id is not None:
                 line.version += 1
-        for stable_key, line in existing.items():
-            if stable_key not in seen and not line.removed:
-                line.removed = True
-                line.version += 1
-                changed = True
         if changed and not created:
             invalidate_order_approval(order)
         db.flush()
@@ -796,10 +895,87 @@ def persist_grouped_orders(
 
 
 def _order_is_immutable(order: ProcurementOrderFormation) -> bool:
-    return order.status in {"transmitting", "transmitted"} or order.onec_status in {
-        "pending",
-        "transmitted",
-    }
+    return (
+        order.status in {"approved", "transmitting", "transmitted"}
+        or order.approved_version is not None
+        or order.onec_status
+        in {
+            "pending",
+            "transmitted",
+        }
+    )
+
+
+def _incoming_order_merge_key(payload: Mapping[str, Any]) -> str:
+    explicit = str(payload.get("merge_key") or "").strip()
+    if explicit:
+        return explicit
+    dimensions = (
+        payload["supplier"].get("ref") or "",
+        payload["supplier"].get("code") or "",
+        payload["contract"].get("ref") or "",
+        payload["contract"].get("code") or "",
+        str(payload.get("currency") or ""),
+        payload["warehouse"].get("ref") or "",
+        payload["warehouse"].get("code") or "",
+        str(payload.get("procurement_contour") or ""),
+        str(payload.get("route") or ""),
+    )
+    digest = hashlib.sha256("|".join(dimensions).encode("utf-8")).hexdigest()[:20]
+    return f"proc-order:{digest}"
+
+
+def _stored_order_merge_key(order: ProcurementOrderFormation) -> str:
+    explicit = str((order.payload or {}).get("merge_key") or "").strip()
+    if explicit:
+        return explicit
+    return _incoming_order_merge_key(
+        {
+            "supplier": {"ref": order.supplier_ref, "code": order.supplier_code},
+            "contract": {"ref": order.contract_ref, "code": order.contract_code},
+            "warehouse": {"ref": order.warehouse_ref, "code": order.warehouse_code},
+            "currency": order.currency,
+            "procurement_contour": order.procurement_contour,
+            "route": order.route,
+        }
+    )
+
+
+def _latest_merge_candidate(
+    db: Session, payload: Mapping[str, Any]
+) -> ProcurementOrderFormation | None:
+    merge_key = _incoming_order_merge_key(payload)
+    candidates = db.scalars(select(ProcurementOrderFormation)).all()
+    matches = [
+        order
+        for order in candidates
+        if order.status != "superseded"
+        and (
+            (order.payload or {}).get("sync_source") == "display_auto_order"
+            or (order.payload or {}).get("dry_run_source")
+        )
+        and _stored_order_merge_key(order) == merge_key
+    ]
+    return max(matches, key=lambda item: (item.created_at, item.id or 0), default=None)
+
+
+def _incoming_line_identity(payload: Mapping[str, Any]) -> str:
+    for field_name in ("nomenclature_ref", "nomenclature_code", "bitrix_product_xml_id"):
+        value = str(payload.get(field_name) or "").strip().lower()
+        if value:
+            return f"{field_name}:{value}"
+    return f"stable_key:{payload['stable_key']}"
+
+
+def _stored_line_identity(line: ProcurementOrderFormationLine) -> str:
+    return _incoming_line_identity(
+        {
+            "stable_key": line.stable_key,
+            "nomenclature_ref": line.nomenclature_ref,
+            "nomenclature_code": line.nomenclature_code,
+            "bitrix_product_xml_id": line.bitrix_product_xml_id,
+        }
+    )
 
 
 def _immutable_revision_stable_key(payload: Mapping[str, Any]) -> str:

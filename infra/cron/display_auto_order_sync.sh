@@ -41,7 +41,7 @@ SAFETY_STOCK_DAYS="${DISPLAY_AUTO_ORDER_SAFETY_STOCK_DAYS:-}"
 MIN_DISPLAY_QTY="${DISPLAY_AUTO_ORDER_MIN_DISPLAY_QTY:-}"
 MIN_ORDER_QTY="${DISPLAY_AUTO_ORDER_MIN_ORDER_QTY:-}"
 MAX_ORDER_QTY="${DISPLAY_AUTO_ORDER_MAX_ORDER_QTY:-}"
-ASSIGNED_BY_ID="${DISPLAY_AUTO_ORDER_ASSIGNED_BY_ID:-130757}"
+ASSIGNED_BY_ID="${DISPLAY_AUTO_ORDER_ASSIGNED_BY_ID:-}"
 APPLY="${DISPLAY_AUTO_ORDER_APPLY:-false}"
 REPORT_DIR="${DISPLAY_AUTO_ORDER_REPORT_DIR:-${REPO_DIR}/reports/assortment_lifecycle/${AS_OF}}"
 OUTPUT_CSV="${DISPLAY_AUTO_ORDER_OUTPUT_CSV:-${REPORT_DIR}/display-auto-order-dry-run.csv}"
@@ -81,7 +81,7 @@ cleanup() {
 trap cleanup EXIT
 
 timestamp="$(date -Iseconds)"
-echo "[$timestamp] starting display auto-order sync folder=${FOLDER} as_of=${AS_OF} policy=${AUTO_ORDER_POLICY_JSON} target=${TARGET_DAYS:-policy} cadence=${ORDER_CADENCE_DAYS:-policy} prepare=${SUPPLIER_PREPARE_DAYS:-policy} logistics=${LOGISTICS_DAYS:-policy} max_qty=${MAX_ORDER_QTY:-policy} assigned=${ASSIGNED_BY_ID} legacy_apply=${APPLY} formation_persist_db=${ORDER_FORMATION_PERSIST_DB} adaptive=${USE_ADAPTIVE_LEAD_TIME}" >> "${LOG_FILE}"
+echo "[$timestamp] starting display auto-order sync folder=${FOLDER} as_of=${AS_OF} policy=${AUTO_ORDER_POLICY_JSON} target=${TARGET_DAYS:-policy} cadence=${ORDER_CADENCE_DAYS:-policy} prepare=${SUPPLIER_PREPARE_DAYS:-policy} logistics=${LOGISTICS_DAYS:-policy} max_qty=${MAX_ORDER_QTY:-policy} assigned=${ASSIGNED_BY_ID:-shared_queue} legacy_apply=${APPLY} formation_persist_db=${ORDER_FORMATION_PERSIST_DB} adaptive=${USE_ADAPTIVE_LEAD_TIME}" >> "${LOG_FILE}"
 echo "[$timestamp] python interpreter: ${PYTHON_BIN}" >> "${LOG_FILE}"
 
 mkdir -p "${REPORT_DIR}"
@@ -184,12 +184,13 @@ formation_cmd=(
   --source-summary-json "${OUTPUT_JSON}"
   --batch-id "${AS_OF}"
   --order-date "${AS_OF}"
-  --responsible-bitrix-user-id "${ASSIGNED_BY_ID}"
   --output-json "${ORDER_FORMATION_OUTPUT_JSON}"
   --output-csv "${ORDER_FORMATION_OUTPUT_CSV}"
-  --fail-on-blockers
   --json
 )
+if [[ -n "${ASSIGNED_BY_ID}" ]]; then
+  formation_cmd+=(--responsible-bitrix-user-id "${ASSIGNED_BY_ID}")
+fi
 if is_truthy "${ORDER_FORMATION_PERSIST_DB}"; then
   formation_cmd+=(--persist-db --supersede-open-batches)
 fi

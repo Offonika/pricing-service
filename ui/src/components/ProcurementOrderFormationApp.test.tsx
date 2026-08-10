@@ -154,4 +154,33 @@ describe("ProcurementOrderFormationApp version conflicts", () => {
     );
     expect(fetchProcurementOrder).not.toHaveBeenCalled();
   });
+
+  it("показывает защищённое ручное решение и исчезнувшую потребность", () => {
+    render(
+      <ProcurementOrderFormationApp
+        initialOrder={order({
+          lines: [
+            line({
+              removed: true,
+              final_quantity: "7.000",
+              purchase_price: "90.0000",
+              payload: {
+                need_status: "disappeared",
+                manual_overrides: { final_quantity: true, purchase_price: true },
+                recommendation_discrepancy: {
+                  final_quantity: { manual: "7.000", recommended: "9" },
+                  purchase_price: { manual: "90.0000", recommended: "110" },
+                },
+              },
+            }),
+          ],
+        })}
+      />
+    );
+
+    expect(screen.getByText("Потребность исчезла в новом расчёте")).toBeInTheDocument();
+    expect(screen.getByText(/Решение человека: 7.000 · новый расчёт: 9/)).toBeInTheDocument();
+    expect(screen.getByText(/Цена человека: 90.0000 · новая цена: 110/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Сохранить" })).toBeDisabled();
+  });
 });

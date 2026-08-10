@@ -95,7 +95,8 @@ function supplierMissing(order: ProcurementOrderFormation) {
 
 function rowReady(row: AssistantRow) {
   return Boolean(
-    row.order.status !== "approved" &&
+    !row.line.removed &&
+      row.order.status !== "approved" &&
       !supplierMissing(row.order) &&
       row.order.blockers.length === 0 &&
       row.line.blockers.length === 0 &&
@@ -120,6 +121,7 @@ function rowSelectable(row: AssistantRow) {
 }
 
 function rowUnavailableReason(row: AssistantRow) {
+  if (row.line.removed) return "Потребность исчезла в новом расчёте";
   if (supplierMissing(row.order)) return "Недоступно: не определён поставщик";
   if (!row.line.product_card_url || !row.line.photo_original_url) {
     if (!row.line.product_card_url) return "Недоступно: не найдена точная карточка товара";
@@ -559,9 +561,7 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
   useEffect(() => { void load(); }, [load]);
 
   const rows = useMemo<AssistantRow[]>(() => (data?.orders.flatMap((order) =>
-    order.lines
-      .filter((line) => !line.removed)
-      .map((line) => ({ key: `${order.id}:${line.id}`, order, line }))
+    order.lines.map((line) => ({ key: `${order.id}:${line.id}`, order, line }))
   ) || []).sort((left, right) =>
     left.line.line_number - right.line.line_number || left.order.id - right.order.id
   ), [data]);
@@ -707,9 +707,9 @@ export function ProcurementOrderAssistant({ onOpenOrder }: Props) {
                     <tr className={selectable ? "" : "is-unavailable"} key={row.key}>
                       <td><input aria-label={`Выбрать ${row.line.nomenclature_name}`} checked={isSelected} disabled={!selectable} onChange={() => toggleRow(row)} type="checkbox" /></td>
                       <td><div className="order-assistant__product"><ProductPhoto line={row.line} /><div><strong>{row.line.nomenclature_name}</strong><small>{row.line.nomenclature_code || "Код не указан"}</small>{row.line.product_card_url ? <a className="order-assistant__product-card-link" href={row.line.product_card_url} rel="noreferrer" target="_blank">Карточка товара</a> : <small>Карточка не найдена</small>}</div></div></td>
-                      <td><strong>{quantity(row.line.final_quantity)} шт.</strong><small>к {dateLabel(row.order.order_date)}</small></td>
+                      <td><strong>{quantity(row.line.final_quantity)} шт.</strong><small>к {dateLabel(row.order.order_date)}</small>{row.line.removed && <small className="is-warning">Потребность исчезла</small>}{row.line.payload?.recommendation_discrepancy?.final_quantity && <small className="is-warning">Новый расчёт: {quantity(row.line.payload.recommendation_discrepancy.final_quantity.recommended)} шт.</small>}</td>
                       <td><button className="order-assistant__link-button" onClick={() => { setPanelOrderId(row.order.id); setPanelOpen(true); }} type="button">{row.order.supplier_name || "Нет поставщика"}</button><small>{row.order.contract_ref || row.order.contract_code ? "Контракт" : "Без контракта"}</small></td>
-                      <td><strong>{money(row.line.purchase_price, row.line.currency)}</strong><small className={priceChange !== null && Math.abs(priceChange) > 10 ? "is-danger" : priceChange !== null && priceChange < 0 ? "is-good" : ""}>{priceHistoryLabel(row.line)}</small></td>
+                      <td><strong>{money(row.line.purchase_price, row.line.currency)}</strong><small className={priceChange !== null && Math.abs(priceChange) > 10 ? "is-danger" : priceChange !== null && priceChange < 0 ? "is-good" : ""}>{priceHistoryLabel(row.line)}</small>{row.line.payload?.recommendation_discrepancy?.purchase_price && <small className="is-warning">Новая цена: {money(row.line.payload.recommendation_discrepancy.purchase_price.recommended, row.line.currency)}</small>}</td>
                       <td><strong className={profitability !== null && profitability < 20 ? "is-warning" : profitability !== null ? "is-good" : ""}>{percent(profitability)}</strong><small>{row.line.profitability_explanation || (row.line.metrics_window_days ? `${row.line.metrics_window_days} дней · 1С` : "Нет истории")}</small></td>
                       <td><strong className={supplierDefectConfirmed && defect !== null && defect > 10 && (defectBasis || 0) >= 100 ? "is-danger" : defect !== null ? "is-good" : ""}>{percent(defect)}</strong><small>{supplierDefectConfirmed ? "Брак поставщика подтверждён" : "Брак по товару — поставщик не подтверждён"}</small><small>{defectBasis ? `${defectBasis.toLocaleString("ru-RU")} шт. · ${defectConfidence || "без оценки"}` : "Нет истории"}</small></td>
                       <td><strong>{row.line.lead_time_days != null ? `${row.line.lead_time_days} дн. всего` : "Нет данных"}</strong><small>сборка: {row.line.supplier_prepare_days ?? "—"} · логистика: {row.line.logistics_days ?? "—"}</small><small>{row.line.lead_time_source_level || "источник не определён"} · {row.line.lead_time_confidence || "без оценки"}</small></td>

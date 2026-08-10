@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -219,11 +221,11 @@ def test_customer_settlement_rollout_flags_are_fail_closed_by_default() -> None:
         ("unchanged", 0),
         ("skipped_lock", 0),
         ("disabled", 0),
-        ("blocked", 1),
+        ("blocked", 2),
         ("error", 1),
     ],
 )
-def test_mapping_task_reports_only_runnable_states_as_success(
+def test_mapping_task_distinguishes_retryable_errors_from_blocked_states(
     monkeypatch,
     worker_status: str,
     exit_code: int,
@@ -325,7 +327,7 @@ def test_mock_client_dry_run_never_prints_assertion_or_user_id(
     assert '"assertion_exposed": false' in output
 
 
-def test_cron_artifacts_bound_hung_processes_and_retry_only_financial_errors() -> None:
+def test_cron_artifacts_bound_hung_processes_and_retry_only_real_errors() -> None:
     project_root = Path(__file__).resolve().parents[1]
     scripts = {
         path.name: path.read_text(encoding="utf-8")
@@ -342,4 +344,69 @@ def test_cron_artifacts_bound_hung_processes_and_retry_only_financial_errors() -
         scripts["customer_settlement_financial_sync.sh"].count("-m tasks.sync_customer_settlements")
         == 1
     )
+    assert (
+        scripts["customer_settlement_mapping_sync.sh"].count(
+            "-m tasks.sync_customer_settlement_mapping"
+        )
+        == 1
+    )
+    assert "first_exit_code == 2" in scripts["customer_settlement_mapping_sync.sh"]
+    assert 'sleep "${RETRY_DELAY_SECONDS}"' in scripts["customer_settlement_mapping_sync.sh"]
     assert 'sleep "${RETRY_DELAY_SECONDS}"' in scripts["customer_settlement_financial_sync.sh"]
+
+
+@pytest.mark.parametrize(
+    ("exit_codes", "expected_calls", "expected_exit_code"),
+    [
+        ("0", 1, 0),
+        ("1,0", 2, 0),
+        ("1,1", 2, 1),
+        ("2", 1, 2),
+        ("124,0", 2, 0),
+    ],
+)
+def test_mapping_cron_retries_only_retryable_errors(
+    tmp_path: Path,
+    exit_codes: str,
+    expected_calls: int,
+    expected_exit_code: int,
+) -> None:
+    project_root = Path(__file__).resolve().parents[1]
+    fake_python = tmp_path / "fake-python"
+    call_counter = tmp_path / "calls"
+    fake_python.write_text(
+        """#!/usr/bin/env python3
+import os
+from pathlib import Path
+import sys
+
+counter = Path(os.environ["FAKE_MAPPING_CALL_COUNTER"])
+call_number = int(counter.read_text() or "0") if counter.exists() else 0
+counter.write_text(str(call_number + 1))
+exit_codes = [int(value) for value in os.environ["FAKE_MAPPING_EXIT_CODES"].split(",")]
+raise SystemExit(exit_codes[min(call_number, len(exit_codes) - 1)])
+""",
+        encoding="utf-8",
+    )
+    fake_python.chmod(0o700)
+    env = {
+        **os.environ,
+        "REPO_DIR": str(project_root),
+        "PYTHON_BIN": str(fake_python),
+        "CUSTOMER_SETTLEMENTS_ENV_FILE": str(tmp_path / "missing.env"),
+        "CUSTOMER_SETTLEMENTS_JOB_TIMEOUT_SECONDS": "5",
+        "CUSTOMER_SETTLEMENTS_RETRY_DELAY_SECONDS": "0",
+        "FAKE_MAPPING_CALL_COUNTER": str(call_counter),
+        "FAKE_MAPPING_EXIT_CODES": exit_codes,
+    }
+
+    result = subprocess.run(
+        ["bash", str(project_root / "infra/cron/customer_settlement_mapping_sync.sh")],
+        check=False,
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+
+    assert result.returncode == expected_exit_code
+    assert int(call_counter.read_text()) == expected_calls

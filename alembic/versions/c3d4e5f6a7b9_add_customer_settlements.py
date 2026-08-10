@@ -1,7 +1,7 @@
 """add customer settlement snapshot and scoped access
 
 Revision ID: c3d4e5f6a7b9
-Revises: d1a2b3c4e5f7
+Revises: b2d4f6a8c0e1
 Create Date: 2026-07-29 22:30:00.000000
 """
 
@@ -12,7 +12,7 @@ import sqlalchemy as sa
 from alembic import op
 
 revision = "c3d4e5f6a7b9"
-down_revision = "d1a2b3c4e5f7"
+down_revision = "b2d4f6a8c0e1"
 branch_labels = None
 depends_on = None
 

@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
+import time as time_module
 from datetime import date, timedelta
 from pathlib import Path
 
@@ -18,8 +20,10 @@ from tasks.build_display_auto_order_dry_run import (
 from tasks.display_auto_order_backtest_preflight import (
     build_historical_incoming_by_day,
     build_preflight_tables,
+    fetch_daily_sales,
     fetch_daily_unit_economics,
     fetch_kmp4_demand,
+    fetch_onec_product_refs,
     load_scenario_config,
     reconstruct_historical_placements,
     reconstruct_historical_reserves,
@@ -35,7 +39,7 @@ from tasks.report_display_auto_order_six_month_backtest import (
     DEFAULT_SUPPLIER_ORDER_MAPPING_JSON,
     _clean,
     build_launch_observations,
-    fetch_daily_sales,
+    fetch_historical_open_supplier_pipeline,
     load_backtest_items,
     normalize_purchase_history,
 )
@@ -93,6 +97,22 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> int:
     args = _parse_args()
+    started_at = time_module.monotonic()
+
+    def progress(stage: str, **values: object) -> None:
+        print(
+            json.dumps(
+                {
+                    "stage": stage,
+                    "elapsed_seconds": round(time_module.monotonic() - started_at, 1),
+                    **values,
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+            flush=True,
+        )
+
     settings = get_settings()
     application_url = (
         args.database_url or os.environ.get("DATABASE_URL") or settings.database_url
@@ -137,47 +157,78 @@ def main() -> int:
             and not row.get("is_non_systematic_sale")
         }
     )
+    progress("cohort_loaded", sku_count=len(codes), classification_run_id=run_id)
 
     onec_engine = build_engine(onec_url, pool_pre_ping=True)
     try:
+        product_refs, product_ref_counts = fetch_onec_product_refs(
+            onec_engine,
+            codes=codes,
+        )
+        if product_ref_counts["missing_code_count"]:
+            raise SystemExit("some display SKU codes are missing in the 1C catalog")
+        if product_ref_counts["duplicate_code_count"]:
+            raise SystemExit("some display SKU codes resolve to multiple 1C references")
+        progress("product_refs_resolved", **product_ref_counts)
         sales = fetch_daily_sales(
             onec_engine,
             codes=codes,
+            product_refs=product_refs,
             warehouse_codes=warehouse_policy.sellable_codes,
             date_from=args.history_start,
             date_to=args.date_to,
         )
+        progress("sales_loaded", sku_count=len(sales))
         stock_by_day, availability, stock_counts = reconstruct_historical_stock(
             onec_engine,
             codes=codes,
+            product_refs=product_refs,
             network_warehouse_codes=network_codes,
             physical_warehouse_codes=warehouse_policy.sellable_codes,
             date_from=args.history_start,
             date_to=args.date_to,
         )
+        progress("stock_reconstructed", **stock_counts)
+        initial_pipeline = fetch_historical_open_supplier_pipeline(
+            onec_engine,
+            codes=codes,
+            as_of=args.date_from - timedelta(days=1),
+            fallback_lead_time_days=scenario_config.lead_time_fallback_days,
+        )
+        progress(
+            "initial_pipeline_reconstructed",
+            sku_count=len(initial_pipeline),
+            lot_count=sum(len(lots) for lots in initial_pipeline.values()),
+        )
         reserves = reconstruct_historical_reserves(
             onec_engine,
             codes=codes,
+            product_refs=product_refs,
             date_from=args.history_start,
             date_to=args.date_to,
             tolerance=scenario_config.quantity_tolerance,
         )
+        progress("reserves_reconstructed", **reserves.source_counts)
         placements = reconstruct_historical_placements(
             onec_engine,
             codes=codes,
+            product_refs=product_refs,
             date_from=args.history_start,
             date_to=args.date_to,
             tolerance=scenario_config.quantity_tolerance,
         )
+        progress("placements_reconstructed", **placements.source_counts)
         kmp4_raw, kmp4_counts = fetch_kmp4_demand(
             onec_engine,
             codes=codes,
+            product_refs=product_refs,
             date_from=max(
                 args.history_start,
                 args.date_from - timedelta(days=scenario_config.kmp4_queue_days),
             ),
             date_to=args.date_to,
         )
+        progress("kmp4_loaded", **kmp4_counts)
         supplier_mapping = _load_document_line_mapping(
             DEFAULT_SUPPLIER_ORDER_MAPPING_JSON,
             error_code=SUPPLIER_ORDER_MAPPING_UNRESOLVED,
@@ -195,12 +246,18 @@ def main() -> int:
             receipt_mapping=receipt_mapping,
             limit=50000,
         )
+        progress(
+            "lead_time_sources_loaded",
+            supplier_order_rows=len(source_rows["supplier_order_rows"]),
+            receipt_rows=len(source_rows["receipt_rows"]),
+        )
         economics = fetch_daily_unit_economics(
             onec_engine,
             codes=codes,
             date_from=args.history_start,
             date_to=args.date_to,
         )
+        progress("unit_economics_loaded", sku_count=len(economics))
     finally:
         onec_engine.dispose()
 
@@ -235,6 +292,14 @@ def main() -> int:
         "lead_time_detail_rows": len(lead_time_detail),
         "launch_observation_count": len(launch_observations),
         "economics_sku_count": len(economics),
+        "initial_pipeline_sku_count": len(initial_pipeline),
+        "initial_pipeline_lot_count": sum(
+            len(lots) for lots in initial_pipeline.values()
+        ),
+        **{
+            f"product_ref_{key}": value
+            for key, value in product_ref_counts.items()
+        },
         "reserve_opening_rows": reserves.source_counts["opening_rows"],
         "reserve_movement_rows": reserves.source_counts["movement_rows"],
         "placement_opening_rows": placements.source_counts["opening_rows"],
@@ -249,6 +314,7 @@ def main() -> int:
         reserves=reserves,
         placements=placements,
         incoming_by_day=incoming_by_day,
+        initial_pipeline_by_code=initial_pipeline,
         kmp4_raw_by_code=kmp4_raw,
         purchases=purchases,
         receipts=receipts,
@@ -263,6 +329,12 @@ def main() -> int:
         source_metadata=source_metadata,
         launch_profile_min_samples=args.launch_profile_min_samples,
     )
+    progress(
+        "tables_built",
+        status=tables.status,
+        decision_input_rows=len(tables.decision_inputs),
+        scenario_decision_rows=len(tables.scenario_decisions),
+    )
     manifest = write_preflight_artifacts(
         args.output_dir,
         tables=tables,
@@ -272,6 +344,7 @@ def main() -> int:
         config_path=args.scenario_config_json,
         cohort_run_id=run_id,
     )
+    progress("artifacts_written", status=tables.status)
     print(json.dumps(manifest, ensure_ascii=False))
     return 0 if tables.status == "PASS" else 2
 

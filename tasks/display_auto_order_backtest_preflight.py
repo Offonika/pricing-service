@@ -23,11 +23,12 @@ from openpyxl import Workbook
 from sqlalchemy import bindparam, text
 
 from app.services.assortment_lifecycle import AssortmentStatus
-from tasks.build_display_auto_order_dry_run import AutoOrderPolicy, rounded_order_qty
+from tasks.build_display_auto_order_dry_run import AutoOrderPolicy
 from tasks.report_display_auto_order_six_month_backtest import (
     DEFAULT_LAUNCH_PROFILE_MIN_SAMPLES,
     DEFAULT_LEAD_TIME_DAYS,
     LaunchObservation,
+    PipelineLot,
     PurchaseLine,
     ReceiptLine,
     _demand_multiplier,
@@ -51,6 +52,7 @@ REQUIRED_PREFLIGHT_FILES = (
     "scenario-decisions.csv",
     "lifecycle-daily.csv",
     "daily-facts.csv",
+    "initial-pipeline.csv",
     "source-quality.csv",
     "reconciliations.csv",
     "backtest-preflight.xlsx",
@@ -159,6 +161,24 @@ class LeadTimeProfile:
     last_observation_at: date | None = None
 
 
+@dataclass
+class LeadTimeHistoryIndex:
+    orders_by_code: dict[str, tuple[Mapping[str, Any], ...]]
+    completed_by_sku_supplier: dict[
+        tuple[str, str], tuple[tuple[Mapping[str, Any], int, date], ...]
+    ]
+    completed_by_group_supplier: dict[
+        tuple[str, str], tuple[tuple[Mapping[str, Any], int, date], ...]
+    ]
+    completed_by_supplier: dict[
+        str, tuple[tuple[Mapping[str, Any], int, date], ...]
+    ]
+    completed_all: tuple[tuple[Mapping[str, Any], int, date], ...]
+    candidate_cache: dict[
+        tuple[str, str, date], tuple[tuple[Mapping[str, Any], int, date], ...]
+    ]
+
+
 @dataclass(frozen=True)
 class EconomicSafetyStock:
     units: Decimal
@@ -190,6 +210,7 @@ class PreflightTables:
     scenario_decisions: list[dict[str, Any]]
     lifecycle_daily: list[dict[str, Any]]
     daily_facts: list[dict[str, Any]]
+    initial_pipeline: list[dict[str, Any]]
     source_quality: list[dict[str, Any]]
     reconciliations: list[dict[str, Any]]
     status: str
@@ -240,6 +261,7 @@ def fetch_kmp4_demand(
     engine: Any,
     *,
     codes: Sequence[str],
+    product_refs: Mapping[str, str] | None = None,
     date_from: date,
     date_to: date,
 ) -> tuple[dict[str, dict[date, Decimal]], dict[str, int]]:
@@ -259,15 +281,15 @@ def fetch_kmp4_demand(
         SELECT
             CONVERT(varchar(34), doc._IDRRef, 1) AS document_ref,
             CAST(doc._Date_Time AS date) AS business_date,
-            NULLIF(LTRIM(RTRIM(product._Code)), N'') AS product_code,
+            product.product_code,
             CAST(line._Fld2431 AS decimal(28, 3)) AS quantity
         FROM dbo._Document132 AS doc WITH (NOLOCK)
         JOIN demand_counterparties AS demand
           ON demand.counterparty_ref = doc._Fld2405RRef
         JOIN dbo._Document132_VT2427 AS line WITH (NOLOCK)
           ON line._Document132_IDRRef = doc._IDRRef
-        JOIN dbo._Reference62 AS product WITH (NOLOCK)
-          ON product._IDRRef = line._Fld2434RRef
+        JOIN #preflight_register_products AS product
+          ON product.product_ref = line._Fld2434RRef
         WHERE doc._Marked = 0x00
           AND doc._Date_Time >= :date_from
           AND doc._Date_Time < :date_to
@@ -275,6 +297,7 @@ def fetch_kmp4_demand(
         """
     )
     with engine.connect() as connection:
+        _create_register_product_filter(connection, codes, product_refs=product_refs)
         rows = connection.execute(
             query,
             {
@@ -300,6 +323,136 @@ def fetch_kmp4_demand(
             "active_date_count": len(
                 {business_date for rows in result.values() for business_date in rows}
             ),
+        },
+    )
+
+
+def fetch_daily_sales(
+    engine: Any,
+    *,
+    codes: Sequence[str],
+    product_refs: Mapping[str, str] | None = None,
+    warehouse_codes: Sequence[str],
+    date_from: date,
+    date_to: date,
+) -> dict[str, dict[date, Decimal]]:
+    """Read display sales with product filtering applied by binary 1C reference."""
+
+    query = text(
+        """
+        SELECT
+            product.product_code,
+            CAST(document._Date_Time AS date) AS business_date,
+            CAST(SUM(line._Fld4971) AS decimal(28, 3)) AS sales_qty
+        FROM dbo._Document203 AS document WITH (NOLOCK)
+        JOIN dbo._Document203_VT4966 AS line WITH (NOLOCK)
+          ON line._Document203_IDRRef = document._IDRRef
+        JOIN #preflight_register_products AS product
+          ON product.product_ref = line._Fld4974RRef
+        JOIN #display_preflight_sales_warehouses AS warehouse
+          ON warehouse.warehouse_ref = CASE
+            WHEN line._Fld4983RRef <> 0x00000000000000000000000000000000
+            THEN line._Fld4983RRef ELSE document._Fld4940RRef END
+        WHERE document._Marked = 0x00
+          AND document._Posted = 0x01
+          AND document._Date_Time >= :date_from
+          AND document._Date_Time < :date_to
+          AND line._Fld4971 > 0
+        GROUP BY product.product_code, CAST(document._Date_Time AS date)
+        """
+    )
+    out: dict[str, dict[date, Decimal]] = defaultdict(dict)
+    with engine.connect() as connection:
+        _create_register_product_filter(connection, codes, product_refs=product_refs)
+        connection.execute(
+            text(
+                "CREATE TABLE #display_preflight_sales_warehouses ("
+                "warehouse_ref binary(16) NOT NULL PRIMARY KEY)"
+            )
+        )
+        insert_warehouses = text(
+            "INSERT INTO #display_preflight_sales_warehouses (warehouse_ref) "
+            "SELECT DISTINCT warehouse._IDRRef "
+            "FROM dbo._Reference80 AS warehouse WITH (NOLOCK) "
+            "WHERE NULLIF(LTRIM(RTRIM(warehouse._Code)), N'') IN :warehouses"
+        ).bindparams(bindparam("warehouses", expanding=True))
+        connection.execute(
+            insert_warehouses,
+            {"warehouses": tuple(sorted(set(warehouse_codes)))},
+        )
+        for row in connection.execute(
+            query,
+            {
+                "date_from": datetime.combine(date_from, time.min),
+                "date_to": datetime.combine(date_to + timedelta(days=1), time.min),
+            },
+        ).mappings():
+            code = _clean(row.get("product_code"))
+            business_date = _date(row.get("business_date"))
+            if code and business_date is not None:
+                out[code][business_date] = _decimal(row.get("sales_qty"))
+    return dict(out)
+
+
+def fetch_onec_product_refs(
+    engine: Any,
+    *,
+    codes: Sequence[str],
+) -> tuple[dict[str, str], dict[str, int]]:
+    """Resolve current 1C binary references once from the stable SKU codes."""
+
+    rows_by_code: dict[str, list[str]] = defaultdict(list)
+    with engine.connect() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE #display_preflight_codes ("
+                "product_code nvarchar(100) NOT NULL PRIMARY KEY)"
+            )
+        )
+        ordered_codes = sorted(set(codes))
+        for offset in range(0, len(ordered_codes), 1000):
+            code_batch = ordered_codes[offset : offset + 1000]
+            values_sql = ", ".join(
+                f"(:product_code_{index})" for index in range(len(code_batch))
+            )
+            connection.execute(
+                text(
+                    "INSERT INTO #display_preflight_codes (product_code) VALUES "
+                    + values_sql
+                ),
+                {
+                    f"product_code_{index}": code
+                    for index, code in enumerate(code_batch)
+                },
+            )
+        for row in connection.execute(
+            text(
+                "SELECT target.product_code, "
+                "CONVERT(varchar(34), product._IDRRef, 1) AS product_ref "
+                "FROM dbo._Reference62 AS product WITH (NOLOCK) "
+                "JOIN #display_preflight_codes AS target "
+                "ON target.product_code = LTRIM(RTRIM(product._Code))"
+            )
+        ).mappings():
+            code = _clean(row.get("product_code"))
+            ref = _clean(row.get("product_ref"))
+            if code and ref:
+                rows_by_code[code].append(ref)
+    duplicate_codes = {
+        code: refs for code, refs in rows_by_code.items() if len(set(refs)) != 1
+    }
+    resolved = {
+        code: next(iter(set(refs)))
+        for code, refs in rows_by_code.items()
+        if len(set(refs)) == 1
+    }
+    return (
+        resolved,
+        {
+            "requested_code_count": len(set(codes)),
+            "resolved_code_count": len(resolved),
+            "missing_code_count": len(set(codes) - set(rows_by_code)),
+            "duplicate_code_count": len(duplicate_codes),
         },
     )
 
@@ -415,6 +568,7 @@ def _fetch_register_openings(
     product_field: str,
     quantity_field: str,
     codes: Sequence[str],
+    product_refs: Mapping[str, str] | None,
     date_from: date,
     date_to: date,
 ) -> tuple[dict[date, dict[str, Decimal]], int]:
@@ -422,35 +576,80 @@ def _fetch_register_openings(
         f"""
         SELECT
             CAST(reg._Period AS date) AS period_month,
-            NULLIF(LTRIM(RTRIM(product._Code)), N'') AS product_code,
+            product.product_code,
             CAST(SUM(reg.{quantity_field}) AS decimal(28, 3)) AS quantity
         FROM dbo.{table_name} AS reg WITH (NOLOCK)
-        JOIN dbo._Reference62 AS product WITH (NOLOCK)
-          ON product._IDRRef = reg.{product_field}
+        JOIN #preflight_register_products AS product
+          ON product.product_ref = reg.{product_field}
         WHERE reg._Period >= :date_from
           AND reg._Period <= :date_to
-          AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
-        GROUP BY CAST(reg._Period AS date), product._Code
+        GROUP BY CAST(reg._Period AS date), product.product_code
         """
-    ).bindparams(bindparam("codes", expanding=True))
+    )
     out: dict[date, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
     row_count = 0
     with engine.connect() as connection:
-        for code_chunk in _chunks(sorted(set(codes))):
-            for row in connection.execute(
-                query,
-                {
-                    "date_from": datetime.combine(date_from, time.min),
-                    "date_to": datetime.combine(date_to, time.min),
-                    "codes": code_chunk,
-                },
-            ).mappings():
-                period_month = _date(row.get("period_month"))
-                code = _clean(row.get("product_code"))
-                if period_month is not None and code:
-                    out[period_month][code] += _decimal(row.get("quantity"))
-                    row_count += 1
+        _create_register_product_filter(connection, codes, product_refs=product_refs)
+        for row in connection.execute(
+            query,
+            {
+                "date_from": datetime.combine(date_from, time.min),
+                "date_to": datetime.combine(date_to, time.min),
+            },
+        ).mappings():
+            period_month = _date(row.get("period_month"))
+            code = _clean(row.get("product_code"))
+            if period_month is not None and code:
+                out[period_month][code] += _decimal(row.get("quantity"))
+                row_count += 1
     return ({month: dict(rows) for month, rows in out.items()}, row_count)
+
+
+def _create_register_product_filter(
+    connection: Any,
+    codes: Sequence[str],
+    *,
+    product_refs: Mapping[str, str] | None = None,
+) -> None:
+    del product_refs
+    connection.execute(
+        text(
+            "CREATE TABLE #preflight_register_products ("
+            "product_ref binary(16) NOT NULL PRIMARY KEY, "
+            "product_code nvarchar(100) NOT NULL)"
+        )
+    )
+    connection.execute(
+        text(
+            "CREATE TABLE #preflight_register_codes ("
+            "product_code nvarchar(100) NOT NULL PRIMARY KEY)"
+        )
+    )
+    ordered_codes = sorted(set(codes))
+    for offset in range(0, len(ordered_codes), 1000):
+        code_batch = ordered_codes[offset : offset + 1000]
+        values_sql = ", ".join(
+            f"(:product_code_{index})" for index in range(len(code_batch))
+        )
+        connection.execute(
+            text(
+                "INSERT INTO #preflight_register_codes (product_code) VALUES "
+                + values_sql
+            ),
+            {
+                f"product_code_{index}": code
+                for index, code in enumerate(code_batch)
+            },
+        )
+    connection.execute(
+        text(
+            "INSERT INTO #preflight_register_products (product_ref, product_code) "
+            "SELECT product._IDRRef, target.product_code "
+            "FROM dbo._Reference62 AS product WITH (NOLOCK) "
+            "JOIN #preflight_register_codes AS target "
+            "ON target.product_code = LTRIM(RTRIM(product._Code))"
+        )
+    )
 
 
 def _fetch_register_movements(
@@ -460,6 +659,7 @@ def _fetch_register_movements(
     product_field: str,
     quantity_field: str,
     codes: Sequence[str],
+    product_refs: Mapping[str, str] | None,
     date_from: date,
     date_to: date,
 ) -> tuple[dict[date, dict[str, Decimal]], int]:
@@ -467,38 +667,36 @@ def _fetch_register_movements(
         f"""
         SELECT
             CAST(reg._Period AS date) AS business_date,
-            NULLIF(LTRIM(RTRIM(product._Code)), N'') AS product_code,
+            product.product_code,
             CAST(SUM(
                 CASE WHEN reg._RecordKind = 0
                      THEN reg.{quantity_field} ELSE -reg.{quantity_field} END
             ) AS decimal(28, 3)) AS quantity_delta
         FROM dbo.{table_name} AS reg WITH (NOLOCK)
-        JOIN dbo._Reference62 AS product WITH (NOLOCK)
-          ON product._IDRRef = reg.{product_field}
+        JOIN #preflight_register_products AS product
+          ON product.product_ref = reg.{product_field}
         WHERE reg._Active = 0x01
           AND reg._Period >= :date_from
           AND reg._Period < :date_to
-          AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
-        GROUP BY CAST(reg._Period AS date), product._Code
+        GROUP BY CAST(reg._Period AS date), product.product_code
         """
-    ).bindparams(bindparam("codes", expanding=True))
+    )
     out: dict[date, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
     row_count = 0
     with engine.connect() as connection:
-        for code_chunk in _chunks(sorted(set(codes))):
-            for row in connection.execute(
-                query,
-                {
-                    "date_from": datetime.combine(date_from, time.min),
-                    "date_to": datetime.combine(date_to + timedelta(days=1), time.min),
-                    "codes": code_chunk,
-                },
-            ).mappings():
-                business_date = _date(row.get("business_date"))
-                code = _clean(row.get("product_code"))
-                if business_date is not None and code:
-                    out[business_date][code] += _decimal(row.get("quantity_delta"))
-                    row_count += 1
+        _create_register_product_filter(connection, codes, product_refs=product_refs)
+        for row in connection.execute(
+            query,
+            {
+                "date_from": datetime.combine(date_from, time.min),
+                "date_to": datetime.combine(date_to + timedelta(days=1), time.min),
+            },
+        ).mappings():
+            business_date = _date(row.get("business_date"))
+            code = _clean(row.get("product_code"))
+            if business_date is not None and code:
+                out[business_date][code] += _decimal(row.get("quantity_delta"))
+                row_count += 1
     return ({day: dict(rows) for day, rows in out.items()}, row_count)
 
 
@@ -511,6 +709,7 @@ def reconstruct_quantity_register(
     product_field: str,
     quantity_field: str,
     codes: Sequence[str],
+    product_refs: Mapping[str, str] | None = None,
     date_from: date,
     date_to: date,
     tolerance: Decimal = Decimal("0.001"),
@@ -527,6 +726,7 @@ def reconstruct_quantity_register(
         product_field=product_field,
         quantity_field=quantity_field,
         codes=codes,
+        product_refs=product_refs,
         date_from=first_month,
         date_to=last_opening,
     )
@@ -536,6 +736,7 @@ def reconstruct_quantity_register(
         product_field=product_field,
         quantity_field=quantity_field,
         codes=codes,
+        product_refs=product_refs,
         date_from=first_month,
         date_to=_next_month(final_month) - timedelta(days=1),
     )
@@ -587,6 +788,7 @@ def reconstruct_historical_reserves(
     engine: Any,
     *,
     codes: Sequence[str],
+    product_refs: Mapping[str, str] | None = None,
     date_from: date,
     date_to: date,
     tolerance: Decimal = Decimal("0.001"),
@@ -599,6 +801,7 @@ def reconstruct_historical_reserves(
         product_field="_Fld7655RRef",
         quantity_field="_Fld7659",
         codes=codes,
+        product_refs=product_refs,
         date_from=date_from,
         date_to=date_to,
         tolerance=tolerance,
@@ -609,6 +812,7 @@ def reconstruct_historical_placements(
     engine: Any,
     *,
     codes: Sequence[str],
+    product_refs: Mapping[str, str] | None = None,
     date_from: date,
     date_to: date,
     tolerance: Decimal = Decimal("0.001"),
@@ -621,6 +825,7 @@ def reconstruct_historical_placements(
         product_field="_Fld7598RRef",
         quantity_field="_Fld7602",
         codes=codes,
+        product_refs=product_refs,
         date_from=date_from,
         date_to=date_to,
         tolerance=tolerance,
@@ -631,6 +836,7 @@ def reconstruct_historical_stock(
     engine: Any,
     *,
     codes: Sequence[str],
+    product_refs: Mapping[str, str] | None = None,
     network_warehouse_codes: Sequence[str],
     physical_warehouse_codes: Sequence[str],
     date_from: date,
@@ -642,47 +848,43 @@ def reconstruct_historical_stock(
         """
         SELECT
             CAST(stock._Period AS date) AS period_month,
-            NULLIF(LTRIM(RTRIM(product._Code)), N'') AS product_code,
-            NULLIF(LTRIM(RTRIM(warehouse._Code)), N'') AS warehouse_code,
+            product.product_code,
+            warehouse.warehouse_code,
             CAST(SUM(stock._Fld7743) AS decimal(28, 3)) AS quantity
         FROM dbo._AccumRgT7745 AS stock WITH (NOLOCK)
-        JOIN dbo._Reference62 AS product WITH (NOLOCK)
-          ON product._IDRRef = stock._Fld7738RRef
-        JOIN dbo._Reference80 AS warehouse WITH (NOLOCK)
-          ON warehouse._IDRRef = stock._Fld7742RRef
+        JOIN #preflight_register_products AS product
+          ON product.product_ref = stock._Fld7738RRef
+        JOIN #display_preflight_warehouses AS warehouse
+          ON warehouse.warehouse_ref = stock._Fld7742RRef
         WHERE stock._Period >= :date_from
           AND stock._Period <= :date_to
-          AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
-          AND NULLIF(LTRIM(RTRIM(warehouse._Code)), N'') IN :warehouses
-        GROUP BY CAST(stock._Period AS date), product._Code, warehouse._Code
+        GROUP BY
+            CAST(stock._Period AS date), product.product_code,
+            warehouse.warehouse_code
         """
-    ).bindparams(
-        bindparam("codes", expanding=True), bindparam("warehouses", expanding=True)
     )
     movement_query = text(
         """
         SELECT
             CAST(movement._Period AS date) AS business_date,
-            NULLIF(LTRIM(RTRIM(product._Code)), N'') AS product_code,
-            NULLIF(LTRIM(RTRIM(warehouse._Code)), N'') AS warehouse_code,
+            product.product_code,
+            warehouse.warehouse_code,
             CAST(SUM(
                 CASE WHEN movement._RecordKind = 0
                      THEN movement._Fld7743 ELSE -movement._Fld7743 END
             ) AS decimal(28, 3)) AS quantity_delta
         FROM dbo._AccumRg7735 AS movement WITH (NOLOCK)
-        JOIN dbo._Reference62 AS product WITH (NOLOCK)
-          ON product._IDRRef = movement._Fld7738RRef
-        JOIN dbo._Reference80 AS warehouse WITH (NOLOCK)
-          ON warehouse._IDRRef = movement._Fld7742RRef
+        JOIN #preflight_register_products AS product
+          ON product.product_ref = movement._Fld7738RRef
+        JOIN #display_preflight_warehouses AS warehouse
+          ON warehouse.warehouse_ref = movement._Fld7742RRef
         WHERE movement._Active = 0x01
           AND movement._Period >= :date_from
           AND movement._Period < :date_to
-          AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
-          AND NULLIF(LTRIM(RTRIM(warehouse._Code)), N'') IN :warehouses
-        GROUP BY CAST(movement._Period AS date), product._Code, warehouse._Code
+        GROUP BY
+            CAST(movement._Period AS date), product.product_code,
+            warehouse.warehouse_code
         """
-    ).bindparams(
-        bindparam("codes", expanding=True), bindparam("warehouses", expanding=True)
     )
     warehouses = tuple(sorted(set(network_warehouse_codes)))
     if not warehouses:
@@ -698,41 +900,52 @@ def reconstruct_historical_stock(
     opening_rows = 0
     movement_rows = 0
     with engine.connect() as connection:
-        for code_chunk in _chunks(sorted(set(codes))):
-            for row in connection.execute(
-                opening_query,
-                {
-                    "date_from": datetime.combine(first_month, time.min),
-                    "date_to": datetime.combine(final_month, time.min),
-                    "codes": code_chunk,
-                    "warehouses": warehouses,
-                },
-            ).mappings():
-                period_month = _date(row.get("period_month"))
-                code = _clean(row.get("product_code"))
-                warehouse = _clean(row.get("warehouse_code"))
-                if period_month is not None and code and warehouse:
-                    openings[period_month][(code, warehouse)] += _decimal(
-                        row.get("quantity")
-                    )
-                    opening_rows += 1
-            for row in connection.execute(
-                movement_query,
-                {
-                    "date_from": datetime.combine(first_month, time.min),
-                    "date_to": datetime.combine(date_to + timedelta(days=1), time.min),
-                    "codes": code_chunk,
-                    "warehouses": warehouses,
-                },
-            ).mappings():
-                business_date = _date(row.get("business_date"))
-                code = _clean(row.get("product_code"))
-                warehouse = _clean(row.get("warehouse_code"))
-                if business_date is not None and code and warehouse:
-                    movements[business_date][(code, warehouse)] += _decimal(
-                        row.get("quantity_delta")
-                    )
-                    movement_rows += 1
+        _create_register_product_filter(connection, codes, product_refs=product_refs)
+        connection.execute(
+            text(
+                "CREATE TABLE #display_preflight_warehouses ("
+                "warehouse_ref binary(16) NOT NULL PRIMARY KEY, "
+                "warehouse_code nvarchar(100) NOT NULL)"
+            )
+        )
+        insert_warehouses = text(
+            "INSERT INTO #display_preflight_warehouses "
+            "(warehouse_ref, warehouse_code) "
+            "SELECT DISTINCT warehouse._IDRRef, LTRIM(RTRIM(warehouse._Code)) "
+            "FROM dbo._Reference80 AS warehouse WITH (NOLOCK) "
+            "WHERE NULLIF(LTRIM(RTRIM(warehouse._Code)), N'') IN :warehouses"
+        ).bindparams(bindparam("warehouses", expanding=True))
+        connection.execute(insert_warehouses, {"warehouses": warehouses})
+        for row in connection.execute(
+            opening_query,
+            {
+                "date_from": datetime.combine(first_month, time.min),
+                "date_to": datetime.combine(final_month, time.min),
+            },
+        ).mappings():
+            period_month = _date(row.get("period_month"))
+            code = _clean(row.get("product_code"))
+            warehouse = _clean(row.get("warehouse_code"))
+            if period_month is not None and code and warehouse:
+                openings[period_month][(code, warehouse)] += _decimal(
+                    row.get("quantity")
+                )
+                opening_rows += 1
+        for row in connection.execute(
+            movement_query,
+            {
+                "date_from": datetime.combine(first_month, time.min),
+                "date_to": datetime.combine(date_to + timedelta(days=1), time.min),
+            },
+        ).mappings():
+            business_date = _date(row.get("business_date"))
+            code = _clean(row.get("product_code"))
+            warehouse = _clean(row.get("warehouse_code"))
+            if business_date is not None and code and warehouse:
+                movements[business_date][(code, warehouse)] += _decimal(
+                    row.get("quantity_delta")
+                )
+                movement_rows += 1
 
     wanted_codes = tuple(sorted(set(codes)))
     physical_codes = set(physical_warehouse_codes)
@@ -864,13 +1077,17 @@ def _nearest_rank(values: Sequence[int], quantile: Decimal) -> int:
 
 
 def latest_supplier_identity(
-    detail_rows: Sequence[Mapping[str, Any]],
+    detail_rows: Sequence[Mapping[str, Any]] | LeadTimeHistoryIndex,
     *,
     code: str,
     as_of: date,
 ) -> tuple[str, str]:
+    if isinstance(detail_rows, LeadTimeHistoryIndex):
+        rows = detail_rows.orders_by_code.get(code, ())
+    else:
+        rows = detail_rows
     candidates = []
-    for row in detail_rows:
+    for row in rows:
         if _clean(row.get("nomenclature_code")) != code:
             continue
         order_date = _date(row.get("supplier_order_created_at"))
@@ -883,8 +1100,71 @@ def latest_supplier_identity(
     return _clean(row.get("supplier_ref")), _clean(row.get("supplier_name"))
 
 
-def select_lead_time_profile(
+def build_lead_time_history_index(
     detail_rows: Sequence[Mapping[str, Any]],
+) -> LeadTimeHistoryIndex:
+    orders_by_code: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    by_sku_supplier: dict[
+        tuple[str, str], list[tuple[Mapping[str, Any], int, date]]
+    ] = defaultdict(list)
+    by_group_supplier: dict[
+        tuple[str, str], list[tuple[Mapping[str, Any], int, date]]
+    ] = defaultdict(list)
+    by_supplier: dict[str, list[tuple[Mapping[str, Any], int, date]]] = defaultdict(
+        list
+    )
+    completed: list[tuple[Mapping[str, Any], int, date]] = []
+    for row in detail_rows:
+        code = _clean(row.get("nomenclature_code"))
+        supplier = _clean(row.get("supplier_ref"))
+        if code:
+            orders_by_code[code].append(row)
+        receipt_at = _date(row.get("warehouse_receipt_at"))
+        days = int(_decimal(row.get("total_arrival_days")))
+        if receipt_at is None or days < 0:
+            continue
+        item = (row, days, receipt_at)
+        completed.append(item)
+        if code and supplier:
+            by_sku_supplier[(code, supplier)].append(item)
+        group_key = _clean(row.get("display_group_key"))
+        if group_key and supplier:
+            by_group_supplier[(group_key, supplier)].append(item)
+        if supplier:
+            by_supplier[supplier].append(item)
+    return LeadTimeHistoryIndex(
+        orders_by_code={
+            code: tuple(sorted(rows, key=lambda row: _date(row.get("supplier_order_created_at")) or date.min))
+            for code, rows in orders_by_code.items()
+        },
+        completed_by_sku_supplier={key: tuple(rows) for key, rows in by_sku_supplier.items()},
+        completed_by_group_supplier={
+            key: tuple(rows) for key, rows in by_group_supplier.items()
+        },
+        completed_by_supplier={key: tuple(rows) for key, rows in by_supplier.items()},
+        completed_all=tuple(completed),
+        candidate_cache={},
+    )
+
+
+def _lead_time_candidates_before(
+    index: LeadTimeHistoryIndex,
+    *,
+    level: str,
+    key: str,
+    rows: Sequence[tuple[Mapping[str, Any], int, date]],
+    as_of: date,
+) -> tuple[tuple[Mapping[str, Any], int, date], ...]:
+    cache_key = (level, key, as_of)
+    cached = index.candidate_cache.get(cache_key)
+    if cached is None:
+        cached = tuple(item for item in rows if item[2] < as_of)
+        index.candidate_cache[cache_key] = cached
+    return cached
+
+
+def select_lead_time_profile(
+    detail_rows: Sequence[Mapping[str, Any]] | LeadTimeHistoryIndex,
     *,
     code: str,
     group_key: str,
@@ -893,45 +1173,41 @@ def select_lead_time_profile(
     as_of: date,
     config: BacktestScenarioConfig,
 ) -> LeadTimeProfile:
-    completed: list[tuple[Mapping[str, Any], int, date]] = []
-    for row in detail_rows:
-        receipt_at = _date(row.get("warehouse_receipt_at"))
-        days = int(_decimal(row.get("total_arrival_days")))
-        if receipt_at is None or receipt_at >= as_of or days < 0:
-            continue
-        completed.append((row, days, receipt_at))
+    index = (
+        detail_rows
+        if isinstance(detail_rows, LeadTimeHistoryIndex)
+        else build_lead_time_history_index(detail_rows)
+    )
     levels = (
         (
             "sku_supplier",
-            [
-                item
-                for item in completed
-                if _clean(item[0].get("nomenclature_code")) == code
-                and supplier_ref
-                and _clean(item[0].get("supplier_ref")) == supplier_ref
-            ],
+            f"{code}|{supplier_ref}",
+            index.completed_by_sku_supplier.get((code, supplier_ref), ())
+            if supplier_ref
+            else (),
         ),
         (
             "display_group_supplier",
-            [
-                item
-                for item in completed
-                if _clean(item[0].get("display_group_key")) == group_key
-                and supplier_ref
-                and _clean(item[0].get("supplier_ref")) == supplier_ref
-            ],
+            f"{group_key}|{supplier_ref}",
+            index.completed_by_group_supplier.get((group_key, supplier_ref), ())
+            if supplier_ref
+            else (),
         ),
         (
             "supplier",
-            [
-                item
-                for item in completed
-                if supplier_ref and _clean(item[0].get("supplier_ref")) == supplier_ref
-            ],
+            supplier_ref,
+            index.completed_by_supplier.get(supplier_ref, ()) if supplier_ref else (),
         ),
-        ("all_displays", completed),
+        ("all_displays", "all", index.completed_all),
     )
-    for level, rows in levels:
+    for level, key, candidate_rows in levels:
+        rows = _lead_time_candidates_before(
+            index,
+            level=level,
+            key=key,
+            rows=candidate_rows,
+            as_of=as_of,
+        )
         if len(rows) < config.lead_time_medium_samples:
             continue
         values = [item[1] for item in rows]
@@ -1104,6 +1380,7 @@ def build_preflight_tables(
     reserves: RegisterHistory,
     placements: RegisterHistory,
     incoming_by_day: Mapping[date, Mapping[str, Decimal]],
+    initial_pipeline_by_code: Mapping[str, Sequence[PipelineLot]],
     kmp4_raw_by_code: Mapping[str, Mapping[date, Decimal]],
     purchases: Mapping[str, Sequence[PurchaseLine]],
     receipts: Mapping[str, Sequence[ReceiptLine]],
@@ -1159,8 +1436,56 @@ def build_preflight_tables(
     lifecycle_daily: list[dict[str, Any]] = []
     daily_facts: list[dict[str, Any]] = []
     decision_inputs: list[dict[str, Any]] = []
-    scenario_decisions: list[dict[str, Any]] = []
     cadence = max(1, policy.order_cadence_days)
+    scenario_decisions: list[dict[str, Any]] = [
+        {
+            "scenario_id": "legacy",
+            "row_kind": "scenario_definition",
+            "stage_profile": "legacy",
+            "kmp4_weight": "0",
+            "holding_cost_scenario": "legacy_excluded",
+            "lead_time_rule": "fixed_legacy",
+            "lead_time_days": DEFAULT_LEAD_TIME_DAYS,
+        }
+    ]
+    for stage_name in ("conservative", "typical", "service"):
+        for kmp4_weight in config.kmp4_weights:
+            for cost_scenario in config.holding_cost_scenarios:
+                scenario_decisions.append(
+                    {
+                        "scenario_id": (
+                            f"{stage_name}_kmp{str(kmp4_weight).replace('.', '_')}"
+                            f"_{cost_scenario.name}"
+                        ),
+                        "row_kind": "scenario_definition",
+                        "stage_profile": stage_name,
+                        "kmp4_weight": str(kmp4_weight),
+                        "holding_cost_scenario": cost_scenario.name,
+                        "capital_annual_rate": str(
+                            cost_scenario.capital_annual_rate
+                        ),
+                        "storage_annual_rate": str(
+                            cost_scenario.storage_annual_rate
+                        ),
+                        "obsolescence_annual_rate": str(
+                            cost_scenario.obsolescence_annual_rate
+                        ),
+                        "lead_time_rule": "p50_then_p75_economic_protection",
+                        "review_cadence_days": cadence,
+                    }
+                )
+    lead_time_index = build_lead_time_history_index(lead_time_detail_rows)
+    initial_pipeline = [
+        {
+            "nomenclature_code": code,
+            "arrival_at": lot.arrival_at.isoformat(),
+            "quantity": str(lot.qty),
+            "source": lot.source,
+        }
+        for code, lots in sorted(initial_pipeline_by_code.items())
+        for lot in lots
+        if lot.qty > ZERO
+    ]
 
     for business_date in _daterange(date_from, date_to):
         scheduled_review = (business_date - date_from).days % cadence == 0
@@ -1197,27 +1522,6 @@ def build_preflight_tables(
             free_incoming = max(ZERO, gross_incoming - placed_incoming)
             free_stock = physical_stock - reserve_qty
             inventory_position = free_stock + free_incoming
-            supplier_ref, supplier_name = latest_supplier_identity(
-                lead_time_detail_rows, code=code, as_of=business_date
-            )
-            group_key = display_group_key(
-                {"name": _clean(item.get("name")), "nomenclature_code": code}
-            )
-            lead_time = select_lead_time_profile(
-                lead_time_detail_rows,
-                code=code,
-                group_key=group_key,
-                supplier_ref=supplier_ref,
-                supplier_name=supplier_name,
-                as_of=business_date,
-                config=config,
-            )
-            inventory_cost, unit_margin, cost_source = _inventory_cost_and_margin(
-                code=code,
-                economics=economics,
-                purchases=purchases,
-                as_of=business_date,
-            )
             daily_facts.append(
                 {
                     "business_date": business_date.isoformat(),
@@ -1258,6 +1562,27 @@ def build_preflight_tables(
             )
             if not scheduled_review and not event_review:
                 continue
+            supplier_ref, supplier_name = latest_supplier_identity(
+                lead_time_index, code=code, as_of=business_date
+            )
+            group_key = display_group_key(
+                {"name": _clean(item.get("name")), "nomenclature_code": code}
+            )
+            lead_time = select_lead_time_profile(
+                lead_time_index,
+                code=code,
+                group_key=group_key,
+                supplier_ref=supplier_ref,
+                supplier_name=supplier_name,
+                as_of=business_date,
+                config=config,
+            )
+            inventory_cost, unit_margin, cost_source = _inventory_cost_and_margin(
+                code=code,
+                economics=economics,
+                purchases=purchases,
+                as_of=business_date,
+            )
             input_row = {
                 "decision_date": business_date.isoformat(),
                 "nomenclature_code": code,
@@ -1320,219 +1645,52 @@ def build_preflight_tables(
                     if applies
                 ),
             }
-            decision_inputs.append(input_row)
-
-            legacy_target = _ceil(rate * Decimal(DEFAULT_LEAD_TIME_DAYS + cadence))
-            legacy_raw = _ceil(max(ZERO, legacy_target - physical_stock - gross_incoming))
-            legacy_qty = rounded_order_qty(
-                legacy_raw,
-                min_order_qty=policy.min_order_qty,
-                max_order_qty=policy.max_order_qty,
-                order_rounding_rules=policy.order_rounding_rules,
-            )
-            scenario_decisions.append(
-                {
-                    "scenario_id": "legacy",
-                    "decision_date": business_date.isoformat(),
-                    "nomenclature_code": code,
-                    "stage_profile": "legacy",
-                    "kmp4_weight": "0",
-                    "holding_cost_scenario": "legacy_excluded",
-                    "status": lifecycle.status.value,
-                    "forecast_rate": str(rate),
-                    "selected_lead_time_days": DEFAULT_LEAD_TIME_DAYS,
-                    "lead_time_basis": "fixed_legacy",
-                    "min_stock_qty": str(legacy_target),
-                    "max_stock_qty": str(legacy_target),
-                    "economic_safety_stock_qty": "0",
-                    "recommended_order_qty_raw": str(legacy_raw),
-                    "recommended_order_qty": str(legacy_qty),
-                    "decision": _action_for_stage(
-                        status=lifecycle.status.value,
-                        recommended_qty=legacy_qty,
-                        scheduled_review=scheduled_review,
-                        lead_time_confidence="high",
-                        kmp4_open_weighted=ZERO,
-                    ),
-                    "inventory_position_qty": str(physical_stock + gross_incoming),
-                    "expected_saved_margin_rub": "0",
-                    "carrying_cost_rub": "0",
-                    "manual_review_reason": "legacy_control",
-                }
-            )
-
             for stage_name in ("conservative", "typical", "service"):
-                stage_scenario = stage_model_scenario(stage_name)
                 launch_profile = select_launch_profile(
                     item=item,
                     snapshot=launch_snapshot,
-                    scenario=stage_scenario,
+                    scenario=stage_model_scenario(stage_name),
                     policy=policy,
                     min_samples=launch_profile_min_samples,
                 )
-                for kmp4_weight in config.kmp4_weights:
-                    weighted_kmp = queue_day.open_qty * kmp4_weight
-                    scenario_rate = rate + weighted_kmp / Decimal(config.kmp4_queue_days)
-                    if (
-                        lifecycle.status is AssortmentStatus.NEW_ITEM
-                        and launch_profile is not None
-                    ):
-                        scenario_rate = max(
-                            scenario_rate,
-                            launch_profile.demand_qty_30d / Decimal("30"),
-                        )
-                    for cost_scenario in config.holding_cost_scenarios:
-                        selected_days = lead_time.p50_days
-                        min_qty = _ceil(scenario_rate * Decimal(selected_days))
-                        max_qty = _ceil(scenario_rate * Decimal(selected_days + cadence))
-                        samples = historical_demand_samples(
-                            sales_by_code.get(code, {}),
-                            as_of=business_date,
-                            horizon_days=selected_days + cadence,
-                            lookback_days=config.safety_lookback_days,
-                            step_days=config.safety_step_days,
-                        )
-                        safety = calculate_economic_safety_stock(
-                            base_max_qty=max_qty,
-                            demand_samples=samples,
-                            gross_margin_per_unit_rub=unit_margin,
-                            inventory_cost_per_unit_rub=inventory_cost,
-                            holding_days=selected_days + cadence,
-                            cost_scenario=cost_scenario,
-                            max_units=config.safety_max_units,
-                            min_samples=config.safety_min_samples,
-                        )
-                        if safety.units > ZERO and lead_time.p75_days > selected_days:
-                            selected_days = lead_time.p75_days
-                            min_qty = _ceil(scenario_rate * Decimal(selected_days))
-                            max_qty = _ceil(
-                                scenario_rate * Decimal(selected_days + cadence)
-                            )
-                            samples = historical_demand_samples(
-                                sales_by_code.get(code, {}),
-                                as_of=business_date,
-                                horizon_days=selected_days + cadence,
-                                lookback_days=config.safety_lookback_days,
-                                step_days=config.safety_step_days,
-                            )
-                            safety = calculate_economic_safety_stock(
-                                base_max_qty=max_qty,
-                                demand_samples=samples,
-                                gross_margin_per_unit_rub=unit_margin,
-                                inventory_cost_per_unit_rub=inventory_cost,
-                                holding_days=selected_days + cadence,
-                                cost_scenario=cost_scenario,
-                                max_units=config.safety_max_units,
-                                min_samples=config.safety_min_samples,
-                            )
-                        target_qty = max_qty + safety.units
-                        if lifecycle.status is AssortmentStatus.FRUIT:
-                            target_qty = ZERO
-                        elif lifecycle.status is AssortmentStatus.NEWBORN:
-                            target_qty = weighted_kmp
-                        reorder_triggered = inventory_position <= min_qty
-                        raw = (
-                            _ceil(max(ZERO, target_qty - inventory_position))
-                            if reorder_triggered
-                            or lifecycle.status
-                            in {AssortmentStatus.NEWBORN, AssortmentStatus.NEW_ITEM}
-                            else ZERO
-                        )
-                        recommended = rounded_order_qty(
-                            raw,
-                            min_order_qty=policy.min_order_qty,
-                            max_order_qty=policy.max_order_qty,
-                            order_rounding_rules=policy.order_rounding_rules,
-                        )
-                        decision = _action_for_stage(
-                            status=lifecycle.status.value,
-                            recommended_qty=recommended,
-                            scheduled_review=scheduled_review,
-                            lead_time_confidence=lead_time.confidence,
-                            kmp4_open_weighted=weighted_kmp,
-                        )
-                        reasons = []
-                        if not scheduled_review:
-                            reasons.append("out_of_cycle_manual_review")
-                        if lead_time.confidence == "low":
-                            reasons.append("lead_time_low_confidence")
-                        if inventory_cost <= ZERO or unit_margin <= ZERO:
-                            reasons.append("unit_economics_low_confidence")
-                        if lifecycle.status.value in {
-                            AssortmentStatus.NEWBORN.value,
-                            AssortmentStatus.NEW_ITEM.value,
-                            AssortmentStatus.SALES_START.value,
-                        }:
-                            reasons.append(f"stage_{lifecycle.status.value}_manual_review")
-                        scenario_decisions.append(
-                            {
-                                "scenario_id": (
-                                    f"{stage_name}_kmp{str(kmp4_weight).replace('.', '_')}"
-                                    f"_{cost_scenario.name}"
-                                ),
-                                "decision_date": business_date.isoformat(),
-                                "nomenclature_code": code,
-                                "stage_profile": stage_name,
-                                "kmp4_weight": str(kmp4_weight),
-                                "holding_cost_scenario": cost_scenario.name,
-                                "capital_annual_rate": str(
-                                    cost_scenario.capital_annual_rate
-                                ),
-                                "storage_annual_rate": str(
-                                    cost_scenario.storage_annual_rate
-                                ),
-                                "obsolescence_annual_rate": str(
-                                    cost_scenario.obsolescence_annual_rate
-                                ),
-                                "status": lifecycle.status.value,
-                                "forecast_rate": str(scenario_rate),
-                                "kmp4_open_weighted_qty": str(weighted_kmp),
-                                "selected_lead_time_days": selected_days,
-                                "lead_time_basis": (
-                                    "p75_economic_protection"
-                                    if selected_days == lead_time.p75_days
-                                    and safety.units > ZERO
-                                    else "p50"
-                                ),
-                                "lead_time_confidence": lead_time.confidence,
-                                "min_stock_qty": str(min_qty),
-                                "max_stock_qty": str(max_qty),
-                                "economic_safety_stock_qty": str(safety.units),
-                                "recommended_order_qty_raw": str(raw),
-                                "recommended_order_qty": str(recommended),
-                                "decision": decision,
-                                "inventory_position_qty": str(inventory_position),
-                                "expected_saved_margin_rub": str(
-                                    safety.expected_saved_margin_rub
-                                ),
-                                "carrying_cost_rub": str(safety.carrying_cost_rub),
-                                "marginal_saved_margin_rub": str(
-                                    safety.marginal_saved_margin_rub
-                                ),
-                                "marginal_carrying_cost_rub": str(
-                                    safety.marginal_carrying_cost_rub
-                                ),
-                                "launch_profile_group_level": (
-                                    launch_profile.group_level if launch_profile else ""
-                                ),
-                                "launch_profile_sample_count": (
-                                    launch_profile.sample_count if launch_profile else 0
-                                ),
-                                "launch_profile_confidence": (
-                                    launch_profile.confidence if launch_profile else ""
-                                ),
-                                "manual_review_reason": "|".join(reasons),
-                            }
-                        )
+                prefix = f"launch_{stage_name}"
+                input_row.update(
+                    {
+                        f"{prefix}_group_level": (
+                            launch_profile.group_level if launch_profile else ""
+                        ),
+                        f"{prefix}_group_key": (
+                            launch_profile.group_key if launch_profile else ""
+                        ),
+                        f"{prefix}_sample_count": (
+                            launch_profile.sample_count if launch_profile else 0
+                        ),
+                        f"{prefix}_quantile": (
+                            str(launch_profile.quantile) if launch_profile else ""
+                        ),
+                        f"{prefix}_demand_qty_30d": (
+                            str(launch_profile.demand_qty_30d)
+                            if launch_profile
+                            else ""
+                        ),
+                        f"{prefix}_min_qty": (
+                            str(launch_profile.min_qty) if launch_profile else ""
+                        ),
+                        f"{prefix}_max_qty": (
+                            str(launch_profile.max_qty) if launch_profile else ""
+                        ),
+                        f"{prefix}_confidence": (
+                            launch_profile.confidence if launch_profile else ""
+                        ),
+                    }
+                )
+            decision_inputs.append(input_row)
 
     reconciliations = reserves.reconciliations + placements.reconciliations
     input_keys = [
         (row["decision_date"], row["nomenclature_code"]) for row in decision_inputs
     ]
-    scenario_keys = [
-        (row["scenario_id"], row["decision_date"], row["nomenclature_code"])
-        for row in scenario_decisions
-    ]
+    scenario_keys = [row["scenario_id"] for row in scenario_decisions]
     quality: list[dict[str, Any]] = []
 
     def add_quality(
@@ -1564,12 +1722,12 @@ def build_preflight_tables(
         note="Одна строка на дату решения и SKU.",
     )
     add_quality(
-        "scenario_decision_primary_key",
+        "scenario_definition_primary_key",
         passed=len(scenario_keys) == len(set(scenario_keys)),
         severity="critical",
         value=len(scenario_keys) - len(set(scenario_keys)),
         threshold=0,
-        note="Одна строка на сценарий, дату решения и SKU.",
+        note="Одна строка на определение сценария; раскрытие выполняет backtest.",
     )
     failed_reconciliations = sum(row["status"] != "pass" for row in reconciliations)
     add_quality(
@@ -1639,6 +1797,7 @@ def build_preflight_tables(
         scenario_decisions=scenario_decisions,
         lifecycle_daily=lifecycle_daily,
         daily_facts=daily_facts,
+        initial_pipeline=initial_pipeline,
         source_quality=quality,
         reconciliations=reconciliations,
         status=status,
@@ -1717,6 +1876,7 @@ def write_preflight_artifacts(
         "scenario-decisions.csv": tables.scenario_decisions,
         "lifecycle-daily.csv": tables.lifecycle_daily,
         "daily-facts.csv": tables.daily_facts,
+        "initial-pipeline.csv": tables.initial_pipeline,
         "source-quality.csv": tables.source_quality,
         "reconciliations.csv": tables.reconciliations,
     }
@@ -1728,6 +1888,7 @@ def write_preflight_artifacts(
             "decision-inputs": tables.decision_inputs,
             "scenario-decisions": tables.scenario_decisions,
             "lifecycle-daily": tables.lifecycle_daily,
+            "initial-pipeline": tables.initial_pipeline,
             "source-quality": tables.source_quality,
             "reconciliations": tables.reconciliations,
         },
@@ -1749,6 +1910,7 @@ def write_preflight_artifacts(
             "scenario_decisions": len(tables.scenario_decisions),
             "lifecycle_daily": len(tables.lifecycle_daily),
             "daily_facts": len(tables.daily_facts),
+            "initial_pipeline": len(tables.initial_pipeline),
             "source_quality": len(tables.source_quality),
             "reconciliations": len(tables.reconciliations),
         },
@@ -1793,7 +1955,9 @@ __all__ = [
     "build_kmp4_queue_history",
     "build_preflight_tables",
     "calculate_economic_safety_stock",
+    "fetch_daily_sales",
     "fetch_kmp4_demand",
+    "fetch_onec_product_refs",
     "fetch_daily_unit_economics",
     "historical_demand_samples",
     "load_scenario_config",

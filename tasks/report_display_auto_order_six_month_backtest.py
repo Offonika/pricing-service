@@ -1048,8 +1048,8 @@ def forecast_rate(
         for days in (180, 90, 30)
     }
     accelerating = (
-        rates[30] >= rates[90] * ACCELERATING_MIN_GROWTH_MULTIPLIER
-        and rates[90] >= rates[180] * ACCELERATING_MIN_GROWTH_MULTIPLIER
+        rates[30] > ZERO
+        and rates[30] >= rates[90] * ACCELERATING_MIN_GROWTH_MULTIPLIER
     )
     base = max(rates.values()) if accelerating else sum(rates.values(), ZERO) / Decimal(3)
     return (

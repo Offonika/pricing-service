@@ -66,6 +66,25 @@ def test_forecast_rate_does_not_use_future_sales() -> None:
     assert spike_evidence == baseline_evidence
 
 
+def test_forecast_rate_reacts_when_30_days_accelerate_against_90_days() -> None:
+    as_of = date(2026, 2, 1)
+    history_from = as_of - timedelta(days=179)
+    sales = _sales(history_from, as_of)
+    for offset in range(30):
+        sales[as_of - timedelta(days=offset)] = Decimal("2")
+
+    rate, trend, evidence = forecast_rate(
+        sales,
+        set(sales),
+        as_of=as_of,
+    )
+
+    assert trend == "accelerating"
+    assert evidence["sales_30"] == Decimal("60")
+    assert evidence["sales_90"] == Decimal("120")
+    assert rate == Decimal("2")
+
+
 def test_initial_pipeline_fifo_deducts_receipts_before_start() -> None:
     purchases = {
         "SKU-1": [

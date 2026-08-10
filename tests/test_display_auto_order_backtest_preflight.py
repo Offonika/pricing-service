@@ -155,6 +155,7 @@ def test_preflight_manifest_checks_status_and_hashes(tmp_path: Path) -> None:
         scenario_decisions=[{"scenario_id": "legacy", **row}],
         lifecycle_daily=[{"business_date": "2026-02-01", **row}],
         daily_facts=[{"business_date": "2026-02-01", **row}],
+        initial_pipeline=[{"nomenclature_code": "SKU-1", "quantity": "1"}],
         source_quality=[{"check": "keys", "status": "pass"}],
         reconciliations=[{"source": "reserve", "status": "pass"}],
         status="PASS",

@@ -35,7 +35,11 @@ def _settings() -> Settings:
     )
 
 
-def _row(*, expected_name: str = "Пилот") -> importer.ManualMappingRow:
+def _row(
+    *,
+    expected_name: str = "Пилот",
+    expected_inn: str = "1234567890",
+) -> importer.ManualMappingRow:
     return importer.ManualMappingRow(
         site_user_id="101",
         counterparty_guid=CP_GUID,
@@ -43,13 +47,14 @@ def _row(*, expected_name: str = "Пилот") -> importer.ManualMappingRow:
         source_system="ut103",
         expected_code="РБ000001",
         expected_name=expected_name,
-        expected_inn="1234567890",
+        expected_inn=expected_inn,
     )
 
 
 def _control(
     *,
     name: str = "Пилот",
+    inn: str = "1234567890",
     currencies: tuple[str, ...] = ("643",),
 ) -> ManualCustomerSettlementControl:
     return ManualCustomerSettlementControl(
@@ -57,7 +62,7 @@ def _control(
         counterparty_guid=CP_GUID,
         counterparty_code="РБ000001",
         counterparty_name=name,
-        counterparty_inn="1234567890",
+        counterparty_inn=inn,
         active_contract_currency_codes=currencies,
     )
 
@@ -89,6 +94,7 @@ def test_manual_import_dry_run_rolls_back_and_apply_materializes_account(
             )
             assert dry_run["status"] == "validated"
             assert dry_run["row_count"] == 1
+            assert dry_run["inn_control_count"] == 1
             assert len(str(dry_run["input_hash"])) == 64
             assert session.scalar(select(func.count()).select_from(CustomerAccount)) == 0
 
@@ -219,6 +225,66 @@ def test_manual_import_rejects_control_mismatch_and_non_rub(
         engine.dispose()
 
 
+def test_manual_import_allows_missing_inn_but_checks_it_when_provided(
+    monkeypatch,
+) -> None:
+    engine = _engine()
+    try:
+        monkeypatch.setattr(
+            importer,
+            "fetch_manual_customer_settlement_controls",
+            lambda *_args, **_kwargs: (_control(inn=""),),
+        )
+        with Session(engine) as session:
+            result = importer.import_manual_customer_settlement_mappings(
+                session,
+                object(),
+                rows=(_row(expected_inn=""),),
+                settings=_settings(),
+                apply=False,
+                approved_by=None,
+            )
+        assert result["status"] == "validated"
+        assert result["inn_control_count"] == 0
+
+        monkeypatch.setattr(
+            importer,
+            "fetch_manual_customer_settlement_controls",
+            lambda *_args, **_kwargs: (_control(inn="9999999999"),),
+        )
+        with Session(engine) as session:
+            applied = importer.import_manual_customer_settlement_mappings(
+                session,
+                object(),
+                rows=(_row(expected_inn=""),),
+                settings=_settings(),
+                apply=True,
+                approved_by="finance-owner",
+                approved_input_hash=str(result["input_hash"]),
+                approved_controls_hash=str(result["controls_hash"]),
+            )
+        assert applied["status"] == "applied"
+
+        monkeypatch.setattr(
+            importer,
+            "fetch_manual_customer_settlement_controls",
+            lambda *_args, **_kwargs: (_control(inn="9999999999"),),
+        )
+        with Session(engine) as session, pytest.raises(importer.ManualMappingImportError) as exc:
+            importer.import_manual_customer_settlement_mappings(
+                session,
+                object(),
+                rows=(_row(),),
+                settings=_settings(),
+                apply=False,
+                approved_by=None,
+            )
+        assert exc.value.code == "identity_control_mismatch"
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
 def test_manual_mapping_csv_has_exact_contract_and_ten_row_limit(tmp_path: Path) -> None:
     csv_path = tmp_path / "pilot.csv"
     csv_path.write_text(
@@ -228,6 +294,22 @@ def test_manual_mapping_csv_has_exact_contract_and_ten_row_limit(tmp_path: Path)
         encoding="utf-8",
     )
     assert importer.load_manual_mapping_csv(csv_path) == (_row(),)
+
+    csv_path.write_text(
+        ",".join(importer.CSV_FIELDS) + "\n" + f"101,{CP_GUID},{ORG_GUID},ut103,РБ000001,Пилот,\n",
+        encoding="utf-8",
+    )
+    assert importer.load_manual_mapping_csv(csv_path) == (_row(expected_inn=""),)
+
+    csv_path.write_text(
+        ",".join(importer.CSV_FIELDS)
+        + "\n"
+        + f"101,{CP_GUID},{ORG_GUID},ut103,РБ000001,Пилот,12345\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(importer.ManualMappingImportError) as exc:
+        importer.load_manual_mapping_csv(csv_path)
+    assert exc.value.code == "invalid_identity_controls"
 
     csv_path.write_text(
         ",".join(importer.CSV_FIELDS)

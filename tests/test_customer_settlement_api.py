@@ -23,10 +23,12 @@ from app.services.customer_settlements import (
     SettlementMappingInput,
     activate_financial_revision,
     activate_mapping_revision,
+    onec_ref_to_guid,
     set_pilot_access,
 )
 
 ORG = "0x" + "a" * 32
+ORG_GUID = onec_ref_to_guid(ORG)
 CP_1 = "0x" + "1" * 32
 CP_2 = "0x" + "2" * 32
 
@@ -50,6 +52,8 @@ def _seed(session: Session, now: datetime) -> None:
             SettlementMappingInput("102", "cluster-102", CP_2, "linked"),
         ],
         source_checked_at=now,
+        organization_ref=ORG,
+        organization_guid=ORG_GUID,
     )
     activate_financial_revision(
         session,

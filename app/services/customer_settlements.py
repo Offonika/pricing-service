@@ -12,6 +12,9 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.orm import Session
 
 from app.models.customer_settlement import (
+    CustomerAccount,
+    CustomerAccountSiteBinding,
+    CustomerAccountSourceBinding,
     CustomerSettlementAssertionJti,
     CustomerSettlementBalance,
     CustomerSettlementMappingEntry,
@@ -28,13 +31,22 @@ REVISION_SUPERSEDED = "superseded"
 
 _MONEY_QUANTUM = Decimal("0.01")
 _COUNTERPARTY_REF_RE = re.compile(r"^0x[0-9a-fA-F]{32}$")
+_GUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-" r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
 _SITE_USER_ID_RE = re.compile(r"^[1-9][0-9]{0,18}$")
+DEFAULT_SITE_CODE = "master-mobile.ru"
+DEFAULT_SOURCE_SYSTEM = "ut103"
+DEFAULT_ORGANIZATION_REF = "0xb34a0025901e48ef11e211128227ea80"
+DEFAULT_ORGANIZATION_GUID = "8227ea80-1112-11e2-b34a-0025901e48ef"
+MANUAL_MAPPING_SOURCE_NAME = "manual_confirmed_pilot"
 
 
 @dataclass(frozen=True)
 class SettlementBalanceInput:
     counterparty_ref: str
     signed_balance: Decimal
+    counterparty_guid: str | None = None
     currency: str = "RUB"
     exists: bool = True
     marked_deleted: bool = False
@@ -46,6 +58,9 @@ class SettlementMappingInput:
     cluster_id: str | None
     counterparty_ref: str | None
     status: Literal["linked", "not_linked", "ambiguous"]
+    counterparty_guid: str | None = None
+    counterparty_code: str | None = None
+    identity_control_hash: str | None = None
     source_updated_at: datetime | None = None
 
 
@@ -82,6 +97,32 @@ def normalize_counterparty_ref(value: str) -> str:
     if not _COUNTERPARTY_REF_RE.fullmatch(normalized):
         raise ValueError("counterparty_ref must be 0x followed by 32 hexadecimal characters")
     return "0x" + normalized[2:].lower()
+
+
+def normalize_guid(value: str) -> str:
+    normalized = str(value or "").strip().strip("{}").lower()
+    if not _GUID_RE.fullmatch(normalized):
+        raise ValueError("GUID must use canonical 8-4-4-4-12 format")
+    return normalized
+
+
+def onec_ref_to_guid(value: str) -> str:
+    normalized = normalize_counterparty_ref(value)[2:]
+    return "-".join(
+        (
+            normalized[24:32],
+            normalized[20:24],
+            normalized[16:20],
+            normalized[0:4],
+            normalized[4:16],
+        )
+    )
+
+
+def onec_guid_to_ref(value: str) -> str:
+    normalized = normalize_guid(value)
+    first, second, third, fourth, fifth = normalized.split("-")
+    return normalize_counterparty_ref(f"0x{fourth}{fifth}{third}{second}{first}")
 
 
 def normalize_site_user_id(value: str | int) -> str:
@@ -123,6 +164,13 @@ def _normalized_balance_rows(
     seen: set[str] = set()
     for item in rows:
         counterparty_ref = normalize_counterparty_ref(item.counterparty_ref)
+        counterparty_guid = (
+            normalize_guid(item.counterparty_guid)
+            if item.counterparty_guid is not None
+            else onec_ref_to_guid(counterparty_ref)
+        )
+        if onec_guid_to_ref(counterparty_guid) != counterparty_ref:
+            raise ValueError("counterparty_guid_does_not_match_ref")
         if counterparty_ref in seen:
             raise ValueError("duplicate_counterparty_ref")
         seen.add(counterparty_ref)
@@ -134,6 +182,7 @@ def _normalized_balance_rows(
             SettlementBalanceInput(
                 counterparty_ref=counterparty_ref,
                 signed_balance=normalize_money(item.signed_balance),
+                counterparty_guid=counterparty_guid,
                 currency="RUB",
             )
         )
@@ -144,6 +193,7 @@ def activate_financial_revision(
     session: Session,
     *,
     organization_ref: str,
+    organization_guid: str | None = None,
     as_of: datetime,
     source_db_time: datetime,
     source_mode: str,
@@ -152,6 +202,11 @@ def activate_financial_revision(
     synced_at: datetime | None = None,
 ) -> tuple[CustomerSettlementRevision, bool]:
     organization = normalize_counterparty_ref(organization_ref)
+    normalized_organization_guid = normalize_guid(
+        organization_guid or onec_ref_to_guid(organization)
+    )
+    if onec_guid_to_ref(normalized_organization_guid) != organization:
+        raise ValueError("organization_guid_does_not_match_ref")
     expected_refs = {normalize_counterparty_ref(value) for value in expected_counterparty_refs}
     normalized_rows = _normalized_balance_rows(balances)
     loaded_refs = {item.counterparty_ref for item in normalized_rows}
@@ -164,6 +219,7 @@ def activate_financial_revision(
     source_hash = _canonical_hash(
         {
             "organization_ref": organization,
+            "organization_guid": normalized_organization_guid,
             "currency": "RUB",
             "as_of": as_of_utc.isoformat(),
             "source_db_time": source_db_time_utc.isoformat(),
@@ -171,6 +227,7 @@ def activate_financial_revision(
             "balances": [
                 {
                     "counterparty_ref": item.counterparty_ref,
+                    "counterparty_guid": item.counterparty_guid,
                     "signed_balance": format(item.signed_balance, ".2f"),
                 }
                 for item in normalized_rows
@@ -188,6 +245,7 @@ def activate_financial_revision(
     revision = CustomerSettlementRevision(
         status="loading",
         organization_ref=organization,
+        organization_guid=normalized_organization_guid,
         currency="RUB",
         as_of=as_of_utc,
         source_db_time=source_db_time_utc,
@@ -205,6 +263,7 @@ def activate_financial_revision(
             CustomerSettlementBalance(
                 revision_id=revision.id,
                 counterparty_ref=item.counterparty_ref,
+                counterparty_guid=str(item.counterparty_guid),
                 signed_balance=item.signed_balance,
                 currency="RUB",
             )
@@ -232,15 +291,21 @@ def mark_financial_revision_failed(
     session: Session,
     *,
     organization_ref: str,
+    organization_guid: str | None = None,
     as_of: datetime,
     source_mode: str,
     error_code: str,
     error_detail: str | None = None,
 ) -> CustomerSettlementRevision:
     now = utc_now()
+    normalized_organization_ref = normalize_counterparty_ref(organization_ref)
+    normalized_organization_guid = normalize_guid(
+        organization_guid or onec_ref_to_guid(normalized_organization_ref)
+    )
     revision = CustomerSettlementRevision(
         status="failed",
-        organization_ref=normalize_counterparty_ref(organization_ref),
+        organization_ref=normalized_organization_ref,
+        organization_guid=normalized_organization_guid,
         currency="RUB",
         as_of=ensure_utc(as_of),
         source_db_time=now,
@@ -264,14 +329,155 @@ def mark_financial_revision_failed(
     return revision
 
 
+def _materialize_linked_customer_account(
+    session: Session,
+    *,
+    revision_id: int,
+    item: SettlementMappingInput,
+    checked_at: datetime,
+    source_system: str,
+    organization_ref: str,
+    organization_guid: str,
+) -> tuple[int, int, str]:
+    if item.status != MAPPING_LINKED or not item.cluster_id or not item.counterparty_ref:
+        raise ValueError("linked_mapping_requires_cluster_and_counterparty")
+    counterparty_ref = normalize_counterparty_ref(item.counterparty_ref)
+    counterparty_guid = normalize_guid(item.counterparty_guid or onec_ref_to_guid(counterparty_ref))
+    if onec_guid_to_ref(counterparty_guid) != counterparty_ref:
+        raise ValueError("counterparty_guid_does_not_match_ref")
+
+    site_binding = session.scalar(
+        select(CustomerAccountSiteBinding).where(
+            CustomerAccountSiteBinding.site_code == DEFAULT_SITE_CODE,
+            CustomerAccountSiteBinding.site_user_id == item.site_user_id,
+            CustomerAccountSiteBinding.status == "active",
+        )
+    )
+    identity_binding = session.scalar(
+        select(CustomerAccountSourceBinding).where(
+            CustomerAccountSourceBinding.source_system == source_system,
+            CustomerAccountSourceBinding.counterparty_guid == counterparty_guid,
+            CustomerAccountSourceBinding.organization_guid == organization_guid,
+            CustomerAccountSourceBinding.status == "active",
+        )
+    )
+    account_ids = {
+        value
+        for value in (
+            site_binding.customer_account_id if site_binding is not None else None,
+            identity_binding.customer_account_id if identity_binding is not None else None,
+        )
+        if value is not None
+    }
+    if len(account_ids) > 1:
+        raise ValueError("durable_customer_account_mapping_conflict")
+    if account_ids:
+        account_id = next(iter(account_ids))
+        account = session.get(CustomerAccount, account_id)
+        if account is None or account.status != "active":
+            raise ValueError("customer_account_is_not_active")
+    else:
+        account = CustomerAccount(status="active")
+        session.add(account)
+        session.flush()
+        account_id = account.id
+
+    account_source = session.scalar(
+        select(CustomerAccountSourceBinding).where(
+            CustomerAccountSourceBinding.customer_account_id == account_id,
+            CustomerAccountSourceBinding.source_system == source_system,
+            CustomerAccountSourceBinding.organization_guid == organization_guid,
+            CustomerAccountSourceBinding.status == "active",
+        )
+    )
+    if account_source is not None and account_source.counterparty_guid != counterparty_guid:
+        account_source.status = "revoked"
+        account_source.valid_to = checked_at
+        account_source.updated_at = checked_at
+        session.flush()
+        account_source = None
+    if identity_binding is not None and identity_binding.customer_account_id != account_id:
+        raise ValueError("counterparty_guid_is_linked_to_another_customer_account")
+    source_binding = account_source or identity_binding
+    if source_binding is None:
+        source_binding = CustomerAccountSourceBinding(
+            customer_account_id=account_id,
+            source_system=source_system,
+            counterparty_guid=counterparty_guid,
+            counterparty_ref=counterparty_ref,
+            organization_guid=organization_guid,
+            organization_ref=organization_ref,
+            counterparty_code=(
+                (str(item.counterparty_code).strip()[:64] or None)
+                if item.counterparty_code
+                else None
+            ),
+            identity_control_hash=(
+                str(item.identity_control_hash).strip().lower()[:64] or None
+                if item.identity_control_hash
+                else None
+            ),
+            status="active",
+            mapping_revision_id=revision_id,
+            valid_from=checked_at,
+            verified_at=checked_at,
+        )
+        session.add(source_binding)
+        session.flush()
+    else:
+        source_binding.counterparty_ref = counterparty_ref
+        source_binding.organization_ref = organization_ref
+        source_binding.mapping_revision_id = revision_id
+        source_binding.verified_at = checked_at
+        source_binding.updated_at = checked_at
+        if item.counterparty_code:
+            source_binding.counterparty_code = str(item.counterparty_code).strip()[:64] or None
+        if item.identity_control_hash:
+            source_binding.identity_control_hash = (
+                str(item.identity_control_hash).strip().lower()[:64] or None
+            )
+
+    if site_binding is None:
+        site_binding = CustomerAccountSiteBinding(
+            customer_account_id=account_id,
+            site_code=DEFAULT_SITE_CODE,
+            site_user_id=item.site_user_id,
+            cluster_id=item.cluster_id,
+            status="active",
+            mapping_revision_id=revision_id,
+            valid_from=checked_at,
+            verified_at=checked_at,
+        )
+        session.add(site_binding)
+    else:
+        if site_binding.customer_account_id != account_id:
+            raise ValueError("site_user_is_linked_to_another_customer_account")
+        site_binding.cluster_id = item.cluster_id
+        site_binding.mapping_revision_id = revision_id
+        site_binding.verified_at = checked_at
+        site_binding.updated_at = checked_at
+    session.flush()
+    return account_id, source_binding.id, counterparty_guid
+
+
 def activate_mapping_revision(
     session: Session,
     *,
     entries: Sequence[SettlementMappingInput],
     source_checked_at: datetime | None = None,
     source_name: str = "bitrix_crm_customer_cluster",
+    source_system: str = DEFAULT_SOURCE_SYSTEM,
+    organization_ref: str = DEFAULT_ORGANIZATION_REF,
+    organization_guid: str = DEFAULT_ORGANIZATION_GUID,
 ) -> tuple[CustomerSettlementMappingRevision, bool]:
     checked_at = ensure_utc(source_checked_at or utc_now())
+    normalized_source_system = str(source_system or "").strip().lower()
+    if normalized_source_system not in {"ut103", "ka2"}:
+        raise ValueError("unsupported_customer_settlement_source_system")
+    normalized_organization_ref = normalize_counterparty_ref(organization_ref)
+    normalized_organization_guid = normalize_guid(organization_guid)
+    if onec_guid_to_ref(normalized_organization_guid) != normalized_organization_ref:
+        raise ValueError("organization_guid_does_not_match_ref")
     normalized_entries: list[SettlementMappingInput] = []
     seen: set[str] = set()
     for item in entries:
@@ -288,14 +494,36 @@ def activate_mapping_revision(
         )
         if item.status == MAPPING_LINKED and (not item.cluster_id or not counterparty_ref):
             raise ValueError("linked_mapping_requires_cluster_and_counterparty")
+        counterparty_guid = (
+            normalize_guid(item.counterparty_guid or onec_ref_to_guid(counterparty_ref))
+            if counterparty_ref is not None
+            else None
+        )
+        if (
+            counterparty_ref is not None
+            and onec_guid_to_ref(str(counterparty_guid)) != counterparty_ref
+        ):
+            raise ValueError("counterparty_guid_does_not_match_ref")
         if item.status != MAPPING_LINKED:
             counterparty_ref = None
+            counterparty_guid = None
         normalized_entries.append(
             SettlementMappingInput(
                 site_user_id=site_user_id,
                 cluster_id=str(item.cluster_id).strip() if item.cluster_id else None,
                 counterparty_ref=counterparty_ref,
                 status=item.status,
+                counterparty_guid=counterparty_guid,
+                counterparty_code=(
+                    str(item.counterparty_code).strip()[:64] or None
+                    if item.counterparty_code
+                    else None
+                ),
+                identity_control_hash=(
+                    str(item.identity_control_hash).strip().lower()[:64] or None
+                    if item.identity_control_hash
+                    else None
+                ),
                 source_updated_at=(
                     ensure_utc(item.source_updated_at) if item.source_updated_at else None
                 ),
@@ -303,15 +531,20 @@ def activate_mapping_revision(
         )
     normalized_entries.sort(key=lambda item: item.site_user_id)
     source_hash = _canonical_hash(
-        [
-            {
-                "site_user_id": item.site_user_id,
-                "cluster_id": item.cluster_id,
-                "counterparty_ref": item.counterparty_ref,
-                "status": item.status,
-            }
-            for item in normalized_entries
-        ]
+        {
+            "source_system": normalized_source_system,
+            "organization_guid": normalized_organization_guid,
+            "entries": [
+                {
+                    "site_user_id": item.site_user_id,
+                    "cluster_id": item.cluster_id,
+                    "counterparty_ref": item.counterparty_ref,
+                    "counterparty_guid": item.counterparty_guid,
+                    "status": item.status,
+                }
+                for item in normalized_entries
+            ],
+        }
     )
     existing = session.scalar(
         select(CustomerSettlementMappingRevision).where(
@@ -330,6 +563,32 @@ def activate_mapping_revision(
             session.flush()
             existing.status = REVISION_ACTIVE
             existing.activated_at = checked_at
+        existing_entries = {
+            row.site_user_id: row
+            for row in session.scalars(
+                select(CustomerSettlementMappingEntry).where(
+                    CustomerSettlementMappingEntry.revision_id == existing.id
+                )
+            )
+        }
+        for item in normalized_entries:
+            row = existing_entries.get(item.site_user_id)
+            if row is None or item.status != MAPPING_LINKED:
+                continue
+            account_id, source_binding_id, counterparty_guid = _materialize_linked_customer_account(
+                session,
+                revision_id=existing.id,
+                item=item,
+                checked_at=checked_at,
+                source_system=normalized_source_system,
+                organization_ref=normalized_organization_ref,
+                organization_guid=normalized_organization_guid,
+            )
+            row.customer_account_id = account_id
+            row.source_binding_id = source_binding_id
+            row.counterparty_guid = counterparty_guid
+            row.source_system = normalized_source_system
+            row.organization_guid = normalized_organization_guid
         session.flush()
         return existing, False
 
@@ -345,12 +604,32 @@ def activate_mapping_revision(
     session.add(revision)
     session.flush()
     for item in normalized_entries:
+        account_id = None
+        source_binding_id = None
+        counterparty_guid = item.counterparty_guid
+        if item.status == MAPPING_LINKED:
+            account_id, source_binding_id, counterparty_guid = _materialize_linked_customer_account(
+                session,
+                revision_id=revision.id,
+                item=item,
+                checked_at=checked_at,
+                source_system=normalized_source_system,
+                organization_ref=normalized_organization_ref,
+                organization_guid=normalized_organization_guid,
+            )
         session.add(
             CustomerSettlementMappingEntry(
                 revision_id=revision.id,
                 site_user_id=item.site_user_id,
                 cluster_id=item.cluster_id,
                 counterparty_ref=item.counterparty_ref,
+                counterparty_guid=counterparty_guid,
+                source_system=(normalized_source_system if item.status == MAPPING_LINKED else None),
+                organization_guid=(
+                    normalized_organization_guid if item.status == MAPPING_LINKED else None
+                ),
+                customer_account_id=account_id,
+                source_binding_id=source_binding_id,
                 status=item.status,
                 source_updated_at=item.source_updated_at,
             )
@@ -444,10 +723,27 @@ def active_pilot_counterparty_refs(session: Session) -> tuple[str, ...]:
             CustomerSettlementPilotAccess.site_user_id
             == CustomerSettlementMappingEntry.site_user_id,
         )
+        .join(
+            CustomerAccountSourceBinding,
+            CustomerAccountSourceBinding.id == CustomerSettlementMappingEntry.source_binding_id,
+        )
+        .join(
+            CustomerAccount,
+            CustomerAccount.id == CustomerSettlementMappingEntry.customer_account_id,
+        )
         .where(
             CustomerSettlementMappingEntry.revision_id == mapping_revision.id,
             CustomerSettlementMappingEntry.status == MAPPING_LINKED,
             CustomerSettlementMappingEntry.counterparty_ref.is_not(None),
+            CustomerSettlementMappingEntry.counterparty_guid.is_not(None),
+            CustomerSettlementMappingEntry.customer_account_id.is_not(None),
+            CustomerSettlementMappingEntry.source_binding_id.is_not(None),
+            CustomerAccountSourceBinding.status == "active",
+            CustomerAccountSourceBinding.counterparty_guid
+            == CustomerSettlementMappingEntry.counterparty_guid,
+            CustomerAccountSourceBinding.counterparty_ref
+            == CustomerSettlementMappingEntry.counterparty_ref,
+            CustomerAccount.status == "active",
             CustomerSettlementPilotAccess.enabled.is_(True),
         )
         .distinct()
@@ -486,7 +782,10 @@ def get_customer_settlement_summary(
     if mapping_revision is None:
         return SettlementSummary(status="temporarily_unavailable")
     mapping_checked_at = ensure_utc(mapping_revision.source_checked_at)
-    if current_time - mapping_checked_at > timedelta(seconds=mapping_stale_after_seconds):
+    if (
+        mapping_revision.source_name != MANUAL_MAPPING_SOURCE_NAME
+        and current_time - mapping_checked_at > timedelta(seconds=mapping_stale_after_seconds)
+    ):
         return SettlementSummary(status="temporarily_unavailable")
     mapping = session.scalar(
         select(CustomerSettlementMappingEntry).where(
@@ -496,7 +795,27 @@ def get_customer_settlement_summary(
     )
     if mapping is None or mapping.status == MAPPING_NOT_LINKED:
         return SettlementSummary(status="not_linked")
-    if mapping.status == MAPPING_AMBIGUOUS or not mapping.counterparty_ref:
+    if (
+        mapping.status == MAPPING_AMBIGUOUS
+        or not mapping.counterparty_ref
+        or not mapping.counterparty_guid
+        or mapping.customer_account_id is None
+        or mapping.source_binding_id is None
+    ):
+        return SettlementSummary(status="ambiguous_link")
+
+    account = session.get(CustomerAccount, mapping.customer_account_id)
+    source_binding = session.get(CustomerAccountSourceBinding, mapping.source_binding_id)
+    if (
+        account is None
+        or account.status != "active"
+        or source_binding is None
+        or source_binding.status != "active"
+        or source_binding.customer_account_id != mapping.customer_account_id
+        or source_binding.counterparty_guid != mapping.counterparty_guid
+        or source_binding.counterparty_ref != mapping.counterparty_ref
+        or source_binding.organization_guid != mapping.organization_guid
+    ):
         return SettlementSummary(status="ambiguous_link")
 
     revision = session.scalar(
@@ -506,10 +825,12 @@ def get_customer_settlement_summary(
     )
     if revision is None:
         return SettlementSummary(status="temporarily_unavailable")
+    if revision.organization_guid != mapping.organization_guid:
+        return SettlementSummary(status="temporarily_unavailable")
     balance = session.scalar(
         select(CustomerSettlementBalance).where(
             CustomerSettlementBalance.revision_id == revision.id,
-            CustomerSettlementBalance.counterparty_ref == mapping.counterparty_ref,
+            CustomerSettlementBalance.counterparty_guid == mapping.counterparty_guid,
         )
     )
     if balance is None:
@@ -519,7 +840,7 @@ def get_customer_settlement_summary(
     age = current_time - synced_at
     if age > timedelta(seconds=hide_after_seconds):
         return SettlementSummary(
-            status="temporarily_unavailable",
+            status="stale",
             as_of=ensure_utc(revision.as_of),
             synced_at=synced_at,
             is_stale=True,
@@ -572,11 +893,12 @@ def customer_settlement_health_metrics(
         freshness_status = "warning"
     else:
         freshness_status = "ok"
-    mapping_status = (
-        "ok"
-        if mapping_age is not None and mapping_age <= mapping_stale_after_seconds
-        else "critical"
-    )
+    mapping_status = "critical"
+    if mapping is not None and (
+        mapping.source_name == MANUAL_MAPPING_SOURCE_NAME
+        or (mapping_age is not None and mapping_age <= mapping_stale_after_seconds)
+    ):
+        mapping_status = "ok"
     return {
         "freshness_status": freshness_status,
         "mapping_status": mapping_status,

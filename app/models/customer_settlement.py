@@ -23,6 +23,152 @@ from sqlalchemy.orm import Mapped, mapped_column
 from app.models.base import Base
 
 
+class CustomerAccount(Base):
+    __tablename__ = "customer_account"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active','blocked')",
+            name="ck_customer_account_status",
+        ),
+        Index("ix_customer_account_status", "status"),
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="active", server_default="active"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class CustomerAccountSiteBinding(Base):
+    __tablename__ = "customer_account_site_binding"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active','revoked')",
+            name="ck_customer_account_site_binding_status",
+        ),
+        Index(
+            "uq_customer_account_site_binding_active_user",
+            "site_code",
+            "site_user_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+        Index(
+            "ix_customer_account_site_binding_account_status",
+            "customer_account_id",
+            "status",
+        ),
+    )
+
+    customer_account_id: Mapped[int] = mapped_column(
+        ForeignKey("customer_account.id", ondelete="CASCADE"), nullable=False
+    )
+    site_code: Mapped[str] = mapped_column(
+        String(64), nullable=False, default="master-mobile.ru", server_default="master-mobile.ru"
+    )
+    site_user_id: Mapped[str] = mapped_column(String(32), nullable=False)
+    cluster_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="active", server_default="active"
+    )
+    mapping_revision_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("customer_settlement_mapping_revision.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    valid_to: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
+class CustomerAccountSourceBinding(Base):
+    __tablename__ = "customer_account_source_binding"
+    __table_args__ = (
+        CheckConstraint(
+            "status IN ('active','revoked')",
+            name="ck_customer_account_source_binding_status",
+        ),
+        CheckConstraint(
+            "counterparty_guid = lower(counterparty_guid) AND length(counterparty_guid) = 36",
+            name="ck_customer_account_source_binding_guid",
+        ),
+        CheckConstraint(
+            "organization_guid = lower(organization_guid) AND length(organization_guid) = 36",
+            name="ck_customer_account_source_binding_org_guid",
+        ),
+        Index(
+            "uq_customer_account_source_binding_active_account",
+            "customer_account_id",
+            "source_system",
+            "organization_guid",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+        Index(
+            "uq_customer_account_source_binding_active_identity",
+            "source_system",
+            "counterparty_guid",
+            "organization_guid",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+        Index(
+            "ix_customer_account_source_binding_account_status",
+            "customer_account_id",
+            "status",
+        ),
+    )
+
+    customer_account_id: Mapped[int] = mapped_column(
+        ForeignKey("customer_account.id", ondelete="CASCADE"), nullable=False
+    )
+    source_system: Mapped[str] = mapped_column(String(32), nullable=False)
+    counterparty_guid: Mapped[str] = mapped_column(String(36), nullable=False)
+    counterparty_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    organization_guid: Mapped[str] = mapped_column(String(36), nullable=False)
+    organization_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    counterparty_code: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    identity_control_hash: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="active", server_default="active"
+    )
+    mapping_revision_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("customer_settlement_mapping_revision.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    valid_from: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    valid_to: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
+    verified_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 class CustomerSettlementRevision(Base):
     __tablename__ = "customer_settlement_revision"
     __table_args__ = (
@@ -56,6 +202,7 @@ class CustomerSettlementRevision(Base):
         server_default="loading",
     )
     organization_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    organization_guid: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="RUB")
     as_of: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     source_db_time: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
@@ -93,6 +240,11 @@ class CustomerSettlementBalance(Base):
             "counterparty_ref",
             "revision_id",
         ),
+        UniqueConstraint(
+            "revision_id",
+            "counterparty_guid",
+            name="uq_customer_settlement_balance_revision_guid",
+        ),
     )
 
     revision_id: Mapped[int] = mapped_column(
@@ -100,6 +252,7 @@ class CustomerSettlementBalance(Base):
         nullable=False,
     )
     counterparty_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    counterparty_guid: Mapped[str] = mapped_column(String(36), nullable=False)
     signed_balance: Mapped[Decimal] = mapped_column(Numeric(18, 2), nullable=False)
     currency: Mapped[str] = mapped_column(String(3), nullable=False, default="RUB")
     created_at: Mapped[datetime] = mapped_column(
@@ -184,6 +337,15 @@ class CustomerSettlementMappingEntry(Base):
     site_user_id: Mapped[str] = mapped_column(String(32), nullable=False)
     cluster_id: Mapped[Optional[str]] = mapped_column(String(128), nullable=True)
     counterparty_ref: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    counterparty_guid: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    source_system: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+    organization_guid: Mapped[Optional[str]] = mapped_column(String(36), nullable=True)
+    customer_account_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("customer_account.id", ondelete="RESTRICT"), nullable=True
+    )
+    source_binding_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("customer_account_source_binding.id", ondelete="RESTRICT"), nullable=True
+    )
     status: Mapped[str] = mapped_column(String(16), nullable=False)
     source_updated_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), nullable=True

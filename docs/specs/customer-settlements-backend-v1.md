@@ -99,12 +99,15 @@ updated_at: "2026-08-11"
 - [x] SQL не использует `NOLOCK`, принимает точный `as_of` и выбирает `< as_of`.
 - [x] Live extractor закрыт отдельным флагом бухгалтерской сверки источника.
 - [x] Ручной импорт по умолчанию работает как dry-run, ограничен 10 строками,
-  требует `--approved-by` для apply и блокирует несовпадение controls/non-RUB.
+  требует `--approved-by` и оба SHA-256 из dry-run для apply, блокирует изменение
+  CSV/controls между проверкой и применением, а также несовпадение controls/non-RUB.
 - [x] Смена `CounterpartyGuid` сохраняет `customer_account_id`, а конфликт двух
   customer accounts и старый financial snapshot закрываются fail-closed.
 - [x] PostgreSQL integration проверяет partial unique index, atomic rollback,
   advisory lock, конкурентный replay и retention активной revision.
-- [ ] SQL сверён с согласованным отчётом `УТ 10.3` на реальных пилотах.
+- [x] Исходная SQL-сверка выполнена на 10 реальных пилотах на конец
+  `2026-07-29`: максимальная разница с ведомостью `0,00 RUB`. Повторная сверка
+  тех же пилотов на контрольных точках нового shadow-run остаётся обязательной.
 - [ ] Пройден 72-часовой shadow-run и письменная бухгалтерская приёмка.
 - [ ] Получено отдельное разрешение на установку PHP-адаптера сайта.
 
@@ -320,7 +323,9 @@ site_user_id,counterparty_guid,organization_guid,source_system,expected_code,exp
 ```
 
 - максимум 10 строк, dry-run по умолчанию;
-- apply разрешён только с `--apply --approved-by`;
+- apply разрешён только с `--apply --approved-by`, `--approved-input-hash` и
+  `--approved-controls-hash`; оба SHA-256 должны совпасть с текущими CSV и live
+  controls;
 - УТ/QWE читается без записи и проверяет существование организации/контрагента,
   GUID↔ref, код, название, ИНН и отсутствие активных договоров не в `643/RUB`;
 - обычный JSON-вывод содержит только counts, boolean-признаки и SHA-256 hashes;
@@ -502,8 +507,9 @@ cluster/counterparty ref, assertion, подпись, сырой `jti` или с�
   клиентский `X-Forwarded-For` не используется.
 - PHP-компонент должен отключить component cache, composite cache и
   reverse-proxy cache; одного `Cache-Control` недостаточно.
-- Alembic revision следует непосредственно за опубликованным head
-  `d1a2b3c4e5f7` и не зависит от незавершённой задачи кредитных решений.
+- Alembic-цепочка однозначна: базовая revision взаиморасчётов
+  `c3d4e5f6a7b9` следует за опубликованным head `b2d4f6a8c0e1`, а GUID/account
+  revision `d9e1f3a5b7c9` следует за `c3d4e5f6a7b9` и является текущим head.
 
 # Tests
 
@@ -530,7 +536,8 @@ PostgreSQL advisory lock, partial indexes, транзакции и конкур�
 2. Выполнить synthetic и PostgreSQL integration tests.
 3. Подготовить полный CSV до 10 пилотов и выполнить обязательный dry-run
    `tasks.import_customer_settlement_mappings`.
-4. После сверки controls применить CSV с `--apply --approved-by`, не включая whitelist.
+4. После сверки controls применить CSV с `--apply --approved-by` и обоими
+   SHA-256 из dry-run, не включая whitelist.
 5. Отдельно включить согласованный whitelist и однократно сверить read-only SQL
    с бухгалтерским отчётом.
 6. После сверки включить только `CUSTOMER_SETTLEMENTS_SOURCE_VALIDATED=true`,
@@ -572,3 +579,10 @@ Rollback:
   постоянный `customer_account_id`, GUID bindings, manual-confirmed pilot importer,
   отдельный auth scope и fail-closed stale/remap; Bitrix, личный кабинет, production
   и cron installation не изменяются.
+- 2026-08-11 — перед ревью устранена документационная неоднозначность: зафиксированы
+  завершённая исходная сверка 10/10, обязательность повторной проверки в новом
+  shadow-run и фактическая Alembic-цепочка `b2d4f6a8c0e1 -> c3d4e5f6a7b9 ->
+  d9e1f3a5b7c9`.
+- 2026-08-11 — apply ручного pilot mapping привязан к `input_hash` и
+  `controls_hash` успешного dry-run; изменение CSV или live controls требует
+  новой проверки и нового подтверждения.

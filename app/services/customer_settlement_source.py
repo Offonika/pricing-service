@@ -300,6 +300,7 @@ def fetch_manual_customer_settlement_controls(
             RTRIM(counterparty._Description) AS counterparty_name,
             RTRIM(CAST(counterparty.{inn_field} AS nvarchar(64))) AS counterparty_inn,
             CASE WHEN counterparty._Marked = 0x01 THEN 1 ELSE 0 END AS marked_deleted,
+            -- In this UT 10.3 database, 0x01 marks elements and 0x00 folders.
             CASE WHEN counterparty._Folder = 0x01 THEN 1 ELSE 0 END AS is_element
         FROM #CustomerSettlementManualPilot AS pilot
         LEFT JOIN dbo._Reference54 AS counterparty
@@ -321,8 +322,7 @@ def fetch_manual_customer_settlement_controls(
         """)
     organization_statement = text("""
         SELECT TOP 2
-            CASE WHEN organization._Marked = 0x01 THEN 1 ELSE 0 END AS marked_deleted,
-            CASE WHEN organization._Folder = 0x01 THEN 1 ELSE 0 END AS is_element
+            CASE WHEN organization._Marked = 0x01 THEN 1 ELSE 0 END AS marked_deleted
         FROM dbo._Reference66 AS organization
         WHERE organization._IDRRef = CONVERT(
             binary(16),
@@ -373,11 +373,7 @@ def fetch_manual_customer_settlement_controls(
 
     if time.monotonic() - started > query_timeout_seconds:
         raise CustomerSettlementSourceError("customer_settlement_query_timeout")
-    if (
-        len(organization_rows) != 1
-        or bool(organization_rows[0]["marked_deleted"])
-        or not bool(organization_rows[0]["is_element"])
-    ):
+    if len(organization_rows) != 1 or bool(organization_rows[0]["marked_deleted"]):
         raise CustomerSettlementSourceError("organization_not_found_or_inactive")
     if len(counterparty_rows) != len(normalized_guids):
         raise CustomerSettlementSourceError("incomplete_manual_mapping_controls")

@@ -13,6 +13,7 @@ from app.core.config import Settings
 from app.services.customer_settlement_source import (
     CustomerSettlementSourceError,
     fetch_customer_settlement_balances,
+    fetch_manual_customer_settlement_controls,
     validate_organization_field,
 )
 from app.services.customer_settlements import onec_ref_to_guid
@@ -124,6 +125,39 @@ class _FakeEngine:
         return self.connection
 
 
+class _ManualControlConnection(_FakeConnection):
+    def execute(self, statement, parameters=None):
+        sql = str(statement)
+        self.sql.append(sql)
+        self.parameters.append(parameters)
+        if "SYSUTCDATETIME()" in sql:
+            return super().execute(statement, parameters)
+        if "FROM dbo._Reference66 AS organization" in sql:
+            return _FakeResult([{"marked_deleted": 0}])
+        if "LEFT JOIN dbo._Reference54 AS counterparty" in sql:
+            return _FakeResult(
+                [
+                    {
+                        "counterparty_ref": CP_1,
+                        "counterparty_code": "PILOT-1",
+                        "counterparty_name": "Synthetic Pilot",
+                        "counterparty_inn": "1234567890",
+                        "marked_deleted": 0,
+                        "is_element": 1,
+                    }
+                ]
+            )
+        if "JOIN dbo._Reference37 AS contract" in sql:
+            return _FakeResult([{"counterparty_ref": CP_1, "currency_code": "643"}])
+        return _FakeResult([])
+
+
+class _ManualControlEngine(_FakeEngine):
+    def __init__(self):
+        self.dialect = SimpleNamespace(name="mssql")
+        self.connection = _ManualControlConnection()
+
+
 def test_extractor_uses_exact_as_of_snapshot_and_explicit_zero() -> None:
     engine = _FakeEngine()
     as_of = datetime(2026, 7, 29, 9, 15, tzinfo=UTC)
@@ -189,6 +223,28 @@ def test_extractor_rejects_unvalidated_dimensions_future_time_and_wrong_database
             counterparty_refs=[CP_1],
             query_timeout_seconds=30,
         )
+
+
+def test_manual_controls_support_nonhierarchical_organization_and_ut103_element_flag() -> None:
+    engine = _ManualControlEngine()
+
+    controls = fetch_manual_customer_settlement_controls(
+        engine,
+        organization_ref=ORG,
+        organization_guid=onec_ref_to_guid(ORG),
+        counterparty_guids=[onec_ref_to_guid(CP_1)],
+        counterparty_inn_field="_Fld611",
+        query_timeout_seconds=30,
+    )
+
+    assert len(controls) == 1
+    assert controls[0].counterparty_ref == CP_1
+    rendered_sql = "\n".join(engine.connection.sql)
+    organization_sql = next(
+        value for value in engine.connection.sql if "_Reference66 AS organization" in value
+    )
+    assert "organization._Folder" not in organization_sql
+    assert "counterparty._Folder = 0x01" in rendered_sql
 
 
 def test_worker_requires_explicit_source_reconciliation_gate() -> None:

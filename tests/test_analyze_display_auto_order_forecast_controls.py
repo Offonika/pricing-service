@@ -4,8 +4,10 @@ from decimal import Decimal
 from tasks.analyze_display_auto_order_forecast_controls import (
     attach_rolling_buffers,
     build_decision_windows,
+    evaluate_buffer_policy,
     match_cases_to_controls,
     nearest_rank,
+    segment_stability_rows,
     select_case_anchors,
 )
 
@@ -52,6 +54,33 @@ def test_decision_window_excludes_sales_after_fully_observed_horizon() -> None:
     assert rows[0]["forecast_demand_qty"] == "9"
     assert rows[0]["underforecast_error_qty"] == "0"
     assert rows[0]["model_lost_observed_qty_in_horizon"] == "2"
+    assert rows[0]["period"] == "final_month_exposed"
+
+
+def test_decision_window_period_uses_outcome_end_not_decision_month() -> None:
+    rows = build_decision_windows(
+        decision_rows_by_date={
+            date(2026, 5, 1): [
+                {
+                    "scheduled_review": "1",
+                    "status": "sale",
+                    "nomenclature_code": "SKU-1",
+                    "forecast_rate_sales": "0",
+                    "lead_time_p50_days": "60",
+                    "lead_time_confidence": "medium",
+                    "inventory_cost_per_unit_rub": "100",
+                }
+            ]
+        },
+        sales_by_code={"SKU-1": {}},
+        loss_by_code={"SKU-1": {}},
+        pattern_by_code={"SKU-1": "smooth"},
+        date_to=date(2026, 7, 31),
+    )
+
+    assert rows[0]["decision_period"] == "pre_final_month"
+    assert rows[0]["outcome_end"] == "2026-07-07"
+    assert rows[0]["period"] == "final_month_exposed"
 
 
 def test_case_anchor_is_latest_scheduled_window_covering_loss_start() -> None:
@@ -145,3 +174,98 @@ def test_rolling_buffer_uses_only_previously_completed_windows() -> None:
     assert by_id["B:2026-03-04"]["buffer_p60_qty"] == "2"
     assert by_id["B:2026-03-04"]["buffer_p75_qty"] == "2"
     assert by_id["B:2026-03-04"]["buffer_p90_qty"] == "2"
+
+
+def _policy_pair(
+    pair_id: int,
+    *,
+    period: str,
+    case_error: str,
+    control_error: str,
+    loss: str = "3",
+) -> dict[str, str]:
+    return {
+        "pair_id": str(pair_id),
+        "case_opportunity_id": f"CASE-{pair_id}",
+        "control_opportunity_id": f"CONTROL-{pair_id}",
+        "case_pattern": "smooth",
+        "case_lead_band": "31-60",
+        "case_confidence": "medium",
+        "case_period": period,
+        "control_period": period,
+        "case_underforecast_error_qty": case_error,
+        "control_underforecast_error_qty": control_error,
+        "case_episode_lost_qty": loss,
+    }
+
+
+def test_segment_candidate_is_selected_only_from_pre_final_evidence() -> None:
+    pairs = [
+        _policy_pair(
+            1,
+            period="pre_final_month",
+            case_error="3",
+            control_error="0",
+        ),
+        _policy_pair(
+            2,
+            period="pre_final_month",
+            case_error="2",
+            control_error="0",
+        ),
+        _policy_pair(
+            3,
+            period="final_month_exposed",
+            case_error="0",
+            control_error="5",
+        ),
+    ]
+
+    rows = segment_stability_rows(
+        pairs,
+        candidate_min_pairs=2,
+        candidate_min_gap=Decimal("1"),
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["candidate_p90"] == 1
+    assert Decimal(rows[0]["pre_final_mean_underforecast_gap_qty"]) > 0
+    assert Decimal(rows[0]["final_month_mean_underforecast_gap_qty"]) < 0
+
+
+def test_targeted_policy_uses_p90_only_for_selected_segment() -> None:
+    pair = _policy_pair(
+        1,
+        period="final_month_exposed",
+        case_error="4",
+        control_error="0",
+    )
+    opportunities = {
+        "CASE-1": {
+            "calibration_level": "all",
+            "underforecast_error_qty": "4",
+            "buffer_p75_qty": "1",
+            "buffer_p90_qty": "4",
+            "inventory_cost_per_unit_rub": "100",
+        },
+        "CONTROL-1": {
+            "calibration_level": "all",
+            "underforecast_error_qty": "0",
+            "buffer_p75_qty": "1",
+            "buffer_p90_qty": "4",
+            "inventory_cost_per_unit_rub": "100",
+        },
+    }
+    selected = {("smooth", "31-60", "medium")}
+
+    result = evaluate_buffer_policy(
+        [pair],
+        opportunities,
+        policy="targeted_p90_else_p75",
+        period="final_month_exposed",
+        candidate_segments=selected,
+    )
+
+    assert result["candidate_pair_count"] == 1
+    assert result["case_loss_proxy_covered_qty"] == "3"
+    assert result["control_excess_buffer_proxy_qty"] == "4"

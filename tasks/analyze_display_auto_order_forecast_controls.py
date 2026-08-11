@@ -123,8 +123,9 @@ def _cost_band(cost: Decimal) -> str:
     return ">=3000"
 
 
-def _period(value: date) -> str:
-    return "july" if value.month == 7 else "pre_july"
+def _outcome_period(outcome_end: date, *, date_to: date) -> str:
+    final_month_start = date(date_to.year, date_to.month, 1)
+    return "final_month_exposed" if outcome_end >= final_month_start else "pre_final_month"
 
 
 def nearest_rank(values: Sequence[Decimal], percentile: Decimal) -> Decimal:
@@ -204,7 +205,13 @@ def build_decision_windows(
                     "lead_time_confidence": (
                         _clean(source.get("lead_time_confidence")) or "unknown"
                     ),
-                    "period": _period(decision_date),
+                    "decision_period": (
+                        "final_month"
+                        if decision_date.year == date_to.year
+                        and decision_date.month == date_to.month
+                        else "pre_final_month"
+                    ),
+                    "period": _outcome_period(outcome_end, date_to=date_to),
                     "forecast_rate_sales": str(rate),
                     "forecast_rate_band": _rate_band(rate),
                     "forecast_demand_qty": str(predicted),
@@ -785,6 +792,322 @@ def segment_comparison_rows(pairs: Sequence[Mapping[str, Any]]) -> list[dict[str
     return output
 
 
+def _pair_segment(row: Mapping[str, Any]) -> tuple[str, str, str]:
+    return (
+        _clean(row.get("case_pattern")),
+        _clean(row.get("case_lead_band")),
+        _clean(row.get("case_confidence")),
+    )
+
+
+def _segment_label(segment: tuple[str, str, str]) -> str:
+    return " | ".join(segment)
+
+
+def _segment_statistics(
+    pairs: Sequence[Mapping[str, Any]],
+    *,
+    period: str | None = None,
+) -> dict[tuple[str, str, str], dict[str, Any]]:
+    grouped: dict[tuple[str, str, str], list[Mapping[str, Any]]] = defaultdict(list)
+    for row in pairs:
+        if _clean(row.get("case_period")) != _clean(row.get("control_period")):
+            continue
+        if period is not None and _clean(row.get("case_period")) != period:
+            continue
+        grouped[_pair_segment(row)].append(row)
+
+    output: dict[tuple[str, str, str], dict[str, Any]] = {}
+    for segment, rows in grouped.items():
+        case_errors = [_decimal(row.get("case_underforecast_error_qty")) for row in rows]
+        control_errors = [_decimal(row.get("control_underforecast_error_qty")) for row in rows]
+        case_mean = sum(case_errors, ZERO) / Decimal(len(rows))
+        control_mean = sum(control_errors, ZERO) / Decimal(len(rows))
+        case_frequency = Decimal(sum(value > ZERO for value in case_errors)) / Decimal(len(rows))
+        control_frequency = Decimal(sum(value > ZERO for value in control_errors)) / Decimal(
+            len(rows)
+        )
+        output[segment] = {
+            "matched_pair_count": len(rows),
+            "case_episode_lost_qty": sum(
+                (_decimal(row.get("case_episode_lost_qty")) for row in rows), ZERO
+            ),
+            "case_mean_underforecast_qty": case_mean,
+            "control_mean_underforecast_qty": control_mean,
+            "mean_underforecast_gap_qty": case_mean - control_mean,
+            "case_underforecast_frequency": case_frequency,
+            "control_underforecast_frequency": control_frequency,
+            "underforecast_frequency_gap": case_frequency - control_frequency,
+        }
+    return output
+
+
+def segment_stability_rows(
+    pairs: Sequence[Mapping[str, Any]],
+    *,
+    candidate_min_pairs: int = 30,
+    candidate_min_gap: Decimal = ONE,
+) -> list[dict[str, Any]]:
+    pre = _segment_statistics(pairs, period="pre_final_month")
+    final = _segment_statistics(pairs, period="final_month_exposed")
+    overall = _segment_statistics(pairs)
+    output: list[dict[str, Any]] = []
+    for segment in sorted(set(pre) | set(final) | set(overall)):
+        pre_row = pre.get(segment, {})
+        final_row = final.get(segment, {})
+        overall_row = overall.get(segment, {})
+        pre_count = int(pre_row.get("matched_pair_count") or 0)
+        pre_gap = _decimal(pre_row.get("mean_underforecast_gap_qty"))
+        pre_frequency_gap = _decimal(pre_row.get("underforecast_frequency_gap"))
+        selected = (
+            pre_count >= candidate_min_pairs
+            and pre_gap >= candidate_min_gap
+            and pre_frequency_gap > ZERO
+        )
+        output.append(
+            {
+                "segment": _segment_label(segment),
+                "demand_pattern_preperiod": segment[0],
+                "lead_time_band": segment[1],
+                "lead_time_confidence": segment[2],
+                "candidate_p90": int(selected),
+                "candidate_rule": (
+                    f"pre_final_pairs>={candidate_min_pairs};"
+                    f"pre_final_mean_gap>={candidate_min_gap};"
+                    "pre_final_frequency_gap>0"
+                ),
+                "overall_matched_pair_count": int(overall_row.get("matched_pair_count") or 0),
+                "overall_case_episode_lost_qty": str(
+                    _decimal(overall_row.get("case_episode_lost_qty"))
+                ),
+                "overall_mean_underforecast_gap_qty": str(
+                    _decimal(overall_row.get("mean_underforecast_gap_qty"))
+                ),
+                "pre_final_matched_pair_count": pre_count,
+                "pre_final_case_episode_lost_qty": str(
+                    _decimal(pre_row.get("case_episode_lost_qty"))
+                ),
+                "pre_final_mean_underforecast_gap_qty": str(pre_gap),
+                "pre_final_underforecast_frequency_gap": str(pre_frequency_gap),
+                "final_month_matched_pair_count": int(final_row.get("matched_pair_count") or 0),
+                "final_month_case_episode_lost_qty": str(
+                    _decimal(final_row.get("case_episode_lost_qty"))
+                ),
+                "final_month_mean_underforecast_gap_qty": str(
+                    _decimal(final_row.get("mean_underforecast_gap_qty"))
+                ),
+                "final_month_underforecast_frequency_gap": str(
+                    _decimal(final_row.get("underforecast_frequency_gap"))
+                ),
+            }
+        )
+    output.sort(
+        key=lambda row: (
+            -int(row["candidate_p90"]),
+            -_decimal(row.get("pre_final_case_episode_lost_qty")),
+            _clean(row.get("segment")),
+        )
+    )
+    return output
+
+
+def _calibrated_pairs(
+    pairs: Sequence[Mapping[str, Any]],
+    opportunities: Mapping[str, Mapping[str, Any]],
+    *,
+    period: str | None,
+) -> list[Mapping[str, Any]]:
+    return [
+        row
+        for row in pairs
+        if _clean(row.get("case_period")) == _clean(row.get("control_period"))
+        and (period is None or _clean(row.get("case_period")) == period)
+        and _clean(
+            opportunities.get(_clean(row.get("case_opportunity_id")), {}).get("calibration_level")
+        )
+        != "insufficient"
+        and _clean(
+            opportunities.get(_clean(row.get("control_opportunity_id")), {}).get(
+                "calibration_level"
+            )
+        )
+        != "insufficient"
+    ]
+
+
+def evaluate_buffer_policy(
+    pairs: Sequence[Mapping[str, Any]],
+    opportunities: Mapping[str, Mapping[str, Any]],
+    *,
+    policy: str,
+    period: str | None,
+    candidate_segments: set[tuple[str, str, str]],
+) -> dict[str, Any]:
+    calibrated = _calibrated_pairs(pairs, opportunities, period=period)
+    case_loss_total = ZERO
+    case_loss_covered = ZERO
+    case_error_total = ZERO
+    case_error_protected = ZERO
+    control_excess = ZERO
+    control_buffer_value = ZERO
+    selected_pair_count = 0
+    for pair in calibrated:
+        segment = _pair_segment(pair)
+        if policy == "p90_all":
+            buffer_label = "p90"
+        elif policy == "targeted_p90_else_p75" and segment in candidate_segments:
+            buffer_label = "p90"
+            selected_pair_count += 1
+        else:
+            buffer_label = "p75"
+        case = opportunities[_clean(pair.get("case_opportunity_id"))]
+        control = opportunities[_clean(pair.get("control_opportunity_id"))]
+        case_buffer = _decimal(case.get(f"buffer_{buffer_label}_qty"))
+        control_buffer = _decimal(control.get(f"buffer_{buffer_label}_qty"))
+        case_error = _decimal(case.get("underforecast_error_qty"))
+        control_error = _decimal(control.get("underforecast_error_qty"))
+        loss = _decimal(pair.get("case_episode_lost_qty"))
+        case_loss_total += loss
+        case_loss_covered += min(case_buffer, loss)
+        case_error_total += case_error
+        case_error_protected += min(case_buffer, case_error)
+        control_excess += max(ZERO, control_buffer - control_error)
+        control_buffer_value += control_buffer * _decimal(
+            control.get("inventory_cost_per_unit_rub")
+        )
+    return {
+        "policy": policy,
+        "period": period or "all",
+        "matched_pair_count": len(calibrated),
+        "candidate_segment_count": len(candidate_segments),
+        "candidate_pair_count": selected_pair_count,
+        "case_loss_proxy_qty": str(case_loss_total),
+        "case_loss_proxy_covered_qty": str(case_loss_covered),
+        "case_loss_proxy_coverage_share": str(
+            case_loss_covered / case_loss_total if case_loss_total > ZERO else ZERO
+        ),
+        "case_underforecast_error_qty": str(case_error_total),
+        "case_underforecast_protected_qty": str(case_error_protected),
+        "case_underforecast_unit_coverage_share": str(
+            case_error_protected / case_error_total if case_error_total > ZERO else ONE
+        ),
+        "control_excess_buffer_proxy_qty": str(control_excess),
+        "control_buffer_value_proxy_rub": str(control_buffer_value),
+        "loss_covered_per_control_excess_qty": str(
+            case_loss_covered / control_excess if control_excess > ZERO else ZERO
+        ),
+    }
+
+
+def buffer_policy_evaluation_rows(
+    pairs: Sequence[Mapping[str, Any]],
+    opportunities: Mapping[str, Mapping[str, Any]],
+    stability_rows: Sequence[Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    candidate_segments = {
+        (
+            _clean(row.get("demand_pattern_preperiod")),
+            _clean(row.get("lead_time_band")),
+            _clean(row.get("lead_time_confidence")),
+        )
+        for row in stability_rows
+        if int(row.get("candidate_p90") or 0)
+    }
+    output: list[dict[str, Any]] = []
+    for period in (None, "pre_final_month", "final_month_exposed"):
+        period_rows = [
+            evaluate_buffer_policy(
+                pairs,
+                opportunities,
+                policy=policy,
+                period=period,
+                candidate_segments=candidate_segments,
+            )
+            for policy in ("p75_all", "targeted_p90_else_p75", "p90_all")
+        ]
+        baseline = period_rows[0]
+        for row in period_rows:
+            incremental_covered = _decimal(row.get("case_loss_proxy_covered_qty")) - _decimal(
+                baseline.get("case_loss_proxy_covered_qty")
+            )
+            incremental_excess = _decimal(row.get("control_excess_buffer_proxy_qty")) - _decimal(
+                baseline.get("control_excess_buffer_proxy_qty")
+            )
+            row["incremental_loss_proxy_covered_qty_vs_p75"] = str(incremental_covered)
+            row["incremental_control_excess_proxy_qty_vs_p75"] = str(incremental_excess)
+            row["incremental_covered_per_incremental_excess_qty"] = str(
+                incremental_covered / incremental_excess if incremental_excess > ZERO else ZERO
+            )
+            row["candidate_segments"] = "; ".join(
+                _segment_label(segment) for segment in sorted(candidate_segments)
+            )
+            output.append(row)
+    return output
+
+
+def candidate_sensitivity_rows(
+    pairs: Sequence[Mapping[str, Any]],
+    opportunities: Mapping[str, Mapping[str, Any]],
+) -> list[dict[str, Any]]:
+    pre = _segment_statistics(pairs, period="pre_final_month")
+    baseline = evaluate_buffer_policy(
+        pairs,
+        opportunities,
+        policy="p75_all",
+        period="final_month_exposed",
+        candidate_segments=set(),
+    )
+    output: list[dict[str, Any]] = []
+    for min_pairs in (20, 30, 50):
+        for min_gap in (ZERO, ONE, Decimal("2")):
+            selected = {
+                segment
+                for segment, stats in pre.items()
+                if int(stats["matched_pair_count"]) >= min_pairs
+                and _decimal(stats["mean_underforecast_gap_qty"]) >= min_gap
+                and _decimal(stats["underforecast_frequency_gap"]) > ZERO
+            }
+            evaluation = evaluate_buffer_policy(
+                pairs,
+                opportunities,
+                policy="targeted_p90_else_p75",
+                period="final_month_exposed",
+                candidate_segments=selected,
+            )
+            incremental_covered = _decimal(
+                evaluation.get("case_loss_proxy_covered_qty")
+            ) - _decimal(baseline.get("case_loss_proxy_covered_qty"))
+            incremental_excess = _decimal(
+                evaluation.get("control_excess_buffer_proxy_qty")
+            ) - _decimal(baseline.get("control_excess_buffer_proxy_qty"))
+            output.append(
+                {
+                    "training_period": "pre_final_month",
+                    "evaluation_period": "final_month_exposed",
+                    "min_training_pairs": min_pairs,
+                    "min_training_mean_gap_qty": str(min_gap),
+                    "require_positive_frequency_gap": 1,
+                    "candidate_segment_count": len(selected),
+                    "candidate_segments": "; ".join(
+                        _segment_label(segment) for segment in sorted(selected)
+                    ),
+                    "evaluation_matched_pair_count": evaluation["matched_pair_count"],
+                    "case_loss_proxy_coverage_share": evaluation["case_loss_proxy_coverage_share"],
+                    "control_excess_buffer_proxy_qty": evaluation[
+                        "control_excess_buffer_proxy_qty"
+                    ],
+                    "incremental_loss_proxy_covered_qty_vs_p75": str(incremental_covered),
+                    "incremental_control_excess_proxy_qty_vs_p75": str(incremental_excess),
+                    "incremental_covered_per_incremental_excess_qty": str(
+                        incremental_covered / incremental_excess
+                        if incremental_excess > ZERO
+                        else ZERO
+                    ),
+                }
+            )
+    return output
+
+
 def build_analysis(
     *,
     preflight_dir: Path,
@@ -833,6 +1156,9 @@ def build_analysis(
     match = matching_summary(pairs)
     buffers = evaluate_buffers(pairs, opportunity_index)
     segments = segment_comparison_rows(pairs)
+    stability = segment_stability_rows(pairs)
+    policies = buffer_policy_evaluation_rows(pairs, opportunity_index, stability)
+    sensitivity = candidate_sensitivity_rows(pairs, opportunity_index)
 
     sale_episode_loss = sum(
         (
@@ -851,7 +1177,7 @@ def build_analysis(
         _clean(row.get("calibration_level")) == "insufficient" for row in opportunities_with_buffers
     )
     summary: dict[str, Any] = {
-        "schema": "display_auto_order_forecast_control_analysis.v1",
+        "schema": "display_auto_order_forecast_control_analysis.v2",
         "source_preflight_manifest_sha256": _sha256(preflight_dir / "run-manifest.json"),
         "source_loss_analysis_sha256": _sha256(loss_analysis_dir / "analysis-summary.json"),
         "date_from": inputs["date_from"].isoformat(),
@@ -873,7 +1199,10 @@ def build_analysis(
         },
         "matching": match,
         "buffer_profiles": buffers,
+        "buffer_policies": policies,
+        "candidate_sensitivity": sensitivity,
         "top_segments": segments[:20],
+        "candidate_segments": [row for row in stability if int(row.get("candidate_p90") or 0)],
         "quality": {
             "missing_cost_opportunity_count": missing_cost,
             "insufficient_calibration_opportunity_count": insufficient_calibration,
@@ -888,8 +1217,10 @@ def build_analysis(
             "population": "scheduled weekly reviews in historical sale/Растим stage with a fully observed P50 lead-time plus 7-day cadence outcome window",
             "case": "latest eligible scheduled review covering a P75 loss episode; duplicate episodes sharing one anchor are combined",
             "control": "one deterministic no-loss scheduled review per different SKU-month",
-            "matching": "one-to-one without replacement; pre-outcome demand pattern, P50 lead band, confidence, period and forecast-rate band with deterministic relaxations",
+            "matching": "one-to-one without replacement; pre-outcome demand pattern, P50 lead band, confidence, outcome period and forecast-rate band with deterministic relaxations",
             "buffer": "nearest-rank P60/P75/P90 from other fully completed prior decision windows; hierarchical cross-SKU segment fallback; no future window enters calibration",
+            "candidate_rule": "P90 candidate segments are selected only from windows ending before the final month: at least 30 pairs, mean case-control underforecast gap at least 1 unit and positive frequency gap; all other segments keep P75",
+            "sensitivity": "candidate minimum pair counts 20/30/50 and mean gaps 0/1/2 are trained before the final month and evaluated on windows ending in the final month; stability and policy proxies use only pairs with the same outcome period",
             "interpretation": "buffer results are screening proxies, not simulated saved sales or warehouse capital; a frozen backtest is required before any policy change",
         },
         "reconciliation": {
@@ -909,6 +1240,9 @@ def build_analysis(
     _write_csv(output_dir / "unmatched-cases.csv", unmatched)
     _write_csv(output_dir / "buffer-profile-evaluation.csv", buffers)
     _write_csv(output_dir / "segment-comparison.csv", segments)
+    _write_csv(output_dir / "segment-stability.csv", stability)
+    _write_csv(output_dir / "buffer-policy-evaluation.csv", policies)
+    _write_csv(output_dir / "candidate-sensitivity.csv", sensitivity)
     (output_dir / "analysis-summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
@@ -922,9 +1256,12 @@ def build_analysis(
         "unmatched-cases.csv",
         "buffer-profile-evaluation.csv",
         "segment-comparison.csv",
+        "segment-stability.csv",
+        "buffer-policy-evaluation.csv",
+        "candidate-sensitivity.csv",
     )
     manifest = {
-        "schema": "display_auto_order_forecast_control_analysis_manifest.v1",
+        "schema": "display_auto_order_forecast_control_analysis_manifest.v2",
         "diagnostic_only": True,
         "production_authorized": False,
         "files": {name: _sha256(output_dir / name) for name in artifact_names},

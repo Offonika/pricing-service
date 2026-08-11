@@ -165,9 +165,7 @@ def _load_scenarios(path: Path) -> list[FrozenScenario]:
                 kmp4_weight=_decimal(row.get("kmp4_weight")),
                 site_profile=_clean(row.get("site_profile")) or "off",
                 site_order_weight=_decimal(row.get("site_order_weight")),
-                site_unordered_cart_weight=_decimal(
-                    row.get("site_unordered_cart_weight")
-                ),
+                site_unordered_cart_weight=_decimal(row.get("site_unordered_cart_weight")),
                 cost=CarryingCostScenario(
                     name=_clean(row.get("holding_cost_scenario")),
                     capital_annual_rate=_decimal(row.get("capital_annual_rate")),
@@ -258,9 +256,7 @@ def _summary(
         "served_hidden_kmp4_qty": str(total.served_hidden_kmp4_qty),
         "served_hidden_site_order_qty": str(total.served_hidden_site_order_qty),
         "served_hidden_site_cart_qty": str(total.served_hidden_site_cart_qty),
-        "served_hidden_reserve_backlog_qty": str(
-            total.served_hidden_reserve_backlog_qty
-        ),
+        "served_hidden_reserve_backlog_qty": str(total.served_hidden_reserve_backlog_qty),
         "lost_qty": str(total.lost_qty),
         "lost_observed_qty": str(total.lost_observed_qty),
         "lost_hidden_qty": str(total.lost_hidden_qty),
@@ -386,9 +382,7 @@ def _add_hidden_source_metrics(
     metric.served_hidden_kmp4_qty += served_by_source.get("kmp4", ZERO)
     metric.served_hidden_site_order_qty += served_by_source.get("site_order", ZERO)
     metric.served_hidden_site_cart_qty += served_by_source.get("site_cart", ZERO)
-    metric.served_hidden_reserve_backlog_qty += served_by_source.get(
-        "reserve_backlog", ZERO
-    )
+    metric.served_hidden_reserve_backlog_qty += served_by_source.get("reserve_backlog", ZERO)
 
 
 def simulate_scenario(
@@ -530,15 +524,12 @@ def simulate_scenario(
             status = _clean(fact.get("status")) or "unknown"
             observed = max(ZERO, _decimal(fact.get("observed_sales_qty")))
             hidden_by_source = {
-                "kmp4": max(ZERO, _decimal(fact.get("kmp4_expired_qty")))
-                * scenario.kmp4_weight,
+                "kmp4": max(ZERO, _decimal(fact.get("kmp4_expired_qty"))) * scenario.kmp4_weight,
                 "site_order": max(ZERO, _decimal(fact.get("site_order_hidden_qty")))
                 * scenario.site_order_weight,
                 "site_cart": max(ZERO, _decimal(fact.get("site_cart_hidden_qty")))
                 * scenario.site_unordered_cart_weight,
-                "reserve_backlog": max(
-                    ZERO, _decimal(fact.get("reserve_backlog_hidden_qty"))
-                ),
+                "reserve_backlog": max(ZERO, _decimal(fact.get("reserve_backlog_hidden_qty"))),
             }
             hidden = sum(hidden_by_source.values(), ZERO)
             margin = current_margin[code]
@@ -559,9 +550,7 @@ def simulate_scenario(
             actual_row = actual[code]
             actual_stage = actual_by_stage[status]
             actual_stock = max(ZERO, _decimal(fact.get("physical_stock_qty")))
-            actual_hidden_served_by_source, _ = _allocate_hidden(
-                actual_stock, hidden_by_source
-            )
+            actual_hidden_served_by_source, _ = _allocate_hidden(actual_stock, hidden_by_source)
             actual_hidden_served = sum(actual_hidden_served_by_source.values(), ZERO)
             actual_row.observed_demand_qty += observed
             actual_row.hidden_demand_qty += hidden
@@ -640,9 +629,7 @@ def simulate_scenario(
             daily["actual_hidden_kmp4_qty"] += hidden_by_source["kmp4"]
             daily["actual_hidden_site_order_qty"] += hidden_by_source["site_order"]
             daily["actual_hidden_site_cart_qty"] += hidden_by_source["site_cart"]
-            daily["actual_hidden_reserve_backlog_qty"] += hidden_by_source[
-                "reserve_backlog"
-            ]
+            daily["actual_hidden_reserve_backlog_qty"] += hidden_by_source["reserve_backlog"]
             daily["actual_served_qty"] += observed + actual_hidden_served
             daily["actual_served_observed_qty"] += observed
             daily["actual_served_hidden_qty"] += actual_hidden_served
@@ -676,14 +663,20 @@ def simulate_scenario(
                 )
                 * scenario.kmp4_weight
             )
-            weighted_site_orders = max(
-                ZERO,
-                _decimal(fact.get("site_order_open_qty", row.get("site_order_open_qty"))),
-            ) * scenario.site_order_weight
-            weighted_site_carts = max(
-                ZERO,
-                _decimal(fact.get("site_cart_open_qty", row.get("site_cart_open_qty"))),
-            ) * scenario.site_unordered_cart_weight
+            weighted_site_orders = (
+                max(
+                    ZERO,
+                    _decimal(fact.get("site_order_open_qty", row.get("site_order_open_qty"))),
+                )
+                * scenario.site_order_weight
+            )
+            weighted_site_carts = (
+                max(
+                    ZERO,
+                    _decimal(fact.get("site_cart_open_qty", row.get("site_cart_open_qty"))),
+                )
+                * scenario.site_unordered_cart_weight
+            )
             weighted_signals = weighted_kmp + weighted_site_orders + weighted_site_carts
             scenario_rate = rate
             arrival_lead_days = 52 if scenario.legacy else int(row.get("lead_time_p50_days") or 52)
@@ -859,8 +852,7 @@ def simulate_scenario(
                 stage_metric.manual_order_lines += int(manual)
                 stage_metric.safety_stock_units_ordered += safety_units
             if keep_detail and (
-                recommended > ZERO
-                or (fresh_decision and (rate > ZERO or weighted_signals > ZERO))
+                recommended > ZERO or (fresh_decision and (rate > ZERO or weighted_signals > ZERO))
             ):
                 trigger = (
                     "scheduled_review"
@@ -878,9 +870,7 @@ def simulate_scenario(
                         "kmp4_open_weighted_qty": str(weighted_kmp),
                         "site_order_open_weighted_qty": str(weighted_site_orders),
                         "site_cart_open_weighted_qty": str(weighted_site_carts),
-                        "reserve_backlog_qty": str(
-                            _decimal(fact.get("reserve_backlog_qty"))
-                        ),
+                        "reserve_backlog_qty": str(_decimal(fact.get("reserve_backlog_qty"))),
                         "selected_lead_time_days": lead_days,
                         "simulated_arrival_lead_time_days": arrival_lead_days,
                         "min_stock_qty": str(min_qty),
@@ -929,18 +919,12 @@ def _sku_comparison_rows(result: SimulationResult, period_days: int) -> list[dic
                 "actual_hidden_kmp4_qty": str(actual.hidden_kmp4_qty),
                 "actual_hidden_site_order_qty": str(actual.hidden_site_order_qty),
                 "actual_hidden_site_cart_qty": str(actual.hidden_site_cart_qty),
-                "actual_hidden_reserve_backlog_qty": str(
-                    actual.hidden_reserve_backlog_qty
-                ),
+                "actual_hidden_reserve_backlog_qty": str(actual.hidden_reserve_backlog_qty),
                 "model_served_qty": str(model.served_qty),
                 "model_served_observed_qty": str(model.served_observed_qty),
                 "model_served_hidden_qty": str(model.served_hidden_qty),
-                "model_served_hidden_site_order_qty": str(
-                    model.served_hidden_site_order_qty
-                ),
-                "model_served_hidden_site_cart_qty": str(
-                    model.served_hidden_site_cart_qty
-                ),
+                "model_served_hidden_site_order_qty": str(model.served_hidden_site_order_qty),
+                "model_served_hidden_site_cart_qty": str(model.served_hidden_site_cart_qty),
                 "model_served_hidden_reserve_backlog_qty": str(
                     model.served_hidden_reserve_backlog_qty
                 ),
@@ -996,15 +980,11 @@ def _stage_summary_rows(result: SimulationResult, period_days: int) -> list[dict
                     "hidden_kmp4_qty": str(metric.hidden_kmp4_qty),
                     "hidden_site_order_qty": str(metric.hidden_site_order_qty),
                     "hidden_site_cart_qty": str(metric.hidden_site_cart_qty),
-                    "hidden_reserve_backlog_qty": str(
-                        metric.hidden_reserve_backlog_qty
-                    ),
+                    "hidden_reserve_backlog_qty": str(metric.hidden_reserve_backlog_qty),
                     "served_qty": str(metric.served_qty),
                     "served_observed_qty": str(metric.served_observed_qty),
                     "served_hidden_qty": str(metric.served_hidden_qty),
-                    "served_hidden_site_order_qty": str(
-                        metric.served_hidden_site_order_qty
-                    ),
+                    "served_hidden_site_order_qty": str(metric.served_hidden_site_order_qty),
                     "served_hidden_site_cart_qty": str(metric.served_hidden_site_cart_qty),
                     "served_hidden_reserve_backlog_qty": str(
                         metric.served_hidden_reserve_backlog_qty
@@ -1068,12 +1048,8 @@ def _period_summary_rows(
             observed = sum(
                 (_decimal(row.get("actual_observed_demand_qty")) for row in selected), ZERO
             )
-            hidden = sum(
-                (_decimal(row.get("actual_hidden_demand_qty")) for row in selected), ZERO
-            )
-            served = sum(
-                (_decimal(row.get(f"{strategy}_served_qty")) for row in selected), ZERO
-            )
+            hidden = sum((_decimal(row.get("actual_hidden_demand_qty")) for row in selected), ZERO)
+            served = sum((_decimal(row.get(f"{strategy}_served_qty")) for row in selected), ZERO)
             potential = observed + hidden
             gross_profit = sum(
                 (_decimal(row.get(f"{strategy}_gross_profit_rub")) for row in selected),

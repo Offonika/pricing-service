@@ -326,9 +326,7 @@ def load_scenario_config(path: Path) -> BacktestScenarioConfig:
         raise ValueError("unordered_cart_daily_cap must be positive")
     if not config.site_signal_profiles:
         raise ValueError("site_signal_profiles must not be empty")
-    if len({row.name for row in config.site_signal_profiles}) != len(
-        config.site_signal_profiles
-    ):
+    if len({row.name for row in config.site_signal_profiles}) != len(config.site_signal_profiles):
         raise ValueError("site signal profile names must be unique")
     if any(
         not row.name or row.order_weight < ZERO or row.unordered_cart_weight < ZERO
@@ -1172,7 +1170,11 @@ def normalize_site_event_rows(
         if event_date is None:
             stats["invalid_event_date_count"] += 1
         cancellation_date = _date(source_row.get("cancelled_at"))
-        if cancellation_date is not None and event_date is not None and cancellation_date < event_date:
+        if (
+            cancellation_date is not None
+            and event_date is not None
+            and cancellation_date < event_date
+        ):
             stats["invalid_cancellation_date_count"] += 1
         base = {
             "event_date": event_date.isoformat() if event_date else "",
@@ -1198,9 +1200,7 @@ def normalize_site_event_rows(
             if current is None:
                 cart_groups[key] = base
             else:
-                current["raw_quantity"] = str(
-                    _decimal(current.get("raw_quantity")) + quantity
-                )
+                current["raw_quantity"] = str(_decimal(current.get("raw_quantity")) + quantity)
                 stats["cart_deduplicated_row_count"] += 1
             continue
         normalized.append(base)
@@ -1208,9 +1208,7 @@ def normalize_site_event_rows(
     for row in cart_groups.values():
         raw = _decimal(row["raw_quantity"])
         row["quantity"] = str(
-            ZERO
-            if row["manual_review_only"]
-            else min(unordered_cart_daily_cap, raw)
+            ZERO if row["manual_review_only"] else min(unordered_cart_daily_cap, raw)
         )
         if raw > _decimal(row["quantity"]):
             stats["cart_capped_quantity"] += raw - _decimal(row["quantity"])
@@ -1231,7 +1229,11 @@ def normalize_site_event_rows(
     ]
     stats["normalized_row_count"] = len(normalized)
     stats["site_order_quantity"] = sum(
-        (_decimal(row["quantity"]) for row in mapped_quantitative if row["event_type"] == "site_order"),
+        (
+            _decimal(row["quantity"])
+            for row in mapped_quantitative
+            if row["event_type"] == "site_order"
+        ),
         ZERO,
     )
     stats["site_cart_quantity_before_stock_filter"] = sum(
@@ -1329,9 +1331,7 @@ def build_demand_signal_queue_history(
                     active.append(entry)
             queue = active
 
-            kmp4_raw = max(
-                ZERO, _decimal(kmp4_raw_by_code.get(code, {}).get(business_date))
-            )
+            kmp4_raw = max(ZERO, _decimal(kmp4_raw_by_code.get(code, {}).get(business_date)))
             if kmp4_raw > ZERO:
                 raw["kmp4"] += kmp4_raw
                 queue.append(
@@ -1380,8 +1380,7 @@ def build_demand_signal_queue_history(
             sale_remaining = sale_qty
             if backlog_decrease > ZERO and sale_remaining > ZERO:
                 targeted = _consume_signal_queue(
-                    queue,
-                    min(backlog_decrease, sale_remaining), source="reserve_backlog"
+                    queue, min(backlog_decrease, sale_remaining), source="reserve_backlog"
                 )
                 targeted_qty = sum(targeted.values(), ZERO)
                 for source, qty in targeted.items():
@@ -1860,15 +1859,11 @@ def build_preflight_tables(
                             "kmp4_weight": str(kmp4_weight),
                             "site_profile": site_profile.name,
                             "site_order_weight": str(site_profile.order_weight),
-                            "site_unordered_cart_weight": str(
-                                site_profile.unordered_cart_weight
-                            ),
+                            "site_unordered_cart_weight": str(site_profile.unordered_cart_weight),
                             "holding_cost_scenario": cost_scenario.name,
                             "capital_annual_rate": str(cost_scenario.capital_annual_rate),
                             "storage_annual_rate": str(cost_scenario.storage_annual_rate),
-                            "obsolescence_annual_rate": str(
-                                cost_scenario.obsolescence_annual_rate
-                            ),
+                            "obsolescence_annual_rate": str(cost_scenario.obsolescence_annual_rate),
                             "lead_time_rule": "p50_then_p75_economic_protection",
                             "review_cadence_days": cadence,
                         }
@@ -1910,9 +1905,7 @@ def build_preflight_tables(
                 as_of=business_date,
                 demand_multiplier=_demand_multiplier(item, policy),
             )
-            queue_day = signal_queue.get(code, {}).get(
-                business_date, DemandSignalQueueDay()
-            )
+            queue_day = signal_queue.get(code, {}).get(business_date, DemandSignalQueueDay())
             event_review = trend == "accelerating" or any(
                 (
                     queue_day.kmp4_raw_qty > ZERO,
@@ -1963,23 +1956,13 @@ def build_preflight_tables(
                     "site_cart_cancelled_qty": str(queue_day.site_cart_cancelled_qty),
                     "site_cart_hidden_qty": str(queue_day.site_cart_hidden_qty),
                     "site_cart_open_qty": str(queue_day.site_cart_open_qty),
-                    "site_cart_stock_blocked_qty": str(
-                        queue_day.site_cart_stock_blocked_qty
-                    ),
+                    "site_cart_stock_blocked_qty": str(queue_day.site_cart_stock_blocked_qty),
                     "site_soft_trigger_count": queue_day.site_soft_trigger_count,
                     "reserve_backlog_raw_qty": str(queue_day.reserve_backlog_raw_qty),
-                    "reserve_backlog_matched_qty": str(
-                        queue_day.reserve_backlog_matched_qty
-                    ),
-                    "reserve_backlog_expired_qty": str(
-                        queue_day.reserve_backlog_expired_qty
-                    ),
-                    "reserve_backlog_cancelled_qty": str(
-                        queue_day.reserve_backlog_cancelled_qty
-                    ),
-                    "reserve_backlog_hidden_qty": str(
-                        queue_day.reserve_backlog_hidden_qty
-                    ),
+                    "reserve_backlog_matched_qty": str(queue_day.reserve_backlog_matched_qty),
+                    "reserve_backlog_expired_qty": str(queue_day.reserve_backlog_expired_qty),
+                    "reserve_backlog_cancelled_qty": str(queue_day.reserve_backlog_cancelled_qty),
+                    "reserve_backlog_hidden_qty": str(queue_day.reserve_backlog_hidden_qty),
                     "reserve_backlog_open_qty": str(queue_day.reserve_backlog_open_qty),
                     "status": lifecycle.status.value,
                 }
@@ -2066,9 +2049,7 @@ def build_preflight_tables(
                 "reserve_backlog_raw_qty": str(queue_day.reserve_backlog_raw_qty),
                 "reserve_backlog_matched_qty": str(queue_day.reserve_backlog_matched_qty),
                 "reserve_backlog_expired_qty": str(queue_day.reserve_backlog_expired_qty),
-                "reserve_backlog_cancelled_qty": str(
-                    queue_day.reserve_backlog_cancelled_qty
-                ),
+                "reserve_backlog_cancelled_qty": str(queue_day.reserve_backlog_cancelled_qty),
                 "reserve_backlog_open_qty": str(queue_day.reserve_backlog_open_qty),
                 "reserve_increase_qty": str(queue_day.reserve_increase_qty),
                 "site_signals_included": int(config.site_signals_enabled),
@@ -2230,9 +2211,7 @@ def build_preflight_tables(
         threshold=0,
         note="События сохраняются для аудита, но не влияют на когорту дисплеев.",
     )
-    invalid_cancellations = int(
-        site_mapping_stats.get("invalid_cancellation_date_count") or 0
-    )
+    invalid_cancellations = int(site_mapping_stats.get("invalid_cancellation_date_count") or 0)
     add_quality(
         "site_cancellation_date_order",
         passed=invalid_cancellations == 0,
@@ -2275,8 +2254,7 @@ def build_preflight_tables(
     july_days = [day for day in _daterange(date_from, date_to) if day.month == 7]
     pre_july_days = [day for day in _daterange(date_from, date_to) if day.month != 7]
     july_avg = (
-        sum((site_daily.get(day, ZERO) for day in july_days), ZERO)
-        / Decimal(len(july_days))
+        sum((site_daily.get(day, ZERO) for day in july_days), ZERO) / Decimal(len(july_days))
         if july_days
         else ZERO
     )
@@ -2481,9 +2459,7 @@ def write_preflight_artifacts(
             "normalized_sha256": file_hashes["site-events-normalized.csv"],
             "queue_days": scenario_config.site_queue_days,
             "deduplication_key": "session_key+nomenclature_code+event_date",
-            "unordered_cart_daily_cap": str(
-                scenario_config.unordered_cart_daily_cap
-            ),
+            "unordered_cart_daily_cap": str(scenario_config.unordered_cart_daily_cap),
             "mapping_stats": {
                 key: str(value) if isinstance(value, Decimal) else value
                 for key, value in sorted(site_mapping_stats.items())

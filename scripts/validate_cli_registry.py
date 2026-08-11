@@ -32,6 +32,7 @@ ALLOWED_DB_ACCESS = {
     "none",
     "application_read_only",
     "application_write",
+    "bitrix_read_only",
     "onec_read_only",
     "mixed",
 }

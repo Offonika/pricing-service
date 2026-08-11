@@ -107,7 +107,7 @@ def write_site_events_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None
 
 def _remote_php() -> str:
     # The query intentionally selects no customer name, phone, address or email.
-    return r'''
+    return r"""
 define("NO_KEEP_STATISTIC", true);
 define("NO_AGENT_STATISTIC", true);
 define("NOT_CHECK_PERMISSIONS", true);
@@ -149,7 +149,7 @@ foreach ($queries as $sql) {
         echo json_encode($row, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES), "\n";
     }
 }
-'''.strip()
+""".strip()
 
 
 def fetch_remote_rows(

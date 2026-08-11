@@ -182,9 +182,7 @@ def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
                 "service": "Сервисный",
             }.get(row.get("site_profile") or "off", row.get("site_profile") or "off"),
             "site_order_weight": _float(row.get("site_order_weight")),
-            "site_unordered_cart_weight": _float(
-                row.get("site_unordered_cart_weight")
-            ),
+            "site_unordered_cart_weight": _float(row.get("site_unordered_cart_weight")),
             "holding_cost_scenario": row["holding_cost_scenario"],
             "total_fill_rate": _float(row["fill_rate"]),
             "observed_fill_rate": _float(row["observed_fill_rate"]),
@@ -308,9 +306,7 @@ def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
             "hidden_kmp4_qty": _float(model.get("hidden_kmp4_qty")),
             "hidden_site_order_qty": _float(model.get("hidden_site_order_qty")),
             "hidden_site_cart_qty": _float(model.get("hidden_site_cart_qty")),
-            "hidden_reserve_backlog_qty": _float(
-                model.get("hidden_reserve_backlog_qty")
-            ),
+            "hidden_reserve_backlog_qty": _float(model.get("hidden_reserve_backlog_qty")),
         },
         "stages": stages,
         "monthly": monthly,
@@ -346,7 +342,7 @@ def build_markdown(analysis: Mapping[str, Any]) -> str:
     pre_july_model = periods.get("pre_july", {}).get("model", {})
     july_model = periods.get("july", {}).get("model", {})
     site_mapping = analysis.get("site_export", {}).get("mapping_stats", {})
-    return f"""# Повторный backtest автозаказа дисплеев — простое объяснение
+    return f"""# Автозаказ дисплеев: почему модель не прошла проверку на истории
 
 ## Краткий вывод
 
@@ -437,7 +433,7 @@ def _source(source_id: str, label: str, path: str) -> dict[str, Any]:
 
 
 def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
-    title = "Новая модель автозаказа дисплеев — результат проверки на истории"
+    title = "Автозаказ дисплеев: почему модель не прошла проверку на истории"
     headline = analysis["headline"]
     stages = analysis["stages"]
     sources = [
@@ -465,7 +461,7 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
         _source(
             "preflight_manifest",
             "PASS preflight и контрольные суммы источников",
-            "next-stage-model-preflight/run-manifest.json",
+            "next-stage-model-preflight-site-reserve-v2/run-manifest.json",
         ),
     ]
     headline_dataset = [
@@ -480,9 +476,7 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
         }
     ]
     scenario_base = sorted(analysis["scenario_chart"], key=lambda row: row["scenario_id"])
-    site_sensitivity = sorted(
-        analysis["site_sensitivity"], key=lambda row: row["site_profile"]
-    )
+    site_sensitivity = sorted(analysis["site_sensitivity"], key=lambda row: row["site_profile"])
     cards = [
         {
             "id": "observed_fill_card",
@@ -889,27 +883,35 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def build_source_notes(analysis: Mapping[str, Any]) -> str:
-    return f"""# Frozen report source notes
+    return f"""# Примечания к источникам frozen-отчёта
 
-## Audience and structure
+## Аудитория и структура
 
-- Audience: product stakeholders / partner.
-- Required structure: title; Executive Summary; findings with visual evidence; recommendations; further questions; caveats.
-- Delivery mode: portable HTML used as the static source for PDF conversion.
+- Аудитория: партнёр и владельцы бизнес-процесса.
+- Структура: заголовок; краткий вывод; выводы с графиками; рекомендации;
+  открытые вопросы; ограничения.
+- Формат: portable HTML как статический источник для PDF.
 
-## Chart map
+## Карта графиков
 
-| Segment | Question | Type | Dataset | Claim |
+| Раздел | Вопрос | Тип | Данные | Подтверждаемый вывод |
 | --- | --- | --- | --- | --- |
-| Historical stages | Where is extra shortage created? | Categorical bar | `frozen-baseline-stage.csv` | `sale / Растим` dominates the gap |
-| Monthly service | When does the gap build? | Grouped monthly bars | `frozen-baseline-daily.csv` | the gap widens by June–July |
-| Scenario sensitivity | Do profile and KMP4 weight solve it? | Grouped bars | `frozen-scenario-summary.csv` | no tested combination passes acceptance |
+| Профили сайта | Как сигналы сайта меняют сервис? | Столбцы по категориям | `frozen-scenario-summary.csv` | сайт добавляет спрос, но не закрывает дефицит |
+| Исторические стадии | Где создаётся дополнительный дефицит? | Столбцы по категориям | `frozen-baseline-stage.csv` | `sale / Растим` доминирует в разрыве |
+| Сервис по месяцам | Когда накапливается разрыв? | Сгруппированные месячные столбцы | `frozen-baseline-daily.csv` | разрыв расширяется к июню–июлю |
+| Чувствительность сценариев | Решают ли проблему профиль и вес КМП4? | Сгруппированные столбцы | `frozen-scenario-summary.csv` | ни один сценарий не проходит acceptance |
 
-## Omitted or qualified cuts
+## Ограниченные разрезы
 
-- Lead-time attribution is not charted because per-SKU aggregate loss cannot be causally assigned to one changing daily lead-time bucket without a larger SKU-day output.
-- Site demand is excluded because historical events are not yet reliably linked to SKU.
-- The report uses classification run `{analysis['cohort']['classification_run_id']}` and the frozen preflight manifest hash stored in `frozen-summary.json`.
+- Причинный вклад lead time не показан отдельным графиком: агрегированную потерю
+  SKU нельзя надёжно отнести к одному меняющемуся дневному сроку поставки без
+  более крупной SKU-day выгрузки.
+- События сайта входят только при однозначной связи валидного `PRODUCT_XML_ID` с
+  SKU когорты; события вне когорты не распределяются догадкой.
+- `reserve_backlog` реализован и проверен, но в историческом периоде фактических
+  случаев резерва сверх физического остатка не найдено.
+- Отчёт использует classification run `{analysis['cohort']['classification_run_id']}`
+  и SHA-256 frozen preflight manifest из `frozen-summary.json`.
 """
 
 

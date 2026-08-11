@@ -6,7 +6,6 @@ from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-import httpx
 from openai import OpenAI
 
 from app.core.config import Settings, get_settings
@@ -57,7 +56,10 @@ class CardBalanceOCRClient:
     ) -> None:
         self.settings = settings or get_settings()
         self.model = self.settings.card_balance_ocr_model or self.settings.openai_model
-        self.client = client or _build_openai_client(self.settings)
+        self.client = client or OpenAI(
+            api_key=self.settings.openai_api_key,
+            base_url=self.settings.openai_api_base,
+        )
 
     def extract_balance(
         self,
@@ -140,16 +142,6 @@ class CardBalanceOCRClient:
 def ocr_is_available(settings: Settings | None = None) -> bool:
     settings = settings or get_settings()
     return bool(settings.card_balance_ocr_enabled and clean_string(settings.openai_api_key))
-
-
-def _build_openai_client(settings: Settings) -> OpenAI:
-    kwargs: dict[str, Any] = {
-        "api_key": settings.openai_api_key,
-        "base_url": settings.openai_api_base,
-    }
-    if clean_string(settings.openai_http_proxy):
-        kwargs["http_client"] = httpx.Client(proxy=settings.openai_http_proxy)
-    return OpenAI(**kwargs)
 
 
 def _normalize_balance(value: Any) -> Decimal | None:

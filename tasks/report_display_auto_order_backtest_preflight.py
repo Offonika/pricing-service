@@ -297,10 +297,7 @@ def main() -> int:
         "economics_sku_count": len(economics),
         "initial_pipeline_sku_count": len(initial_pipeline),
         "initial_pipeline_lot_count": sum(len(lots) for lots in initial_pipeline.values()),
-        **{
-            f"site_{key}": value
-            for key, value in site_normalization.mapping_stats.items()
-        },
+        **{f"site_{key}": value for key, value in site_normalization.mapping_stats.items()},
         **{f"product_ref_{key}": value for key, value in product_ref_counts.items()},
         "reserve_opening_rows": reserves.source_counts["opening_rows"],
         "reserve_movement_rows": reserves.source_counts["movement_rows"],

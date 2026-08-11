@@ -117,11 +117,7 @@ class CarryingCostScenario:
 
     @property
     def total_annual_rate(self) -> Decimal:
-        return (
-            self.capital_annual_rate
-            + self.storage_annual_rate
-            + self.obsolescence_annual_rate
-        )
+        return self.capital_annual_rate + self.storage_annual_rate + self.obsolescence_annual_rate
 
 
 @dataclass(frozen=True)
@@ -170,13 +166,9 @@ class LeadTimeHistoryIndex:
     completed_by_group_supplier: dict[
         tuple[str, str], tuple[tuple[Mapping[str, Any], int, date], ...]
     ]
-    completed_by_supplier: dict[
-        str, tuple[tuple[Mapping[str, Any], int, date], ...]
-    ]
+    completed_by_supplier: dict[str, tuple[tuple[Mapping[str, Any], int, date], ...]]
     completed_all: tuple[tuple[Mapping[str, Any], int, date], ...]
-    candidate_cache: dict[
-        tuple[str, str, date], tuple[tuple[Mapping[str, Any], int, date], ...]
-    ]
+    candidate_cache: dict[tuple[str, str, date], tuple[tuple[Mapping[str, Any], int, date], ...]]
 
 
 @dataclass(frozen=True)
@@ -235,9 +227,7 @@ def load_scenario_config(path: Path) -> BacktestScenarioConfig:
         kmp4_queue_days=int(payload.get("kmp4_queue_days") or 0),
         site_signals_enabled=bool(payload.get("site_signals_enabled")),
         holding_cost_scenarios=holding,
-        lead_time_fallback_days=int(
-            lead_time.get("fallback_days") or DEFAULT_LEAD_TIME_DAYS
-        ),
+        lead_time_fallback_days=int(lead_time.get("fallback_days") or DEFAULT_LEAD_TIME_DAYS),
         lead_time_high_samples=int(lead_time.get("high_confidence_min_samples") or 5),
         lead_time_medium_samples=int(lead_time.get("medium_confidence_min_samples") or 2),
         safety_max_units=int(safety.get("max_units") or 1000),
@@ -271,8 +261,7 @@ def fetch_kmp4_demand(
     document_refs: set[str] = set()
     line_count = 0
     target_codes = set(codes)
-    query = text(
-        """
+    query = text("""
         WITH demand_counterparties AS (
             SELECT DISTINCT _Fld8857RRef AS counterparty_ref
             FROM dbo._Reference69 WITH (NOLOCK)
@@ -294,8 +283,7 @@ def fetch_kmp4_demand(
           AND doc._Date_Time >= :date_from
           AND doc._Date_Time < :date_to
           AND line._Fld2431 > 0
-        """
-    )
+        """)
     with engine.connect() as connection:
         _create_register_product_filter(connection, codes, product_refs=product_refs)
         rows = connection.execute(
@@ -338,8 +326,7 @@ def fetch_daily_sales(
 ) -> dict[str, dict[date, Decimal]]:
     """Read display sales with product filtering applied by binary 1C reference."""
 
-    query = text(
-        """
+    query = text("""
         SELECT
             product.product_code,
             CAST(document._Date_Time AS date) AS business_date,
@@ -359,8 +346,7 @@ def fetch_daily_sales(
           AND document._Date_Time < :date_to
           AND line._Fld4971 > 0
         GROUP BY product.product_code, CAST(document._Date_Time AS date)
-        """
-    )
+        """)
     out: dict[str, dict[date, Decimal]] = defaultdict(dict)
     with engine.connect() as connection:
         _create_register_product_filter(connection, codes, product_refs=product_refs)
@@ -412,18 +398,10 @@ def fetch_onec_product_refs(
         ordered_codes = sorted(set(codes))
         for offset in range(0, len(ordered_codes), 1000):
             code_batch = ordered_codes[offset : offset + 1000]
-            values_sql = ", ".join(
-                f"(:product_code_{index})" for index in range(len(code_batch))
-            )
+            values_sql = ", ".join(f"(:product_code_{index})" for index in range(len(code_batch)))
             connection.execute(
-                text(
-                    "INSERT INTO #display_preflight_codes (product_code) VALUES "
-                    + values_sql
-                ),
-                {
-                    f"product_code_{index}": code
-                    for index, code in enumerate(code_batch)
-                },
+                text("INSERT INTO #display_preflight_codes (product_code) VALUES " + values_sql),
+                {f"product_code_{index}": code for index, code in enumerate(code_batch)},
             )
         for row in connection.execute(
             text(
@@ -438,13 +416,9 @@ def fetch_onec_product_refs(
             ref = _clean(row.get("product_ref"))
             if code and ref:
                 rows_by_code[code].append(ref)
-    duplicate_codes = {
-        code: refs for code, refs in rows_by_code.items() if len(set(refs)) != 1
-    }
+    duplicate_codes = {code: refs for code, refs in rows_by_code.items() if len(set(refs)) != 1}
     resolved = {
-        code: next(iter(set(refs)))
-        for code, refs in rows_by_code.items()
-        if len(set(refs)) == 1
+        code: next(iter(set(refs))) for code, refs in rows_by_code.items() if len(set(refs)) == 1
     }
     return (
         resolved,
@@ -466,8 +440,7 @@ def fetch_daily_unit_economics(
 ) -> dict[str, list[HistoricalUnitEconomicsEvent]]:
     """Read dated revenue and cost events without projecting future margins backward."""
 
-    query = text(
-        """
+    query = text("""
         WITH target_organization AS (
             SELECT _IDRRef
             FROM dbo._Reference66 WITH (NOLOCK)
@@ -531,8 +504,7 @@ def fetch_daily_unit_economics(
          AND cost.product_ref = revenue.product_ref
         GROUP BY revenue.business_date, revenue.code
         ORDER BY revenue.code, revenue.business_date
-        """
-    ).bindparams(bindparam("codes", expanding=True))
+        """).bindparams(bindparam("codes", expanding=True))
     result: dict[str, list[HistoricalUnitEconomicsEvent]] = defaultdict(list)
     with engine.connect() as connection:
         for code_chunk in _chunks(sorted(set(codes))):
@@ -572,8 +544,7 @@ def _fetch_register_openings(
     date_from: date,
     date_to: date,
 ) -> tuple[dict[date, dict[str, Decimal]], int]:
-    query = text(
-        f"""
+    query = text(f"""
         SELECT
             CAST(reg._Period AS date) AS period_month,
             product.product_code,
@@ -584,8 +555,7 @@ def _fetch_register_openings(
         WHERE reg._Period >= :date_from
           AND reg._Period <= :date_to
         GROUP BY CAST(reg._Period AS date), product.product_code
-        """
-    )
+        """)
     out: dict[date, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
     row_count = 0
     with engine.connect() as connection:
@@ -628,18 +598,10 @@ def _create_register_product_filter(
     ordered_codes = sorted(set(codes))
     for offset in range(0, len(ordered_codes), 1000):
         code_batch = ordered_codes[offset : offset + 1000]
-        values_sql = ", ".join(
-            f"(:product_code_{index})" for index in range(len(code_batch))
-        )
+        values_sql = ", ".join(f"(:product_code_{index})" for index in range(len(code_batch)))
         connection.execute(
-            text(
-                "INSERT INTO #preflight_register_codes (product_code) VALUES "
-                + values_sql
-            ),
-            {
-                f"product_code_{index}": code
-                for index, code in enumerate(code_batch)
-            },
+            text("INSERT INTO #preflight_register_codes (product_code) VALUES " + values_sql),
+            {f"product_code_{index}": code for index, code in enumerate(code_batch)},
         )
     connection.execute(
         text(
@@ -663,8 +625,7 @@ def _fetch_register_movements(
     date_from: date,
     date_to: date,
 ) -> tuple[dict[date, dict[str, Decimal]], int]:
-    query = text(
-        f"""
+    query = text(f"""
         SELECT
             CAST(reg._Period AS date) AS business_date,
             product.product_code,
@@ -679,8 +640,7 @@ def _fetch_register_movements(
           AND reg._Period >= :date_from
           AND reg._Period < :date_to
         GROUP BY CAST(reg._Period AS date), product.product_code
-        """
-    )
+        """)
     out: dict[date, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
     row_count = 0
     with engine.connect() as connection:
@@ -757,8 +717,7 @@ def reconstruct_quantity_register(
         next_opening = openings_by_month.get(_next_month(cursor), {})
         all_codes = set(balance) | set(next_opening)
         differences = {
-            code: balance.get(code, ZERO) - next_opening.get(code, ZERO)
-            for code in all_codes
+            code: balance.get(code, ZERO) - next_opening.get(code, ZERO) for code in all_codes
         }
         max_abs = max((abs(value) for value in differences.values()), default=ZERO)
         mismatch_count = sum(abs(value) > tolerance for value in differences.values())
@@ -844,8 +803,7 @@ def reconstruct_historical_stock(
 ) -> tuple[dict[date, dict[str, Decimal]], dict[str, set[date]], dict[str, int]]:
     """Rebuild display stock with filtering performed inside SQL Server."""
 
-    opening_query = text(
-        """
+    opening_query = text("""
         SELECT
             CAST(stock._Period AS date) AS period_month,
             product.product_code,
@@ -861,10 +819,8 @@ def reconstruct_historical_stock(
         GROUP BY
             CAST(stock._Period AS date), product.product_code,
             warehouse.warehouse_code
-        """
-    )
-    movement_query = text(
-        """
+        """)
+    movement_query = text("""
         SELECT
             CAST(movement._Period AS date) AS business_date,
             product.product_code,
@@ -884,16 +840,13 @@ def reconstruct_historical_stock(
         GROUP BY
             CAST(movement._Period AS date), product.product_code,
             warehouse.warehouse_code
-        """
-    )
+        """)
     warehouses = tuple(sorted(set(network_warehouse_codes)))
     if not warehouses:
         raise ValueError("network warehouse list must not be empty")
     first_month = _month_start(date_from)
     final_month = _month_start(date_to)
-    openings: dict[date, dict[tuple[str, str], Decimal]] = defaultdict(
-        lambda: defaultdict(Decimal)
-    )
+    openings: dict[date, dict[tuple[str, str], Decimal]] = defaultdict(lambda: defaultdict(Decimal))
     movements: dict[date, dict[tuple[str, str], Decimal]] = defaultdict(
         lambda: defaultdict(Decimal)
     )
@@ -927,9 +880,7 @@ def reconstruct_historical_stock(
             code = _clean(row.get("product_code"))
             warehouse = _clean(row.get("warehouse_code"))
             if period_month is not None and code and warehouse:
-                openings[period_month][(code, warehouse)] += _decimal(
-                    row.get("quantity")
-                )
+                openings[period_month][(code, warehouse)] += _decimal(row.get("quantity"))
                 opening_rows += 1
         for row in connection.execute(
             movement_query,
@@ -942,9 +893,7 @@ def reconstruct_historical_stock(
             code = _clean(row.get("product_code"))
             warehouse = _clean(row.get("warehouse_code"))
             if business_date is not None and code and warehouse:
-                movements[business_date][(code, warehouse)] += _decimal(
-                    row.get("quantity_delta")
-                )
+                movements[business_date][(code, warehouse)] += _decimal(row.get("quantity_delta"))
                 movement_rows += 1
 
     wanted_codes = tuple(sorted(set(codes)))
@@ -971,9 +920,7 @@ def reconstruct_historical_stock(
             for code in wanted_codes:
                 keys = keys_by_code.get(code, ())
                 daily[code] = sum((max(ZERO, balances[key]) for key in keys), ZERO)
-                if any(
-                    key[1] in physical_codes and balances[key] > ZERO for key in keys
-                ):
+                if any(key[1] in physical_codes and balances[key] > ZERO for key in keys):
                     available_days[code].add(business_date)
             stock_by_day[business_date] = daily
         cursor = _next_month(cursor)
@@ -1014,9 +961,7 @@ def build_historical_incoming_by_day(
         for code, delta in events.get(business_date, {}).items():
             balances[code] = max(ZERO, balances[code] + delta)
         if business_date >= date_from:
-            result[business_date] = {
-                code: qty for code, qty in balances.items() if qty > ZERO
-            }
+            result[business_date] = {code: qty for code, qty in balances.items() if qty > ZERO}
     return result
 
 
@@ -1104,15 +1049,13 @@ def build_lead_time_history_index(
     detail_rows: Sequence[Mapping[str, Any]],
 ) -> LeadTimeHistoryIndex:
     orders_by_code: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
-    by_sku_supplier: dict[
-        tuple[str, str], list[tuple[Mapping[str, Any], int, date]]
-    ] = defaultdict(list)
-    by_group_supplier: dict[
-        tuple[str, str], list[tuple[Mapping[str, Any], int, date]]
-    ] = defaultdict(list)
-    by_supplier: dict[str, list[tuple[Mapping[str, Any], int, date]]] = defaultdict(
+    by_sku_supplier: dict[tuple[str, str], list[tuple[Mapping[str, Any], int, date]]] = defaultdict(
         list
     )
+    by_group_supplier: dict[tuple[str, str], list[tuple[Mapping[str, Any], int, date]]] = (
+        defaultdict(list)
+    )
+    by_supplier: dict[str, list[tuple[Mapping[str, Any], int, date]]] = defaultdict(list)
     completed: list[tuple[Mapping[str, Any], int, date]] = []
     for row in detail_rows:
         code = _clean(row.get("nomenclature_code"))
@@ -1134,13 +1077,15 @@ def build_lead_time_history_index(
             by_supplier[supplier].append(item)
     return LeadTimeHistoryIndex(
         orders_by_code={
-            code: tuple(sorted(rows, key=lambda row: _date(row.get("supplier_order_created_at")) or date.min))
+            code: tuple(
+                sorted(
+                    rows, key=lambda row: _date(row.get("supplier_order_created_at")) or date.min
+                )
+            )
             for code, rows in orders_by_code.items()
         },
         completed_by_sku_supplier={key: tuple(rows) for key, rows in by_sku_supplier.items()},
-        completed_by_group_supplier={
-            key: tuple(rows) for key, rows in by_group_supplier.items()
-        },
+        completed_by_group_supplier={key: tuple(rows) for key, rows in by_group_supplier.items()},
         completed_by_supplier={key: tuple(rows) for key, rows in by_supplier.items()},
         completed_all=tuple(completed),
         candidate_cache={},
@@ -1182,16 +1127,16 @@ def select_lead_time_profile(
         (
             "sku_supplier",
             f"{code}|{supplier_ref}",
-            index.completed_by_sku_supplier.get((code, supplier_ref), ())
-            if supplier_ref
-            else (),
+            index.completed_by_sku_supplier.get((code, supplier_ref), ()) if supplier_ref else (),
         ),
         (
             "display_group_supplier",
             f"{group_key}|{supplier_ref}",
-            index.completed_by_group_supplier.get((group_key, supplier_ref), ())
-            if supplier_ref
-            else (),
+            (
+                index.completed_by_group_supplier.get((group_key, supplier_ref), ())
+                if supplier_ref
+                else ()
+            ),
         ),
         (
             "supplier",
@@ -1211,9 +1156,7 @@ def select_lead_time_profile(
         if len(rows) < config.lead_time_medium_samples:
             continue
         values = [item[1] for item in rows]
-        confidence = (
-            "high" if len(rows) >= config.lead_time_high_samples else "medium"
-        )
+        confidence = "high" if len(rows) >= config.lead_time_high_samples else "medium"
         return LeadTimeProfile(
             p50_days=max(1, _nearest_rank(values, Decimal("0.50"))),
             p75_days=max(1, _nearest_rank(values, Decimal("0.75"))),
@@ -1295,9 +1238,9 @@ def calculate_economic_safety_stock(
     marginal_saved = ZERO
     for unit_number in range(1, max_units + 1):
         threshold = base_max_qty + Decimal(unit_number - 1)
-        probability = Decimal(
-            sum(sample > threshold for sample in demand_samples)
-        ) / Decimal(len(demand_samples))
+        probability = Decimal(sum(sample > threshold for sample in demand_samples)) / Decimal(
+            len(demand_samples)
+        )
         marginal_saved = gross_margin_per_unit_rub * probability
         if marginal_saved <= unit_cost:
             return EconomicSafetyStock(
@@ -1306,9 +1249,7 @@ def calculate_economic_safety_stock(
         units += 1
         saved_total += marginal_saved
         cost_total += unit_cost
-    return EconomicSafetyStock(
-        Decimal(units), saved_total, cost_total, marginal_saved, unit_cost
-    )
+    return EconomicSafetyStock(Decimal(units), saved_total, cost_total, marginal_saved, unit_cost)
 
 
 def _inventory_cost_and_margin(
@@ -1323,8 +1264,7 @@ def _inventory_cost_and_margin(
         events = [
             event
             for event in row
-            if isinstance(event, HistoricalUnitEconomicsEvent)
-            and event.business_date <= as_of
+            if isinstance(event, HistoricalUnitEconomicsEvent) and event.business_date <= as_of
         ]
         gross_qty = sum((event.gross_sale_qty for event in events), ZERO)
         net_revenue = sum((event.net_revenue_rub for event in events), ZERO)
@@ -1461,15 +1401,9 @@ def build_preflight_tables(
                         "stage_profile": stage_name,
                         "kmp4_weight": str(kmp4_weight),
                         "holding_cost_scenario": cost_scenario.name,
-                        "capital_annual_rate": str(
-                            cost_scenario.capital_annual_rate
-                        ),
-                        "storage_annual_rate": str(
-                            cost_scenario.storage_annual_rate
-                        ),
-                        "obsolescence_annual_rate": str(
-                            cost_scenario.obsolescence_annual_rate
-                        ),
+                        "capital_annual_rate": str(cost_scenario.capital_annual_rate),
+                        "storage_annual_rate": str(cost_scenario.storage_annual_rate),
+                        "obsolescence_annual_rate": str(cost_scenario.obsolescence_annual_rate),
                         "lead_time_rule": "p50_then_p75_economic_protection",
                         "review_cadence_days": cadence,
                     }
@@ -1489,9 +1423,7 @@ def build_preflight_tables(
 
     for business_date in _daterange(date_from, date_to):
         scheduled_review = (business_date - date_from).days % cadence == 0
-        launch_snapshot = build_launch_profile_snapshot(
-            launch_observations, as_of=business_date
-        )
+        launch_snapshot = build_launch_profile_snapshot(launch_observations, as_of=business_date)
         for code in codes:
             item = item_by_code[code]
             if not item_active_as_of(item, as_of=business_date):
@@ -1659,9 +1591,7 @@ def build_preflight_tables(
                         f"{prefix}_group_level": (
                             launch_profile.group_level if launch_profile else ""
                         ),
-                        f"{prefix}_group_key": (
-                            launch_profile.group_key if launch_profile else ""
-                        ),
+                        f"{prefix}_group_key": (launch_profile.group_key if launch_profile else ""),
                         f"{prefix}_sample_count": (
                             launch_profile.sample_count if launch_profile else 0
                         ),
@@ -1669,9 +1599,7 @@ def build_preflight_tables(
                             str(launch_profile.quantile) if launch_profile else ""
                         ),
                         f"{prefix}_demand_qty_30d": (
-                            str(launch_profile.demand_qty_30d)
-                            if launch_profile
-                            else ""
+                            str(launch_profile.demand_qty_30d) if launch_profile else ""
                         ),
                         f"{prefix}_min_qty": (
                             str(launch_profile.min_qty) if launch_profile else ""
@@ -1687,9 +1615,7 @@ def build_preflight_tables(
             decision_inputs.append(input_row)
 
     reconciliations = reserves.reconciliations + placements.reconciliations
-    input_keys = [
-        (row["decision_date"], row["nomenclature_code"]) for row in decision_inputs
-    ]
+    input_keys = [(row["decision_date"], row["nomenclature_code"]) for row in decision_inputs]
     scenario_keys = [row["scenario_id"] for row in scenario_decisions]
     quality: list[dict[str, Any]] = []
 
@@ -1738,10 +1664,9 @@ def build_preflight_tables(
         threshold=0,
         note="Дневное восстановление должно сходиться с totals следующего месяца.",
     )
-    negative_balances = (
-        reserves.source_counts.get("negative_balance_rows", 0)
-        + placements.source_counts.get("negative_balance_rows", 0)
-    )
+    negative_balances = reserves.source_counts.get(
+        "negative_balance_rows", 0
+    ) + placements.source_counts.get("negative_balance_rows", 0)
     add_quality(
         "negative_register_balances",
         passed=negative_balances == 0,
@@ -1786,10 +1711,7 @@ def build_preflight_tables(
             )
     status = (
         "PASS"
-        if not any(
-            row["status"] == "fail" and row["severity"] == "critical"
-            for row in quality
-        )
+        if not any(row["status"] == "fail" and row["severity"] == "critical" for row in quality)
         else "FAIL"
     )
     return PreflightTables(

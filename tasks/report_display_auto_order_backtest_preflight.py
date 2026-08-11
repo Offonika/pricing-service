@@ -51,18 +51,14 @@ from tasks.report_display_supplier_lead_time_history import (
     fetch_display_supplier_lead_time_source_rows,
 )
 
-DEFAULT_SCENARIO_CONFIG = Path(
-    "config/assortment/display-auto-order-backtest-scenarios.json"
-)
+DEFAULT_SCENARIO_CONFIG = Path("config/assortment/display-auto-order-backtest-scenarios.json")
 
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--date-from", type=date.fromisoformat, default=DEFAULT_DATE_FROM)
     parser.add_argument("--date-to", type=date.fromisoformat, default=DEFAULT_DATE_TO)
-    parser.add_argument(
-        "--history-start", type=date.fromisoformat, default=DEFAULT_HISTORY_START
-    )
+    parser.add_argument("--history-start", type=date.fromisoformat, default=DEFAULT_HISTORY_START)
     parser.add_argument("--folder", default="дисплеи")
     parser.add_argument("--database-url", default="")
     parser.add_argument("--onec-database-url", default="")
@@ -76,9 +72,7 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("config/assortment/display-warehouse-policy.json"),
     )
-    parser.add_argument(
-        "--scenario-config-json", type=Path, default=DEFAULT_SCENARIO_CONFIG
-    )
+    parser.add_argument("--scenario-config-json", type=Path, default=DEFAULT_SCENARIO_CONFIG)
     parser.add_argument(
         "--launch-profile-min-samples",
         type=int,
@@ -114,9 +108,7 @@ def main() -> int:
         )
 
     settings = get_settings()
-    application_url = (
-        args.database_url or os.environ.get("DATABASE_URL") or settings.database_url
-    )
+    application_url = args.database_url or os.environ.get("DATABASE_URL") or settings.database_url
     onec_url = (
         args.onec_database_url
         or os.environ.get("ONEC_DATABASE_URL", "")
@@ -127,9 +119,7 @@ def main() -> int:
         raise SystemExit("ONEC_DATABASE_URL is not configured")
     scenario_config = load_scenario_config(args.scenario_config_json)
     policy = load_auto_order_policy(args.auto_order_policy_json)
-    warehouse_policy: WarehousePolicy = load_warehouse_policy(
-        args.warehouse_policy_json
-    )
+    warehouse_policy: WarehousePolicy = load_warehouse_policy(args.warehouse_policy_json)
 
     application_engine = build_engine(application_url, pool_pre_ping=True)
     try:
@@ -145,9 +135,7 @@ def main() -> int:
             if _clean(item.get("nomenclature_code"))
         }
     )
-    warehouse_config = json.loads(
-        args.warehouse_policy_json.read_text(encoding="utf-8-sig")
-    )
+    warehouse_config = json.loads(args.warehouse_policy_json.read_text(encoding="utf-8-sig"))
     network_codes = sorted(
         {
             _clean(row.get("warehouse_code") or row.get("code"))
@@ -293,13 +281,8 @@ def main() -> int:
         "launch_observation_count": len(launch_observations),
         "economics_sku_count": len(economics),
         "initial_pipeline_sku_count": len(initial_pipeline),
-        "initial_pipeline_lot_count": sum(
-            len(lots) for lots in initial_pipeline.values()
-        ),
-        **{
-            f"product_ref_{key}": value
-            for key, value in product_ref_counts.items()
-        },
+        "initial_pipeline_lot_count": sum(len(lots) for lots in initial_pipeline.values()),
+        **{f"product_ref_{key}": value for key, value in product_ref_counts.items()},
         "reserve_opening_rows": reserves.source_counts["opening_rows"],
         "reserve_movement_rows": reserves.source_counts["movement_rows"],
         "placement_opening_rows": placements.source_counts["opening_rows"],

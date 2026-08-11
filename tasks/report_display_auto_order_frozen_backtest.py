@@ -22,7 +22,6 @@ from tasks.build_display_auto_order_dry_run import (
 from tasks.display_auto_order_backtest_preflight import (
     CarryingCostScenario,
     calculate_economic_safety_stock,
-    historical_demand_samples,
     load_scenario_config,
     validate_preflight_directory,
 )
@@ -157,9 +156,7 @@ def _load_scenarios(path: Path) -> list[FrozenScenario]:
                     name=_clean(row.get("holding_cost_scenario")),
                     capital_annual_rate=_decimal(row.get("capital_annual_rate")),
                     storage_annual_rate=_decimal(row.get("storage_annual_rate")),
-                    obsolescence_annual_rate=_decimal(
-                        row.get("obsolescence_annual_rate")
-                    ),
+                    obsolescence_annual_rate=_decimal(row.get("obsolescence_annual_rate")),
                 ),
                 legacy=legacy,
             )
@@ -205,16 +202,10 @@ def _summary(
     potential = total.potential_demand_qty
     average_inventory = total.inventory_value_days_rub / Decimal(period_days)
     carrying_cost = (
-        average_inventory
-        * scenario.cost.total_annual_rate
-        * Decimal(period_days)
-        / YEAR_DAYS
+        average_inventory * scenario.cost.total_annual_rate * Decimal(period_days) / YEAR_DAYS
     )
     gmroi = (
-        total.gross_profit_rub
-        * YEAR_DAYS
-        / Decimal(period_days)
-        / average_inventory
+        total.gross_profit_rub * YEAR_DAYS / Decimal(period_days) / average_inventory
         if average_inventory > ZERO
         else ZERO
     )
@@ -228,9 +219,25 @@ def _summary(
         "storage_annual_rate": str(scenario.cost.storage_annual_rate),
         "obsolescence_annual_rate": str(scenario.cost.obsolescence_annual_rate),
         "potential_demand_qty": str(potential),
+        "observed_demand_qty": str(total.observed_demand_qty),
+        "hidden_demand_qty": str(total.hidden_demand_qty),
         "served_qty": str(total.served_qty),
+        "served_observed_qty": str(total.served_observed_qty),
+        "served_hidden_qty": str(total.served_hidden_qty),
         "lost_qty": str(total.lost_qty),
+        "lost_observed_qty": str(total.lost_observed_qty),
+        "lost_hidden_qty": str(total.lost_hidden_qty),
         "fill_rate": str(total.served_qty / potential if potential > ZERO else ONE),
+        "observed_fill_rate": str(
+            total.served_observed_qty / total.observed_demand_qty
+            if total.observed_demand_qty > ZERO
+            else ONE
+        ),
+        "hidden_fill_rate": str(
+            total.served_hidden_qty / total.hidden_demand_qty
+            if total.hidden_demand_qty > ZERO
+            else ONE
+        ),
         "gross_profit_rub": str(total.gross_profit_rub),
         "average_inventory_value_rub": str(average_inventory),
         "carrying_cost_rub": str(carrying_cost),
@@ -276,6 +283,45 @@ def _free_initial_pipeline(
     return dict(by_code)
 
 
+def historical_forecast_error_samples(
+    decision_rows: Sequence[Mapping[str, Any]],
+    sales: Mapping[date, Decimal],
+    *,
+    as_of: date,
+    order_cadence_days: int,
+    lookback_days: int,
+) -> list[Decimal]:
+    """Return only fully observed past underforecast errors at decision grain."""
+
+    earliest = as_of - timedelta(days=max(1, lookback_days))
+    samples: list[Decimal] = []
+    for row in decision_rows:
+        if _clean(row.get("scheduled_review")) != "1":
+            continue
+        decision_date = _date(row.get("decision_date"))
+        if decision_date is None or decision_date < earliest or decision_date >= as_of:
+            continue
+        lead_days = max(1, int(row.get("lead_time_p50_days") or 52))
+        horizon_days = lead_days + max(1, order_cadence_days)
+        observed_through = decision_date + timedelta(days=horizon_days)
+        if observed_through >= as_of:
+            continue
+        actual_demand = sum(
+            (
+                max(ZERO, _decimal(qty))
+                for business_date, qty in sales.items()
+                if decision_date < business_date <= observed_through
+            ),
+            ZERO,
+        )
+        predicted_demand = max(
+            ZERO,
+            _decimal(row.get("forecast_rate_sales")) * Decimal(horizon_days),
+        )
+        samples.append(max(ZERO, actual_demand - predicted_demand))
+    return samples
+
+
 def simulate_scenario(
     *,
     scenario: FrozenScenario,
@@ -299,8 +345,7 @@ def simulate_scenario(
         }
     )
     first_facts = {
-        _clean(row.get("nomenclature_code")): row
-        for row in fact_rows_by_date.get(date_from, ())
+        _clean(row.get("nomenclature_code")): row for row in fact_rows_by_date.get(date_from, ())
     }
     stock = {
         code: max(
@@ -311,8 +356,7 @@ def simulate_scenario(
         for code in codes
     }
     placed = {
-        code: _decimal(first_facts.get(code, {}).get("placed_incoming_qty"))
-        for code in codes
+        code: _decimal(first_facts.get(code, {}).get("placed_incoming_qty")) for code in codes
     }
     initial = _free_initial_pipeline(
         initial_pipeline_rows,
@@ -358,6 +402,13 @@ def simulate_scenario(
     current_cost: dict[str, Decimal] = defaultdict(Decimal)
     current_margin: dict[str, Decimal] = defaultdict(Decimal)
     demand_samples = demand_sample_cache if demand_sample_cache is not None else {}
+    decision_history_by_code: dict[str, list[Mapping[str, Any]]] = defaultdict(list)
+    for rows in decision_rows_by_date.values():
+        for row in rows:
+            code = _clean(row.get("nomenclature_code"))
+            if code:
+                decision_history_by_code[code].append(row)
+    latest_decision_rows: dict[str, Mapping[str, Any]] = {}
     decision_detail: list[dict[str, Any]] = []
     daily_detail: list[dict[str, Any]] = []
 
@@ -372,21 +423,33 @@ def simulate_scenario(
             _clean(row.get("nomenclature_code")): row
             for row in decision_rows_by_date.get(cursor, ())
         }
+        latest_decision_rows.update(decisions_today)
         for code, row in decisions_today.items():
             current_cost[code] = _decimal(row.get("inventory_cost_per_unit_rub"))
             current_margin[code] = _decimal(row.get("gross_margin_per_unit_rub"))
+        facts_today = {
+            _clean(row.get("nomenclature_code")): row for row in fact_rows_by_date.get(cursor, ())
+        }
 
         daily = {
             "scenario_id": scenario.scenario_id,
             "business_date": cursor.isoformat(),
             "actual_potential_demand_qty": ZERO,
+            "actual_observed_demand_qty": ZERO,
+            "actual_hidden_demand_qty": ZERO,
             "actual_served_qty": ZERO,
+            "actual_served_observed_qty": ZERO,
+            "actual_served_hidden_qty": ZERO,
             "model_served_qty": ZERO,
+            "model_served_observed_qty": ZERO,
+            "model_served_hidden_qty": ZERO,
             "model_lost_qty": ZERO,
+            "model_lost_observed_qty": ZERO,
+            "model_lost_hidden_qty": ZERO,
             "model_ending_inventory_qty": ZERO,
             "model_inventory_value_rub": ZERO,
         }
-        for fact in fact_rows_by_date.get(cursor, ()):
+        for fact in facts_today.values():
             code = _clean(fact.get("nomenclature_code"))
             status = _clean(fact.get("status")) or "unknown"
             observed = max(ZERO, _decimal(fact.get("observed_sales_qty")))
@@ -427,9 +490,7 @@ def simulate_scenario(
             actual_stage.lost_hidden_qty += hidden - actual_hidden_served
             actual_stage.gross_profit_rub += (observed + actual_hidden_served) * margin
             actual_stage.inventory_qty_days += actual_stock
-            actual_stage.priced_inventory_qty_days += (
-                actual_stock if cost > ZERO else ZERO
-            )
+            actual_stage.priced_inventory_qty_days += actual_stock if cost > ZERO else ZERO
             actual_stage.inventory_value_days_rub += actual_stock * cost
 
             model_row = model[code]
@@ -461,23 +522,40 @@ def simulate_scenario(
             model_stage.inventory_value_days_rub += stock[code] * cost
 
             daily["actual_potential_demand_qty"] += observed + hidden
+            daily["actual_observed_demand_qty"] += observed
+            daily["actual_hidden_demand_qty"] += hidden
             daily["actual_served_qty"] += observed + actual_hidden_served
+            daily["actual_served_observed_qty"] += observed
+            daily["actual_served_hidden_qty"] += actual_hidden_served
             daily["model_served_qty"] += served_observed + served_hidden
+            daily["model_served_observed_qty"] += served_observed
+            daily["model_served_hidden_qty"] += served_hidden
             daily["model_lost_qty"] += observed - served_observed + hidden - served_hidden
+            daily["model_lost_observed_qty"] += observed - served_observed
+            daily["model_lost_hidden_qty"] += hidden - served_hidden
             daily["model_ending_inventory_qty"] += stock[code]
             daily["model_inventory_value_rub"] += stock[code] * cost
 
-        for code, row in decisions_today.items():
-            status = _clean(row.get("status"))
-            scheduled_review = _clean(row.get("scheduled_review")) == "1"
+        decision_candidates = decisions_today if scenario.legacy else latest_decision_rows
+        for code, row in decision_candidates.items():
+            fact = facts_today.get(code, {})
+            if not fact:
+                continue
+            status = _clean(fact.get("status")) or _clean(row.get("status"))
+            fresh_decision = code in decisions_today
+            scheduled_review = fresh_decision and _clean(row.get("scheduled_review")) == "1"
             if scenario.legacy and not scheduled_review:
                 continue
             rate = max(ZERO, _decimal(row.get("forecast_rate_sales")))
-            weighted_kmp = max(ZERO, _decimal(row.get("kmp4_open_qty"))) * scenario.kmp4_weight
-            scenario_rate = rate
-            arrival_lead_days = (
-                52 if scenario.legacy else int(row.get("lead_time_p50_days") or 52)
+            weighted_kmp = (
+                max(
+                    ZERO,
+                    _decimal(fact.get("kmp4_open_qty", row.get("kmp4_open_qty"))),
+                )
+                * scenario.kmp4_weight
             )
+            scenario_rate = rate
+            arrival_lead_days = 52 if scenario.legacy else int(row.get("lead_time_p50_days") or 52)
             lead_days = arrival_lead_days
             safety_units = ZERO
             manual = not scheduled_review
@@ -504,18 +582,12 @@ def simulate_scenario(
                 if status == AssortmentStatus.NEW_ITEM.value:
                     scenario_rate = max(
                         scenario_rate,
-                        _profile_value(
-                            row, scenario.stage_profile, "demand_qty_30d"
-                        )
+                        _profile_value(row, scenario.stage_profile, "demand_qty_30d")
                         / Decimal("30"),
                     )
-                min_qty = _ceil(
-                    scenario_rate * Decimal(lead_days) + weighted_kmp
-                )
+                min_qty = _ceil(scenario_rate * Decimal(lead_days) + weighted_kmp)
                 max_qty = _ceil(
-                    scenario_rate
-                    * Decimal(lead_days + policy.order_cadence_days)
-                    + weighted_kmp
+                    scenario_rate * Decimal(lead_days + policy.order_cadence_days) + weighted_kmp
                 )
                 if status == AssortmentStatus.NEW_ITEM.value:
                     min_qty = max(
@@ -533,16 +605,16 @@ def simulate_scenario(
                     cache_key = (code, cursor, lead_days + policy.order_cadence_days)
                     samples = demand_samples.get(cache_key)
                     if samples is None:
-                        samples = historical_demand_samples(
+                        samples = historical_forecast_error_samples(
+                            decision_history_by_code.get(code, ()),
                             sales_by_code.get(code, {}),
                             as_of=cursor,
-                            horizon_days=lead_days + policy.order_cadence_days,
+                            order_cadence_days=policy.order_cadence_days,
                             lookback_days=config.safety_lookback_days,
-                            step_days=config.safety_step_days,
                         )
                         demand_samples[cache_key] = samples
                     safety = calculate_economic_safety_stock(
-                        base_max_qty=max_qty,
+                        base_max_qty=ZERO,
                         demand_samples=samples,
                         gross_margin_per_unit_rub=current_margin[code],
                         inventory_cost_per_unit_rub=current_cost[code],
@@ -555,12 +627,9 @@ def simulate_scenario(
                     p75_days = int(row.get("lead_time_p75_days") or lead_days)
                     if safety_units > ZERO and p75_days > lead_days:
                         lead_days = p75_days
-                        min_qty = _ceil(
-                            scenario_rate * Decimal(lead_days) + weighted_kmp
-                        )
+                        min_qty = _ceil(scenario_rate * Decimal(lead_days) + weighted_kmp)
                         max_qty = _ceil(
-                            scenario_rate
-                            * Decimal(lead_days + policy.order_cadence_days)
+                            scenario_rate * Decimal(lead_days + policy.order_cadence_days)
                             + weighted_kmp
                         )
                         p75_cache_key = (
@@ -570,17 +639,16 @@ def simulate_scenario(
                         )
                         p75_samples = demand_samples.get(p75_cache_key)
                         if p75_samples is None:
-                            p75_samples = historical_demand_samples(
+                            p75_samples = historical_forecast_error_samples(
+                                decision_history_by_code.get(code, ()),
                                 sales_by_code.get(code, {}),
                                 as_of=cursor,
-                                horizon_days=lead_days
-                                + policy.order_cadence_days,
+                                order_cadence_days=policy.order_cadence_days,
                                 lookback_days=config.safety_lookback_days,
-                                step_days=config.safety_step_days,
                             )
                             demand_samples[p75_cache_key] = p75_samples
                         safety_units = calculate_economic_safety_stock(
-                            base_max_qty=max_qty,
+                            base_max_qty=ZERO,
                             demand_samples=p75_samples,
                             gross_margin_per_unit_rub=current_margin[code],
                             inventory_cost_per_unit_rub=current_cost[code],
@@ -598,10 +666,7 @@ def simulate_scenario(
                     max_qty = weighted_kmp
                     safety_units = ZERO
                     manual = weighted_kmp > ZERO
-                elif (
-                    status == AssortmentStatus.NEW_ITEM.value
-                    and code not in launch_ready
-                ):
+                elif status == AssortmentStatus.NEW_ITEM.value and code not in launch_ready:
                     min_qty = weighted_kmp
                     max_qty = weighted_kmp
                     safety_units = ZERO
@@ -627,7 +692,10 @@ def simulate_scenario(
                 manual = False
 
             target_qty = max_qty + safety_units
-            reserve = max(ZERO, _decimal(row.get("reserve_qty")))
+            reserve = max(
+                ZERO,
+                _decimal(fact.get("reserve_qty", row.get("reserve_qty"))),
+            )
             position = stock[code] - reserve + pipeline_qty[code]
             triggered = position <= min_qty
             raw = _ceil(max(ZERO, target_qty - position)) if triggered else ZERO
@@ -653,13 +721,21 @@ def simulate_scenario(
                 stage_metric.order_lines += 1
                 stage_metric.manual_order_lines += int(manual)
                 stage_metric.safety_stock_units_ordered += safety_units
-            if keep_detail and (recommended > ZERO or rate > ZERO or weighted_kmp > ZERO):
+            if keep_detail and (
+                recommended > ZERO or (fresh_decision and (rate > ZERO or weighted_kmp > ZERO))
+            ):
+                trigger = (
+                    "scheduled_review"
+                    if scheduled_review
+                    else "event_review" if fresh_decision else "stockout_guard"
+                )
                 decision_detail.append(
                     {
                         "scenario_id": scenario.scenario_id,
                         "decision_date": cursor.isoformat(),
                         "nomenclature_code": code,
                         "status": status,
+                        "decision_trigger": trigger,
                         "forecast_rate_sales": str(rate),
                         "kmp4_open_weighted_qty": str(weighted_kmp),
                         "selected_lead_time_days": lead_days,
@@ -677,7 +753,12 @@ def simulate_scenario(
                     }
                 )
         if keep_detail:
-            daily_detail.append({key: str(value) if isinstance(value, Decimal) else value for key, value in daily.items()})
+            daily_detail.append(
+                {
+                    key: str(value) if isinstance(value, Decimal) else value
+                    for key, value in daily.items()
+                }
+            )
         cursor += timedelta(days=1)
 
     return SimulationResult(
@@ -700,15 +781,21 @@ def _sku_comparison_rows(result: SimulationResult, period_days: int) -> list[dic
             {
                 "nomenclature_code": code,
                 "actual_served_qty": str(actual.served_qty),
+                "actual_served_observed_qty": str(actual.served_observed_qty),
+                "actual_served_hidden_qty": str(actual.served_hidden_qty),
                 "model_served_qty": str(model.served_qty),
+                "model_served_observed_qty": str(model.served_observed_qty),
+                "model_served_hidden_qty": str(model.served_hidden_qty),
                 "served_delta_qty": str(model.served_qty - actual.served_qty),
                 "actual_lost_qty": str(actual.lost_qty),
+                "actual_lost_observed_qty": str(actual.lost_observed_qty),
+                "actual_lost_hidden_qty": str(actual.lost_hidden_qty),
                 "model_lost_qty": str(model.lost_qty),
+                "model_lost_observed_qty": str(model.lost_observed_qty),
+                "model_lost_hidden_qty": str(model.lost_hidden_qty),
                 "actual_gross_profit_rub": str(actual.gross_profit_rub),
                 "model_gross_profit_rub": str(model.gross_profit_rub),
-                "gross_profit_delta_rub": str(
-                    model.gross_profit_rub - actual.gross_profit_rub
-                ),
+                "gross_profit_delta_rub": str(model.gross_profit_rub - actual.gross_profit_rub),
                 "actual_average_inventory_value_rub": str(
                     actual.inventory_value_days_rub / Decimal(period_days)
                 ),
@@ -729,9 +816,7 @@ def _sku_comparison_rows(result: SimulationResult, period_days: int) -> list[dic
     return rows
 
 
-def _stage_summary_rows(
-    result: SimulationResult, period_days: int
-) -> list[dict[str, Any]]:
+def _stage_summary_rows(result: SimulationResult, period_days: int) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     stages = sorted(set(result.actual_by_stage) | set(result.model_by_stage))
     for stage in stages:
@@ -748,10 +833,24 @@ def _stage_summary_rows(
                     "strategy": strategy,
                     "status": stage,
                     "potential_demand_qty": str(potential),
+                    "observed_demand_qty": str(metric.observed_demand_qty),
+                    "hidden_demand_qty": str(metric.hidden_demand_qty),
                     "served_qty": str(metric.served_qty),
+                    "served_observed_qty": str(metric.served_observed_qty),
+                    "served_hidden_qty": str(metric.served_hidden_qty),
                     "lost_qty": str(metric.lost_qty),
-                    "fill_rate": str(
-                        metric.served_qty / potential if potential > ZERO else ONE
+                    "lost_observed_qty": str(metric.lost_observed_qty),
+                    "lost_hidden_qty": str(metric.lost_hidden_qty),
+                    "fill_rate": str(metric.served_qty / potential if potential > ZERO else ONE),
+                    "observed_fill_rate": str(
+                        metric.served_observed_qty / metric.observed_demand_qty
+                        if metric.observed_demand_qty > ZERO
+                        else ONE
+                    ),
+                    "hidden_fill_rate": str(
+                        metric.served_hidden_qty / metric.hidden_demand_qty
+                        if metric.hidden_demand_qty > ZERO
+                        else ONE
                     ),
                     "gross_profit_rub": str(metric.gross_profit_rub),
                     "average_inventory_value_rub": str(average_inventory),
@@ -759,12 +858,8 @@ def _stage_summary_rows(
                     "order_value_rub": str(metric.order_value_rub),
                     "order_lines": metric.order_lines,
                     "manual_order_lines": metric.manual_order_lines,
-                    "economic_safety_stock_qty": str(
-                        metric.safety_stock_units_ordered
-                    ),
-                    "exogenous_launch_seed_qty": str(
-                        metric.exogenous_launch_seed_qty
-                    ),
+                    "economic_safety_stock_qty": str(metric.safety_stock_units_ordered),
+                    "exogenous_launch_seed_qty": str(metric.exogenous_launch_seed_qty),
                     "inventory_valuation_coverage": str(
                         metric.priced_inventory_qty_days / metric.inventory_qty_days
                         if metric.inventory_qty_days > ZERO
@@ -862,8 +957,7 @@ def main() -> int:
             - _decimal(actual_summary["average_inventory_value_rub"])
         )
         model_summary["fill_rate_delta"] = str(
-            _decimal(model_summary["fill_rate"])
-            - _decimal(actual_summary["fill_rate"])
+            _decimal(model_summary["fill_rate"]) - _decimal(actual_summary["fill_rate"])
         )
         model_summary["economic_contribution_delta_rub"] = str(
             _decimal(model_summary["economic_contribution_rub"])
@@ -895,12 +989,9 @@ def main() -> int:
     fill_rate_pass = _decimal(base_model["fill_rate"]) + Decimal("0.0001") >= _decimal(
         base_actual["fill_rate"]
     )
-    capital_or_gmroi_pass = (
-        _decimal(base_model["average_inventory_value_rub"])
-        <= _decimal(base_actual["average_inventory_value_rub"])
-        or _decimal(base_model["gmroi_annualized"])
-        >= _decimal(base_actual["gmroi_annualized"])
-    )
+    capital_or_gmroi_pass = _decimal(base_model["average_inventory_value_rub"]) <= _decimal(
+        base_actual["average_inventory_value_rub"]
+    ) or _decimal(base_model["gmroi_annualized"]) >= _decimal(base_actual["gmroi_annualized"])
     acceptance = {
         "gross_profit_not_lower": gross_profit_pass,
         "fill_rate_not_lower": fill_rate_pass,
@@ -920,20 +1011,20 @@ def main() -> int:
     )
     summary = {
         "schema": OUTPUT_SCHEMA,
-        "source_preflight_manifest_sha256": _sha256(
-            args.preflight_dir / "run-manifest.json"
-        ),
+        "source_preflight_manifest_sha256": _sha256(args.preflight_dir / "run-manifest.json"),
         "date_from": date_from.isoformat(),
         "date_to": date_to.isoformat(),
         "base_scenario_id": BASE_SCENARIO_ID,
         "scenario_count": len(scenarios),
         "method": {
             "source_mode": "frozen_preflight_only",
-            "review_mode": "weekly_plus_event_manual_reviews_assumed_accepted",
+            "review_mode": "weekly_plus_event_and_daily_stockout_guard_manual_reviews_assumed_accepted",
             "hidden_demand_evaluation": "weighted_unmatched_kmp4_at_queue_expiry",
+            "kmp4_inventory_effect": "weighted_open_queue_added_once_to_min_and_max_not_extrapolated_as_daily_rate",
             "historical_stage": "frozen_daily_stage_from_preflight",
             "inventory_position": "simulated_stock_minus_historical_reserve_plus_simulated_free_pipeline",
             "lead_time_usage": "p50_for_simulated_arrival_and_p75_only_for_economically_protected_coverage",
+            "economic_safety_stock": "empirical_completed_walk_forward_underforecast_errors_times_margin_vs_holding_cost",
             "within_period_launches": "first_observed_positive_stock_seeded_as_exogenous_launch_supply",
             "new_item_reorder_gate": "launch_profile_starts_after_first_positive_stock_or_initial_pipeline_arrival",
         },

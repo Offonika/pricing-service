@@ -1047,10 +1047,7 @@ def forecast_rate(
         days: _availability_rate(quantities[days], days=days, available_days=available[days])
         for days in (180, 90, 30)
     }
-    accelerating = (
-        rates[30] > ZERO
-        and rates[30] >= rates[90] * ACCELERATING_MIN_GROWTH_MULTIPLIER
-    )
+    accelerating = rates[30] > ZERO and rates[30] >= rates[90] * ACCELERATING_MIN_GROWTH_MULTIPLIER
     base = max(rates.values()) if accelerating else sum(rates.values(), ZERO) / Decimal(3)
     return (
         base * demand_multiplier,
@@ -1800,9 +1797,10 @@ def main() -> int:
         preflight_manifest = validate_preflight_directory(args.preflight_dir)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
-    if preflight_manifest.get("date_from") != args.date_from.isoformat() or preflight_manifest.get(
-        "date_to"
-    ) != args.date_to.isoformat():
+    if (
+        preflight_manifest.get("date_from") != args.date_from.isoformat()
+        or preflight_manifest.get("date_to") != args.date_to.isoformat()
+    ):
         raise SystemExit("preflight period does not match backtest period")
     settings = get_settings()
     app_url = args.database_url or os.environ.get("DATABASE_URL") or settings.database_url

@@ -1049,9 +1049,10 @@ def main() -> int:
         preflight_manifest = validate_preflight_directory(args.preflight_dir)
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
-    if preflight_manifest.get("date_from") != args.date_from.isoformat() or preflight_manifest.get(
-        "date_to"
-    ) != args.date_to.isoformat():
+    if (
+        preflight_manifest.get("date_from") != args.date_from.isoformat()
+        or preflight_manifest.get("date_to") != args.date_to.isoformat()
+    ):
         raise SystemExit("preflight period does not match backtest period")
     settings = get_settings()
     app_url = args.database_url or os.environ.get("DATABASE_URL") or settings.database_url

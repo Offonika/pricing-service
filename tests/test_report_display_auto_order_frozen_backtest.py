@@ -2,6 +2,8 @@ from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from tasks.build_display_auto_order_dry_run import AutoOrderPolicy
 from tasks.display_auto_order_backtest_preflight import (
     CarryingCostScenario,
@@ -16,13 +18,219 @@ from tasks.report_display_auto_order_frozen_backtest import (
     acceleration_pipeline_fraction,
     allocate_service_floor_budget,
     apply_grow_target_protection,
+    apply_quick_acceleration_guard,
     apply_service_floor_sku_cap,
     calculate_demand_acceleration,
+    cap_acceleration_to_projected_shortage,
     combine_service_floor_with_economic_stock,
     empirical_underforecast_percentile,
+    evaluate_acceleration_shortage_guard,
     historical_forecast_error_samples,
+    release_open_acceleration_protection,
+    select_scenarios,
     simulate_scenario,
 )
+
+
+def _selection_scenario(scenario_id: str) -> FrozenScenario:
+    return FrozenScenario(
+        scenario_id=scenario_id,
+        stage_profile="typical",
+        kmp4_weight=Decimal("0.5"),
+        cost=CarryingCostScenario(
+            name="base",
+            capital_annual_rate=Decimal("0.3"),
+            storage_annual_rate=Decimal("0.1"),
+            obsolescence_annual_rate=Decimal("0.25"),
+        ),
+    )
+
+
+def test_quick_mode_selects_exactly_three_explicit_scenario_roles() -> None:
+    scenarios = [
+        _selection_scenario("control"),
+        _selection_scenario("hypothesis"),
+        _selection_scenario("cautious"),
+        _selection_scenario("not-selected"),
+    ]
+
+    selection = select_scenarios(
+        scenarios,
+        run_mode="quick",
+        control_scenario_id="control",
+        hypothesis_scenario_id="hypothesis",
+        cautious_scenario_id="cautious",
+    )
+
+    assert [scenario.scenario_id for scenario in selection.scenarios] == [
+        "control",
+        "hypothesis",
+        "cautious",
+    ]
+    assert selection.base_scenario_id == "hypothesis"
+    assert selection.control_scenario_id == "control"
+    assert selection.scenario_roles == {
+        "control": "control",
+        "hypothesis": "hypothesis",
+        "cautious": "cautious",
+    }
+
+
+@pytest.mark.parametrize(
+    ("control", "hypothesis", "cautious", "message"),
+    [
+        ("control", "hypothesis", None, "requires scenario IDs"),
+        ("control", "hypothesis", "hypothesis", "three different"),
+        ("control", "missing", "cautious", "absent from frozen preflight"),
+    ],
+)
+def test_quick_mode_rejects_incomplete_or_ambiguous_scenario_roles(
+    control: str | None,
+    hypothesis: str | None,
+    cautious: str | None,
+    message: str,
+) -> None:
+    scenarios = [
+        _selection_scenario("control"),
+        _selection_scenario("hypothesis"),
+        _selection_scenario("cautious"),
+    ]
+
+    with pytest.raises(ValueError, match=message):
+        select_scenarios(
+            scenarios,
+            run_mode="quick",
+            control_scenario_id=control,
+            hypothesis_scenario_id=hypothesis,
+            cautious_scenario_id=cautious,
+        )
+
+
+def test_quick_acceleration_guard_overlays_hypothesis_and_cautious_only() -> None:
+    selection = select_scenarios(
+        [
+            _selection_scenario("control"),
+            _selection_scenario("hypothesis"),
+            _selection_scenario("cautious"),
+        ],
+        run_mode="quick",
+        control_scenario_id="control",
+        hypothesis_scenario_id="hypothesis",
+        cautious_scenario_id="cautious",
+    )
+
+    guarded = apply_quick_acceleration_guard(
+        selection,
+        hypothesis_min_shortage_qty=Decimal("2"),
+        cautious_min_shortage_qty=Decimal("3"),
+    )
+
+    assert guarded.scenarios[0].scenario_id == "control"
+    assert guarded.scenarios[1].scenario_id.endswith("_forecastguard_shortage2")
+    assert guarded.scenarios[2].scenario_id.endswith("_forecastguard_shortage3")
+    assert guarded.scenarios[1].grow_acceleration_require_forecast_growth is True
+    assert guarded.scenarios[1].grow_acceleration_min_shortage_qty == Decimal("2")
+    assert guarded.scenarios[2].grow_acceleration_min_shortage_qty == Decimal("3")
+    assert guarded.base_scenario_id == guarded.scenarios[1].scenario_id
+
+
+def test_quick_acceleration_guard_rejects_weaker_cautious_threshold() -> None:
+    selection = select_scenarios(
+        [
+            _selection_scenario("control"),
+            _selection_scenario("hypothesis"),
+            _selection_scenario("cautious"),
+        ],
+        run_mode="quick",
+        control_scenario_id="control",
+        hypothesis_scenario_id="hypothesis",
+        cautious_scenario_id="cautious",
+    )
+
+    with pytest.raises(ValueError, match="must not be lower"):
+        apply_quick_acceleration_guard(
+            selection,
+            hypothesis_min_shortage_qty=Decimal("3"),
+            cautious_min_shortage_qty=Decimal("2"),
+        )
+
+
+def test_quick_acceleration_guard_can_cap_add_on_by_projected_shortage() -> None:
+    selection = select_scenarios(
+        [
+            _selection_scenario("control"),
+            _selection_scenario("hypothesis"),
+            _selection_scenario("cautious"),
+        ],
+        run_mode="quick",
+        control_scenario_id="control",
+        hypothesis_scenario_id="hypothesis",
+        cautious_scenario_id="cautious",
+    )
+
+    guarded = apply_quick_acceleration_guard(
+        selection,
+        hypothesis_min_shortage_qty=Decimal("2"),
+        cautious_min_shortage_qty=Decimal("3"),
+        cap_to_projected_shortage=True,
+    )
+
+    assert guarded.scenarios[1].scenario_id.endswith("_forecastguard_shortage2_shortagecap")
+    assert guarded.scenarios[1].grow_acceleration_cap_to_projected_shortage is True
+    assert guarded.scenarios[1].grow_acceleration_quantity_policy == (
+        "projected_shortage_capped_forecast_guard_no_economic_cap"
+    )
+
+
+def test_quick_acceleration_guard_can_enable_single_open_lot() -> None:
+    selection = select_scenarios(
+        [
+            _selection_scenario("control"),
+            _selection_scenario("hypothesis"),
+            _selection_scenario("cautious"),
+        ],
+        run_mode="quick",
+        control_scenario_id="control",
+        hypothesis_scenario_id="hypothesis",
+        cautious_scenario_id="cautious",
+    )
+
+    guarded = apply_quick_acceleration_guard(
+        selection,
+        hypothesis_min_shortage_qty=Decimal("2"),
+        cautious_min_shortage_qty=Decimal("3"),
+        cap_to_projected_shortage=True,
+        single_open_lot=True,
+    )
+
+    assert guarded.scenarios[0].grow_acceleration_single_open_lot is False
+    assert guarded.scenarios[1].scenario_id.endswith("_shortagecap_singleopenlot")
+    assert guarded.scenarios[1].grow_acceleration_single_open_lot is True
+    assert guarded.scenarios[1].grow_acceleration_quantity_policy.endswith(
+        "_single_open_lot"
+    )
+
+
+def test_single_open_lot_requires_shortage_cap() -> None:
+    selection = select_scenarios(
+        [
+            _selection_scenario("control"),
+            _selection_scenario("hypothesis"),
+            _selection_scenario("cautious"),
+        ],
+        run_mode="quick",
+        control_scenario_id="control",
+        hypothesis_scenario_id="hypothesis",
+        cautious_scenario_id="cautious",
+    )
+
+    with pytest.raises(ValueError, match="requires projected shortage cap"):
+        apply_quick_acceleration_guard(
+            selection,
+            hypothesis_min_shortage_qty=Decimal("2"),
+            cautious_min_shortage_qty=Decimal("3"),
+            single_open_lot=True,
+        )
 
 
 def test_acceleration_uses_only_completed_past_days() -> None:
@@ -66,6 +274,115 @@ def test_acceleration_requires_minimum_recent_sales_and_rate_growth() -> None:
     )
 
     assert result.triggered is False
+
+
+def test_acceleration_shortage_guard_requires_forecast_growth_and_p75_shortage() -> None:
+    signal = DemandAccelerationSignal(
+        recent_qty=Decimal("7"),
+        baseline_qty=Decimal("2"),
+        recent_rate=Decimal("0.5"),
+        baseline_rate=Decimal("0.1"),
+        rate_ratio=Decimal("5"),
+        triggered=True,
+    )
+
+    eligible = evaluate_acceleration_shortage_guard(
+        signal=signal,
+        forecast_rate=Decimal("0.4"),
+        lead_time_days=10,
+        model_stock_qty=Decimal("3"),
+        effective_reserve_qty=Decimal("0"),
+        effective_pipeline_qty=Decimal("0"),
+        require_forecast_growth=True,
+        min_shortage_qty=Decimal("2"),
+    )
+    forecast_blocked = evaluate_acceleration_shortage_guard(
+        signal=signal,
+        forecast_rate=Decimal("0.5"),
+        lead_time_days=10,
+        model_stock_qty=Decimal("3"),
+        effective_reserve_qty=Decimal("0"),
+        effective_pipeline_qty=Decimal("0"),
+        require_forecast_growth=True,
+        min_shortage_qty=Decimal("2"),
+    )
+    shortage_blocked = evaluate_acceleration_shortage_guard(
+        signal=signal,
+        forecast_rate=Decimal("0.4"),
+        lead_time_days=10,
+        model_stock_qty=Decimal("4"),
+        effective_reserve_qty=Decimal("0"),
+        effective_pipeline_qty=Decimal("0"),
+        require_forecast_growth=True,
+        min_shortage_qty=Decimal("2"),
+    )
+
+    assert eligible.projected_demand_qty == Decimal("5")
+    assert eligible.projected_shortage_qty == Decimal("2")
+    assert eligible.eligible is True
+    assert forecast_blocked.forecast_growth_passed is False
+    assert forecast_blocked.eligible is False
+    assert shortage_blocked.projected_shortage_qty == Decimal("1")
+    assert shortage_blocked.shortage_passed is False
+    assert shortage_blocked.eligible is False
+
+
+def test_single_open_guard_counts_ordinary_pipeline_once_and_open_lot_fully() -> None:
+    signal = DemandAccelerationSignal(
+        recent_qty=Decimal("14"),
+        baseline_qty=Decimal("1"),
+        recent_rate=Decimal("1"),
+        baseline_rate=Decimal("0.05"),
+        rate_ratio=Decimal("20"),
+        triggered=True,
+    )
+
+    guard = evaluate_acceleration_shortage_guard(
+        signal=signal,
+        forecast_rate=Decimal("0.1"),
+        lead_time_days=10,
+        model_stock_qty=Decimal("0"),
+        effective_reserve_qty=Decimal("0"),
+        effective_pipeline_qty=Decimal("2"),
+        open_acceleration_protection_qty=Decimal("3"),
+        require_forecast_growth=True,
+        min_shortage_qty=Decimal("2"),
+    )
+
+    assert guard.gross_projected_shortage_qty == Decimal("8")
+    assert guard.projected_shortage_qty == Decimal("5")
+    assert guard.inventory_position_qty == Decimal("5")
+    assert guard.open_acceleration_protection_qty == Decimal("3")
+
+
+def test_open_acceleration_protection_releases_arrival_or_cancellation_only() -> None:
+    assert release_open_acceleration_protection(
+        Decimal("5"), arrived_qty=Decimal("2")
+    ) == Decimal("3")
+    assert release_open_acceleration_protection(
+        Decimal("5"), cancelled_qty=Decimal("7")
+    ) == Decimal("0")
+    assert release_open_acceleration_protection(
+        Decimal("5"), arrived_qty=Decimal("-10")
+    ) == Decimal("5")
+
+
+def test_acceleration_add_on_is_capped_by_projected_shortage() -> None:
+    assert cap_acceleration_to_projected_shortage(
+        Decimal("8"),
+        projected_shortage_qty=Decimal("3"),
+        enabled=True,
+    ) == Decimal("3")
+    assert cap_acceleration_to_projected_shortage(
+        Decimal("2"),
+        projected_shortage_qty=Decimal("3"),
+        enabled=True,
+    ) == Decimal("2")
+    assert cap_acceleration_to_projected_shortage(
+        Decimal("8"),
+        projected_shortage_qty=Decimal("3"),
+        enabled=False,
+    ) == Decimal("8")
 
 
 def test_acceleration_increment_protects_p90_and_does_not_use_economic_cap() -> None:
@@ -231,6 +548,136 @@ def test_acceleration_review_uses_past_sales_and_pipeline_confidence() -> None:
     assert medium.decision_rows[-1]["decision_trigger"] == "acceleration_review"
     assert medium.decision_rows[-1]["acceleration_allocated_qty"] == "4"
     assert medium.decision_rows[-1]["acceleration_pipeline_fraction"] == "0.75"
+
+
+def _run_single_open_acceleration_scenario(
+    *,
+    days: int,
+    shortage_growth: bool = False,
+) -> object:
+    start = date(2026, 3, 1)
+    cost = CarryingCostScenario(
+        name="base",
+        capital_annual_rate=Decimal("0.3"),
+        storage_annual_rate=Decimal("0.1"),
+        obsolescence_annual_rate=Decimal("0.25"),
+    )
+    fact_rows: dict[date, list[dict[str, str]]] = {}
+    decision_rows: dict[date, list[dict[str, str]]] = {}
+    sales = {
+        start - timedelta(days=6): Decimal("1"),
+        start - timedelta(days=4): Decimal("1"),
+        start - timedelta(days=2): Decimal("1"),
+        start - timedelta(days=1): Decimal("1"),
+    }
+    sample_cache: dict[tuple[str, date, int], list[Decimal]] = {}
+    for offset in range(days):
+        business_date = start + timedelta(days=offset)
+        observed = Decimal("5") if shortage_growth and offset == 1 else Decimal("0")
+        if observed > Decimal("0"):
+            sales[business_date] = observed
+        fact_rows[business_date] = [
+            {
+                "nomenclature_code": "SKU-1",
+                "status": "sale",
+                "physical_stock_qty": "0",
+                "observed_sales_qty": str(observed),
+                "placed_incoming_qty": "0",
+                "effective_reserve_qty": "0",
+            }
+        ]
+        decision_rows[business_date] = [
+            {
+                "decision_date": business_date.isoformat(),
+                "nomenclature_code": "SKU-1",
+                "scheduled_review": "1",
+                "status": "sale",
+                "forecast_rate_sales": "0.1",
+                "lead_time_p50_days": "5",
+                "lead_time_p75_days": "5",
+                "lead_time_confidence": "high",
+                "inventory_cost_per_unit_rub": "1",
+                "gross_margin_per_unit_rub": "100",
+            }
+        ]
+        sample_cache[("SKU-1", business_date, 6)] = [Decimal("0")] * 8
+
+    return simulate_scenario(
+        scenario=FrozenScenario(
+            scenario_id="grow_accel_single_open",
+            stage_profile="typical",
+            kmp4_weight=Decimal("0"),
+            cost=cost,
+            grow_weekly_reduction_cap=Decimal("0.2"),
+            forecast_error_percentile=Decimal("0.9"),
+            grow_acceleration_profile="balanced",
+            grow_acceleration_quantity_policy="single_open_lot",
+            grow_acceleration_recent_days=7,
+            grow_acceleration_baseline_days=28,
+            grow_acceleration_min_recent_sales=Decimal("4"),
+            grow_acceleration_rate_multiplier=Decimal("1.5"),
+            grow_acceleration_sku_cap_rub=Decimal("50000"),
+            grow_acceleration_stage_budget_rub=Decimal("8000000"),
+            grow_acceleration_require_forecast_growth=True,
+            grow_acceleration_min_shortage_qty=Decimal("2"),
+            grow_acceleration_cap_to_projected_shortage=True,
+            grow_acceleration_single_open_lot=True,
+        ),
+        fact_rows_by_date=fact_rows,
+        decision_rows_by_date=decision_rows,
+        initial_pipeline_rows=[],
+        sales_by_code={"SKU-1": sales},
+        policy=AutoOrderPolicy(order_cadence_days=1),
+        config=load_scenario_config(
+            Path("config/assortment/display-auto-order-backtest-scenarios.json")
+        ),
+        date_from=start,
+        date_to=start + timedelta(days=days - 1),
+        keep_detail=True,
+        demand_sample_cache=sample_cache,
+    )
+
+
+def test_single_open_acceleration_blocks_repeat_for_unchanged_shortage() -> None:
+    result = _run_single_open_acceleration_scenario(days=2)
+
+    assert result.model["SKU-1"].order_qty == Decimal("4")
+    assert result.diagnostics.acceleration_order_component_qty == Decimal("3")
+    assert result.diagnostics.acceleration_single_open_blocked_recalculations == 1
+    assert result.diagnostics.acceleration_open_protection_ending_qty == Decimal("3")
+    assert result.decision_rows[0]["acceleration_order_component_qty"] == "3"
+    assert result.decision_rows[1]["recommended_order_qty"] == "0"
+
+
+def test_single_open_acceleration_orders_only_shortage_growth() -> None:
+    result = _run_single_open_acceleration_scenario(days=3, shortage_growth=True)
+
+    assert result.model["SKU-1"].order_qty == Decimal("6")
+    assert result.diagnostics.acceleration_order_component_qty == Decimal("5")
+    assert result.decision_rows[2]["acceleration_projected_shortage_to_p75_qty"] == "2"
+    assert result.decision_rows[2]["acceleration_order_component_qty"] == "2"
+    assert result.decision_rows[2]["acceleration_open_protection_before_qty"] == "3"
+    assert result.decision_rows[2]["acceleration_open_protection_after_qty"] == "5"
+
+
+def test_single_open_acceleration_releases_protection_on_arrival_not_before() -> None:
+    before_arrival = _run_single_open_acceleration_scenario(days=5)
+    on_arrival = _run_single_open_acceleration_scenario(days=6)
+
+    assert before_arrival.diagnostics.acceleration_released_on_arrival_qty == Decimal("0")
+    assert before_arrival.diagnostics.acceleration_open_protection_ending_qty == Decimal("3")
+    assert on_arrival.diagnostics.acceleration_released_on_arrival_qty == Decimal("3")
+    assert on_arrival.diagnostics.acceleration_open_protection_ending_qty == Decimal("0")
+
+
+def test_single_open_acceleration_does_not_persist_in_grow_target_state() -> None:
+    result = _run_single_open_acceleration_scenario(days=2)
+
+    first, second = result.decision_rows
+    assert first["ordinary_max_stock_qty"] == "1"
+    assert first["max_stock_qty"] == "4"
+    assert second["ordinary_max_stock_qty"] == "1"
+    assert second["max_stock_qty"] == "1"
 
 
 def test_service_floor_sku_cap_uses_whole_affordable_units() -> None:

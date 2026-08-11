@@ -7,7 +7,7 @@ import csv
 import hashlib
 import json
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from pathlib import Path
@@ -34,7 +34,7 @@ BASE_SCENARIO_ID = (
     "cap20_hold4_typical_kmp0_5_sitebalanced_base"
 )
 CONTROL_SCENARIO_ID = "grow_cap20_p90_hold4_typical_kmp0_5_sitebalanced_base"
-OUTPUT_SCHEMA = "display_auto_order_frozen_backtest.v6"
+OUTPUT_SCHEMA = "display_auto_order_frozen_backtest.v9"
 RUN_MODE_FULL = "full"
 RUN_MODE_QUICK = "quick"
 
@@ -120,6 +120,10 @@ class FrozenScenario:
     grow_acceleration_stage_budget_rub: Decimal = ZERO
     grow_acceleration_medium_pipeline_fraction: Decimal = ONE
     grow_acceleration_low_pipeline_fraction: Decimal = ONE
+    grow_acceleration_require_forecast_growth: bool = False
+    grow_acceleration_min_shortage_qty: Decimal = ZERO
+    grow_acceleration_cap_to_projected_shortage: bool = False
+    grow_acceleration_single_open_lot: bool = False
     legacy: bool = False
 
 
@@ -185,32 +189,70 @@ class ScenarioDiagnostics:
     service_floor_requested_qty: Decimal = ZERO
     service_floor_allocated_qty: Decimal = ZERO
     acceleration_triggered_recalculations: int = 0
+    acceleration_forecast_growth_passed_recalculations: int = 0
+    acceleration_shortage_passed_recalculations: int = 0
+    acceleration_guard_eligible_recalculations: int = 0
     acceleration_positive_recalculations: int = 0
+    acceleration_shortage_capped_recalculations: int = 0
     acceleration_budget_limited_recalculations: int = 0
+    acceleration_uncapped_requested_qty: Decimal = ZERO
+    acceleration_shortage_cap_reduction_qty: Decimal = ZERO
     acceleration_requested_qty: Decimal = ZERO
     acceleration_allocated_qty: Decimal = ZERO
+    acceleration_single_open_blocked_recalculations: int = 0
+    acceleration_single_open_blocked_qty: Decimal = ZERO
+    acceleration_order_component_qty: Decimal = ZERO
+    acceleration_released_on_arrival_qty: Decimal = ZERO
+    acceleration_open_protection_peak_qty: Decimal = ZERO
+    acceleration_open_protection_ending_qty: Decimal = ZERO
 
     def as_summary_fields(self) -> dict[str, Any]:
         return {
-            "service_floor_positive_recalculations": (
-                self.service_floor_positive_recalculations
-            ),
+            "service_floor_positive_recalculations": (self.service_floor_positive_recalculations),
             "service_floor_budget_limited_recalculations": (
                 self.service_floor_budget_limited_recalculations
             ),
             "service_floor_requested_qty": str(self.service_floor_requested_qty),
             "service_floor_allocated_qty": str(self.service_floor_allocated_qty),
-            "acceleration_triggered_recalculations": (
-                self.acceleration_triggered_recalculations
+            "acceleration_triggered_recalculations": (self.acceleration_triggered_recalculations),
+            "acceleration_forecast_growth_passed_recalculations": (
+                self.acceleration_forecast_growth_passed_recalculations
             ),
-            "acceleration_positive_recalculations": (
-                self.acceleration_positive_recalculations
+            "acceleration_shortage_passed_recalculations": (
+                self.acceleration_shortage_passed_recalculations
+            ),
+            "acceleration_guard_eligible_recalculations": (
+                self.acceleration_guard_eligible_recalculations
+            ),
+            "acceleration_positive_recalculations": (self.acceleration_positive_recalculations),
+            "acceleration_shortage_capped_recalculations": (
+                self.acceleration_shortage_capped_recalculations
             ),
             "acceleration_budget_limited_recalculations": (
                 self.acceleration_budget_limited_recalculations
             ),
+            "acceleration_uncapped_requested_qty": str(self.acceleration_uncapped_requested_qty),
+            "acceleration_shortage_cap_reduction_qty": str(
+                self.acceleration_shortage_cap_reduction_qty
+            ),
             "acceleration_requested_qty": str(self.acceleration_requested_qty),
             "acceleration_allocated_qty": str(self.acceleration_allocated_qty),
+            "acceleration_single_open_blocked_recalculations": (
+                self.acceleration_single_open_blocked_recalculations
+            ),
+            "acceleration_single_open_blocked_qty": str(
+                self.acceleration_single_open_blocked_qty
+            ),
+            "acceleration_order_component_qty": str(self.acceleration_order_component_qty),
+            "acceleration_released_on_arrival_qty": str(
+                self.acceleration_released_on_arrival_qty
+            ),
+            "acceleration_open_protection_peak_qty": str(
+                self.acceleration_open_protection_peak_qty
+            ),
+            "acceleration_open_protection_ending_qty": str(
+                self.acceleration_open_protection_ending_qty
+            ),
         }
 
 
@@ -264,14 +306,14 @@ def select_scenarios(
 
     missing_roles = [role for role, scenario_id in role_values.items() if not scenario_id]
     if missing_roles:
-        raise ValueError(
-            "quick mode requires scenario IDs for roles: " + ", ".join(missing_roles)
-        )
+        raise ValueError("quick mode requires scenario IDs for roles: " + ", ".join(missing_roles))
     if len(set(role_values.values())) != 3:
         raise ValueError("quick mode requires three different scenario IDs")
     missing_ids = [scenario_id for scenario_id in role_values.values() if scenario_id not in by_id]
     if missing_ids:
-        raise ValueError("quick scenario IDs are absent from frozen preflight: " + ", ".join(missing_ids))
+        raise ValueError(
+            "quick scenario IDs are absent from frozen preflight: " + ", ".join(missing_ids)
+        )
 
     return ScenarioSelection(
         run_mode=run_mode,
@@ -279,6 +321,70 @@ def select_scenarios(
         base_scenario_id=role_values["hypothesis"],
         control_scenario_id=role_values["control"],
         scenario_roles=role_values,
+    )
+
+
+def apply_quick_acceleration_guard(
+    selection: ScenarioSelection,
+    *,
+    hypothesis_min_shortage_qty: Decimal,
+    cautious_min_shortage_qty: Decimal,
+    cap_to_projected_shortage: bool = False,
+    single_open_lot: bool = False,
+) -> ScenarioSelection:
+    if selection.run_mode != RUN_MODE_QUICK:
+        raise ValueError("acceleration guard overlay is supported only in quick mode")
+    hypothesis_threshold = _decimal(hypothesis_min_shortage_qty)
+    cautious_threshold = _decimal(cautious_min_shortage_qty)
+    if hypothesis_threshold <= ZERO or cautious_threshold <= ZERO:
+        raise ValueError("quick acceleration guard shortage thresholds must be positive")
+    if cautious_threshold < hypothesis_threshold:
+        raise ValueError("cautious shortage threshold must not be lower than hypothesis threshold")
+    if single_open_lot and not cap_to_projected_shortage:
+        raise ValueError("single open acceleration lot requires projected shortage cap")
+
+    source_by_id = {scenario.scenario_id: scenario for scenario in selection.scenarios}
+    guarded_by_role: dict[str, FrozenScenario] = {
+        "control": source_by_id[selection.scenario_roles["control"]]
+    }
+    for role, threshold in (
+        ("hypothesis", hypothesis_threshold),
+        ("cautious", cautious_threshold),
+    ):
+        source = source_by_id[selection.scenario_roles[role]]
+        threshold_token = format(threshold.normalize(), "f").replace(".", "p")
+        quantity_policy = (
+            "projected_shortage_capped_forecast_guard_no_economic_cap"
+            if cap_to_projected_shortage
+            else "protected_p90_forecast_and_shortage_guard_no_economic_cap"
+        )
+        if single_open_lot:
+            quantity_policy += "_single_open_lot"
+        scenario_suffix = (
+            f"_forecastguard_shortage{threshold_token}_shortagecap"
+            if cap_to_projected_shortage
+            else f"_forecastguard_shortage{threshold_token}"
+        )
+        if single_open_lot:
+            scenario_suffix += "_singleopenlot"
+        guarded_by_role[role] = replace(
+            source,
+            scenario_id=f"{source.scenario_id}{scenario_suffix}",
+            grow_acceleration_quantity_policy=quantity_policy,
+            grow_acceleration_require_forecast_growth=True,
+            grow_acceleration_min_shortage_qty=threshold,
+            grow_acceleration_cap_to_projected_shortage=cap_to_projected_shortage,
+            grow_acceleration_single_open_lot=single_open_lot,
+        )
+    scenario_roles = {
+        role: guarded_by_role[role].scenario_id for role in ("control", "hypothesis", "cautious")
+    }
+    return ScenarioSelection(
+        run_mode=selection.run_mode,
+        scenarios=tuple(guarded_by_role[role] for role in ("control", "hypothesis", "cautious")),
+        base_scenario_id=scenario_roles["hypothesis"],
+        control_scenario_id=scenario_roles["control"],
+        scenario_roles=scenario_roles,
     )
 
 
@@ -306,6 +412,18 @@ class DemandAccelerationSignal:
     baseline_rate: Decimal
     rate_ratio: Decimal
     triggered: bool
+
+
+@dataclass(frozen=True)
+class AccelerationShortageGuard:
+    forecast_growth_passed: bool
+    projected_demand_qty: Decimal
+    inventory_position_qty: Decimal
+    projected_shortage_qty: Decimal
+    shortage_passed: bool
+    eligible: bool
+    gross_projected_shortage_qty: Decimal = ZERO
+    open_acceleration_protection_qty: Decimal = ZERO
 
 
 def _load_scenarios(path: Path) -> list[FrozenScenario]:
@@ -352,6 +470,21 @@ def _load_scenarios(path: Path) -> list[FrozenScenario]:
                 ),
                 grow_acceleration_low_pipeline_fraction=_decimal(
                     row.get("grow_acceleration_low_pipeline_fraction") or ONE
+                ),
+                grow_acceleration_require_forecast_growth=(
+                    _clean(row.get("grow_acceleration_require_forecast_growth")).lower()
+                    in {"1", "true", "yes", "y"}
+                ),
+                grow_acceleration_min_shortage_qty=_decimal(
+                    row.get("grow_acceleration_min_shortage_qty")
+                ),
+                grow_acceleration_cap_to_projected_shortage=(
+                    _clean(row.get("grow_acceleration_cap_to_projected_shortage")).lower()
+                    in {"1", "true", "yes", "y"}
+                ),
+                grow_acceleration_single_open_lot=(
+                    _clean(row.get("grow_acceleration_single_open_lot")).lower()
+                    in {"1", "true", "yes", "y"}
                 ),
                 cost=CarryingCostScenario(
                     name=_clean(row.get("holding_cost_scenario")),
@@ -447,6 +580,16 @@ def _summary(
         ),
         "grow_acceleration_low_pipeline_fraction": str(
             scenario.grow_acceleration_low_pipeline_fraction
+        ),
+        "grow_acceleration_require_forecast_growth": int(
+            scenario.grow_acceleration_require_forecast_growth
+        ),
+        "grow_acceleration_min_shortage_qty": str(scenario.grow_acceleration_min_shortage_qty),
+        "grow_acceleration_cap_to_projected_shortage": int(
+            scenario.grow_acceleration_cap_to_projected_shortage
+        ),
+        "grow_acceleration_single_open_lot": int(
+            scenario.grow_acceleration_single_open_lot
         ),
         "holding_cost_scenario": scenario.cost.name,
         "capital_annual_rate": str(scenario.cost.capital_annual_rate),
@@ -652,6 +795,71 @@ def calculate_demand_acceleration(
         rate_ratio=rate_ratio,
         triggered=triggered,
     )
+
+
+def evaluate_acceleration_shortage_guard(
+    *,
+    signal: DemandAccelerationSignal,
+    forecast_rate: Decimal,
+    lead_time_days: int,
+    model_stock_qty: Decimal,
+    effective_reserve_qty: Decimal,
+    effective_pipeline_qty: Decimal,
+    open_acceleration_protection_qty: Decimal = ZERO,
+    require_forecast_growth: bool,
+    min_shortage_qty: Decimal,
+) -> AccelerationShortageGuard:
+    projected_demand = _ceil(max(ZERO, signal.recent_rate) * Decimal(max(1, lead_time_days)))
+    gross_inventory_position = (
+        max(ZERO, model_stock_qty)
+        - max(ZERO, effective_reserve_qty)
+        + max(ZERO, effective_pipeline_qty)
+    )
+    open_protection = max(ZERO, open_acceleration_protection_qty)
+    inventory_position = gross_inventory_position + open_protection
+    gross_projected_shortage = _ceil(
+        max(ZERO, projected_demand - gross_inventory_position)
+    )
+    projected_shortage = _ceil(max(ZERO, gross_projected_shortage - open_protection))
+    forecast_growth_passed = bool(
+        not require_forecast_growth or signal.recent_rate > max(ZERO, forecast_rate)
+    )
+    shortage_threshold = max(ZERO, min_shortage_qty)
+    shortage_passed = bool(shortage_threshold <= ZERO or projected_shortage >= shortage_threshold)
+    return AccelerationShortageGuard(
+        forecast_growth_passed=forecast_growth_passed,
+        projected_demand_qty=projected_demand,
+        inventory_position_qty=inventory_position,
+        projected_shortage_qty=projected_shortage,
+        shortage_passed=shortage_passed,
+        eligible=signal.triggered and forecast_growth_passed and shortage_passed,
+        gross_projected_shortage_qty=gross_projected_shortage,
+        open_acceleration_protection_qty=open_protection,
+    )
+
+
+def release_open_acceleration_protection(
+    open_qty: Decimal,
+    *,
+    arrived_qty: Decimal = ZERO,
+    cancelled_qty: Decimal = ZERO,
+) -> Decimal:
+    """Release only already-open acceleration protection, never future lots."""
+
+    released = max(ZERO, arrived_qty) + max(ZERO, cancelled_qty)
+    return max(ZERO, max(ZERO, open_qty) - released)
+
+
+def cap_acceleration_to_projected_shortage(
+    requested_units: Decimal,
+    *,
+    projected_shortage_qty: Decimal,
+    enabled: bool,
+) -> Decimal:
+    requested = max(ZERO, _ceil(requested_units))
+    if not enabled:
+        return requested
+    return min(requested, max(ZERO, _ceil(projected_shortage_qty)))
 
 
 def acceleration_incremental_units(
@@ -912,7 +1120,11 @@ def simulate_scenario(
         )
     }
     arrivals: dict[date, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
+    acceleration_arrivals: dict[date, dict[str, Decimal]] = defaultdict(
+        lambda: defaultdict(Decimal)
+    )
     pipeline_qty: dict[str, Decimal] = defaultdict(Decimal)
+    open_acceleration_protection_qty: dict[str, Decimal] = defaultdict(Decimal)
     for code, lots in initial.items():
         for arrival, qty in lots:
             arrivals[arrival][code] += qty
@@ -940,9 +1152,23 @@ def simulate_scenario(
 
     cursor = date_from
     while cursor <= date_to:
+        released_acceleration_today: dict[str, Decimal] = defaultdict(Decimal)
         for code, qty in arrivals.get(cursor, {}).items():
             stock[code] += qty
             pipeline_qty[code] = max(ZERO, pipeline_qty[code] - qty)
+            acceleration_arrived = min(
+                open_acceleration_protection_qty[code],
+                max(ZERO, acceleration_arrivals.get(cursor, {}).get(code, ZERO)),
+            )
+            if acceleration_arrived > ZERO:
+                open_acceleration_protection_qty[code] = (
+                    release_open_acceleration_protection(
+                        open_acceleration_protection_qty[code],
+                        arrived_qty=acceleration_arrived,
+                    )
+                )
+                released_acceleration_today[code] = acceleration_arrived
+                diagnostics.acceleration_released_on_arrival_qty += acceleration_arrived
             if qty > ZERO:
                 launch_ready.add(code)
         decisions_today = {
@@ -1201,12 +1427,11 @@ def simulate_scenario(
                 )
                 context: dict[str, Any] = {
                     "signal": signal,
+                    "uncapped_requested_qty": ZERO,
                     "requested_qty": ZERO,
                     "sku_capped_qty": ZERO,
                 }
                 acceleration_context[candidate_code] = context
-                if not signal.triggered:
-                    continue
                 candidate_rate = max(
                     ZERO,
                     _decimal(candidate_row.get("forecast_rate_sales")),
@@ -1216,6 +1441,50 @@ def simulate_scenario(
                     or candidate_row.get("lead_time_p50_days")
                     or 52
                 )
+                candidate_reserve = max(
+                    ZERO,
+                    _decimal(
+                        candidate_fact.get(
+                            "effective_reserve_qty",
+                            candidate_row.get(
+                                "effective_reserve_qty",
+                                candidate_row.get("reserve_qty"),
+                            ),
+                        )
+                    ),
+                )
+                candidate_pipeline_fraction = acceleration_pipeline_fraction(
+                    _clean(candidate_row.get("lead_time_confidence")),
+                    medium_fraction=scenario.grow_acceleration_medium_pipeline_fraction,
+                    low_fraction=scenario.grow_acceleration_low_pipeline_fraction,
+                )
+                candidate_open_acceleration = (
+                    open_acceleration_protection_qty[candidate_code]
+                    if scenario.grow_acceleration_single_open_lot
+                    else ZERO
+                )
+                candidate_ordinary_pipeline = max(
+                    ZERO,
+                    pipeline_qty[candidate_code] - candidate_open_acceleration,
+                )
+                guard = evaluate_acceleration_shortage_guard(
+                    signal=signal,
+                    forecast_rate=candidate_rate,
+                    lead_time_days=candidate_lead_days,
+                    model_stock_qty=stock[candidate_code],
+                    effective_reserve_qty=candidate_reserve,
+                    effective_pipeline_qty=(
+                        candidate_ordinary_pipeline * candidate_pipeline_fraction
+                        if scenario.grow_acceleration_single_open_lot
+                        else pipeline_qty[candidate_code] * candidate_pipeline_fraction
+                    ),
+                    open_acceleration_protection_qty=candidate_open_acceleration,
+                    require_forecast_growth=(scenario.grow_acceleration_require_forecast_growth),
+                    min_shortage_qty=scenario.grow_acceleration_min_shortage_qty,
+                )
+                context["guard"] = guard
+                if not guard.eligible:
+                    continue
                 candidate_cache_key = (
                     candidate_code,
                     cursor,
@@ -1250,7 +1519,7 @@ def simulate_scenario(
                     candidate_economic_cap,
                     candidate_percentile_target,
                 )
-                requested_units = acceleration_incremental_units(
+                uncapped_requested_units = acceleration_incremental_units(
                     signal=signal,
                     forecast_rate=candidate_rate,
                     coverage_days=candidate_lead_days + policy.order_cadence_days,
@@ -1258,11 +1527,17 @@ def simulate_scenario(
                     ordinary_safety_units=candidate_ordinary_safety,
                     max_units=config.safety_max_units,
                 )
+                requested_units = cap_acceleration_to_projected_shortage(
+                    uncapped_requested_units,
+                    projected_shortage_qty=guard.projected_shortage_qty,
+                    enabled=scenario.grow_acceleration_cap_to_projected_shortage,
+                )
                 capped_units = apply_service_floor_sku_cap(
                     requested_units,
                     unit_cost_rub=current_cost[candidate_code],
                     per_sku_cap_rub=scenario.grow_acceleration_sku_cap_rub,
                 )
+                context["uncapped_requested_qty"] = uncapped_requested_units
                 context["requested_qty"] = requested_units
                 context["sku_capped_qty"] = capped_units
                 if capped_units <= ZERO:
@@ -1285,10 +1560,51 @@ def simulate_scenario(
             )
             for candidate_code, context in acceleration_context.items():
                 signal = context["signal"]
+                guard = context["guard"]
+                uncapped_requested_qty = context["uncapped_requested_qty"]
                 requested_qty = context["requested_qty"]
                 sku_capped_qty = context["sku_capped_qty"]
                 allocated_qty = acceleration_allocations.get(candidate_code, ZERO)
                 diagnostics.acceleration_triggered_recalculations += int(signal.triggered)
+                diagnostics.acceleration_forecast_growth_passed_recalculations += int(
+                    signal.triggered and guard.forecast_growth_passed
+                )
+                diagnostics.acceleration_shortage_passed_recalculations += int(
+                    signal.triggered and guard.shortage_passed
+                )
+                diagnostics.acceleration_guard_eligible_recalculations += int(guard.eligible)
+                shortage_threshold = max(
+                    ZERO,
+                    scenario.grow_acceleration_min_shortage_qty,
+                )
+                gross_shortage_passed = bool(
+                    shortage_threshold <= ZERO
+                    or guard.gross_projected_shortage_qty >= shortage_threshold
+                )
+                blocked_by_open_lot = bool(
+                    scenario.grow_acceleration_single_open_lot
+                    and signal.triggered
+                    and guard.forecast_growth_passed
+                    and gross_shortage_passed
+                    and not guard.shortage_passed
+                )
+                diagnostics.acceleration_single_open_blocked_recalculations += int(
+                    blocked_by_open_lot
+                )
+                if blocked_by_open_lot:
+                    diagnostics.acceleration_single_open_blocked_qty += max(
+                        ZERO,
+                        guard.gross_projected_shortage_qty
+                        - guard.projected_shortage_qty,
+                    )
+                diagnostics.acceleration_uncapped_requested_qty += uncapped_requested_qty
+                diagnostics.acceleration_shortage_cap_reduction_qty += max(
+                    ZERO,
+                    uncapped_requested_qty - requested_qty,
+                )
+                diagnostics.acceleration_shortage_capped_recalculations += int(
+                    requested_qty < uncapped_requested_qty
+                )
                 if requested_qty <= ZERO:
                     continue
                 diagnostics.acceleration_positive_recalculations += 1
@@ -1343,10 +1659,23 @@ def simulate_scenario(
                 "signal",
                 DemandAccelerationSignal(ZERO, ZERO, ZERO, ZERO, ZERO, False),
             )
+            acceleration_guard = acceleration_row.get(
+                "guard",
+                AccelerationShortageGuard(False, ZERO, ZERO, ZERO, False, False),
+            )
+            acceleration_uncapped_requested = _decimal(
+                acceleration_row.get("uncapped_requested_qty")
+            )
             acceleration_requested = _decimal(acceleration_row.get("requested_qty"))
             acceleration_sku_capped = _decimal(acceleration_row.get("sku_capped_qty"))
             acceleration_allocated = _decimal(acceleration_allocations.get(code))
             acceleration_pipeline_share = ONE
+            acceleration_base_min_qty: Decimal | None = None
+            acceleration_base_max_qty: Decimal | None = None
+            acceleration_order_component = ZERO
+            acceleration_open_before = open_acceleration_protection_qty[code]
+            acceleration_open_after = acceleration_open_before
+            ordinary_recommended = ZERO
             grow_protection_reason = "none"
             manual = not scheduled_review
 
@@ -1529,24 +1858,23 @@ def simulate_scenario(
                 if (
                     status == AssortmentStatus.SALE.value
                     and scenario.grow_acceleration_recent_days > 0
-                    and acceleration_signal.triggered
+                    and acceleration_guard.eligible
                     and acceleration_allocated > ZERO
                 ):
                     lead_days = max(
                         lead_days,
                         int(row.get("lead_time_p75_days") or lead_days),
                     )
-                    min_qty = (
-                        _ceil(scenario_rate * Decimal(lead_days) + weighted_signals)
-                        + acceleration_allocated
+                    acceleration_base_min_qty = _ceil(
+                        scenario_rate * Decimal(lead_days) + weighted_signals
                     )
-                    max_qty = (
-                        _ceil(
-                            scenario_rate * Decimal(lead_days + policy.order_cadence_days)
-                            + weighted_signals
-                        )
-                        + acceleration_allocated
+                    acceleration_base_max_qty = _ceil(
+                        scenario_rate * Decimal(lead_days + policy.order_cadence_days)
+                        + weighted_signals
                     )
+                    if not scenario.grow_acceleration_single_open_lot:
+                        min_qty = acceleration_base_min_qty + acceleration_allocated
+                        max_qty = acceleration_base_max_qty + acceleration_allocated
                     acceleration_pipeline_share = acceleration_pipeline_fraction(
                         _clean(row.get("lead_time_confidence")),
                         medium_fraction=(scenario.grow_acceleration_medium_pipeline_fraction),
@@ -1611,6 +1939,8 @@ def simulate_scenario(
             elif status != AssortmentStatus.SALE.value:
                 grow_target_states.pop(code, None)
 
+            ordinary_min_qty = min_qty
+            ordinary_max_qty = max_qty
             target_qty = max_qty + safety_units
             reserve = max(
                 ZERO,
@@ -1621,16 +1951,78 @@ def simulate_scenario(
                     )
                 ),
             )
-            effective_pipeline_qty = pipeline_qty[code] * acceleration_pipeline_share
-            position = stock[code] - reserve + effective_pipeline_qty
-            triggered = position <= min_qty
-            raw = _ceil(max(ZERO, target_qty - position)) if triggered else ZERO
-            recommended = rounded_order_qty(
-                raw,
-                min_order_qty=policy.min_order_qty,
-                max_order_qty=policy.max_order_qty,
-                order_rounding_rules=policy.order_rounding_rules,
-            )
+            if (
+                scenario.grow_acceleration_single_open_lot
+                and acceleration_base_min_qty is not None
+                and acceleration_base_max_qty is not None
+            ):
+                ordinary_position = stock[code] - reserve + pipeline_qty[code]
+                ordinary_triggered = ordinary_position <= ordinary_min_qty
+                ordinary_raw = (
+                    _ceil(
+                        max(
+                            ZERO,
+                            ordinary_max_qty + safety_units - ordinary_position,
+                        )
+                    )
+                    if ordinary_triggered
+                    else ZERO
+                )
+                ordinary_recommended = rounded_order_qty(
+                    ordinary_raw,
+                    min_order_qty=policy.min_order_qty,
+                    max_order_qty=policy.max_order_qty,
+                    order_rounding_rules=policy.order_rounding_rules,
+                )
+                min_qty = (
+                    max(ordinary_min_qty, acceleration_base_min_qty)
+                    + acceleration_open_before
+                    + acceleration_allocated
+                )
+                max_qty = (
+                    max(ordinary_max_qty, acceleration_base_max_qty)
+                    + acceleration_open_before
+                    + acceleration_allocated
+                )
+                target_qty = max_qty + safety_units
+                ordinary_pipeline_qty = max(
+                    ZERO,
+                    pipeline_qty[code] - acceleration_open_before,
+                )
+                effective_pipeline_qty = (
+                    ordinary_pipeline_qty * acceleration_pipeline_share
+                    + acceleration_open_before
+                )
+                position = stock[code] - reserve + effective_pipeline_qty
+                triggered = position <= min_qty
+                raw = _ceil(max(ZERO, target_qty - position)) if triggered else ZERO
+                recommended_with_acceleration = rounded_order_qty(
+                    raw,
+                    min_order_qty=policy.min_order_qty,
+                    max_order_qty=policy.max_order_qty,
+                    order_rounding_rules=policy.order_rounding_rules,
+                )
+                acceleration_order_component = max(
+                    ZERO,
+                    recommended_with_acceleration - ordinary_recommended,
+                )
+                acceleration_order_component = min(
+                    acceleration_allocated,
+                    acceleration_order_component,
+                )
+                recommended = ordinary_recommended + acceleration_order_component
+            else:
+                effective_pipeline_qty = pipeline_qty[code] * acceleration_pipeline_share
+                position = stock[code] - reserve + effective_pipeline_qty
+                triggered = position <= min_qty
+                raw = _ceil(max(ZERO, target_qty - position)) if triggered else ZERO
+                recommended = rounded_order_qty(
+                    raw,
+                    min_order_qty=policy.min_order_qty,
+                    max_order_qty=policy.max_order_qty,
+                    order_rounding_rules=policy.order_rounding_rules,
+                )
+                ordinary_recommended = recommended
             manual_review_action = ""
             if recommended > ZERO and manual:
                 if code in manual_review_seen:
@@ -1642,6 +2034,17 @@ def simulate_scenario(
                 arrival = cursor + timedelta(days=max(1, arrival_lead_days))
                 arrivals[arrival][code] += recommended
                 pipeline_qty[code] += recommended
+                if acceleration_order_component > ZERO:
+                    acceleration_arrivals[arrival][code] += acceleration_order_component
+                    open_acceleration_protection_qty[code] += acceleration_order_component
+                    acceleration_open_after = open_acceleration_protection_qty[code]
+                    diagnostics.acceleration_order_component_qty += (
+                        acceleration_order_component
+                    )
+                    diagnostics.acceleration_open_protection_peak_qty = max(
+                        diagnostics.acceleration_open_protection_peak_qty,
+                        sum(open_acceleration_protection_qty.values(), ZERO),
+                    )
                 metric = model[code]
                 metric.order_qty += recommended
                 metric.order_value_rub += recommended * current_cost[code]
@@ -1730,9 +2133,57 @@ def simulate_scenario(
                         "acceleration_baseline_rate": str(acceleration_signal.baseline_rate),
                         "acceleration_actual_ratio": str(acceleration_signal.rate_ratio),
                         "acceleration_triggered": int(acceleration_signal.triggered),
+                        "acceleration_require_forecast_growth": int(
+                            scenario.grow_acceleration_require_forecast_growth
+                        ),
+                        "acceleration_forecast_growth_passed": int(
+                            acceleration_guard.forecast_growth_passed
+                        ),
+                        "acceleration_min_shortage_qty": str(
+                            scenario.grow_acceleration_min_shortage_qty
+                        ),
+                        "acceleration_projected_demand_to_p75_qty": str(
+                            acceleration_guard.projected_demand_qty
+                        ),
+                        "acceleration_guard_inventory_position_qty": str(
+                            acceleration_guard.inventory_position_qty
+                        ),
+                        "acceleration_projected_shortage_to_p75_qty": str(
+                            acceleration_guard.projected_shortage_qty
+                        ),
+                        "acceleration_gross_projected_shortage_to_p75_qty": str(
+                            acceleration_guard.gross_projected_shortage_qty
+                        ),
+                        "acceleration_shortage_passed": int(acceleration_guard.shortage_passed),
+                        "acceleration_guard_eligible": int(acceleration_guard.eligible),
+                        "acceleration_cap_to_projected_shortage": int(
+                            scenario.grow_acceleration_cap_to_projected_shortage
+                        ),
+                        "acceleration_uncapped_requested_qty": str(acceleration_uncapped_requested),
+                        "acceleration_shortage_cap_reduction_qty": str(
+                            max(
+                                ZERO,
+                                acceleration_uncapped_requested - acceleration_requested,
+                            )
+                        ),
                         "acceleration_requested_qty": str(acceleration_requested),
                         "acceleration_sku_capped_qty": str(acceleration_sku_capped),
                         "acceleration_allocated_qty": str(acceleration_allocated),
+                        "acceleration_single_open_lot": int(
+                            scenario.grow_acceleration_single_open_lot
+                        ),
+                        "acceleration_open_protection_before_qty": str(
+                            acceleration_open_before
+                        ),
+                        "acceleration_open_protection_after_qty": str(
+                            acceleration_open_after
+                        ),
+                        "acceleration_released_on_arrival_qty": str(
+                            released_acceleration_today[code]
+                        ),
+                        "acceleration_order_component_qty": str(
+                            acceleration_order_component
+                        ),
                         "acceleration_unfunded_qty": str(
                             max(ZERO, acceleration_requested - acceleration_allocated)
                         ),
@@ -1749,6 +2200,9 @@ def simulate_scenario(
                         "model_pipeline_qty": str(pipeline_qty[code]),
                         "effective_model_pipeline_qty": str(effective_pipeline_qty),
                         "inventory_position_qty": str(position),
+                        "ordinary_min_stock_qty": str(ordinary_min_qty),
+                        "ordinary_max_stock_qty": str(ordinary_max_qty),
+                        "ordinary_recommended_order_qty": str(ordinary_recommended),
                         "recommended_order_qty_raw": str(raw),
                         "recommended_order_qty": str(recommended),
                         "manual_review_assumed_accepted": int(manual),
@@ -1764,6 +2218,10 @@ def simulate_scenario(
             )
         cursor += timedelta(days=1)
 
+    diagnostics.acceleration_open_protection_ending_qty = sum(
+        open_acceleration_protection_qty.values(),
+        ZERO,
+    )
     return SimulationResult(
         scenario=scenario,
         actual=actual,
@@ -1976,18 +2434,15 @@ def _quick_comparison_rows(
                 "scenario_id": scenario_id,
                 "served_observed_qty": row["served_observed_qty"],
                 "served_observed_delta_to_control_qty": str(
-                    _decimal(row["served_observed_qty"])
-                    - _decimal(control["served_observed_qty"])
+                    _decimal(row["served_observed_qty"]) - _decimal(control["served_observed_qty"])
                 ),
                 "observed_fill_rate": row["observed_fill_rate"],
                 "observed_fill_rate_delta_to_control": str(
-                    _decimal(row["observed_fill_rate"])
-                    - _decimal(control["observed_fill_rate"])
+                    _decimal(row["observed_fill_rate"]) - _decimal(control["observed_fill_rate"])
                 ),
                 "gross_profit_rub": row["gross_profit_rub"],
                 "gross_profit_delta_to_control_rub": str(
-                    _decimal(row["gross_profit_rub"])
-                    - _decimal(control["gross_profit_rub"])
+                    _decimal(row["gross_profit_rub"]) - _decimal(control["gross_profit_rub"])
                 ),
                 "average_inventory_value_rub": row["average_inventory_value_rub"],
                 "capital_delta_to_control_rub": str(
@@ -2006,14 +2461,63 @@ def _quick_comparison_rows(
                 ),
                 "order_value_rub": row["order_value_rub"],
                 "manual_review_created": row["manual_review_created"],
+                "acceleration_require_forecast_growth": row.get(
+                    "grow_acceleration_require_forecast_growth", 0
+                ),
+                "acceleration_min_shortage_qty": row.get("grow_acceleration_min_shortage_qty", "0"),
+                "acceleration_cap_to_projected_shortage": row.get(
+                    "grow_acceleration_cap_to_projected_shortage", 0
+                ),
+                "acceleration_single_open_lot": row.get(
+                    "grow_acceleration_single_open_lot", 0
+                ),
+                "acceleration_triggered_recalculations": row.get(
+                    "acceleration_triggered_recalculations", 0
+                ),
+                "acceleration_forecast_growth_passed_recalculations": row.get(
+                    "acceleration_forecast_growth_passed_recalculations", 0
+                ),
+                "acceleration_shortage_passed_recalculations": row.get(
+                    "acceleration_shortage_passed_recalculations", 0
+                ),
+                "acceleration_guard_eligible_recalculations": row.get(
+                    "acceleration_guard_eligible_recalculations", 0
+                ),
                 "acceleration_positive_recalculations": row.get(
                     "acceleration_positive_recalculations", 0
+                ),
+                "acceleration_shortage_capped_recalculations": row.get(
+                    "acceleration_shortage_capped_recalculations", 0
                 ),
                 "acceleration_budget_limited_recalculations": row.get(
                     "acceleration_budget_limited_recalculations", 0
                 ),
+                "acceleration_uncapped_requested_qty": row.get(
+                    "acceleration_uncapped_requested_qty", "0"
+                ),
+                "acceleration_shortage_cap_reduction_qty": row.get(
+                    "acceleration_shortage_cap_reduction_qty", "0"
+                ),
                 "acceleration_requested_qty": row.get("acceleration_requested_qty", "0"),
                 "acceleration_allocated_qty": row.get("acceleration_allocated_qty", "0"),
+                "acceleration_single_open_blocked_recalculations": row.get(
+                    "acceleration_single_open_blocked_recalculations", 0
+                ),
+                "acceleration_single_open_blocked_qty": row.get(
+                    "acceleration_single_open_blocked_qty", "0"
+                ),
+                "acceleration_order_component_qty": row.get(
+                    "acceleration_order_component_qty", "0"
+                ),
+                "acceleration_released_on_arrival_qty": row.get(
+                    "acceleration_released_on_arrival_qty", "0"
+                ),
+                "acceleration_open_protection_peak_qty": row.get(
+                    "acceleration_open_protection_peak_qty", "0"
+                ),
+                "acceleration_open_protection_ending_qty": row.get(
+                    "acceleration_open_protection_ending_qty", "0"
+                ),
                 "acceptance_passed": row["acceptance_passed"],
                 "diagnostic_only": 1,
             }
@@ -2043,6 +2547,37 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--control-scenario-id")
     parser.add_argument("--hypothesis-scenario-id")
     parser.add_argument("--cautious-scenario-id")
+    parser.add_argument(
+        "--quick-acceleration-guard",
+        action="store_true",
+        help=(
+            "Require recent growth above forecast and projected P75 shortage for "
+            "hypothesis/cautious quick scenarios"
+        ),
+    )
+    parser.add_argument(
+        "--hypothesis-min-shortage-qty",
+        type=Decimal,
+        default=Decimal("2"),
+    )
+    parser.add_argument(
+        "--cautious-min-shortage-qty",
+        type=Decimal,
+        default=Decimal("3"),
+    )
+    parser.add_argument(
+        "--quick-cap-acceleration-to-shortage",
+        action="store_true",
+        help="Cap acceleration add-on by the projected shortage through P75",
+    )
+    parser.add_argument(
+        "--quick-single-open-acceleration-lot",
+        action="store_true",
+        help=(
+            "Treat already ordered acceleration protection as one open SKU lot and "
+            "order only the remaining shortage growth"
+        ),
+    )
     return parser.parse_args()
 
 
@@ -2089,6 +2624,25 @@ def main() -> int:
             hypothesis_scenario_id=args.hypothesis_scenario_id,
             cautious_scenario_id=args.cautious_scenario_id,
         )
+        source_scenario_roles = dict(selection.scenario_roles)
+        if args.quick_cap_acceleration_to_shortage and not args.quick_acceleration_guard:
+            raise ValueError("shortage cap requires --quick-acceleration-guard")
+        if args.quick_single_open_acceleration_lot and not (
+            args.quick_acceleration_guard
+            and args.quick_cap_acceleration_to_shortage
+        ):
+            raise ValueError(
+                "single open acceleration lot requires --quick-acceleration-guard "
+                "and --quick-cap-acceleration-to-shortage"
+            )
+        if args.quick_acceleration_guard:
+            selection = apply_quick_acceleration_guard(
+                selection,
+                hypothesis_min_shortage_qty=args.hypothesis_min_shortage_qty,
+                cautious_min_shortage_qty=args.cautious_min_shortage_qty,
+                cap_to_projected_shortage=(args.quick_cap_acceleration_to_shortage),
+                single_open_lot=(args.quick_single_open_acceleration_lot),
+            )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
     scenarios = selection.scenarios
@@ -2251,6 +2805,15 @@ def main() -> int:
             "compact_metrics_only" if selection.run_mode == RUN_MODE_QUICK else "full_detail"
         ),
         "scenario_roles": dict(selection.scenario_roles),
+        "source_scenario_roles": source_scenario_roles,
+        "quick_acceleration_guard": {
+            "enabled": bool(args.quick_acceleration_guard),
+            "require_forecast_growth": bool(args.quick_acceleration_guard),
+            "cap_to_projected_shortage": bool(args.quick_cap_acceleration_to_shortage),
+            "single_open_lot": bool(args.quick_single_open_acceleration_lot),
+            "hypothesis_min_shortage_qty": str(args.hypothesis_min_shortage_qty),
+            "cautious_min_shortage_qty": str(args.cautious_min_shortage_qty),
+        },
         "base_scenario_id": selection.base_scenario_id,
         "scenario_count": len(scenarios),
         "control_scenario_id": selection.control_scenario_id,
@@ -2267,7 +2830,19 @@ def main() -> int:
             "lead_time_usage": "p50_for_simulated_arrival_and_p75_for_positive_economic_service_or_acceleration_coverage",
             "economic_safety_stock": "completed_underforecast_error_capped_by_margin_vs_holding_cost_and_applied_only_above_the_grow_service_floor",
             "grow_service_floor": "sale_stage_p75_or_p90_minimum;budgeted_p90_has_per_sku_and_concurrent_stage_value_caps_with_marginal_saved_margin_allocation",
-            "grow_acceleration": "sale_stage_completed_recent_7_or_14_day_rate_vs_prior_28_or_42_days;protect_max_of_p90_and_acceleration_gap_without_per_sku_economic_quantity_cap;concurrent_stage_budget_ranked_by_expected_saved_margin_per_purchase_ruble;manual_review;pipeline_fraction_1_0_0_75_0_5_by_lead_time_confidence",
+            "grow_acceleration": (
+                "sale_stage_completed_recent_rate_above_prior_window_multiplier_and_current_forecast;remaining_projected_shortage_to_p75_after_full_open_acceleration_protection_at_or_above_role_threshold;acceleration_add_on_capped_by_remaining_shortage;one_open_acceleration_lot_per_sku;new_acceleration_order_component_only_on_shortage_growth;open_protection_released_on_arrival;ordinary_grow_target_state_excludes_acceleration;no_per_sku_economic_quantity_cap;concurrent_stage_budget_ranked_by_expected_saved_margin_per_purchase_ruble;manual_review;ordinary_pipeline_fraction_1_0_0_75_0_5_and_open_acceleration_pipeline_fraction_1"
+                if args.quick_single_open_acceleration_lot
+                else (
+                    "sale_stage_completed_recent_rate_above_prior_window_multiplier_and_current_forecast;projected_shortage_to_p75_at_or_above_role_threshold;acceleration_add_on_capped_by_projected_shortage_to_p75;no_per_sku_economic_quantity_cap;concurrent_stage_budget_ranked_by_expected_saved_margin_per_purchase_ruble;manual_review;pipeline_fraction_1_0_0_75_0_5_by_lead_time_confidence"
+                    if args.quick_cap_acceleration_to_shortage
+                    else (
+                        "sale_stage_completed_recent_rate_above_prior_window_multiplier_and_current_forecast;projected_shortage_to_p75_at_or_above_role_threshold;protect_max_of_p90_and_acceleration_gap_without_per_sku_economic_quantity_cap;concurrent_stage_budget_ranked_by_expected_saved_margin_per_purchase_ruble;manual_review;pipeline_fraction_1_0_0_75_0_5_by_lead_time_confidence"
+                        if args.quick_acceleration_guard
+                        else "sale_stage_completed_recent_7_or_14_day_rate_vs_prior_28_or_42_days;protect_max_of_p90_and_acceleration_gap_without_per_sku_economic_quantity_cap;concurrent_stage_budget_ranked_by_expected_saved_margin_per_purchase_ruble;manual_review;pipeline_fraction_1_0_0_75_0_5_by_lead_time_confidence"
+                    )
+                )
+            ),
             "grow_weekly_target_protection": "min_max_reduction_limited_to_10_20_30_percent_per_scheduled_week;event_reviews_may_raise_not_lower",
             "grow_entry_protection": "entry_min_max_may_rise_but_not_fall_for_2_4_6_weeks",
             "focused_scenario_design": (
@@ -2290,10 +2865,7 @@ def main() -> int:
         "control_actual": control_actual,
         "control_model": control_model,
         "quick_comparison": quick_comparison,
-        "files": {
-            filename: _sha256(output / filename)
-            for filename in artifact_filenames
-        },
+        "files": {filename: _sha256(output / filename) for filename in artifact_filenames},
     }
     (output / "frozen-summary.json").write_text(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n",

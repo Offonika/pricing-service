@@ -5,6 +5,7 @@ def test_frozen_report_metric_cards_render_ruble_values_without_usd_format() -> 
     analysis = {
         "generated_at": "2026-08-11T00:00:00Z",
         "cohort": {"sku_count": 1, "classification_run_id": 1},
+        "preflight_directory_name": "next-stage-model-preflight-service-floor-v5",
         "acceptance": {
             "gross_profit_not_lower": False,
             "fill_rate_not_lower": False,
@@ -42,10 +43,19 @@ def test_frozen_report_metric_cards_render_ruble_values_without_usd_format() -> 
             "sale_sku_count": 1_700,
             "entered_sale_sku_count": 1_200,
             "economic_safety_binding_share": 0.98,
+            "service_floor_limited_share": 0.80,
+            "service_floor_limited_sku_count": 8,
+            "service_floor_sku_count": 10,
+            "service_floor_allocated_share": 0.44,
+            "p90_incremental_order_qty": 100,
+            "p90_incremental_ending_inventory_qty": 50,
+            "p90_incremental_served_total_qty": 10,
+            "p90_budget_service_recovery_share": 0.5,
         },
         "actual": {
             "observed_fill_rate": "1.0000",
             "hidden_fill_rate": "0.6174",
+            "gmroi_annualized": "1.83",
         },
         "model": {
             "observed_fill_rate": "0.9334",
@@ -62,6 +72,38 @@ def test_frozen_report_metric_cards_render_ruble_values_without_usd_format() -> 
             "average_inventory_value_rub": "0",
         },
         "control_scenario": {"economic_contribution_rub": 600_000},
+        "p75_scenario": {
+            "observed_fill_rate": 0.93,
+            "served_observed_delta_vs_control_qty": -3,
+            "gross_profit_delta_vs_control_rub": 50_000,
+            "capital_delta_vs_control_rub": 700_000,
+            "gross_profit_rub": 1_050_000,
+            "average_inventory_value_rub": 2_700_000,
+            "economic_contribution_rub": 550_000,
+        },
+        "p90_scenario": {
+            "observed_fill_rate": 0.94,
+            "observed_fill_delta_vs_control": 0.01,
+            "served_observed_delta_vs_control_qty": 10,
+            "served_delta_vs_control_qty": 12,
+            "gross_profit_delta_vs_control_rub": 100_000,
+            "capital_delta_vs_control_rub": 1_000_000,
+            "gross_profit_delta_rub": -900_000,
+            "capital_delta_rub": -500_000,
+            "gross_profit_rub": 1_100_000,
+            "average_inventory_value_rub": 3_000_000,
+            "economic_contribution_rub": 500_000,
+            "gmroi_annualized": 1.75,
+        },
+        "p90_budget_scenario": {
+            "observed_fill_rate": 0.935,
+            "served_observed_delta_vs_control_qty": 5,
+            "gross_profit_delta_vs_control_rub": 25_000,
+            "capital_delta_vs_control_rub": 500_000,
+            "gross_profit_rub": 1_025_000,
+            "average_inventory_value_rub": 2_500_000,
+            "economic_contribution_rub": 525_000,
+        },
         "best_service_scenario": {
             "observed_fill_rate": 0.9344,
             "gross_profit_delta_vs_control_rub": 700_000,
@@ -88,24 +130,22 @@ def test_frozen_report_metric_cards_render_ruble_values_without_usd_format() -> 
 
     artifact = build_artifact(analysis)
 
-    assert artifact["manifest"]["title"] == (
-        "Автозаказ дисплеев: защита «Растим» улучшила результат, но не закрыла дефицит"
-    )
+    assert artifact["manifest"]["title"] == ("Автозаказ дисплеев: сервисный P90 помогает мало")
     sources = {source["id"]: source for source in artifact["manifest"]["sources"]}
     assert sources["preflight_manifest"]["path"] == (
-        "next-stage-model-preflight-grow-protection-v3/run-manifest.json"
+        "next-stage-model-preflight-service-floor-v5/run-manifest.json"
     )
     headline = artifact["snapshot"]["datasets"]["headline"][0]
-    assert headline["gross_profit_delta_million_rub"] == -10.07181562
-    assert headline["capital_delta_million_rub"] == -9.67528562
+    assert headline["p90_incremental_profit_million_rub"] == 0.1
+    assert headline["p90_incremental_capital_million_rub"] == 1.0
     cards = {card["id"]: card for card in artifact["manifest"]["cards"]}
-    assert cards["profit_delta_card"]["metrics"][0] == {
-        "label": "Δ прибыль к факту, млн ₽",
-        "field": "gross_profit_delta_million_rub",
+    assert cards["p90_sales_card"]["metrics"][0] == {
+        "label": "Дополнительные продажи",
+        "field": "p90_incremental_sales_qty",
         "format": "number",
         "signed": True,
     }
     assert cards["acceptance_card"]["metrics"][0]["field"] == "passed_scenario_count"
     source_notes = build_source_notes(analysis)
-    assert "| Обмен сервиса на капитал |" in source_notes
+    assert "| Сравнение правил |" in source_notes
     assert "Site demand is excluded" not in source_notes

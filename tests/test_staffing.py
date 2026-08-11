@@ -21,15 +21,15 @@ from app.workers import staffing as staffing_worker
 from tasks import sync_staffing as staffing_task
 
 
-def test_staffing_cron_template_is_prepared_for_active_release() -> None:
+def test_staffing_cron_template_stays_outside_active_release_until_integration() -> None:
     repo_root = Path(__file__).resolve().parents[1]
     cron = (repo_root / "infra/cron/receivable_ledger_sync.cron").read_text(encoding="utf-8")
     active_release = "/opt/MM/pricing-service-task43-current"
     staffing_line = next(line for line in cron.splitlines() if "staffing_sync.sh" in line)
 
-    assert f"REPO_DIR={active_release}" in staffing_line
-    assert f"{active_release}/infra/cron/staffing_sync.sh" in staffing_line
-    assert "/opt/MM/pricing-service/infra/cron/staffing_sync.sh" not in staffing_line
+    assert "/opt/MM/pricing-service/infra/cron/staffing_sync.sh" in staffing_line
+    assert f"REPO_DIR={active_release}" not in staffing_line
+    assert f"{active_release}/infra/cron/staffing_sync.sh" not in staffing_line
 
 
 def _staff_rows() -> list[StaffMemberRow]:

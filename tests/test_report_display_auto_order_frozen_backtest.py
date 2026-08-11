@@ -8,16 +8,209 @@ from tasks.display_auto_order_backtest_preflight import (
     load_scenario_config,
 )
 from tasks.report_display_auto_order_frozen_backtest import (
+    DemandAccelerationSignal,
     FrozenScenario,
     ServiceFloorCandidate,
     _free_initial_pipeline,
+    acceleration_incremental_units,
+    acceleration_pipeline_fraction,
     allocate_service_floor_budget,
     apply_grow_target_protection,
     apply_service_floor_sku_cap,
+    calculate_demand_acceleration,
+    combine_service_floor_with_economic_stock,
     empirical_underforecast_percentile,
     historical_forecast_error_samples,
     simulate_scenario,
 )
+
+
+def test_acceleration_uses_only_completed_past_days() -> None:
+    as_of = date(2026, 3, 1)
+    sales = {
+        as_of - timedelta(days=20): Decimal("4"),
+        as_of - timedelta(days=6): Decimal("1"),
+        as_of - timedelta(days=1): Decimal("1"),
+        as_of: Decimal("100"),
+        as_of + timedelta(days=1): Decimal("1000"),
+    }
+
+    result = calculate_demand_acceleration(
+        sales,
+        as_of=as_of,
+        recent_days=7,
+        baseline_days=28,
+        min_recent_sales=Decimal("2"),
+        rate_multiplier=Decimal("1.5"),
+    )
+
+    assert result.recent_qty == Decimal("2")
+    assert result.baseline_qty == Decimal("4")
+    assert result.triggered is True
+
+
+def test_acceleration_requires_minimum_recent_sales_and_rate_growth() -> None:
+    as_of = date(2026, 3, 1)
+    sales = {
+        as_of - timedelta(days=20): Decimal("8"),
+        as_of - timedelta(days=2): Decimal("1"),
+    }
+
+    result = calculate_demand_acceleration(
+        sales,
+        as_of=as_of,
+        recent_days=14,
+        baseline_days=42,
+        min_recent_sales=Decimal("2"),
+        rate_multiplier=Decimal("1.5"),
+    )
+
+    assert result.triggered is False
+
+
+def test_acceleration_increment_is_only_the_economic_amount_above_normal_p90() -> None:
+    signal = DemandAccelerationSignal(
+        recent_qty=Decimal("4"),
+        baseline_qty=Decimal("1"),
+        recent_rate=Decimal("0.5"),
+        baseline_rate=Decimal("0.05"),
+        rate_ratio=Decimal("10"),
+        triggered=True,
+    )
+
+    assert acceleration_incremental_units(
+        signal=signal,
+        forecast_rate=Decimal("0.1"),
+        coverage_days=20,
+        percentile_safety_units=Decimal("2"),
+        economic_cap_units=Decimal("6"),
+        max_units=1000,
+    ) == Decimal("4")
+
+
+def test_acceleration_pipeline_haircut_follows_lead_time_confidence() -> None:
+    assert acceleration_pipeline_fraction(
+        "high",
+        medium_fraction=Decimal("0.75"),
+        low_fraction=Decimal("0.5"),
+    ) == Decimal("1")
+    assert acceleration_pipeline_fraction(
+        "medium",
+        medium_fraction=Decimal("0.75"),
+        low_fraction=Decimal("0.5"),
+    ) == Decimal("0.75")
+    assert acceleration_pipeline_fraction(
+        "low",
+        medium_fraction=Decimal("0.75"),
+        low_fraction=Decimal("0.5"),
+    ) == Decimal("0.5")
+
+
+def test_acceleration_review_uses_past_sales_and_pipeline_confidence() -> None:
+    start = date(2026, 3, 1)
+    second = start + timedelta(days=1)
+    cost = CarryingCostScenario(
+        name="base",
+        capital_annual_rate=Decimal("0.3"),
+        storage_annual_rate=Decimal("0.1"),
+        obsolescence_annual_rate=Decimal("0.25"),
+    )
+    facts = {
+        start: [
+            {
+                "nomenclature_code": "SKU-1",
+                "status": "sale",
+                "physical_stock_qty": "0",
+                "observed_sales_qty": "1",
+                "placed_incoming_qty": "0",
+            }
+        ],
+        second: [
+            {
+                "nomenclature_code": "SKU-1",
+                "status": "sale",
+                "physical_stock_qty": "0",
+                "observed_sales_qty": "0",
+                "placed_incoming_qty": "0",
+            }
+        ],
+    }
+    decisions = {
+        start: [
+            {
+                "decision_date": start.isoformat(),
+                "nomenclature_code": "SKU-1",
+                "scheduled_review": "1",
+                "status": "sale",
+                "forecast_rate_sales": "0.01",
+                "lead_time_p50_days": "5",
+                "lead_time_p75_days": "5",
+                "inventory_cost_per_unit_rub": "1",
+                "gross_margin_per_unit_rub": "100",
+            }
+        ]
+    }
+    sales = {
+        "SKU-1": {
+            start - timedelta(days=6): Decimal("1"),
+            start - timedelta(days=4): Decimal("1"),
+            start - timedelta(days=2): Decimal("1"),
+            start: Decimal("1"),
+        }
+    }
+    samples = [Decimal("0")] * 6 + [Decimal("10")] * 2
+    sample_cache = {("SKU-1", business_date, 6): samples for business_date in (start, second)}
+
+    def run(confidence: str) -> object:
+        decisions[start][0]["lead_time_confidence"] = confidence
+        return simulate_scenario(
+            scenario=FrozenScenario(
+                scenario_id=f"grow_accel_{confidence}",
+                stage_profile="typical",
+                kmp4_weight=Decimal("0"),
+                cost=cost,
+                forecast_error_percentile=Decimal("0.75"),
+                grow_acceleration_profile="fast",
+                grow_acceleration_recent_days=7,
+                grow_acceleration_baseline_days=28,
+                grow_acceleration_min_recent_sales=Decimal("4"),
+                grow_acceleration_rate_multiplier=Decimal("1.5"),
+                grow_acceleration_sku_cap_rub=Decimal("50000"),
+                grow_acceleration_stage_budget_rub=Decimal("8000000"),
+                grow_acceleration_medium_pipeline_fraction=Decimal("0.75"),
+                grow_acceleration_low_pipeline_fraction=Decimal("0.5"),
+            ),
+            fact_rows_by_date=facts,
+            decision_rows_by_date=decisions,
+            initial_pipeline_rows=[
+                {
+                    "nomenclature_code": "SKU-1",
+                    "arrival_at": (second + timedelta(days=10)).isoformat(),
+                    "quantity": "5",
+                }
+            ],
+            sales_by_code=sales,
+            policy=AutoOrderPolicy(order_cadence_days=1),
+            config=load_scenario_config(
+                Path("config/assortment/display-auto-order-backtest-scenarios.json")
+            ),
+            date_from=start,
+            date_to=second,
+            keep_detail=True,
+            demand_sample_cache=dict(sample_cache),
+        )
+
+    high = run("high")
+    medium = run("medium")
+    low = run("low")
+
+    assert high.model["SKU-1"].order_qty == Decimal("0")
+    assert medium.model["SKU-1"].order_qty == Decimal("2")
+    assert low.model["SKU-1"].order_qty == Decimal("3")
+    assert medium.decision_rows[-1]["decision_date"] == second.isoformat()
+    assert medium.decision_rows[-1]["decision_trigger"] == "acceleration_review"
+    assert medium.decision_rows[-1]["acceleration_allocated_qty"] == "4"
+    assert medium.decision_rows[-1]["acceleration_pipeline_fraction"] == "0.75"
 
 
 def test_service_floor_sku_cap_uses_whole_affordable_units() -> None:
@@ -50,6 +243,19 @@ def test_service_floor_stage_budget_prioritizes_marginal_saved_margin() -> None:
     )
 
     assert allocated == {"HIGH": Decimal("2"), "LOW": Decimal("0")}
+
+
+def test_service_floor_is_minimum_and_economic_stock_can_add_above_it() -> None:
+    assert combine_service_floor_with_economic_stock(
+        service_floor_units=Decimal("6"),
+        economic_cap_units=Decimal("7"),
+        economic_percentile_target_units=Decimal("8"),
+    ) == Decimal("7")
+    assert combine_service_floor_with_economic_stock(
+        service_floor_units=Decimal("6"),
+        economic_cap_units=Decimal("4"),
+        economic_percentile_target_units=Decimal("8"),
+    ) == Decimal("6")
 
 
 def test_initial_pipeline_excludes_customer_placed_quantity() -> None:
@@ -715,7 +921,7 @@ def test_grow_service_floor_is_not_cut_by_sku_economic_filter() -> None:
         stage_profile="typical",
         kmp4_weight=Decimal("0.5"),
         grow_weekly_reduction_cap=Decimal("0.2"),
-        forecast_error_percentile=Decimal("0.75"),
+        forecast_error_percentile=Decimal("0.9"),
         grow_entry_protection_weeks=2,
         grow_service_floor_percentile=Decimal("0.75"),
         cost=CarryingCostScenario(

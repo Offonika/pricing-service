@@ -80,17 +80,19 @@ updated_at: "2026-08-11"
 Первый штатный запуск после cutover ожидается 2026-08-12 в 06:20 МСК. До его
 успешного readback следующий job не переключать.
 
-## Preparation: staffing sync
+## Отменённая canary-подготовка: staffing sync
 
-2026-08-11 `staffing_sync` подготовлен как второй canary, но live cron не
-переключён. Проверка показала:
+2026-08-11 `staffing_sync` был подготовлен как второй canary, но live cron не
+переключался. После диагностики job исключён из cron-canary и вынесен в отдельную
+межпроектную задачу: сначала требуется спроектировать источники плановых смен и
+фактических выходов. Проверка показала:
 
 - wrapper, task, worker, staffing service и тесты в mutable checkout и active
   release совпадают побайтово;
 - isolated CLI-run на SQLite дал одинаковые counters и итоговое состояние в обеих
   версиях; повторный запуск не создал дублей, SHA-256 результата совпал;
-- cron-шаблон в репозитории подготовлен к явному запуску через
-  `/opt/MM/pricing-service-task43-current` с `REPO_DIR`;
+- подготовленная staffing-строка cron-шаблона возвращена на mutable checkout и не
+  направляет незавершённую интеграцию в active release;
 - live cron по-прежнему запускает staffing из `/opt/MM/pricing-service`;
 - переменные `STAFFING_SYNC_STAFF_FILE`, `STAFFING_SYNC_PLAN_FILE` и
   `STAFFING_SYNC_FACT_FILE` в production `.env` отсутствуют; сохранённые логи с
@@ -98,13 +100,12 @@ updated_at: "2026-08-11"
 - в production DB есть 308 записей сотрудников с последним обновлением
   2026-04-17, но нет планов смен, факта смен и staffing snapshots.
 
-До cutover требуется определить producer/system of record для трёх входных JSON,
-создать реальные входы и выполнить isolated zero-regression сравнение на их копии.
-Дополнительный gate — успешный readback первого canary 2026-08-12 в 06:20 МСК.
+Дальнейшая работа ведётся в
+`/opt/MM/mm-compensation/docs/specs/bitrix-staffing-v2-shift-coverage-integration.md`.
+Этот runbook не разрешает live cutover `staffing_sync`.
 
-Rollback будущего cutover: вернуть только staffing-строку на
-`/opt/MM/pricing-service/infra/cron/staffing_sync.sh`; остальные строки файла cron
-не менять.
+Если отдельная интеграция будет принята и реализована, её rollout и rollback должны
+быть согласованы в её spec после проверки реальных входов.
 
 ## Проверка после изменения расписания
 

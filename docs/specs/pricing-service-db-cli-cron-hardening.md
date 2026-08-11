@@ -112,17 +112,17 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Переключить одну live cron-строку на active release symlink с готовым rollback.
 - [ ] Подтвердить первый штатный scheduled-run canary 2026-08-12 в 06:20 МСК;
       до readback не переключать следующий job.
-- [x] `staffing_sync` выбран вторым canary; разрешена только подготовка и
-      isolated DB-проверка, live cron остаётся на mutable checkout до успешного
-      readback первого canary.
+- [x] ОТМЕНЕНО (2026-08-11): `staffing_sync` был выбран вторым canary в режиме
+      preparation-only. После диагностики job исключён из cron-canary: это
+      незавершённая бизнес-интеграция без источников плана и факта смен.
 - [x] Подтвердить побайтовое совпадение staffing wrapper/task/worker/service между
       mutable checkout и active release.
 - [x] Подтвердить одинаковый isolated CLI-run обеих версий и идемпотентный повтор
       без дублей.
-- [ ] Определить producer/system of record и настроить три production JSON-входа
-      `staffing_sync`; до этого job не считать рабочим canary.
-- [ ] Повторить isolated zero-regression сравнение на копии реальных входов и
-      только после обоих gate рассматривать live cutover.
+- [x] ОТМЕНЕНО (2026-08-11) в этом spec: выбор producer/system of record и настройка
+      трёх JSON-входов вынесены в отдельную staffing-интеграцию.
+- [x] ОТМЕНЕНО (2026-08-11) в этом spec: zero-regression проверка на реальных
+      staffing-входах переносится в rollout отдельной интеграции.
 
 # Review Notes / Risks
 
@@ -158,9 +158,12 @@ JSON/CSV/XLSX артефактов сохраняются.
 - 2026-08-11 — rollout переведён на canary-first с обязательным zero-regression gate.
 - 2026-08-11 — первый canary `pricing-display-supplier-lead-time-refresh` прошёл
   побайтовое сравнение и переключён на active release; scheduled readback ожидается.
-- 2026-08-11 — `staffing_sync` выбран вторым canary в режиме preparation-only.
+- ОТМЕНЕНО (2026-08-11): `staffing_sync` был выбран вторым canary в режиме
+  preparation-only; решение заменено отдельной задачей по интеграции смен.
 - 2026-08-11 — подготовка `staffing_sync` подтвердила code parity и isolated
   idempotency; обнаружен блокер — production JSON-входы не настроены.
+- 2026-08-11 — `staffing_sync` исключён из cron-canary; интеграция Staffing v2,
+  плановых смен и фактических выходов вынесена в отдельную задачу.
 - 2026-08-11 — DB/CLI/cron/idempotency выбран следующим архитектурным аудитом
   `pricing-service`.
 - 2026-07-14 — accepted Release B spec; started read-only nightly matching slice.

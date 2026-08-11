@@ -1,5 +1,5 @@
 {
-  "schema": "display_auto_order_backtest_scenarios.v1",
+  "schema": "display_auto_order_backtest_scenarios.v2",
   "kmp4_weights": [0, 0.5, 1],
   "kmp4_queue_days": 14,
   "site_queue_days": 14,
@@ -70,6 +70,41 @@
         "percentile": 0.9,
         "per_sku_cap_rub": 50000,
         "stage_budget_rub": 8000000
+      }
+    ],
+    "acceleration_scenarios": [
+      {
+        "name": "fast",
+        "recent_days": 7,
+        "baseline_days": 28,
+        "min_recent_sales": 2,
+        "rate_multiplier": 1.5,
+        "per_sku_cap_rub": 50000,
+        "stage_budget_rub": 8000000,
+        "medium_pipeline_fraction": 0.75,
+        "low_pipeline_fraction": 0.5
+      },
+      {
+        "name": "balanced",
+        "recent_days": 14,
+        "baseline_days": 42,
+        "min_recent_sales": 2,
+        "rate_multiplier": 1.5,
+        "per_sku_cap_rub": 50000,
+        "stage_budget_rub": 8000000,
+        "medium_pipeline_fraction": 0.75,
+        "low_pipeline_fraction": 0.5
+      },
+      {
+        "name": "strict",
+        "recent_days": 14,
+        "baseline_days": 42,
+        "min_recent_sales": 3,
+        "rate_multiplier": 2,
+        "per_sku_cap_rub": 50000,
+        "stage_budget_rub": 8000000,
+        "medium_pipeline_fraction": 0.75,
+        "low_pipeline_fraction": 0.5
       }
     ]
   },

@@ -49,12 +49,13 @@ from tasks.report_display_supplier_lead_time_history import display_group_key
 ZERO = Decimal("0")
 ONE = Decimal("1")
 EMPTY_REF_SQL = "0x00000000000000000000000000000000"
-PREFLIGHT_SCHEMA = "display_auto_order_backtest_preflight.v1"
+PREFLIGHT_SCHEMA = "display_auto_order_backtest_preflight.v2"
 REQUIRED_PREFLIGHT_FILES = (
     "decision-inputs.csv",
     "scenario-decisions.csv",
     "lifecycle-daily.csv",
     "daily-facts.csv",
+    "historical-sales.csv",
     "initial-pipeline.csv",
     "source-quality.csv",
     "reconciliations.csv",
@@ -141,6 +142,19 @@ class GrowServiceFloorScenario:
 
 
 @dataclass(frozen=True)
+class GrowAccelerationScenario:
+    name: str
+    recent_days: int
+    baseline_days: int
+    min_recent_sales: Decimal
+    rate_multiplier: Decimal
+    per_sku_cap_rub: Decimal
+    stage_budget_rub: Decimal
+    medium_pipeline_fraction: Decimal
+    low_pipeline_fraction: Decimal
+
+
+@dataclass(frozen=True)
 class BacktestScenarioConfig:
     kmp4_weights: tuple[Decimal, ...]
     kmp4_queue_days: int
@@ -164,6 +178,7 @@ class BacktestScenarioConfig:
     grow_entry_protection_weeks: tuple[int, ...]
     grow_balanced_design_offsets: tuple[int, ...]
     grow_service_floor_scenarios: tuple[GrowServiceFloorScenario, ...]
+    grow_acceleration_scenarios: tuple[GrowAccelerationScenario, ...]
     quantity_tolerance: Decimal
 
     @property
@@ -288,6 +303,7 @@ class PreflightTables:
     scenario_decisions: list[dict[str, Any]]
     lifecycle_daily: list[dict[str, Any]]
     daily_facts: list[dict[str, Any]]
+    historical_sales: list[dict[str, Any]]
     initial_pipeline: list[dict[str, Any]]
     source_quality: list[dict[str, Any]]
     reconciliations: list[dict[str, Any]]
@@ -327,6 +343,20 @@ def load_scenario_config(path: Path) -> BacktestScenarioConfig:
         )
         for row in grow.get("service_floor_scenarios", ())
     )
+    acceleration_scenarios = tuple(
+        GrowAccelerationScenario(
+            name=_clean(row.get("name")),
+            recent_days=int(row.get("recent_days") or 0),
+            baseline_days=int(row.get("baseline_days") or 0),
+            min_recent_sales=_decimal(row.get("min_recent_sales")),
+            rate_multiplier=_decimal(row.get("rate_multiplier")),
+            per_sku_cap_rub=_decimal(row.get("per_sku_cap_rub")),
+            stage_budget_rub=_decimal(row.get("stage_budget_rub")),
+            medium_pipeline_fraction=_decimal(row.get("medium_pipeline_fraction")),
+            low_pipeline_fraction=_decimal(row.get("low_pipeline_fraction")),
+        )
+        for row in grow.get("acceleration_scenarios", ())
+    )
     config = BacktestScenarioConfig(
         kmp4_weights=tuple(_decimal(value) for value in payload.get("kmp4_weights", ())),
         kmp4_queue_days=int(payload.get("kmp4_queue_days") or 0),
@@ -358,6 +388,7 @@ def load_scenario_config(path: Path) -> BacktestScenarioConfig:
             int(value) for value in grow.get("balanced_design_offsets", ())
         ),
         grow_service_floor_scenarios=service_floor_scenarios,
+        grow_acceleration_scenarios=acceleration_scenarios,
         quantity_tolerance=_decimal(acceptance.get("quantity_tolerance") or "0.001"),
     )
     if not config.kmp4_weights or any(value < ZERO for value in config.kmp4_weights):
@@ -424,6 +455,26 @@ def load_scenario_config(path: Path) -> BacktestScenarioConfig:
         for row in config.grow_service_floor_scenarios
     ):
         raise ValueError("grow service floor scenarios contain invalid percentiles or budgets")
+    if len(config.grow_acceleration_scenarios) != 3:
+        raise ValueError("grow acceleration design must contain three scenarios")
+    if len({row.name for row in config.grow_acceleration_scenarios}) != len(
+        config.grow_acceleration_scenarios
+    ):
+        raise ValueError("grow acceleration scenario names must be unique")
+    if any(
+        not row.name
+        or row.recent_days <= 0
+        or row.baseline_days <= 0
+        or row.min_recent_sales <= ZERO
+        or row.rate_multiplier <= ONE
+        or row.per_sku_cap_rub <= ZERO
+        or row.stage_budget_rub <= ZERO
+        or row.low_pipeline_fraction < ZERO
+        or row.medium_pipeline_fraction < row.low_pipeline_fraction
+        or row.medium_pipeline_fraction > ONE
+        for row in config.grow_acceleration_scenarios
+    ):
+        raise ValueError("grow acceleration scenarios contain invalid windows, limits or fractions")
     return config
 
 
@@ -432,7 +483,7 @@ def build_focused_scenario_definitions(
     *,
     review_cadence_days: int,
 ) -> list[dict[str, Any]]:
-    """Build controls, 18 economic-cap variants and three service-floor variants."""
+    """Build controls plus focused protection, service-floor and acceleration variants."""
 
     site_profile = next(
         row for row in config.site_signal_profiles if row.name == config.grow_site_profile
@@ -474,6 +525,15 @@ def build_focused_scenario_definitions(
             "grow_service_floor_percentile": "0",
             "grow_service_floor_sku_cap_rub": "0",
             "grow_service_floor_stage_budget_rub": "0",
+            "grow_acceleration_profile": "off",
+            "grow_acceleration_recent_days": 0,
+            "grow_acceleration_baseline_days": 0,
+            "grow_acceleration_min_recent_sales": "0",
+            "grow_acceleration_rate_multiplier": "0",
+            "grow_acceleration_sku_cap_rub": "0",
+            "grow_acceleration_stage_budget_rub": "0",
+            "grow_acceleration_medium_pipeline_fraction": "1",
+            "grow_acceleration_low_pipeline_fraction": "1",
         },
         {
             **common,
@@ -484,6 +544,15 @@ def build_focused_scenario_definitions(
             "grow_service_floor_percentile": "0",
             "grow_service_floor_sku_cap_rub": "0",
             "grow_service_floor_stage_budget_rub": "0",
+            "grow_acceleration_profile": "off",
+            "grow_acceleration_recent_days": 0,
+            "grow_acceleration_baseline_days": 0,
+            "grow_acceleration_min_recent_sales": "0",
+            "grow_acceleration_rate_multiplier": "0",
+            "grow_acceleration_sku_cap_rub": "0",
+            "grow_acceleration_stage_budget_rub": "0",
+            "grow_acceleration_medium_pipeline_fraction": "1",
+            "grow_acceleration_low_pipeline_fraction": "1",
         },
     ]
     week_count = len(config.grow_entry_protection_weeks)
@@ -507,18 +576,30 @@ def build_focused_scenario_definitions(
                         "grow_service_floor_percentile": "0",
                         "grow_service_floor_sku_cap_rub": "0",
                         "grow_service_floor_stage_budget_rub": "0",
+                        "grow_acceleration_profile": "off",
+                        "grow_acceleration_recent_days": 0,
+                        "grow_acceleration_baseline_days": 0,
+                        "grow_acceleration_min_recent_sales": "0",
+                        "grow_acceleration_rate_multiplier": "0",
+                        "grow_acceleration_sku_cap_rub": "0",
+                        "grow_acceleration_stage_budget_rub": "0",
+                        "grow_acceleration_medium_pipeline_fraction": "1",
+                        "grow_acceleration_low_pipeline_fraction": "1",
                         "balanced_design_offset": design_offset,
                     }
                 )
     central_cap = Decimal("0.2")
     central_weeks = 4
+    central_economic_percentile = Decimal("0.9")
     if (
         central_cap not in config.grow_weekly_reduction_caps
         or central_weeks not in config.grow_entry_protection_weeks
+        or central_economic_percentile not in config.grow_forecast_error_percentiles
     ):
-        raise ValueError("service floor design requires the central 20% / 4 week protection")
+        raise ValueError("service floor design requires the central 20% / P90 / 4 week protection")
     for floor in config.grow_service_floor_scenarios:
-        percentile_token = int(floor.percentile * Decimal("100"))
+        floor_token = int(floor.percentile * Decimal("100"))
+        economic_token = int(central_economic_percentile * Decimal("100"))
         budget_token = (
             f"_sku{int(floor.per_sku_cap_rub)}_stage{int(floor.stage_budget_rub)}"
             if floor.stage_budget_rub > ZERO
@@ -528,19 +609,61 @@ def build_focused_scenario_definitions(
             {
                 **common,
                 "scenario_id": (
-                    f"grow_servicefloor_{floor.name}_p{percentile_token}{budget_token}"
+                    f"grow_servicefloor_{floor.name}_floor{floor_token}"
+                    f"_econ{economic_token}{budget_token}"
                     "_cap20_hold4_typical_kmp0_5_sitebalanced_base"
                 ),
                 "grow_weekly_reduction_cap": str(central_cap),
-                "forecast_error_percentile": str(floor.percentile),
+                "forecast_error_percentile": str(central_economic_percentile),
                 "grow_entry_protection_weeks": central_weeks,
                 "grow_service_floor_percentile": str(floor.percentile),
                 "grow_service_floor_sku_cap_rub": str(floor.per_sku_cap_rub),
                 "grow_service_floor_stage_budget_rub": str(floor.stage_budget_rub),
+                "grow_acceleration_profile": "off",
+                "grow_acceleration_recent_days": 0,
+                "grow_acceleration_baseline_days": 0,
+                "grow_acceleration_min_recent_sales": "0",
+                "grow_acceleration_rate_multiplier": "0",
+                "grow_acceleration_sku_cap_rub": "0",
+                "grow_acceleration_stage_budget_rub": "0",
+                "grow_acceleration_medium_pipeline_fraction": "1",
+                "grow_acceleration_low_pipeline_fraction": "1",
             }
         )
-    if len(rows) != 23 or len({row["scenario_id"] for row in rows}) != len(rows):
-        raise ValueError("focused grow scenario design must contain 23 unique definitions")
+    for acceleration in config.grow_acceleration_scenarios:
+        ratio_token = int(acceleration.rate_multiplier * Decimal("100"))
+        rows.append(
+            {
+                **common,
+                "scenario_id": (
+                    f"grow_accel_{acceleration.name}_r{acceleration.recent_days}"
+                    f"_b{acceleration.baseline_days}_x{ratio_token}"
+                    f"_min{int(acceleration.min_recent_sales)}"
+                    f"_sku{int(acceleration.per_sku_cap_rub)}"
+                    f"_stage{int(acceleration.stage_budget_rub)}"
+                    "_cap20_hold4_typical_kmp0_5_sitebalanced_base"
+                ),
+                "grow_weekly_reduction_cap": str(central_cap),
+                "forecast_error_percentile": str(central_economic_percentile),
+                "grow_entry_protection_weeks": central_weeks,
+                "grow_service_floor_percentile": "0",
+                "grow_service_floor_sku_cap_rub": "0",
+                "grow_service_floor_stage_budget_rub": "0",
+                "grow_acceleration_profile": acceleration.name,
+                "grow_acceleration_recent_days": acceleration.recent_days,
+                "grow_acceleration_baseline_days": acceleration.baseline_days,
+                "grow_acceleration_min_recent_sales": str(acceleration.min_recent_sales),
+                "grow_acceleration_rate_multiplier": str(acceleration.rate_multiplier),
+                "grow_acceleration_sku_cap_rub": str(acceleration.per_sku_cap_rub),
+                "grow_acceleration_stage_budget_rub": str(acceleration.stage_budget_rub),
+                "grow_acceleration_medium_pipeline_fraction": str(
+                    acceleration.medium_pipeline_fraction
+                ),
+                "grow_acceleration_low_pipeline_fraction": str(acceleration.low_pipeline_fraction),
+            }
+        )
+    if len(rows) != 26 or len({row["scenario_id"] for row in rows}) != len(rows):
+        raise ValueError("focused grow scenario design must contain 26 unique definitions")
     return rows
 
 
@@ -2050,6 +2173,16 @@ def build_preflight_tables(
         for lot in lots
         if lot.qty > ZERO
     ]
+    historical_sales = [
+        {
+            "business_date": business_date.isoformat(),
+            "nomenclature_code": code,
+            "observed_sales_qty": str(max(ZERO, quantity)),
+        }
+        for code in codes
+        for business_date, quantity in sorted(sales_by_code.get(code, {}).items())
+        if history_start <= business_date <= date_to and quantity > ZERO
+    ]
 
     for business_date in _daterange(date_from, date_to):
         scheduled_review = (business_date - date_from).days % cadence == 0
@@ -2500,6 +2633,7 @@ def build_preflight_tables(
         scenario_decisions=scenario_decisions,
         lifecycle_daily=lifecycle_daily,
         daily_facts=daily_facts,
+        historical_sales=historical_sales,
         initial_pipeline=initial_pipeline,
         source_quality=quality,
         reconciliations=reconciliations,
@@ -2583,6 +2717,7 @@ def write_preflight_artifacts(
         "scenario-decisions.csv": tables.scenario_decisions,
         "lifecycle-daily.csv": tables.lifecycle_daily,
         "daily-facts.csv": tables.daily_facts,
+        "historical-sales.csv": tables.historical_sales,
         "initial-pipeline.csv": tables.initial_pipeline,
         "source-quality.csv": tables.source_quality,
         "reconciliations.csv": tables.reconciliations,
@@ -2599,6 +2734,7 @@ def write_preflight_artifacts(
             "decision-inputs": tables.decision_inputs,
             "scenario-decisions": tables.scenario_decisions,
             "lifecycle-daily": tables.lifecycle_daily,
+            "historical-sales": tables.historical_sales,
             "initial-pipeline": tables.initial_pipeline,
             "source-quality": tables.source_quality,
             "reconciliations": tables.reconciliations,
@@ -2622,6 +2758,7 @@ def write_preflight_artifacts(
             "scenario_decisions": len(tables.scenario_decisions),
             "lifecycle_daily": len(tables.lifecycle_daily),
             "daily_facts": len(tables.daily_facts),
+            "historical_sales": len(tables.historical_sales),
             "initial_pipeline": len(tables.initial_pipeline),
             "source_quality": len(tables.source_quality),
             "reconciliations": len(tables.reconciliations),
@@ -2672,6 +2809,7 @@ __all__ = [
     "BacktestScenarioConfig",
     "CarryingCostScenario",
     "EconomicSafetyStock",
+    "GrowAccelerationScenario",
     "GrowServiceFloorScenario",
     "HistoricalUnitEconomicsEvent",
     "Kmp4QueueDay",

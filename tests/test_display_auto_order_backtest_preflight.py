@@ -65,6 +65,15 @@ def test_scenario_config_matches_approved_grid() -> None:
     ]
     assert config.grow_service_floor_scenarios[-1].per_sku_cap_rub == Decimal("50000")
     assert config.grow_service_floor_scenarios[-1].stage_budget_rub == Decimal("8000000")
+    assert [row.name for row in config.grow_acceleration_scenarios] == [
+        "fast",
+        "balanced",
+        "strict",
+    ]
+    assert config.grow_acceleration_scenarios[1].recent_days == 14
+    assert config.grow_acceleration_scenarios[1].baseline_days == 42
+    assert config.grow_acceleration_scenarios[1].rate_multiplier == Decimal("1.5")
+    assert config.grow_acceleration_scenarios[1].medium_pipeline_fraction == Decimal("0.75")
 
 
 def test_focused_grow_scenario_design_is_balanced_and_contains_central_candidate() -> None:
@@ -75,10 +84,12 @@ def test_focused_grow_scenario_design_is_balanced_and_contains_central_candidate
     protected = [
         row
         for row in rows
-        if row["grow_weekly_reduction_cap"] != "0" and row["grow_service_floor_percentile"] == "0"
+        if row["grow_weekly_reduction_cap"] != "0"
+        and row["grow_service_floor_percentile"] == "0"
+        and row["grow_acceleration_profile"] == "off"
     ]
 
-    assert len(rows) == 23
+    assert len(rows) == 26
     assert len(protected) == 18
     assert "typical_kmp0_5_sitebalanced_base" in {row["scenario_id"] for row in rows}
     assert "grow_cap20_p90_hold4_typical_kmp0_5_sitebalanced_base" in {
@@ -102,9 +113,23 @@ def test_focused_grow_scenario_design_is_balanced_and_contains_central_candidate
         "0.75",
         "0.9",
     }
+    assert {row["forecast_error_percentile"] for row in service_floors} == {"0.9"}
     budgeted = next(row for row in service_floors if "p90_budget" in row["scenario_id"])
     assert budgeted["grow_service_floor_sku_cap_rub"] == "50000"
     assert budgeted["grow_service_floor_stage_budget_rub"] == "8000000"
+    acceleration = [row for row in rows if row["grow_acceleration_profile"] != "off"]
+    assert len(acceleration) == 3
+    assert {row["grow_acceleration_profile"] for row in acceleration} == {
+        "fast",
+        "balanced",
+        "strict",
+    }
+    balanced = next(row for row in acceleration if row["grow_acceleration_profile"] == "balanced")
+    assert balanced["grow_acceleration_recent_days"] == 14
+    assert balanced["grow_acceleration_baseline_days"] == 42
+    assert balanced["grow_acceleration_rate_multiplier"] == "1.5"
+    assert balanced["grow_acceleration_sku_cap_rub"] == "50000"
+    assert balanced["grow_acceleration_stage_budget_rub"] == "8000000"
 
 
 def test_kmp4_queue_is_closed_by_later_sale_without_double_count() -> None:
@@ -392,6 +417,13 @@ def test_preflight_manifest_checks_status_and_hashes(tmp_path: Path) -> None:
         scenario_decisions=[{"scenario_id": "legacy", **row}],
         lifecycle_daily=[{"business_date": "2026-02-01", **row}],
         daily_facts=[{"business_date": "2026-02-01", **row}],
+        historical_sales=[
+            {
+                "business_date": "2026-01-31",
+                "nomenclature_code": "SKU-1",
+                "observed_sales_qty": "1",
+            }
+        ],
         initial_pipeline=[{"nomenclature_code": "SKU-1", "quantity": "1"}],
         source_quality=[{"check": "keys", "status": "pass"}],
         reconciliations=[{"source": "reserve", "status": "pass"}],
@@ -417,6 +449,8 @@ def test_preflight_manifest_checks_status_and_hashes(tmp_path: Path) -> None:
 
     manifest = validate_preflight_directory(tmp_path)
     assert manifest["preflight_status"] == "PASS"
+    assert manifest["schema"] == "display_auto_order_backtest_preflight.v2"
+    assert manifest["row_counts"]["historical_sales"] == 1
 
     (tmp_path / "decision-inputs.csv").write_text("changed", encoding="utf-8")
     with pytest.raises(ValueError, match="checksum mismatch"):

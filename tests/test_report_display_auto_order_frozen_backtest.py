@@ -9,10 +9,47 @@ from tasks.display_auto_order_backtest_preflight import (
 )
 from tasks.report_display_auto_order_frozen_backtest import (
     FrozenScenario,
+    ServiceFloorCandidate,
     _free_initial_pipeline,
+    allocate_service_floor_budget,
+    apply_grow_target_protection,
+    apply_service_floor_sku_cap,
+    empirical_underforecast_percentile,
     historical_forecast_error_samples,
     simulate_scenario,
 )
+
+
+def test_service_floor_sku_cap_uses_whole_affordable_units() -> None:
+    assert apply_service_floor_sku_cap(
+        Decimal("5"),
+        unit_cost_rub=Decimal("30"),
+        per_sku_cap_rub=Decimal("100"),
+    ) == Decimal("3")
+
+
+def test_service_floor_stage_budget_prioritizes_marginal_saved_margin() -> None:
+    allocated = allocate_service_floor_budget(
+        [
+            ServiceFloorCandidate(
+                code="HIGH",
+                requested_units=Decimal("2"),
+                unit_cost_rub=Decimal("50"),
+                gross_margin_per_unit_rub=Decimal("100"),
+                error_samples=(Decimal("2"),) * 8,
+            ),
+            ServiceFloorCandidate(
+                code="LOW",
+                requested_units=Decimal("2"),
+                unit_cost_rub=Decimal("50"),
+                gross_margin_per_unit_rub=Decimal("10"),
+                error_samples=(Decimal("2"),) * 8,
+            ),
+        ],
+        stage_budget_rub=Decimal("100"),
+    )
+
+    assert allocated == {"HIGH": Decimal("2"), "LOW": Decimal("0")}
 
 
 def test_initial_pipeline_excludes_customer_placed_quantity() -> None:
@@ -70,6 +107,80 @@ def test_historical_forecast_errors_use_only_completed_past_windows() -> None:
     )
 
     assert result == [Decimal("2")]
+
+
+def test_empirical_underforecast_percentile_uses_nearest_rank() -> None:
+    samples = [Decimal(value) for value in range(1, 9)]
+
+    assert empirical_underforecast_percentile(
+        samples,
+        percentile=Decimal("0.75"),
+        min_samples=8,
+    ) == Decimal("6")
+    assert empirical_underforecast_percentile(
+        samples,
+        percentile=Decimal("0.90"),
+        min_samples=8,
+    ) == Decimal("8")
+
+
+def test_grow_target_holds_after_entry_then_reduces_only_by_weekly_cap() -> None:
+    start = date(2026, 2, 1)
+    minimum, maximum, state, reason = apply_grow_target_protection(
+        raw_min_qty=Decimal("50"),
+        raw_max_qty=Decimal("100"),
+        as_of=start,
+        scheduled_review=True,
+        entered_today=True,
+        weekly_reduction_cap=Decimal("0.2"),
+        entry_protection_weeks=2,
+        state=None,
+    )
+    assert (minimum, maximum, reason) == (Decimal("50"), Decimal("100"), "entry_hold")
+
+    minimum, maximum, state, reason = apply_grow_target_protection(
+        raw_min_qty=Decimal("10"),
+        raw_max_qty=Decimal("20"),
+        as_of=start + timedelta(days=7),
+        scheduled_review=True,
+        entered_today=False,
+        weekly_reduction_cap=Decimal("0.2"),
+        entry_protection_weeks=2,
+        state=state,
+    )
+    assert (minimum, maximum, reason) == (Decimal("50"), Decimal("100"), "entry_hold")
+
+    minimum, maximum, state, reason = apply_grow_target_protection(
+        raw_min_qty=Decimal("10"),
+        raw_max_qty=Decimal("20"),
+        as_of=start + timedelta(days=14),
+        scheduled_review=True,
+        entered_today=False,
+        weekly_reduction_cap=Decimal("0.2"),
+        entry_protection_weeks=2,
+        state=state,
+    )
+    assert (minimum, maximum, reason) == (
+        Decimal("40"),
+        Decimal("80"),
+        "weekly_reduction_cap",
+    )
+
+    minimum, maximum, _, reason = apply_grow_target_protection(
+        raw_min_qty=Decimal("5"),
+        raw_max_qty=Decimal("10"),
+        as_of=start + timedelta(days=15),
+        scheduled_review=False,
+        entered_today=False,
+        weekly_reduction_cap=Decimal("0.2"),
+        entry_protection_weeks=2,
+        state=state,
+    )
+    assert (minimum, maximum, reason) == (
+        Decimal("40"),
+        Decimal("80"),
+        "between_reviews_floor",
+    )
 
 
 def test_frozen_weekly_min_max_order_arrives_and_serves_demand() -> None:
@@ -227,6 +338,8 @@ def test_event_only_review_is_accepted_for_new_model_but_not_legacy() -> None:
 
     assert new_model.model["SKU-1"].order_qty == Decimal("3")
     assert new_model.model["SKU-1"].manual_order_lines == 2
+    assert new_model.model["SKU-1"].manual_review_created == 1
+    assert new_model.model["SKU-1"].manual_review_updated == 1
     assert new_model.model["SKU-1"].served_observed_qty == Decimal("1")
     assert legacy.model["SKU-1"].order_qty == Decimal("0")
     assert legacy.model["SKU-1"].lost_observed_qty == Decimal("1")
@@ -527,6 +640,137 @@ def test_p75_changes_coverage_but_not_simulated_arrival_date() -> None:
     assert result.model["SKU-1"].served_observed_qty == Decimal("1")
     assert result.decision_rows[0]["selected_lead_time_days"] == 5
     assert result.decision_rows[0]["simulated_arrival_lead_time_days"] == 1
+
+
+def test_grow_safety_stock_uses_selected_error_percentile_with_economic_cap() -> None:
+    start = date(2026, 2, 1)
+    scenario = FrozenScenario(
+        scenario_id="grow_cap20_p75_hold2",
+        stage_profile="typical",
+        kmp4_weight=Decimal("0.5"),
+        site_profile="balanced",
+        site_order_weight=Decimal("1"),
+        site_unordered_cart_weight=Decimal("0.25"),
+        grow_weekly_reduction_cap=Decimal("0.2"),
+        forecast_error_percentile=Decimal("0.75"),
+        grow_entry_protection_weeks=2,
+        cost=CarryingCostScenario(
+            name="base",
+            capital_annual_rate=Decimal("0.3"),
+            storage_annual_rate=Decimal("0.1"),
+            obsolescence_annual_rate=Decimal("0.25"),
+        ),
+    )
+
+    result = simulate_scenario(
+        scenario=scenario,
+        fact_rows_by_date={
+            start: [
+                {
+                    "nomenclature_code": "SKU-1",
+                    "status": "sale",
+                    "previous_status": "working",
+                    "physical_stock_qty": "0",
+                    "observed_sales_qty": "0",
+                }
+            ]
+        },
+        decision_rows_by_date={
+            start: [
+                {
+                    "nomenclature_code": "SKU-1",
+                    "scheduled_review": "1",
+                    "status": "sale",
+                    "forecast_rate_sales": "0",
+                    "lead_time_p50_days": "1",
+                    "lead_time_p75_days": "1",
+                    "lead_time_confidence": "high",
+                    "inventory_cost_per_unit_rub": "1",
+                    "gross_margin_per_unit_rub": "100",
+                }
+            ]
+        },
+        initial_pipeline_rows=[],
+        sales_by_code={},
+        policy=AutoOrderPolicy(order_cadence_days=1),
+        config=load_scenario_config(
+            Path("config/assortment/display-auto-order-backtest-scenarios.json")
+        ),
+        date_from=start,
+        date_to=start,
+        keep_detail=True,
+        demand_sample_cache={("SKU-1", start, 2): [Decimal(value) for value in range(1, 9)]},
+    )
+
+    assert result.model["SKU-1"].order_qty == Decimal("6")
+    assert result.decision_rows[0]["forecast_error_percentile_qty"] == "6"
+    assert Decimal(result.decision_rows[0]["economic_safety_cap_qty"]) >= Decimal("6")
+    assert result.decision_rows[0]["economic_safety_stock_qty"] == "6"
+
+
+def test_grow_service_floor_is_not_cut_by_sku_economic_filter() -> None:
+    start = date(2026, 2, 1)
+    scenario = FrozenScenario(
+        scenario_id="grow_servicefloor_p75",
+        stage_profile="typical",
+        kmp4_weight=Decimal("0.5"),
+        grow_weekly_reduction_cap=Decimal("0.2"),
+        forecast_error_percentile=Decimal("0.75"),
+        grow_entry_protection_weeks=2,
+        grow_service_floor_percentile=Decimal("0.75"),
+        cost=CarryingCostScenario(
+            name="base",
+            capital_annual_rate=Decimal("0.3"),
+            storage_annual_rate=Decimal("0.1"),
+            obsolescence_annual_rate=Decimal("0.25"),
+        ),
+    )
+
+    result = simulate_scenario(
+        scenario=scenario,
+        fact_rows_by_date={
+            start: [
+                {
+                    "nomenclature_code": "SKU-1",
+                    "status": "sale",
+                    "previous_status": "working",
+                    "physical_stock_qty": "0",
+                    "observed_sales_qty": "0",
+                }
+            ]
+        },
+        decision_rows_by_date={
+            start: [
+                {
+                    "nomenclature_code": "SKU-1",
+                    "scheduled_review": "1",
+                    "status": "sale",
+                    "forecast_rate_sales": "0",
+                    "lead_time_p50_days": "1",
+                    "lead_time_p75_days": "1",
+                    "lead_time_confidence": "high",
+                    "inventory_cost_per_unit_rub": "1000",
+                    "gross_margin_per_unit_rub": "1",
+                }
+            ]
+        },
+        initial_pipeline_rows=[],
+        sales_by_code={},
+        policy=AutoOrderPolicy(order_cadence_days=1),
+        config=load_scenario_config(
+            Path("config/assortment/display-auto-order-backtest-scenarios.json")
+        ),
+        date_from=start,
+        date_to=start,
+        keep_detail=True,
+        demand_sample_cache={("SKU-1", start, 2): [Decimal(value) for value in range(1, 9)]},
+    )
+
+    decision = result.decision_rows[0]
+    assert decision["economic_safety_cap_qty"] == "0"
+    assert decision["service_floor_requested_qty"] == "6"
+    assert decision["service_floor_allocated_qty"] == "6"
+    assert result.model["SKU-1"].order_qty == Decimal("6")
 
 
 def test_daily_stockout_guard_uses_latest_weekly_min_max() -> None:

@@ -9,7 +9,7 @@ import json
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, timedelta
-from decimal import ROUND_CEILING, Decimal
+from decimal import ROUND_CEILING, ROUND_FLOOR, Decimal
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -29,8 +29,12 @@ from tasks.display_auto_order_backtest_preflight import (
 ZERO = Decimal("0")
 ONE = Decimal("1")
 YEAR_DAYS = Decimal("365")
-BASE_SCENARIO_ID = "typical_kmp0_5_sitebalanced_base"
-OUTPUT_SCHEMA = "display_auto_order_frozen_backtest.v2"
+BASE_SCENARIO_ID = (
+    "grow_servicefloor_p90_budget_p90_sku50000_stage8000000_"
+    "cap20_hold4_typical_kmp0_5_sitebalanced_base"
+)
+CONTROL_SCENARIO_ID = "grow_cap20_p90_hold4_typical_kmp0_5_sitebalanced_base"
+OUTPUT_SCHEMA = "display_auto_order_frozen_backtest.v3"
 
 
 def _clean(value: Any) -> str:
@@ -98,6 +102,12 @@ class FrozenScenario:
     site_profile: str = "off"
     site_order_weight: Decimal = ZERO
     site_unordered_cart_weight: Decimal = ZERO
+    grow_weekly_reduction_cap: Decimal = ZERO
+    forecast_error_percentile: Decimal = ZERO
+    grow_entry_protection_weeks: int = 0
+    grow_service_floor_percentile: Decimal = ZERO
+    grow_service_floor_sku_cap_rub: Decimal = ZERO
+    grow_service_floor_stage_budget_rub: Decimal = ZERO
     legacy: bool = False
 
 
@@ -126,6 +136,8 @@ class Metric:
     order_value_rub: Decimal = ZERO
     order_lines: int = 0
     manual_order_lines: int = 0
+    manual_review_created: int = 0
+    manual_review_updated: int = 0
     safety_stock_units_ordered: Decimal = ZERO
     exogenous_launch_seed_qty: Decimal = ZERO
 
@@ -153,6 +165,22 @@ class SimulationResult:
     daily_rows: list[dict[str, Any]]
 
 
+@dataclass
+class GrowProtectionState:
+    entered_at: date | None
+    min_qty: Decimal
+    max_qty: Decimal
+
+
+@dataclass(frozen=True)
+class ServiceFloorCandidate:
+    code: str
+    requested_units: Decimal
+    unit_cost_rub: Decimal
+    gross_margin_per_unit_rub: Decimal
+    error_samples: tuple[Decimal, ...]
+
+
 def _load_scenarios(path: Path) -> list[FrozenScenario]:
     scenarios: list[FrozenScenario] = []
     for row in _read_csv(path):
@@ -166,6 +194,14 @@ def _load_scenarios(path: Path) -> list[FrozenScenario]:
                 site_profile=_clean(row.get("site_profile")) or "off",
                 site_order_weight=_decimal(row.get("site_order_weight")),
                 site_unordered_cart_weight=_decimal(row.get("site_unordered_cart_weight")),
+                grow_weekly_reduction_cap=_decimal(row.get("grow_weekly_reduction_cap")),
+                forecast_error_percentile=_decimal(row.get("forecast_error_percentile")),
+                grow_entry_protection_weeks=int(row.get("grow_entry_protection_weeks") or 0),
+                grow_service_floor_percentile=_decimal(row.get("grow_service_floor_percentile")),
+                grow_service_floor_sku_cap_rub=_decimal(row.get("grow_service_floor_sku_cap_rub")),
+                grow_service_floor_stage_budget_rub=_decimal(
+                    row.get("grow_service_floor_stage_budget_rub")
+                ),
                 cost=CarryingCostScenario(
                     name=_clean(row.get("holding_cost_scenario")),
                     capital_annual_rate=_decimal(row.get("capital_annual_rate")),
@@ -208,6 +244,8 @@ def _aggregate_metric(metrics: Mapping[str, Metric]) -> Metric:
         out.order_value_rub += row.order_value_rub
         out.order_lines += row.order_lines
         out.manual_order_lines += row.manual_order_lines
+        out.manual_review_created += row.manual_review_created
+        out.manual_review_updated += row.manual_review_updated
         out.safety_stock_units_ordered += row.safety_stock_units_ordered
         out.exogenous_launch_seed_qty += row.exogenous_launch_seed_qty
     return out
@@ -239,6 +277,12 @@ def _summary(
         "site_profile": scenario.site_profile,
         "site_order_weight": str(scenario.site_order_weight),
         "site_unordered_cart_weight": str(scenario.site_unordered_cart_weight),
+        "grow_weekly_reduction_cap": str(scenario.grow_weekly_reduction_cap),
+        "forecast_error_percentile": str(scenario.forecast_error_percentile),
+        "grow_entry_protection_weeks": scenario.grow_entry_protection_weeks,
+        "grow_service_floor_percentile": str(scenario.grow_service_floor_percentile),
+        "grow_service_floor_sku_cap_rub": str(scenario.grow_service_floor_sku_cap_rub),
+        "grow_service_floor_stage_budget_rub": str(scenario.grow_service_floor_stage_budget_rub),
         "holding_cost_scenario": scenario.cost.name,
         "capital_annual_rate": str(scenario.cost.capital_annual_rate),
         "storage_annual_rate": str(scenario.cost.storage_annual_rate),
@@ -281,6 +325,8 @@ def _summary(
         "order_value_rub": str(total.order_value_rub),
         "order_lines": total.order_lines,
         "manual_order_lines": total.manual_order_lines,
+        "manual_review_created": total.manual_review_created,
+        "manual_review_updated": total.manual_review_updated,
         "safety_stock_units_ordered": str(total.safety_stock_units_ordered),
         "exogenous_launch_seed_qty": str(total.exogenous_launch_seed_qty),
         "inventory_valuation_coverage": str(
@@ -288,6 +334,27 @@ def _summary(
             if total.inventory_qty_days > ZERO
             else ONE
         ),
+    }
+
+
+def _acceptance_result(
+    actual: Mapping[str, Any],
+    model: Mapping[str, Any],
+) -> dict[str, bool]:
+    gross_profit_pass = _decimal(model["gross_profit_rub"]) + Decimal("1") >= _decimal(
+        actual["gross_profit_rub"]
+    )
+    fill_rate_pass = _decimal(model["fill_rate"]) + Decimal("0.0001") >= _decimal(
+        actual["fill_rate"]
+    )
+    capital_or_gmroi_pass = _decimal(model["average_inventory_value_rub"]) <= _decimal(
+        actual["average_inventory_value_rub"]
+    ) or _decimal(model["gmroi_annualized"]) >= _decimal(actual["gmroi_annualized"])
+    return {
+        "gross_profit_not_lower": gross_profit_pass,
+        "fill_rate_not_lower": fill_rate_pass,
+        "capital_lower_or_gmroi_higher": capital_or_gmroi_pass,
+        "passed": gross_profit_pass and fill_rate_pass and capital_or_gmroi_pass,
     }
 
 
@@ -353,6 +420,131 @@ def historical_forecast_error_samples(
         )
         samples.append(max(ZERO, actual_demand - predicted_demand))
     return samples
+
+
+def empirical_underforecast_percentile(
+    samples: Sequence[Decimal],
+    *,
+    percentile: Decimal,
+    min_samples: int,
+) -> Decimal:
+    """Return a nearest-rank percentile using only the supplied completed windows."""
+
+    cleaned = sorted(max(ZERO, _decimal(value)) for value in samples)
+    if len(cleaned) < min_samples or percentile <= ZERO or percentile >= ONE:
+        return ZERO
+    rank = int(_ceil(percentile * Decimal(len(cleaned))))
+    return _ceil(cleaned[max(0, rank - 1)])
+
+
+def apply_service_floor_sku_cap(
+    requested_units: Decimal,
+    *,
+    unit_cost_rub: Decimal,
+    per_sku_cap_rub: Decimal,
+) -> Decimal:
+    requested = max(ZERO, _ceil(requested_units))
+    if per_sku_cap_rub <= ZERO:
+        return requested
+    if unit_cost_rub <= ZERO:
+        return ZERO
+    affordable = (per_sku_cap_rub / unit_cost_rub).to_integral_value(rounding=ROUND_FLOOR)
+    return min(requested, max(ZERO, affordable))
+
+
+def allocate_service_floor_budget(
+    candidates: Sequence[ServiceFloorCandidate],
+    *,
+    stage_budget_rub: Decimal,
+) -> dict[str, Decimal]:
+    """Allocate a concurrent stage budget by marginal saved-margin return."""
+
+    allocated = {candidate.code: ZERO for candidate in candidates}
+    if stage_budget_rub <= ZERO:
+        return {
+            candidate.code: max(ZERO, _ceil(candidate.requested_units)) for candidate in candidates
+        }
+    ranked_units: list[tuple[Decimal, Decimal, str, int, Decimal]] = []
+    for candidate in candidates:
+        unit_cost = max(ZERO, candidate.unit_cost_rub)
+        if unit_cost <= ZERO:
+            continue
+        samples = tuple(max(ZERO, value) for value in candidate.error_samples)
+        sample_count = Decimal(len(samples))
+        for unit_number in range(1, int(max(ZERO, candidate.requested_units)) + 1):
+            probability = (
+                Decimal(sum(sample > Decimal(unit_number - 1) for sample in samples)) / sample_count
+                if sample_count > ZERO
+                else ZERO
+            )
+            expected_saved_margin = max(ZERO, candidate.gross_margin_per_unit_rub) * probability
+            return_per_ruble = expected_saved_margin / unit_cost
+            ranked_units.append(
+                (return_per_ruble, probability, candidate.code, unit_number, unit_cost)
+            )
+    ranked_units.sort(key=lambda row: (-row[0], -row[1], row[2], row[3]))
+    remaining = max(ZERO, stage_budget_rub)
+    for _, _, code, _, unit_cost in ranked_units:
+        if unit_cost <= remaining:
+            allocated[code] += ONE
+            remaining -= unit_cost
+    return allocated
+
+
+def apply_grow_target_protection(
+    *,
+    raw_min_qty: Decimal,
+    raw_max_qty: Decimal,
+    as_of: date,
+    scheduled_review: bool,
+    entered_today: bool,
+    weekly_reduction_cap: Decimal,
+    entry_protection_weeks: int,
+    state: GrowProtectionState | None,
+) -> tuple[Decimal, Decimal, GrowProtectionState, str]:
+    """Protect grow-stage min/max from look-ahead-free abrupt target reductions."""
+
+    raw_min = max(ZERO, _ceil(raw_min_qty))
+    raw_max = max(raw_min, _ceil(raw_max_qty))
+    if state is None or entered_today:
+        state = GrowProtectionState(
+            entered_at=as_of if entered_today else None,
+            min_qty=raw_min,
+            max_qty=raw_max,
+        )
+        return raw_min, raw_max, state, "entry_hold" if entered_today else "initialized"
+
+    entry_hold_active = (
+        state.entered_at is not None
+        and entry_protection_weeks > 0
+        and as_of < state.entered_at + timedelta(weeks=entry_protection_weeks)
+    )
+    if entry_hold_active:
+        protected_min = max(raw_min, state.min_qty)
+        protected_max = max(raw_max, state.max_qty, protected_min)
+        reason = "entry_hold" if protected_min > raw_min or protected_max > raw_max else "none"
+    elif scheduled_review and weekly_reduction_cap > ZERO:
+        reduction_factor = ONE - weekly_reduction_cap
+        protected_min = max(raw_min, _ceil(state.min_qty * reduction_factor))
+        protected_max = max(
+            raw_max,
+            _ceil(state.max_qty * reduction_factor),
+            protected_min,
+        )
+        reason = (
+            "weekly_reduction_cap" if protected_min > raw_min or protected_max > raw_max else "none"
+        )
+    else:
+        protected_min = max(raw_min, state.min_qty)
+        protected_max = max(raw_max, state.max_qty, protected_min)
+        reason = (
+            "between_reviews_floor"
+            if protected_min > raw_min or protected_max > raw_max
+            else "none"
+        )
+    state.min_qty = protected_min
+    state.max_qty = protected_max
+    return protected_min, protected_max, state, reason
 
 
 def _allocate_hidden(
@@ -474,6 +666,8 @@ def simulate_scenario(
     latest_decision_rows: dict[str, Mapping[str, Any]] = {}
     decision_detail: list[dict[str, Any]] = []
     daily_detail: list[dict[str, Any]] = []
+    grow_target_states: dict[str, GrowProtectionState] = {}
+    manual_review_seen: set[str] = set()
 
     cursor = date_from
     while cursor <= date_to:
@@ -646,6 +840,66 @@ def simulate_scenario(
             daily["model_gross_profit_rub"] += (served_observed + served_hidden) * margin
 
         decision_candidates = decisions_today if scenario.legacy else latest_decision_rows
+        service_floor_allocations: dict[str, Decimal] = {}
+        if (
+            scenario.grow_service_floor_percentile > ZERO
+            and scenario.grow_service_floor_stage_budget_rub > ZERO
+        ):
+            budget_candidates: list[ServiceFloorCandidate] = []
+            for candidate_code, candidate_row in sorted(decision_candidates.items()):
+                candidate_fact = facts_today.get(candidate_code, {})
+                candidate_status = _clean(candidate_fact.get("status")) or _clean(
+                    candidate_row.get("status")
+                )
+                if candidate_status != AssortmentStatus.SALE.value:
+                    continue
+                candidate_lead_days = int(candidate_row.get("lead_time_p50_days") or 52)
+                candidate_cache_key = (
+                    candidate_code,
+                    cursor,
+                    candidate_lead_days + policy.order_cadence_days,
+                )
+                candidate_samples = demand_samples.get(candidate_cache_key)
+                if candidate_samples is None:
+                    candidate_samples = historical_forecast_error_samples(
+                        decision_history_by_code.get(candidate_code, ()),
+                        sales_by_code.get(candidate_code, {}),
+                        as_of=cursor,
+                        order_cadence_days=policy.order_cadence_days,
+                        lookback_days=config.safety_lookback_days,
+                    )
+                    demand_samples[candidate_cache_key] = candidate_samples
+                requested_units = min(
+                    Decimal(config.safety_max_units),
+                    empirical_underforecast_percentile(
+                        candidate_samples,
+                        percentile=scenario.grow_service_floor_percentile,
+                        min_samples=config.safety_min_samples,
+                    ),
+                )
+                capped_units = apply_service_floor_sku_cap(
+                    requested_units,
+                    unit_cost_rub=current_cost[candidate_code],
+                    per_sku_cap_rub=scenario.grow_service_floor_sku_cap_rub,
+                )
+                if capped_units <= ZERO:
+                    service_floor_allocations[candidate_code] = ZERO
+                    continue
+                budget_candidates.append(
+                    ServiceFloorCandidate(
+                        code=candidate_code,
+                        requested_units=capped_units,
+                        unit_cost_rub=current_cost[candidate_code],
+                        gross_margin_per_unit_rub=current_margin[candidate_code],
+                        error_samples=tuple(candidate_samples),
+                    )
+                )
+            service_floor_allocations.update(
+                allocate_service_floor_budget(
+                    budget_candidates,
+                    stage_budget_rub=scenario.grow_service_floor_stage_budget_rub,
+                )
+            )
         for code, row in decision_candidates.items():
             fact = facts_today.get(code, {})
             if not fact:
@@ -682,6 +936,12 @@ def simulate_scenario(
             arrival_lead_days = 52 if scenario.legacy else int(row.get("lead_time_p50_days") or 52)
             lead_days = arrival_lead_days
             safety_units = ZERO
+            economic_safety_cap = ZERO
+            percentile_safety_target = ZERO
+            service_floor_requested = ZERO
+            service_floor_sku_capped = ZERO
+            service_floor_allocated = ZERO
+            grow_protection_reason = "none"
             manual = not scheduled_review
 
             if scenario.legacy:
@@ -748,7 +1008,42 @@ def simulate_scenario(
                         max_units=config.safety_max_units,
                         min_samples=config.safety_min_samples,
                     )
-                    safety_units = safety.units
+                    economic_safety_cap = safety.units
+                    percentile_safety_target = empirical_underforecast_percentile(
+                        samples,
+                        percentile=scenario.forecast_error_percentile,
+                        min_samples=config.safety_min_samples,
+                    )
+                    if (
+                        status == AssortmentStatus.SALE.value
+                        and scenario.grow_service_floor_percentile > ZERO
+                    ):
+                        service_floor_requested = min(
+                            Decimal(config.safety_max_units),
+                            empirical_underforecast_percentile(
+                                samples,
+                                percentile=scenario.grow_service_floor_percentile,
+                                min_samples=config.safety_min_samples,
+                            ),
+                        )
+                        service_floor_sku_capped = apply_service_floor_sku_cap(
+                            service_floor_requested,
+                            unit_cost_rub=current_cost[code],
+                            per_sku_cap_rub=scenario.grow_service_floor_sku_cap_rub,
+                        )
+                        service_floor_allocated = (
+                            service_floor_allocations.get(code, ZERO)
+                            if scenario.grow_service_floor_stage_budget_rub > ZERO
+                            else service_floor_sku_capped
+                        )
+                        safety_units = service_floor_allocated
+                    elif (
+                        status == AssortmentStatus.SALE.value
+                        and scenario.forecast_error_percentile > ZERO
+                    ):
+                        safety_units = min(economic_safety_cap, percentile_safety_target)
+                    else:
+                        safety_units = economic_safety_cap
                     p75_days = int(row.get("lead_time_p75_days") or lead_days)
                     if safety_units > ZERO and p75_days > lead_days:
                         lead_days = p75_days
@@ -772,7 +1067,7 @@ def simulate_scenario(
                                 lookback_days=config.safety_lookback_days,
                             )
                             demand_samples[p75_cache_key] = p75_samples
-                        safety_units = calculate_economic_safety_stock(
+                        economic_safety_cap = calculate_economic_safety_stock(
                             base_max_qty=ZERO,
                             demand_samples=p75_samples,
                             gross_margin_per_unit_rub=current_margin[code],
@@ -782,6 +1077,41 @@ def simulate_scenario(
                             max_units=config.safety_max_units,
                             min_samples=config.safety_min_samples,
                         ).units
+                        percentile_safety_target = empirical_underforecast_percentile(
+                            p75_samples,
+                            percentile=scenario.forecast_error_percentile,
+                            min_samples=config.safety_min_samples,
+                        )
+                        if (
+                            status == AssortmentStatus.SALE.value
+                            and scenario.grow_service_floor_percentile > ZERO
+                        ):
+                            service_floor_requested = min(
+                                Decimal(config.safety_max_units),
+                                empirical_underforecast_percentile(
+                                    p75_samples,
+                                    percentile=scenario.grow_service_floor_percentile,
+                                    min_samples=config.safety_min_samples,
+                                ),
+                            )
+                            service_floor_sku_capped = apply_service_floor_sku_cap(
+                                service_floor_requested,
+                                unit_cost_rub=current_cost[code],
+                                per_sku_cap_rub=scenario.grow_service_floor_sku_cap_rub,
+                            )
+                            service_floor_allocated = (
+                                service_floor_allocations.get(code, ZERO)
+                                if scenario.grow_service_floor_stage_budget_rub > ZERO
+                                else service_floor_sku_capped
+                            )
+                            safety_units = service_floor_allocated
+                        elif (
+                            status == AssortmentStatus.SALE.value
+                            and scenario.forecast_error_percentile > ZERO
+                        ):
+                            safety_units = min(economic_safety_cap, percentile_safety_target)
+                        else:
+                            safety_units = economic_safety_cap
                 if status == AssortmentStatus.FRUIT.value:
                     min_qty = ZERO
                     max_qty = ZERO
@@ -816,6 +1146,30 @@ def simulate_scenario(
                 safety_units = ZERO
                 manual = False
 
+            unprotected_min_qty = min_qty
+            unprotected_max_qty = max_qty
+            if status == AssortmentStatus.SALE.value and (
+                scenario.grow_weekly_reduction_cap > ZERO
+                or scenario.grow_entry_protection_weeks > 0
+            ):
+                previous_status = _clean(fact.get("previous_status"))
+                entered_today = bool(
+                    previous_status and previous_status != AssortmentStatus.SALE.value
+                )
+                min_qty, max_qty, state, grow_protection_reason = apply_grow_target_protection(
+                    raw_min_qty=min_qty,
+                    raw_max_qty=max_qty,
+                    as_of=cursor,
+                    scheduled_review=scheduled_review,
+                    entered_today=entered_today,
+                    weekly_reduction_cap=scenario.grow_weekly_reduction_cap,
+                    entry_protection_weeks=scenario.grow_entry_protection_weeks,
+                    state=grow_target_states.get(code),
+                )
+                grow_target_states[code] = state
+            elif status != AssortmentStatus.SALE.value:
+                grow_target_states.pop(code, None)
+
             target_qty = max_qty + safety_units
             reserve = max(
                 ZERO,
@@ -835,6 +1189,13 @@ def simulate_scenario(
                 max_order_qty=policy.max_order_qty,
                 order_rounding_rules=policy.order_rounding_rules,
             )
+            manual_review_action = ""
+            if recommended > ZERO and manual:
+                if code in manual_review_seen:
+                    manual_review_action = "updated"
+                else:
+                    manual_review_seen.add(code)
+                    manual_review_action = "created"
             if recommended > ZERO:
                 arrival = cursor + timedelta(days=max(1, arrival_lead_days))
                 arrivals[arrival][code] += recommended
@@ -844,12 +1205,16 @@ def simulate_scenario(
                 metric.order_value_rub += recommended * current_cost[code]
                 metric.order_lines += 1
                 metric.manual_order_lines += int(manual)
+                metric.manual_review_created += int(manual_review_action == "created")
+                metric.manual_review_updated += int(manual_review_action == "updated")
                 metric.safety_stock_units_ordered += safety_units
                 stage_metric = model_by_stage[status]
                 stage_metric.order_qty += recommended
                 stage_metric.order_value_rub += recommended * current_cost[code]
                 stage_metric.order_lines += 1
                 stage_metric.manual_order_lines += int(manual)
+                stage_metric.manual_review_created += int(manual_review_action == "created")
+                stage_metric.manual_review_updated += int(manual_review_action == "updated")
                 stage_metric.safety_stock_units_ordered += safety_units
             if keep_detail and (
                 recommended > ZERO or (fresh_decision and (rate > ZERO or weighted_signals > ZERO))
@@ -873,9 +1238,31 @@ def simulate_scenario(
                         "reserve_backlog_qty": str(_decimal(fact.get("reserve_backlog_qty"))),
                         "selected_lead_time_days": lead_days,
                         "simulated_arrival_lead_time_days": arrival_lead_days,
+                        "unprotected_min_stock_qty": str(unprotected_min_qty),
+                        "unprotected_max_stock_qty": str(unprotected_max_qty),
                         "min_stock_qty": str(min_qty),
                         "max_stock_qty": str(max_qty),
+                        "grow_protection_reason": grow_protection_reason,
+                        "grow_weekly_reduction_cap": str(scenario.grow_weekly_reduction_cap),
+                        "grow_entry_protection_weeks": (scenario.grow_entry_protection_weeks),
+                        "forecast_error_percentile": str(scenario.forecast_error_percentile),
+                        "forecast_error_percentile_qty": str(percentile_safety_target),
+                        "economic_safety_cap_qty": str(economic_safety_cap),
                         "economic_safety_stock_qty": str(safety_units),
+                        "service_floor_percentile": str(scenario.grow_service_floor_percentile),
+                        "service_floor_requested_qty": str(service_floor_requested),
+                        "service_floor_sku_capped_qty": str(service_floor_sku_capped),
+                        "service_floor_allocated_qty": str(service_floor_allocated),
+                        "service_floor_unfunded_qty": str(
+                            max(ZERO, service_floor_requested - service_floor_allocated)
+                        ),
+                        "service_floor_sku_cap_rub": str(scenario.grow_service_floor_sku_cap_rub),
+                        "service_floor_stage_budget_rub": str(
+                            scenario.grow_service_floor_stage_budget_rub
+                        ),
+                        "service_floor_budget_limited": int(
+                            service_floor_allocated < service_floor_requested
+                        ),
                         "model_stock_qty": str(stock[code]),
                         "reserve_qty": str(reserve),
                         "model_pipeline_qty": str(pipeline_qty[code]),
@@ -883,6 +1270,7 @@ def simulate_scenario(
                         "recommended_order_qty_raw": str(raw),
                         "recommended_order_qty": str(recommended),
                         "manual_review_assumed_accepted": int(manual),
+                        "manual_review_action": manual_review_action,
                     }
                 )
         if keep_detail:
@@ -951,6 +1339,8 @@ def _sku_comparison_rows(result: SimulationResult, period_days: int) -> list[dic
                 "model_order_qty": str(model.order_qty),
                 "model_order_value_rub": str(model.order_value_rub),
                 "manual_order_lines": model.manual_order_lines,
+                "manual_review_created": model.manual_review_created,
+                "manual_review_updated": model.manual_review_updated,
                 "exogenous_launch_seed_qty": str(model.exogenous_launch_seed_qty),
             }
         )
@@ -1009,6 +1399,8 @@ def _stage_summary_rows(result: SimulationResult, period_days: int) -> list[dict
                     "order_value_rub": str(metric.order_value_rub),
                     "order_lines": metric.order_lines,
                     "manual_order_lines": metric.manual_order_lines,
+                    "manual_review_created": metric.manual_review_created,
+                    "manual_review_updated": metric.manual_review_updated,
                     "economic_safety_stock_qty": str(metric.safety_stock_units_ordered),
                     "exogenous_launch_seed_qty": str(metric.exogenous_launch_seed_qty),
                     "inventory_valuation_coverage": str(
@@ -1131,7 +1523,11 @@ def main() -> int:
     stage_rows: list[dict[str, Any]] = []
     shared_demand_sample_cache: dict[tuple[str, date, int], list[Decimal]] = {}
     for scenario in scenarios:
-        keep_detail = scenario.scenario_id in {"legacy", BASE_SCENARIO_ID}
+        keep_detail = scenario.scenario_id in {
+            "legacy",
+            CONTROL_SCENARIO_ID,
+            BASE_SCENARIO_ID,
+        }
         result = simulate_scenario(
             scenario=scenario,
             fact_rows_by_date=fact_rows_by_date,
@@ -1172,6 +1568,19 @@ def main() -> int:
             _decimal(model_summary["economic_contribution_rub"])
             - _decimal(actual_summary["economic_contribution_rub"])
         )
+        scenario_acceptance = _acceptance_result(actual_summary, model_summary)
+        model_summary.update(
+            {
+                "acceptance_gross_profit_not_lower": int(
+                    scenario_acceptance["gross_profit_not_lower"]
+                ),
+                "acceptance_fill_rate_not_lower": int(scenario_acceptance["fill_rate_not_lower"]),
+                "acceptance_capital_lower_or_gmroi_higher": int(
+                    scenario_acceptance["capital_lower_or_gmroi_higher"]
+                ),
+                "acceptance_passed": int(scenario_acceptance["passed"]),
+            }
+        )
         summary_rows.extend([actual_summary, model_summary])
         if keep_detail:
             detail_rows.extend(result.decision_rows)
@@ -1192,21 +1601,27 @@ def main() -> int:
         for row in summary_rows
         if row["scenario_id"] == BASE_SCENARIO_ID and row["strategy"] == "model"
     )
-    gross_profit_pass = _decimal(base_model["gross_profit_rub"]) + Decimal("1") >= _decimal(
-        base_actual["gross_profit_rub"]
+    acceptance = _acceptance_result(base_actual, base_model)
+    control_actual = next(
+        row
+        for row in summary_rows
+        if row["scenario_id"] == CONTROL_SCENARIO_ID and row["strategy"] == "actual"
     )
-    fill_rate_pass = _decimal(base_model["fill_rate"]) + Decimal("0.0001") >= _decimal(
-        base_actual["fill_rate"]
+    control_model = next(
+        row
+        for row in summary_rows
+        if row["scenario_id"] == CONTROL_SCENARIO_ID and row["strategy"] == "model"
     )
-    capital_or_gmroi_pass = _decimal(base_model["average_inventory_value_rub"]) <= _decimal(
-        base_actual["average_inventory_value_rub"]
-    ) or _decimal(base_model["gmroi_annualized"]) >= _decimal(base_actual["gmroi_annualized"])
-    acceptance = {
-        "gross_profit_not_lower": gross_profit_pass,
-        "fill_rate_not_lower": fill_rate_pass,
-        "capital_lower_or_gmroi_higher": capital_or_gmroi_pass,
-        "passed": gross_profit_pass and fill_rate_pass and capital_or_gmroi_pass,
-    }
+    protected_model_rows = [
+        row
+        for row in summary_rows
+        if row["strategy"] == "model" and _decimal(row.get("grow_weekly_reduction_cap")) > ZERO
+    ]
+    passing_scenario_ids = sorted(
+        row["scenario_id"]
+        for row in protected_model_rows
+        if _clean(row.get("acceptance_passed")) == "1"
+    )
 
     output = args.output_dir
     output.mkdir(parents=True, exist_ok=True)
@@ -1234,22 +1649,34 @@ def main() -> int:
         "date_to": date_to.isoformat(),
         "base_scenario_id": BASE_SCENARIO_ID,
         "scenario_count": len(scenarios),
+        "control_scenario_id": CONTROL_SCENARIO_ID,
         "method": {
             "source_mode": "frozen_preflight_only",
-            "review_mode": "weekly_plus_event_and_daily_stockout_guard_manual_reviews_assumed_accepted",
+            "review_mode": "weekly_plus_event_and_daily_stockout_guard_manual_reviews_assumed_accepted;one_updatable_manual_review_per_scenario_sku",
             "hidden_demand_evaluation": "weighted_unmatched_kmp4_site_and_confirmed_reserve_backlog_at_expiry_or_cancellation",
             "signal_inventory_effect": "one_common_fifo_queue; weighted KMP4 and site open quantities are added once to min/max; reserve backlog acts through effective reserve",
             "site_source_mode": "frozen_anonymized_csv_only_no_live_site_queries",
             "historical_stage": "frozen_daily_stage_from_preflight",
             "inventory_position": "simulated_stock_minus_max(raw_historical_reserve,0)+simulated_free_pipeline; negative raw reserve never increases availability",
             "lead_time_usage": "p50_for_simulated_arrival_and_p75_only_for_economically_protected_coverage",
-            "economic_safety_stock": "empirical_completed_walk_forward_underforecast_errors_times_margin_vs_holding_cost",
+            "economic_safety_stock": "sale_stage_empirical_p75_p90_p95_completed_underforecast_error_capped_by_margin_vs_holding_cost",
+            "grow_weekly_target_protection": "min_max_reduction_limited_to_10_20_30_percent_per_scheduled_week;event_reviews_may_raise_not_lower",
+            "grow_entry_protection": "entry_min_max_may_rise_but_not_fall_for_2_4_6_weeks",
+            "focused_scenario_design": "legacy_plus_prior_control_plus_18_balanced_incomplete_factorial_protection_combinations",
             "within_period_launches": "first_observed_positive_stock_seeded_as_exogenous_launch_supply",
             "new_item_reorder_gate": "launch_profile_starts_after_first_positive_stock_or_initial_pipeline_arrival",
         },
         "acceptance": acceptance,
+        "protective_scenario_acceptance": {
+            "evaluated_count": len(protected_model_rows),
+            "passed_count": len(passing_scenario_ids),
+            "passing_scenario_ids": passing_scenario_ids,
+            "any_passed": bool(passing_scenario_ids),
+        },
         "base_actual": base_actual,
         "base_model": base_model,
+        "control_actual": control_actual,
+        "control_model": control_model,
         "files": {
             filename: _sha256(output / filename)
             for filename in (

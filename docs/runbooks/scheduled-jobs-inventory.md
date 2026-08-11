@@ -5,7 +5,7 @@ domain: operations
 status: active
 owner: pricing-platform
 source_of_truth: true
-updated_at: "2026-08-08"
+updated_at: "2026-08-11"
 ---
 
 # Инвентарь заданий по расписанию
@@ -34,10 +34,10 @@ updated_at: "2026-08-08"
 | `onec_assembly_crm_reconciler` | каждые 30 минут | рабочая папка |
 | `order_fulfillment_sync` | каждые 30 минут, ежечасно в :05, ежедневно 11:00 | рабочая папка |
 | `pricing-onec-stock-availability` | ежедневно 03:15, еженедельно вс 02:00 | релиз |
-| `pricing-service-data-sync` | ежедневно 02:00, 02:30, 03:20 | рабочая папка |
+| `pricing-service-data-sync` | ежедневно 02:00, 02:30, 03:20 | смешанный: receivable — релиз; staffing и sales KPI — рабочая папка |
 | `pricing-sku-generation-ut103` | ежедневно 02:30 | рабочая папка |
-| `pricing-service-competitors` | ежедневно 04:10, 04:45, 05:20 | рабочая папка |
-| `pricing-display-supplier-lead-time-refresh` | ежедневно 06:20 | рабочая папка |
+| `pricing-service-competitors` | ежедневно 04:10, 04:45, 05:20 | релиз |
+| `pricing-display-supplier-lead-time-refresh` | ежедневно 06:20 | релиз, canary с 2026-08-11 |
 | `manual_matching_bitrix_tasks` | по будням 09:10 | рабочая папка |
 | `pricing-executive-procurement-snapshot` | ежедневно 10:35 | релиз |
 | `pricing-executive-management-balance` | ежедневно 11:40 | релиз |
@@ -53,17 +53,58 @@ updated_at: "2026-08-08"
 
 ## Известное расхождение
 
-На 2026-08-08 система работает из двух источников одновременно:
+На 2026-08-11 система всё ещё работает из двух источников одновременно:
 
-- служба API — из релиза `task-43-table-overflow-20260806-d20e64d`;
-- девять заданий по расписанию — из рабочей папки.
+- служба API — из релиза `card-balance-ocr-proxy-20260811-ee077fb`;
+- восемь cron entrypoints — из рабочей папки после первого canary-переключения.
 
-Между этими версиями 228 файлов различий. Экраны и ночные расчёты могут по-разному
-интерпретировать одни и те же данные.
+Между mutable checkout и active release на момент аудита было 117 различающихся
+путей. Экраны и ночные расчёты могут по-разному интерпретировать одни и те же данные.
 
-Свести источники к одному следует **после** того, как ветка релиза будет принята в
-`main`: иначе перевод заданий на релиз законсервирует в них непроверенный код, а
-обновление релиза до `main` откатит контур дебиторки примерно на две недели.
+Источники сводятся к одному canary-first: только после isolated zero-regression
+сравнения, с переключением одной cron-строки и адресным rollback.
+
+## Canary: display supplier lead-time
+
+2026-08-11 `pricing-display-supplier-lead-time-refresh` переведён на
+`/opt/MM/pricing-service-task43-current` с явным `REPO_DIR`. Перед cutover:
+
+- wrapper и task в mutable checkout и active release совпали побайтово;
+- isolated release-run завершился с status `0`;
+- пять CSV/JSON артефактов побайтово совпали с production baseline, включая SHA-256;
+- release `reports/` подтверждён как symlink на постоянный
+  `/opt/MM/pricing-service/reports`;
+- rollback-копия cron сохранена в
+  `/opt/MM/backups/pricing-service-cron-canary-20260811/`.
+
+Первый штатный запуск после cutover ожидается 2026-08-12 в 06:20 МСК. До его
+успешного readback следующий job не переключать.
+
+## Preparation: staffing sync
+
+2026-08-11 `staffing_sync` подготовлен как второй canary, но live cron не
+переключён. Проверка показала:
+
+- wrapper, task, worker, staffing service и тесты в mutable checkout и active
+  release совпадают побайтово;
+- isolated CLI-run на SQLite дал одинаковые counters и итоговое состояние в обеих
+  версиях; повторный запуск не создал дублей, SHA-256 результата совпал;
+- cron-шаблон в репозитории подготовлен к явному запуску через
+  `/opt/MM/pricing-service-task43-current` с `REPO_DIR`;
+- live cron по-прежнему запускает staffing из `/opt/MM/pricing-service`;
+- переменные `STAFFING_SYNC_STAFF_FILE`, `STAFFING_SYNC_PLAN_FILE` и
+  `STAFFING_SYNC_FACT_FILE` в production `.env` отсутствуют; сохранённые логи с
+  2026-05-22 по 2026-08-11 показывают только раннюю остановку до обращения к БД;
+- в production DB есть 308 записей сотрудников с последним обновлением
+  2026-04-17, но нет планов смен, факта смен и staffing snapshots.
+
+До cutover требуется определить producer/system of record для трёх входных JSON,
+создать реальные входы и выполнить isolated zero-regression сравнение на их копии.
+Дополнительный gate — успешный readback первого canary 2026-08-12 в 06:20 МСК.
+
+Rollback будущего cutover: вернуть только staffing-строку на
+`/opt/MM/pricing-service/infra/cron/staffing_sync.sh`; остальные строки файла cron
+не менять.
 
 ## Проверка после изменения расписания
 
@@ -73,6 +114,6 @@ updated_at: "2026-08-08"
 
 ## Проверка после переключения ветки в рабочей папке
 
-Переключение ветки в `/opt/MM/pricing-service` меняет код девяти боевых заданий.
+Переключение ветки в `/opt/MM/pricing-service` меняет код оставшихся восьми cron entrypoints.
 После такого переключения проверить логи ближайших запусков — в первую очередь
 `assortment_lifecycle_classification.log` и `order_fulfillment_sync.log`.

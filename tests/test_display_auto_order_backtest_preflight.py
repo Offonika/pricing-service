@@ -10,6 +10,7 @@ from tasks.display_auto_order_backtest_preflight import (
     CarryingCostScenario,
     PreflightTables,
     build_demand_signal_queue_history,
+    build_focused_scenario_definitions,
     build_kmp4_queue_history,
     calculate_economic_safety_stock,
     load_scenario_config,
@@ -46,6 +47,64 @@ def test_scenario_config_matches_approved_grid() -> None:
         Decimal("0.65"),
         Decimal("0.95"),
     ]
+    assert config.grow_weekly_reduction_caps == (
+        Decimal("0.1"),
+        Decimal("0.2"),
+        Decimal("0.3"),
+    )
+    assert config.grow_forecast_error_percentiles == (
+        Decimal("0.75"),
+        Decimal("0.9"),
+        Decimal("0.95"),
+    )
+    assert config.grow_entry_protection_weeks == (2, 4, 6)
+    assert [row.name for row in config.grow_service_floor_scenarios] == [
+        "p75",
+        "p90",
+        "p90_budget",
+    ]
+    assert config.grow_service_floor_scenarios[-1].per_sku_cap_rub == Decimal("50000")
+    assert config.grow_service_floor_scenarios[-1].stage_budget_rub == Decimal("8000000")
+
+
+def test_focused_grow_scenario_design_is_balanced_and_contains_central_candidate() -> None:
+    rows = build_focused_scenario_definitions(
+        load_scenario_config(CONFIG_PATH),
+        review_cadence_days=7,
+    )
+    protected = [
+        row
+        for row in rows
+        if row["grow_weekly_reduction_cap"] != "0" and row["grow_service_floor_percentile"] == "0"
+    ]
+
+    assert len(rows) == 23
+    assert len(protected) == 18
+    assert "typical_kmp0_5_sitebalanced_base" in {row["scenario_id"] for row in rows}
+    assert "grow_cap20_p90_hold4_typical_kmp0_5_sitebalanced_base" in {
+        row["scenario_id"] for row in rows
+    }
+    assert {
+        cap: sum(row["grow_weekly_reduction_cap"] == cap for row in protected)
+        for cap in ("0.1", "0.2", "0.3")
+    } == {"0.1": 6, "0.2": 6, "0.3": 6}
+    assert {
+        percentile: sum(row["forecast_error_percentile"] == percentile for row in protected)
+        for percentile in ("0.75", "0.9", "0.95")
+    } == {"0.75": 6, "0.9": 6, "0.95": 6}
+    assert {
+        weeks: sum(row["grow_entry_protection_weeks"] == weeks for row in protected)
+        for weeks in (2, 4, 6)
+    } == {2: 6, 4: 6, 6: 6}
+    service_floors = [row for row in rows if row["grow_service_floor_percentile"] != "0"]
+    assert len(service_floors) == 3
+    assert {row["grow_service_floor_percentile"] for row in service_floors} == {
+        "0.75",
+        "0.9",
+    }
+    budgeted = next(row for row in service_floors if "p90_budget" in row["scenario_id"])
+    assert budgeted["grow_service_floor_sku_cap_rub"] == "50000"
+    assert budgeted["grow_service_floor_stage_budget_rub"] == "8000000"
 
 
 def test_kmp4_queue_is_closed_by_later_sale_without_double_count() -> None:

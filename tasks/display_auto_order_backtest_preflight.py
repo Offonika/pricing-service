@@ -133,6 +133,14 @@ class SiteSignalProfile:
 
 
 @dataclass(frozen=True)
+class GrowServiceFloorScenario:
+    name: str
+    percentile: Decimal
+    per_sku_cap_rub: Decimal
+    stage_budget_rub: Decimal
+
+
+@dataclass(frozen=True)
 class BacktestScenarioConfig:
     kmp4_weights: tuple[Decimal, ...]
     kmp4_queue_days: int
@@ -147,6 +155,15 @@ class BacktestScenarioConfig:
     safety_lookback_days: int
     safety_step_days: int
     safety_min_samples: int
+    grow_stage_profile: str
+    grow_kmp4_weight: Decimal
+    grow_site_profile: str
+    grow_holding_cost_scenario: str
+    grow_weekly_reduction_caps: tuple[Decimal, ...]
+    grow_forecast_error_percentiles: tuple[Decimal, ...]
+    grow_entry_protection_weeks: tuple[int, ...]
+    grow_balanced_design_offsets: tuple[int, ...]
+    grow_service_floor_scenarios: tuple[GrowServiceFloorScenario, ...]
     quantity_tolerance: Decimal
 
     @property
@@ -291,6 +308,7 @@ def load_scenario_config(path: Path) -> BacktestScenarioConfig:
     )
     lead_time = payload.get("lead_time") or {}
     safety = payload.get("economic_safety_stock") or {}
+    grow = payload.get("focused_grow_protection") or {}
     acceptance = payload.get("acceptance") or {}
     site_profiles = tuple(
         SiteSignalProfile(
@@ -299,6 +317,15 @@ def load_scenario_config(path: Path) -> BacktestScenarioConfig:
             unordered_cart_weight=_decimal(row.get("unordered_cart_weight")),
         )
         for row in payload.get("site_signal_profiles", ())
+    )
+    service_floor_scenarios = tuple(
+        GrowServiceFloorScenario(
+            name=_clean(row.get("name")),
+            percentile=_decimal(row.get("percentile")),
+            per_sku_cap_rub=_decimal(row.get("per_sku_cap_rub")),
+            stage_budget_rub=_decimal(row.get("stage_budget_rub")),
+        )
+        for row in grow.get("service_floor_scenarios", ())
     )
     config = BacktestScenarioConfig(
         kmp4_weights=tuple(_decimal(value) for value in payload.get("kmp4_weights", ())),
@@ -314,6 +341,23 @@ def load_scenario_config(path: Path) -> BacktestScenarioConfig:
         safety_lookback_days=int(safety.get("demand_sample_lookback_days") or 365),
         safety_step_days=int(safety.get("demand_sample_step_days") or 7),
         safety_min_samples=int(safety.get("min_demand_samples") or 8),
+        grow_stage_profile=_clean(grow.get("stage_profile")) or "typical",
+        grow_kmp4_weight=_decimal(grow.get("kmp4_weight")),
+        grow_site_profile=_clean(grow.get("site_profile")) or "balanced",
+        grow_holding_cost_scenario=(_clean(grow.get("holding_cost_scenario")) or "base"),
+        grow_weekly_reduction_caps=tuple(
+            _decimal(value) for value in grow.get("weekly_max_reduction_fractions", ())
+        ),
+        grow_forecast_error_percentiles=tuple(
+            _decimal(value) for value in grow.get("forecast_error_percentiles", ())
+        ),
+        grow_entry_protection_weeks=tuple(
+            int(value) for value in grow.get("entry_protection_weeks", ())
+        ),
+        grow_balanced_design_offsets=tuple(
+            int(value) for value in grow.get("balanced_design_offsets", ())
+        ),
+        grow_service_floor_scenarios=service_floor_scenarios,
         quantity_tolerance=_decimal(acceptance.get("quantity_tolerance") or "0.001"),
     )
     if not config.kmp4_weights or any(value < ZERO for value in config.kmp4_weights):
@@ -337,7 +381,167 @@ def load_scenario_config(path: Path) -> BacktestScenarioConfig:
         raise ValueError("holding_cost_scenarios must not be empty")
     if any(row.total_annual_rate < ZERO for row in config.holding_cost_scenarios):
         raise ValueError("holding cost rates must be non-negative")
+    if len(config.grow_weekly_reduction_caps) != 3 or any(
+        value <= ZERO or value >= ONE for value in config.grow_weekly_reduction_caps
+    ):
+        raise ValueError("grow weekly reduction caps must contain three fractions in (0, 1)")
+    if len(config.grow_forecast_error_percentiles) != 3 or any(
+        value <= ZERO or value >= ONE for value in config.grow_forecast_error_percentiles
+    ):
+        raise ValueError("grow forecast error percentiles must contain three values in (0, 1)")
+    if len(config.grow_entry_protection_weeks) != 3 or any(
+        value <= 0 for value in config.grow_entry_protection_weeks
+    ):
+        raise ValueError("grow entry protection weeks must contain three positive values")
+    if (
+        len(config.grow_balanced_design_offsets) != 2
+        or len(set(config.grow_balanced_design_offsets)) != 2
+        or any(
+            value < 0 or value >= len(config.grow_entry_protection_weeks)
+            for value in config.grow_balanced_design_offsets
+        )
+    ):
+        raise ValueError("grow balanced design must contain two distinct valid offsets")
+    if config.grow_kmp4_weight not in config.kmp4_weights:
+        raise ValueError("focused grow KMP4 weight is absent from kmp4_weights")
+    if config.grow_site_profile not in {row.name for row in config.site_signal_profiles}:
+        raise ValueError("focused grow site profile is absent from site_signal_profiles")
+    if config.grow_holding_cost_scenario not in {row.name for row in config.holding_cost_scenarios}:
+        raise ValueError("focused grow holding cost scenario is absent")
+    if len(config.grow_service_floor_scenarios) != 3:
+        raise ValueError("grow service floor design must contain three scenarios")
+    if len({row.name for row in config.grow_service_floor_scenarios}) != len(
+        config.grow_service_floor_scenarios
+    ):
+        raise ValueError("grow service floor scenario names must be unique")
+    if any(
+        not row.name
+        or row.percentile <= ZERO
+        or row.percentile >= ONE
+        or row.per_sku_cap_rub < ZERO
+        or row.stage_budget_rub < ZERO
+        or (row.stage_budget_rub > ZERO and row.per_sku_cap_rub <= ZERO)
+        for row in config.grow_service_floor_scenarios
+    ):
+        raise ValueError("grow service floor scenarios contain invalid percentiles or budgets")
     return config
+
+
+def build_focused_scenario_definitions(
+    config: BacktestScenarioConfig,
+    *,
+    review_cadence_days: int,
+) -> list[dict[str, Any]]:
+    """Build controls, 18 economic-cap variants and three service-floor variants."""
+
+    site_profile = next(
+        row for row in config.site_signal_profiles if row.name == config.grow_site_profile
+    )
+    cost_scenario = next(
+        row
+        for row in config.holding_cost_scenarios
+        if row.name == config.grow_holding_cost_scenario
+    )
+    common = {
+        "row_kind": "scenario_definition",
+        "stage_profile": config.grow_stage_profile,
+        "kmp4_weight": str(config.grow_kmp4_weight),
+        "site_profile": site_profile.name,
+        "site_order_weight": str(site_profile.order_weight),
+        "site_unordered_cart_weight": str(site_profile.unordered_cart_weight),
+        "holding_cost_scenario": cost_scenario.name,
+        "capital_annual_rate": str(cost_scenario.capital_annual_rate),
+        "storage_annual_rate": str(cost_scenario.storage_annual_rate),
+        "obsolescence_annual_rate": str(cost_scenario.obsolescence_annual_rate),
+        "lead_time_rule": "p50_then_p75_economic_protection",
+        "review_cadence_days": review_cadence_days,
+    }
+    rows: list[dict[str, Any]] = [
+        {
+            "scenario_id": "legacy",
+            "row_kind": "scenario_definition",
+            "stage_profile": "legacy",
+            "kmp4_weight": "0",
+            "site_profile": "off",
+            "site_order_weight": "0",
+            "site_unordered_cart_weight": "0",
+            "holding_cost_scenario": "legacy_excluded",
+            "lead_time_rule": "fixed_legacy",
+            "lead_time_days": DEFAULT_LEAD_TIME_DAYS,
+            "grow_weekly_reduction_cap": "0",
+            "forecast_error_percentile": "0",
+            "grow_entry_protection_weeks": 0,
+            "grow_service_floor_percentile": "0",
+            "grow_service_floor_sku_cap_rub": "0",
+            "grow_service_floor_stage_budget_rub": "0",
+        },
+        {
+            **common,
+            "scenario_id": "typical_kmp0_5_sitebalanced_base",
+            "grow_weekly_reduction_cap": "0",
+            "forecast_error_percentile": "0",
+            "grow_entry_protection_weeks": 0,
+            "grow_service_floor_percentile": "0",
+            "grow_service_floor_sku_cap_rub": "0",
+            "grow_service_floor_stage_budget_rub": "0",
+        },
+    ]
+    week_count = len(config.grow_entry_protection_weeks)
+    for cap_index, cap in enumerate(config.grow_weekly_reduction_caps):
+        for percentile_index, percentile in enumerate(config.grow_forecast_error_percentiles):
+            for design_offset in config.grow_balanced_design_offsets:
+                week_index = (cap_index + percentile_index + design_offset) % week_count
+                protection_weeks = config.grow_entry_protection_weeks[week_index]
+                cap_token = int(cap * Decimal("100"))
+                percentile_token = int(percentile * Decimal("100"))
+                rows.append(
+                    {
+                        **common,
+                        "scenario_id": (
+                            f"grow_cap{cap_token}_p{percentile_token}"
+                            f"_hold{protection_weeks}_typical_kmp0_5_sitebalanced_base"
+                        ),
+                        "grow_weekly_reduction_cap": str(cap),
+                        "forecast_error_percentile": str(percentile),
+                        "grow_entry_protection_weeks": protection_weeks,
+                        "grow_service_floor_percentile": "0",
+                        "grow_service_floor_sku_cap_rub": "0",
+                        "grow_service_floor_stage_budget_rub": "0",
+                        "balanced_design_offset": design_offset,
+                    }
+                )
+    central_cap = Decimal("0.2")
+    central_weeks = 4
+    if (
+        central_cap not in config.grow_weekly_reduction_caps
+        or central_weeks not in config.grow_entry_protection_weeks
+    ):
+        raise ValueError("service floor design requires the central 20% / 4 week protection")
+    for floor in config.grow_service_floor_scenarios:
+        percentile_token = int(floor.percentile * Decimal("100"))
+        budget_token = (
+            f"_sku{int(floor.per_sku_cap_rub)}_stage{int(floor.stage_budget_rub)}"
+            if floor.stage_budget_rub > ZERO
+            else ""
+        )
+        rows.append(
+            {
+                **common,
+                "scenario_id": (
+                    f"grow_servicefloor_{floor.name}_p{percentile_token}{budget_token}"
+                    "_cap20_hold4_typical_kmp0_5_sitebalanced_base"
+                ),
+                "grow_weekly_reduction_cap": str(central_cap),
+                "forecast_error_percentile": str(floor.percentile),
+                "grow_entry_protection_weeks": central_weeks,
+                "grow_service_floor_percentile": str(floor.percentile),
+                "grow_service_floor_sku_cap_rub": str(floor.per_sku_cap_rub),
+                "grow_service_floor_stage_budget_rub": str(floor.stage_budget_rub),
+            }
+        )
+    if len(rows) != 23 or len({row["scenario_id"] for row in rows}) != len(rows):
+        raise ValueError("focused grow scenario design must contain 23 unique definitions")
+    return rows
 
 
 def fetch_kmp4_demand(
@@ -1830,44 +2034,10 @@ def build_preflight_tables(
     daily_facts: list[dict[str, Any]] = []
     decision_inputs: list[dict[str, Any]] = []
     cadence = max(1, policy.order_cadence_days)
-    scenario_decisions: list[dict[str, Any]] = [
-        {
-            "scenario_id": "legacy",
-            "row_kind": "scenario_definition",
-            "stage_profile": "legacy",
-            "kmp4_weight": "0",
-            "site_profile": "off",
-            "site_order_weight": "0",
-            "site_unordered_cart_weight": "0",
-            "holding_cost_scenario": "legacy_excluded",
-            "lead_time_rule": "fixed_legacy",
-            "lead_time_days": DEFAULT_LEAD_TIME_DAYS,
-        }
-    ]
-    for stage_name in ("conservative", "typical", "service"):
-        for kmp4_weight in config.kmp4_weights:
-            for site_profile in config.site_signal_profiles:
-                for cost_scenario in config.holding_cost_scenarios:
-                    scenario_decisions.append(
-                        {
-                            "scenario_id": (
-                                f"{stage_name}_kmp{str(kmp4_weight).replace('.', '_')}"
-                                f"_site{site_profile.name}_{cost_scenario.name}"
-                            ),
-                            "row_kind": "scenario_definition",
-                            "stage_profile": stage_name,
-                            "kmp4_weight": str(kmp4_weight),
-                            "site_profile": site_profile.name,
-                            "site_order_weight": str(site_profile.order_weight),
-                            "site_unordered_cart_weight": str(site_profile.unordered_cart_weight),
-                            "holding_cost_scenario": cost_scenario.name,
-                            "capital_annual_rate": str(cost_scenario.capital_annual_rate),
-                            "storage_annual_rate": str(cost_scenario.storage_annual_rate),
-                            "obsolescence_annual_rate": str(cost_scenario.obsolescence_annual_rate),
-                            "lead_time_rule": "p50_then_p75_economic_protection",
-                            "review_cadence_days": cadence,
-                        }
-                    )
+    scenario_decisions = build_focused_scenario_definitions(
+        config,
+        review_cadence_days=cadence,
+    )
     lead_time_index = build_lead_time_history_index(lead_time_detail_rows)
     initial_pipeline = [
         {
@@ -1906,13 +2076,17 @@ def build_preflight_tables(
                 demand_multiplier=_demand_multiplier(item, policy),
             )
             queue_day = signal_queue.get(code, {}).get(business_date, DemandSignalQueueDay())
-            event_review = trend == "accelerating" or any(
-                (
-                    queue_day.kmp4_raw_qty > ZERO,
-                    queue_day.site_order_raw_qty > ZERO,
-                    queue_day.site_cart_raw_qty > ZERO,
-                    queue_day.reserve_backlog_raw_qty > ZERO,
-                    queue_day.site_soft_trigger_count > 0,
+            event_review = (
+                lifecycle.status.value != previous_status
+                or trend == "accelerating"
+                or any(
+                    (
+                        queue_day.kmp4_raw_qty > ZERO,
+                        queue_day.site_order_raw_qty > ZERO,
+                        queue_day.site_cart_raw_qty > ZERO,
+                        queue_day.reserve_backlog_raw_qty > ZERO,
+                        queue_day.site_soft_trigger_count > 0,
+                    )
                 )
             )
             physical_stock = _decimal(stock_by_day.get(business_date, {}).get(code))
@@ -1965,6 +2139,7 @@ def build_preflight_tables(
                     "reserve_backlog_hidden_qty": str(queue_day.reserve_backlog_hidden_qty),
                     "reserve_backlog_open_qty": str(queue_day.reserve_backlog_open_qty),
                     "status": lifecycle.status.value,
+                    "previous_status": previous_status or "",
                 }
             )
             lifecycle_daily.append(
@@ -2497,12 +2672,14 @@ __all__ = [
     "BacktestScenarioConfig",
     "CarryingCostScenario",
     "EconomicSafetyStock",
+    "GrowServiceFloorScenario",
     "HistoricalUnitEconomicsEvent",
     "Kmp4QueueDay",
     "LeadTimeProfile",
     "PreflightTables",
     "RegisterHistory",
     "build_historical_incoming_by_day",
+    "build_focused_scenario_definitions",
     "build_kmp4_queue_history",
     "build_preflight_tables",
     "calculate_economic_safety_stock",

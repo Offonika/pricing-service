@@ -21,7 +21,7 @@ depends_on:
   - docs/specs/pricing-service-architecture-hardening.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-14"
+updated_at: "2026-08-11"
 ---
 
 # Назначение
@@ -98,6 +98,8 @@ JSON/CSV/XLSX артефактов сохраняются.
 
 # Implementation Checklist
 
+- [x] 2026-08-11: контур выбран следующим приоритетом архитектурного аудита;
+      аудит сначала проверяет фактическое состояние и не разрешает production-изменения.
 - [x] Перевести read-only команды nightly matching на central read-only session scope.
 - [x] Добавить `db_access` policy и проверку для мигрированных CLI.
 - [x] Покрыть read-only rollback тестом DB infrastructure.
@@ -105,6 +107,22 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [ ] Перевести постоянные write-команды на Unit of Work.
 - [ ] Убрать бизнес-логику из оставшихся Python cron entrypoints.
 - [ ] Подтвердить идемпотентность каждой постоянной scheduled job.
+- [x] Выполнить isolated zero-regression canary для
+      `pricing-display-supplier-lead-time-refresh`: пять артефактов совпали побайтово.
+- [x] Переключить одну live cron-строку на active release symlink с готовым rollback.
+- [ ] Подтвердить первый штатный scheduled-run canary 2026-08-12 в 06:20 МСК;
+      до readback не переключать следующий job.
+- [x] `staffing_sync` выбран вторым canary; разрешена только подготовка и
+      isolated DB-проверка, live cron остаётся на mutable checkout до успешного
+      readback первого canary.
+- [x] Подтвердить побайтовое совпадение staffing wrapper/task/worker/service между
+      mutable checkout и active release.
+- [x] Подтвердить одинаковый isolated CLI-run обеих версий и идемпотентный повтор
+      без дублей.
+- [ ] Определить producer/system of record и настроить три production JSON-входа
+      `staffing_sync`; до этого job не считать рабочим canary.
+- [ ] Повторить isolated zero-regression сравнение на копии реальных входов и
+      только после обоих gate рассматривать live cutover.
 
 # Review Notes / Risks
 
@@ -122,6 +140,12 @@ JSON/CSV/XLSX артефактов сохраняются.
 
 # Rollout
 
+РЕШЕНИЕ (2026-08-11): отказ от массового переключения scheduled jobs. Первый
+переход выполняется одним canary с неизменяемым release, isolated dry-run,
+проверкой результата и готовым возвратом одной cron-строки. Обязательный gate —
+отсутствие регрессий: одинаковые входы должны давать эквивалентные counters,
+артефакты, изменения состояния и внешние side effects до и после переключения.
+
 1. Выпускать небольшими slices по одному job-контру.
 2. Перед переключением сравнить counters/artifacts с текущим production.
 3. Сначала выполнить scheduled job в штатном режиме без новых external side effects.
@@ -129,4 +153,14 @@ JSON/CSV/XLSX артефактов сохраняются.
 
 # Changelog
 
+- ОТМЕНЕНО (2026-08-11): формулировка о «неуспешной предыдущей попытке» была
+  ошибочной трактовкой сообщения пользователя.
+- 2026-08-11 — rollout переведён на canary-first с обязательным zero-regression gate.
+- 2026-08-11 — первый canary `pricing-display-supplier-lead-time-refresh` прошёл
+  побайтовое сравнение и переключён на active release; scheduled readback ожидается.
+- 2026-08-11 — `staffing_sync` выбран вторым canary в режиме preparation-only.
+- 2026-08-11 — подготовка `staffing_sync` подтвердила code parity и isolated
+  idempotency; обнаружен блокер — production JSON-входы не настроены.
+- 2026-08-11 — DB/CLI/cron/idempotency выбран следующим архитектурным аудитом
+  `pricing-service`.
 - 2026-07-14 — accepted Release B spec; started read-only nightly matching slice.

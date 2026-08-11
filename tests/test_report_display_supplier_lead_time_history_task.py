@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from pathlib import Path
 
 from tasks.report_display_supplier_lead_time_history import (
     aggregate_lead_time_rows,
@@ -10,6 +11,18 @@ from tasks.report_display_supplier_lead_time_history import (
     build_weekly_seasonality_rows,
     mark_lead_time_outliers,
 )
+
+
+def test_display_supplier_lead_time_cron_uses_active_release() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    cron = (repo_root / "infra/cron/display_supplier_lead_time_refresh.cron").read_text(
+        encoding="utf-8"
+    )
+    active_release = "/opt/MM/pricing-service-task43-current"
+
+    assert f"REPO_DIR={active_release}" in cron
+    assert f"{active_release}/infra/cron/display_supplier_lead_time_refresh.sh" in cron
+    assert "/opt/MM/pricing-service/infra/cron/display_supplier_lead_time_refresh.sh" not in cron
 
 
 def test_display_supplier_lead_time_matches_nearest_receipt_after_cargo() -> None:

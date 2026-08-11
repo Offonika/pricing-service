@@ -6,4 +6,4 @@ SHELL=/bin/bash
 PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 CRON_TZ=Europe/Moscow
 
-20 6 * * * root /opt/MM/pricing-service/infra/cron/display_supplier_lead_time_refresh.sh >> /var/log/pricing/display_supplier_lead_time_refresh.cron.log 2>&1
+20 6 * * * root REPO_DIR=/opt/MM/pricing-service-task43-current /opt/MM/pricing-service-task43-current/infra/cron/display_supplier_lead_time_refresh.sh >> /var/log/pricing/display_supplier_lead_time_refresh.cron.log 2>&1

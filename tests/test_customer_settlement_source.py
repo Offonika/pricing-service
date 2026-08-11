@@ -15,6 +15,7 @@ from app.services.customer_settlement_source import (
     fetch_customer_settlement_balances,
     validate_organization_field,
 )
+from app.services.customer_settlements import onec_ref_to_guid
 from app.workers.customer_settlements import (
     run_customer_settlement_financial_sync,
     run_customer_settlement_mapping_sync,
@@ -142,6 +143,7 @@ def test_extractor_uses_exact_as_of_snapshot_and_explicit_zero() -> None:
     assert result.isolation_level == "SNAPSHOT"
     assert [item.counterparty_ref for item in result.balances] == [CP_1, CP_2]
     assert result.balances[0].signed_balance == Decimal("0.00")
+    assert result.balances[0].counterparty_guid == onec_ref_to_guid(CP_1)
 
     rendered_sql = "\n".join(engine.connection.sql)
     assert "NOLOCK" not in rendered_sql.upper()

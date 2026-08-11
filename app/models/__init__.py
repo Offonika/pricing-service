@@ -38,6 +38,9 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         CustomerPriceTypeSnapshot,
     )
     from app.models.customer_settlement import (
+        CustomerAccount,
+        CustomerAccountSiteBinding,
+        CustomerAccountSourceBinding,
         CustomerSettlementAssertionJti,
         CustomerSettlementBalance,
         CustomerSettlementMappingEntry,
@@ -173,6 +176,9 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "CounterpartyDuplicateCase",
         "CounterpartyFolderSnapshot",
         "CustomerSettlementRevision",
+        "CustomerAccount",
+        "CustomerAccountSiteBinding",
+        "CustomerAccountSourceBinding",
         "CustomerSettlementBalance",
         "CustomerSettlementMappingRevision",
         "CustomerSettlementMappingEntry",

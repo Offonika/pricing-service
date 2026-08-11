@@ -74,3 +74,51 @@ def test_customer_settlement_migration_upgrade_and_downgrade(tmp_path: Path) -> 
             assert expected_tables.isdisjoint(inspect(connection).get_table_names())
     finally:
         engine.dispose()
+
+
+def test_customer_account_guid_migration_upgrade_and_downgrade(tmp_path: Path) -> None:
+    versions = Path(__file__).resolve().parents[1] / "alembic/versions"
+
+    def load(filename: str, module_name: str):
+        spec = importlib.util.spec_from_file_location(module_name, versions / filename)
+        module = importlib.util.module_from_spec(spec)
+        assert spec and spec.loader
+        spec.loader.exec_module(module)
+        return module
+
+    base = load("c3d4e5f6a7b9_add_customer_settlements.py", "settlement_base_migration")
+    account = load(
+        "d9e1f3a5b7c9_add_customer_account_guid_mapping.py",
+        "settlement_account_migration",
+    )
+    engine = create_engine(f"sqlite:///{tmp_path / 'account-migration.db'}")
+    try:
+        with engine.begin() as connection:
+            base.op = Operations(MigrationContext.configure(connection))
+            base.upgrade()
+            account.op = Operations(MigrationContext.configure(connection))
+            account.upgrade()
+            tables = set(inspect(connection).get_table_names())
+            assert {
+                "customer_account",
+                "customer_account_site_binding",
+                "customer_account_source_binding",
+            }.issubset(tables)
+            balance_columns = {
+                item["name"]
+                for item in inspect(connection).get_columns("customer_settlement_balance")
+            }
+            assert "counterparty_guid" in balance_columns
+
+        with engine.begin() as connection:
+            account.op = Operations(MigrationContext.configure(connection))
+            account.downgrade()
+            tables = set(inspect(connection).get_table_names())
+            assert "customer_account" not in tables
+            balance_columns = {
+                item["name"]
+                for item in inspect(connection).get_columns("customer_settlement_balance")
+            }
+            assert "counterparty_guid" not in balance_columns
+    finally:
+        engine.dispose()

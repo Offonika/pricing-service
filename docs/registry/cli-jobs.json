@@ -64,6 +64,16 @@
       "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
       "remove_after": null
     },
+    "import_customer_settlement_mappings.py": {
+      "owner": "receivables",
+      "kind": "permanent_cli",
+      "dry_run": "supported",
+      "idempotency": "verified_by_mapping_revision_hash",
+      "side_effect_level": "db_write",
+      "db_access": "mixed",
+      "spec": "docs/specs/customer-settlements-backend-v1.md",
+      "remove_after": null
+    },
     "export_competitor_match_review_queue.py": {
       "owner": "matching",
       "kind": "export",

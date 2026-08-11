@@ -4,7 +4,7 @@ import hashlib
 from contextlib import contextmanager
 from typing import Iterator
 
-from sqlalchemy import text
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
@@ -13,6 +13,7 @@ from app.infrastructure.db import (
     build_onec_engine,
     get_application_session_factory,
 )
+from app.models.customer_settlement import CustomerSettlementMappingRevision
 from app.services.customer_settlement_mapping import (
     build_mapping_entries,
     fetch_crm_cluster_rows,
@@ -64,6 +65,27 @@ def run_customer_settlement_mapping_sync(
     settings = settings or get_settings()
     if not (settings.customer_settlements_shadow_enabled or settings.customer_settlements_enabled):
         return {"status": "disabled"}
+    mapping_mode = str(settings.customer_settlements_mapping_mode or "").strip().lower()
+    if mapping_mode == "manual_confirmed":
+        session = get_application_session_factory()()
+        try:
+            revision = session.scalar(
+                select(CustomerSettlementMappingRevision).where(
+                    CustomerSettlementMappingRevision.status == "active",
+                    CustomerSettlementMappingRevision.source_name == "manual_confirmed_pilot",
+                )
+            )
+            if revision is None:
+                return {"status": "blocked", "reason": "manual_mapping_not_imported"}
+            return {
+                "status": "unchanged",
+                "revision_id": revision.id,
+                "mapping_entries": revision.loaded_entry_count,
+            }
+        finally:
+            session.close()
+    if mapping_mode != "crm_readonly":
+        return {"status": "blocked", "reason": "unsupported_mapping_mode"}
     session = get_application_session_factory()()
     onec_engine = None
     try:
@@ -74,6 +96,11 @@ def run_customer_settlement_mapping_sync(
                 return {"status": "blocked", "reason": "crm_mapping_source_not_configured"}
             if not settings.onec_database_url:
                 return {"status": "blocked", "reason": "onec_mapping_source_not_configured"}
+            if not (
+                settings.customer_settlements_organization_ref
+                and settings.customer_settlements_organization_guid
+            ):
+                return {"status": "blocked", "reason": "mapping_organization_not_configured"}
             try:
                 onec_engine = build_onec_engine(
                     settings.onec_database_url,
@@ -100,6 +127,8 @@ def run_customer_settlement_mapping_sync(
                     session,
                     entries=entries,
                     source_checked_at=utc_now(),
+                    organization_ref=str(settings.customer_settlements_organization_ref),
+                    organization_guid=str(settings.customer_settlements_organization_guid),
                 )
                 session.commit()
                 return {
@@ -136,6 +165,7 @@ def run_customer_settlement_financial_sync(
         return {"status": "blocked", "reason": "financial_source_not_validated"}
     required_config = (
         settings.customer_settlements_organization_ref,
+        settings.customer_settlements_organization_guid,
         settings.customer_settlements_opening_organization_field,
         settings.customer_settlements_movement_organization_field,
         settings.onec_database_url,
@@ -165,6 +195,7 @@ def run_customer_settlement_financial_sync(
                 source = fetch_customer_settlement_balances(
                     onec_engine,
                     organization_ref=settings.customer_settlements_organization_ref,
+                    organization_guid=settings.customer_settlements_organization_guid,
                     opening_organization_field=(
                         settings.customer_settlements_opening_organization_field
                     ),
@@ -198,6 +229,7 @@ def run_customer_settlement_financial_sync(
                     mark_financial_revision_failed(
                         session,
                         organization_ref=settings.customer_settlements_organization_ref,
+                        organization_guid=settings.customer_settlements_organization_guid,
                         as_of=utc_now(),
                         source_mode=settings.customer_settlements_source_mode,
                         error_code=(

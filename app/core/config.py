@@ -286,10 +286,13 @@ class Settings(BaseSettings):
     customer_settlements_enabled: bool = False
     customer_settlements_shadow_enabled: bool = False
     customer_settlements_organization_ref: str | None = None
+    customer_settlements_organization_guid: str | None = None
     customer_settlements_opening_organization_field: str | None = None
     customer_settlements_movement_organization_field: str | None = None
+    customer_settlements_counterparty_inn_field: str = "_Fld611"
     customer_settlements_source_mode: str = "onec_canonical_mutual_statement_7002"
     customer_settlements_source_validated: bool = False
+    customer_settlements_mapping_mode: str = "manual_confirmed"
     customer_settlements_query_timeout_seconds: int = 30
     customer_settlements_stale_after_seconds: int = 2 * 60 * 60
     customer_settlements_hide_after_seconds: int = 6 * 60 * 60

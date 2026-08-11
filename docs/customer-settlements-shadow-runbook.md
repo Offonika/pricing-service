@@ -6,9 +6,10 @@
 
 ## Подтверждённая база запуска
 
-На 2026-07-30 выполнены:
+На 2026-07-30 выполнены исходная бухгалтерская сверка и PostgreSQL-проверки.
+Перед новым shadow-run требуется применить актуальную миграцию:
 
-- Alembic `upgrade -> downgrade -> upgrade` до `c3d4e5f6a7b9` на отдельном
+- Alembic `upgrade -> downgrade -> upgrade` до `d9e1f3a5b7c9` на отдельном
   PostgreSQL `settlements_stage`;
 - PostgreSQL integration suite: `5 passed`;
 - бухгалтерская сверка на конец 2026-07-29 по организации `MASTER MOBILE`:
@@ -17,8 +18,8 @@
 - исходное состояние: нет active mapping/financial revision и финансовых строк;
   health до первого sync ожидаемо `critical`.
 
-Для запуска всё ещё нужен отдельный staging Bitrix24 webhook с read-only правами.
-Одноразовый webhook из `mm-compensation` повторно использовать запрещено.
+Пилотный mapping импортируется вручную из проверенного CSV. Bitrix24 webhook в
+режиме `manual_confirmed` не нужен и не должен добавляться «на всякий случай».
 
 ## 1. Отдельный secret-файл
 
@@ -34,10 +35,12 @@ CUSTOMER_SETTLEMENTS_ENABLED=false
 CUSTOMER_SETTLEMENTS_SHADOW_ENABLED=true
 CUSTOMER_SETTLEMENTS_SOURCE_VALIDATED=true
 CUSTOMER_SETTLEMENTS_ORGANIZATION_REF=0xb34a0025901e48ef11e211128227ea80
+CUSTOMER_SETTLEMENTS_ORGANIZATION_GUID=8227ea80-1112-11e2-b34a-0025901e48ef
 CUSTOMER_SETTLEMENTS_OPENING_ORGANIZATION_FIELD=_Fld7005RRef
 CUSTOMER_SETTLEMENTS_MOVEMENT_ORGANIZATION_FIELD=_Fld7005RRef
+CUSTOMER_SETTLEMENTS_COUNTERPARTY_INN_FIELD=_Fld611
 CUSTOMER_SETTLEMENTS_SOURCE_MODE=onec_canonical_mutual_statement_7002
-CUSTOMER_SETTLEMENTS_CRM_WEBHOOK_URL=https://<staging-portal>/rest/<readonly-user>/<token>
+CUSTOMER_SETTLEMENTS_MAPPING_MODE=manual_confirmed
 
 CUSTOMER_SETTLEMENTS_QUERY_TIMEOUT_SECONDS=30
 CUSTOMER_SETTLEMENTS_CRM_TIMEOUT_SECONDS=6
@@ -51,17 +54,17 @@ CUSTOMER_SETTLEMENTS_JOB_TIMEOUT_SECONDS=90
 CUSTOMER_SETTLEMENTS_RETRY_DELAY_SECONDS=600
 ```
 
-Webhook должен принадлежать staging-контуру, иметь только нужные CRM-read методы и
-не использоваться из `mm-compensation`. Пароли и URL не выводить в логи.
+`ONEC_DATABASE_URL` использует только read-only доступ. Пароли и URL не выводить
+в логи. Режим `crm_readonly` остаётся совместимым, но не используется в этом пилоте.
 
 ## 2. Bootstrap preflight
 
 Preflight выполняет только локальные проверки конфигурации и PostgreSQL. Он не
-обращается к CRM или 1С и не выводит URL, client ID, cluster ID, counterparty ref
+обращается к 1С и не выводит URL, user ID, customer account ID, counterparty GUID/ref
 или суммы.
 
 ```bash
-export REPO_DIR=/opt/MM/.worktrees/pricing-customer-settlements-backend-v1
+export REPO_DIR=/opt/MM/.worktrees/pricing-task-2883-customer-settlements-backend
 export PYTHON_BIN=/opt/MM/pricing-service/.venv/bin/python
 export CUSTOMER_SETTLEMENTS_ENV_FILE=/etc/pricing-service/customer-settlements-shadow.env
 
@@ -77,13 +80,22 @@ cd "${REPO_DIR}"
 Допустимый результат перед первым sync: `status=ready`, 10 пилотов, ноль active
 revision и подтверждение fail-closed health. Любой failed check блокирует запуск.
 Особенно недопустимы `CUSTOMER_SETTLEMENTS_ENABLED=true`, не-staging окружение,
-другая БД, другая организация или отсутствующий отдельный CRM webhook.
+другая БД, другая организация или mapping mode вне утверждённого контура.
 
 ## 3. Первый ручной цикл
 
-Выполнять только после успешного bootstrap preflight:
+CSV содержит ровно семь колонок:
+`site_user_id,counterparty_guid,organization_guid,source_system,expected_code,expected_name,expected_inn`.
+Допускается не более 10 строк. В обычный вывод команды не попадают ID, GUID, названия,
+ИНН или суммы — только количества и SHA-256 hashes.
+
+Выполнять только после успешного bootstrap preflight. Сначала обязательный dry-run,
+затем отдельное применение с зафиксированным согласующим:
 
 ```bash
+"${PYTHON_BIN}" -m tasks.import_customer_settlement_mappings /secure/pilot-mapping.csv
+"${PYTHON_BIN}" -m tasks.import_customer_settlement_mappings /secure/pilot-mapping.csv \
+  --apply --approved-by '<role-or-ticket>'
 "${PYTHON_BIN}" -m tasks.sync_customer_settlement_mapping
 "${PYTHON_BIN}" -m tasks.sync_customer_settlements
 "${PYTHON_BIN}" -m tasks.preflight_customer_settlement_shadow \
@@ -91,8 +103,12 @@ revision и подтверждение fail-closed health. Любой failed che
   --expected-pilot-count 10
 ```
 
-Mapping sync должен завершить полную пагинацию CRM. Financial sync должен вернуть
-ровно все уникальные контрагенты активных пилотов, включая явные нулевые строки.
+Importer сверяет GUID, организацию, код, название и ИНН с live read-only УТ, а также
+блокирует контрагента при любом активном договоре не в `643/RUB`. Whitelist включается
+отдельно через `tasks.manage_customer_settlement_pilot`. Mapping sync в ручном режиме
+только проверяет наличие active `manual_confirmed_pilot` и не перезаписывает его.
+Financial sync должен вернуть ровно все уникальные контрагенты включённых пилотов,
+включая явные нулевые строки.
 `ready` требует:
 
 - ровно одну свежую active mapping revision;
@@ -113,12 +129,12 @@ staging checkout. Settlement-обёртки принимают отдельны�
 
 ```cron
 CRON_TZ=Europe/Moscow
-REPO_DIR=/opt/MM/.worktrees/pricing-customer-settlements-backend-v1
+REPO_DIR=/opt/MM/.worktrees/pricing-task-2883-customer-settlements-backend
 PYTHON_BIN=/opt/MM/pricing-service/.venv/bin/python
 CUSTOMER_SETTLEMENTS_ENV_FILE=/etc/pricing-service/customer-settlements-shadow.env
 
 5 * * * * ${REPO_DIR}/infra/cron/customer_settlement_mapping_sync.sh >> /var/log/pricing-staging/customer_settlement_mapping_sync.log 2>&1
-12 * * * * ${REPO_DIR}/infra/cron/customer_settlement_financial_sync.sh >> /var/log/pricing-staging/customer_settlement_financial_sync.log 2>&1
+17 * * * * ${REPO_DIR}/infra/cron/customer_settlement_financial_sync.sh >> /var/log/pricing-staging/customer_settlement_financial_sync.log 2>&1
 35 * * * * ${REPO_DIR}/infra/cron/customer_settlement_health.sh >> /var/log/pricing-staging/customer_settlement_health.log 2>&1
 25 3 * * * ${REPO_DIR}/infra/cron/customer_settlement_cleanup.sh >> /var/log/pricing-staging/customer_settlement_cleanup.log 2>&1
 ```

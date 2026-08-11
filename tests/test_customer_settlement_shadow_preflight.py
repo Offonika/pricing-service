@@ -6,6 +6,7 @@ from app.core.config import Settings
 from tasks import preflight_customer_settlement_shadow as preflight
 
 ORG = "0xb34a0025901e48ef11e211128227ea80"
+ORG_GUID = "8227ea80-1112-11e2-b34a-0025901e48ef"
 
 
 def _settings(**overrides) -> Settings:
@@ -17,6 +18,7 @@ def _settings(**overrides) -> Settings:
         "customer_settlements_shadow_enabled": True,
         "customer_settlements_source_validated": True,
         "customer_settlements_organization_ref": ORG,
+        "customer_settlements_organization_guid": ORG_GUID,
         "customer_settlements_opening_organization_field": "_Fld7005RRef",
         "customer_settlements_movement_organization_field": "_Fld7005RRef",
         "customer_settlements_crm_webhook_url": "https://crm.example/rest/readonly",
@@ -29,8 +31,9 @@ def _facts(**overrides):
     values = {
         "database_dialect": "postgresql",
         "current_database": "settlements_stage",
-        "alembic_revision": "c3d4e5f6a7b9",
+        "alembic_revision": "d9e1f3a5b7c9",
         "alembic_revision_count": 1,
+        "active_mapping_source_name": None,
         "enabled_pilots": 10,
         "active_mapping_revisions": 0,
         "active_financial_revisions": 0,
@@ -70,6 +73,7 @@ def test_bootstrap_preflight_accepts_empty_fail_closed_staging(monkeypatch) -> N
         phase="bootstrap",
         expected_database_name="settlements_stage",
         expected_organization_ref=ORG,
+        expected_organization_guid=ORG_GUID,
         expected_pilot_count=10,
     )
 
@@ -78,7 +82,9 @@ def test_bootstrap_preflight_accepts_empty_fail_closed_staging(monkeypatch) -> N
     assert report["metrics"]["enabled_pilots"] == 10
 
 
-def test_bootstrap_preflight_blocks_client_api_and_missing_crm(monkeypatch) -> None:
+def test_bootstrap_preflight_blocks_client_api_but_manual_mode_does_not_require_crm(
+    monkeypatch,
+) -> None:
     monkeypatch.setattr(preflight, "_collect_database_facts", lambda session: _facts())
 
     report = preflight.build_shadow_preflight_report(
@@ -90,12 +96,30 @@ def test_bootstrap_preflight_blocks_client_api_and_missing_crm(monkeypatch) -> N
         phase="bootstrap",
         expected_database_name="settlements_stage",
         expected_organization_ref=ORG,
+        expected_organization_guid=ORG_GUID,
         expected_pilot_count=10,
     )
 
     assert report["status"] == "blocked"
     assert "client_api_disabled" in report["failed_checks"]
-    assert "crm_readonly_source_configured" in report["failed_checks"]
+    assert "mapping_source_configured" not in report["failed_checks"]
+
+
+def test_bootstrap_preflight_requires_crm_only_in_crm_mode(monkeypatch) -> None:
+    monkeypatch.setattr(preflight, "_collect_database_facts", lambda session: _facts())
+    report = preflight.build_shadow_preflight_report(
+        _settings(
+            customer_settlements_mapping_mode="crm_readonly",
+            customer_settlements_crm_webhook_url=None,
+        ),
+        SimpleNamespace(),
+        phase="bootstrap",
+        expected_database_name="settlements_stage",
+        expected_organization_ref=ORG,
+        expected_organization_guid=ORG_GUID,
+        expected_pilot_count=10,
+    )
+    assert "mapping_source_configured" in report["failed_checks"]
 
 
 def test_bootstrap_preflight_blocks_multiple_alembic_heads(monkeypatch) -> None:
@@ -111,6 +135,7 @@ def test_bootstrap_preflight_blocks_multiple_alembic_heads(monkeypatch) -> None:
         phase="bootstrap",
         expected_database_name="settlements_stage",
         expected_organization_ref=ORG,
+        expected_organization_guid=ORG_GUID,
         expected_pilot_count=10,
     )
 
@@ -121,6 +146,7 @@ def test_bootstrap_preflight_blocks_multiple_alembic_heads(monkeypatch) -> None:
 def test_ready_preflight_requires_fresh_compatible_revisions(monkeypatch) -> None:
     ready_facts = _facts(
         active_mapping_revisions=1,
+        active_mapping_source_name="manual_confirmed_pilot",
         active_financial_revisions=1,
         mapping_entries_total=4103,
         financial_balances_total=10,
@@ -154,6 +180,7 @@ def test_ready_preflight_requires_fresh_compatible_revisions(monkeypatch) -> Non
         phase="ready",
         expected_database_name="settlements_stage",
         expected_organization_ref=ORG,
+        expected_organization_guid=ORG_GUID,
         expected_pilot_count=10,
     )
 
@@ -172,6 +199,7 @@ def test_preflight_report_never_contains_connection_strings_or_identifiers(monke
         phase="bootstrap",
         expected_database_name="settlements_stage",
         expected_organization_ref=ORG,
+        expected_organization_guid=ORG_GUID,
         expected_pilot_count=10,
     )
     rendered = str(report)

@@ -11,6 +11,8 @@ from sqlalchemy.orm import Session
 from app.core.config import Settings, get_settings
 from app.infrastructure.db import get_application_session_factory
 from app.models.customer_settlement import (
+    CustomerAccount,
+    CustomerAccountSourceBinding,
     CustomerSettlementBalance,
     CustomerSettlementMappingEntry,
     CustomerSettlementMappingRevision,
@@ -19,11 +21,12 @@ from app.models.customer_settlement import (
 )
 from app.services.customer_settlements import customer_settlement_health_metrics
 
-EXPECTED_ALEMBIC_REVISION = "c3d4e5f6a7b9"
+EXPECTED_ALEMBIC_REVISION = "d9e1f3a5b7c9"
 EXPECTED_ORGANIZATION_FIELD = "_Fld7005RRef"
 EXPECTED_SOURCE_MODE = "onec_canonical_mutual_statement_7002"
 DEFAULT_EXPECTED_DATABASE_NAME = "settlements_stage"
 DEFAULT_EXPECTED_ORGANIZATION_REF = "0xb34a0025901e48ef11e211128227ea80"
+DEFAULT_EXPECTED_ORGANIZATION_GUID = "8227ea80-1112-11e2-b34a-0025901e48ef"
 
 
 def _check(name: str, ok: bool) -> dict[str, object]:
@@ -34,6 +37,7 @@ def _configuration_checks(
     settings: Settings,
     *,
     expected_organization_ref: str,
+    expected_organization_guid: str,
 ) -> list[dict[str, object]]:
     try:
         database_backend = make_url(settings.database_url).get_backend_name()
@@ -47,11 +51,20 @@ def _configuration_checks(
         _check("application_database_is_postgresql", database_backend == "postgresql"),
         _check("onec_source_configured", bool(settings.onec_database_url)),
         _check(
-            "crm_readonly_source_configured", bool(settings.customer_settlements_crm_webhook_url)
+            "mapping_source_configured",
+            settings.customer_settlements_mapping_mode == "manual_confirmed"
+            or (
+                settings.customer_settlements_mapping_mode == "crm_readonly"
+                and bool(settings.customer_settlements_crm_webhook_url)
+            ),
         ),
         _check(
             "organization_matches_reconciled_pilot",
             settings.customer_settlements_organization_ref == expected_organization_ref,
+        ),
+        _check(
+            "organization_guid_matches_reconciled_pilot",
+            settings.customer_settlements_organization_guid == expected_organization_guid,
         ),
         _check(
             "opening_organization_field_matches_reconciliation",
@@ -112,6 +125,9 @@ def _collect_database_facts(session: Session) -> dict[str, Any]:
         ),
         "alembic_revision": alembic_revisions[0] if len(alembic_revisions) == 1 else None,
         "alembic_revision_count": len(alembic_revisions),
+        "active_mapping_source_name": (
+            active_mapping.source_name if active_mapping is not None else None
+        ),
         "enabled_pilots": session.scalar(
             select(func.count())
             .select_from(CustomerSettlementPilotAccess)
@@ -177,6 +193,9 @@ def _collect_database_facts(session: Session) -> dict[str, Any]:
                     *pilot_mapping_filter,
                     CustomerSettlementMappingEntry.status == "linked",
                     CustomerSettlementMappingEntry.counterparty_ref.is_not(None),
+                    CustomerSettlementMappingEntry.counterparty_guid.is_not(None),
+                    CustomerSettlementMappingEntry.customer_account_id.is_not(None),
+                    CustomerSettlementMappingEntry.source_binding_id.is_not(None),
                 )
             )
             or 0
@@ -199,7 +218,7 @@ def _collect_database_facts(session: Session) -> dict[str, Any]:
         )
         facts["pilot_counterparties"] = (
             session.scalar(
-                select(func.count(distinct(CustomerSettlementMappingEntry.counterparty_ref)))
+                select(func.count(distinct(CustomerSettlementMappingEntry.counterparty_guid)))
                 .select_from(CustomerSettlementPilotAccess)
                 .join(
                     CustomerSettlementMappingEntry,
@@ -209,7 +228,7 @@ def _collect_database_facts(session: Session) -> dict[str, Any]:
                 .where(
                     *pilot_mapping_filter,
                     CustomerSettlementMappingEntry.status == "linked",
-                    CustomerSettlementMappingEntry.counterparty_ref.is_not(None),
+                    CustomerSettlementMappingEntry.counterparty_guid.is_not(None),
                 )
             )
             or 0
@@ -231,13 +250,26 @@ def _collect_database_facts(session: Session) -> dict[str, Any]:
                     )
                     .join(
                         CustomerSettlementBalance,
-                        CustomerSettlementBalance.counterparty_ref
-                        == CustomerSettlementMappingEntry.counterparty_ref,
+                        CustomerSettlementBalance.counterparty_guid
+                        == CustomerSettlementMappingEntry.counterparty_guid,
+                    )
+                    .join(
+                        CustomerAccountSourceBinding,
+                        CustomerAccountSourceBinding.id
+                        == CustomerSettlementMappingEntry.source_binding_id,
+                    )
+                    .join(
+                        CustomerAccount,
+                        CustomerAccount.id == CustomerSettlementMappingEntry.customer_account_id,
                     )
                     .where(
                         CustomerSettlementPilotAccess.enabled.is_(True),
                         CustomerSettlementMappingEntry.revision_id == active_mapping.id,
                         CustomerSettlementMappingEntry.status == "linked",
+                        CustomerSettlementMappingEntry.customer_account_id.is_not(None),
+                        CustomerSettlementMappingEntry.source_binding_id.is_not(None),
+                        CustomerAccountSourceBinding.status == "active",
+                        CustomerAccount.status == "active",
                         CustomerSettlementBalance.revision_id == active_financial.id,
                     )
                 )
@@ -337,13 +369,27 @@ def build_shadow_preflight_report(
     phase: str,
     expected_database_name: str,
     expected_organization_ref: str,
+    expected_organization_guid: str,
     expected_pilot_count: int,
 ) -> dict[str, object]:
     checks = _configuration_checks(
         settings,
         expected_organization_ref=expected_organization_ref,
+        expected_organization_guid=expected_organization_guid,
     )
     facts = _collect_database_facts(session)
+    if phase == "ready":
+        expected_mapping_source = (
+            "manual_confirmed_pilot"
+            if settings.customer_settlements_mapping_mode == "manual_confirmed"
+            else "bitrix_crm_customer_cluster"
+        )
+        checks.append(
+            _check(
+                "active_mapping_source_matches_mode",
+                facts["active_mapping_source_name"] == expected_mapping_source,
+            )
+        )
     checks.extend(
         _database_checks(
             facts,
@@ -361,6 +407,7 @@ def build_shadow_preflight_report(
             "database_dialect",
             "current_database",
             "alembic_revision",
+            "active_mapping_source_name",
             "health",
         }
     }
@@ -391,6 +438,10 @@ def main(argv: list[str] | None = None) -> int:
         "--expected-organization-ref",
         default=DEFAULT_EXPECTED_ORGANIZATION_REF,
     )
+    parser.add_argument(
+        "--expected-organization-guid",
+        default=DEFAULT_EXPECTED_ORGANIZATION_GUID,
+    )
     args = parser.parse_args(argv)
     if args.expected_pilot_count <= 0:
         parser.error("--expected-pilot-count must be positive")
@@ -404,6 +455,7 @@ def main(argv: list[str] | None = None) -> int:
             phase=args.phase,
             expected_database_name=args.expected_database_name,
             expected_organization_ref=args.expected_organization_ref,
+            expected_organization_guid=args.expected_organization_guid,
             expected_pilot_count=args.expected_pilot_count,
         )
     except Exception as exc:

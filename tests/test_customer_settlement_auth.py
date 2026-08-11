@@ -71,6 +71,7 @@ def test_assertion_roundtrip_consumes_only_hashed_jti(db_session: Session) -> No
     )
 
     assert identity.site_user_id == "123"
+    assert identity.scope == "customer:settlements:read"
     assert int(identity.expires_at.timestamp()) == expires_at
     stored = db_session.scalar(select(CustomerSettlementAssertionJti))
     assert stored is not None
@@ -106,9 +107,10 @@ def test_documented_assertion_contract_vector_is_stable() -> None:
         "Ijoic2V0dGxlbWVudHMtdGVzdC0xIn0."
         "eyJpc3MiOiJtYXN0ZXItbW9iaWxlLnJ1IiwiYXVkIjoicHJpY2luZy1zZXJ2aWNlOmN1"
         "c3RvbWVyLXNldHRsZW1lbnRzIiwic3ViIjoiMTIzNDUiLCJzaXRlX3VzZXJfaWQiOiIx"
-        "MjM0NSIsImlhdCI6MTc4NTMwMTIwMCwibmJmIjoxNzg1MzAxMjAwLCJleHAiOjE3ODUz"
+        "MjM0NSIsInNjb3BlIjoiY3VzdG9tZXI6c2V0dGxlbWVudHM6cmVhZCIsImlhdCI6MTc4"
+        "NTMwMTIwMCwibmJmIjoxNzg1MzAxMjAwLCJleHAiOjE3ODUz"
         "MDEyNjAsImp0aSI6ImNvbnRyYWN0X3ZlY3Rvcl8yMDI2MDcyOSJ9."
-        "GhCE-qIikJ2Im0xZimMcpJEf3PZALN1yGNkoHxEycwk"
+        "9wNCjm02BBxwqiZln4bE2klctnn4zEA_6QBWfrlfYcw"
     )
 
 
@@ -141,6 +143,31 @@ def test_assertion_rejects_wrong_issuer_or_audience(
             settings=_settings(**verify_overrides),
             now=1_001,
         )
+
+
+def test_assertion_rejects_missing_or_wrong_scope(db_session: Session) -> None:
+    settings = _settings()
+    token, _ = create_customer_settlement_assertion(
+        site_user_id="123",
+        settings=settings,
+        now=1_000,
+        jti="synthetic_scope_123456789",
+    )
+    for scope in (None, "customer:settlements:write"):
+        invalid = _rewrite_token(
+            token,
+            settings=settings,
+            payload_changes={"scope": scope},
+        )
+        with pytest.raises(CustomerSettlementAuthError) as exc:
+            verify_and_consume_customer_settlement_assertion(
+                db_session,
+                token=invalid,
+                source_ip="127.0.0.1",
+                settings=settings,
+                now=1_001,
+            )
+        assert exc.value.code == "scope"
 
 
 def test_assertion_rejects_wrong_alg_kid_and_malformed_base64(db_session: Session) -> None:

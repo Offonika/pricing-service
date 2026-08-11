@@ -22,6 +22,7 @@ from app.services.customer_settlements import normalize_site_user_id
 
 TOKEN_ALGORITHM = "HS256"
 TOKEN_TYPE = "MM-CUSTOMER-SETTLEMENTS"
+TOKEN_SCOPE = "customer:settlements:read"
 _JTI_RE = re.compile(r"^[A-Za-z0-9_-]{16,128}$")
 
 
@@ -40,6 +41,7 @@ class CustomerSettlementIdentity:
     site_user_id: str
     issuer: str
     audience: str
+    scope: str
     jti_hash: str
     expires_at: datetime
 
@@ -125,6 +127,7 @@ def create_customer_settlement_assertion(
         "aud": settings.customer_settlements_assertion_audience,
         "sub": user_id,
         "site_user_id": user_id,
+        "scope": TOKEN_SCOPE,
         "iat": issued_at,
         "nbf": issued_at,
         "exp": expires_at,
@@ -186,6 +189,9 @@ def verify_and_consume_customer_settlement_assertion(
         raise CustomerSettlementAuthError()
     if audience != settings.customer_settlements_assertion_audience:
         raise CustomerSettlementAuthError()
+    scope = str(payload.get("scope") or "")
+    if scope != TOKEN_SCOPE:
+        raise CustomerSettlementAuthError("scope")
     try:
         site_user_id = normalize_site_user_id(payload.get("site_user_id") or "")
     except ValueError as exc:
@@ -232,6 +238,7 @@ def verify_and_consume_customer_settlement_assertion(
         site_user_id=site_user_id,
         issuer=issuer,
         audience=audience,
+        scope=scope,
         jti_hash=jti_hash,
         expires_at=expires_at_dt,
     )

@@ -140,10 +140,12 @@ documents:
       - app/services/customer_settlements.py
       - app/workers/customer_settlements.py
       - tasks/check_customer_settlement_health.py
+      - tasks/import_customer_settlement_mappings.py
       - tasks/manage_customer_settlement_pilot.py
       - tasks/mock_customer_settlement_client.py
       - tasks/preflight_customer_settlement_shadow.py
       - alembic/versions/c3d4e5f6a7b9_add_customer_settlements.py
+      - alembic/versions/d9e1f3a5b7c9_add_customer_account_guid_mapping.py
     related_tests:
       - tests/test_customer_settlement_api.py
       - tests/test_customer_settlement_auth.py
@@ -152,7 +154,8 @@ documents:
       - tests/test_customer_settlement_postgres.py
       - tests/test_customer_settlement_source.py
       - tests/test_customer_settlements.py
-    keywords: [customer-account, settlements, onec, bitrix, hmac, snapshot, pilot]
+      - tests/test_import_customer_settlement_mappings.py
+    keywords: [customer-account, settlements, onec, guid, hmac, snapshot, pilot]
   - path: docs/customer-settlements-shadow-runbook.md
     title: Customer Settlements Staging Shadow Runbook
     doc_type: runbook
@@ -162,6 +165,7 @@ documents:
     source_of_truth: true
     related_code:
       - tasks/preflight_customer_settlement_shadow.py
+      - tasks/import_customer_settlement_mappings.py
       - tasks/sync_customer_settlement_mapping.py
       - tasks/sync_customer_settlements.py
       - tasks/check_customer_settlement_health.py
@@ -173,6 +177,7 @@ documents:
       - tests/test_customer_settlement_shadow_preflight.py
       - tests/test_customer_settlement_source.py
       - tests/test_customer_settlement_postgres.py
+      - tests/test_import_customer_settlement_mappings.py
     keywords: [customer-account, settlements, staging, shadow-run, preflight, cron, rollback]
   - path: .github/workflows/docs-manifest.yml
     title: Docs Manifest Workflow

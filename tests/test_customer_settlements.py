@@ -8,6 +8,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.models.customer_settlement import (
+    CustomerAccountSiteBinding,
+    CustomerAccountSourceBinding,
     CustomerSettlementAssertionJti,
     CustomerSettlementBalance,
     CustomerSettlementMappingRevision,
@@ -23,11 +25,14 @@ from app.services.customer_settlements import (
     get_customer_settlement_summary,
     mark_financial_revision_failed,
     normalize_money,
+    onec_guid_to_ref,
+    onec_ref_to_guid,
     set_pilot_access,
     settlement_state,
 )
 
 ORG = "0x" + "a" * 32
+ORG_GUID = onec_ref_to_guid(ORG)
 CP_1 = "0x" + "1" * 32
 CP_2 = "0x" + "2" * 32
 CP_3 = "0x" + "3" * 32
@@ -70,6 +75,8 @@ def _activate_mapping(
         session,
         entries=entries,
         source_checked_at=checked_at,
+        organization_ref=ORG,
+        organization_guid=ORG_GUID,
     )
     assert activated is True
     assert revision.status == "active"
@@ -214,9 +221,135 @@ def test_summary_covers_debt_advance_zero_and_freshness(db_session: Session) -> 
     assert stale.status == "stale"
     assert stale.is_stale is True
     assert stale.amount == Decimal("14800.00")
-    assert hidden.status == "temporarily_unavailable"
+    assert hidden.status == "stale"
+    assert hidden.is_stale is True
     assert hidden.amount is None
     assert hidden.state is None
+
+
+def test_onec_reference_guid_round_trip_is_stable() -> None:
+    ref = "0xb34a0025901e48ef11e211128227ea80"
+    guid = "8227ea80-1112-11e2-b34a-0025901e48ef"
+    assert onec_ref_to_guid(ref) == guid
+    assert onec_guid_to_ref(guid) == ref
+
+
+def test_customer_account_survives_guid_remap_and_old_snapshot_is_not_reused(
+    db_session: Session,
+) -> None:
+    _activate_mapping(db_session, [_linked("501", CP_1)])
+    _activate_balances(db_session, [_balance(CP_1, "10.00")])
+    set_pilot_access(db_session, site_user_id="501", enabled=True)
+    db_session.commit()
+    first_site_binding = db_session.scalar(
+        select(CustomerAccountSiteBinding).where(
+            CustomerAccountSiteBinding.site_user_id == "501",
+            CustomerAccountSiteBinding.status == "active",
+        )
+    )
+    assert first_site_binding is not None
+    account_id = first_site_binding.customer_account_id
+
+    _activate_mapping(
+        db_session,
+        [_linked("501", CP_2)],
+        checked_at=BASE_TIME + timedelta(minutes=30),
+    )
+    db_session.commit()
+    current_site_binding = db_session.scalar(
+        select(CustomerAccountSiteBinding).where(
+            CustomerAccountSiteBinding.site_user_id == "501",
+            CustomerAccountSiteBinding.status == "active",
+        )
+    )
+    assert current_site_binding is not None
+    assert current_site_binding.customer_account_id == account_id
+    source_bindings = list(
+        db_session.scalars(
+            select(CustomerAccountSourceBinding)
+            .where(CustomerAccountSourceBinding.customer_account_id == account_id)
+            .order_by(CustomerAccountSourceBinding.id)
+        )
+    )
+    assert [(item.counterparty_ref, item.status) for item in source_bindings] == [
+        (CP_1, "revoked"),
+        (CP_2, "active"),
+    ]
+    summary = get_customer_settlement_summary(
+        db_session,
+        site_user_id="501",
+        enabled=True,
+        stale_after_seconds=7200,
+        hide_after_seconds=21600,
+        mapping_stale_after_seconds=7200,
+        now=BASE_TIME + timedelta(hours=1),
+    )
+    assert summary.status == "temporarily_unavailable"
+    assert summary.amount is None
+
+
+def test_mapping_conflict_between_two_durable_accounts_fails_closed(
+    db_session: Session,
+) -> None:
+    _activate_mapping(db_session, [_linked("601", CP_1), _linked("602", CP_2)])
+    db_session.commit()
+    with pytest.raises(ValueError, match="durable_customer_account_mapping_conflict"):
+        _activate_mapping(
+            db_session,
+            [_linked("601", CP_2)],
+            checked_at=BASE_TIME + timedelta(minutes=30),
+        )
+    db_session.rollback()
+    active_bindings = list(
+        db_session.scalars(
+            select(CustomerAccountSourceBinding).where(
+                CustomerAccountSourceBinding.status == "active"
+            )
+        )
+    )
+    assert len(active_bindings) == 2
+
+
+def test_manual_confirmed_mapping_does_not_expire_without_explicit_remap(
+    db_session: Session,
+) -> None:
+    revision, activated = activate_mapping_revision(
+        db_session,
+        entries=[_linked("701", CP_1)],
+        source_checked_at=BASE_TIME,
+        source_name="manual_confirmed_pilot",
+        organization_ref=ORG,
+        organization_guid=ORG_GUID,
+    )
+    assert activated is True
+    assert revision.source_name == "manual_confirmed_pilot"
+    _activate_balances(
+        db_session,
+        [_balance(CP_1, "12.00")],
+        as_of=BASE_TIME + timedelta(days=1),
+        synced_at=BASE_TIME + timedelta(days=1),
+    )
+    set_pilot_access(db_session, site_user_id="701", enabled=True)
+    db_session.commit()
+
+    summary = get_customer_settlement_summary(
+        db_session,
+        site_user_id="701",
+        enabled=True,
+        stale_after_seconds=7200,
+        hide_after_seconds=21600,
+        mapping_stale_after_seconds=7200,
+        now=BASE_TIME + timedelta(days=1, minutes=5),
+    )
+    assert summary.status == "available"
+    health = customer_settlement_health_metrics(
+        db_session,
+        stale_after_seconds=7200,
+        hide_after_seconds=21600,
+        mapping_stale_after_seconds=7200,
+        now=BASE_TIME + timedelta(days=1, minutes=5),
+    )
+    assert health["mapping_status"] == "ok"
 
 
 def test_summary_fails_closed_for_mapping_states_and_missing_compatible_balance(

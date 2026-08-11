@@ -18,6 +18,16 @@
 - исходное состояние: нет active mapping/financial revision и финансовых строк;
   health до первого sync ожидаемо `critical`.
 
+Контрольный PostgreSQL gate от `2026-08-11` выполнен на отдельной одноразовой БД
+`settlements_stage_pr36_20260811`, не изменяя прежнюю populated staging-БД:
+
+- фактический цикл `c3d4e5f6a7b9 -> d9e1f3a5b7c9 -> c3d4e5f6a7b9 ->
+  d9e1f3a5b7c9` завершён успешно;
+- пять синтетических строк старого формата сохранены после upgrade и downgrade,
+  GUID backfill проверен;
+- PostgreSQL integration suite после перевода fixture на обе settlement migration:
+  `5 passed`.
+
 Пилотный mapping импортируется вручную из проверенного CSV. Bitrix24 webhook в
 режиме `manual_confirmed` не нужен и не должен добавляться «на всякий случай».
 

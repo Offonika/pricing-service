@@ -45,19 +45,31 @@ SETTLEMENT_TABLES = {
     "customer_settlement_mapping_entry",
     "customer_settlement_pilot_access",
     "customer_settlement_assertion_jti",
+    "customer_account",
+    "customer_account_site_binding",
+    "customer_account_source_binding",
 }
 
 
-def _load_migration():
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "alembic/versions/c3d4e5f6a7b9_add_customer_settlements.py"
-    )
-    spec = importlib.util.spec_from_file_location("customer_settlement_postgres_migration", path)
+def _load_migration(filename: str, module_name: str):
+    path = Path(__file__).resolve().parents[1] / "alembic/versions" / filename
+    spec = importlib.util.spec_from_file_location(module_name, path)
     module = importlib.util.module_from_spec(spec)
     assert spec and spec.loader
     spec.loader.exec_module(module)
     return module
+
+
+def _load_settlement_migrations():
+    base = _load_migration(
+        "c3d4e5f6a7b9_add_customer_settlements.py",
+        "customer_settlement_postgres_base_migration",
+    )
+    accounts = _load_migration(
+        "d9e1f3a5b7c9_add_customer_account_guid_mapping.py",
+        "customer_settlement_postgres_account_migration",
+    )
+    return base, accounts
 
 
 @pytest.fixture(scope="module")
@@ -78,11 +90,13 @@ def postgres_engine():
         connect_args={"options": f"-csearch_path={schema}"},
         poolclass=NullPool,
     )
-    migration = _load_migration()
+    base_migration, account_migration = _load_settlement_migrations()
     try:
         with engine.begin() as connection:
-            migration.op = Operations(MigrationContext.configure(connection))
-            migration.upgrade()
+            base_migration.op = Operations(MigrationContext.configure(connection))
+            base_migration.upgrade()
+            account_migration.op = Operations(MigrationContext.configure(connection))
+            account_migration.upgrade()
         yield engine
     finally:
         engine.dispose()
@@ -139,15 +153,28 @@ def test_postgres_migration_supports_upgrade_and_downgrade(postgres_engine) -> N
         connect_args={"options": f"-csearch_path={schema}"},
         poolclass=NullPool,
     )
-    migration = _load_migration()
+    base_migration, account_migration = _load_settlement_migrations()
+    base_tables = SETTLEMENT_TABLES - {
+        "customer_account",
+        "customer_account_site_binding",
+        "customer_account_source_binding",
+    }
     try:
         with engine.begin() as connection:
-            migration.op = Operations(MigrationContext.configure(connection))
-            migration.upgrade()
+            base_migration.op = Operations(MigrationContext.configure(connection))
+            base_migration.upgrade()
+            account_migration.op = Operations(MigrationContext.configure(connection))
+            account_migration.upgrade()
             assert SETTLEMENT_TABLES.issubset(inspect(connection).get_table_names())
         with engine.begin() as connection:
-            migration.op = Operations(MigrationContext.configure(connection))
-            migration.downgrade()
+            account_migration.op = Operations(MigrationContext.configure(connection))
+            account_migration.downgrade()
+            assert base_tables.issubset(inspect(connection).get_table_names())
+            assert (SETTLEMENT_TABLES - base_tables).isdisjoint(
+                inspect(connection).get_table_names()
+            )
+            base_migration.op = Operations(MigrationContext.configure(connection))
+            base_migration.downgrade()
             assert SETTLEMENT_TABLES.isdisjoint(inspect(connection).get_table_names())
     finally:
         engine.dispose()

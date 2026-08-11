@@ -110,7 +110,11 @@ def load_manual_mapping_csv(path: Path) -> tuple[ManualMappingRow, ...]:
         expected_code = _canonical_text(raw.get("expected_code"))
         expected_name = _canonical_text(raw.get("expected_name"))
         expected_inn = re.sub(r"\s+", "", str(raw.get("expected_inn") or ""))
-        if not expected_code or not expected_name or not _INN_RE.fullmatch(expected_inn):
+        if (
+            not expected_code
+            or not expected_name
+            or (expected_inn and not _INN_RE.fullmatch(expected_inn))
+        ):
             raise ManualMappingImportError("invalid_identity_controls")
         result.append(
             ManualMappingRow(
@@ -141,22 +145,21 @@ def _validated_mapping_inputs(
             raise ManualMappingImportError("incomplete_manual_mapping_controls")
         if any(code != "643" for code in control.active_contract_currency_codes):
             raise ManualMappingImportError("counterparty_has_non_rub_contract")
-        actual_controls = (
-            _canonical_text(control.counterparty_code),
-            _canonical_text(control.counterparty_name),
-            re.sub(r"\s+", "", control.counterparty_inn),
-        )
-        expected_controls = (item.expected_code, item.expected_name, item.expected_inn)
-        if actual_controls != expected_controls:
+        actual_code = _canonical_text(control.counterparty_code)
+        actual_name = _canonical_text(control.counterparty_name)
+        actual_inn = re.sub(r"\s+", "", str(control.counterparty_inn or ""))
+        if (actual_code, actual_name) != (item.expected_code, item.expected_name):
+            raise ManualMappingImportError("identity_control_mismatch")
+        if item.expected_inn and actual_inn != item.expected_inn:
             raise ManualMappingImportError("identity_control_mismatch")
         identity_control_hash = _hash_payload(
             {
                 "counterparty_guid": item.counterparty_guid,
                 "organization_guid": item.organization_guid,
                 "source_system": item.source_system,
-                "code": actual_controls[0],
-                "name": actual_controls[1],
-                "inn": actual_controls[2],
+                "code": actual_code,
+                "name": actual_name,
+                "inn": actual_inn if item.expected_inn else None,
             }
         )
         entries.append(
@@ -165,7 +168,7 @@ def _validated_mapping_inputs(
                 cluster_id=f"manual:{_hash_payload(item.site_user_id)[:24]}",
                 counterparty_ref=onec_guid_to_ref(item.counterparty_guid),
                 counterparty_guid=item.counterparty_guid,
-                counterparty_code=actual_controls[0],
+                counterparty_code=actual_code,
                 identity_control_hash=identity_control_hash,
                 status="linked",
             )
@@ -215,6 +218,7 @@ def import_manual_customer_settlement_mappings(
         query_timeout_seconds=settings.customer_settlements_query_timeout_seconds,
     )
     entries = _validated_mapping_inputs(rows, controls)
+    expected_inn_by_guid = {item.counterparty_guid: item.expected_inn for item in rows}
     input_hash = _hash_payload(
         [
             {
@@ -235,7 +239,11 @@ def import_manual_customer_settlement_mappings(
                 "counterparty_guid": item.counterparty_guid,
                 "counterparty_code": item.counterparty_code,
                 "counterparty_name": item.counterparty_name,
-                "counterparty_inn": item.counterparty_inn,
+                "counterparty_inn": (
+                    item.counterparty_inn
+                    if expected_inn_by_guid.get(item.counterparty_guid)
+                    else None
+                ),
                 "active_contract_currency_codes": item.active_contract_currency_codes,
             }
             for item in controls
@@ -280,6 +288,7 @@ def import_manual_customer_settlement_mappings(
         "mode": "apply" if apply else "dry-run",
         "row_count": len(rows),
         "unique_counterparty_count": len({item.counterparty_guid for item in rows}),
+        "inn_control_count": sum(bool(item.expected_inn) for item in rows),
         "input_hash": input_hash,
         "controls_hash": controls_hash,
         "mapping_changed": bool(activated),

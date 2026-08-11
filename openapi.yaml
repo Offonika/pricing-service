@@ -4654,6 +4654,33 @@ paths:
                 $ref: '#/components/schemas/CounterpartyDuplicateHealthResponse'
       security:
       - HTTPBearer: []
+  /api/customer-price-types/advisories/preview:
+    post:
+      tags:
+      - customer-price-types
+      summary: Preview Customer Price Type Advisories
+      operationId: preview_customer_price_type_advisories_api_customer_price_types_advisories_preview_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerPriceTypeAdvisoryPreviewRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeAdvisoryPreviewResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/customer-price-types/session:
     post:
       tags:
@@ -12709,6 +12736,64 @@ components:
           default: manual
       type: object
       title: CurrentMatch
+    CustomerPriceTypeAdvisoryPreviewRequest:
+      properties:
+        return_character:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Return Character
+        period_mismatch:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Period Mismatch
+        behavior_group:
+          anyOf:
+          - type: string
+            maxLength: 100
+          - type: 'null'
+          title: Behavior Group
+        notification_event:
+          anyOf:
+          - type: string
+            enum:
+            - presignal
+            - price_type_changed
+            - recovery
+          - type: 'null'
+          title: Notification Event
+        current_level:
+          anyOf:
+          - type: string
+            maxLength: 100
+          - type: 'null'
+          title: Current Level
+      type: object
+      title: CustomerPriceTypeAdvisoryPreviewRequest
+    CustomerPriceTypeAdvisoryPreviewResponse:
+      properties:
+        mode:
+          type: string
+          const: shadow
+          title: Mode
+          default: shadow
+        onec_write_allowed:
+          type: boolean
+          title: Onec Write Allowed
+          default: false
+        order_lamp:
+          $ref: '#/components/schemas/CustomerPriceTypeOrderLampResponse'
+        notification:
+          anyOf:
+          - $ref: '#/components/schemas/CustomerPriceTypeNotificationDraftResponse'
+          - type: 'null'
+      type: object
+      required:
+      - order_lamp
+      title: CustomerPriceTypeAdvisoryPreviewResponse
     CustomerPriceTypeCaseDetailResponse:
       properties:
         run_id:
@@ -13038,6 +13123,72 @@ components:
           title: Ignored Reason
       type: object
       title: CustomerPriceTypeContractCandidate
+    CustomerPriceTypeNotificationDraftResponse:
+      properties:
+        event:
+          type: string
+          enum:
+          - presignal
+          - price_type_changed
+          - recovery
+          title: Event
+        text:
+          type: string
+          title: Text
+        channel_candidates:
+          items:
+            type: string
+          type: array
+          title: Channel Candidates
+        approval_status:
+          type: string
+          const: requires_approval
+          title: Approval Status
+        send_allowed:
+          type: boolean
+          title: Send Allowed
+      type: object
+      required:
+      - event
+      - text
+      - approval_status
+      - send_allowed
+      title: CustomerPriceTypeNotificationDraftResponse
+    CustomerPriceTypeOrderLampResponse:
+      properties:
+        key:
+          type: string
+          title: Key
+        severity:
+          type: string
+          enum:
+          - none
+          - info
+          - warning
+          - critical
+          - review
+          title: Severity
+        title:
+          type: string
+          title: Title
+        manager_action:
+          type: string
+          title: Manager Action
+        visible:
+          type: boolean
+          title: Visible
+        blocks_fulfillment:
+          type: boolean
+          title: Blocks Fulfillment
+      type: object
+      required:
+      - key
+      - severity
+      - title
+      - manager_action
+      - visible
+      - blocks_fulfillment
+      title: CustomerPriceTypeOrderLampResponse
     CustomerPriceTypePortfolioItem:
       properties:
         counterparty_ref:

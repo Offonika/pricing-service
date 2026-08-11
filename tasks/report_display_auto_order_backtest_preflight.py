@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import os
 import sys
@@ -25,6 +26,7 @@ from tasks.display_auto_order_backtest_preflight import (
     fetch_kmp4_demand,
     fetch_onec_product_refs,
     load_scenario_config,
+    normalize_site_event_rows,
     reconstruct_historical_placements,
     reconstruct_historical_reserves,
     reconstruct_historical_stock,
@@ -73,6 +75,7 @@ def _parse_args() -> argparse.Namespace:
         default=Path("config/assortment/display-warehouse-policy.json"),
     )
     parser.add_argument("--scenario-config-json", type=Path, default=DEFAULT_SCENARIO_CONFIG)
+    parser.add_argument("--site-events-csv", type=Path, required=True)
     parser.add_argument(
         "--launch-profile-min-samples",
         type=int,
@@ -86,6 +89,8 @@ def _parse_args() -> argparse.Namespace:
         raise SystemExit("history-start must provide at least 365 days of warm-up")
     if args.launch_profile_min_samples <= 0:
         raise SystemExit("launch-profile-min-samples must be positive")
+    if not args.site_events_csv.is_file():
+        raise SystemExit(f"site-events-csv does not exist: {args.site_events_csv}")
     return args
 
 
@@ -102,6 +107,7 @@ def main() -> int:
                     **values,
                 },
                 ensure_ascii=False,
+                default=str,
             ),
             file=sys.stderr,
             flush=True,
@@ -158,6 +164,15 @@ def main() -> int:
         if product_ref_counts["duplicate_code_count"]:
             raise SystemExit("some display SKU codes resolve to multiple 1C references")
         progress("product_refs_resolved", **product_ref_counts)
+        with args.site_events_csv.open(encoding="utf-8-sig", newline="") as handle:
+            site_raw_rows = list(csv.DictReader(handle))
+        site_normalization = normalize_site_event_rows(
+            site_raw_rows,
+            product_refs=product_refs,
+            cohort_codes=codes,
+            unordered_cart_daily_cap=scenario_config.unordered_cart_daily_cap,
+        )
+        progress("site_events_normalized", **site_normalization.mapping_stats)
         sales = fetch_daily_sales(
             onec_engine,
             codes=codes,
@@ -282,6 +297,10 @@ def main() -> int:
         "economics_sku_count": len(economics),
         "initial_pipeline_sku_count": len(initial_pipeline),
         "initial_pipeline_lot_count": sum(len(lots) for lots in initial_pipeline.values()),
+        **{
+            f"site_{key}": value
+            for key, value in site_normalization.mapping_stats.items()
+        },
         **{f"product_ref_{key}": value for key, value in product_ref_counts.items()},
         "reserve_opening_rows": reserves.source_counts["opening_rows"],
         "reserve_movement_rows": reserves.source_counts["movement_rows"],
@@ -299,6 +318,8 @@ def main() -> int:
         incoming_by_day=incoming_by_day,
         initial_pipeline_by_code=initial_pipeline,
         kmp4_raw_by_code=kmp4_raw,
+        site_event_rows=site_normalization.rows,
+        site_mapping_stats=site_normalization.mapping_stats,
         purchases=purchases,
         receipts=receipts,
         launch_observations=launch_observations,
@@ -326,6 +347,8 @@ def main() -> int:
         history_start=args.history_start,
         config_path=args.scenario_config_json,
         cohort_run_id=run_id,
+        site_events_csv=args.site_events_csv,
+        site_mapping_stats=site_normalization.mapping_stats,
     )
     progress("artifacts_written", status=tables.status)
     print(json.dumps(manifest, ensure_ascii=False))

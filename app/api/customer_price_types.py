@@ -19,12 +19,18 @@ from app.api.procurement_labels import (
 )
 from app.core.config import get_settings
 from app.domains.customer_price_types import CustomerPriceTypeAccessScope
+from app.domains.customer_price_types.advisories import (
+    build_customer_notification_draft,
+    build_order_return_lamp,
+)
 from app.infrastructure.customer_price_types import (
     SqlAlchemyCustomerPriceTypeRepository,
     review_batch_item_matches,
     review_batch_snapshot_status,
 )
 from app.schemas.customer_price_types import (
+    CustomerPriceTypeAdvisoryPreviewRequest,
+    CustomerPriceTypeAdvisoryPreviewResponse,
     CustomerPriceTypeCaseDetailResponse,
     CustomerPriceTypeCaseEventResponse,
     CustomerPriceTypeCaseItem,
@@ -108,6 +114,48 @@ def require_customer_price_type_access(
 
 
 Access = Annotated[CustomerPriceTypeAccessScope, Depends(require_customer_price_type_access)]
+
+
+@router.post(
+    "/advisories/preview",
+    response_model=CustomerPriceTypeAdvisoryPreviewResponse,
+)
+def preview_customer_price_type_advisories(
+    payload: CustomerPriceTypeAdvisoryPreviewRequest,
+    _access: Access,
+) -> CustomerPriceTypeAdvisoryPreviewResponse:
+    lamp = build_order_return_lamp(
+        character=payload.return_character,
+        period_mismatch=payload.period_mismatch,
+        behavior_group=payload.behavior_group,
+    )
+    notification = None
+    if payload.notification_event is not None:
+        notification = build_customer_notification_draft(
+            payload.notification_event,
+            current_level=payload.current_level,
+        )
+    return CustomerPriceTypeAdvisoryPreviewResponse(
+        order_lamp={
+            "key": lamp.key,
+            "severity": lamp.severity,
+            "title": lamp.title,
+            "manager_action": lamp.manager_action,
+            "visible": lamp.visible,
+            "blocks_fulfillment": lamp.blocks_fulfillment,
+        },
+        notification=(
+            {
+                "event": notification.event,
+                "text": notification.text,
+                "channel_candidates": list(notification.channel_candidates),
+                "approval_status": notification.approval_status,
+                "send_allowed": notification.send_allowed,
+            }
+            if notification is not None
+            else None
+        ),
+    )
 
 
 @router.post("/session", response_model=CustomerPriceTypeSessionResponse)

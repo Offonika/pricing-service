@@ -2,7 +2,15 @@
   "schema": "display_auto_order_backtest_scenarios.v1",
   "kmp4_weights": [0, 0.5, 1],
   "kmp4_queue_days": 14,
-  "site_signals_enabled": false,
+  "site_queue_days": 14,
+  "unordered_cart_daily_cap": 1,
+  "site_signal_profiles": [
+    {"name": "off", "order_weight": 0, "unordered_cart_weight": 0},
+    {"name": "order_only", "order_weight": 1, "unordered_cart_weight": 0},
+    {"name": "cautious", "order_weight": 0.5, "unordered_cart_weight": 0.25},
+    {"name": "balanced", "order_weight": 1, "unordered_cart_weight": 0.25},
+    {"name": "service", "order_weight": 1, "unordered_cart_weight": 0.5}
+  ],
   "holding_cost_scenarios": [
     {
       "name": "low",

@@ -17,6 +17,7 @@ related_code:
   - app/api/customer_price_types.py
   - scripts/build_bronze_monthly_inventory.py
   - scripts/build_customer_returns_portrait.py
+  - scripts/build_customer_return_lamp_shadow.py
   - scripts/build_customer_price_type_blueprint.py
   - app/services/exporters/ut103_customer_price_types.py
   - tasks/export_ut103_customer_price_types.py
@@ -24,6 +25,7 @@ related_code:
   - tasks/run_customer_price_type_shadow.py
 related_tests:
   - tests/test_customer_price_type_core.py
+  - tests/test_customer_price_type_advisories.py
   - tests/test_customer_price_type_sources.py
   - tests/test_customer_price_type_migration.py
   - tests/test_customer_price_type_review_batches.py
@@ -39,7 +41,7 @@ depends_on:
   - docs/specs/receivables-smart-process-workflow.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-31"
+updated_at: "2026-08-11"
 ---
 
 # Назначение
@@ -207,6 +209,19 @@ updated_at: "2026-07-31"
 Предсигнал за семь дней до конца месяца остается очередью приложения и
 уведомлением. Карточка smart-process появляется только после назначения
 конкретного действия человеку.
+
+## Shadow-точка подключения лампочки к заказу
+
+- Расчётный источник — витрина `customer-returns-portrait`; технический класс
+  возвратов без подтверждённого характера сам по себе лампочку не включает.
+- Read-only preview доступен через
+  `POST /api/customer-price-types/advisories/preview`: ответ всегда содержит
+  `mode=shadow`, `onec_write_allowed=false`, а подсказка не блокирует сборку.
+- Целевая точка будущего показа — форма `Документ.ЗаказПокупателя` после выбора
+  контрагента и до перевода заказа в сборку/резерв. Подключение этой точки в 1С
+  не выполнено и требует отдельного разрешения на изменение production 1С.
+- Черновики предсигнала, сообщения о смене уровня и реанимации возвращаются без
+  отправки с `approval_status=requires_approval` и `send_allowed=false`.
 
 # Domain Model
 
@@ -720,6 +735,10 @@ sync dedupe и 1С whitelist/dry-run/apply/readback проверяются в Ph
 
 # Rollout
 
+Для задачи №2169 действует режим shadow: разрешены моделирование, локальная
+реализация, тесты, формирование пакетов и dry-run без записи. Изменение типов цен
+и других данных в production 1С запрещено до отдельного явного решения владельца.
+
 1. Синхронизировать ruleset, текущий blueprint, OpenAPI и эту accepted spec.
 2. Импортировать контрольный batch `50 + 32` и выполнить shadow-run за июнь 2026
    только в БД pricing-service, без записей в Bitrix24 и 1С.
@@ -734,6 +753,11 @@ sync dedupe и 1С whitelist/dry-run/apply/readback проверяются в Ph
 
 # Changelog
 
+- 2026-08-11 — добавлен read-only shadow-слой: возвратный характер преобразуется
+  в неблокирующую подсказку менеджеру до сборки заказа, клиентские уведомления
+  формируются только как неутверждённые черновики без отправки.
+- 2026-08-11 — для задачи №2169 утверждён shadow-режим без изменений production
+  1С; apply требует отдельного подтверждения.
 - 2026-07-31 — включён fail-closed доступ менеджера к собственным клиентам через
   актуальное сопоставление Bitrix-пользователя с `owner_ref` 1С; руководящие и
   функциональные роли сохраняют приоритет, неоднозначные связи получают отказ.

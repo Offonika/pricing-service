@@ -94,6 +94,16 @@
       "spec": "docs/specs/assortment-lifecycle-policy.md",
       "remove_after": null
     },
+    "export_display_auto_order_site_events.py": {
+      "owner": "procurement",
+      "kind": "export",
+      "dry_run": "not_applicable",
+      "idempotency": "frozen_artifact_by_checksum",
+      "side_effect_level": "artifact_write",
+      "db_access": "remote_bitrix_read_only",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
     "report_competitor_items_needs_compat_review.py": {
       "owner": "matching",
       "kind": "report",

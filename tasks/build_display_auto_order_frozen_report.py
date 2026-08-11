@@ -11,7 +11,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
 
-BASE_SCENARIO_ID = "typical_kmp0_5_base"
+BASE_SCENARIO_ID = "typical_kmp0_5_sitebalanced_base"
 ACTIVE_STAGE_LABELS = {
     "new_item": "Завезли / Новинка",
     "sales_start": "Пошли продажи",
@@ -173,6 +173,18 @@ def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
             }.get(row["stage_profile"], row["stage_profile"]),
             "kmp4_weight": _float(row["kmp4_weight"]),
             "kmp4_label": f"КМП4 × {row['kmp4_weight'].replace('.', ',')}",
+            "site_profile": row.get("site_profile") or "off",
+            "site_profile_label": {
+                "off": "Сайт выключен",
+                "order_only": "Только заказы",
+                "cautious": "Осторожный",
+                "balanced": "Сбалансированный",
+                "service": "Сервисный",
+            }.get(row.get("site_profile") or "off", row.get("site_profile") or "off"),
+            "site_order_weight": _float(row.get("site_order_weight")),
+            "site_unordered_cart_weight": _float(
+                row.get("site_unordered_cart_weight")
+            ),
             "holding_cost_scenario": row["holding_cost_scenario"],
             "total_fill_rate": _float(row["fill_rate"]),
             "observed_fill_rate": _float(row["observed_fill_rate"]),
@@ -186,8 +198,34 @@ def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
             "safety_stock_units_ordered": _float(row["safety_stock_units_ordered"]),
         }
         scenarios.append(item)
-        if row["holding_cost_scenario"] == "base" and row["stage_profile"] != "legacy":
+        if (
+            row["holding_cost_scenario"] == "base"
+            and row["stage_profile"] != "legacy"
+            and (row.get("site_profile") or "off") == "balanced"
+        ):
             scenario_chart.append(item)
+
+    site_sensitivity = [
+        row
+        for row in scenarios
+        if row["stage_profile"] == "typical"
+        and row["kmp4_weight"] == 0.5
+        and row["holding_cost_scenario"] == "base"
+    ]
+    site_off = next((row for row in site_sensitivity if row["site_profile"] == "off"), None)
+    if site_off:
+        for row in site_sensitivity:
+            row["observed_fill_delta_vs_site_off"] = (
+                row["observed_fill_rate"] - site_off["observed_fill_rate"]
+            )
+            row["gross_profit_delta_vs_site_off_rub"] = (
+                row["gross_profit_delta_rub"] - site_off["gross_profit_delta_rub"]
+            )
+            row["capital_delta_vs_site_off_rub"] = (
+                row["capital_delta_rub"] - site_off["capital_delta_rub"]
+            )
+
+    period_rows = _read_csv(backtest_dir / "frozen-baseline-period.csv")
 
     names: dict[str, str] = {}
     for row in _read_csv(preflight_dir / "decision-inputs.csv"):
@@ -239,7 +277,7 @@ def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
     order_lines = _decimal(model["order_lines"])
     manual_share = _ratio(_decimal(model["manual_order_lines"]), order_lines)
     return {
-        "schema": "display_auto_order_frozen_report_analysis.v1",
+        "schema": "display_auto_order_frozen_report_analysis.v2",
         "generated_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "period": {"date_from": frozen["date_from"], "date_to": frozen["date_to"]},
         "cohort": {
@@ -267,15 +305,24 @@ def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
             "top10_negative_gp_share": float(
                 Decimal(str(top10_loss)) / negative_gp_total if negative_gp_total else Decimal("0")
             ),
+            "hidden_kmp4_qty": _float(model.get("hidden_kmp4_qty")),
+            "hidden_site_order_qty": _float(model.get("hidden_site_order_qty")),
+            "hidden_site_cart_qty": _float(model.get("hidden_site_cart_qty")),
+            "hidden_reserve_backlog_qty": _float(
+                model.get("hidden_reserve_backlog_qty")
+            ),
         },
         "stages": stages,
         "monthly": monthly,
         "monthly_chart": monthly_chart,
         "scenarios": scenarios,
         "scenario_chart": scenario_chart,
+        "site_sensitivity": site_sensitivity,
+        "period_sensitivity": period_rows,
         "top_skus": top_skus,
         "trigger_counts": dict(trigger_counts),
         "source_quality": quality,
+        "site_export": preflight.get("site_export", {}),
         "method": frozen["method"],
     }
 
@@ -285,18 +332,45 @@ def build_markdown(analysis: Mapping[str, Any]) -> str:
     model = analysis["model"]
     actual = analysis["actual"]
     quality = analysis["source_quality"]
-    return f"""# Новая модель автозаказа дисплеев — результат проверки на истории
+    passed = bool(analysis["acceptance"]["passed"])
+    outcome = (
+        "Модель прошла строгий критерий backtest, но ещё не разрешена для рабочих заказов."
+        if passed
+        else "Модель пока не прошла строгий критерий и не может создавать рабочие заказы."
+    )
+    site_rows = {row["site_profile"]: row for row in analysis["site_sensitivity"]}
+    balanced_site = site_rows.get("balanced", {})
+    periods: dict[str, dict[str, Mapping[str, Any]]] = defaultdict(dict)
+    for row in analysis["period_sensitivity"]:
+        periods[row["period"]][row["strategy"]] = row
+    pre_july_model = periods.get("pre_july", {}).get("model", {})
+    july_model = periods.get("july", {}).get("model", {})
+    site_mapping = analysis.get("site_export", {}).get("mapping_stats", {})
+    return f"""# Повторный backtest автозаказа дисплеев — простое объяснение
 
 ## Краткий вывод
 
-- **Модель пока нельзя включать в рабочую систему.** Она снизила бы средний складской капитал на **{_money_m(-_decimal(headline['capital_delta_rub']))}**, но одновременно потеряла бы **{_money_m(-_decimal(headline['gross_profit_delta_rub']))}** валовой прибыли.
-- **Обычные продажи обслужены на {_pct(model['observed_fill_rate'])} против 100% записанных фактических продаж.** Для скрытого спроса КМП4 результат {_pct(model['hidden_fill_rate'])} против {_pct(actual['hidden_fill_rate'])} у фактического запаса.
+- **{outcome}**
+- Базовый вариант обслужил **{_pct(model['observed_fill_rate'])}** записанных продаж против **{_pct(actual['observed_fill_rate'])}** у фактического запаса.
+- Разница валовой прибыли — **{_money_m(headline['gross_profit_delta_rub'])}**, разница среднего капитала — **{_money_m(headline['capital_delta_rub'])}**.
 - **Главный провал — стадия «Растим».** На неё приходится {_pct(headline['sale_extra_lost_share'], 1)} дополнительного дефицита. Стартовый профиль новинок влияет на итог лишь на десятые доли процента.
 - **Ручная нагрузка слишком велика.** {_pct(headline['manual_order_share'], 1)} строк заказа в базовом сценарии требуют принятого вручную внепланового решения.
 
 ## Что именно проверяли
 
-Период — с 1 февраля по 31 июля 2026 года, когорта — {analysis['cohort']['sku_count']} SKU предмета «Дисплеи». На каждую дату восстановлена историческая стадия SKU, остаток, резерв, свободный товар в пути, КМП4 и доступный на тот момент срок поставки. Базовый сценарий: типичный стартовый профиль, вес КМП4 0,5 и базовая стоимость хранения.
+Период — с 1 февраля по 31 июля 2026 года, когорта — {analysis['cohort']['sku_count']} SKU предмета «Дисплеи». На каждую дату стадия восстановлена только по продажам. Сайт, КМП4 и дефицитный резерв не переводят товар между стадиями, а лишь уточняют потребность и запускают внеплановый пересмотр.
+
+Базовый сценарий: типичный стартовый профиль + КМП4 0,5 + сайт `balanced` (заказ ×1, дефицитная корзина ×0,25) + базовая стоимость запаса. В общей 14-дневной очереди одна продажа или один прирост резерва может погасить только один ранее созданный сигнал.
+
+## Что добавил сайт
+
+В frozen-файл вошло {site_mapping.get('mapped_row_count', '—')} сопоставленных строк сайта. После погашения и истечения очереди базовый сценарий увидел {headline['hidden_site_order_qty']:.0f} единиц скрытого спроса из заказов и {headline['hidden_site_cart_qty']:.0f} из дефицитных корзин. По сравнению с выключенным сайтом профиль `balanced` изменил сервис записанных продаж на {_pct(balanced_site.get('observed_fill_delta_vs_site_off', 0), 3)} и валовую прибыль на {_money_m(balanced_site.get('gross_profit_delta_vs_site_off_rub', 0))}.
+
+Корзина учитывается количественно только при свободном остатке не выше нуля; повторные строки одной сессии по SKU за день сжимаются до одной единицы. `DELAY=Y` остаётся только ручным сигналом.
+
+## Что исправлено в резерве
+
+Отрицательный баланс регистра больше не создаёт виртуальный товар. В расчёте отдельно хранятся сырой резерв, эффективный резерв `max(raw, 0)` и дефицитный backlog сверх физического остатка. Рост backlog считается подтверждённой неудовлетворённой потребностью; его снижение с продажей — погашением, без продажи — отменой. За период скрытый спрос этого источника составил {headline['hidden_reserve_backlog_qty']:.0f} единиц.
 
 ## Почему модель не угадала
 
@@ -304,23 +378,20 @@ def build_markdown(analysis: Mapping[str, Any]) -> str:
 
 Экономический safety stock по прошлым ошибкам прогноза и ежедневный контроль точки заказа улучшили сервис, но не закрыли разрыв. Это означает, что проблема системная: текущая формула распределяет слишком мало капитала в ходовые SKU, а не просто ошибается на нескольких новинках. Топ-10 SKU дают только {_pct(headline['top10_negative_gp_share'], 1)} отрицательной валовой прибыли, поэтому точечная правка списка товаров проблему не решит.
 
-## Что было исправлено в тесте
+## До июля и июль отдельно
 
-1. Внеплановые `manual_review` теперь участвуют в сценарии «все рекомендации приняты».
-2. SKU, появившиеся внутри периода, получают свой реальный первый стартовый остаток как внешний запуск, а не как угаданный автозаказ.
-3. Стартовый профиль новинки включается только после первого реального положительного остатка или прихода исходного стартового заказа.
-4. КМП4 прибавляется к min/max один раз как очередь потребности, а не растягивается как ежедневная скорость на весь срок поставки.
-5. P50 определяет ожидаемую дату прихода, P75 — только защитный горизонт покрытия.
-6. Ускорение определяется по 30 и 90 дням, а ежедневная защита от дефицита поднимает внеплановый ручной пересмотр.
-7. Защитный запас считается по завершённым прошлым ошибкам прогноза без подсматривания в будущее.
+- До июля сервис модели: **{_pct(pre_july_model.get('fill_rate', 0))}**, валовая прибыль: **{_money_m(pre_july_model.get('gross_profit_rub', 0))}**.
+- За июль сервис модели: **{_pct(july_model.get('fill_rate', 0))}**, валовая прибыль: **{_money_m(july_model.get('gross_profit_rub', 0))}**.
+
+Июльский скачок корзин не удалён из расчёта. Он показан отдельно, чтобы партнёр видел, насколько итог чувствителен к изменению структуры сайта.
 
 ## Что делать дальше
 
 1. **Не включать автоматические заказы.** Оставить только расчёт рекомендаций без отправки заказов.
 2. **Ввести отдельную сервисную защиту для «Растим».** Калибровать её по стоимости дефицита и эмпирической ошибке прогноза, а не единым числом дней для всех SKU.
 3. **Сократить очередь ручных решений.** Один активный сигнал на SKU должен обновляться до закрытия, а не создавать новую строку при каждом дне ускорения.
-4. **Проверить SKU-связанные события интернет-магазина.** В этом backtest сайт не включён: используются продажи, резервы и КМП4.
-5. **После настройки снова проверить модель на истории, затем на текущих данных без заказов.** Критерий прежний: прибыль и сервис не ниже факта, капитал ниже либо GMROI выше.
+4. **Провести forward shadow без заказов.** Даже успешная история не доказывает, что сигналы сайта и резерва будут приходить вовремя в текущем процессе.
+5. **Сохранить раздельный мониторинг источников.** Заказы сайта, корзины, КМП4 и backlog нельзя сливать в один непрозрачный коэффициент.
 
 ## Открытые вопросы
 
@@ -330,10 +401,11 @@ def build_markdown(analysis: Mapping[str, Any]) -> str:
 
 ## Ограничения
 
-- Фактический fill rate обычных продаж равен 100% по определению: в данных видны только состоявшиеся продажи. Незарегистрированный спрос оценивается отдельно через КМП4.
-- Исторические события сайта без надёжной связи с SKU не восстанавливались догадкой.
-- Предварительная проверка данных пройдена, но найдены {quality['negative_register_balances']['value']} отрицательных дневных резервов и {quality['unit_economics_coverage']['value']} строк решений без себестоимости; они не скрыты и остаются ограничением.
+- Фактический fill rate обычных продаж равен 100% по определению: видны только состоявшиеся продажи. Незарегистрированный спрос оценивается через несколько косвенных источников.
+- Сайт сопоставляется только по валидному `PRODUCT_XML_ID`; строки вне когорты не распределяются догадкой.
+- Найдены {quality['negative_register_balances']['value']} отрицательных дневных балансов регистра и {quality['unit_economics_coverage']['value']} строк решений без себестоимости. Отрицательный резерв теперь безопасно обнулён для доступности, но причина в 1С остаётся вопросом качества данных.
 - В сценарии все положительные ручные рекомендации считаются принятыми. Реальный результат без этой дисциплины будет хуже.
+- Production-заказы и внешние записи не создавались.
 """
 
 
@@ -352,7 +424,7 @@ def _source(source_id: str, label: str, path: str) -> dict[str, Any]:
             "filters": [
                 "Период 2026-02-01 — 2026-07-31",
                 "Все SKU предмета Дисплеи",
-                "Базовый сценарий typical / КМП4 0,5 / base",
+                "Базовый сценарий typical / КМП4 0,5 / site balanced / cost base",
             ],
             "metric_definitions": [
                 "Fill rate = обслуженный потенциальный спрос / потенциальный спрос.",
@@ -408,6 +480,9 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
         }
     ]
     scenario_base = sorted(analysis["scenario_chart"], key=lambda row: row["scenario_id"])
+    site_sensitivity = sorted(
+        analysis["site_sensitivity"], key=lambda row: row["site_profile"]
+    )
     cards = [
         {
             "id": "observed_fill_card",
@@ -605,6 +680,50 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
             "legend": {"position": "bottom", "sort": "spec"},
             "settings": {"groupMode": "grouped"},
         },
+        {
+            "id": "site_profile_chart",
+            "title": "Эффект профиля интернет-магазина",
+            "subtitle": "Typical, КМП4 0,5 и базовая стоимость запаса.",
+            "showDescription": True,
+            "intent": "comparison",
+            "question": "Как сайт меняет сервис обычных продаж?",
+            "rationale": "Профили отличаются только весом заказа и дефицитной корзины.",
+            "comparisonContext": {
+                "baseline": "Сайт выключен",
+                "grain": "Профиль сайта",
+                "unit": "fraction",
+            },
+            "type": "bar",
+            "dataset": "site_sensitivity",
+            "sourceId": "scenario_summary",
+            "encodings": {
+                "x": {
+                    "field": "site_profile_label",
+                    "type": "nominal",
+                    "label": "Профиль сайта",
+                },
+                "y": {
+                    "field": "observed_fill_rate",
+                    "type": "quantitative",
+                    "label": "Сервис обычных продаж",
+                },
+                "tooltip": [
+                    {
+                        "field": "gross_profit_delta_vs_site_off_rub",
+                        "type": "quantitative",
+                        "label": "Δ прибыли к site off, ₽",
+                    },
+                    {
+                        "field": "capital_delta_vs_site_off_rub",
+                        "type": "quantitative",
+                        "label": "Δ капитала к site off, ₽",
+                    },
+                ],
+            },
+            "valueFormat": "percent",
+            "layout": "full",
+            "palette": {"kind": "categorical"},
+        },
     ]
     tables: list[dict[str, Any]] = []
     summary_body = build_markdown(analysis).split("## Что именно проверяли", 1)[0]
@@ -625,10 +744,20 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
             "type": "markdown",
             "body": (
                 "## Что именно проверяли\n\n"
-                f"Период — с 1 февраля по 31 июля 2026 года, когорта — {analysis['cohort']['sku_count']} SKU предмета «Дисплеи». На каждую дату восстановлены историческая стадия, остаток, резерв, свободный товар в пути, КМП4 и доступный на тот момент срок поставки. Базовый сценарий: типичный стартовый профиль, вес КМП4 0,5 и базовая стоимость хранения."
+                f"Период — с 1 февраля по 31 июля 2026 года, когорта — {analysis['cohort']['sku_count']} SKU предмета «Дисплеи». Стадия на каждую дату восстановлена только по продажам. Базовый сценарий: typical + КМП4 0,5 + site balanced + cost base."
             ),
             "sourceId": "preflight_manifest",
         },
+        {
+            "id": "site_finding",
+            "type": "markdown",
+            "body": (
+                "## Сайт и резерв теперь учтены отдельно\n\n"
+                f"Заказы сайта дали {headline['hidden_site_order_qty']:.0f} единиц скрытого спроса, дефицитные корзины — {headline['hidden_site_cart_qty']:.0f}, backlog резерва — {headline['hidden_reserve_backlog_qty']:.0f}. Все источники проходят через общую 14-дневную очередь без двойного погашения одной продажей."
+            ),
+            "sourceId": "preflight_manifest",
+        },
+        {"id": "site_profile_chart_block", "type": "chart", "chartId": "site_profile_chart"},
         {
             "id": "stage_finding",
             "type": "markdown",
@@ -683,10 +812,10 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
                 "## Что уже исправлено\n\n"
                 "1. Внеплановые ручные решения включены в сценарий.\n"
                 "2. Исторический запуск новых SKU больше не начинается с искусственного нуля.\n"
-                "3. КМП4 считается разовой очередью потребности, а не ежедневной скоростью.\n"
-                "4. P50 и P75 разделены на срок прихода и защитный горизонт.\n"
-                "5. Рост спроса определяется по окнам 30/90 дней.\n"
-                "6. Добавлены ежедневная защита от дефицита и защитный запас по прошлым ошибкам прогноза."
+                "3. КМП4, сайт и backlog проходят через одну очередь без двойного счёта.\n"
+                "4. Отрицательный резерв больше не увеличивает доступный остаток.\n"
+                "5. Корзина учитывается только при дефиците и с дневным cap=1.\n"
+                "6. Июльский скачок сайта сохранён и показан отдельно."
             ),
         },
         {
@@ -697,8 +826,8 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
                 "1. **Не включать автоматические заказы:** оставить только расчёт рекомендаций без отправки заказов.\n"
                 "2. **Откалибровать отдельную сервисную защиту «Растим»:** по эмпирической ошибке прогноза и стоимости дефицита, без единого числа дней для всех SKU.\n"
                 "3. **Сократить ручную очередь:** один активный сигнал на SKU должен обновляться до закрытия, а не размножаться каждый день.\n"
-                "4. **Проверить SKU-события сайта** и только после этого добавлять их как отдельный сигнал спроса.\n"
-                "5. **Снова проверить модель на истории, затем на текущих данных без заказов** с теми же критериями приёмки."
+                "4. **Провести forward shadow без заказов** с теми же критериями приёмки.\n"
+                "5. **Мониторить источники раздельно:** КМП4, заказы сайта, корзины и backlog."
             ),
         },
         {
@@ -717,7 +846,7 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
             "body": (
                 "## Ограничения\n\n"
                 "- Фактический сервис обычных продаж равен 100% по определению: видны только состоявшиеся продажи; скрытый спрос измеряется отдельно.\n"
-                "- История сайта без надёжной связи с SKU не восстанавливалась догадкой.\n"
+                "- Сайт связан с SKU только по валидному PRODUCT_XML_ID; строки вне когорты не распределялись догадкой.\n"
                 f"- Предварительная проверка данных пройдена, но найдены {analysis['source_quality']['negative_register_balances']['value']} отрицательных дневных резервов и {analysis['source_quality']['unit_economics_coverage']['value']} строк решений без себестоимости.\n"
                 "- Все положительные ручные рекомендации считаются принятыми; без этого реальный сервис будет ниже."
             ),
@@ -748,6 +877,7 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
                 "stages": stages,
                 "monthly_service": analysis["monthly_chart"],
                 "scenario_base_cost": scenario_base,
+                "site_sensitivity": site_sensitivity,
             },
             "accessIssues": [],
         },

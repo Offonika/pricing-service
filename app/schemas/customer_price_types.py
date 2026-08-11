@@ -16,6 +16,38 @@ class CustomerPriceTypeEnvelope(BaseModel):
     source_status: str
 
 
+class CustomerPriceTypeAdvisoryPreviewRequest(BaseModel):
+    return_character: str | None = Field(default=None, max_length=500)
+    period_mismatch: str | None = Field(default=None, max_length=500)
+    behavior_group: str | None = Field(default=None, max_length=100)
+    notification_event: Literal["presignal", "price_type_changed", "recovery"] | None = None
+    current_level: str | None = Field(default=None, max_length=100)
+
+
+class CustomerPriceTypeOrderLampResponse(BaseModel):
+    key: str
+    severity: Literal["none", "info", "warning", "critical", "review"]
+    title: str
+    manager_action: str
+    visible: bool
+    blocks_fulfillment: bool
+
+
+class CustomerPriceTypeNotificationDraftResponse(BaseModel):
+    event: Literal["presignal", "price_type_changed", "recovery"]
+    text: str
+    channel_candidates: list[str] = Field(default_factory=list)
+    approval_status: Literal["requires_approval"]
+    send_allowed: bool
+
+
+class CustomerPriceTypeAdvisoryPreviewResponse(BaseModel):
+    mode: Literal["shadow"] = "shadow"
+    onec_write_allowed: bool = False
+    order_lamp: CustomerPriceTypeOrderLampResponse
+    notification: CustomerPriceTypeNotificationDraftResponse | None = None
+
+
 class CustomerPriceTypeSummary(BaseModel):
     profile_count: int = 0
     actionable_count: int = 0

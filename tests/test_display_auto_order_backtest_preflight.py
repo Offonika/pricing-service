@@ -9,9 +9,11 @@ import pytest
 from tasks.display_auto_order_backtest_preflight import (
     CarryingCostScenario,
     PreflightTables,
+    build_demand_signal_queue_history,
     build_kmp4_queue_history,
     calculate_economic_safety_stock,
     load_scenario_config,
+    normalize_site_event_rows,
     select_lead_time_profile,
     validate_preflight_directory,
     write_preflight_artifacts,
@@ -29,7 +31,16 @@ def test_scenario_config_matches_approved_grid() -> None:
         Decimal("1"),
     )
     assert config.kmp4_queue_days == 14
-    assert config.site_signals_enabled is False
+    assert config.site_queue_days == 14
+    assert config.unordered_cart_daily_cap == Decimal("1")
+    assert config.site_signals_enabled is True
+    assert [row.name for row in config.site_signal_profiles] == [
+        "off",
+        "order_only",
+        "cautious",
+        "balanced",
+        "service",
+    ]
     assert [row.total_annual_rate for row in config.holding_cost_scenarios] == [
         Decimal("0.35"),
         Decimal("0.65"),
@@ -76,6 +87,173 @@ def test_kmp4_queue_uses_reserve_increase_but_not_unchanged_balance() -> None:
     assert result[start + timedelta(days=1)].matched_qty == Decimal("1")
     assert result[start + timedelta(days=2)].matched_qty == Decimal("0")
     assert result[start + timedelta(days=2)].open_qty == Decimal("1")
+
+
+def test_site_guid_mapping_cart_dedup_and_daily_cap() -> None:
+    start = date(2026, 7, 1)
+    rows = [
+        {
+            "event_date": start.isoformat(),
+            "event_type": "site_unordered_cart",
+            "product_xml_id": "2685293e-967c-11e1-bdb9-0025901e48ef",
+            "quantity": "3",
+            "session_key": "anon-1",
+            "event_key": "event-1",
+            "delay_flag": "N",
+        },
+        {
+            "event_date": start.isoformat(),
+            "event_type": "site_unordered_cart",
+            "product_xml_id": "{2685293E-967C-11E1-BDB9-0025901E48EF}",
+            "quantity": "2",
+            "session_key": "anon-1",
+            "event_key": "event-2",
+            "delay_flag": "N",
+        },
+    ]
+
+    result = normalize_site_event_rows(
+        rows,
+        product_refs={"SKU-1": "0xBDB90025901E48EF11E1967C2685293E"},
+        cohort_codes=["SKU-1"],
+        unordered_cart_daily_cap=Decimal("1"),
+    )
+
+    assert len(result.rows) == 1
+    assert result.rows[0]["nomenclature_code"] == "SKU-1"
+    assert result.rows[0]["raw_quantity"] == "5"
+    assert result.rows[0]["quantity"] == "1"
+    assert result.mapping_stats["cart_deduplicated_row_count"] == 1
+
+
+def test_common_queue_prevents_sale_from_matching_kmp4_and_site_twice() -> None:
+    start = date(2026, 2, 1)
+    rows = [
+        {
+            "event_date": start.isoformat(),
+            "event_type": "site_order",
+            "nomenclature_code": "SKU-1",
+            "quantity": "1",
+            "event_key": "order-1",
+            "mapping_status": "matched",
+            "manual_review_only": 0,
+        }
+    ]
+
+    result = build_demand_signal_queue_history(
+        codes=["SKU-1"],
+        kmp4_raw_by_code={"SKU-1": {start: Decimal("1")}},
+        site_event_rows=rows,
+        sales_by_code={"SKU-1": {start + timedelta(days=1): Decimal("1")}},
+        reserves_by_day={},
+        stock_by_day={},
+        date_from=start,
+        date_to=start + timedelta(days=1),
+        queue_days=14,
+    )["SKU-1"]
+
+    assert result[start + timedelta(days=1)].kmp4_matched_qty == Decimal("1")
+    assert result[start + timedelta(days=1)].site_order_matched_qty == Decimal("0")
+    assert result[start + timedelta(days=1)].site_order_open_qty == Decimal("1")
+
+
+def test_cart_is_quantitative_only_when_free_stock_is_not_positive() -> None:
+    start = date(2026, 2, 1)
+    row = {
+        "event_date": start.isoformat(),
+        "event_type": "site_unordered_cart",
+        "nomenclature_code": "SKU-1",
+        "quantity": "1",
+        "event_key": "cart-1",
+        "mapping_status": "matched",
+        "manual_review_only": 0,
+    }
+    positive = build_demand_signal_queue_history(
+        codes=["SKU-1"],
+        kmp4_raw_by_code={},
+        site_event_rows=[row],
+        sales_by_code={},
+        reserves_by_day={start: {"SKU-1": Decimal("0")}},
+        stock_by_day={start: {"SKU-1": Decimal("1")}},
+        date_from=start,
+        date_to=start,
+        queue_days=14,
+    )["SKU-1"][start]
+    stockout = build_demand_signal_queue_history(
+        codes=["SKU-1"],
+        kmp4_raw_by_code={},
+        site_event_rows=[row],
+        sales_by_code={},
+        reserves_by_day={start: {"SKU-1": Decimal("0")}},
+        stock_by_day={start: {"SKU-1": Decimal("0")}},
+        date_from=start,
+        date_to=start,
+        queue_days=14,
+    )["SKU-1"][start]
+
+    assert positive.site_cart_raw_qty == Decimal("0")
+    assert positive.site_cart_stock_blocked_qty == Decimal("1")
+    assert stockout.site_cart_raw_qty == Decimal("1")
+
+
+def test_negative_reserve_never_increases_stock_and_backlog_cancel_is_not_sale() -> None:
+    start = date(2026, 2, 1)
+    result = build_demand_signal_queue_history(
+        codes=["SKU-1"],
+        kmp4_raw_by_code={},
+        site_event_rows=[],
+        sales_by_code={},
+        reserves_by_day={
+            start: {"SKU-1": Decimal("-1")},
+            start + timedelta(days=1): {"SKU-1": Decimal("3")},
+            start + timedelta(days=2): {"SKU-1": Decimal("0")},
+        },
+        stock_by_day={
+            start: {"SKU-1": Decimal("0")},
+            start + timedelta(days=1): {"SKU-1": Decimal("1")},
+            start + timedelta(days=2): {"SKU-1": Decimal("1")},
+        },
+        date_from=start,
+        date_to=start + timedelta(days=2),
+        queue_days=14,
+    )["SKU-1"]
+
+    assert result[start].raw_reserve_qty == Decimal("-1")
+    assert result[start].effective_reserve_qty == Decimal("0")
+    assert result[start + timedelta(days=1)].reserve_backlog_qty == Decimal("2")
+    assert result[start + timedelta(days=2)].reserve_backlog_cancelled_qty == Decimal("2")
+    assert result[start + timedelta(days=2)].reserve_backlog_matched_qty == Decimal("0")
+
+
+def test_future_site_cancellation_does_not_change_past_queue() -> None:
+    start = date(2026, 2, 1)
+    result = build_demand_signal_queue_history(
+        codes=["SKU-1"],
+        kmp4_raw_by_code={},
+        site_event_rows=[
+            {
+                "event_date": start.isoformat(),
+                "event_type": "site_order",
+                "nomenclature_code": "SKU-1",
+                "quantity": "2",
+                "event_key": "order-1",
+                "cancelled_at": (start + timedelta(days=2)).isoformat(),
+                "mapping_status": "matched",
+                "manual_review_only": 0,
+            }
+        ],
+        sales_by_code={},
+        reserves_by_day={},
+        stock_by_day={},
+        date_from=start,
+        date_to=start + timedelta(days=2),
+        queue_days=14,
+    )["SKU-1"]
+
+    assert result[start].site_order_open_qty == Decimal("2")
+    assert result[start + timedelta(days=1)].site_order_open_qty == Decimal("2")
+    assert result[start + timedelta(days=2)].site_order_cancelled_qty == Decimal("2")
+    assert result[start + timedelta(days=2)].site_order_open_qty == Decimal("0")
 
 
 def test_lead_time_profile_excludes_receipts_not_known_on_decision_date() -> None:
@@ -158,7 +336,13 @@ def test_preflight_manifest_checks_status_and_hashes(tmp_path: Path) -> None:
         initial_pipeline=[{"nomenclature_code": "SKU-1", "quantity": "1"}],
         source_quality=[{"check": "keys", "status": "pass"}],
         reconciliations=[{"source": "reserve", "status": "pass"}],
+        site_events=[],
         status="PASS",
+    )
+    site_csv = tmp_path / "source-site-events.csv"
+    site_csv.write_text(
+        "event_date,event_type,product_xml_id,quantity,order_number,cancelled_at,session_key,event_key,delay_flag\n",
+        encoding="utf-8",
     )
     write_preflight_artifacts(
         tmp_path,
@@ -168,6 +352,8 @@ def test_preflight_manifest_checks_status_and_hashes(tmp_path: Path) -> None:
         history_start=date(2025, 1, 1),
         config_path=CONFIG_PATH,
         cohort_run_id=1,
+        site_events_csv=site_csv,
+        site_mapping_stats={"mapped_row_count": 0},
     )
 
     manifest = validate_preflight_directory(tmp_path)

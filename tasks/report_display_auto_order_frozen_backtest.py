@@ -29,8 +29,8 @@ from tasks.display_auto_order_backtest_preflight import (
 ZERO = Decimal("0")
 ONE = Decimal("1")
 YEAR_DAYS = Decimal("365")
-BASE_SCENARIO_ID = "typical_kmp0_5_base"
-OUTPUT_SCHEMA = "display_auto_order_frozen_backtest.v1"
+BASE_SCENARIO_ID = "typical_kmp0_5_sitebalanced_base"
+OUTPUT_SCHEMA = "display_auto_order_frozen_backtest.v2"
 
 
 def _clean(value: Any) -> str:
@@ -95,6 +95,9 @@ class FrozenScenario:
     stage_profile: str
     kmp4_weight: Decimal
     cost: CarryingCostScenario
+    site_profile: str = "off"
+    site_order_weight: Decimal = ZERO
+    site_unordered_cart_weight: Decimal = ZERO
     legacy: bool = False
 
 
@@ -102,8 +105,16 @@ class FrozenScenario:
 class Metric:
     observed_demand_qty: Decimal = ZERO
     hidden_demand_qty: Decimal = ZERO
+    hidden_kmp4_qty: Decimal = ZERO
+    hidden_site_order_qty: Decimal = ZERO
+    hidden_site_cart_qty: Decimal = ZERO
+    hidden_reserve_backlog_qty: Decimal = ZERO
     served_observed_qty: Decimal = ZERO
     served_hidden_qty: Decimal = ZERO
+    served_hidden_kmp4_qty: Decimal = ZERO
+    served_hidden_site_order_qty: Decimal = ZERO
+    served_hidden_site_cart_qty: Decimal = ZERO
+    served_hidden_reserve_backlog_qty: Decimal = ZERO
     lost_observed_qty: Decimal = ZERO
     lost_hidden_qty: Decimal = ZERO
     gross_profit_rub: Decimal = ZERO
@@ -152,6 +163,11 @@ def _load_scenarios(path: Path) -> list[FrozenScenario]:
                 scenario_id=scenario_id,
                 stage_profile=_clean(row.get("stage_profile")),
                 kmp4_weight=_decimal(row.get("kmp4_weight")),
+                site_profile=_clean(row.get("site_profile")) or "off",
+                site_order_weight=_decimal(row.get("site_order_weight")),
+                site_unordered_cart_weight=_decimal(
+                    row.get("site_unordered_cart_weight")
+                ),
                 cost=CarryingCostScenario(
                     name=_clean(row.get("holding_cost_scenario")),
                     capital_annual_rate=_decimal(row.get("capital_annual_rate")),
@@ -173,8 +189,16 @@ def _aggregate_metric(metrics: Mapping[str, Metric]) -> Metric:
     for row in metrics.values():
         out.observed_demand_qty += row.observed_demand_qty
         out.hidden_demand_qty += row.hidden_demand_qty
+        out.hidden_kmp4_qty += row.hidden_kmp4_qty
+        out.hidden_site_order_qty += row.hidden_site_order_qty
+        out.hidden_site_cart_qty += row.hidden_site_cart_qty
+        out.hidden_reserve_backlog_qty += row.hidden_reserve_backlog_qty
         out.served_observed_qty += row.served_observed_qty
         out.served_hidden_qty += row.served_hidden_qty
+        out.served_hidden_kmp4_qty += row.served_hidden_kmp4_qty
+        out.served_hidden_site_order_qty += row.served_hidden_site_order_qty
+        out.served_hidden_site_cart_qty += row.served_hidden_site_cart_qty
+        out.served_hidden_reserve_backlog_qty += row.served_hidden_reserve_backlog_qty
         out.lost_observed_qty += row.lost_observed_qty
         out.lost_hidden_qty += row.lost_hidden_qty
         out.gross_profit_rub += row.gross_profit_rub
@@ -214,6 +238,9 @@ def _summary(
         "strategy": strategy,
         "stage_profile": scenario.stage_profile,
         "kmp4_weight": str(scenario.kmp4_weight),
+        "site_profile": scenario.site_profile,
+        "site_order_weight": str(scenario.site_order_weight),
+        "site_unordered_cart_weight": str(scenario.site_unordered_cart_weight),
         "holding_cost_scenario": scenario.cost.name,
         "capital_annual_rate": str(scenario.cost.capital_annual_rate),
         "storage_annual_rate": str(scenario.cost.storage_annual_rate),
@@ -221,9 +248,19 @@ def _summary(
         "potential_demand_qty": str(potential),
         "observed_demand_qty": str(total.observed_demand_qty),
         "hidden_demand_qty": str(total.hidden_demand_qty),
+        "hidden_kmp4_qty": str(total.hidden_kmp4_qty),
+        "hidden_site_order_qty": str(total.hidden_site_order_qty),
+        "hidden_site_cart_qty": str(total.hidden_site_cart_qty),
+        "hidden_reserve_backlog_qty": str(total.hidden_reserve_backlog_qty),
         "served_qty": str(total.served_qty),
         "served_observed_qty": str(total.served_observed_qty),
         "served_hidden_qty": str(total.served_hidden_qty),
+        "served_hidden_kmp4_qty": str(total.served_hidden_kmp4_qty),
+        "served_hidden_site_order_qty": str(total.served_hidden_site_order_qty),
+        "served_hidden_site_cart_qty": str(total.served_hidden_site_cart_qty),
+        "served_hidden_reserve_backlog_qty": str(
+            total.served_hidden_reserve_backlog_qty
+        ),
         "lost_qty": str(total.lost_qty),
         "lost_observed_qty": str(total.lost_observed_qty),
         "lost_hidden_qty": str(total.lost_hidden_qty),
@@ -320,6 +357,38 @@ def historical_forecast_error_samples(
         )
         samples.append(max(ZERO, actual_demand - predicted_demand))
     return samples
+
+
+def _allocate_hidden(
+    stock_qty: Decimal,
+    demand_by_source: Mapping[str, Decimal],
+) -> tuple[dict[str, Decimal], Decimal]:
+    remaining = max(ZERO, stock_qty)
+    served: dict[str, Decimal] = {}
+    for source in ("reserve_backlog", "site_order", "kmp4", "site_cart"):
+        demand = max(ZERO, demand_by_source.get(source, ZERO))
+        quantity = min(remaining, demand)
+        served[source] = quantity
+        remaining -= quantity
+    return served, remaining
+
+
+def _add_hidden_source_metrics(
+    metric: Metric,
+    *,
+    demand_by_source: Mapping[str, Decimal],
+    served_by_source: Mapping[str, Decimal],
+) -> None:
+    metric.hidden_kmp4_qty += demand_by_source.get("kmp4", ZERO)
+    metric.hidden_site_order_qty += demand_by_source.get("site_order", ZERO)
+    metric.hidden_site_cart_qty += demand_by_source.get("site_cart", ZERO)
+    metric.hidden_reserve_backlog_qty += demand_by_source.get("reserve_backlog", ZERO)
+    metric.served_hidden_kmp4_qty += served_by_source.get("kmp4", ZERO)
+    metric.served_hidden_site_order_qty += served_by_source.get("site_order", ZERO)
+    metric.served_hidden_site_cart_qty += served_by_source.get("site_cart", ZERO)
+    metric.served_hidden_reserve_backlog_qty += served_by_source.get(
+        "reserve_backlog", ZERO
+    )
 
 
 def simulate_scenario(
@@ -437,6 +506,10 @@ def simulate_scenario(
             "actual_potential_demand_qty": ZERO,
             "actual_observed_demand_qty": ZERO,
             "actual_hidden_demand_qty": ZERO,
+            "actual_hidden_kmp4_qty": ZERO,
+            "actual_hidden_site_order_qty": ZERO,
+            "actual_hidden_site_cart_qty": ZERO,
+            "actual_hidden_reserve_backlog_qty": ZERO,
             "actual_served_qty": ZERO,
             "actual_served_observed_qty": ZERO,
             "actual_served_hidden_qty": ZERO,
@@ -446,6 +519,9 @@ def simulate_scenario(
             "model_lost_qty": ZERO,
             "model_lost_observed_qty": ZERO,
             "model_lost_hidden_qty": ZERO,
+            "actual_gross_profit_rub": ZERO,
+            "model_gross_profit_rub": ZERO,
+            "actual_inventory_value_rub": ZERO,
             "model_ending_inventory_qty": ZERO,
             "model_inventory_value_rub": ZERO,
         }
@@ -453,7 +529,18 @@ def simulate_scenario(
             code = _clean(fact.get("nomenclature_code"))
             status = _clean(fact.get("status")) or "unknown"
             observed = max(ZERO, _decimal(fact.get("observed_sales_qty")))
-            hidden = max(ZERO, _decimal(fact.get("kmp4_expired_qty"))) * scenario.kmp4_weight
+            hidden_by_source = {
+                "kmp4": max(ZERO, _decimal(fact.get("kmp4_expired_qty")))
+                * scenario.kmp4_weight,
+                "site_order": max(ZERO, _decimal(fact.get("site_order_hidden_qty")))
+                * scenario.site_order_weight,
+                "site_cart": max(ZERO, _decimal(fact.get("site_cart_hidden_qty")))
+                * scenario.site_unordered_cart_weight,
+                "reserve_backlog": max(
+                    ZERO, _decimal(fact.get("reserve_backlog_hidden_qty"))
+                ),
+            }
+            hidden = sum(hidden_by_source.values(), ZERO)
             margin = current_margin[code]
             cost = current_cost[code]
 
@@ -472,7 +559,10 @@ def simulate_scenario(
             actual_row = actual[code]
             actual_stage = actual_by_stage[status]
             actual_stock = max(ZERO, _decimal(fact.get("physical_stock_qty")))
-            actual_hidden_served = min(actual_stock, hidden)
+            actual_hidden_served_by_source, _ = _allocate_hidden(
+                actual_stock, hidden_by_source
+            )
+            actual_hidden_served = sum(actual_hidden_served_by_source.values(), ZERO)
             actual_row.observed_demand_qty += observed
             actual_row.hidden_demand_qty += hidden
             actual_row.served_observed_qty += observed
@@ -483,6 +573,11 @@ def simulate_scenario(
             actual_row.priced_inventory_qty_days += actual_stock if cost > ZERO else ZERO
             actual_row.inventory_value_days_rub += actual_stock * cost
             actual_row.ending_inventory_qty = actual_stock
+            _add_hidden_source_metrics(
+                actual_row,
+                demand_by_source=hidden_by_source,
+                served_by_source=actual_hidden_served_by_source,
+            )
             actual_stage.observed_demand_qty += observed
             actual_stage.hidden_demand_qty += hidden
             actual_stage.served_observed_qty += observed
@@ -492,13 +587,21 @@ def simulate_scenario(
             actual_stage.inventory_qty_days += actual_stock
             actual_stage.priced_inventory_qty_days += actual_stock if cost > ZERO else ZERO
             actual_stage.inventory_value_days_rub += actual_stock * cost
+            _add_hidden_source_metrics(
+                actual_stage,
+                demand_by_source=hidden_by_source,
+                served_by_source=actual_hidden_served_by_source,
+            )
 
             model_row = model[code]
             model_stage = model_by_stage[status]
             served_observed = min(stock[code], observed)
             stock[code] -= served_observed
-            served_hidden = min(stock[code], hidden)
-            stock[code] -= served_hidden
+            model_hidden_served_by_source, remaining_stock = _allocate_hidden(
+                stock[code], hidden_by_source
+            )
+            served_hidden = sum(model_hidden_served_by_source.values(), ZERO)
+            stock[code] = remaining_stock
             model_row.observed_demand_qty += observed
             model_row.hidden_demand_qty += hidden
             model_row.served_observed_qty += served_observed
@@ -510,6 +613,11 @@ def simulate_scenario(
             model_row.priced_inventory_qty_days += stock[code] if cost > ZERO else ZERO
             model_row.inventory_value_days_rub += stock[code] * cost
             model_row.ending_inventory_qty = stock[code]
+            _add_hidden_source_metrics(
+                model_row,
+                demand_by_source=hidden_by_source,
+                served_by_source=model_hidden_served_by_source,
+            )
             model_stage.observed_demand_qty += observed
             model_stage.hidden_demand_qty += hidden
             model_stage.served_observed_qty += served_observed
@@ -520,10 +628,21 @@ def simulate_scenario(
             model_stage.inventory_qty_days += stock[code]
             model_stage.priced_inventory_qty_days += stock[code] if cost > ZERO else ZERO
             model_stage.inventory_value_days_rub += stock[code] * cost
+            _add_hidden_source_metrics(
+                model_stage,
+                demand_by_source=hidden_by_source,
+                served_by_source=model_hidden_served_by_source,
+            )
 
             daily["actual_potential_demand_qty"] += observed + hidden
             daily["actual_observed_demand_qty"] += observed
             daily["actual_hidden_demand_qty"] += hidden
+            daily["actual_hidden_kmp4_qty"] += hidden_by_source["kmp4"]
+            daily["actual_hidden_site_order_qty"] += hidden_by_source["site_order"]
+            daily["actual_hidden_site_cart_qty"] += hidden_by_source["site_cart"]
+            daily["actual_hidden_reserve_backlog_qty"] += hidden_by_source[
+                "reserve_backlog"
+            ]
             daily["actual_served_qty"] += observed + actual_hidden_served
             daily["actual_served_observed_qty"] += observed
             daily["actual_served_hidden_qty"] += actual_hidden_served
@@ -535,6 +654,9 @@ def simulate_scenario(
             daily["model_lost_hidden_qty"] += hidden - served_hidden
             daily["model_ending_inventory_qty"] += stock[code]
             daily["model_inventory_value_rub"] += stock[code] * cost
+            daily["actual_inventory_value_rub"] += actual_stock * cost
+            daily["actual_gross_profit_rub"] += (observed + actual_hidden_served) * margin
+            daily["model_gross_profit_rub"] += (served_observed + served_hidden) * margin
 
         decision_candidates = decisions_today if scenario.legacy else latest_decision_rows
         for code, row in decision_candidates.items():
@@ -554,6 +676,15 @@ def simulate_scenario(
                 )
                 * scenario.kmp4_weight
             )
+            weighted_site_orders = max(
+                ZERO,
+                _decimal(fact.get("site_order_open_qty", row.get("site_order_open_qty"))),
+            ) * scenario.site_order_weight
+            weighted_site_carts = max(
+                ZERO,
+                _decimal(fact.get("site_cart_open_qty", row.get("site_cart_open_qty"))),
+            ) * scenario.site_unordered_cart_weight
+            weighted_signals = weighted_kmp + weighted_site_orders + weighted_site_carts
             scenario_rate = rate
             arrival_lead_days = 52 if scenario.legacy else int(row.get("lead_time_p50_days") or 52)
             lead_days = arrival_lead_days
@@ -585,9 +716,10 @@ def simulate_scenario(
                         _profile_value(row, scenario.stage_profile, "demand_qty_30d")
                         / Decimal("30"),
                     )
-                min_qty = _ceil(scenario_rate * Decimal(lead_days) + weighted_kmp)
+                min_qty = _ceil(scenario_rate * Decimal(lead_days) + weighted_signals)
                 max_qty = _ceil(
-                    scenario_rate * Decimal(lead_days + policy.order_cadence_days) + weighted_kmp
+                    scenario_rate * Decimal(lead_days + policy.order_cadence_days)
+                    + weighted_signals
                 )
                 if status == AssortmentStatus.NEW_ITEM.value:
                     min_qty = max(
@@ -627,10 +759,10 @@ def simulate_scenario(
                     p75_days = int(row.get("lead_time_p75_days") or lead_days)
                     if safety_units > ZERO and p75_days > lead_days:
                         lead_days = p75_days
-                        min_qty = _ceil(scenario_rate * Decimal(lead_days) + weighted_kmp)
+                        min_qty = _ceil(scenario_rate * Decimal(lead_days) + weighted_signals)
                         max_qty = _ceil(
                             scenario_rate * Decimal(lead_days + policy.order_cadence_days)
-                            + weighted_kmp
+                            + weighted_signals
                         )
                         p75_cache_key = (
                             code,
@@ -662,15 +794,15 @@ def simulate_scenario(
                     max_qty = ZERO
                     safety_units = ZERO
                 elif status == AssortmentStatus.NEWBORN.value:
-                    min_qty = weighted_kmp
-                    max_qty = weighted_kmp
+                    min_qty = weighted_signals
+                    max_qty = weighted_signals
                     safety_units = ZERO
-                    manual = weighted_kmp > ZERO
+                    manual = weighted_signals > ZERO
                 elif status == AssortmentStatus.NEW_ITEM.value and code not in launch_ready:
-                    min_qty = weighted_kmp
-                    max_qty = weighted_kmp
+                    min_qty = weighted_signals
+                    max_qty = weighted_signals
                     safety_units = ZERO
-                    manual = weighted_kmp > ZERO
+                    manual = weighted_signals > ZERO
                 elif status in {
                     AssortmentStatus.NEW_ITEM.value,
                     AssortmentStatus.SALES_START.value,
@@ -694,7 +826,12 @@ def simulate_scenario(
             target_qty = max_qty + safety_units
             reserve = max(
                 ZERO,
-                _decimal(fact.get("reserve_qty", row.get("reserve_qty"))),
+                _decimal(
+                    fact.get(
+                        "effective_reserve_qty",
+                        row.get("effective_reserve_qty", row.get("reserve_qty")),
+                    )
+                ),
             )
             position = stock[code] - reserve + pipeline_qty[code]
             triggered = position <= min_qty
@@ -722,7 +859,8 @@ def simulate_scenario(
                 stage_metric.manual_order_lines += int(manual)
                 stage_metric.safety_stock_units_ordered += safety_units
             if keep_detail and (
-                recommended > ZERO or (fresh_decision and (rate > ZERO or weighted_kmp > ZERO))
+                recommended > ZERO
+                or (fresh_decision and (rate > ZERO or weighted_signals > ZERO))
             ):
                 trigger = (
                     "scheduled_review"
@@ -738,6 +876,11 @@ def simulate_scenario(
                         "decision_trigger": trigger,
                         "forecast_rate_sales": str(rate),
                         "kmp4_open_weighted_qty": str(weighted_kmp),
+                        "site_order_open_weighted_qty": str(weighted_site_orders),
+                        "site_cart_open_weighted_qty": str(weighted_site_carts),
+                        "reserve_backlog_qty": str(
+                            _decimal(fact.get("reserve_backlog_qty"))
+                        ),
                         "selected_lead_time_days": lead_days,
                         "simulated_arrival_lead_time_days": arrival_lead_days,
                         "min_stock_qty": str(min_qty),
@@ -783,9 +926,24 @@ def _sku_comparison_rows(result: SimulationResult, period_days: int) -> list[dic
                 "actual_served_qty": str(actual.served_qty),
                 "actual_served_observed_qty": str(actual.served_observed_qty),
                 "actual_served_hidden_qty": str(actual.served_hidden_qty),
+                "actual_hidden_kmp4_qty": str(actual.hidden_kmp4_qty),
+                "actual_hidden_site_order_qty": str(actual.hidden_site_order_qty),
+                "actual_hidden_site_cart_qty": str(actual.hidden_site_cart_qty),
+                "actual_hidden_reserve_backlog_qty": str(
+                    actual.hidden_reserve_backlog_qty
+                ),
                 "model_served_qty": str(model.served_qty),
                 "model_served_observed_qty": str(model.served_observed_qty),
                 "model_served_hidden_qty": str(model.served_hidden_qty),
+                "model_served_hidden_site_order_qty": str(
+                    model.served_hidden_site_order_qty
+                ),
+                "model_served_hidden_site_cart_qty": str(
+                    model.served_hidden_site_cart_qty
+                ),
+                "model_served_hidden_reserve_backlog_qty": str(
+                    model.served_hidden_reserve_backlog_qty
+                ),
                 "served_delta_qty": str(model.served_qty - actual.served_qty),
                 "actual_lost_qty": str(actual.lost_qty),
                 "actual_lost_observed_qty": str(actual.lost_observed_qty),
@@ -835,9 +993,22 @@ def _stage_summary_rows(result: SimulationResult, period_days: int) -> list[dict
                     "potential_demand_qty": str(potential),
                     "observed_demand_qty": str(metric.observed_demand_qty),
                     "hidden_demand_qty": str(metric.hidden_demand_qty),
+                    "hidden_kmp4_qty": str(metric.hidden_kmp4_qty),
+                    "hidden_site_order_qty": str(metric.hidden_site_order_qty),
+                    "hidden_site_cart_qty": str(metric.hidden_site_cart_qty),
+                    "hidden_reserve_backlog_qty": str(
+                        metric.hidden_reserve_backlog_qty
+                    ),
                     "served_qty": str(metric.served_qty),
                     "served_observed_qty": str(metric.served_observed_qty),
                     "served_hidden_qty": str(metric.served_hidden_qty),
+                    "served_hidden_site_order_qty": str(
+                        metric.served_hidden_site_order_qty
+                    ),
+                    "served_hidden_site_cart_qty": str(metric.served_hidden_site_cart_qty),
+                    "served_hidden_reserve_backlog_qty": str(
+                        metric.served_hidden_reserve_backlog_qty
+                    ),
                     "lost_qty": str(metric.lost_qty),
                     "lost_observed_qty": str(metric.lost_observed_qty),
                     "lost_hidden_qty": str(metric.lost_hidden_qty),
@@ -865,6 +1036,68 @@ def _stage_summary_rows(result: SimulationResult, period_days: int) -> list[dict
                         if metric.inventory_qty_days > ZERO
                         else ONE
                     ),
+                }
+            )
+    return rows
+
+
+def _period_summary_rows(
+    daily_rows: Sequence[Mapping[str, Any]],
+    *,
+    scenario_id: str,
+    date_from: date,
+    date_to: date,
+) -> list[dict[str, Any]]:
+    periods = (
+        ("pre_july", date_from, min(date_to, date(2026, 6, 30))),
+        ("july", max(date_from, date(2026, 7, 1)), date_to),
+    )
+    rows: list[dict[str, Any]] = []
+    source_rows = [row for row in daily_rows if _clean(row.get("scenario_id")) == scenario_id]
+    for period_name, period_from, period_to in periods:
+        if period_from > period_to:
+            continue
+        selected = [
+            row
+            for row in source_rows
+            if (business_date := _date(row.get("business_date"))) is not None
+            and period_from <= business_date <= period_to
+        ]
+        days = (period_to - period_from).days + 1
+        for strategy in ("actual", "model"):
+            observed = sum(
+                (_decimal(row.get("actual_observed_demand_qty")) for row in selected), ZERO
+            )
+            hidden = sum(
+                (_decimal(row.get("actual_hidden_demand_qty")) for row in selected), ZERO
+            )
+            served = sum(
+                (_decimal(row.get(f"{strategy}_served_qty")) for row in selected), ZERO
+            )
+            potential = observed + hidden
+            gross_profit = sum(
+                (_decimal(row.get(f"{strategy}_gross_profit_rub")) for row in selected),
+                ZERO,
+            )
+            average_inventory = sum(
+                (_decimal(row.get(f"{strategy}_inventory_value_rub")) for row in selected),
+                ZERO,
+            ) / Decimal(days)
+            rows.append(
+                {
+                    "scenario_id": scenario_id,
+                    "period": period_name,
+                    "date_from": period_from.isoformat(),
+                    "date_to": period_to.isoformat(),
+                    "strategy": strategy,
+                    "observed_demand_qty": str(observed),
+                    "hidden_demand_qty": str(hidden),
+                    "potential_demand_qty": str(potential),
+                    "served_qty": str(served),
+                    "lost_qty": str(potential - served),
+                    "fill_rate": str(served / potential if potential > ZERO else ONE),
+                    "gross_profit_rub": str(gross_profit),
+                    "average_inventory_value_rub": str(average_inventory),
                 }
             )
     return rows
@@ -1006,6 +1239,15 @@ def main() -> int:
     _write_csv(output / "frozen-baseline-daily.csv", daily_rows)
     _write_csv(output / "frozen-baseline-stage.csv", stage_rows)
     _write_csv(
+        output / "frozen-baseline-period.csv",
+        _period_summary_rows(
+            daily_rows,
+            scenario_id=BASE_SCENARIO_ID,
+            date_from=date_from,
+            date_to=date_to,
+        ),
+    )
+    _write_csv(
         output / "frozen-baseline-sku.csv",
         _sku_comparison_rows(base_result, period_days),
     )
@@ -1019,10 +1261,11 @@ def main() -> int:
         "method": {
             "source_mode": "frozen_preflight_only",
             "review_mode": "weekly_plus_event_and_daily_stockout_guard_manual_reviews_assumed_accepted",
-            "hidden_demand_evaluation": "weighted_unmatched_kmp4_at_queue_expiry",
-            "kmp4_inventory_effect": "weighted_open_queue_added_once_to_min_and_max_not_extrapolated_as_daily_rate",
+            "hidden_demand_evaluation": "weighted_unmatched_kmp4_site_and_confirmed_reserve_backlog_at_expiry_or_cancellation",
+            "signal_inventory_effect": "one_common_fifo_queue; weighted KMP4 and site open quantities are added once to min/max; reserve backlog acts through effective reserve",
+            "site_source_mode": "frozen_anonymized_csv_only_no_live_site_queries",
             "historical_stage": "frozen_daily_stage_from_preflight",
-            "inventory_position": "simulated_stock_minus_historical_reserve_plus_simulated_free_pipeline",
+            "inventory_position": "simulated_stock_minus_max(raw_historical_reserve,0)+simulated_free_pipeline; negative raw reserve never increases availability",
             "lead_time_usage": "p50_for_simulated_arrival_and_p75_only_for_economically_protected_coverage",
             "economic_safety_stock": "empirical_completed_walk_forward_underforecast_errors_times_margin_vs_holding_cost",
             "within_period_launches": "first_observed_positive_stock_seeded_as_exogenous_launch_supply",
@@ -1038,6 +1281,7 @@ def main() -> int:
                 "frozen-baseline-decisions.csv",
                 "frozen-baseline-daily.csv",
                 "frozen-baseline-stage.csv",
+                "frozen-baseline-period.csv",
                 "frozen-baseline-sku.csv",
             )
         },

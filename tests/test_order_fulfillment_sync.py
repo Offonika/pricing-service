@@ -529,6 +529,65 @@ def test_apply_outbox_by_target_handles_mixed_targets() -> None:
     assert sorted(client.updates) == [(1, "PREPARATION"), (2, "EXECUTING")]
 
 
+def test_apply_outbox_by_target_applies_only_allowed_targets() -> None:
+    rows = [
+        service.OrderFulfillmentStageOutboxRow(
+            idempotency_key="key-pickup",
+            site_order_number="218001",
+            bitrix_deal_id=1,
+            current_stage="EXECUTING",
+            target_stage="PICKUP_WAITING",
+            operation="update_stage",
+            state="ready",
+            chat_event=service.EVENT_PICKUP_UNCLAIMED,
+            event_confidence="medium",
+            evidence_redacted="не забрали",
+            payload_json="{}",
+            block_reason=None,
+        ),
+        service.OrderFulfillmentStageOutboxRow(
+            idempotency_key="key-won",
+            site_order_number="218002",
+            bitrix_deal_id=2,
+            current_stage="PICKUP_WAITING",
+            target_stage="WON",
+            operation="update_stage",
+            state="ready",
+            chat_event=service.EVENT_PICKUP_RECEIVED,
+            event_confidence="strong",
+            evidence_redacted="выдали",
+            payload_json="{}",
+            block_reason=None,
+        ),
+    ]
+    client = FakeBitrixClient(
+        {
+            1: _deal(
+                deal_id=1,
+                stage_id="EXECUTING",
+                order_number="218001",
+                delivery="Самовывоз",
+            ),
+            2: _deal(
+                deal_id=2,
+                stage_id="PICKUP_WAITING",
+                order_number="218002",
+                delivery="Самовывоз",
+            ),
+        }
+    )
+
+    results = sync.apply_outbox_by_target(
+        rows,
+        client=client,
+        apply=True,
+        allowed_target_stages={"PICKUP_WAITING"},
+    )
+
+    assert [result.result for result in results] == ["applied", "dry_run_ready"]
+    assert client.updates == [(1, "PICKUP_WAITING")]
+
+
 def test_build_operational_monitoring_rows_flags_stage_errors_and_rtu_gap() -> None:
     decisions = [
         sync.decide_new_deal_stage(
@@ -925,6 +984,7 @@ def test_daily_digest_deduplicates_repeated_cron_summaries(tmp_path: Path) -> No
         "manual_review_keys": ["manual-1"],
         "manual_review_reason_counts": {"carrier": 1},
         "technical_review_keys": [],
+        "operational_alert_keys": ["overdue_prepayment|235001|28001"],
     }
     for stamp in ("20260522-080000", "20260522-081500"):
         path = tmp_path / f"order-fulfillment-sync-summary-{stamp}.json"
@@ -961,10 +1021,14 @@ def test_daily_digest_deduplicates_repeated_cron_summaries(tmp_path: Path) -> No
 
     assert len(client.calls) == 1
     message = client.calls[0]["payload"]["MESSAGE"]
-    assert "Проверено уникальных сделок: 1" in message
-    assert "Готово к dry-run/apply: 1" in message
-    assert "Ручной разбор: 1" in message
-    assert "Неизвестные доставки: 2" in message
+    assert "MASTER-MOBILE.RU: контроль интернет-заказов" in message
+    assert "Ожидание оплаты больше 7 дней: 1 заказ." in message
+    assert "заказ 235001 / сделка 28001" in message
+    assert "dry-run" not in message
+    assert "Ручной разбор" not in message
+    assert "Технические ошибки" not in message
+    assert "Неизвестные доставки" not in message
+    assert "/opt/MM" not in message
 
 
 def test_daily_digest_sends_to_site_dialog_without_business_users(tmp_path: Path) -> None:
@@ -1007,3 +1071,7 @@ def test_daily_digest_sends_to_site_dialog_without_business_users(tmp_path: Path
     assert len(client.calls) == 1
     assert client.calls[0]["method"] == "im.message.add"
     assert client.calls[0]["payload"]["DIALOG_ID"] == "chat733"
+    message = client.calls[0]["payload"]["MESSAGE"]
+    assert message == (
+        "MASTER-MOBILE.RU: контроль интернет-заказов\n" "На сегодня подтверждённых действий нет."
+    )

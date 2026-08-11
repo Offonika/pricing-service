@@ -1046,7 +1046,13 @@ def run_chat_sync(
     )
     outbox_path = output_dir / f"chat-stage-outbox-{stamp}.csv"
     fulfillment.write_stage_outbox_csv(outbox_path, outbox_rows)
-    apply_results = apply_outbox_by_target(outbox_rows, client=client, apply=apply)
+    chat_apply_target_stages = {fulfillment.CRM_STAGE_PICKUP_WAITING}
+    apply_results = apply_outbox_by_target(
+        outbox_rows,
+        client=client,
+        apply=apply,
+        allowed_target_stages=chat_apply_target_stages,
+    )
     apply_path = output_dir / f"chat-stage-apply-result-{stamp}.csv"
     fulfillment.write_stage_apply_result_csv(apply_path, apply_results)
     summary = {
@@ -1056,6 +1062,7 @@ def run_chat_sync(
         "outbox": str(outbox_path),
         "apply_result": str(apply_path),
         "dry_run": not apply,
+        "apply_target_stages": sorted(chat_apply_target_stages) if apply else [],
         "review_rows": len(review_rows),
         "outbox_rows": len(outbox_rows),
         "apply_results": dict(Counter(row.result for row in apply_results)),
@@ -1095,17 +1102,21 @@ def apply_outbox_by_target(
     *,
     client: fulfillment.BitrixChatClient,
     apply: bool,
+    allowed_target_stages: set[str] | None = None,
 ) -> list[fulfillment.OrderFulfillmentStageApplyResult]:
     grouped: dict[str, list[fulfillment.OrderFulfillmentStageOutboxRow]] = defaultdict(list)
     for row in rows:
         grouped[row.target_stage].append(row)
     results: list[fulfillment.OrderFulfillmentStageApplyResult] = []
     for target_stage, target_rows in grouped.items():
+        target_apply = apply and (
+            allowed_target_stages is None or target_stage in allowed_target_stages
+        )
         results.extend(
             fulfillment.apply_stage_outbox_rows(
                 target_rows,
                 client=client,
-                apply=apply,
+                apply=target_apply,
                 target_stage=target_stage,
             )
         )
@@ -2348,59 +2359,44 @@ def build_daily_digest(
         current_summary_path=current_summary_path,
         last_stamp=clean_csv_value(state.get("last_daily_digest_stamp")),
     )
-    deal_keys: set[str] = set()
-    ready_keys: set[str] = set()
-    manual_keys: set[str] = set()
-    technical_keys: set[str] = set()
     operational_keys: set[str] = set()
-    manual_reason_counts: Counter = Counter()
-    technical_result_counts: Counter = Counter()
-    operational_alert_counts: Counter = Counter()
-    latest_unknown: dict[str, Any] | None = None
 
     for _, summary in summaries:
         for item in summary.get("items") or []:
-            deal_keys.update(unique_values(item.get("deal_keys") or []))
-            ready_keys.update(unique_values(item.get("ready_keys") or []))
-            manual_keys.update(unique_values(item.get("manual_review_keys") or []))
-            technical_keys.update(unique_values(item.get("technical_review_keys") or []))
             operational_keys.update(unique_values(item.get("operational_alert_keys") or []))
-            manual_reason_counts.update(item.get("manual_review_reason_counts") or {})
-            technical_result_counts.update(item.get("technical_review_result_counts") or {})
-            operational_alert_counts.update(item.get("operational_alert_counts") or {})
-            if item.get("mode") == "daily":
-                latest_unknown = {
-                    "rows": int(item.get("unknown_delivery_rows") or 0),
-                    "path": clean_csv_value(item.get("unknown_delivery")) or "-",
-                }
 
-    unknown_rows = int((latest_unknown or {}).get("rows") or 0)
-    unknown_path = clean_csv_value((latest_unknown or {}).get("path")) or "-"
-    lines = [
-        "MASTER-MOBILE.RU: CRM интернет-заказы, дневной dry-run дайджест",
-        f"Проверено уникальных сделок: {len(deal_keys)}",
-        f"Готово к dry-run/apply: {len(ready_keys)}",
-        f"Ручной разбор: {len(manual_keys)}",
-        f"Технические ошибки: {len(technical_keys)}",
-        f"Операционные сигналы: {len(operational_keys)}",
-        f"Неизвестные доставки: {unknown_rows}",
-    ]
-    if manual_reason_counts:
-        lines.append(f"Причины ручного разбора: {format_top_counts(manual_reason_counts)}")
-    if technical_result_counts:
-        lines.append(f"Техрезультаты: {format_top_counts(technical_result_counts)}")
-    if operational_alert_counts:
-        lines.append(
-            "Операционные сигналы: " f"{format_operational_alert_counts(operational_alert_counts)}"
+    overdue_orders = daily_overdue_payment_orders(operational_keys)
+    lines = ["MASTER-MOBILE.RU: контроль интернет-заказов"]
+    if not overdue_orders:
+        lines.append("На сегодня подтверждённых действий нет.")
+    else:
+        lines.extend(
+            [
+                "Ожидание оплаты больше 7 дней: "
+                f"{format_ru_count(len(overdue_orders), 'заказ', 'заказа', 'заказов')}.",
+                "Заказы:",
+            ]
         )
-    lines.extend(
-        [
-            f"Отчет по неизвестным доставкам: {unknown_path}",
-            f"Служебная сводка: {current_summary_path}",
-            f"Автоизменение CRM: {auto_apply_label_ru(current_summary)}",
-        ]
-    )
+        for order_number, deal_id in overdue_orders[:5]:
+            lines.append(f"- заказ {order_number} / сделка {deal_id}")
+        if len(overdue_orders) > 5:
+            lines.append(f"- ещё {len(overdue_orders) - 5}")
+        lines.append("Действие: проверить оплату и актуальность заказа.")
     return {"message": "\n".join(lines), "summary_count": len(summaries)}
+
+
+def daily_overdue_payment_orders(operational_keys: set[str]) -> list[tuple[str, str]]:
+    orders: set[tuple[str, str]] = set()
+    for key in operational_keys:
+        parts = key.split("|")
+        if len(parts) < 3 or parts[0] != "overdue_prepayment":
+            continue
+        order_number = clean_csv_value(parts[1])
+        deal_id = clean_csv_value(parts[2])
+        if not order_number or order_number == "-" or not deal_id or deal_id == "-":
+            continue
+        orders.add((order_number, deal_id))
+    return sorted(orders, key=lambda item: (len(item[0]), item[0], len(item[1]), item[1]))
 
 
 def load_daily_digest_summaries(

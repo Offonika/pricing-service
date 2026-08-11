@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import csv
 import json
 from collections import defaultdict
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, Mapping
@@ -19,7 +20,10 @@ CONTROL_SCENARIO_ID = "grow_cap20_p90_hold4_typical_kmp0_5_sitebalanced_base"
 SERVICE_FLOOR_SCENARIO_IDS = {
     "p75": ("grow_servicefloor_p75_floor75_econ90_cap20_hold4_" "typical_kmp0_5_sitebalanced_base"),
     "p90": ("grow_servicefloor_p90_floor90_econ90_cap20_hold4_" "typical_kmp0_5_sitebalanced_base"),
-    "p90_budget": BASE_SCENARIO_ID,
+    "p90_budget": (
+        "grow_servicefloor_p90_budget_floor90_econ90_sku50000_stage8000000_"
+        "cap20_hold4_typical_kmp0_5_sitebalanced_base"
+    ),
 }
 ACCELERATION_SCENARIO_IDS = {
     "fast": (
@@ -46,6 +50,21 @@ MONTH_LABELS = {
     "2026-06": "Июнь",
     "2026-07": "Июль",
 }
+RUSSIAN_MONTHS = (
+    "",
+    "января",
+    "февраля",
+    "марта",
+    "апреля",
+    "мая",
+    "июня",
+    "июля",
+    "августа",
+    "сентября",
+    "октября",
+    "ноября",
+    "декабря",
+)
 
 
 def _clean(value: Any) -> str:
@@ -84,7 +103,7 @@ def _pp(value: Any, digits: int = 3) -> str:
 
 def _number(value: Any, digits: int = 0, *, signed: bool = False) -> str:
     sign = "+" if signed else ""
-    return f"{_decimal(value):{sign}.{digits}f}".replace(".", ",")
+    return f"{_decimal(value):{sign},.{digits}f}".replace(",", "\u00a0").replace(".", ",")
 
 
 def _money_m(value: Any, digits: int = 2) -> str:
@@ -97,6 +116,23 @@ def _ratio(numerator: Decimal, denominator: Decimal) -> Decimal:
 
 def _shorten(value: str, limit: int = 72) -> str:
     return value if len(value) <= limit else value[: limit - 1].rstrip() + "…"
+
+
+def _date_ru(value: Any) -> str:
+    parsed = date.fromisoformat(_clean(value))
+    return f"{parsed.day} {RUSSIAN_MONTHS[parsed.month]} {parsed.year} года"
+
+
+def _sales_window_qty(
+    sales_index: Mapping[str, tuple[list[str], list[Decimal]]],
+    code: str,
+    start: date,
+    end: date,
+) -> Decimal:
+    days, cumulative = sales_index.get(code, ([], [Decimal("0")]))
+    left = bisect.bisect_left(days, start.isoformat())
+    right = bisect.bisect_left(days, end.isoformat())
+    return cumulative[right] - cumulative[left]
 
 
 def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
@@ -329,26 +365,22 @@ def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
     }
     acceleration_acceptance = {
         "evaluated_count": len(acceleration_scenarios),
-        "passed_count": sum(
-            row["acceptance_passed"] for row in acceleration_scenarios.values()
-        ),
+        "passed_count": sum(row["acceptance_passed"] for row in acceleration_scenarios.values()),
         "passing_profiles": sorted(
-            profile
-            for profile, row in acceleration_scenarios.items()
-            if row["acceptance_passed"]
+            profile for profile, row in acceleration_scenarios.items() if row["acceptance_passed"]
         ),
     }
     best_service = max(scenario_chart, key=lambda row: row["observed_fill_rate"])
     best_economic = max(scenario_chart, key=lambda row: row["economic_contribution_rub"])
     comparison_specs = [
-        ("Фактический запас", actual),
-        ("Прежняя модель", control_model),
-        ("Сервисный P75", p75_scenario),
-        ("Сервисный P90", p90_scenario),
+        ("Факт", actual),
+        ("Контроль", control_model),
+        ("P75", p75_scenario),
+        ("P90", p90_scenario),
         ("P90 + лимиты", p90_budget_scenario),
-        ("Ускорение: быстрое", acceleration_scenarios["fast"]),
-        ("Ускорение: баланс", acceleration_scenarios["balanced"]),
-        ("Ускорение: строгое", acceleration_scenarios["strict"]),
+        ("Fast", acceleration_scenarios["fast"]),
+        ("Balanced", acceleration_scenarios["balanced"]),
+        ("Strict", acceleration_scenarios["strict"]),
     ]
     scenario_comparison: list[dict[str, Any]] = []
     seen_comparisons: set[str] = set()
@@ -418,7 +450,14 @@ def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
     acceleration_requested_qty = Decimal("0")
     acceleration_allocated_qty = Decimal("0")
     acceleration_unfunded_qty = Decimal("0")
+    acceleration_order_qty = Decimal("0")
+    acceleration_order_line_count = 0
+    acceleration_zero_economic_cap_count = 0
+    acceleration_no_headroom_above_p90_count = 0
+    acceleration_first_positive_date: str | None = None
+    acceleration_pipeline_fraction_counts: dict[str, int] = defaultdict(int)
     acceleration_skus: set[str] = set()
+    acceleration_positive_skus: set[str] = set()
     acceleration_limited_skus: set[str] = set()
     for row in _iter_csv(backtest_dir / "frozen-baseline-decisions.csv"):
         if row.get("scenario_id") != BASE_SCENARIO_ID:
@@ -444,12 +483,30 @@ def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
         if _decimal(row.get("acceleration_triggered")) > 0:
             acceleration_triggered_count += 1
             acceleration_skus.add(row["nomenclature_code"])
+            if _decimal(row.get("economic_safety_cap_qty")) <= 0:
+                acceleration_zero_economic_cap_count += 1
+            if _decimal(row.get("forecast_error_percentile_qty")) >= _decimal(
+                row.get("economic_safety_cap_qty")
+            ):
+                acceleration_no_headroom_above_p90_count += 1
         acceleration_requested = _decimal(row.get("acceleration_requested_qty"))
         if acceleration_requested > 0:
             acceleration_recalculation_count += 1
+            acceleration_positive_skus.add(row["nomenclature_code"])
+            decision_date = row.get("decision_date") or ""
+            acceleration_first_positive_date = min(
+                acceleration_first_positive_date or decision_date,
+                decision_date,
+            )
             acceleration_requested_qty += acceleration_requested
             acceleration_allocated_qty += _decimal(row.get("acceleration_allocated_qty"))
             acceleration_unfunded_qty += _decimal(row.get("acceleration_unfunded_qty"))
+            acceleration_pipeline_fraction_counts[
+                row.get("acceleration_pipeline_fraction") or "unknown"
+            ] += 1
+            if _decimal(row.get("recommended_order_qty")) > 0:
+                acceleration_order_line_count += 1
+                acceleration_order_qty += _decimal(row.get("recommended_order_qty"))
             if _decimal(row.get("acceleration_budget_limited")) > 0:
                 acceleration_limited_count += 1
                 acceleration_limited_skus.add(row["nomenclature_code"])
@@ -463,6 +520,23 @@ def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
         elif economic_cap > 0 and economic_cap <= percentile_qty:
             economic_binding_rows += 1
 
+    historical_sales: dict[str, list[tuple[str, Decimal]]] = defaultdict(list)
+    for row in _iter_csv(preflight_dir / "historical-sales.csv"):
+        historical_sales[row["nomenclature_code"]].append(
+            (row["business_date"], _decimal(row.get("observed_sales_qty")))
+        )
+    sales_index: dict[str, tuple[list[str], list[Decimal]]] = {}
+    for code, observations in historical_sales.items():
+        observations.sort(key=lambda row: row[0])
+        days: list[str] = []
+        cumulative = [Decimal("0")]
+        for business_date, quantity in observations:
+            days.append(business_date)
+            cumulative.append(cumulative[-1] + max(Decimal("0"), quantity))
+        sales_index[code] = (days, cumulative)
+    acceleration_trigger_days: dict[str, int] = defaultdict(int)
+    acceleration_trigger_skus: dict[str, set[str]] = defaultdict(set)
+    acceleration_first_trigger: dict[str, date] = {}
     entered_sale_codes: set[str] = set()
     sale_codes: set[str] = set()
     sale_demand_by_code: dict[str, Decimal] = defaultdict(Decimal)
@@ -472,12 +546,53 @@ def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
         code = row["nomenclature_code"]
         sale_codes.add(code)
         sale_demand_by_code[code] += _decimal(row.get("observed_sales_qty"))
+        as_of = date.fromisoformat(row["business_date"])
+        for profile, scenario_row in acceleration_scenarios.items():
+            recent_days = scenario_row["grow_acceleration_recent_days"]
+            baseline_days = scenario_row["grow_acceleration_baseline_days"]
+            recent_qty = _sales_window_qty(
+                sales_index,
+                code,
+                as_of - timedelta(days=recent_days),
+                as_of,
+            )
+            baseline_qty = _sales_window_qty(
+                sales_index,
+                code,
+                as_of - timedelta(days=recent_days + baseline_days),
+                as_of - timedelta(days=recent_days),
+            )
+            recent_rate = recent_qty / Decimal(recent_days)
+            baseline_rate = baseline_qty / Decimal(baseline_days)
+            if recent_qty >= Decimal(str(scenario_row["grow_acceleration_min_recent_sales"])) and (
+                baseline_rate <= Decimal("0")
+                or recent_rate
+                >= baseline_rate * Decimal(str(scenario_row["grow_acceleration_rate_multiplier"]))
+            ):
+                acceleration_trigger_days[profile] += 1
+                acceleration_trigger_skus[profile].add(code)
+                acceleration_first_trigger[profile] = min(
+                    acceleration_first_trigger.get(profile, as_of), as_of
+                )
         if row.get("previous_status") and row.get("previous_status") != "sale":
             entered_sale_codes.add(code)
     entered_sale_demand = sum(
         (sale_demand_by_code[code] for code in entered_sale_codes), Decimal("0")
     )
     total_sale_demand = sum(sale_demand_by_code.values(), Decimal("0"))
+    acceleration_trigger_profile = {
+        profile: {
+            "trigger_day_count": acceleration_trigger_days[profile],
+            "trigger_sku_count": len(acceleration_trigger_skus[profile]),
+            "trigger_sku_share": len(acceleration_trigger_skus[profile]) / max(1, len(sale_codes)),
+            "first_trigger_date": (
+                acceleration_first_trigger.get(profile).isoformat()
+                if acceleration_first_trigger.get(profile)
+                else None
+            ),
+        }
+        for profile in acceleration_scenarios
+    }
 
     quality = {
         row["check"]: {
@@ -525,6 +640,7 @@ def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
         "p90_budget_scenario": p90_budget_scenario,
         "acceleration_scenarios": acceleration_scenarios,
         "acceleration_acceptance": acceleration_acceptance,
+        "acceleration_trigger_profile": acceleration_trigger_profile,
         "headline": {
             "observed_fill_rate": _float(model["observed_fill_rate"]),
             "observed_fill_delta": _float(model["observed_fill_rate"])
@@ -602,6 +718,7 @@ def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
             "acceleration_limited_share": acceleration_limited_count
             / max(1, acceleration_recalculation_count),
             "acceleration_sku_count": len(acceleration_skus),
+            "acceleration_positive_sku_count": len(acceleration_positive_skus),
             "acceleration_limited_sku_count": len(acceleration_limited_skus),
             "acceleration_requested_qty": float(acceleration_requested_qty),
             "acceleration_allocated_qty": float(acceleration_allocated_qty),
@@ -609,6 +726,17 @@ def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
             "acceleration_allocated_share": float(
                 _ratio(acceleration_allocated_qty, acceleration_requested_qty)
             ),
+            "acceleration_order_line_count": acceleration_order_line_count,
+            "acceleration_order_qty": float(acceleration_order_qty),
+            "acceleration_zero_economic_cap_count": acceleration_zero_economic_cap_count,
+            "acceleration_zero_economic_cap_share": acceleration_zero_economic_cap_count
+            / max(1, acceleration_triggered_count),
+            "acceleration_no_headroom_above_p90_count": (acceleration_no_headroom_above_p90_count),
+            "acceleration_no_headroom_above_p90_share": (
+                acceleration_no_headroom_above_p90_count / max(1, acceleration_triggered_count)
+            ),
+            "acceleration_first_positive_date": acceleration_first_positive_date,
+            "acceleration_pipeline_fraction_counts": dict(acceleration_pipeline_fraction_counts),
         },
         "stages": stages,
         "monthly": monthly,
@@ -630,86 +758,106 @@ def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
 
 def build_markdown(analysis: Mapping[str, Any]) -> str:
     headline = analysis["headline"]
-    actual = analysis["actual"]
     control = analysis["control_model"]
     p75 = analysis["p75_scenario"]
     p90 = analysis["p90_scenario"]
     budget = analysis["p90_budget_scenario"]
+    acceleration = analysis["acceleration_scenarios"]
+    fast = acceleration["fast"]
+    balanced = acceleration["balanced"]
+    strict = acceleration["strict"]
+    trigger_profile = analysis["acceleration_trigger_profile"]
     quality = analysis["source_quality"]
-    passed_count = analysis["protective_scenario_acceptance"]["passed_count"]
+    acceleration_passed = analysis["acceleration_acceptance"]["passed_count"]
+    all_passed = analysis["protective_scenario_acceptance"]["passed_count"]
+    evaluated_count = analysis["protective_scenario_acceptance"]["evaluated_count"]
     periods: dict[str, dict[str, Mapping[str, Any]]] = defaultdict(dict)
     for row in analysis["period_sensitivity"]:
         periods[row["period"]][row["strategy"]] = row
     pre_july_model = periods.get("pre_july", {}).get("model", {})
     july_model = periods.get("july", {}).get("model", {})
     site_mapping = analysis.get("site_export", {}).get("mapping_stats", {})
-    return f"""# Автозаказ дисплеев: сервисный P90 помогает мало и не проходит проверку
+    control_economic = analysis["control_scenario"]["economic_contribution_rub"]
+    return f"""# Автозаказ дисплеев: ускорение распознано, но запас не сработал
 
 ## Executive Summary
 
-- **Правило пока нельзя включать в production.** Ни P75, ни P90, ни P90 с денежными лимитами не прошли строгую проверку (`{passed_count}/3`). Лучший вариант обслужил **{_pct(p90['observed_fill_rate'])}** записанных продаж против **{_pct(actual['observed_fill_rate'])}** у фактического запаса.
-- **Полный P90 действительно вернул часть продаж, но слишком мало.** Относительно прежней модели он обслужил на {p90['served_observed_delta_vs_control_qty']:.0f} продаж больше, добавил {_money_m(p90['gross_profit_delta_vs_control_rub'])} валовой прибыли и потребовал {_money_m(p90['capital_delta_vs_control_rub'])} среднего складского капитала.
-- **Лимиты 50 тыс. ₽ на SKU и 8 млн ₽ на стадию урезали примерно половину сервисного эффекта.** Бюджетный P90 вернул {_number(budget['served_observed_delta_vs_control_qty'], 1)} продажи и {_money_m(budget['gross_profit_delta_vs_control_rub'])} прибыли при дополнительных {_money_m(budget['capital_delta_vs_control_rub'])} капитала.
-- **P75 не оправдал дополнительный запас.** Он не улучшил сервис ({p75['served_observed_delta_vs_control_qty']:+.0f} продажи к прежней модели), хотя средний капитал вырос на {_money_m(p75['capital_delta_vs_control_rub'])}.
+- **Адресная модель не улучшила результат.** Все три профиля ускорения вернули ровно `0` дополнительных продаж и `0 ₽` валовой прибыли относительно прежней модели. `balanced` добавил лишь {_money_m(balanced['capital_delta_vs_control_rub'], 3)} среднего капитала и ухудшил экономический вклад на {_money_m(control_economic - balanced['economic_contribution_rub'], 3)}. Строгую проверку прошли `{acceleration_passed}/3` профилей ускорения и `{all_passed}/{evaluated_count}` всех защитных сценариев.
+- **Триггер оказался слишком широким.** Профиль `balanced` объявил ускоряющимися {_pct(trigger_profile['balanced']['trigger_sku_share'], 1)} SKU стадии «Растим», `fast` — {_pct(trigger_profile['fast']['trigger_sku_share'], 1)}, даже `strict` — {_pct(trigger_profile['strict']['trigger_sku_share'], 1)}. Это почти не отличает действительно быстро растущий товар от редкого товара с несколькими продажами после тихого периода.
+- **Экономический фильтр затем почти всё обнулил.** В записанных решениях `balanced` было {_number(headline['acceleration_triggered_decision_count'])} срабатываний. У {_pct(headline['acceleration_zero_economic_cap_share'], 1)} экономически допустимый запас был нулевым, а у {_pct(headline['acceleration_no_headroom_above_p90_share'], 1)} не осталось места для единиц сверх обычного P90. Положительная надбавка появилась только у {_number(headline['acceleration_recalculation_count'])} пересчётов по {headline['acceleration_positive_sku_count']} SKU и впервые лишь {_date_ru(headline['acceleration_first_positive_date'])}.
+- **Денежные лимиты не были причиной провала.** Ограничение бюджета не сработало ни разу. Полный широкий P90 по-прежнему даёт заметно больший сервисный эффект — на {_number(p90['served_observed_delta_vs_control_qty'])} продажу и {_money_m(p90['gross_profit_delta_vs_control_rub'])} валовой прибыли, — но требует {_money_m(p90['capital_delta_vs_control_rub'])} дополнительного среднего капитала и также не проходит acceptance.
 
 ## Что именно проверяли
 
-Период — с 1 февраля по 31 июля 2026 года, когорта — {analysis['cohort']['sku_count']} SKU предмета «Дисплеи». На каждую дату стадия восстановлена только по фактам продаж, без знания будущего. Сайт, КМП4 и резерв не переводят товар между стадиями, а только уточняют скрытый спрос.
+Период — с 1 февраля по 31 июля 2026 года, когорта — {analysis['cohort']['sku_count']} SKU предмета «Дисплеи». На каждую дату стадия восстановлена только по фактам продаж, без знания будущего. Для окон ускорения frozen-набор содержит продажи с 1 января 2025 года: декабрь и январь не заменяются искусственным нулём. Сайт, КМП4 и резерв не переводят товар между стадиями, а только уточняют скрытый спрос.
 
-Сравнивались прежняя модель и три новых правила для стадии «Растим»: обязательный P75, обязательный P90 и P90 с лимитом 50 тыс. ₽ на SKU и общим бюджетом 8 млн ₽. Во всех вариантах экономически оправданный запас мог добавляться сверху сервисного минимума. Остальные настройки были одинаковыми: типичный старт новинок, КМП4 `0,5`, сайт `balanced`, недельный пересмотр и базовая стоимость запаса.
+Сравнивались прежняя модель, прежние P75/P90-контроли и три адресных профиля: `fast` (`7` дней против `28`, минимум `2` продажи, рост `×1,5`), `balanced` (`14/42`, минимум `2`, рост `×1,5`) и `strict` (`14/42`, минимум `3`, рост `×2`). Ускорение использует только уже завершённые дни, может вызвать внеплановый пересмотр и получает дополнительный запас лишь в пределах положительной экономики, 50 тыс. ₽ на SKU и 8 млн ₽ на стадию. Товар в пути учитывается на 100% / 75% / 50% при высокой / средней / низкой уверенности срока.
 
-## Полный P90 — лучший по сервису, но разрыв с фактом остаётся большим
+## Три профиля ускорения дали одинаковый нулевой сервисный эффект
 
-Прежняя модель обслужила **{_pct(control['observed_fill_rate'])}** записанных продаж. Полный P90 поднял сервис до **{_pct(p90['observed_fill_rate'])}**, то есть всего на {_pp(p90['observed_fill_delta_vs_control'])} Валовая прибыль выросла с {_money_m(control['gross_profit_rub'])} до {_money_m(p90['gross_profit_rub'])}, а средний капитал — с {_money_m(control['average_inventory_value_rub'])} до {_money_m(p90['average_inventory_value_rub'])}.
+Прежняя модель обслужила **{_pct(control['observed_fill_rate'])}** записанных продаж. `fast`, `balanced` и `strict` показали тот же fill rate до округления и не изменили валовую прибыль. Они только немного увеличили склад: соответственно {_money_m(fast['capital_delta_vs_control_rub'], 3)}, {_money_m(balanced['capital_delta_vs_control_rub'], 3)} и {_money_m(strict['capital_delta_vs_control_rub'], 3)} среднего капитала.
 
-До фактической стратегии всё ещё не хватает {_money_m(-p90['gross_profit_delta_rub'])} валовой прибыли и {_pp(p90['observed_fill_rate'] - _float(actual['observed_fill_rate']))} сервиса. Средний капитал при этом ниже факта на {_money_m(-p90['capital_delta_rub'])}, но GMROI тоже ниже: {_number(p90['gmroi_annualized'], 2)} против {_number(actual['gmroi_annualized'], 2)}. Поэтому строгий критерий не выполнен.
+У `balanced` итоговый заказ вырос на {_number(balanced['order_qty'] - analysis['control_scenario']['order_qty'])} единиц, и ровно столько же — {_number(balanced['ending_inventory_qty'] - analysis['control_scenario']['ending_inventory_qty'])} единиц — осталось в конечном остатке. Дополнительный товар не закрыл ни одной продажи. Поэтому правило не прошло ни условие по прибыли, ни условие по сервису.
 
 ## Сравнение вариантов
 
-| Вариант | Сервис записанных продаж | Продажи к прежней модели | Валовая прибыль к прежней модели | Средний капитал к прежней модели |
-| --- | ---: | ---: | ---: | ---: |
-| Прежняя модель | {_pct(control['observed_fill_rate'])} | — | — | — |
-| Сервисный P75 | {_pct(p75['observed_fill_rate'])} | {_number(p75['served_observed_delta_vs_control_qty'], signed=True)} | {_money_m(p75['gross_profit_delta_vs_control_rub'])} | {_money_m(p75['capital_delta_vs_control_rub'])} |
-| Сервисный P90 | {_pct(p90['observed_fill_rate'])} | {_number(p90['served_observed_delta_vs_control_qty'], signed=True)} | {_money_m(p90['gross_profit_delta_vs_control_rub'])} | {_money_m(p90['capital_delta_vs_control_rub'])} |
-| P90 + лимиты | {_pct(budget['observed_fill_rate'])} | {_number(budget['served_observed_delta_vs_control_qty'], 1, signed=True)} | {_money_m(budget['gross_profit_delta_vs_control_rub'])} | {_money_m(budget['capital_delta_vs_control_rub'])} |
+| Вариант | Сервис записанных продаж | Продажи к прежней модели | Валовая прибыль к прежней модели | Средний капитал к прежней модели | Остаток к прежней модели |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Прежняя модель | {_pct(control['observed_fill_rate'])} | — | — | — | — |
+| Сервисный P75 | {_pct(p75['observed_fill_rate'])} | {_number(p75['served_observed_delta_vs_control_qty'], signed=True)} | {_money_m(p75['gross_profit_delta_vs_control_rub'])} | {_money_m(p75['capital_delta_vs_control_rub'])} | {_number(p75['ending_inventory_qty'] - analysis['control_scenario']['ending_inventory_qty'], signed=True)} |
+| Сервисный P90 | {_pct(p90['observed_fill_rate'])} | {_number(p90['served_observed_delta_vs_control_qty'], signed=True)} | {_money_m(p90['gross_profit_delta_vs_control_rub'])} | {_money_m(p90['capital_delta_vs_control_rub'])} | {_number(p90['ending_inventory_qty'] - analysis['control_scenario']['ending_inventory_qty'], signed=True)} |
+| P90 + лимиты | {_pct(budget['observed_fill_rate'])} | {_number(budget['served_observed_delta_vs_control_qty'], 1, signed=True)} | {_money_m(budget['gross_profit_delta_vs_control_rub'])} | {_money_m(budget['capital_delta_vs_control_rub'])} | {_number(budget['ending_inventory_qty'] - analysis['control_scenario']['ending_inventory_qty'], signed=True)} |
+| Ускорение `fast` | {_pct(fast['observed_fill_rate'])} | {_number(fast['served_observed_delta_vs_control_qty'], signed=True)} | {_money_m(fast['gross_profit_delta_vs_control_rub'])} | {_money_m(fast['capital_delta_vs_control_rub'], 3)} | {_number(fast['ending_inventory_qty'] - analysis['control_scenario']['ending_inventory_qty'], signed=True)} |
+| Ускорение `balanced` | {_pct(balanced['observed_fill_rate'])} | {_number(balanced['served_observed_delta_vs_control_qty'], signed=True)} | {_money_m(balanced['gross_profit_delta_vs_control_rub'])} | {_money_m(balanced['capital_delta_vs_control_rub'], 3)} | {_number(balanced['ending_inventory_qty'] - analysis['control_scenario']['ending_inventory_qty'], signed=True)} |
+| Ускорение `strict` | {_pct(strict['observed_fill_rate'])} | {_number(strict['served_observed_delta_vs_control_qty'], signed=True)} | {_money_m(strict['gross_profit_delta_vs_control_rub'])} | {_money_m(strict['capital_delta_vs_control_rub'], 3)} | {_number(strict['ending_inventory_qty'] - analysis['control_scenario']['ending_inventory_qty'], signed=True)} |
 
-Ни один вариант не улучшил экономический вклад после стоимости хранения: P75 дал {_money_m(p75['economic_contribution_rub'] - analysis['control_scenario']['economic_contribution_rub'])}, полный P90 — {_money_m(p90['economic_contribution_rub'] - analysis['control_scenario']['economic_contribution_rub'])}, бюджетный P90 — {_money_m(budget['economic_contribution_rub'] - analysis['control_scenario']['economic_contribution_rub'])} к прежней модели.
+Ни один из вариантов ускорения не улучшил экономический вклад после стоимости хранения. Полный P90 остаётся полезным диагностическим контролем: он доказывает, что дополнительным запасом часть продаж вернуть можно, но делает это слишком широко и дорого.
 
-## Почему обязательный запас почти не помог
+## Почему адресная модель не помогла
 
-1. **P90 добавил много закупки, но мало обслуженных продаж.** За период модель заказала на {_number(headline['p90_incremental_order_qty'])} единиц больше прежней. К концу теста на складе осталось на {_number(headline['p90_incremental_ending_inventory_qty'])} единиц больше, а реально обслужено лишь на {_number(headline['p90_incremental_served_total_qty'])} единиц спроса больше. Значит, правило добавляет запас слишком широко или не в тот момент.
-2. **Дефицит остаётся сосредоточен в «Растим».** В бюджетном P90 эта стадия всё ещё потеряла {_number(headline['sale_extra_lost_qty'])} записанных продаж сверх факта — {_pct(headline['sale_extra_lost_share'], 1)} всего дополнительного дефицита модели.
-3. **Бюджет срабатывает слишком часто.** На лимит наткнулись {_pct(headline['service_floor_limited_share'], 1)} пересчётов с положительным сервисным минимумом, или {headline['service_floor_limited_sku_count']} SKU из {headline['service_floor_sku_count']}. В сумме по пересчётам было профинансировано лишь {_pct(headline['service_floor_allocated_share'], 1)} запрошенных сервисных единиц. Это не потерянный спрос, а диагностический объём целей min/max, повторяющихся при пересмотре.
-4. **Распределение по ожидаемой марже на рубль не дало ожидаемой экономической отдачи.** Бюджетный вариант сохранил {_pct(headline['p90_budget_service_recovery_share'], 1)} прироста продаж полного P90, но лишь {_pct(budget['gross_profit_delta_vs_control_rub'] / p90['gross_profit_delta_vs_control_rub'], 1)} прироста валовой прибыли. Текущий приоритет недостаточно учитывает момент поставки и вероятность продажи до конца горизонта.
+1. **Критерий ускорения почти не отбирает SKU.** Две или три продажи после слабого прошлого окна достаточно, чтобы длиннохвостый товар выглядел быстрорастущим. `balanced` сработал хотя бы раз у {trigger_profile['balanced']['trigger_sku_count']} из {headline['sale_sku_count']} SKU стадии «Растим», `strict` — у {trigger_profile['strict']['trigger_sku_count']}.
+2. **Действие разрешено только сверх уже рассчитанного P90.** У {_pct(headline['acceleration_no_headroom_above_p90_share'], 1)} записанных срабатываний экономический предел был не выше обычного P90. Поэтому модель распознала ускорение, но не могла ни раньше использовать уже разрешённый запас, ни перераспределить его.
+3. **Экономическая история созрела поздно.** Для пригодности нужны минимум восемь полностью завершённых прошлых окон ошибки прогноза. Первый положительный адресный объём появился только {_date_ru(headline['acceleration_first_positive_date'])}. До этого ускорение было видно, но экономическое количество часто оставалось нулём.
+4. **Редкие адресные заказы не попали в дефицитное место и время.** Положительный объём возник в {headline['acceleration_recalculation_count']} пересчётах по {headline['acceleration_positive_sku_count']} SKU; {headline['acceleration_order_line_count']} решений дали заказ. Однако итоговые дополнительные {_number(balanced['ending_inventory_qty'] - analysis['control_scenario']['ending_inventory_qty'])} единиц остались на складе и не обслужили спрос.
+5. **Бюджет и haircut pipeline не спасают неправильный отбор.** Все {headline['acceleration_requested_qty']:.0f} запрошенных по событиям единиц были профинансированы; ограничение 8 млн ₽ не сработало. Доля pipeline `75%` применялась, но риск опоздания имеет смысл учитывать только после того, как найден действительно дефицитный SKU.
+
+## Основной провал по-прежнему находится в стадии «Растим»
+
+В `sale / Растим` модель обслужила **93,26%** записанных продаж и потеряла {_number(headline['sale_extra_lost_qty'], 1)} продажи сверх факта. Это {_pct(headline['sale_extra_lost_share'], 1)} всего дополнительного дефицита модели. Адресное ускорение не изменило ни одну из этих цифр.
+
+Значит, направление «защищать Растим» остаётся правильным, но текущий детектор и способ применения защиты неправильные: первый создаёт слишком много кандидатов, второй почти всем запрещает действие.
 
 ## До июля и июль отдельно
 
-- До июля общий сервис бюджетного P90: **{_pct(pre_july_model.get('fill_rate', 0))}**, валовая прибыль: **{_money_m(pre_july_model.get('gross_profit_rub', 0))}**.
-- За июль общий сервис бюджетного P90: **{_pct(july_model.get('fill_rate', 0))}**, валовая прибыль: **{_money_m(july_model.get('gross_profit_rub', 0))}**.
+- До июля общий fill rate `balanced`: **{_pct(pre_july_model.get('fill_rate', 0))}**, валовая прибыль: **{_money_m(pre_july_model.get('gross_profit_rub', 0))}**.
+- За июль общий fill rate `balanced`: **{_pct(july_model.get('fill_rate', 0))}**, валовая прибыль: **{_money_m(july_model.get('gross_profit_rub', 0))}**.
 
 Июльский структурный скачок событий сайта не удалён из расчёта. Он показан отдельно, чтобы не скрывать чувствительность результата к изменению структуры интернет-магазина.
 
 ## Что делать дальше
 
 1. **Не включать production-заказы.** Оставить расчёт рекомендаций и ручную проверку.
-2. **Не принимать P75.** Он увеличил капитал без роста сервиса.
-3. **Не принимать широкий P90 как готовое правило.** Оставить его контрольным сценарием следующего теста, а не production-настройкой.
-4. **Следующим изменением проверять не более высокий percentile, а адресность и момент заказа.** Сервисный минимум давать SKU с ускорением продаж и высокой ценой дефицита, учитывать вероятность поздней поставки и заказывать раньше, когда продажи ускоряются.
-5. **Пересчитать бюджетный приоритет.** Оценивать не только ожидаемую маржу на рубль, но и вероятность, что дополнительная единица будет продана в пределах срока поставки и тестового горизонта.
-6. **Пороги 50 тыс. ₽ и 8 млн ₽ пока считать экспериментальными.** Они не стали утверждёнными бизнес-лимитами.
+2. **Заменить «ускорение по отношению» на «ожидаемый дефицит до поставки».** Кандидат должен одновременно продаваться быстрее прошлого окна и текущего прогноза, а расчётная нехватка до срока P75 должна быть не меньше 2 единиц. Это уберёт SKU, у которых две случайные продажи выглядят как рост.
+3. **Не требовать запас сверх P90; проверять более раннее использование уже экономически разрешённого запаса.** Ускорение должно поднять или перенести вперёд `min/max` внутри действующего экономического cap. Отдельный сценарий «добавить сверх P90» оставить контролем.
+4. **Подготовить предтестовые ошибки прогноза.** Добавить frozen-таблицу завершённых недельных прогнозов и факта до 1 февраля, чтобы экономическая пригодность была известна с первого дня теста, а не впервые в мае.
+5. **Привязать риск pipeline к конкретной поставке.** Уменьшать доверие не ко всему товару в пути по общему классу, а к просроченной или нестабильной партии конкретного поставщика.
+6. **Не настраивать пока лимиты 50 тыс. ₽ и 8 млн ₽.** В этом тесте они не ограничили ни одной единицы, поэтому их изменение не исправит модель.
+7. **Следующий frozen-backtest сделать узким.** Сравнить прежний контроль, полный P90 и 2–3 варианта `retime within economic cap`; production и forward shadow оставить заблокированными.
 
 ## Открытые вопросы
 
-- Какую полную цену дефицита считать высокой: только потерянную маржу или также риск ухода клиента и срочной закупки?
-- Какие факты надёжности поставщика использовать для уменьшения доверия к товару в пути?
+- Считать порогом ожидаемого дефицита `2` единицы или денежную потерю маржи за срок поставки?
+- Какие факты партии считать риском опоздания: просрочку обещанной даты, разброс прошлых поставок или оба признака?
 - Как учитывать замену одного качества или версии дисплея другим, чтобы не считать весь дефицит потерянной продажей?
-- Какой денежный лимит стадии допустим бизнесу после положительного backtest?
+- Должен ли ручной пересмотр ускорения сразу переносить уже разрешённый заказ вперёд или только поднимать недельный `min`?
 
 ## Ограничения
 
 - Фактический fill rate обычных продаж равен 100% по определению: видны только состоявшиеся продажи. Незарегистрированный спрос оценивается через несколько косвенных источников.
 - В frozen-файл вошло {site_mapping.get('mapped_row_count', '—')} сопоставленных строк сайта; события вне когорты не распределялись догадкой.
 - Найдены {quality['negative_register_balances']['value']} отрицательных дневных балансов регистра. Они не считаются спросом и не увеличивают доступный остаток, но причина в 1С остаётся вопросом качества данных.
+- В {quality['unit_economics_coverage']['value']} строках решений нет себестоимости; для них экономическая надбавка равна нулю и требуется ручная оценка.
+- Предтестовые продажи сохранены, но предтестовые недельные ошибки прогноза пока не frozen-артефакт. Это консервативно задерживает экономическую пригодность в начале периода.
 - В сценарии все положительные ручные рекомендации считаются принятыми. Реальный результат без этой дисциплины будет хуже.
 - Production-заказы и внешние записи не создавались.
 """
@@ -744,10 +892,13 @@ def _source(source_id: str, label: str, path: str) -> dict[str, Any]:
 
 
 def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
-    title = "Автозаказ дисплеев: сервисный P90 помогает мало"
+    title = "Автозаказ дисплеев: ускорение не улучшило сервис"
     headline = analysis["headline"]
+    acceleration = analysis["acceleration_scenarios"]
+    balanced = acceleration["balanced"]
+    trigger_profile = analysis["acceleration_trigger_profile"]
     p90 = analysis["p90_scenario"]
-    budget = analysis["p90_budget_scenario"]
+    control = analysis["control_scenario"]
     preflight_name = analysis["preflight_directory_name"]
     sources = [
         _source("frozen_summary", "Итог frozen-backtest", "frozen-summary.json"),
@@ -763,8 +914,13 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
         ),
         _source(
             "decision_detail",
-            "Детализация сервисного минимума и бюджетных ограничений",
+            "Детализация ускорения, экономического фильтра и pipeline",
             "frozen-baseline-decisions.csv",
+        ),
+        _source(
+            "stage_summary",
+            "Итоги по историческим стадиям",
+            "frozen-baseline-stage.csv",
         ),
         _source(
             "period_summary",
@@ -774,25 +930,34 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
     ]
     headline_dataset = [
         {
-            "passed_scenario_count": 0,
-            "evaluated_scenario_count": 3,
-            "p90_observed_fill_rate": p90["observed_fill_rate"],
-            "p90_observed_fill_delta_vs_control": p90["observed_fill_delta_vs_control"],
-            "p90_incremental_sales_qty": p90["served_observed_delta_vs_control_qty"],
-            "p90_incremental_profit_million_rub": p90["gross_profit_delta_vs_control_rub"]
+            "passed_scenario_count": analysis["acceleration_acceptance"]["passed_count"],
+            "evaluated_scenario_count": analysis["acceleration_acceptance"]["evaluated_count"],
+            "acceleration_observed_fill_rate": balanced["observed_fill_rate"],
+            "acceleration_observed_fill_delta_vs_control": balanced[
+                "observed_fill_delta_vs_control"
+            ],
+            "acceleration_incremental_sales_qty": balanced["served_observed_delta_vs_control_qty"],
+            "acceleration_incremental_profit_million_rub": balanced[
+                "gross_profit_delta_vs_control_rub"
+            ]
             / 1_000_000,
-            "p90_incremental_capital_million_rub": p90["capital_delta_vs_control_rub"] / 1_000_000,
-            "p90_economic_contribution_delta_million_rub": (
-                p90["economic_contribution_rub"]
-                - analysis["control_scenario"]["economic_contribution_rub"]
+            "acceleration_incremental_capital_million_rub": balanced["capital_delta_vs_control_rub"]
+            / 1_000_000,
+            "acceleration_economic_contribution_delta_million_rub": (
+                balanced["economic_contribution_rub"] - control["economic_contribution_rub"]
             )
             / 1_000_000,
+            "balanced_trigger_sku_share": trigger_profile["balanced"]["trigger_sku_share"],
+            "strict_trigger_sku_share": trigger_profile["strict"]["trigger_sku_share"],
+            "actionable_trigger_sku_share": headline["acceleration_positive_sku_count"]
+            / max(1, trigger_profile["balanced"]["trigger_sku_count"]),
+            "no_headroom_above_p90_share": headline["acceleration_no_headroom_above_p90_share"],
         }
     ]
     cards = [
         {
             "id": "acceptance_card",
-            "description": "Сколько новых сервисных вариантов выполнили все строгие условия.",
+            "description": "Сколько профилей ускорения выполнили все строгие условия.",
             "dataset": "headline",
             "sourceId": "frozen_summary",
             "metrics": [
@@ -809,59 +974,59 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
             ],
         },
         {
-            "id": "p90_service_card",
-            "description": "Доля записанных продаж полного P90 и изменение к прежней модели.",
+            "id": "acceleration_service_card",
+            "description": "Сервис balanced и изменение к прежней модели.",
             "dataset": "headline",
             "sourceId": "scenario_summary",
             "metrics": [
                 {
-                    "label": "Сервис полного P90",
-                    "field": "p90_observed_fill_rate",
+                    "label": "Сервис balanced",
+                    "field": "acceleration_observed_fill_rate",
                     "format": "percent",
                 },
                 {
                     "label": "к прежней модели",
-                    "field": "p90_observed_fill_delta_vs_control",
+                    "field": "acceleration_observed_fill_delta_vs_control",
                     "format": "percent",
                     "signed": True,
                 },
             ],
         },
         {
-            "id": "p90_sales_card",
-            "description": "Сколько записанных продаж и валовой прибыли вернул полный P90.",
+            "id": "acceleration_sales_card",
+            "description": "Сколько продаж и валовой прибыли вернул balanced.",
             "dataset": "headline",
             "sourceId": "scenario_summary",
             "metrics": [
                 {
                     "label": "Дополнительные продажи",
-                    "field": "p90_incremental_sales_qty",
+                    "field": "acceleration_incremental_sales_qty",
                     "format": "number",
                     "signed": True,
                 },
                 {
                     "label": "Δ валовая прибыль, млн ₽",
-                    "field": "p90_incremental_profit_million_rub",
+                    "field": "acceleration_incremental_profit_million_rub",
                     "format": "number",
                     "signed": True,
                 },
             ],
         },
         {
-            "id": "p90_capital_card",
-            "description": "Цена улучшения полного P90 в среднем складском капитале.",
+            "id": "acceleration_capital_card",
+            "description": "Цена нулевого сервисного эффекта balanced.",
             "dataset": "headline",
             "sourceId": "scenario_summary",
             "metrics": [
                 {
                     "label": "Дополнительный капитал, млн ₽",
-                    "field": "p90_incremental_capital_million_rub",
+                    "field": "acceleration_incremental_capital_million_rub",
                     "format": "number",
                     "signed": True,
                 },
                 {
                     "label": "Δ экономический вклад, млн ₽",
-                    "field": "p90_economic_contribution_delta_million_rub",
+                    "field": "acceleration_economic_contribution_delta_million_rub",
                     "format": "number",
                     "signed": True,
                 },
@@ -871,12 +1036,12 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
     charts = [
         {
             "id": "scenario_comparison_chart",
-            "title": "Сервис записанных продаж по вариантам",
-            "subtitle": "Февраль–июль 2026 года, доля состоявшихся продаж в одинаковой когорте.",
+            "title": "Сервис записанных продаж по сценариям",
+            "subtitle": "Февраль–июль 2026 года, единая frozen-когорта; шкала начинается с нуля.",
             "showDescription": True,
             "intent": "comparison",
-            "question": "Насколько сервисный минимум приблизил модель к фактическому запасу?",
-            "rationale": "Пять столбцов показывают абсолютный сервис факта и сопоставимых политик.",
+            "question": "Улучшила ли адресная защита ускоряющихся SKU сервис?",
+            "rationale": "Столбцы с короткими подписями показывают факт, контроль, P90 и три профиля ускорения на одной шкале.",
             "comparisonContext": {
                 "baseline": "Прежняя модель и фактическая стратегия",
                 "grain": "Сценарий frozen-backtest",
@@ -921,13 +1086,17 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
         .split("## Что именно проверяли", 1)[0]
         .strip()
     )
+    period_rows: dict[str, dict[str, Mapping[str, Any]]] = defaultdict(dict)
+    for row in analysis["period_sensitivity"]:
+        period_rows[row["period"]][row["strategy"]] = row
+    pre_july = period_rows.get("pre_july", {}).get("model", {})
+    july = period_rows.get("july", {}).get("model", {})
     blocks = [
         {"id": "title", "type": "markdown", "body": f"# {title}"},
         {
             "id": "executive_summary",
             "type": "markdown",
             "body": f"## Executive Summary\n\n{executive_summary}",
-            "sourceId": "frozen_summary",
         },
         {
             "id": "headline_metrics",
@@ -939,7 +1108,7 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
             "type": "markdown",
             "body": (
                 "## Что именно проверяли\n\n"
-                f"Период — с 1 февраля по 31 июля 2026 года, когорта — {analysis['cohort']['sku_count']} SKU предмета «Дисплеи». Стадия на каждую дату восстановлена только по продажам. Сравнивались прежняя модель, обязательный P75, обязательный P90 и P90 с лимитами 50 тыс. ₽ на SKU и 8 млн ₽ на стадию."
+                f"Период — с 1 февраля по 31 июля 2026 года, когорта — {analysis['cohort']['sku_count']} SKU предмета «Дисплеи». Стадия на каждую дату восстановлена только по продажам. Окна ускорения используют frozen-историю с 1 января 2025 года. Сравнивались прежняя модель, P75/P90 и профили fast, balanced и strict."
             ),
             "sourceId": "preflight_manifest",
         },
@@ -947,8 +1116,8 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
             "id": "result_finding",
             "type": "markdown",
             "body": (
-                "## Полный P90 — лучший по сервису, но не закрывает разрыв\n\n"
-                f"**Он вернул {_number(p90['served_observed_delta_vs_control_qty'])} записанных продаж и {_money_m(p90['gross_profit_delta_vs_control_rub'])} валовой прибыли относительно прежней модели.** Для этого средний капитал вырос на {_money_m(p90['capital_delta_vs_control_rub'])}. До факта всё ещё не хватает {_money_m(-p90['gross_profit_delta_rub'])} прибыли."
+                "## Ускорение не вернуло ни одной продажи\n\n"
+                f"**Все три профиля показали тот же сервис, что прежняя модель: {_pct(balanced['observed_fill_rate'])}.** Balanced добавил {_number(balanced['order_qty'] - control['order_qty'])} единиц заказа, но они не дали продаж и остались в конечном остатке. Средний капитал вырос на {_money_m(balanced['capital_delta_vs_control_rub'], 3)}, экономический вклад снизился на {_money_m(control['economic_contribution_rub'] - balanced['economic_contribution_rub'], 3)}."
             ),
             "sourceId": "scenario_summary",
         },
@@ -958,22 +1127,39 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
             "chartId": "scenario_comparison_chart",
         },
         {
-            "id": "budget_finding",
+            "id": "comparison_context",
             "type": "markdown",
             "body": (
-                "## Денежные лимиты сохранили лишь половину эффекта P90\n\n"
-                f"**Бюджетный P90 вернул {_number(budget['served_observed_delta_vs_control_qty'], 1)} продажи против {_number(p90['served_observed_delta_vs_control_qty'])} у полного P90.** На ограничения наткнулись {_pct(headline['service_floor_limited_share'], 1)} пересчётов положительного сервисного минимума. Текущий порядок распределения бюджета не обеспечил положительного экономического вклада."
+                "## P90 показывает, что продажи вернуть можно, но дорого\n\n"
+                f"**Полный P90 вернул {_number(p90['served_observed_delta_vs_control_qty'])} записанную продажу и {_money_m(p90['gross_profit_delta_vs_control_rub'])} валовой прибыли.** Для этого понадобилось {_money_m(p90['capital_delta_vs_control_rub'])} дополнительного среднего капитала, а к концу периода осталось {_number(p90['ending_inventory_qty'] - control['ending_inventory_qty'])} лишних единиц. Поэтому P90 остаётся только диагностическим контролем."
             ),
-            "sourceId": "decision_detail",
+            "sourceId": "scenario_summary",
         },
         {
             "id": "mechanism_finding",
             "type": "markdown",
             "body": (
-                "## Дополнительный запас размещён недостаточно адресно\n\n"
-                f"**Полный P90 заказал на {_number(headline['p90_incremental_order_qty'])} единиц больше, но обслужил всего на {_number(headline['p90_incremental_served_total_qty'])} единиц спроса больше.** К концу периода на складе осталось на {_number(headline['p90_incremental_ending_inventory_qty'])} единиц больше. Это означает, что один общий percentile для всей стадии добавляет запас слишком широко или слишком поздно."
+                "## Детектор широкий, а действие почти полностью заблокировано\n\n"
+                f"**Balanced отметил ускорение у {_pct(trigger_profile['balanced']['trigger_sku_share'], 1)} SKU стадии «Растим», но положительную надбавку получили лишь {headline['acceleration_positive_sku_count']} SKU.** У {_pct(headline['acceleration_zero_economic_cap_share'], 1)} записанных срабатываний экономический cap был нулевым, у {_pct(headline['acceleration_no_headroom_above_p90_share'], 1)} не было места для единиц сверх обычного P90. Первый положительный объём появился только {_date_ru(headline['acceleration_first_positive_date'])}; денежный бюджет не ограничил ни одного решения."
             ),
-            "sourceId": "scenario_summary",
+        },
+        {
+            "id": "stage_finding",
+            "type": "markdown",
+            "body": (
+                "## Основной дефицит всё ещё в стадии «Растим»\n\n"
+                f"**На эту стадию приходится {_pct(headline['sale_extra_lost_share'], 1)} дополнительного дефицита модели — {_number(headline['sale_extra_lost_qty'], 1)} записанных продаж сверх факта.** Адресное ускорение не изменило этот разрыв. Направление защиты стадии остаётся правильным, но текущая формула отбора и момент действия требуют замены."
+            ),
+            "sourceId": "stage_summary",
+        },
+        {
+            "id": "period_sensitivity",
+            "type": "markdown",
+            "body": (
+                "## Июльский скачок сайта не меняет вывод\n\n"
+                f"**До июля общий fill rate balanced составил {_pct(pre_july.get('fill_rate', 0))}, за июль — {_pct(july.get('fill_rate', 0))}.** Валовая прибыль составила {_money_m(pre_july.get('gross_profit_rub', 0))} и {_money_m(july.get('gross_profit_rub', 0))} соответственно. Июль оставлен в расчёте и показан отдельно; нулевой эффект ускорения наблюдается в полном периоде, а не создаётся исключением июля."
+            ),
+            "sourceId": "period_summary",
         },
         {
             "id": "recommendations",
@@ -981,10 +1167,11 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
             "body": (
                 "## Что делать дальше\n\n"
                 "1. **Не включать production-заказы:** оставить рекомендации под ручным контролем.\n"
-                "2. **Не принимать P75 и широкий P90 как готовое правило.**\n"
-                "3. **Следующий тест направить на адресность и момент заказа:** ускорение продаж, высокая цена дефицита и риск опоздания поставщика.\n"
-                "4. **Пересчитать бюджетный приоритет:** учитывать вероятность продажи дополнительной единицы до её устаревания, а не только маржу на рубль закупки.\n"
-                "5. **Не утверждать 50 тыс. ₽ и 8 млн ₽ как бизнес-лимиты:** это пока параметры чувствительности."
+                "2. **Отбирать по ожидаемому дефициту до P75:** рост должен быть выше прошлого окна и текущего прогноза, а нехватка — не меньше двух единиц.\n"
+                "3. **Проверить перенос уже экономически разрешённого P90 вперёд:** ускорение должно менять момент заказа внутри cap, а не требовать запас только сверх P90.\n"
+                "4. **Заморозить предтестовые ошибки прогноза:** экономическая пригодность должна быть доступна с первого дня, а не впервые в мае.\n"
+                "5. **Учитывать риск конкретной партии:** haircut применять к просроченной или нестабильной поставке, а не ко всему pipeline.\n"
+                "6. **Не настраивать пока лимиты 50 тыс. ₽ и 8 млн ₽:** они не были узким местом этого теста."
             ),
         },
         {
@@ -992,10 +1179,10 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
             "type": "markdown",
             "body": (
                 "## Открытые вопросы\n\n"
-                "- Как оценивать полную цену дефицита: маржа, срочная закупка и риск ухода клиента?\n"
-                "- Какие факты надёжности поставщика должны уменьшать доверие к товару в пути?\n"
+                "- Порог ожидаемого дефицита задавать в штуках или в потерянной марже?\n"
+                "- Какие факты партии должны уменьшать доверие к товару в пути?\n"
                 "- Как учитывать замену одного качества или версии дисплея другим?\n"
-                "- Какой бюджет стадии допустим после положительного backtest?"
+                "- Внеплановый сигнал должен переносить заказ вперёд или только повышать недельный min?"
             ),
         },
         {
@@ -1006,10 +1193,11 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
                 "- Фактический сервис обычных продаж равен 100% по определению: видны только состоявшиеся продажи; скрытый спрос измеряется отдельно.\n"
                 "- Сайт связан с SKU только по валидному PRODUCT_XML_ID; строки вне когорты не распределялись догадкой.\n"
                 f"- Предварительная проверка данных пройдена, но найдены {analysis['source_quality']['negative_register_balances']['value']} отрицательных дневных резервов; они не считаются спросом и не увеличивают остаток.\n"
+                f"- В {analysis['source_quality']['unit_economics_coverage']['value']} строках нет себестоимости; экономическая надбавка для них равна нулю.\n"
+                "- Предтестовые продажи frozen, но предтестовые недельные ошибки прогноза пока не frozen; это консервативно задерживает экономическую пригодность.\n"
                 "- Все положительные ручные рекомендации считаются принятыми; без этого реальный сервис будет ниже.\n"
                 "- Production-заказы и внешние записи не создавались."
             ),
-            "sourceId": "preflight_manifest",
         },
     ]
     return {
@@ -1039,7 +1227,7 @@ def build_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
         },
         "sources": sources,
         "package_info": {
-            "originUrl": "artifact://display-auto-order-service-floor-frozen-backtest-2026-h1"
+            "originUrl": "artifact://display-auto-order-acceleration-frozen-backtest-2026-h1"
         },
     }
 
@@ -1060,11 +1248,24 @@ def build_source_notes(analysis: Mapping[str, Any]) -> str:
 
 | Раздел | Вопрос | Тип | Данные | Подтверждаемый вывод |
 | --- | --- | --- | --- | --- |
-| Сравнение правил | Улучшает ли адресная защита ускоряющихся SKU сервис и экономику? | Столбцы по восьми категориям | `frozen-scenario-summary.csv` | сопоставление контроля, P90 и трёх профилей ускорения |
+| Сравнение правил | Улучшает ли адресная защита ускоряющихся SKU сервис? | Столбцы по восьми категориям с короткими подписями | `frozen-scenario-summary.csv` | ускорение не изменило сервис, P90 остаётся диагностическим контролем |
 
 График использует абсолютный fill rate с нулевой шкалой, чтобы не преувеличивать
 небольшую разницу между вариантами. Точные изменения продаж, прибыли и капитала
 приведены рядом в тексте и метриках.
+
+Разрез до июля / июль содержит только две дискретные точки, поэтому отдельный
+график не строится: точные значения приведены в соседнем текстовом блоке. Это
+честнее, чем изображать две точки как временной тренд.
+
+## Соответствие структуре партнёрского отчёта
+
+- Title — короткий вывод о нулевом эффекте ускорения.
+- Executive Summary — четыре самостоятельных ответа для партнёра.
+- Key findings — сравнение сценариев, механизм отсечения, стадия «Растим» и июль.
+- Recommended next steps — узкий следующий backtest без production.
+- Further questions — порог дефицита, pipeline и замены.
+- Caveats and assumptions — наблюдаемость спроса, качество данных и ручное принятие.
 
 ## Ограниченные разрезы
 
@@ -1078,6 +1279,9 @@ def build_source_notes(analysis: Mapping[str, Any]) -> str:
   количеством потерянного спроса.
 - `historical-sales.csv` содержит разреженную историю продаж с 1 января 2025 года,
   поэтому окна ускорения в начале теста не принимают декабрь–январь за нулевой спрос.
+- Отдельный notebook не создаётся: канонический расчёт уже реализован
+  детерминированными CLI, тестами и frozen CSV. Notebook продублировал бы
+  бизнес-логику и создал второй источник истины.
 - События сайта входят только при однозначной связи валидного `PRODUCT_XML_ID` с
   SKU когорты; события вне когорты не распределяются догадкой.
 - `reserve_backlog` реализован и проверен, но в историческом периоде фактических

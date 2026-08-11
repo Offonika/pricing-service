@@ -38,7 +38,7 @@ BASE_SCENARIO_ID = (
     "cap20_hold4_typical_kmp0_5_sitebalanced_base"
 )
 CONTROL_SCENARIO_ID = "grow_cap20_p90_hold4_typical_kmp0_5_sitebalanced_base"
-OUTPUT_SCHEMA = "display_auto_order_frozen_backtest.v12"
+OUTPUT_SCHEMA = "display_auto_order_frozen_backtest.v13"
 RUN_MODE_FULL = "full"
 RUN_MODE_QUICK = "quick"
 ACCELERATION_SEGMENT_PROFILE_OFF = "off"
@@ -56,12 +56,20 @@ BASE_PIPELINE_PROFILE_MEDIUM_95 = "medium_95"
 BASE_PIPELINE_PROFILE_MEDIUM_90 = "medium_90"
 BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050 = "medium_95_margin_cost_050"
 BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_100 = "medium_95_margin_cost_100"
+BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050_LOT_RISK_P50 = (
+    "medium_95_margin_cost_050_lotrisk_p50"
+)
+BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050_LOT_RISK_P75 = (
+    "medium_95_margin_cost_050_lotrisk_p75"
+)
 BASE_PIPELINE_PROFILES = (
     BASE_PIPELINE_PROFILE_OFF,
     BASE_PIPELINE_PROFILE_MEDIUM_95,
     BASE_PIPELINE_PROFILE_MEDIUM_90,
     BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050,
     BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_100,
+    BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050_LOT_RISK_P50,
+    BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050_LOT_RISK_P75,
 )
 
 
@@ -160,6 +168,8 @@ class FrozenScenario:
     base_pipeline_medium_fraction: Decimal = ONE
     base_pipeline_low_fraction: Decimal = ONE
     base_pipeline_min_margin_to_cost_ratio: Decimal = ZERO
+    base_pipeline_lot_risk_boundary: str = ""
+    base_pipeline_lot_risk_fraction: Decimal = ONE
     legacy: bool = False
 
 
@@ -249,6 +259,10 @@ class ScenarioDiagnostics:
     acceleration_segment_blocked_cost_recalculations: int = 0
     acceleration_segment_blocked_confidence_recalculations: int = 0
     acceleration_segment_blocked_p75_recalculations: int = 0
+    base_pipeline_lot_risk_evaluations: int = 0
+    base_pipeline_lot_risk_positive_evaluations: int = 0
+    base_pipeline_lot_risk_qty_evaluated: Decimal = ZERO
+    base_pipeline_lot_risk_effective_reduction_qty: Decimal = ZERO
 
     def as_summary_fields(self) -> dict[str, Any]:
         return {
@@ -313,6 +327,14 @@ class ScenarioDiagnostics:
             ),
             "acceleration_segment_blocked_p75_recalculations": (
                 self.acceleration_segment_blocked_p75_recalculations
+            ),
+            "base_pipeline_lot_risk_evaluations": self.base_pipeline_lot_risk_evaluations,
+            "base_pipeline_lot_risk_positive_evaluations": (
+                self.base_pipeline_lot_risk_positive_evaluations
+            ),
+            "base_pipeline_lot_risk_qty_evaluated": str(self.base_pipeline_lot_risk_qty_evaluated),
+            "base_pipeline_lot_risk_effective_reduction_qty": str(
+                self.base_pipeline_lot_risk_effective_reduction_qty
             ),
         }
 
@@ -544,6 +566,8 @@ def base_pipeline_profile_fractions(profile: str) -> tuple[Decimal, Decimal, Dec
     if normalized in {
         BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050,
         BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_100,
+        BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050_LOT_RISK_P50,
+        BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050_LOT_RISK_P75,
     }:
         return ONE, Decimal("0.95"), ONE
     raise ValueError(f"unsupported base pipeline profile: {profile}")
@@ -551,7 +575,11 @@ def base_pipeline_profile_fractions(profile: str) -> tuple[Decimal, Decimal, Dec
 
 def base_pipeline_margin_cost_ratio_floor(profile: str) -> Decimal:
     normalized = _clean(profile).lower() or BASE_PIPELINE_PROFILE_OFF
-    if normalized == BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050:
+    if normalized in {
+        BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050,
+        BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050_LOT_RISK_P50,
+        BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050_LOT_RISK_P75,
+    }:
         return Decimal("0.5")
     if normalized == BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_100:
         return ONE
@@ -562,6 +590,53 @@ def base_pipeline_margin_cost_ratio_floor(profile: str) -> Decimal:
     }:
         return ZERO
     raise ValueError(f"unsupported base pipeline profile: {profile}")
+
+
+def base_pipeline_lot_risk_parameters(profile: str) -> tuple[str, Decimal]:
+    normalized = _clean(profile).lower() or BASE_PIPELINE_PROFILE_OFF
+    if normalized == BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050_LOT_RISK_P50:
+        return "p50", Decimal("0.90")
+    if normalized == BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050_LOT_RISK_P75:
+        return "p75", Decimal("0.90")
+    if normalized in {
+        BASE_PIPELINE_PROFILE_OFF,
+        BASE_PIPELINE_PROFILE_MEDIUM_95,
+        BASE_PIPELINE_PROFILE_MEDIUM_90,
+        BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050,
+        BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_100,
+    }:
+        return "", ONE
+    raise ValueError(f"unsupported base pipeline profile: {profile}")
+
+
+def risk_adjusted_base_pipeline_quantity(
+    *,
+    total_pipeline_qty: Decimal,
+    base_fraction: Decimal,
+    arrivals: Mapping[date, Mapping[str, Decimal]],
+    code: str,
+    as_of: date,
+    boundary_days: int,
+    risk_fraction: Decimal,
+) -> tuple[Decimal, Decimal]:
+    total = max(ZERO, _decimal(total_pipeline_qty))
+    normal_share = max(ZERO, min(ONE, _decimal(base_fraction)))
+    risky_share = max(ZERO, min(normal_share, _decimal(risk_fraction)))
+    if total <= ZERO or boundary_days <= 0 or risky_share >= normal_share:
+        return total * normal_share, ZERO
+    risky_qty = min(
+        total,
+        sum(
+            (
+                max(ZERO, _decimal(rows.get(code)))
+                for arrival_at, rows in arrivals.items()
+                if arrival_at > as_of and (arrival_at - as_of).days > boundary_days
+            ),
+            ZERO,
+        ),
+    )
+    effective = (total - risky_qty) * normal_share + risky_qty * risky_share
+    return effective, risky_qty
 
 
 def base_pipeline_fraction(
@@ -607,6 +682,7 @@ def apply_quick_base_pipeline_profiles(
         normalized = _clean(profile).lower()
         high, medium, low = base_pipeline_profile_fractions(normalized)
         margin_cost_ratio_floor = base_pipeline_margin_cost_ratio_floor(normalized)
+        lot_risk_boundary, lot_risk_fraction = base_pipeline_lot_risk_parameters(normalized)
         if normalized == BASE_PIPELINE_PROFILE_OFF:
             raise ValueError("base pipeline challenger profiles must not be off")
         scenarios_by_role[role] = replace(
@@ -617,6 +693,8 @@ def apply_quick_base_pipeline_profiles(
             base_pipeline_medium_fraction=medium,
             base_pipeline_low_fraction=low,
             base_pipeline_min_margin_to_cost_ratio=margin_cost_ratio_floor,
+            base_pipeline_lot_risk_boundary=lot_risk_boundary,
+            base_pipeline_lot_risk_fraction=lot_risk_fraction,
         )
     if scenarios_by_role["hypothesis"].scenario_id == scenarios_by_role["cautious"].scenario_id:
         raise ValueError("base pipeline hypothesis and cautious profiles must differ")
@@ -815,6 +893,12 @@ def _load_scenarios(path: Path) -> list[FrozenScenario]:
                 base_pipeline_min_margin_to_cost_ratio=_decimal(
                     row.get("base_pipeline_min_margin_to_cost_ratio")
                 ),
+                base_pipeline_lot_risk_boundary=_clean(
+                    row.get("base_pipeline_lot_risk_boundary")
+                ).lower(),
+                base_pipeline_lot_risk_fraction=_decimal(
+                    row.get("base_pipeline_lot_risk_fraction") or ONE
+                ),
                 cost=CarryingCostScenario(
                     name=_clean(row.get("holding_cost_scenario")),
                     capital_annual_rate=_decimal(row.get("capital_annual_rate")),
@@ -934,6 +1018,8 @@ def _summary(
         "base_pipeline_min_margin_to_cost_ratio": str(
             scenario.base_pipeline_min_margin_to_cost_ratio
         ),
+        "base_pipeline_lot_risk_boundary": scenario.base_pipeline_lot_risk_boundary,
+        "base_pipeline_lot_risk_fraction": str(scenario.base_pipeline_lot_risk_fraction),
         "holding_cost_scenario": scenario.cost.name,
         "capital_annual_rate": str(scenario.cost.capital_annual_rate),
         "storage_annual_rate": str(scenario.cost.storage_annual_rate),
@@ -1408,6 +1494,8 @@ def simulate_scenario(
     keep_detail: bool,
     demand_sample_cache: dict[tuple[str, date, int], list[Decimal]] | None = None,
 ) -> SimulationResult:
+    if scenario.base_pipeline_lot_risk_boundary and scenario.grow_acceleration_profile != "off":
+        raise ValueError("base pipeline lot risk cannot be combined with acceleration")
     codes = sorted(
         {
             _clean(row.get("nomenclature_code"))
@@ -1722,6 +1810,20 @@ def simulate_scenario(
                         "prior_model_pipeline_qty": prior.get("model_pipeline_qty", ""),
                         "prior_effective_model_pipeline_qty": prior.get(
                             "effective_model_pipeline_qty", ""
+                        ),
+                        "prior_base_pipeline_profile": prior.get("base_pipeline_profile", ""),
+                        "prior_base_pipeline_fraction": prior.get("base_pipeline_fraction", ""),
+                        "prior_base_pipeline_margin_to_cost_ratio": prior.get(
+                            "base_pipeline_margin_to_cost_ratio", ""
+                        ),
+                        "prior_base_pipeline_lot_risk_boundary": prior.get(
+                            "base_pipeline_lot_risk_boundary", ""
+                        ),
+                        "prior_base_pipeline_lot_risk_boundary_days": prior.get(
+                            "base_pipeline_lot_risk_boundary_days", ""
+                        ),
+                        "prior_base_pipeline_lot_risky_qty": prior.get(
+                            "base_pipeline_lot_risky_qty", ""
                         ),
                         "prior_inventory_position_qty": prior.get("inventory_position_qty", ""),
                         "prior_triggered": prior.get("triggered", 0),
@@ -2140,6 +2242,35 @@ def simulate_scenario(
                 gross_margin_per_unit_rub=current_margin[code],
                 inventory_cost_per_unit_rub=current_cost[code],
             )
+            base_pipeline_lot_risk_boundary_days = 0
+            if base_pipeline_share < ONE:
+                if scenario.base_pipeline_lot_risk_boundary == "p50":
+                    base_pipeline_lot_risk_boundary_days = int(row.get("lead_time_p50_days") or 52)
+                elif scenario.base_pipeline_lot_risk_boundary == "p75":
+                    base_pipeline_lot_risk_boundary_days = int(
+                        row.get("lead_time_p75_days") or row.get("lead_time_p50_days") or 52
+                    )
+            risk_adjusted_base_pipeline_qty, base_pipeline_lot_risky_qty = (
+                risk_adjusted_base_pipeline_quantity(
+                    total_pipeline_qty=pipeline_qty[code],
+                    base_fraction=base_pipeline_share,
+                    arrivals=arrivals,
+                    code=code,
+                    as_of=cursor,
+                    boundary_days=base_pipeline_lot_risk_boundary_days,
+                    risk_fraction=scenario.base_pipeline_lot_risk_fraction,
+                )
+            )
+            if scenario.base_pipeline_lot_risk_boundary and base_pipeline_share < ONE:
+                diagnostics.base_pipeline_lot_risk_evaluations += 1
+                diagnostics.base_pipeline_lot_risk_positive_evaluations += int(
+                    base_pipeline_lot_risky_qty > ZERO
+                )
+                diagnostics.base_pipeline_lot_risk_qty_evaluated += base_pipeline_lot_risky_qty
+                diagnostics.base_pipeline_lot_risk_effective_reduction_qty += max(
+                    ZERO,
+                    pipeline_qty[code] * base_pipeline_share - risk_adjusted_base_pipeline_qty,
+                )
             safety_units = ZERO
             economic_safety_cap = ZERO
             percentile_safety_target = ZERO
@@ -2515,10 +2646,13 @@ def simulate_scenario(
                 )
                 recommended = ordinary_recommended + acceleration_order_component
             else:
-                effective_pipeline_qty = pipeline_qty[code] * min(
-                    acceleration_pipeline_share,
-                    base_pipeline_share,
-                )
+                if scenario.base_pipeline_lot_risk_boundary:
+                    effective_pipeline_qty = risk_adjusted_base_pipeline_qty
+                else:
+                    effective_pipeline_qty = pipeline_qty[code] * min(
+                        acceleration_pipeline_share,
+                        base_pipeline_share,
+                    )
                 position = stock[code] - reserve + effective_pipeline_qty
                 triggered = position <= min_qty
                 raw = _ceil(max(ZERO, target_qty - position)) if triggered else ZERO
@@ -2555,6 +2689,10 @@ def simulate_scenario(
                 "base_pipeline_margin_to_cost_ratio": str(
                     current_margin[code] / current_cost[code] if current_cost[code] > ZERO else ZERO
                 ),
+                "base_pipeline_lot_risk_boundary": (scenario.base_pipeline_lot_risk_boundary),
+                "base_pipeline_lot_risk_boundary_days": (base_pipeline_lot_risk_boundary_days),
+                "base_pipeline_lot_risk_fraction": str(scenario.base_pipeline_lot_risk_fraction),
+                "base_pipeline_lot_risky_qty": str(base_pipeline_lot_risky_qty),
                 "inventory_position_qty": str(position),
                 "triggered": int(triggered),
                 "recommended_order_qty_raw": str(raw),
@@ -2602,7 +2740,9 @@ def simulate_scenario(
                 stage_metric.manual_review_updated += int(manual_review_action == "updated")
                 stage_metric.safety_stock_units_ordered += safety_units
             if keep_detail and (
-                recommended > ZERO or (fresh_decision and (rate > ZERO or weighted_signals > ZERO))
+                scheduled_review
+                or recommended > ZERO
+                or (fresh_decision and (rate > ZERO or weighted_signals > ZERO))
             ):
                 trigger = (
                     "scheduled_review"
@@ -2760,6 +2900,16 @@ def simulate_scenario(
                             if current_cost[code] > ZERO
                             else ZERO
                         ),
+                        "base_pipeline_lot_risk_boundary": (
+                            scenario.base_pipeline_lot_risk_boundary
+                        ),
+                        "base_pipeline_lot_risk_boundary_days": (
+                            base_pipeline_lot_risk_boundary_days
+                        ),
+                        "base_pipeline_lot_risk_fraction": str(
+                            scenario.base_pipeline_lot_risk_fraction
+                        ),
+                        "base_pipeline_lot_risky_qty": str(base_pipeline_lot_risky_qty),
                         "model_stock_qty": str(stock[code]),
                         "reserve_qty": str(reserve),
                         "model_pipeline_qty": str(pipeline_qty[code]),
@@ -3057,6 +3207,20 @@ def _quick_comparison_rows(
                 "base_pipeline_low_fraction": row.get("base_pipeline_low_fraction", "1"),
                 "base_pipeline_min_margin_to_cost_ratio": row.get(
                     "base_pipeline_min_margin_to_cost_ratio", "0"
+                ),
+                "base_pipeline_lot_risk_boundary": row.get("base_pipeline_lot_risk_boundary", ""),
+                "base_pipeline_lot_risk_fraction": row.get("base_pipeline_lot_risk_fraction", "1"),
+                "base_pipeline_lot_risk_evaluations": row.get(
+                    "base_pipeline_lot_risk_evaluations", 0
+                ),
+                "base_pipeline_lot_risk_positive_evaluations": row.get(
+                    "base_pipeline_lot_risk_positive_evaluations", 0
+                ),
+                "base_pipeline_lot_risk_qty_evaluated": row.get(
+                    "base_pipeline_lot_risk_qty_evaluated", "0"
+                ),
+                "base_pipeline_lot_risk_effective_reduction_qty": row.get(
+                    "base_pipeline_lot_risk_effective_reduction_qty", "0"
                 ),
                 "acceleration_triggered_recalculations": row.get(
                     "acceleration_triggered_recalculations", 0
@@ -3507,6 +3671,30 @@ def main() -> int:
                     if scenario.scenario_id == selection.scenario_roles["cautious"]
                 )
             ),
+            "hypothesis_lot_risk_boundary": next(
+                scenario.base_pipeline_lot_risk_boundary
+                for scenario in scenarios
+                if scenario.scenario_id == selection.scenario_roles["hypothesis"]
+            ),
+            "cautious_lot_risk_boundary": next(
+                scenario.base_pipeline_lot_risk_boundary
+                for scenario in scenarios
+                if scenario.scenario_id == selection.scenario_roles["cautious"]
+            ),
+            "hypothesis_lot_risk_fraction": str(
+                next(
+                    scenario.base_pipeline_lot_risk_fraction
+                    for scenario in scenarios
+                    if scenario.scenario_id == selection.scenario_roles["hypothesis"]
+                )
+            ),
+            "cautious_lot_risk_fraction": str(
+                next(
+                    scenario.base_pipeline_lot_risk_fraction
+                    for scenario in scenarios
+                    if scenario.scenario_id == selection.scenario_roles["cautious"]
+                )
+            ),
         },
         "base_scenario_id": selection.base_scenario_id,
         "scenario_count": len(scenarios),
@@ -3522,7 +3710,7 @@ def main() -> int:
             "historical_sales": "frozen_sparse_sales_from_history_start_through_test_end_used_for_completed_acceleration_and_forecast_error_windows",
             "inventory_position": "simulated_stock_minus_max(raw_historical_reserve,0)+risk_adjusted_simulated_free_pipeline; negative raw reserve never increases availability",
             "base_pipeline_confidence_haircut": (
-                "ordinary_min_max_counts_high_confidence_pipeline_at_100_percent;medium_confidence_pipeline_uses_the_role_fraction_only_when_current_margin_to_cost_ratio_meets_the_profile_floor;unknown_or_zero_current_cost_does_not_pass_the_segment_gate;current_decision_features_only;no_future_outcome_filter"
+                "ordinary_min_max_counts_high_confidence_pipeline_at_100_percent;medium_confidence_pipeline_uses_the_role_fraction_only_when_current_margin_to_cost_ratio_meets_the_profile_floor;lot_risk_profiles_count_medium_pipeline_at_95_percent_except_each_lot_with_frozen_remaining_lead_time_strictly_above_the_current_p50_or_p75_boundary_at_90_percent;unknown_or_zero_current_cost_does_not_pass_the_segment_gate;current_decision_features_only;no_future_outcome_filter"
                 if base_pipeline_profiles_enabled
                 else "off_full_pipeline_counted"
             ),

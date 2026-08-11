@@ -24,6 +24,7 @@ from tasks.report_display_auto_order_frozen_backtest import (
     apply_quick_base_pipeline_profiles,
     apply_service_floor_sku_cap,
     base_pipeline_fraction,
+    base_pipeline_lot_risk_parameters,
     base_pipeline_margin_cost_ratio_floor,
     base_pipeline_profile_fractions,
     calculate_demand_acceleration,
@@ -34,6 +35,7 @@ from tasks.report_display_auto_order_frozen_backtest import (
     evaluate_acceleration_shortage_guard,
     historical_forecast_error_samples,
     release_open_acceleration_protection,
+    risk_adjusted_base_pipeline_quantity,
     select_scenarios,
     simulate_scenario,
 )
@@ -240,6 +242,174 @@ def test_segmented_base_pipeline_profile_uses_current_margin_cost_boundary() -> 
     assert base_pipeline_fraction(
         "high", gross_margin_per_unit_rub=Decimal("0"), **common
     ) == Decimal("1")
+
+
+def test_lot_risk_profiles_use_p50_or_p75_with_ninety_percent_fraction() -> None:
+    assert base_pipeline_lot_risk_parameters("medium_95_margin_cost_050_lotrisk_p50") == (
+        "p50",
+        Decimal("0.90"),
+    )
+    assert base_pipeline_lot_risk_parameters("medium_95_margin_cost_050_lotrisk_p75") == (
+        "p75",
+        Decimal("0.90"),
+    )
+
+
+def test_lot_risk_is_strictly_beyond_boundary_and_blends_per_lot() -> None:
+    as_of = date(2026, 3, 1)
+    effective, risky = risk_adjusted_base_pipeline_quantity(
+        total_pipeline_qty=Decimal("6.4"),
+        base_fraction=Decimal("0.95"),
+        arrivals={
+            as_of + timedelta(days=5): {"SKU-1": Decimal("3")},
+            as_of + timedelta(days=6): {"SKU-1": Decimal("3.4")},
+        },
+        code="SKU-1",
+        as_of=as_of,
+        boundary_days=5,
+        risk_fraction=Decimal("0.90"),
+    )
+
+    assert risky == Decimal("3.4")
+    assert effective == Decimal("5.910")
+
+
+def _run_lot_risk_scenario(
+    *,
+    profile: str,
+    future_p50_days: int | None = None,
+) -> object:
+    start = date(2026, 3, 1)
+    dates = [start]
+    if future_p50_days is not None:
+        dates.append(start + timedelta(days=1))
+    facts = {
+        business_date: [
+            {
+                "nomenclature_code": "SKU-1",
+                "status": "sale",
+                "physical_stock_qty": "0",
+                "observed_sales_qty": "0",
+                "effective_reserve_qty": "0",
+                "placed_incoming_qty": "0",
+            }
+        ]
+        for business_date in dates
+    }
+    decisions = {
+        business_date: [
+            {
+                "decision_date": business_date.isoformat(),
+                "nomenclature_code": "SKU-1",
+                "scheduled_review": "1",
+                "status": "sale",
+                "forecast_rate_sales": "1.01",
+                "lead_time_p50_days": str(5 if business_date == start else future_p50_days),
+                "lead_time_p75_days": "7",
+                "lead_time_confidence": "medium",
+                "inventory_cost_per_unit_rub": "100",
+                "gross_margin_per_unit_rub": "50",
+            }
+        ]
+        for business_date in dates
+    }
+    high, medium, low = base_pipeline_profile_fractions(profile)
+    boundary, risk_fraction = base_pipeline_lot_risk_parameters(profile)
+    return simulate_scenario(
+        scenario=FrozenScenario(
+            scenario_id=profile,
+            stage_profile="typical",
+            kmp4_weight=Decimal("0"),
+            cost=CarryingCostScenario(
+                name="base",
+                capital_annual_rate=Decimal("0.3"),
+                storage_annual_rate=Decimal("0.1"),
+                obsolescence_annual_rate=Decimal("0.25"),
+            ),
+            base_pipeline_profile=profile,
+            base_pipeline_high_fraction=high,
+            base_pipeline_medium_fraction=medium,
+            base_pipeline_low_fraction=low,
+            base_pipeline_min_margin_to_cost_ratio=(base_pipeline_margin_cost_ratio_floor(profile)),
+            base_pipeline_lot_risk_boundary=boundary,
+            base_pipeline_lot_risk_fraction=risk_fraction,
+        ),
+        fact_rows_by_date=facts,
+        decision_rows_by_date=decisions,
+        initial_pipeline_rows=[
+            {
+                "nomenclature_code": "SKU-1",
+                "arrival_at": (start + timedelta(days=6)).isoformat(),
+                "quantity": "6.5",
+            }
+        ],
+        sales_by_code={"SKU-1": {}},
+        policy=AutoOrderPolicy(order_cadence_days=7),
+        config=load_scenario_config(
+            Path("config/assortment/display-auto-order-backtest-scenarios.json")
+        ),
+        date_from=start,
+        date_to=dates[-1],
+        keep_detail=True,
+        demand_sample_cache={},
+    )
+
+
+def test_lot_risk_profile_can_order_when_v15_does_not() -> None:
+    v15 = _run_lot_risk_scenario(profile="medium_95_margin_cost_050")
+    p50 = _run_lot_risk_scenario(profile="medium_95_margin_cost_050_lotrisk_p50")
+
+    assert v15.model["SKU-1"].order_qty == Decimal("0")
+    assert p50.model["SKU-1"].order_qty > Decimal("0")
+    assert p50.decision_rows[0]["base_pipeline_lot_risk_boundary"] == "p50"
+    assert p50.decision_rows[0]["base_pipeline_lot_risk_boundary_days"] == 5
+    assert p50.decision_rows[0]["base_pipeline_lot_risky_qty"] == "6.5"
+    assert p50.decision_rows[0]["effective_model_pipeline_qty"] == "5.850"
+
+
+def test_lot_risk_uses_no_future_decision_boundary() -> None:
+    short_future = _run_lot_risk_scenario(
+        profile="medium_95_margin_cost_050_lotrisk_p50",
+        future_p50_days=1,
+    )
+    long_future = _run_lot_risk_scenario(
+        profile="medium_95_margin_cost_050_lotrisk_p50",
+        future_p50_days=100,
+    )
+
+    assert short_future.decision_rows[0] == long_future.decision_rows[0]
+
+
+def test_lot_risk_cannot_be_combined_with_acceleration() -> None:
+    with pytest.raises(
+        ValueError,
+        match="base pipeline lot risk cannot be combined with acceleration",
+    ):
+        simulate_scenario(
+            scenario=FrozenScenario(
+                scenario_id="invalid-combination",
+                stage_profile="typical",
+                kmp4_weight=Decimal("0"),
+                cost=CarryingCostScenario(
+                    name="base",
+                    capital_annual_rate=Decimal("0.3"),
+                    storage_annual_rate=Decimal("0.1"),
+                    obsolescence_annual_rate=Decimal("0.25"),
+                ),
+                grow_acceleration_profile="balanced",
+                base_pipeline_lot_risk_boundary="p50",
+                base_pipeline_lot_risk_fraction=Decimal("0.90"),
+            ),
+            fact_rows_by_date={},
+            decision_rows_by_date={},
+            initial_pipeline_rows=[],
+            sales_by_code={},
+            policy=AutoOrderPolicy(order_cadence_days=7),
+            config=None,
+            date_from=date(2026, 3, 1),
+            date_to=date(2026, 3, 1),
+            keep_detail=False,
+        )
 
 
 @pytest.mark.parametrize("cost", [Decimal("0"), Decimal("-1")])

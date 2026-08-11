@@ -586,3 +586,8 @@ Rollback:
 - 2026-08-11 — apply ручного pilot mapping привязан к `input_hash` и
   `controls_hash` успешного dry-run; изменение CSV или live controls требует
   новой проверки и нового подтверждения.
+- 2026-08-11 — PostgreSQL staging gate повторён на отдельной одноразовой БД:
+  `upgrade -> downgrade -> upgrade` до `d9e1f3a5b7c9` сохранил синтетические
+  строки и корректно выполнил GUID backfill; fixture integration suite обновлён
+  с `c3d4e5f6a7b9` до полной цепочки `c3d4e5f6a7b9 -> d9e1f3a5b7c9`, результат
+  `5 passed`.

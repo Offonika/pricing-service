@@ -90,12 +90,17 @@ CSV содержит ровно семь колонок:
 ИНН или суммы — только количества и SHA-256 hashes.
 
 Выполнять только после успешного bootstrap preflight. Сначала обязательный dry-run,
-затем отдельное применение с зафиксированным согласующим:
+затем отдельное применение с зафиксированным согласующим и точными SHA-256 из
+успешного dry-run. Если CSV или live controls изменились, apply блокируется и
+dry-run нужно повторить:
 
 ```bash
 "${PYTHON_BIN}" -m tasks.import_customer_settlement_mappings /secure/pilot-mapping.csv
 "${PYTHON_BIN}" -m tasks.import_customer_settlement_mappings /secure/pilot-mapping.csv \
-  --apply --approved-by '<role-or-ticket>'
+  --apply \
+  --approved-by '<role-or-ticket>' \
+  --approved-input-hash '<input_hash-from-dry-run>' \
+  --approved-controls-hash '<controls_hash-from-dry-run>'
 "${PYTHON_BIN}" -m tasks.sync_customer_settlement_mapping
 "${PYTHON_BIN}" -m tasks.sync_customer_settlements
 "${PYTHON_BIN}" -m tasks.preflight_customer_settlement_shadow \

@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import csv
 import hashlib
+import hmac
 import json
 import re
 import unicodedata
@@ -43,6 +44,7 @@ CSV_FIELDS = (
 MAX_PILOT_ROWS = 10
 MANUAL_SOURCE_NAME = "manual_confirmed_pilot"
 _INN_RE = re.compile(r"^(?:[0-9]{10}|[0-9]{12})$")
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class ManualMappingImportError(RuntimeError):
@@ -179,9 +181,16 @@ def import_manual_customer_settlement_mappings(
     settings: Settings,
     apply: bool,
     approved_by: str | None,
+    approved_input_hash: str | None = None,
+    approved_controls_hash: str | None = None,
 ) -> dict[str, object]:
     if apply and not _canonical_text(approved_by):
         raise ManualMappingImportError("approved_by_required")
+    if apply and (
+        not _SHA256_RE.fullmatch(str(approved_input_hash or "").strip().lower())
+        or not _SHA256_RE.fullmatch(str(approved_controls_hash or "").strip().lower())
+    ):
+        raise ManualMappingImportError("approved_dry_run_hashes_required")
     if not settings.customer_settlements_organization_ref:
         raise ManualMappingImportError("organization_ref_not_configured")
     if not settings.customer_settlements_organization_guid:
@@ -232,6 +241,11 @@ def import_manual_customer_settlement_mappings(
             for item in controls
         ]
     )
+    if apply and (
+        not hmac.compare_digest(input_hash, str(approved_input_hash).strip().lower())
+        or not hmac.compare_digest(controls_hash, str(approved_controls_hash).strip().lower())
+    ):
+        raise ManualMappingImportError("approved_dry_run_hash_mismatch")
     try:
         revision, activated = activate_mapping_revision(
             session,
@@ -285,9 +299,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("csv_path", type=Path)
     parser.add_argument("--apply", action="store_true")
     parser.add_argument("--approved-by")
+    parser.add_argument("--approved-input-hash")
+    parser.add_argument("--approved-controls-hash")
     args = parser.parse_args(argv)
     if args.apply and not _canonical_text(args.approved_by):
         parser.error("--approved-by is required with --apply")
+    if args.apply and (not args.approved_input_hash or not args.approved_controls_hash):
+        parser.error("--approved-input-hash and --approved-controls-hash are required with --apply")
 
     mode = "apply" if args.apply else "dry-run"
     session = None
@@ -311,6 +329,8 @@ def main(argv: list[str] | None = None) -> int:
             settings=settings,
             apply=args.apply,
             approved_by=args.approved_by,
+            approved_input_hash=args.approved_input_hash,
+            approved_controls_hash=args.approved_controls_hash,
         )
         print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         return 0

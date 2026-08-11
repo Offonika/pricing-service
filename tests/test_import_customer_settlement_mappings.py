@@ -100,6 +100,8 @@ def test_manual_import_dry_run_rolls_back_and_apply_materializes_account(
                 settings=_settings(),
                 apply=True,
                 approved_by="finance-owner",
+                approved_input_hash=str(dry_run["input_hash"]),
+                approved_controls_hash=str(dry_run["controls_hash"]),
             )
             assert applied["status"] == "applied"
             assert len(str(applied["approval_hash"])) == 64
@@ -132,6 +134,49 @@ def test_manual_import_dry_run_rolls_back_and_apply_materializes_account(
                 session.scalar(select(func.count()).select_from(CustomerSettlementMappingRevision))
                 == 1
             )
+    finally:
+        Base.metadata.drop_all(engine)
+        engine.dispose()
+
+
+@pytest.mark.parametrize(
+    ("input_hash", "controls_hash"),
+    [
+        (None, None),
+        ("0" * 64, "0" * 64),
+    ],
+)
+def test_manual_import_apply_requires_matching_dry_run_hashes(
+    monkeypatch,
+    input_hash: str | None,
+    controls_hash: str | None,
+) -> None:
+    monkeypatch.setattr(
+        importer,
+        "fetch_manual_customer_settlement_controls",
+        lambda *_args, **_kwargs: (_control(),),
+    )
+    engine = _engine()
+    try:
+        with Session(engine) as session, pytest.raises(importer.ManualMappingImportError) as exc:
+            importer.import_manual_customer_settlement_mappings(
+                session,
+                object(),
+                rows=(_row(),),
+                settings=_settings(),
+                apply=True,
+                approved_by="finance-owner",
+                approved_input_hash=input_hash,
+                approved_controls_hash=controls_hash,
+            )
+        expected_code = (
+            "approved_dry_run_hashes_required"
+            if input_hash is None
+            else "approved_dry_run_hash_mismatch"
+        )
+        assert exc.value.code == expected_code
+        with Session(engine) as session:
+            assert session.scalar(select(func.count()).select_from(CustomerAccount)) == 0
     finally:
         Base.metadata.drop_all(engine)
         engine.dispose()

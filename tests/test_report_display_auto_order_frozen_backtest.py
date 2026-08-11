@@ -68,7 +68,7 @@ def test_acceleration_requires_minimum_recent_sales_and_rate_growth() -> None:
     assert result.triggered is False
 
 
-def test_acceleration_increment_is_only_the_economic_amount_above_normal_p90() -> None:
+def test_acceleration_increment_protects_p90_and_does_not_use_economic_cap() -> None:
     signal = DemandAccelerationSignal(
         recent_qty=Decimal("4"),
         baseline_qty=Decimal("1"),
@@ -83,9 +83,29 @@ def test_acceleration_increment_is_only_the_economic_amount_above_normal_p90() -
         forecast_rate=Decimal("0.1"),
         coverage_days=20,
         percentile_safety_units=Decimal("2"),
-        economic_cap_units=Decimal("6"),
+        ordinary_safety_units=Decimal("0"),
         max_units=1000,
-    ) == Decimal("4")
+    ) == Decimal("8")
+
+
+def test_acceleration_increment_only_adds_above_existing_ordinary_safety() -> None:
+    signal = DemandAccelerationSignal(
+        recent_qty=Decimal("4"),
+        baseline_qty=Decimal("1"),
+        recent_rate=Decimal("0.5"),
+        baseline_rate=Decimal("0.05"),
+        rate_ratio=Decimal("10"),
+        triggered=True,
+    )
+
+    assert acceleration_incremental_units(
+        signal=signal,
+        forecast_rate=Decimal("0.1"),
+        coverage_days=20,
+        percentile_safety_units=Decimal("2"),
+        ordinary_safety_units=Decimal("6"),
+        max_units=1000,
+    ) == Decimal("2")
 
 
 def test_acceleration_pipeline_haircut_follows_lead_time_confidence() -> None:

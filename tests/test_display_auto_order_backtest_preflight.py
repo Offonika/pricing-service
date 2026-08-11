@@ -73,6 +73,10 @@ def test_scenario_config_matches_approved_grid() -> None:
     assert config.grow_acceleration_scenarios[1].recent_days == 14
     assert config.grow_acceleration_scenarios[1].baseline_days == 42
     assert config.grow_acceleration_scenarios[1].rate_multiplier == Decimal("1.5")
+    assert config.grow_acceleration_scenarios[1].quantity_policy == (
+        "protected_p90_no_economic_cap"
+    )
+    assert config.grow_acceleration_scenarios[1].per_sku_cap_rub == Decimal("0")
     assert config.grow_acceleration_scenarios[1].medium_pipeline_fraction == Decimal("0.75")
 
 
@@ -128,7 +132,8 @@ def test_focused_grow_scenario_design_is_balanced_and_contains_central_candidate
     assert balanced["grow_acceleration_recent_days"] == 14
     assert balanced["grow_acceleration_baseline_days"] == 42
     assert balanced["grow_acceleration_rate_multiplier"] == "1.5"
-    assert balanced["grow_acceleration_sku_cap_rub"] == "50000"
+    assert balanced["grow_acceleration_quantity_policy"] == ("protected_p90_no_economic_cap")
+    assert balanced["grow_acceleration_sku_cap_rub"] == "0"
     assert balanced["grow_acceleration_stage_budget_rub"] == "8000000"
 
 

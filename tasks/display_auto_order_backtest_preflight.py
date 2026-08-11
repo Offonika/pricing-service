@@ -144,6 +144,7 @@ class GrowServiceFloorScenario:
 @dataclass(frozen=True)
 class GrowAccelerationScenario:
     name: str
+    quantity_policy: str
     recent_days: int
     baseline_days: int
     min_recent_sales: Decimal
@@ -346,6 +347,7 @@ def load_scenario_config(path: Path) -> BacktestScenarioConfig:
     acceleration_scenarios = tuple(
         GrowAccelerationScenario(
             name=_clean(row.get("name")),
+            quantity_policy=_clean(row.get("quantity_policy")),
             recent_days=int(row.get("recent_days") or 0),
             baseline_days=int(row.get("baseline_days") or 0),
             min_recent_sales=_decimal(row.get("min_recent_sales")),
@@ -463,11 +465,12 @@ def load_scenario_config(path: Path) -> BacktestScenarioConfig:
         raise ValueError("grow acceleration scenario names must be unique")
     if any(
         not row.name
+        or row.quantity_policy != "protected_p90_no_economic_cap"
         or row.recent_days <= 0
         or row.baseline_days <= 0
         or row.min_recent_sales <= ZERO
         or row.rate_multiplier <= ONE
-        or row.per_sku_cap_rub <= ZERO
+        or row.per_sku_cap_rub < ZERO
         or row.stage_budget_rub <= ZERO
         or row.low_pipeline_fraction < ZERO
         or row.medium_pipeline_fraction < row.low_pipeline_fraction
@@ -632,14 +635,19 @@ def build_focused_scenario_definitions(
         )
     for acceleration in config.grow_acceleration_scenarios:
         ratio_token = int(acceleration.rate_multiplier * Decimal("100"))
+        sku_cap_token = (
+            f"sku{int(acceleration.per_sku_cap_rub)}"
+            if acceleration.per_sku_cap_rub > ZERO
+            else "nocap"
+        )
         rows.append(
             {
                 **common,
                 "scenario_id": (
-                    f"grow_accel_{acceleration.name}_r{acceleration.recent_days}"
+                    f"grow_accel_{acceleration.name}_retimep90_"
+                    f"{sku_cap_token}_r{acceleration.recent_days}"
                     f"_b{acceleration.baseline_days}_x{ratio_token}"
                     f"_min{int(acceleration.min_recent_sales)}"
-                    f"_sku{int(acceleration.per_sku_cap_rub)}"
                     f"_stage{int(acceleration.stage_budget_rub)}"
                     "_cap20_hold4_typical_kmp0_5_sitebalanced_base"
                 ),
@@ -650,6 +658,7 @@ def build_focused_scenario_definitions(
                 "grow_service_floor_sku_cap_rub": "0",
                 "grow_service_floor_stage_budget_rub": "0",
                 "grow_acceleration_profile": acceleration.name,
+                "grow_acceleration_quantity_policy": acceleration.quantity_policy,
                 "grow_acceleration_recent_days": acceleration.recent_days,
                 "grow_acceleration_baseline_days": acceleration.baseline_days,
                 "grow_acceleration_min_recent_sales": str(acceleration.min_recent_sales),

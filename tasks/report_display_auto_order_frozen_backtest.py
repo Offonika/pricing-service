@@ -30,11 +30,13 @@ ZERO = Decimal("0")
 ONE = Decimal("1")
 YEAR_DAYS = Decimal("365")
 BASE_SCENARIO_ID = (
-    "grow_accel_balanced_r14_b42_x150_min2_sku50000_stage8000000_"
+    "grow_accel_balanced_retimep90_nocap_r14_b42_x150_min2_stage8000000_"
     "cap20_hold4_typical_kmp0_5_sitebalanced_base"
 )
 CONTROL_SCENARIO_ID = "grow_cap20_p90_hold4_typical_kmp0_5_sitebalanced_base"
-OUTPUT_SCHEMA = "display_auto_order_frozen_backtest.v4"
+OUTPUT_SCHEMA = "display_auto_order_frozen_backtest.v6"
+RUN_MODE_FULL = "full"
+RUN_MODE_QUICK = "quick"
 
 
 def _clean(value: Any) -> str:
@@ -109,6 +111,7 @@ class FrozenScenario:
     grow_service_floor_sku_cap_rub: Decimal = ZERO
     grow_service_floor_stage_budget_rub: Decimal = ZERO
     grow_acceleration_profile: str = "off"
+    grow_acceleration_quantity_policy: str = "off"
     grow_acceleration_recent_days: int = 0
     grow_acceleration_baseline_days: int = 0
     grow_acceleration_min_recent_sales: Decimal = ZERO
@@ -172,6 +175,111 @@ class SimulationResult:
     model_by_stage: dict[str, Metric]
     decision_rows: list[dict[str, Any]]
     daily_rows: list[dict[str, Any]]
+    diagnostics: ScenarioDiagnostics
+
+
+@dataclass
+class ScenarioDiagnostics:
+    service_floor_positive_recalculations: int = 0
+    service_floor_budget_limited_recalculations: int = 0
+    service_floor_requested_qty: Decimal = ZERO
+    service_floor_allocated_qty: Decimal = ZERO
+    acceleration_triggered_recalculations: int = 0
+    acceleration_positive_recalculations: int = 0
+    acceleration_budget_limited_recalculations: int = 0
+    acceleration_requested_qty: Decimal = ZERO
+    acceleration_allocated_qty: Decimal = ZERO
+
+    def as_summary_fields(self) -> dict[str, Any]:
+        return {
+            "service_floor_positive_recalculations": (
+                self.service_floor_positive_recalculations
+            ),
+            "service_floor_budget_limited_recalculations": (
+                self.service_floor_budget_limited_recalculations
+            ),
+            "service_floor_requested_qty": str(self.service_floor_requested_qty),
+            "service_floor_allocated_qty": str(self.service_floor_allocated_qty),
+            "acceleration_triggered_recalculations": (
+                self.acceleration_triggered_recalculations
+            ),
+            "acceleration_positive_recalculations": (
+                self.acceleration_positive_recalculations
+            ),
+            "acceleration_budget_limited_recalculations": (
+                self.acceleration_budget_limited_recalculations
+            ),
+            "acceleration_requested_qty": str(self.acceleration_requested_qty),
+            "acceleration_allocated_qty": str(self.acceleration_allocated_qty),
+        }
+
+
+@dataclass(frozen=True)
+class ScenarioSelection:
+    run_mode: str
+    scenarios: tuple[FrozenScenario, ...]
+    base_scenario_id: str
+    control_scenario_id: str
+    scenario_roles: Mapping[str, str]
+
+
+def select_scenarios(
+    scenarios: Sequence[FrozenScenario],
+    *,
+    run_mode: str,
+    control_scenario_id: str | None = None,
+    hypothesis_scenario_id: str | None = None,
+    cautious_scenario_id: str | None = None,
+) -> ScenarioSelection:
+    by_id: dict[str, FrozenScenario] = {}
+    duplicate_ids: set[str] = set()
+    for scenario in scenarios:
+        if scenario.scenario_id in by_id:
+            duplicate_ids.add(scenario.scenario_id)
+        by_id[scenario.scenario_id] = scenario
+    if duplicate_ids:
+        rendered = ", ".join(sorted(duplicate_ids))
+        raise ValueError(f"frozen scenario definitions contain duplicate IDs: {rendered}")
+
+    role_values = {
+        "control": _clean(control_scenario_id),
+        "hypothesis": _clean(hypothesis_scenario_id),
+        "cautious": _clean(cautious_scenario_id),
+    }
+    if run_mode == RUN_MODE_FULL:
+        if any(role_values.values()):
+            raise ValueError("scenario role arguments are supported only in quick mode")
+        return ScenarioSelection(
+            run_mode=run_mode,
+            scenarios=tuple(scenarios),
+            base_scenario_id=BASE_SCENARIO_ID,
+            control_scenario_id=CONTROL_SCENARIO_ID,
+            scenario_roles={
+                "control": CONTROL_SCENARIO_ID,
+                "hypothesis": BASE_SCENARIO_ID,
+            },
+        )
+    if run_mode != RUN_MODE_QUICK:
+        raise ValueError(f"unsupported run mode: {run_mode}")
+
+    missing_roles = [role for role, scenario_id in role_values.items() if not scenario_id]
+    if missing_roles:
+        raise ValueError(
+            "quick mode requires scenario IDs for roles: " + ", ".join(missing_roles)
+        )
+    if len(set(role_values.values())) != 3:
+        raise ValueError("quick mode requires three different scenario IDs")
+    missing_ids = [scenario_id for scenario_id in role_values.values() if scenario_id not in by_id]
+    if missing_ids:
+        raise ValueError("quick scenario IDs are absent from frozen preflight: " + ", ".join(missing_ids))
+
+    return ScenarioSelection(
+        run_mode=run_mode,
+        scenarios=tuple(by_id[role_values[role]] for role in ("control", "hypothesis", "cautious")),
+        base_scenario_id=role_values["hypothesis"],
+        control_scenario_id=role_values["control"],
+        scenario_roles=role_values,
+    )
 
 
 @dataclass
@@ -222,6 +330,9 @@ def _load_scenarios(path: Path) -> list[FrozenScenario]:
                     row.get("grow_service_floor_stage_budget_rub")
                 ),
                 grow_acceleration_profile=_clean(row.get("grow_acceleration_profile")) or "off",
+                grow_acceleration_quantity_policy=(
+                    _clean(row.get("grow_acceleration_quantity_policy")) or "off"
+                ),
                 grow_acceleration_recent_days=int(row.get("grow_acceleration_recent_days") or 0),
                 grow_acceleration_baseline_days=int(
                     row.get("grow_acceleration_baseline_days") or 0
@@ -324,6 +435,7 @@ def _summary(
         "grow_service_floor_sku_cap_rub": str(scenario.grow_service_floor_sku_cap_rub),
         "grow_service_floor_stage_budget_rub": str(scenario.grow_service_floor_stage_budget_rub),
         "grow_acceleration_profile": scenario.grow_acceleration_profile,
+        "grow_acceleration_quantity_policy": scenario.grow_acceleration_quantity_policy,
         "grow_acceleration_recent_days": scenario.grow_acceleration_recent_days,
         "grow_acceleration_baseline_days": scenario.grow_acceleration_baseline_days,
         "grow_acceleration_min_recent_sales": str(scenario.grow_acceleration_min_recent_sales),
@@ -548,25 +660,22 @@ def acceleration_incremental_units(
     forecast_rate: Decimal,
     coverage_days: int,
     percentile_safety_units: Decimal,
-    economic_cap_units: Decimal,
+    ordinary_safety_units: Decimal,
     max_units: int,
 ) -> Decimal:
-    """Return economically eligible extra units above the ordinary P90 safety stock."""
+    """Protect P90 and acceleration demand without a per-SKU economic quantity cap."""
 
-    if not signal.triggered or coverage_days <= 0 or economic_cap_units <= ZERO:
+    if not signal.triggered or coverage_days <= 0:
         return ZERO
     acceleration_gap = _ceil(
         max(ZERO, signal.recent_rate - max(ZERO, forecast_rate)) * Decimal(coverage_days)
     )
-    base_safety = min(
-        max(ZERO, economic_cap_units),
-        max(ZERO, percentile_safety_units),
-    )
-    accelerated_safety = min(
-        max(ZERO, economic_cap_units),
+    protected_target = min(
+        Decimal(max_units),
         max(max(ZERO, percentile_safety_units), acceleration_gap),
     )
-    return min(Decimal(max_units), max(ZERO, accelerated_safety - base_safety))
+    ordinary_safety = min(Decimal(max_units), max(ZERO, ordinary_safety_units))
+    return max(ZERO, protected_target - ordinary_safety)
 
 
 def acceleration_pipeline_fraction(
@@ -827,6 +936,7 @@ def simulate_scenario(
     daily_detail: list[dict[str, Any]] = []
     grow_target_states: dict[str, GrowProtectionState] = {}
     manual_review_seen: set[str] = set()
+    diagnostics = ScenarioDiagnostics()
 
     cursor = date_from
     while cursor <= date_to:
@@ -1059,6 +1169,14 @@ def simulate_scenario(
                     stage_budget_rub=scenario.grow_service_floor_stage_budget_rub,
                 )
             )
+            for candidate in budget_candidates:
+                allocated_qty = service_floor_allocations.get(candidate.code, ZERO)
+                diagnostics.service_floor_positive_recalculations += 1
+                diagnostics.service_floor_requested_qty += candidate.requested_units
+                diagnostics.service_floor_allocated_qty += allocated_qty
+                diagnostics.service_floor_budget_limited_recalculations += int(
+                    allocated_qty < candidate.requested_units
+                )
         acceleration_context: dict[str, dict[str, Any]] = {}
         acceleration_allocations: dict[str, Decimal] = {}
         if (
@@ -1128,12 +1246,16 @@ def simulate_scenario(
                     percentile=scenario.forecast_error_percentile,
                     min_samples=config.safety_min_samples,
                 )
+                candidate_ordinary_safety = min(
+                    candidate_economic_cap,
+                    candidate_percentile_target,
+                )
                 requested_units = acceleration_incremental_units(
                     signal=signal,
                     forecast_rate=candidate_rate,
                     coverage_days=candidate_lead_days + policy.order_cadence_days,
                     percentile_safety_units=candidate_percentile_target,
-                    economic_cap_units=candidate_economic_cap,
+                    ordinary_safety_units=candidate_ordinary_safety,
                     max_units=config.safety_max_units,
                 )
                 capped_units = apply_service_floor_sku_cap(
@@ -1161,6 +1283,20 @@ def simulate_scenario(
                     stage_budget_rub=scenario.grow_acceleration_stage_budget_rub,
                 )
             )
+            for candidate_code, context in acceleration_context.items():
+                signal = context["signal"]
+                requested_qty = context["requested_qty"]
+                sku_capped_qty = context["sku_capped_qty"]
+                allocated_qty = acceleration_allocations.get(candidate_code, ZERO)
+                diagnostics.acceleration_triggered_recalculations += int(signal.triggered)
+                if requested_qty <= ZERO:
+                    continue
+                diagnostics.acceleration_positive_recalculations += 1
+                diagnostics.acceleration_requested_qty += requested_qty
+                diagnostics.acceleration_allocated_qty += allocated_qty
+                diagnostics.acceleration_budget_limited_recalculations += int(
+                    allocated_qty < sku_capped_qty
+                )
         for code, row in decision_candidates.items():
             fact = facts_today.get(code, {})
             if not fact:
@@ -1577,6 +1713,9 @@ def simulate_scenario(
                             service_floor_allocated < service_floor_requested
                         ),
                         "acceleration_profile": scenario.grow_acceleration_profile,
+                        "acceleration_quantity_policy": (
+                            scenario.grow_acceleration_quantity_policy
+                        ),
                         "acceleration_recent_days": scenario.grow_acceleration_recent_days,
                         "acceleration_baseline_days": (scenario.grow_acceleration_baseline_days),
                         "acceleration_min_recent_sales": str(
@@ -1633,6 +1772,7 @@ def simulate_scenario(
         model_by_stage=dict(model_by_stage),
         decision_rows=decision_detail,
         daily_rows=daily_detail,
+        diagnostics=diagnostics,
     )
 
 
@@ -1814,6 +1954,73 @@ def _period_summary_rows(
     return rows
 
 
+def _quick_comparison_rows(
+    summary_rows: Sequence[Mapping[str, Any]],
+    *,
+    scenario_roles: Mapping[str, str],
+) -> list[dict[str, Any]]:
+    model_by_id = {
+        _clean(row.get("scenario_id")): row
+        for row in summary_rows
+        if _clean(row.get("strategy")) == "model"
+    }
+    control_id = scenario_roles["control"]
+    control = model_by_id[control_id]
+    rows: list[dict[str, Any]] = []
+    for role in ("control", "hypothesis", "cautious"):
+        scenario_id = scenario_roles[role]
+        row = model_by_id[scenario_id]
+        rows.append(
+            {
+                "scenario_role": role,
+                "scenario_id": scenario_id,
+                "served_observed_qty": row["served_observed_qty"],
+                "served_observed_delta_to_control_qty": str(
+                    _decimal(row["served_observed_qty"])
+                    - _decimal(control["served_observed_qty"])
+                ),
+                "observed_fill_rate": row["observed_fill_rate"],
+                "observed_fill_rate_delta_to_control": str(
+                    _decimal(row["observed_fill_rate"])
+                    - _decimal(control["observed_fill_rate"])
+                ),
+                "gross_profit_rub": row["gross_profit_rub"],
+                "gross_profit_delta_to_control_rub": str(
+                    _decimal(row["gross_profit_rub"])
+                    - _decimal(control["gross_profit_rub"])
+                ),
+                "average_inventory_value_rub": row["average_inventory_value_rub"],
+                "capital_delta_to_control_rub": str(
+                    _decimal(row["average_inventory_value_rub"])
+                    - _decimal(control["average_inventory_value_rub"])
+                ),
+                "ending_inventory_qty": row["ending_inventory_qty"],
+                "ending_inventory_delta_to_control_qty": str(
+                    _decimal(row["ending_inventory_qty"])
+                    - _decimal(control["ending_inventory_qty"])
+                ),
+                "economic_contribution_rub": row["economic_contribution_rub"],
+                "economic_contribution_delta_to_control_rub": str(
+                    _decimal(row["economic_contribution_rub"])
+                    - _decimal(control["economic_contribution_rub"])
+                ),
+                "order_value_rub": row["order_value_rub"],
+                "manual_review_created": row["manual_review_created"],
+                "acceleration_positive_recalculations": row.get(
+                    "acceleration_positive_recalculations", 0
+                ),
+                "acceleration_budget_limited_recalculations": row.get(
+                    "acceleration_budget_limited_recalculations", 0
+                ),
+                "acceleration_requested_qty": row.get("acceleration_requested_qty", "0"),
+                "acceleration_allocated_qty": row.get("acceleration_allocated_qty", "0"),
+                "acceptance_passed": row["acceptance_passed"],
+                "diagnostic_only": 1,
+            }
+        )
+    return rows
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--preflight-dir", type=Path, required=True)
@@ -1828,6 +2035,14 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("config/assortment/display-auto-order-backtest-scenarios.json"),
     )
+    parser.add_argument(
+        "--run-mode",
+        choices=(RUN_MODE_FULL, RUN_MODE_QUICK),
+        default=RUN_MODE_FULL,
+    )
+    parser.add_argument("--control-scenario-id")
+    parser.add_argument("--hypothesis-scenario-id")
+    parser.add_argument("--cautious-scenario-id")
     return parser.parse_args()
 
 
@@ -1863,9 +2078,20 @@ def main() -> int:
         if business_date is not None:
             decision_rows_by_date[business_date].append(row)
     initial_pipeline = _read_csv(args.preflight_dir / "initial-pipeline.csv")
-    scenarios = _load_scenarios(args.preflight_dir / "scenario-decisions.csv")
-    if not scenarios:
+    frozen_scenarios = _load_scenarios(args.preflight_dir / "scenario-decisions.csv")
+    if not frozen_scenarios:
         raise SystemExit("frozen scenario definitions are empty")
+    try:
+        selection = select_scenarios(
+            frozen_scenarios,
+            run_mode=args.run_mode,
+            control_scenario_id=args.control_scenario_id,
+            hypothesis_scenario_id=args.hypothesis_scenario_id,
+            cautious_scenario_id=args.cautious_scenario_id,
+        )
+    except ValueError as exc:
+        raise SystemExit(str(exc)) from exc
+    scenarios = selection.scenarios
 
     summary_rows: list[dict[str, Any]] = []
     base_result: SimulationResult | None = None
@@ -1874,10 +2100,10 @@ def main() -> int:
     stage_rows: list[dict[str, Any]] = []
     shared_demand_sample_cache: dict[tuple[str, date, int], list[Decimal]] = {}
     for scenario in scenarios:
-        keep_detail = scenario.scenario_id in {
+        keep_detail = selection.run_mode == RUN_MODE_FULL and scenario.scenario_id in {
             "legacy",
-            CONTROL_SCENARIO_ID,
-            BASE_SCENARIO_ID,
+            selection.control_scenario_id,
+            selection.base_scenario_id,
         }
         result = simulate_scenario(
             scenario=scenario,
@@ -1932,36 +2158,37 @@ def main() -> int:
                 "acceptance_passed": int(scenario_acceptance["passed"]),
             }
         )
+        model_summary.update(result.diagnostics.as_summary_fields())
         summary_rows.extend([actual_summary, model_summary])
         if keep_detail:
             detail_rows.extend(result.decision_rows)
             daily_rows.extend(result.daily_rows)
             stage_rows.extend(_stage_summary_rows(result, period_days))
-        if scenario.scenario_id == BASE_SCENARIO_ID:
+        if scenario.scenario_id == selection.base_scenario_id:
             base_result = result
 
     if base_result is None:
-        raise SystemExit(f"base scenario is missing: {BASE_SCENARIO_ID}")
+        raise SystemExit(f"base scenario is missing: {selection.base_scenario_id}")
     base_actual = next(
         row
         for row in summary_rows
-        if row["scenario_id"] == BASE_SCENARIO_ID and row["strategy"] == "actual"
+        if row["scenario_id"] == selection.base_scenario_id and row["strategy"] == "actual"
     )
     base_model = next(
         row
         for row in summary_rows
-        if row["scenario_id"] == BASE_SCENARIO_ID and row["strategy"] == "model"
+        if row["scenario_id"] == selection.base_scenario_id and row["strategy"] == "model"
     )
     acceptance = _acceptance_result(base_actual, base_model)
     control_actual = next(
         row
         for row in summary_rows
-        if row["scenario_id"] == CONTROL_SCENARIO_ID and row["strategy"] == "actual"
+        if row["scenario_id"] == selection.control_scenario_id and row["strategy"] == "actual"
     )
     control_model = next(
         row
         for row in summary_rows
-        if row["scenario_id"] == CONTROL_SCENARIO_ID and row["strategy"] == "model"
+        if row["scenario_id"] == selection.control_scenario_id and row["strategy"] == "model"
     )
     protected_model_rows = [
         row
@@ -1977,32 +2204,59 @@ def main() -> int:
     output = args.output_dir
     output.mkdir(parents=True, exist_ok=True)
     _write_csv(output / "frozen-scenario-summary.csv", summary_rows)
-    _write_csv(output / "frozen-baseline-decisions.csv", detail_rows)
-    _write_csv(output / "frozen-baseline-daily.csv", daily_rows)
-    _write_csv(output / "frozen-baseline-stage.csv", stage_rows)
-    _write_csv(
-        output / "frozen-baseline-period.csv",
-        _period_summary_rows(
-            daily_rows,
-            scenario_id=BASE_SCENARIO_ID,
-            date_from=date_from,
-            date_to=date_to,
-        ),
-    )
-    _write_csv(
-        output / "frozen-baseline-sku.csv",
-        _sku_comparison_rows(base_result, period_days),
-    )
+    artifact_filenames = ["frozen-scenario-summary.csv"]
+    quick_comparison: list[dict[str, Any]] = []
+    if selection.run_mode == RUN_MODE_QUICK:
+        quick_comparison = _quick_comparison_rows(
+            summary_rows,
+            scenario_roles=selection.scenario_roles,
+        )
+        _write_csv(output / "quick-scenario-comparison.csv", quick_comparison)
+        artifact_filenames.append("quick-scenario-comparison.csv")
+    else:
+        _write_csv(output / "frozen-baseline-decisions.csv", detail_rows)
+        _write_csv(output / "frozen-baseline-daily.csv", daily_rows)
+        _write_csv(output / "frozen-baseline-stage.csv", stage_rows)
+        _write_csv(
+            output / "frozen-baseline-period.csv",
+            _period_summary_rows(
+                daily_rows,
+                scenario_id=selection.base_scenario_id,
+                date_from=date_from,
+                date_to=date_to,
+            ),
+        )
+        _write_csv(
+            output / "frozen-baseline-sku.csv",
+            _sku_comparison_rows(base_result, period_days),
+        )
+        artifact_filenames.extend(
+            [
+                "frozen-baseline-decisions.csv",
+                "frozen-baseline-daily.csv",
+                "frozen-baseline-stage.csv",
+                "frozen-baseline-period.csv",
+                "frozen-baseline-sku.csv",
+            ]
+        )
     summary = {
         "schema": OUTPUT_SCHEMA,
         "source_preflight_manifest_sha256": _sha256(args.preflight_dir / "run-manifest.json"),
         "date_from": date_from.isoformat(),
         "date_to": date_to.isoformat(),
-        "base_scenario_id": BASE_SCENARIO_ID,
+        "run_mode": selection.run_mode,
+        "diagnostic_only": selection.run_mode == RUN_MODE_QUICK,
+        "production_authorized": False,
+        "artifact_level": (
+            "compact_metrics_only" if selection.run_mode == RUN_MODE_QUICK else "full_detail"
+        ),
+        "scenario_roles": dict(selection.scenario_roles),
+        "base_scenario_id": selection.base_scenario_id,
         "scenario_count": len(scenarios),
-        "control_scenario_id": CONTROL_SCENARIO_ID,
+        "control_scenario_id": selection.control_scenario_id,
         "method": {
             "source_mode": "frozen_preflight_only",
+            "execution_mode": selection.run_mode,
             "review_mode": "weekly_plus_event_and_daily_stockout_guard_manual_reviews_assumed_accepted;one_updatable_manual_review_per_scenario_sku",
             "hidden_demand_evaluation": "weighted_unmatched_kmp4_site_and_confirmed_reserve_backlog_at_expiry_or_cancellation",
             "signal_inventory_effect": "one_common_fifo_queue; weighted KMP4 and site open quantities are added once to min/max; reserve backlog acts through effective reserve",
@@ -2013,10 +2267,14 @@ def main() -> int:
             "lead_time_usage": "p50_for_simulated_arrival_and_p75_for_positive_economic_service_or_acceleration_coverage",
             "economic_safety_stock": "completed_underforecast_error_capped_by_margin_vs_holding_cost_and_applied_only_above_the_grow_service_floor",
             "grow_service_floor": "sale_stage_p75_or_p90_minimum;budgeted_p90_has_per_sku_and_concurrent_stage_value_caps_with_marginal_saved_margin_allocation",
-            "grow_acceleration": "sale_stage_completed_recent_7_or_14_day_rate_vs_prior_28_or_42_days;economic_increment_above_ordinary_p90;per_sku_and_stage_budget;pipeline_fraction_1_0_0_75_0_5_by_lead_time_confidence",
+            "grow_acceleration": "sale_stage_completed_recent_7_or_14_day_rate_vs_prior_28_or_42_days;protect_max_of_p90_and_acceleration_gap_without_per_sku_economic_quantity_cap;concurrent_stage_budget_ranked_by_expected_saved_margin_per_purchase_ruble;manual_review;pipeline_fraction_1_0_0_75_0_5_by_lead_time_confidence",
             "grow_weekly_target_protection": "min_max_reduction_limited_to_10_20_30_percent_per_scheduled_week;event_reviews_may_raise_not_lower",
             "grow_entry_protection": "entry_min_max_may_rise_but_not_fall_for_2_4_6_weeks",
-            "focused_scenario_design": "legacy_plus_prior_control_plus_18_balanced_economic_cap_combinations_plus_three_service_floors_plus_three_targeted_acceleration_profiles",
+            "focused_scenario_design": (
+                "three_explicit_roles_control_hypothesis_cautious_on_full_frozen_cohort"
+                if selection.run_mode == RUN_MODE_QUICK
+                else "legacy_plus_prior_control_plus_18_balanced_economic_cap_combinations_plus_three_service_floors_plus_three_targeted_acceleration_profiles"
+            ),
             "within_period_launches": "first_observed_positive_stock_seeded_as_exogenous_launch_supply",
             "new_item_reorder_gate": "launch_profile_starts_after_first_positive_stock_or_initial_pipeline_arrival",
         },
@@ -2031,16 +2289,10 @@ def main() -> int:
         "base_model": base_model,
         "control_actual": control_actual,
         "control_model": control_model,
+        "quick_comparison": quick_comparison,
         "files": {
             filename: _sha256(output / filename)
-            for filename in (
-                "frozen-scenario-summary.csv",
-                "frozen-baseline-decisions.csv",
-                "frozen-baseline-daily.csv",
-                "frozen-baseline-stage.csv",
-                "frozen-baseline-period.csv",
-                "frozen-baseline-sku.csv",
-            )
+            for filename in artifact_filenames
         },
     }
     (output / "frozen-summary.json").write_text(

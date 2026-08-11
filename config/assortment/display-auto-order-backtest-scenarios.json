@@ -75,33 +75,36 @@
     "acceleration_scenarios": [
       {
         "name": "fast",
+        "quantity_policy": "protected_p90_no_economic_cap",
         "recent_days": 7,
         "baseline_days": 28,
         "min_recent_sales": 2,
         "rate_multiplier": 1.5,
-        "per_sku_cap_rub": 50000,
+        "per_sku_cap_rub": 0,
         "stage_budget_rub": 8000000,
         "medium_pipeline_fraction": 0.75,
         "low_pipeline_fraction": 0.5
       },
       {
         "name": "balanced",
+        "quantity_policy": "protected_p90_no_economic_cap",
         "recent_days": 14,
         "baseline_days": 42,
         "min_recent_sales": 2,
         "rate_multiplier": 1.5,
-        "per_sku_cap_rub": 50000,
+        "per_sku_cap_rub": 0,
         "stage_budget_rub": 8000000,
         "medium_pipeline_fraction": 0.75,
         "low_pipeline_fraction": 0.5
       },
       {
         "name": "strict",
+        "quantity_policy": "protected_p90_no_economic_cap",
         "recent_days": 14,
         "baseline_days": 42,
         "min_recent_sales": 3,
         "rate_multiplier": 2,
-        "per_sku_cap_rub": 50000,
+        "per_sku_cap_rub": 0,
         "stage_budget_rub": 8000000,
         "medium_pipeline_fraction": 0.75,
         "low_pipeline_fraction": 0.5

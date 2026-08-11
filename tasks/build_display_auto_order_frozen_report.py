@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Mapping
 
 BASE_SCENARIO_ID = (
-    "grow_accel_balanced_r14_b42_x150_min2_sku50000_stage8000000_"
+    "grow_accel_balanced_retimep90_nocap_r14_b42_x150_min2_stage8000000_"
     "cap20_hold4_typical_kmp0_5_sitebalanced_base"
 )
 CONTROL_SCENARIO_ID = "grow_cap20_p90_hold4_typical_kmp0_5_sitebalanced_base"
@@ -27,12 +27,12 @@ SERVICE_FLOOR_SCENARIO_IDS = {
 }
 ACCELERATION_SCENARIO_IDS = {
     "fast": (
-        "grow_accel_fast_r7_b28_x150_min2_sku50000_stage8000000_"
+        "grow_accel_fast_retimep90_nocap_r7_b28_x150_min2_stage8000000_"
         "cap20_hold4_typical_kmp0_5_sitebalanced_base"
     ),
     "balanced": BASE_SCENARIO_ID,
     "strict": (
-        "grow_accel_strict_r14_b42_x200_min3_sku50000_stage8000000_"
+        "grow_accel_strict_retimep90_nocap_r14_b42_x200_min3_stage8000000_"
         "cap20_hold4_typical_kmp0_5_sitebalanced_base"
     ),
 }
@@ -453,6 +453,9 @@ def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
     acceleration_order_qty = Decimal("0")
     acceleration_order_line_count = 0
     acceleration_zero_economic_cap_count = 0
+    acceleration_zero_cap_requested_count = 0
+    acceleration_zero_cap_requested_qty = Decimal("0")
+    acceleration_zero_cap_allocated_qty = Decimal("0")
     acceleration_no_headroom_above_p90_count = 0
     acceleration_first_positive_date: str | None = None
     acceleration_pipeline_fraction_counts: dict[str, int] = defaultdict(int)
@@ -490,6 +493,14 @@ def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
             ):
                 acceleration_no_headroom_above_p90_count += 1
         acceleration_requested = _decimal(row.get("acceleration_requested_qty"))
+        if (
+            _decimal(row.get("acceleration_triggered")) > 0
+            and _decimal(row.get("economic_safety_cap_qty")) <= 0
+            and acceleration_requested > 0
+        ):
+            acceleration_zero_cap_requested_count += 1
+            acceleration_zero_cap_requested_qty += acceleration_requested
+            acceleration_zero_cap_allocated_qty += _decimal(row.get("acceleration_allocated_qty"))
         if acceleration_requested > 0:
             acceleration_recalculation_count += 1
             acceleration_positive_skus.add(row["nomenclature_code"])
@@ -616,7 +627,7 @@ def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
     order_lines = _decimal(model["order_lines"])
     manual_share = _ratio(_decimal(model["manual_order_lines"]), order_lines)
     return {
-        "schema": "display_auto_order_frozen_report_analysis.v4",
+        "schema": "display_auto_order_frozen_report_analysis.v5",
         "generated_at": datetime.now(UTC).replace(microsecond=0).isoformat().replace("+00:00", "Z"),
         "period": {"date_from": frozen["date_from"], "date_to": frozen["date_to"]},
         "cohort": {
@@ -731,6 +742,9 @@ def build_analysis(preflight_dir: Path, backtest_dir: Path) -> dict[str, Any]:
             "acceleration_zero_economic_cap_count": acceleration_zero_economic_cap_count,
             "acceleration_zero_economic_cap_share": acceleration_zero_economic_cap_count
             / max(1, acceleration_triggered_count),
+            "acceleration_zero_cap_requested_count": acceleration_zero_cap_requested_count,
+            "acceleration_zero_cap_requested_qty": float(acceleration_zero_cap_requested_qty),
+            "acceleration_zero_cap_allocated_qty": float(acceleration_zero_cap_allocated_qty),
             "acceleration_no_headroom_above_p90_count": (acceleration_no_headroom_above_p90_count),
             "acceleration_no_headroom_above_p90_share": (
                 acceleration_no_headroom_above_p90_count / max(1, acceleration_triggered_count)
@@ -1291,6 +1305,472 @@ def build_source_notes(analysis: Mapping[str, Any]) -> str:
 """
 
 
+def build_v7_markdown(analysis: Mapping[str, Any]) -> str:
+    """Build the stakeholder narrative for the no-economic-quantity-cap iteration."""
+
+    headline = analysis["headline"]
+    control = analysis["control_scenario"]
+    p90 = analysis["p90_scenario"]
+    acceleration = analysis["acceleration_scenarios"]
+    fast = acceleration["fast"]
+    balanced = acceleration["balanced"]
+    strict = acceleration["strict"]
+    trigger_profile = analysis["acceleration_trigger_profile"]
+    quality = analysis["source_quality"]
+    sale_stage = next(
+        (row for row in analysis["stages"] if row["status"] == "sale"),
+        {},
+    )
+    periods: dict[str, dict[str, Mapping[str, Any]]] = defaultdict(dict)
+    for row in analysis["period_sensitivity"]:
+        periods[row["period"]][row["strategy"]] = row
+    pre_july = periods.get("pre_july", {}).get("model", {})
+    july = periods.get("july", {}).get("model", {})
+    acceptance = analysis["acceleration_acceptance"]
+    evaluated = analysis["protective_scenario_acceptance"]
+    site_mapping = analysis.get("site_export", {}).get("mapping_stats", {})
+    zero_cap_allocated_share = _ratio(
+        _decimal(headline["acceleration_zero_cap_allocated_qty"]),
+        _decimal(headline["acceleration_zero_cap_requested_qty"]),
+    )
+    return f"""# Автозаказ дисплеев: фильтр снят, сервис вырос слишком дорогой ценой
+
+## Executive Summary
+
+- **Снятие economic cap с количества действительно вернуло продажи.** Профиль `balanced` обслужил на {_number(balanced['served_observed_delta_vs_control_qty'], signed=True)} записанных продаж больше прежней модели и добавил {_money_m(balanced['gross_profit_delta_vs_control_rub'])} валовой прибыли. Значит, прежний фильтр действительно блокировал полезное действие.
+- **Но защита стала слишком широкой.** За этот прирост `balanced` потребовал {_money_m(balanced['capital_delta_vs_control_rub'])} дополнительного среднего капитала и оставил {_number(balanced['ending_inventory_qty'] - control['ending_inventory_qty'], 1, signed=True)} единицы дополнительного остатка к концу периода. Экономический вклад после стоимости хранения ухудшился на {_money_m(control['economic_contribution_rub'] - balanced['economic_contribution_rub'])}.
+- **Строгий критерий снова не пройден.** Все три профиля улучшили сервис относительно прежней модели, но `{acceptance['passed_count']}/{acceptance['evaluated_count']}` профилей ускорения и `{evaluated['passed_count']}/{evaluated['evaluated_count']}` всех защитных сценариев выполнили одновременно условия по прибыли, fill rate и капиталу/GMROI.
+- **Вывод изменился.** В v6 действие было почти полностью запрещено; в v7 оно разрешено, но детектор ускорения выбирает слишком много SKU. Возвращать обнуляющий фильтр не нужно — следующий шаг должен сузить сам отбор до ожидаемого дефицита до поставки.
+
+## Что именно проверяли
+
+Период — с 1 февраля по 31 июля 2026 года, когорта — {analysis['cohort']['sku_count']} SKU предмета «Дисплеи». Историческая стадия на каждую дату восстановлена только по продажам и без знания будущего. Сайт, КМП4 и резерв уточняют скрытый спрос, но не переводят SKU между стадиями.
+
+В профилях `fast`, `balanced` и `strict` защищённая цель равна максимуму из `P90` исторической ошибки прогноза и покрытия ускорившегося спроса. Economic cap сохраняется в диагностике и ранжировании, но больше не уменьшает это количество. Лимита `50 тыс. ₽` на SKU нет; общий одновременно распределяемый бюджет стадии — `8 млн ₽`, все положительные решения считаются ручными.
+
+## Фильтр больше не обнуляет действие
+
+В `balanced` зафиксировано {_number(headline['acceleration_triggered_decision_count'])} срабатываний. У {_pct(headline['acceleration_zero_economic_cap_share'], 1)} из них прежний economic cap был нулевым, но теперь это не остановило расчёт: положительная потребность появилась в {_number(headline['acceleration_recalculation_count'])} пересчётах по {headline['acceleration_positive_sku_count']} SKU. Для событий с нулевым cap было запрошено {_number(headline['acceleration_zero_cap_requested_qty'])} единиц, из них общий бюджет распределил {_number(headline['acceleration_zero_cap_allocated_qty'])}, или {_pct(zero_cap_allocated_share, 1)}.
+
+То есть исправление сработало технически и методологически: нулевой economic cap больше не означает нулевой сервисный запас. Ограничителем стал общий бюджет и, прежде всего, качество отбора SKU.
+
+## Сервис вырос, но склад вырос гораздо сильнее
+
+| Вариант | Сервис записанных продаж | Продажи к прежней модели | Валовая прибыль к прежней модели | Средний капитал к прежней модели | Остаток к прежней модели |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Прежняя модель | {_pct(control['observed_fill_rate'])} | — | — | — | — |
+| Полный P90 | {_pct(p90['observed_fill_rate'])} | {_number(p90['served_observed_delta_vs_control_qty'], signed=True)} | {_money_m(p90['gross_profit_delta_vs_control_rub'])} | {_money_m(p90['capital_delta_vs_control_rub'])} | {_number(p90['ending_inventory_qty'] - control['ending_inventory_qty'], 1, signed=True)} |
+| Без cap, `fast` | {_pct(fast['observed_fill_rate'])} | {_number(fast['served_observed_delta_vs_control_qty'], 1, signed=True)} | {_money_m(fast['gross_profit_delta_vs_control_rub'])} | {_money_m(fast['capital_delta_vs_control_rub'])} | {_number(fast['ending_inventory_qty'] - control['ending_inventory_qty'], 1, signed=True)} |
+| Без cap, `balanced` | {_pct(balanced['observed_fill_rate'])} | {_number(balanced['served_observed_delta_vs_control_qty'], 1, signed=True)} | {_money_m(balanced['gross_profit_delta_vs_control_rub'])} | {_money_m(balanced['capital_delta_vs_control_rub'])} | {_number(balanced['ending_inventory_qty'] - control['ending_inventory_qty'], 1, signed=True)} |
+| Без cap, `strict` | {_pct(strict['observed_fill_rate'])} | {_number(strict['served_observed_delta_vs_control_qty'], 1, signed=True)} | {_money_m(strict['gross_profit_delta_vs_control_rub'])} | {_money_m(strict['capital_delta_vs_control_rub'])} | {_number(strict['ending_inventory_qty'] - control['ending_inventory_qty'], 1, signed=True)} |
+
+`fast` вернул больше всего продаж, но потребовал больше всего капитала. `strict` оказался самым осторожным из трёх, однако даже он ухудшил экономический вклад относительно контроля. Значит, проблема не решается только настройкой окна: относительное ускорение по нескольким продажам остаётся слишком слабым фильтром длинного хвоста.
+
+## Основной эффект по-прежнему относится к стадии «Растим»
+
+В базовом `balanced` стадия «Растим» всё ещё потеряла сверх факта {_number(sale_stage.get('additional_lost_observed_qty', 0), 1)} записанной продажи. Профиль отметил ускорение хотя бы раз у {_pct(trigger_profile['balanced']['trigger_sku_share'], 1)} SKU этой стадии. Он вернул заметную часть дефицита контроля, но одновременно закупил запас для большого числа товаров, где спрос не реализовался до конца периода.
+
+Практический смысл: защищать «Растим» нужно, но не по правилу «две продажи после тихого окна». Кандидат должен одновременно иметь рост относительно прошлого окна, превышение текущего прогноза и ожидаемую нехватку до срока `P75` не менее согласованного порога.
+
+## До июля и июль отдельно
+
+- До июля fill rate `balanced` по полному потенциальному спросу — **{_pct(pre_july.get('fill_rate', 0))}**, валовая прибыль — **{_money_m(pre_july.get('gross_profit_rub', 0))}**.
+- За июль fill rate — **{_pct(july.get('fill_rate', 0))}**, валовая прибыль — **{_money_m(july.get('gross_profit_rub', 0))}**.
+
+Июльский скачок событий сайта оставлен в данных и показан отдельно. Он не объясняет основной вывод: рост капитала возникает из широкого применения защиты к стадии «Растим», а не из повторного начисления сайта.
+
+## Что делать дальше
+
+1. **Не возвращать обнуляющий economic cap.** Он маскировал потребность и мешал понять реальную цену сервиса.
+2. **Заменить широкий триггер на ожидаемый дефицит до поставки.** Ускорение должно быть выше прошлого окна и текущего прогноза, а нехватка до `P75` — не менее `2` единиц как первый тестовый порог.
+3. **Оставить экономику для ранжирования и общего бюджета.** Сначала финансировать единицы с наибольшей ожидаемой сохранённой маржой на рубль закупки; непрофинансированную потребность показывать отдельно.
+4. **Привязать haircut к конкретной партии.** Снижать доверие только к просроченной или нестабильной поставке, а не ко всему товару в пути SKU.
+5. **Production не включать.** Следующий шаг — ещё один frozen-backtest с узким отбором; forward shadow допустим только после положительного результата и отдельного решения.
+
+## Открытые вопросы
+
+- Оставить первый порог ожидаемого дефицита `2` единицы или заменить его минимальной потерей маржи за срок поставки?
+- Считать `8 млн ₽` бюджетом одного одновременного пересчёта или вводить также недельный лимит новых обязательств?
+- Какой уровень отсутствующей себестоимости блокирует автоматическое ранжирование и требует обязательного ручного решения?
+
+## Ограничения и допущения
+
+- Фактические обычные продажи видны только когда состоялись; скрытый спрос оценивается через КМП4, сайт и резерв.
+- Между run `1126` и `1128` изменились только шесть строк стартовых профилей; lifecycle, daily facts, продажи, pipeline и события сайта совпали по SHA-256. Это не объясняет крупный эффект стадии «Растим».
+- В frozen preflight есть {quality['negative_register_balances']['value']} отрицательных строк регистра; они не считаются спросом и не увеличивают доступный остаток.
+- В нормализованном экспорте сайта сопоставлено {site_mapping.get('mapped_row_count', '—')} строк; события вне когорты не распределялись догадкой.
+- Все положительные ручные рекомендации в симуляции считаются принятыми. В реальной работе результат зависит от дисциплины обработки `manual_review`.
+- Production-заказы и внешние записи не создавались.
+"""
+
+
+def build_v7_source_notes(analysis: Mapping[str, Any]) -> str:
+    return f"""# Source Notes
+
+## Reporting job
+
+- Audience: product stakeholders.
+- Decision: whether removing the per-SKU economic quantity cap makes the display auto-order model ready for a shadow or production step.
+- Window: 2026-02-01 through 2026-07-31, Europe/Moscow business dates.
+- Cohort: all {analysis['cohort']['sku_count']} display SKU in classification run {analysis['cohort']['classification_run_id']}.
+- Baseline: `grow_cap20_p90_hold4_typical_kmp0_5_sitebalanced_base`.
+- Success: gross profit and fill rate not below actual, plus lower capital or higher GMROI.
+
+## Evidence inventory
+
+- Frozen PASS preflight manifest and its checksums.
+- Frozen scenario, decision, stage, period and SKU CSV files.
+- Canonical lifecycle policy and tested Python implementation.
+- Historical stages use completed past sales only; website, KMP4 and reserve do not change stage.
+
+## Chart map
+
+- `service_delta_chart`: category comparison bar; additional observed sales versus control; source `frozen-scenario-summary.csv`; single-root blue palette; zero baseline.
+- `capital_delta_chart`: category comparison bar; additional average inventory capital versus control; source `frozen-scenario-summary.csv`; single-root orange palette; zero baseline.
+- `stage_loss_chart`: category comparison bar; additional lost observed sales versus actual by lifecycle stage; source `frozen-baseline-stage.csv`; single-root gold palette; zero baseline.
+
+## Validation
+
+- Headline service, profit, capital, ending inventory and acceptance values were independently recomputed from `frozen-scenario-summary.csv`.
+- Preflight v6/v7 SHA-256 values match for lifecycle, daily facts, historical sales, initial pipeline, normalized/raw site events and reconciliations. Six decision-input rows differ only in launch-profile fields after classification run 1128.
+- Negative reserve balances stay excluded from demand and availability.
+- July remains in scope and is also shown separately.
+- Confidence: share with caveats; direction is reproducible, but the counterfactual still assumes every manual recommendation is accepted.
+"""
+
+
+def build_v7_artifact(analysis: Mapping[str, Any]) -> dict[str, Any]:
+    title = "Автозаказ дисплеев: сервис вырос слишком дорогой ценой"
+    control = analysis["control_scenario"]
+    balanced = analysis["acceleration_scenarios"]["balanced"]
+    acceleration = analysis["acceleration_scenarios"]
+    sources = [
+        _source("frozen_summary", "Итог frozen-backtest", "frozen-summary.json"),
+        _source(
+            "scenario_summary",
+            "Сравнение сценариев frozen-backtest",
+            "frozen-scenario-summary.csv",
+        ),
+        _source(
+            "decision_detail",
+            "Решения ускорения и распределение бюджета",
+            "frozen-baseline-decisions.csv",
+        ),
+        _source(
+            "stage_summary",
+            "Итоги по историческим стадиям",
+            "frozen-baseline-stage.csv",
+        ),
+        _source(
+            "period_summary",
+            "Итоги до июля и за июль",
+            "frozen-baseline-period.csv",
+        ),
+        _source(
+            "preflight_manifest",
+            "PASS preflight и контрольные суммы",
+            f"{analysis['preflight_directory_name']}/run-manifest.json",
+        ),
+    ]
+    headline_rows = [
+        {
+            "observed_fill_rate": balanced["observed_fill_rate"],
+            "incremental_sales_qty": balanced["served_observed_delta_vs_control_qty"],
+            "incremental_gross_profit_million_rub": balanced["gross_profit_delta_vs_control_rub"]
+            / 1_000_000,
+            "incremental_capital_million_rub": balanced["capital_delta_vs_control_rub"] / 1_000_000,
+            "ending_inventory_delta_qty": balanced["ending_inventory_qty"]
+            - control["ending_inventory_qty"],
+            "passed_profiles": analysis["acceleration_acceptance"]["passed_count"],
+            "evaluated_profiles": analysis["acceleration_acceptance"]["evaluated_count"],
+        }
+    ]
+    labels = {
+        "p90": "Полный P90",
+        "fast": "Без cap: fast",
+        "balanced": "Без cap: balanced",
+        "strict": "Без cap: strict",
+    }
+    tradeoff_rows = [
+        {
+            "scenario_label": labels["p90"],
+            "served_observed_delta_vs_control_qty": analysis["p90_scenario"][
+                "served_observed_delta_vs_control_qty"
+            ],
+            "gross_profit_delta_vs_control_rub": analysis["p90_scenario"][
+                "gross_profit_delta_vs_control_rub"
+            ],
+            "capital_delta_vs_control_rub": analysis["p90_scenario"][
+                "capital_delta_vs_control_rub"
+            ],
+            "ending_inventory_delta_qty": analysis["p90_scenario"]["ending_inventory_qty"]
+            - control["ending_inventory_qty"],
+            "observed_fill_rate": analysis["p90_scenario"]["observed_fill_rate"],
+        }
+    ]
+    for profile in ("fast", "balanced", "strict"):
+        row = acceleration[profile]
+        tradeoff_rows.append(
+            {
+                "scenario_label": labels[profile],
+                "served_observed_delta_vs_control_qty": row["served_observed_delta_vs_control_qty"],
+                "gross_profit_delta_vs_control_rub": row["gross_profit_delta_vs_control_rub"],
+                "capital_delta_vs_control_rub": row["capital_delta_vs_control_rub"],
+                "ending_inventory_delta_qty": row["ending_inventory_qty"]
+                - control["ending_inventory_qty"],
+                "observed_fill_rate": row["observed_fill_rate"],
+            }
+        )
+    stage_rows = [
+        {
+            "stage_label": row["stage_label"],
+            "additional_lost_observed_qty": row["additional_lost_observed_qty"],
+            "gross_profit_delta_rub": row["gross_profit_delta_rub"],
+            "capital_delta_rub": row["capital_delta_rub"],
+        }
+        for row in analysis["stages"]
+    ]
+    cards = [
+        {
+            "id": "service_card",
+            "description": "Дополнительные записанные продажи balanced относительно прежней модели.",
+            "dataset": "headline",
+            "sourceId": "scenario_summary",
+            "metrics": [
+                {
+                    "label": "Дополнительные продажи",
+                    "field": "incremental_sales_qty",
+                    "format": "number",
+                    "signed": True,
+                }
+            ],
+        },
+        {
+            "id": "profit_card",
+            "description": "Изменение валовой прибыли balanced относительно прежней модели.",
+            "dataset": "headline",
+            "sourceId": "scenario_summary",
+            "metrics": [
+                {
+                    "label": "Δ валовая прибыль, млн ₽",
+                    "field": "incremental_gross_profit_million_rub",
+                    "format": "number",
+                    "signed": True,
+                }
+            ],
+        },
+        {
+            "id": "capital_card",
+            "description": "Дополнительный средний складской капитал balanced.",
+            "dataset": "headline",
+            "sourceId": "scenario_summary",
+            "metrics": [
+                {
+                    "label": "Δ средний капитал, млн ₽",
+                    "field": "incremental_capital_million_rub",
+                    "format": "number",
+                    "signed": True,
+                }
+            ],
+        },
+        {
+            "id": "acceptance_card",
+            "description": "Профили, выполнившие все строгие условия одновременно.",
+            "dataset": "headline",
+            "sourceId": "scenario_summary",
+            "metrics": [
+                {"label": "Прошли acceptance", "field": "passed_profiles", "format": "number"},
+                {"label": "проверено", "field": "evaluated_profiles", "format": "number"},
+            ],
+        },
+    ]
+    charts = [
+        {
+            "id": "service_delta_chart",
+            "title": "Дополнительные записанные продажи",
+            "subtitle": "К прежней модели, февраль–июль 2026 года, шт.",
+            "showDescription": True,
+            "type": "bar",
+            "dataset": "scenario_tradeoff",
+            "sourceId": "scenario_summary",
+            "encodings": {
+                "x": {"field": "scenario_label", "type": "nominal", "label": "Вариант"},
+                "y": {
+                    "field": "served_observed_delta_vs_control_qty",
+                    "type": "quantitative",
+                    "label": "Дополнительные продажи, шт.",
+                },
+            },
+            "valueFormat": "number",
+            "layout": "full",
+            "palette": {"kind": "categorical"},
+        },
+        {
+            "id": "capital_delta_chart",
+            "title": "Дополнительный средний складской капитал",
+            "subtitle": "К прежней модели, февраль–июль 2026 года, ₽.",
+            "showDescription": True,
+            "type": "bar",
+            "dataset": "scenario_tradeoff",
+            "sourceId": "scenario_summary",
+            "encodings": {
+                "x": {"field": "scenario_label", "type": "nominal", "label": "Вариант"},
+                "y": {
+                    "field": "capital_delta_vs_control_rub",
+                    "type": "quantitative",
+                    "label": "Дополнительный капитал, ₽",
+                },
+            },
+            "valueFormat": "number",
+            "layout": "full",
+            "palette": {"kind": "categorical"},
+        },
+        {
+            "id": "stage_loss_chart",
+            "title": "Необслуженные записанные продажи по стадиям",
+            "subtitle": "Дополнительные потери модели относительно факта, февраль–июль 2026 года, шт.",
+            "showDescription": True,
+            "type": "bar",
+            "dataset": "stage_loss",
+            "sourceId": "stage_summary",
+            "encodings": {
+                "x": {"field": "stage_label", "type": "nominal", "label": "Стадия"},
+                "y": {
+                    "field": "additional_lost_observed_qty",
+                    "type": "quantitative",
+                    "label": "Дополнительные потери, шт.",
+                },
+            },
+            "valueFormat": "number",
+            "layout": "full",
+            "palette": {"kind": "categorical"},
+        },
+    ]
+    summary_body = (
+        "## Executive Summary\n\n"
+        f"- **Фильтр действительно мешал сервису.** Balanced вернул {_number(balanced['served_observed_delta_vs_control_qty'], 1, signed=True)} записанных продаж и {_money_m(balanced['gross_profit_delta_vs_control_rub'])} валовой прибыли к прежней модели.\n"
+        f"- **Цена улучшения слишком высокая.** Средний складской капитал вырос на {_money_m(balanced['capital_delta_vs_control_rub'])}, конечный остаток — на {_number(balanced['ending_inventory_qty'] - control['ending_inventory_qty'], 1, signed=True)} единицы.\n"
+        f"- **Production включать нельзя.** Строгий критерий прошли `{analysis['acceleration_acceptance']['passed_count']}/{analysis['acceleration_acceptance']['evaluated_count']}` профилей. Следующая итерация должна сузить отбор до ожидаемого дефицита до поставки, а не возвращать обнуляющий cap."
+    )
+    blocks = [
+        {"id": "title", "type": "markdown", "body": f"# {title}"},
+        {
+            "id": "executive_summary",
+            "type": "markdown",
+            "body": summary_body,
+            "sourceId": "scenario_summary",
+        },
+        {"id": "headline_metrics", "type": "metric-strip", "cardIds": [row["id"] for row in cards]},
+        {
+            "id": "scope",
+            "type": "markdown",
+            "body": (
+                "## Что проверяли\n\n"
+                f"Период — 1 февраля–31 июля 2026 года, когорта — {analysis['cohort']['sku_count']} SKU дисплеев. Стадия ежедневно восстановлена только по прошлым продажам. В v7 economic cap остаётся для диагностики и ранжирования, но не уменьшает защищённое количество; лимита 50 тыс. ₽ на SKU нет, общий бюджет стадии — 8 млн ₽."
+            ),
+            "sourceId": "preflight_manifest",
+        },
+        {
+            "id": "mechanism",
+            "type": "markdown",
+            "body": (
+                "## Нулевой cap больше не означает нулевое действие\n\n"
+                f"**Исправление сработало:** положительная потребность появилась в {_number(analysis['headline']['acceleration_recalculation_count'])} пересчётах по {analysis['headline']['acceleration_positive_sku_count']} SKU. Даже при нулевом старом cap модель смогла передать рассчитанные единицы на распределение общего бюджета. Теперь узкое место — слишком широкий выбор SKU, а не запрет количества."
+            ),
+            "sourceId": "decision_detail",
+        },
+        {
+            "id": "service_tradeoff",
+            "type": "markdown",
+            "body": (
+                "## Продажи вернулись, но запас вырос несоразмерно\n\n"
+                "Все три профиля улучшили сервис относительно прежней модели. Fast вернул больше всего продаж, strict потребовал меньше капитала, balanced находится между ними. Ни один вариант не улучшил одновременно сервис, прибыль и эффективность капитала — поэтому рост продаж нельзя считать готовым экономическим результатом."
+            ),
+            "sourceId": "scenario_summary",
+        },
+        {"id": "service_delta", "type": "chart", "chartId": "service_delta_chart"},
+        {
+            "id": "capital_interpretation",
+            "type": "markdown",
+            "body": (
+                "## Цена сервисного эффекта\n\n"
+                f"Balanced добавил {_money_m(balanced['gross_profit_delta_vs_control_rub'])} валовой прибыли, но ухудшил экономический вклад после хранения на {_money_m(control['economic_contribution_rub'] - balanced['economic_contribution_rub'])}. Это означает, что запас в основном был создан раньше или шире, чем требовал реализовавшийся спрос."
+            ),
+            "sourceId": "scenario_summary",
+        },
+        {"id": "capital_delta", "type": "chart", "chartId": "capital_delta_chart"},
+        {
+            "id": "stage_interpretation",
+            "type": "markdown",
+            "body": (
+                "## Главная зона решения — стадия «Растим»\n\n"
+                "Защита должна остаться адресной именно для «Растим», но относительного ускорения недостаточно. Следующий кандидат обязан одновременно превышать прошлое окно и текущий прогноз и показывать ожидаемую нехватку до срока P75."
+            ),
+            "sourceId": "stage_summary",
+        },
+        {"id": "stage_loss", "type": "chart", "chartId": "stage_loss_chart"},
+        {
+            "id": "next_steps",
+            "type": "markdown",
+            "body": (
+                "## Что делать дальше\n\n"
+                "1. Не возвращать обнуляющий economic cap.\n"
+                "2. В следующем frozen-backtest допускать защиту только при ожидаемом дефиците до P75 не менее 2 единиц и росте выше текущего прогноза.\n"
+                "3. Сохранить ранжирование по ожидаемой марже на рубль закупки и общий бюджет 8 млн ₽.\n"
+                "4. Привязать снижение доверия к конкретной просроченной партии.\n"
+                "5. Production и forward shadow оставить заблокированными."
+            ),
+        },
+        {
+            "id": "questions",
+            "type": "markdown",
+            "body": (
+                "## Открытые вопросы\n\n"
+                "- Порог ожидаемого дефицита: 2 единицы или минимальная потеря маржи?\n"
+                "- Нужен ли недельный бюджет новых обязательств дополнительно к 8 млн ₽ одного пересчёта?\n"
+                "- Как обрабатывать SKU без себестоимости до ручного решения?"
+            ),
+        },
+        {
+            "id": "caveats",
+            "type": "markdown",
+            "body": (
+                "## Ограничения и допущения\n\n"
+                "Фактический незарегистрированный спрос неизвестен и оценивается через сайт, КМП4 и резерв. Все положительные ручные рекомендации в симуляции считаются принятыми. Между run 1126 и 1128 изменились только шесть строк стартовых профилей; основные frozen-факты совпали. Production-заказы и внешние записи не создавались."
+            ),
+        },
+    ]
+    return {
+        "surface": "report",
+        "manifest": {
+            "version": 1,
+            "surface": "report",
+            "title": title,
+            "description": "Frozen-backtest адресной защиты ускоряющихся SKU без количественного economic cap.",
+            "generatedAt": analysis["generated_at"],
+            "filters": [],
+            "cards": cards,
+            "charts": charts,
+            "tables": [],
+            "sources": sources,
+            "blocks": blocks,
+        },
+        "snapshot": {
+            "version": 1,
+            "generatedAt": analysis["generated_at"],
+            "status": "ready",
+            "datasets": {
+                "headline": headline_rows,
+                "scenario_tradeoff": tradeoff_rows,
+                "stage_loss": stage_rows,
+            },
+            "accessIssues": [],
+        },
+        "sources": sources,
+        "package_info": {"originUrl": "artifact://display-auto-order-no-economic-cap-v7"},
+    }
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--preflight-dir", type=Path, required=True)
@@ -1305,12 +1785,12 @@ def main() -> int:
         json.dumps(analysis, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     (args.backtest_dir / "FROZEN-BACKTEST-DIAGNOSTIC.md").write_text(
-        build_markdown(analysis), encoding="utf-8"
+        build_v7_markdown(analysis), encoding="utf-8"
     )
     (args.backtest_dir / "FROZEN-REPORT-SOURCE-NOTES.md").write_text(
-        build_source_notes(analysis), encoding="utf-8"
+        build_v7_source_notes(analysis), encoding="utf-8"
     )
-    artifact = build_artifact(analysis)
+    artifact = build_v7_artifact(analysis)
     (args.backtest_dir / "artifact.json").write_text(
         json.dumps(artifact, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )

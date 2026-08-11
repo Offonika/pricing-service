@@ -1,4 +1,7 @@
-from tasks.build_display_auto_order_frozen_report import build_artifact, build_source_notes
+from tasks.build_display_auto_order_frozen_report import (
+    build_v7_artifact,
+    build_v7_source_notes,
+)
 
 
 def test_frozen_report_metric_cards_render_ruble_values_without_usd_format() -> None:
@@ -182,24 +185,26 @@ def test_frozen_report_metric_cards_render_ruble_values_without_usd_format() -> 
         },
     }
 
-    artifact = build_artifact(analysis)
+    artifact = build_v7_artifact(analysis)
 
-    assert artifact["manifest"]["title"] == ("Автозаказ дисплеев: ускорение не улучшило сервис")
+    assert artifact["manifest"]["title"] == (
+        "Автозаказ дисплеев: сервис вырос слишком дорогой ценой"
+    )
     sources = {source["id"]: source for source in artifact["manifest"]["sources"]}
     assert sources["preflight_manifest"]["path"] == (
         "next-stage-model-preflight-acceleration-v6/run-manifest.json"
     )
     headline = artifact["snapshot"]["datasets"]["headline"][0]
-    assert headline["acceleration_incremental_profit_million_rub"] == 0
-    assert headline["acceleration_incremental_capital_million_rub"] == 0.01
+    assert headline["incremental_gross_profit_million_rub"] == 0
+    assert headline["incremental_capital_million_rub"] == 0.01
     cards = {card["id"]: card for card in artifact["manifest"]["cards"]}
-    assert cards["acceleration_sales_card"]["metrics"][0] == {
+    assert cards["service_card"]["metrics"][0] == {
         "label": "Дополнительные продажи",
-        "field": "acceleration_incremental_sales_qty",
+        "field": "incremental_sales_qty",
         "format": "number",
         "signed": True,
     }
-    assert cards["acceptance_card"]["metrics"][0]["field"] == "passed_scenario_count"
-    source_notes = build_source_notes(analysis)
-    assert "| Сравнение правил |" in source_notes
+    assert cards["acceptance_card"]["metrics"][0]["field"] == "passed_profiles"
+    source_notes = build_v7_source_notes(analysis)
+    assert "## Chart map" in source_notes
     assert "Site demand is excluded" not in source_notes

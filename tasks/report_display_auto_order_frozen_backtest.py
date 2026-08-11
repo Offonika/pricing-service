@@ -14,6 +14,10 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from app.services.assortment_lifecycle import AssortmentStatus
+from app.services.display_auto_order_demand_pattern import (
+    classify_demand_pattern,
+    completed_weekly_demand,
+)
 from tasks.build_display_auto_order_dry_run import (
     AutoOrderPolicy,
     load_auto_order_policy,
@@ -34,9 +38,31 @@ BASE_SCENARIO_ID = (
     "cap20_hold4_typical_kmp0_5_sitebalanced_base"
 )
 CONTROL_SCENARIO_ID = "grow_cap20_p90_hold4_typical_kmp0_5_sitebalanced_base"
-OUTPUT_SCHEMA = "display_auto_order_frozen_backtest.v9"
+OUTPUT_SCHEMA = "display_auto_order_frozen_backtest.v12"
 RUN_MODE_FULL = "full"
 RUN_MODE_QUICK = "quick"
+ACCELERATION_SEGMENT_PROFILE_OFF = "off"
+ACCELERATION_SEGMENT_PROFILE_LOW_RISK = "low_cost_high_confidence"
+ACCELERATION_SEGMENT_PROFILE_LOW_RISK_SPARSE = "low_cost_high_confidence_sparse"
+ACCELERATION_SEGMENT_PROFILE_LOW_RISK_COLD_START = "low_cost_high_confidence_cold_start"
+ACCELERATION_SEGMENT_PROFILES = (
+    ACCELERATION_SEGMENT_PROFILE_OFF,
+    ACCELERATION_SEGMENT_PROFILE_LOW_RISK,
+    ACCELERATION_SEGMENT_PROFILE_LOW_RISK_SPARSE,
+    ACCELERATION_SEGMENT_PROFILE_LOW_RISK_COLD_START,
+)
+BASE_PIPELINE_PROFILE_OFF = "off"
+BASE_PIPELINE_PROFILE_MEDIUM_95 = "medium_95"
+BASE_PIPELINE_PROFILE_MEDIUM_90 = "medium_90"
+BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050 = "medium_95_margin_cost_050"
+BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_100 = "medium_95_margin_cost_100"
+BASE_PIPELINE_PROFILES = (
+    BASE_PIPELINE_PROFILE_OFF,
+    BASE_PIPELINE_PROFILE_MEDIUM_95,
+    BASE_PIPELINE_PROFILE_MEDIUM_90,
+    BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050,
+    BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_100,
+)
 
 
 def _clean(value: Any) -> str:
@@ -124,6 +150,16 @@ class FrozenScenario:
     grow_acceleration_min_shortage_qty: Decimal = ZERO
     grow_acceleration_cap_to_projected_shortage: bool = False
     grow_acceleration_single_open_lot: bool = False
+    grow_acceleration_segment_profile: str = ACCELERATION_SEGMENT_PROFILE_OFF
+    grow_acceleration_allowed_demand_patterns: tuple[str, ...] = ()
+    grow_acceleration_max_unit_cost_rub: Decimal = ZERO
+    grow_acceleration_allowed_lead_confidences: tuple[str, ...] = ()
+    grow_acceleration_max_p75_days: int = 0
+    base_pipeline_profile: str = BASE_PIPELINE_PROFILE_OFF
+    base_pipeline_high_fraction: Decimal = ONE
+    base_pipeline_medium_fraction: Decimal = ONE
+    base_pipeline_low_fraction: Decimal = ONE
+    base_pipeline_min_margin_to_cost_ratio: Decimal = ZERO
     legacy: bool = False
 
 
@@ -179,6 +215,7 @@ class SimulationResult:
     model_by_stage: dict[str, Metric]
     decision_rows: list[dict[str, Any]]
     daily_rows: list[dict[str, Any]]
+    loss_rows: list[dict[str, Any]]
     diagnostics: ScenarioDiagnostics
 
 
@@ -205,6 +242,13 @@ class ScenarioDiagnostics:
     acceleration_released_on_arrival_qty: Decimal = ZERO
     acceleration_open_protection_peak_qty: Decimal = ZERO
     acceleration_open_protection_ending_qty: Decimal = ZERO
+    acceleration_segment_evaluated_recalculations: int = 0
+    acceleration_segment_passed_recalculations: int = 0
+    acceleration_segment_blocked_recalculations: int = 0
+    acceleration_segment_blocked_pattern_recalculations: int = 0
+    acceleration_segment_blocked_cost_recalculations: int = 0
+    acceleration_segment_blocked_confidence_recalculations: int = 0
+    acceleration_segment_blocked_p75_recalculations: int = 0
 
     def as_summary_fields(self) -> dict[str, Any]:
         return {
@@ -240,18 +284,35 @@ class ScenarioDiagnostics:
             "acceleration_single_open_blocked_recalculations": (
                 self.acceleration_single_open_blocked_recalculations
             ),
-            "acceleration_single_open_blocked_qty": str(
-                self.acceleration_single_open_blocked_qty
-            ),
+            "acceleration_single_open_blocked_qty": str(self.acceleration_single_open_blocked_qty),
             "acceleration_order_component_qty": str(self.acceleration_order_component_qty),
-            "acceleration_released_on_arrival_qty": str(
-                self.acceleration_released_on_arrival_qty
-            ),
+            "acceleration_released_on_arrival_qty": str(self.acceleration_released_on_arrival_qty),
             "acceleration_open_protection_peak_qty": str(
                 self.acceleration_open_protection_peak_qty
             ),
             "acceleration_open_protection_ending_qty": str(
                 self.acceleration_open_protection_ending_qty
+            ),
+            "acceleration_segment_evaluated_recalculations": (
+                self.acceleration_segment_evaluated_recalculations
+            ),
+            "acceleration_segment_passed_recalculations": (
+                self.acceleration_segment_passed_recalculations
+            ),
+            "acceleration_segment_blocked_recalculations": (
+                self.acceleration_segment_blocked_recalculations
+            ),
+            "acceleration_segment_blocked_pattern_recalculations": (
+                self.acceleration_segment_blocked_pattern_recalculations
+            ),
+            "acceleration_segment_blocked_cost_recalculations": (
+                self.acceleration_segment_blocked_cost_recalculations
+            ),
+            "acceleration_segment_blocked_confidence_recalculations": (
+                self.acceleration_segment_blocked_confidence_recalculations
+            ),
+            "acceleration_segment_blocked_p75_recalculations": (
+                self.acceleration_segment_blocked_p75_recalculations
             ),
         }
 
@@ -388,6 +449,189 @@ def apply_quick_acceleration_guard(
     )
 
 
+@dataclass(frozen=True)
+class AccelerationSegmentRule:
+    profile: str
+    allowed_demand_patterns: tuple[str, ...]
+    max_unit_cost_rub: Decimal
+    allowed_lead_confidences: tuple[str, ...]
+    max_p75_days: int
+
+
+def acceleration_segment_rule(profile: str) -> AccelerationSegmentRule:
+    normalized = _clean(profile).lower() or ACCELERATION_SEGMENT_PROFILE_OFF
+    common = {
+        "max_unit_cost_rub": Decimal("500"),
+        "allowed_lead_confidences": ("high",),
+        "max_p75_days": 90,
+    }
+    if normalized == ACCELERATION_SEGMENT_PROFILE_OFF:
+        return AccelerationSegmentRule(normalized, (), ZERO, (), 0)
+    if normalized == ACCELERATION_SEGMENT_PROFILE_LOW_RISK:
+        return AccelerationSegmentRule(normalized, (), **common)
+    if normalized == ACCELERATION_SEGMENT_PROFILE_LOW_RISK_SPARSE:
+        return AccelerationSegmentRule(
+            normalized,
+            ("intermittent", "lumpy"),
+            **common,
+        )
+    if normalized == ACCELERATION_SEGMENT_PROFILE_LOW_RISK_COLD_START:
+        return AccelerationSegmentRule(
+            normalized,
+            ("no_history", "insufficient_history"),
+            **common,
+        )
+    raise ValueError(f"unsupported acceleration segment profile: {profile}")
+
+
+def apply_quick_acceleration_segment_gates(
+    selection: ScenarioSelection,
+    *,
+    hypothesis_profile: str,
+    cautious_profile: str,
+) -> ScenarioSelection:
+    if selection.run_mode != RUN_MODE_QUICK:
+        raise ValueError("acceleration segment gates are supported only in quick mode")
+    source_by_id = {scenario.scenario_id: scenario for scenario in selection.scenarios}
+    gated_by_role: dict[str, FrozenScenario] = {
+        "control": source_by_id[selection.scenario_roles["control"]]
+    }
+    for role, profile in (
+        ("hypothesis", hypothesis_profile),
+        ("cautious", cautious_profile),
+    ):
+        source = source_by_id[selection.scenario_roles[role]]
+        rule = acceleration_segment_rule(profile)
+        if rule.profile != ACCELERATION_SEGMENT_PROFILE_OFF and not (
+            source.grow_acceleration_single_open_lot
+        ):
+            raise ValueError("acceleration segment gate requires single open acceleration lot")
+        if rule.profile == ACCELERATION_SEGMENT_PROFILE_OFF:
+            gated_by_role[role] = source
+            continue
+        gated_by_role[role] = replace(
+            source,
+            scenario_id=f"{source.scenario_id}_segment_{rule.profile}",
+            grow_acceleration_quantity_policy=(
+                f"{source.grow_acceleration_quantity_policy}_segment_{rule.profile}"
+            ),
+            grow_acceleration_segment_profile=rule.profile,
+            grow_acceleration_allowed_demand_patterns=rule.allowed_demand_patterns,
+            grow_acceleration_max_unit_cost_rub=rule.max_unit_cost_rub,
+            grow_acceleration_allowed_lead_confidences=(rule.allowed_lead_confidences),
+            grow_acceleration_max_p75_days=rule.max_p75_days,
+        )
+    scenario_roles = {
+        role: gated_by_role[role].scenario_id for role in ("control", "hypothesis", "cautious")
+    }
+    return ScenarioSelection(
+        run_mode=selection.run_mode,
+        scenarios=tuple(gated_by_role[role] for role in ("control", "hypothesis", "cautious")),
+        base_scenario_id=scenario_roles["hypothesis"],
+        control_scenario_id=scenario_roles["control"],
+        scenario_roles=scenario_roles,
+    )
+
+
+def base_pipeline_profile_fractions(profile: str) -> tuple[Decimal, Decimal, Decimal]:
+    normalized = _clean(profile).lower() or BASE_PIPELINE_PROFILE_OFF
+    if normalized == BASE_PIPELINE_PROFILE_OFF:
+        return ONE, ONE, ONE
+    if normalized == BASE_PIPELINE_PROFILE_MEDIUM_95:
+        return ONE, Decimal("0.95"), Decimal("0.75")
+    if normalized == BASE_PIPELINE_PROFILE_MEDIUM_90:
+        return ONE, Decimal("0.90"), Decimal("0.50")
+    if normalized in {
+        BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050,
+        BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_100,
+    }:
+        return ONE, Decimal("0.95"), ONE
+    raise ValueError(f"unsupported base pipeline profile: {profile}")
+
+
+def base_pipeline_margin_cost_ratio_floor(profile: str) -> Decimal:
+    normalized = _clean(profile).lower() or BASE_PIPELINE_PROFILE_OFF
+    if normalized == BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_050:
+        return Decimal("0.5")
+    if normalized == BASE_PIPELINE_PROFILE_MEDIUM_95_MARGIN_COST_100:
+        return ONE
+    if normalized in {
+        BASE_PIPELINE_PROFILE_OFF,
+        BASE_PIPELINE_PROFILE_MEDIUM_95,
+        BASE_PIPELINE_PROFILE_MEDIUM_90,
+    }:
+        return ZERO
+    raise ValueError(f"unsupported base pipeline profile: {profile}")
+
+
+def base_pipeline_fraction(
+    confidence: str,
+    *,
+    high_fraction: Decimal,
+    medium_fraction: Decimal,
+    low_fraction: Decimal,
+    min_margin_to_cost_ratio: Decimal = ZERO,
+    gross_margin_per_unit_rub: Decimal = ZERO,
+    inventory_cost_per_unit_rub: Decimal = ZERO,
+) -> Decimal:
+    normalized = _clean(confidence).lower()
+    if normalized == "high":
+        return max(ZERO, min(ONE, _decimal(high_fraction)))
+    if normalized == "medium":
+        ratio_floor = max(ZERO, _decimal(min_margin_to_cost_ratio))
+        unit_cost = _decimal(inventory_cost_per_unit_rub)
+        gross_margin = _decimal(gross_margin_per_unit_rub)
+        if ratio_floor > ZERO and (unit_cost <= ZERO or gross_margin / unit_cost < ratio_floor):
+            return ONE
+        return max(ZERO, min(ONE, _decimal(medium_fraction)))
+    return max(ZERO, min(ONE, _decimal(low_fraction)))
+
+
+def apply_quick_base_pipeline_profiles(
+    selection: ScenarioSelection,
+    *,
+    hypothesis_profile: str,
+    cautious_profile: str,
+) -> ScenarioSelection:
+    if selection.run_mode != RUN_MODE_QUICK:
+        raise ValueError("base pipeline profiles are supported only in quick mode")
+    source_by_id = {scenario.scenario_id: scenario for scenario in selection.scenarios}
+    control = source_by_id[selection.scenario_roles["control"]]
+    if control.grow_acceleration_profile != "off":
+        raise ValueError("base pipeline challenger requires an acceleration-off control")
+    scenarios_by_role = {"control": control}
+    for role, profile in (
+        ("hypothesis", hypothesis_profile),
+        ("cautious", cautious_profile),
+    ):
+        normalized = _clean(profile).lower()
+        high, medium, low = base_pipeline_profile_fractions(normalized)
+        margin_cost_ratio_floor = base_pipeline_margin_cost_ratio_floor(normalized)
+        if normalized == BASE_PIPELINE_PROFILE_OFF:
+            raise ValueError("base pipeline challenger profiles must not be off")
+        scenarios_by_role[role] = replace(
+            control,
+            scenario_id=f"{control.scenario_id}_basepipeline_{normalized}",
+            base_pipeline_profile=normalized,
+            base_pipeline_high_fraction=high,
+            base_pipeline_medium_fraction=medium,
+            base_pipeline_low_fraction=low,
+            base_pipeline_min_margin_to_cost_ratio=margin_cost_ratio_floor,
+        )
+    if scenarios_by_role["hypothesis"].scenario_id == scenarios_by_role["cautious"].scenario_id:
+        raise ValueError("base pipeline hypothesis and cautious profiles must differ")
+    scenario_roles = {
+        role: scenarios_by_role[role].scenario_id for role in ("control", "hypothesis", "cautious")
+    }
+    return ScenarioSelection(
+        run_mode=selection.run_mode,
+        scenarios=tuple(scenarios_by_role[role] for role in ("control", "hypothesis", "cautious")),
+        base_scenario_id=scenario_roles["hypothesis"],
+        control_scenario_id=scenario_roles["control"],
+        scenario_roles=scenario_roles,
+    )
+
+
 @dataclass
 class GrowProtectionState:
     entered_at: date | None
@@ -424,6 +668,52 @@ class AccelerationShortageGuard:
     eligible: bool
     gross_projected_shortage_qty: Decimal = ZERO
     open_acceleration_protection_qty: Decimal = ZERO
+
+
+@dataclass(frozen=True)
+class AccelerationSegmentGate:
+    demand_pattern: str
+    pattern_passed: bool
+    cost_passed: bool
+    confidence_passed: bool
+    p75_passed: bool
+    eligible: bool
+
+
+def evaluate_acceleration_segment_gate(
+    *,
+    demand_pattern: str,
+    unit_cost_rub: Decimal,
+    lead_time_confidence: str,
+    lead_time_p75_days: int,
+    allowed_demand_patterns: Sequence[str],
+    max_unit_cost_rub: Decimal,
+    allowed_lead_confidences: Sequence[str],
+    max_p75_days: int,
+) -> AccelerationSegmentGate:
+    normalized_pattern = _clean(demand_pattern).lower() or "no_history"
+    normalized_patterns = {
+        _clean(value).lower() for value in allowed_demand_patterns if _clean(value)
+    }
+    normalized_confidence = _clean(lead_time_confidence).lower()
+    normalized_confidences = {
+        _clean(value).lower() for value in allowed_lead_confidences if _clean(value)
+    }
+    pattern_passed = not normalized_patterns or normalized_pattern in normalized_patterns
+    cost = max(ZERO, unit_cost_rub)
+    cost_passed = max_unit_cost_rub <= ZERO or (ZERO < cost < max_unit_cost_rub)
+    confidence_passed = (
+        not normalized_confidences or normalized_confidence in normalized_confidences
+    )
+    p75_passed = max_p75_days <= 0 or (0 < lead_time_p75_days <= max_p75_days)
+    return AccelerationSegmentGate(
+        demand_pattern=normalized_pattern,
+        pattern_passed=pattern_passed,
+        cost_passed=cost_passed,
+        confidence_passed=confidence_passed,
+        p75_passed=p75_passed,
+        eligible=(pattern_passed and cost_passed and confidence_passed and p75_passed),
+    )
 
 
 def _load_scenarios(path: Path) -> list[FrozenScenario]:
@@ -485,6 +775,45 @@ def _load_scenarios(path: Path) -> list[FrozenScenario]:
                 grow_acceleration_single_open_lot=(
                     _clean(row.get("grow_acceleration_single_open_lot")).lower()
                     in {"1", "true", "yes", "y"}
+                ),
+                grow_acceleration_segment_profile=(
+                    _clean(row.get("grow_acceleration_segment_profile"))
+                    or ACCELERATION_SEGMENT_PROFILE_OFF
+                ),
+                grow_acceleration_allowed_demand_patterns=tuple(
+                    value
+                    for value in (
+                        _clean(item).lower()
+                        for item in _clean(
+                            row.get("grow_acceleration_allowed_demand_patterns")
+                        ).split(",")
+                    )
+                    if value
+                ),
+                grow_acceleration_max_unit_cost_rub=_decimal(
+                    row.get("grow_acceleration_max_unit_cost_rub")
+                ),
+                grow_acceleration_allowed_lead_confidences=tuple(
+                    value
+                    for value in (
+                        _clean(item).lower()
+                        for item in _clean(
+                            row.get("grow_acceleration_allowed_lead_confidences")
+                        ).split(",")
+                    )
+                    if value
+                ),
+                grow_acceleration_max_p75_days=int(row.get("grow_acceleration_max_p75_days") or 0),
+                base_pipeline_profile=(
+                    _clean(row.get("base_pipeline_profile")) or BASE_PIPELINE_PROFILE_OFF
+                ),
+                base_pipeline_high_fraction=_decimal(row.get("base_pipeline_high_fraction") or ONE),
+                base_pipeline_medium_fraction=_decimal(
+                    row.get("base_pipeline_medium_fraction") or ONE
+                ),
+                base_pipeline_low_fraction=_decimal(row.get("base_pipeline_low_fraction") or ONE),
+                base_pipeline_min_margin_to_cost_ratio=_decimal(
+                    row.get("base_pipeline_min_margin_to_cost_ratio")
                 ),
                 cost=CarryingCostScenario(
                     name=_clean(row.get("holding_cost_scenario")),
@@ -588,8 +917,22 @@ def _summary(
         "grow_acceleration_cap_to_projected_shortage": int(
             scenario.grow_acceleration_cap_to_projected_shortage
         ),
-        "grow_acceleration_single_open_lot": int(
-            scenario.grow_acceleration_single_open_lot
+        "grow_acceleration_single_open_lot": int(scenario.grow_acceleration_single_open_lot),
+        "grow_acceleration_segment_profile": scenario.grow_acceleration_segment_profile,
+        "grow_acceleration_allowed_demand_patterns": ",".join(
+            scenario.grow_acceleration_allowed_demand_patterns
+        ),
+        "grow_acceleration_max_unit_cost_rub": str(scenario.grow_acceleration_max_unit_cost_rub),
+        "grow_acceleration_allowed_lead_confidences": ",".join(
+            scenario.grow_acceleration_allowed_lead_confidences
+        ),
+        "grow_acceleration_max_p75_days": scenario.grow_acceleration_max_p75_days,
+        "base_pipeline_profile": scenario.base_pipeline_profile,
+        "base_pipeline_high_fraction": str(scenario.base_pipeline_high_fraction),
+        "base_pipeline_medium_fraction": str(scenario.base_pipeline_medium_fraction),
+        "base_pipeline_low_fraction": str(scenario.base_pipeline_low_fraction),
+        "base_pipeline_min_margin_to_cost_ratio": str(
+            scenario.base_pipeline_min_margin_to_cost_ratio
         ),
         "holding_cost_scenario": scenario.cost.name,
         "capital_annual_rate": str(scenario.cost.capital_annual_rate),
@@ -817,9 +1160,7 @@ def evaluate_acceleration_shortage_guard(
     )
     open_protection = max(ZERO, open_acceleration_protection_qty)
     inventory_position = gross_inventory_position + open_protection
-    gross_projected_shortage = _ceil(
-        max(ZERO, projected_demand - gross_inventory_position)
-    )
+    gross_projected_shortage = _ceil(max(ZERO, projected_demand - gross_inventory_position))
     projected_shortage = _ceil(max(ZERO, gross_projected_shortage - open_protection))
     forecast_growth_passed = bool(
         not require_forecast_growth or signal.recent_rate > max(ZERO, forecast_rate)
@@ -1075,6 +1416,15 @@ def simulate_scenario(
             if _clean(row.get("nomenclature_code"))
         }
     )
+    demand_pattern_by_code = {
+        code: classify_demand_pattern(
+            completed_weekly_demand(
+                sales_by_code.get(code, {}),
+                as_of=date_from,
+            )
+        ).name
+        for code in codes
+    }
     first_facts = {
         _clean(row.get("nomenclature_code")): row for row in fact_rows_by_date.get(date_from, ())
     }
@@ -1144,8 +1494,10 @@ def simulate_scenario(
             if code:
                 decision_history_by_code[code].append(row)
     latest_decision_rows: dict[str, Mapping[str, Any]] = {}
+    last_evaluation_by_code: dict[str, dict[str, Any]] = {}
     decision_detail: list[dict[str, Any]] = []
     daily_detail: list[dict[str, Any]] = []
+    loss_detail: list[dict[str, Any]] = []
     grow_target_states: dict[str, GrowProtectionState] = {}
     manual_review_seen: set[str] = set()
     diagnostics = ScenarioDiagnostics()
@@ -1161,11 +1513,9 @@ def simulate_scenario(
                 max(ZERO, acceleration_arrivals.get(cursor, {}).get(code, ZERO)),
             )
             if acceleration_arrived > ZERO:
-                open_acceleration_protection_qty[code] = (
-                    release_open_acceleration_protection(
-                        open_acceleration_protection_qty[code],
-                        arrived_qty=acceleration_arrived,
-                    )
+                open_acceleration_protection_qty[code] = release_open_acceleration_protection(
+                    open_acceleration_protection_qty[code],
+                    arrived_qty=acceleration_arrived,
                 )
                 released_acceleration_today[code] = acceleration_arrived
                 diagnostics.acceleration_released_on_arrival_qty += acceleration_arrived
@@ -1273,6 +1623,7 @@ def simulate_scenario(
 
             model_row = model[code]
             model_stage = model_by_stage[status]
+            model_stock_before_demand = stock[code]
             served_observed = min(stock[code], observed)
             stock[code] -= served_observed
             model_hidden_served_by_source, remaining_stock = _allocate_hidden(
@@ -1291,6 +1642,96 @@ def simulate_scenario(
             model_row.priced_inventory_qty_days += stock[code] if cost > ZERO else ZERO
             model_row.inventory_value_days_rub += stock[code] * cost
             model_row.ending_inventory_qty = stock[code]
+            lost_observed = observed - served_observed
+            if keep_detail and lost_observed > ZERO:
+                prior = last_evaluation_by_code.get(code, {})
+                pending_arrival_dates = [
+                    arrival_date
+                    for arrival_date, quantities in arrivals.items()
+                    if arrival_date > cursor and quantities.get(code, ZERO) > ZERO
+                ]
+                next_arrival_date = min(pending_arrival_dates, default=None)
+                current_input = latest_decision_rows.get(code, {})
+                fresh_input = decisions_today.get(code, {})
+                loss_detail.append(
+                    {
+                        "scenario_id": scenario.scenario_id,
+                        "business_date": cursor.isoformat(),
+                        "nomenclature_code": code,
+                        "status": status,
+                        "demand_pattern_preperiod": demand_pattern_by_code[code],
+                        "observed_demand_qty": str(observed),
+                        "served_observed_qty": str(served_observed),
+                        "lost_observed_qty": str(lost_observed),
+                        "model_stock_before_demand_qty": str(model_stock_before_demand),
+                        "model_stock_after_demand_qty": str(stock[code]),
+                        "actual_physical_stock_qty": str(actual_stock),
+                        "raw_reserve_qty": str(_decimal(fact.get("raw_reserve_qty"))),
+                        "effective_reserve_qty": str(
+                            max(ZERO, _decimal(fact.get("effective_reserve_qty")))
+                        ),
+                        "reserve_backlog_qty": str(
+                            max(ZERO, _decimal(fact.get("reserve_backlog_qty")))
+                        ),
+                        "model_pipeline_qty": str(pipeline_qty[code]),
+                        "next_pipeline_arrival_date": (
+                            next_arrival_date.isoformat() if next_arrival_date else ""
+                        ),
+                        "days_to_next_pipeline_arrival": (
+                            (next_arrival_date - cursor).days if next_arrival_date else ""
+                        ),
+                        "launch_seed_pending": int(code in launch_seed_pending),
+                        "launch_ready": int(code in launch_ready),
+                        "inventory_cost_per_unit_rub": str(current_cost[code]),
+                        "gross_margin_per_unit_rub": str(current_margin[code]),
+                        "current_forecast_rate_sales": str(
+                            max(ZERO, _decimal(current_input.get("forecast_rate_sales")))
+                        ),
+                        "current_lead_time_p50_days": int(
+                            current_input.get("lead_time_p50_days") or 52
+                        ),
+                        "current_lead_time_p75_days": int(
+                            current_input.get("lead_time_p75_days")
+                            or current_input.get("lead_time_p50_days")
+                            or 52
+                        ),
+                        "current_lead_time_confidence": _clean(
+                            current_input.get("lead_time_confidence")
+                        ),
+                        "current_day_has_fresh_decision": int(bool(fresh_input)),
+                        "current_day_scheduled_review": int(
+                            _clean(fresh_input.get("scheduled_review")) == "1"
+                        ),
+                        "prior_evaluation_date": prior.get("evaluation_date", ""),
+                        "prior_input_decision_date": prior.get("input_decision_date", ""),
+                        "prior_fresh_decision": prior.get("fresh_decision", 0),
+                        "prior_scheduled_review": prior.get("scheduled_review", 0),
+                        "prior_forecast_rate_sales": prior.get("forecast_rate_sales", ""),
+                        "prior_selected_lead_time_days": prior.get("selected_lead_time_days", ""),
+                        "prior_simulated_arrival_lead_time_days": prior.get(
+                            "simulated_arrival_lead_time_days", ""
+                        ),
+                        "prior_lead_time_p75_days": prior.get("lead_time_p75_days", ""),
+                        "prior_lead_time_confidence": prior.get("lead_time_confidence", ""),
+                        "prior_min_stock_qty": prior.get("min_stock_qty", ""),
+                        "prior_max_stock_qty": prior.get("max_stock_qty", ""),
+                        "prior_safety_stock_qty": prior.get("safety_stock_qty", ""),
+                        "prior_target_stock_qty": prior.get("target_stock_qty", ""),
+                        "prior_model_stock_qty": prior.get("model_stock_qty", ""),
+                        "prior_reserve_qty": prior.get("reserve_qty", ""),
+                        "prior_model_pipeline_qty": prior.get("model_pipeline_qty", ""),
+                        "prior_effective_model_pipeline_qty": prior.get(
+                            "effective_model_pipeline_qty", ""
+                        ),
+                        "prior_inventory_position_qty": prior.get("inventory_position_qty", ""),
+                        "prior_triggered": prior.get("triggered", 0),
+                        "prior_recommended_order_qty_raw": prior.get(
+                            "recommended_order_qty_raw", ""
+                        ),
+                        "prior_recommended_order_qty": prior.get("recommended_order_qty", ""),
+                        "prior_expected_arrival_date": prior.get("expected_arrival_date", ""),
+                    }
+                )
             _add_hidden_source_metrics(
                 model_row,
                 demand_by_source=hidden_by_source,
@@ -1458,6 +1899,15 @@ def simulate_scenario(
                     medium_fraction=scenario.grow_acceleration_medium_pipeline_fraction,
                     low_fraction=scenario.grow_acceleration_low_pipeline_fraction,
                 )
+                candidate_base_pipeline_fraction = base_pipeline_fraction(
+                    _clean(candidate_row.get("lead_time_confidence")),
+                    high_fraction=scenario.base_pipeline_high_fraction,
+                    medium_fraction=scenario.base_pipeline_medium_fraction,
+                    low_fraction=scenario.base_pipeline_low_fraction,
+                    min_margin_to_cost_ratio=(scenario.base_pipeline_min_margin_to_cost_ratio),
+                    gross_margin_per_unit_rub=current_margin[candidate_code],
+                    inventory_cost_per_unit_rub=current_cost[candidate_code],
+                )
                 candidate_open_acceleration = (
                     open_acceleration_protection_qty[candidate_code]
                     if scenario.grow_acceleration_single_open_lot
@@ -1474,16 +1924,29 @@ def simulate_scenario(
                     model_stock_qty=stock[candidate_code],
                     effective_reserve_qty=candidate_reserve,
                     effective_pipeline_qty=(
-                        candidate_ordinary_pipeline * candidate_pipeline_fraction
+                        candidate_ordinary_pipeline
+                        * min(candidate_pipeline_fraction, candidate_base_pipeline_fraction)
                         if scenario.grow_acceleration_single_open_lot
-                        else pipeline_qty[candidate_code] * candidate_pipeline_fraction
+                        else pipeline_qty[candidate_code]
+                        * min(candidate_pipeline_fraction, candidate_base_pipeline_fraction)
                     ),
                     open_acceleration_protection_qty=candidate_open_acceleration,
                     require_forecast_growth=(scenario.grow_acceleration_require_forecast_growth),
                     min_shortage_qty=scenario.grow_acceleration_min_shortage_qty,
                 )
                 context["guard"] = guard
-                if not guard.eligible:
+                segment_gate = evaluate_acceleration_segment_gate(
+                    demand_pattern=demand_pattern_by_code[candidate_code],
+                    unit_cost_rub=current_cost[candidate_code],
+                    lead_time_confidence=_clean(candidate_row.get("lead_time_confidence")),
+                    lead_time_p75_days=candidate_lead_days,
+                    allowed_demand_patterns=(scenario.grow_acceleration_allowed_demand_patterns),
+                    max_unit_cost_rub=(scenario.grow_acceleration_max_unit_cost_rub),
+                    allowed_lead_confidences=(scenario.grow_acceleration_allowed_lead_confidences),
+                    max_p75_days=scenario.grow_acceleration_max_p75_days,
+                )
+                context["segment_gate"] = segment_gate
+                if not guard.eligible or not segment_gate.eligible:
                     continue
                 candidate_cache_key = (
                     candidate_code,
@@ -1561,6 +2024,7 @@ def simulate_scenario(
             for candidate_code, context in acceleration_context.items():
                 signal = context["signal"]
                 guard = context["guard"]
+                segment_gate = context["segment_gate"]
                 uncapped_requested_qty = context["uncapped_requested_qty"]
                 requested_qty = context["requested_qty"]
                 sku_capped_qty = context["sku_capped_qty"]
@@ -1573,6 +2037,26 @@ def simulate_scenario(
                     signal.triggered and guard.shortage_passed
                 )
                 diagnostics.acceleration_guard_eligible_recalculations += int(guard.eligible)
+                if guard.eligible:
+                    diagnostics.acceleration_segment_evaluated_recalculations += 1
+                    diagnostics.acceleration_segment_passed_recalculations += int(
+                        segment_gate.eligible
+                    )
+                    diagnostics.acceleration_segment_blocked_recalculations += int(
+                        not segment_gate.eligible
+                    )
+                    diagnostics.acceleration_segment_blocked_pattern_recalculations += int(
+                        not segment_gate.pattern_passed
+                    )
+                    diagnostics.acceleration_segment_blocked_cost_recalculations += int(
+                        not segment_gate.cost_passed
+                    )
+                    diagnostics.acceleration_segment_blocked_confidence_recalculations += int(
+                        not segment_gate.confidence_passed
+                    )
+                    diagnostics.acceleration_segment_blocked_p75_recalculations += int(
+                        not segment_gate.p75_passed
+                    )
                 shortage_threshold = max(
                     ZERO,
                     scenario.grow_acceleration_min_shortage_qty,
@@ -1594,8 +2078,7 @@ def simulate_scenario(
                 if blocked_by_open_lot:
                     diagnostics.acceleration_single_open_blocked_qty += max(
                         ZERO,
-                        guard.gross_projected_shortage_qty
-                        - guard.projected_shortage_qty,
+                        guard.gross_projected_shortage_qty - guard.projected_shortage_qty,
                     )
                 diagnostics.acceleration_uncapped_requested_qty += uncapped_requested_qty
                 diagnostics.acceleration_shortage_cap_reduction_qty += max(
@@ -1648,6 +2131,15 @@ def simulate_scenario(
             scenario_rate = rate
             arrival_lead_days = 52 if scenario.legacy else int(row.get("lead_time_p50_days") or 52)
             lead_days = arrival_lead_days
+            base_pipeline_share = base_pipeline_fraction(
+                _clean(row.get("lead_time_confidence")),
+                high_fraction=scenario.base_pipeline_high_fraction,
+                medium_fraction=scenario.base_pipeline_medium_fraction,
+                low_fraction=scenario.base_pipeline_low_fraction,
+                min_margin_to_cost_ratio=(scenario.base_pipeline_min_margin_to_cost_ratio),
+                gross_margin_per_unit_rub=current_margin[code],
+                inventory_cost_per_unit_rub=current_cost[code],
+            )
             safety_units = ZERO
             economic_safety_cap = ZERO
             percentile_safety_target = ZERO
@@ -1662,6 +2154,17 @@ def simulate_scenario(
             acceleration_guard = acceleration_row.get(
                 "guard",
                 AccelerationShortageGuard(False, ZERO, ZERO, ZERO, False, False),
+            )
+            acceleration_segment_gate = acceleration_row.get(
+                "segment_gate",
+                AccelerationSegmentGate(
+                    demand_pattern_by_code[code],
+                    True,
+                    True,
+                    True,
+                    True,
+                    True,
+                ),
             )
             acceleration_uncapped_requested = _decimal(
                 acceleration_row.get("uncapped_requested_qty")
@@ -1956,7 +2459,7 @@ def simulate_scenario(
                 and acceleration_base_min_qty is not None
                 and acceleration_base_max_qty is not None
             ):
-                ordinary_position = stock[code] - reserve + pipeline_qty[code]
+                ordinary_position = stock[code] - reserve + pipeline_qty[code] * base_pipeline_share
                 ordinary_triggered = ordinary_position <= ordinary_min_qty
                 ordinary_raw = (
                     _ceil(
@@ -1990,7 +2493,7 @@ def simulate_scenario(
                     pipeline_qty[code] - acceleration_open_before,
                 )
                 effective_pipeline_qty = (
-                    ordinary_pipeline_qty * acceleration_pipeline_share
+                    ordinary_pipeline_qty * min(acceleration_pipeline_share, base_pipeline_share)
                     + acceleration_open_before
                 )
                 position = stock[code] - reserve + effective_pipeline_qty
@@ -2012,7 +2515,10 @@ def simulate_scenario(
                 )
                 recommended = ordinary_recommended + acceleration_order_component
             else:
-                effective_pipeline_qty = pipeline_qty[code] * acceleration_pipeline_share
+                effective_pipeline_qty = pipeline_qty[code] * min(
+                    acceleration_pipeline_share,
+                    base_pipeline_share,
+                )
                 position = stock[code] - reserve + effective_pipeline_qty
                 triggered = position <= min_qty
                 raw = _ceil(max(ZERO, target_qty - position)) if triggered else ZERO
@@ -2023,6 +2529,42 @@ def simulate_scenario(
                     order_rounding_rules=policy.order_rounding_rules,
                 )
                 ordinary_recommended = recommended
+            last_evaluation_by_code[code] = {
+                "evaluation_date": cursor.isoformat(),
+                "input_decision_date": _clean(row.get("decision_date")),
+                "fresh_decision": int(fresh_decision),
+                "scheduled_review": int(scheduled_review),
+                "forecast_rate_sales": str(rate),
+                "selected_lead_time_days": lead_days,
+                "simulated_arrival_lead_time_days": arrival_lead_days,
+                "lead_time_p75_days": int(row.get("lead_time_p75_days") or lead_days),
+                "lead_time_confidence": _clean(row.get("lead_time_confidence")),
+                "min_stock_qty": str(min_qty),
+                "max_stock_qty": str(max_qty),
+                "safety_stock_qty": str(safety_units),
+                "target_stock_qty": str(target_qty),
+                "model_stock_qty": str(stock[code]),
+                "reserve_qty": str(reserve),
+                "model_pipeline_qty": str(pipeline_qty[code]),
+                "effective_model_pipeline_qty": str(effective_pipeline_qty),
+                "base_pipeline_profile": scenario.base_pipeline_profile,
+                "base_pipeline_fraction": str(base_pipeline_share),
+                "base_pipeline_min_margin_to_cost_ratio": str(
+                    scenario.base_pipeline_min_margin_to_cost_ratio
+                ),
+                "base_pipeline_margin_to_cost_ratio": str(
+                    current_margin[code] / current_cost[code] if current_cost[code] > ZERO else ZERO
+                ),
+                "inventory_position_qty": str(position),
+                "triggered": int(triggered),
+                "recommended_order_qty_raw": str(raw),
+                "recommended_order_qty": str(recommended),
+                "expected_arrival_date": (
+                    (cursor + timedelta(days=max(1, arrival_lead_days))).isoformat()
+                    if recommended > ZERO
+                    else ""
+                ),
+            }
             manual_review_action = ""
             if recommended > ZERO and manual:
                 if code in manual_review_seen:
@@ -2038,9 +2580,7 @@ def simulate_scenario(
                     acceleration_arrivals[arrival][code] += acceleration_order_component
                     open_acceleration_protection_qty[code] += acceleration_order_component
                     acceleration_open_after = open_acceleration_protection_qty[code]
-                    diagnostics.acceleration_order_component_qty += (
-                        acceleration_order_component
-                    )
+                    diagnostics.acceleration_order_component_qty += acceleration_order_component
                     diagnostics.acceleration_open_protection_peak_qty = max(
                         diagnostics.acceleration_open_protection_peak_qty,
                         sum(open_acceleration_protection_qty.values(), ZERO),
@@ -2172,18 +2712,33 @@ def simulate_scenario(
                         "acceleration_single_open_lot": int(
                             scenario.grow_acceleration_single_open_lot
                         ),
-                        "acceleration_open_protection_before_qty": str(
-                            acceleration_open_before
+                        "acceleration_segment_profile": (
+                            scenario.grow_acceleration_segment_profile
                         ),
-                        "acceleration_open_protection_after_qty": str(
-                            acceleration_open_after
+                        "acceleration_demand_pattern_preperiod": (
+                            acceleration_segment_gate.demand_pattern
                         ),
+                        "acceleration_segment_pattern_passed": int(
+                            acceleration_segment_gate.pattern_passed
+                        ),
+                        "acceleration_segment_cost_passed": int(
+                            acceleration_segment_gate.cost_passed
+                        ),
+                        "acceleration_segment_confidence_passed": int(
+                            acceleration_segment_gate.confidence_passed
+                        ),
+                        "acceleration_segment_p75_passed": int(
+                            acceleration_segment_gate.p75_passed
+                        ),
+                        "acceleration_segment_gate_eligible": int(
+                            acceleration_segment_gate.eligible
+                        ),
+                        "acceleration_open_protection_before_qty": str(acceleration_open_before),
+                        "acceleration_open_protection_after_qty": str(acceleration_open_after),
                         "acceleration_released_on_arrival_qty": str(
                             released_acceleration_today[code]
                         ),
-                        "acceleration_order_component_qty": str(
-                            acceleration_order_component
-                        ),
+                        "acceleration_order_component_qty": str(acceleration_order_component),
                         "acceleration_unfunded_qty": str(
                             max(ZERO, acceleration_requested - acceleration_allocated)
                         ),
@@ -2195,6 +2750,16 @@ def simulate_scenario(
                             acceleration_allocated < acceleration_requested
                         ),
                         "acceleration_pipeline_fraction": str(acceleration_pipeline_share),
+                        "base_pipeline_profile": scenario.base_pipeline_profile,
+                        "base_pipeline_fraction": str(base_pipeline_share),
+                        "base_pipeline_min_margin_to_cost_ratio": str(
+                            scenario.base_pipeline_min_margin_to_cost_ratio
+                        ),
+                        "base_pipeline_margin_to_cost_ratio": str(
+                            current_margin[code] / current_cost[code]
+                            if current_cost[code] > ZERO
+                            else ZERO
+                        ),
                         "model_stock_qty": str(stock[code]),
                         "reserve_qty": str(reserve),
                         "model_pipeline_qty": str(pipeline_qty[code]),
@@ -2230,6 +2795,7 @@ def simulate_scenario(
         model_by_stage=dict(model_by_stage),
         decision_rows=decision_detail,
         daily_rows=daily_detail,
+        loss_rows=loss_detail,
         diagnostics=diagnostics,
     )
 
@@ -2468,8 +3034,29 @@ def _quick_comparison_rows(
                 "acceleration_cap_to_projected_shortage": row.get(
                     "grow_acceleration_cap_to_projected_shortage", 0
                 ),
-                "acceleration_single_open_lot": row.get(
-                    "grow_acceleration_single_open_lot", 0
+                "acceleration_single_open_lot": row.get("grow_acceleration_single_open_lot", 0),
+                "acceleration_segment_profile": row.get(
+                    "grow_acceleration_segment_profile",
+                    ACCELERATION_SEGMENT_PROFILE_OFF,
+                ),
+                "acceleration_allowed_demand_patterns": row.get(
+                    "grow_acceleration_allowed_demand_patterns", ""
+                ),
+                "acceleration_max_unit_cost_rub": row.get(
+                    "grow_acceleration_max_unit_cost_rub", "0"
+                ),
+                "acceleration_allowed_lead_confidences": row.get(
+                    "grow_acceleration_allowed_lead_confidences", ""
+                ),
+                "acceleration_max_p75_days": row.get("grow_acceleration_max_p75_days", 0),
+                "base_pipeline_profile": row.get(
+                    "base_pipeline_profile", BASE_PIPELINE_PROFILE_OFF
+                ),
+                "base_pipeline_high_fraction": row.get("base_pipeline_high_fraction", "1"),
+                "base_pipeline_medium_fraction": row.get("base_pipeline_medium_fraction", "1"),
+                "base_pipeline_low_fraction": row.get("base_pipeline_low_fraction", "1"),
+                "base_pipeline_min_margin_to_cost_ratio": row.get(
+                    "base_pipeline_min_margin_to_cost_ratio", "0"
                 ),
                 "acceleration_triggered_recalculations": row.get(
                     "acceleration_triggered_recalculations", 0
@@ -2517,6 +3104,27 @@ def _quick_comparison_rows(
                 ),
                 "acceleration_open_protection_ending_qty": row.get(
                     "acceleration_open_protection_ending_qty", "0"
+                ),
+                "acceleration_segment_evaluated_recalculations": row.get(
+                    "acceleration_segment_evaluated_recalculations", 0
+                ),
+                "acceleration_segment_passed_recalculations": row.get(
+                    "acceleration_segment_passed_recalculations", 0
+                ),
+                "acceleration_segment_blocked_recalculations": row.get(
+                    "acceleration_segment_blocked_recalculations", 0
+                ),
+                "acceleration_segment_blocked_pattern_recalculations": row.get(
+                    "acceleration_segment_blocked_pattern_recalculations", 0
+                ),
+                "acceleration_segment_blocked_cost_recalculations": row.get(
+                    "acceleration_segment_blocked_cost_recalculations", 0
+                ),
+                "acceleration_segment_blocked_confidence_recalculations": row.get(
+                    "acceleration_segment_blocked_confidence_recalculations", 0
+                ),
+                "acceleration_segment_blocked_p75_recalculations": row.get(
+                    "acceleration_segment_blocked_p75_recalculations", 0
                 ),
                 "acceptance_passed": row["acceptance_passed"],
                 "diagnostic_only": 1,
@@ -2578,6 +3186,26 @@ def _parse_args() -> argparse.Namespace:
             "order only the remaining shortage growth"
         ),
     )
+    parser.add_argument(
+        "--quick-hypothesis-acceleration-segment-profile",
+        choices=ACCELERATION_SEGMENT_PROFILES,
+        default=ACCELERATION_SEGMENT_PROFILE_OFF,
+    )
+    parser.add_argument(
+        "--quick-cautious-acceleration-segment-profile",
+        choices=ACCELERATION_SEGMENT_PROFILES,
+        default=ACCELERATION_SEGMENT_PROFILE_OFF,
+    )
+    parser.add_argument(
+        "--quick-hypothesis-base-pipeline-profile",
+        choices=BASE_PIPELINE_PROFILES,
+        default=BASE_PIPELINE_PROFILE_OFF,
+    )
+    parser.add_argument(
+        "--quick-cautious-base-pipeline-profile",
+        choices=BASE_PIPELINE_PROFILES,
+        default=BASE_PIPELINE_PROFILE_OFF,
+    )
     return parser.parse_args()
 
 
@@ -2628,13 +3256,44 @@ def main() -> int:
         if args.quick_cap_acceleration_to_shortage and not args.quick_acceleration_guard:
             raise ValueError("shortage cap requires --quick-acceleration-guard")
         if args.quick_single_open_acceleration_lot and not (
-            args.quick_acceleration_guard
-            and args.quick_cap_acceleration_to_shortage
+            args.quick_acceleration_guard and args.quick_cap_acceleration_to_shortage
         ):
             raise ValueError(
                 "single open acceleration lot requires --quick-acceleration-guard "
                 "and --quick-cap-acceleration-to-shortage"
             )
+        segment_profiles_enabled = any(
+            profile != ACCELERATION_SEGMENT_PROFILE_OFF
+            for profile in (
+                args.quick_hypothesis_acceleration_segment_profile,
+                args.quick_cautious_acceleration_segment_profile,
+            )
+        )
+        if segment_profiles_enabled and not args.quick_single_open_acceleration_lot:
+            raise ValueError(
+                "acceleration segment profiles require " "--quick-single-open-acceleration-lot"
+            )
+        base_pipeline_profiles_enabled = any(
+            profile != BASE_PIPELINE_PROFILE_OFF
+            for profile in (
+                args.quick_hypothesis_base_pipeline_profile,
+                args.quick_cautious_base_pipeline_profile,
+            )
+        )
+        if base_pipeline_profiles_enabled and (
+            args.quick_acceleration_guard
+            or args.quick_cap_acceleration_to_shortage
+            or args.quick_single_open_acceleration_lot
+            or segment_profiles_enabled
+        ):
+            raise ValueError(
+                "base pipeline quick profiles cannot be combined with acceleration overlays"
+            )
+        if base_pipeline_profiles_enabled and BASE_PIPELINE_PROFILE_OFF in {
+            args.quick_hypothesis_base_pipeline_profile,
+            args.quick_cautious_base_pipeline_profile,
+        }:
+            raise ValueError("both base pipeline quick profiles must be selected")
         if args.quick_acceleration_guard:
             selection = apply_quick_acceleration_guard(
                 selection,
@@ -2642,6 +3301,18 @@ def main() -> int:
                 cautious_min_shortage_qty=args.cautious_min_shortage_qty,
                 cap_to_projected_shortage=(args.quick_cap_acceleration_to_shortage),
                 single_open_lot=(args.quick_single_open_acceleration_lot),
+            )
+        if segment_profiles_enabled:
+            selection = apply_quick_acceleration_segment_gates(
+                selection,
+                hypothesis_profile=(args.quick_hypothesis_acceleration_segment_profile),
+                cautious_profile=(args.quick_cautious_acceleration_segment_profile),
+            )
+        if base_pipeline_profiles_enabled:
+            selection = apply_quick_base_pipeline_profiles(
+                selection,
+                hypothesis_profile=args.quick_hypothesis_base_pipeline_profile,
+                cautious_profile=args.quick_cautious_base_pipeline_profile,
             )
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
@@ -2813,6 +3484,29 @@ def main() -> int:
             "single_open_lot": bool(args.quick_single_open_acceleration_lot),
             "hypothesis_min_shortage_qty": str(args.hypothesis_min_shortage_qty),
             "cautious_min_shortage_qty": str(args.cautious_min_shortage_qty),
+            "hypothesis_segment_profile": (args.quick_hypothesis_acceleration_segment_profile),
+            "cautious_segment_profile": (args.quick_cautious_acceleration_segment_profile),
+        },
+        "quick_base_pipeline": {
+            "enabled": base_pipeline_profiles_enabled,
+            "hypothesis_profile": args.quick_hypothesis_base_pipeline_profile,
+            "cautious_profile": args.quick_cautious_base_pipeline_profile,
+            "applies_to": "ordinary_min_max_inventory_position",
+            "high_confidence_fraction": "1",
+            "hypothesis_min_margin_to_cost_ratio": str(
+                next(
+                    scenario.base_pipeline_min_margin_to_cost_ratio
+                    for scenario in scenarios
+                    if scenario.scenario_id == selection.scenario_roles["hypothesis"]
+                )
+            ),
+            "cautious_min_margin_to_cost_ratio": str(
+                next(
+                    scenario.base_pipeline_min_margin_to_cost_ratio
+                    for scenario in scenarios
+                    if scenario.scenario_id == selection.scenario_roles["cautious"]
+                )
+            ),
         },
         "base_scenario_id": selection.base_scenario_id,
         "scenario_count": len(scenarios),
@@ -2827,6 +3521,11 @@ def main() -> int:
             "historical_stage": "frozen_daily_stage_from_preflight",
             "historical_sales": "frozen_sparse_sales_from_history_start_through_test_end_used_for_completed_acceleration_and_forecast_error_windows",
             "inventory_position": "simulated_stock_minus_max(raw_historical_reserve,0)+risk_adjusted_simulated_free_pipeline; negative raw reserve never increases availability",
+            "base_pipeline_confidence_haircut": (
+                "ordinary_min_max_counts_high_confidence_pipeline_at_100_percent;medium_confidence_pipeline_uses_the_role_fraction_only_when_current_margin_to_cost_ratio_meets_the_profile_floor;unknown_or_zero_current_cost_does_not_pass_the_segment_gate;current_decision_features_only;no_future_outcome_filter"
+                if base_pipeline_profiles_enabled
+                else "off_full_pipeline_counted"
+            ),
             "lead_time_usage": "p50_for_simulated_arrival_and_p75_for_positive_economic_service_or_acceleration_coverage",
             "economic_safety_stock": "completed_underforecast_error_capped_by_margin_vs_holding_cost_and_applied_only_above_the_grow_service_floor",
             "grow_service_floor": "sale_stage_p75_or_p90_minimum;budgeted_p90_has_per_sku_and_concurrent_stage_value_caps_with_marginal_saved_margin_allocation",
@@ -2842,6 +3541,14 @@ def main() -> int:
                         else "sale_stage_completed_recent_7_or_14_day_rate_vs_prior_28_or_42_days;protect_max_of_p90_and_acceleration_gap_without_per_sku_economic_quantity_cap;concurrent_stage_budget_ranked_by_expected_saved_margin_per_purchase_ruble;manual_review;pipeline_fraction_1_0_0_75_0_5_by_lead_time_confidence"
                     )
                 )
+            ),
+            "acceleration_segmentation": (
+                "static_completed_52_week_demand_pattern_as_of_test_start;"
+                "current_unit_cost_strictly_below_profile_cap;"
+                "current_lead_time_confidence_in_profile;current_p75_at_or_below_profile_cap;"
+                "no_future_sku_outcome_filter"
+                if segment_profiles_enabled
+                else "off"
             ),
             "grow_weekly_target_protection": "min_max_reduction_limited_to_10_20_30_percent_per_scheduled_week;event_reviews_may_raise_not_lower",
             "grow_entry_protection": "entry_min_max_may_rise_but_not_fall_for_2_4_6_weeks",

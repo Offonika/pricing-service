@@ -16,14 +16,21 @@ from tasks.report_display_auto_order_frozen_backtest import (
     _free_initial_pipeline,
     acceleration_incremental_units,
     acceleration_pipeline_fraction,
+    acceleration_segment_rule,
     allocate_service_floor_budget,
     apply_grow_target_protection,
     apply_quick_acceleration_guard,
+    apply_quick_acceleration_segment_gates,
+    apply_quick_base_pipeline_profiles,
     apply_service_floor_sku_cap,
+    base_pipeline_fraction,
+    base_pipeline_margin_cost_ratio_floor,
+    base_pipeline_profile_fractions,
     calculate_demand_acceleration,
     cap_acceleration_to_projected_shortage,
     combine_service_floor_with_economic_stock,
     empirical_underforecast_percentile,
+    evaluate_acceleration_segment_gate,
     evaluate_acceleration_shortage_guard,
     historical_forecast_error_samples,
     release_open_acceleration_protection,
@@ -155,6 +162,261 @@ def test_quick_acceleration_guard_rejects_weaker_cautious_threshold() -> None:
         )
 
 
+def test_quick_base_pipeline_profiles_clone_control_and_change_only_pipeline_trust() -> None:
+    selection = select_scenarios(
+        [
+            _selection_scenario("control"),
+            _selection_scenario("unrelated-hypothesis"),
+            _selection_scenario("unrelated-cautious"),
+        ],
+        run_mode="quick",
+        control_scenario_id="control",
+        hypothesis_scenario_id="unrelated-hypothesis",
+        cautious_scenario_id="unrelated-cautious",
+    )
+
+    result = apply_quick_base_pipeline_profiles(
+        selection,
+        hypothesis_profile="medium_90",
+        cautious_profile="medium_95",
+    )
+
+    control, hypothesis, cautious = result.scenarios
+    assert control.scenario_id == "control"
+    assert hypothesis.stage_profile == control.stage_profile
+    assert hypothesis.grow_acceleration_profile == "off"
+    assert hypothesis.base_pipeline_medium_fraction == Decimal("0.90")
+    assert cautious.base_pipeline_medium_fraction == Decimal("0.95")
+    assert result.base_scenario_id == hypothesis.scenario_id
+
+
+def test_base_pipeline_fraction_is_bounded_and_confidence_specific() -> None:
+    assert base_pipeline_profile_fractions("medium_90") == (
+        Decimal("1"),
+        Decimal("0.90"),
+        Decimal("0.50"),
+    )
+    assert base_pipeline_fraction(
+        "high",
+        high_fraction=Decimal("1.2"),
+        medium_fraction=Decimal("0.9"),
+        low_fraction=Decimal("0.5"),
+    ) == Decimal("1")
+    assert base_pipeline_fraction(
+        "medium",
+        high_fraction=Decimal("1"),
+        medium_fraction=Decimal("0.9"),
+        low_fraction=Decimal("0.5"),
+    ) == Decimal("0.9")
+    assert base_pipeline_fraction(
+        "unknown",
+        high_fraction=Decimal("1"),
+        medium_fraction=Decimal("0.9"),
+        low_fraction=Decimal("-1"),
+    ) == Decimal("0")
+
+
+def test_segmented_base_pipeline_profile_uses_current_margin_cost_boundary() -> None:
+    assert base_pipeline_profile_fractions("medium_95_margin_cost_050") == (
+        Decimal("1"),
+        Decimal("0.95"),
+        Decimal("1"),
+    )
+    assert base_pipeline_margin_cost_ratio_floor("medium_95_margin_cost_050") == Decimal("0.5")
+    common = {
+        "high_fraction": Decimal("1"),
+        "medium_fraction": Decimal("0.95"),
+        "low_fraction": Decimal("1"),
+        "min_margin_to_cost_ratio": Decimal("0.5"),
+        "inventory_cost_per_unit_rub": Decimal("100"),
+    }
+
+    assert base_pipeline_fraction(
+        "medium", gross_margin_per_unit_rub=Decimal("50"), **common
+    ) == Decimal("0.95")
+    assert base_pipeline_fraction(
+        "medium", gross_margin_per_unit_rub=Decimal("49.99"), **common
+    ) == Decimal("1")
+    assert base_pipeline_fraction(
+        "high", gross_margin_per_unit_rub=Decimal("0"), **common
+    ) == Decimal("1")
+
+
+@pytest.mark.parametrize("cost", [Decimal("0"), Decimal("-1")])
+def test_segmented_base_pipeline_unknown_or_nonpositive_cost_does_not_pass(
+    cost: Decimal,
+) -> None:
+    assert base_pipeline_fraction(
+        "medium",
+        high_fraction=Decimal("1"),
+        medium_fraction=Decimal("0.95"),
+        low_fraction=Decimal("1"),
+        min_margin_to_cost_ratio=Decimal("0.5"),
+        gross_margin_per_unit_rub=Decimal("100"),
+        inventory_cost_per_unit_rub=cost,
+    ) == Decimal("1")
+
+
+def test_segmented_base_pipeline_uses_only_economics_known_on_each_decision_date() -> None:
+    start = date(2026, 3, 1)
+    next_day = start + timedelta(days=1)
+    facts = {
+        day: [
+            {
+                "nomenclature_code": "SKU-1",
+                "status": "sale",
+                "physical_stock_qty": "0",
+                "observed_sales_qty": "0",
+                "effective_reserve_qty": "0",
+                "placed_incoming_qty": "0",
+            }
+        ]
+        for day in (start, next_day)
+    }
+    decisions = {
+        start: [
+            {
+                "decision_date": start.isoformat(),
+                "nomenclature_code": "SKU-1",
+                "scheduled_review": "1",
+                "status": "sale",
+                "forecast_rate_sales": "1.01",
+                "lead_time_p50_days": "5",
+                "lead_time_p75_days": "5",
+                "lead_time_confidence": "medium",
+                "inventory_cost_per_unit_rub": "100",
+                "gross_margin_per_unit_rub": "49",
+            }
+        ],
+        next_day: [
+            {
+                "decision_date": next_day.isoformat(),
+                "nomenclature_code": "SKU-1",
+                "scheduled_review": "1",
+                "status": "sale",
+                "forecast_rate_sales": "1.01",
+                "lead_time_p50_days": "5",
+                "lead_time_p75_days": "5",
+                "lead_time_confidence": "medium",
+                "inventory_cost_per_unit_rub": "100",
+                "gross_margin_per_unit_rub": "50",
+            }
+        ],
+    }
+    result = simulate_scenario(
+        scenario=FrozenScenario(
+            scenario_id="segmented-pipeline",
+            stage_profile="typical",
+            kmp4_weight=Decimal("0"),
+            cost=CarryingCostScenario(
+                name="base",
+                capital_annual_rate=Decimal("0.3"),
+                storage_annual_rate=Decimal("0.1"),
+                obsolescence_annual_rate=Decimal("0.25"),
+            ),
+            base_pipeline_profile="medium_95_margin_cost_050",
+            base_pipeline_medium_fraction=Decimal("0.95"),
+            base_pipeline_min_margin_to_cost_ratio=Decimal("0.5"),
+        ),
+        fact_rows_by_date=facts,
+        decision_rows_by_date=decisions,
+        initial_pipeline_rows=[
+            {
+                "nomenclature_code": "SKU-1",
+                "arrival_at": (start + timedelta(days=5)).isoformat(),
+                "quantity": "6.5",
+            }
+        ],
+        sales_by_code={"SKU-1": {}},
+        policy=AutoOrderPolicy(order_cadence_days=7),
+        config=load_scenario_config(
+            Path("config/assortment/display-auto-order-backtest-scenarios.json")
+        ),
+        date_from=start,
+        date_to=next_day,
+        keep_detail=True,
+        demand_sample_cache={},
+    )
+
+    assert [row["base_pipeline_fraction"] for row in result.decision_rows] == ["1", "0.95"]
+    assert result.decision_rows[0]["recommended_order_qty"] == "0"
+
+
+def test_base_pipeline_haircut_can_trigger_ordinary_min_max_order() -> None:
+    start = date(2026, 3, 1)
+    facts = {
+        start: [
+            {
+                "nomenclature_code": "SKU-1",
+                "status": "sale",
+                "physical_stock_qty": "0",
+                "observed_sales_qty": "0",
+                "effective_reserve_qty": "0",
+                "placed_incoming_qty": "0",
+            }
+        ]
+    }
+    decisions = {
+        start: [
+            {
+                "decision_date": start.isoformat(),
+                "nomenclature_code": "SKU-1",
+                "scheduled_review": "1",
+                "status": "sale",
+                "forecast_rate_sales": "1.01",
+                "lead_time_p50_days": "5",
+                "lead_time_p75_days": "5",
+                "lead_time_confidence": "medium",
+                "inventory_cost_per_unit_rub": "100",
+                "gross_margin_per_unit_rub": "50",
+            }
+        ]
+    }
+    initial_pipeline = [
+        {
+            "nomenclature_code": "SKU-1",
+            "arrival_at": (start + timedelta(days=5)).isoformat(),
+            "quantity": "6.5",
+        }
+    ]
+
+    def run(medium_fraction: Decimal) -> object:
+        return simulate_scenario(
+            scenario=FrozenScenario(
+                scenario_id=f"pipeline-{medium_fraction}",
+                stage_profile="typical",
+                kmp4_weight=Decimal("0"),
+                cost=CarryingCostScenario(
+                    name="base",
+                    capital_annual_rate=Decimal("0.3"),
+                    storage_annual_rate=Decimal("0.1"),
+                    obsolescence_annual_rate=Decimal("0.25"),
+                ),
+                base_pipeline_profile="test",
+                base_pipeline_medium_fraction=medium_fraction,
+            ),
+            fact_rows_by_date=facts,
+            decision_rows_by_date=decisions,
+            initial_pipeline_rows=initial_pipeline,
+            sales_by_code={"SKU-1": {}},
+            policy=AutoOrderPolicy(order_cadence_days=7),
+            config=load_scenario_config(
+                Path("config/assortment/display-auto-order-backtest-scenarios.json")
+            ),
+            date_from=start,
+            date_to=start,
+            keep_detail=True,
+            demand_sample_cache={},
+        )
+
+    control = run(Decimal("1"))
+    challenger = run(Decimal("0.9"))
+
+    assert control.model["SKU-1"].order_qty == Decimal("0")
+    assert challenger.model["SKU-1"].order_qty > Decimal("0")
+    assert challenger.decision_rows[0]["base_pipeline_fraction"] == "0.9"
+
+
 def test_quick_acceleration_guard_can_cap_add_on_by_projected_shortage() -> None:
     selection = select_scenarios(
         [
@@ -206,9 +468,7 @@ def test_quick_acceleration_guard_can_enable_single_open_lot() -> None:
     assert guarded.scenarios[0].grow_acceleration_single_open_lot is False
     assert guarded.scenarios[1].scenario_id.endswith("_shortagecap_singleopenlot")
     assert guarded.scenarios[1].grow_acceleration_single_open_lot is True
-    assert guarded.scenarios[1].grow_acceleration_quantity_policy.endswith(
-        "_single_open_lot"
-    )
+    assert guarded.scenarios[1].grow_acceleration_quantity_policy.endswith("_single_open_lot")
 
 
 def test_single_open_lot_requires_shortage_cap() -> None:
@@ -231,6 +491,75 @@ def test_single_open_lot_requires_shortage_cap() -> None:
             cautious_min_shortage_qty=Decimal("3"),
             single_open_lot=True,
         )
+
+
+def test_quick_segment_gates_overlay_non_control_roles() -> None:
+    selection = select_scenarios(
+        [
+            _selection_scenario("control"),
+            _selection_scenario("hypothesis"),
+            _selection_scenario("cautious"),
+        ],
+        run_mode="quick",
+        control_scenario_id="control",
+        hypothesis_scenario_id="hypothesis",
+        cautious_scenario_id="cautious",
+    )
+    guarded = apply_quick_acceleration_guard(
+        selection,
+        hypothesis_min_shortage_qty=Decimal("2"),
+        cautious_min_shortage_qty=Decimal("3"),
+        cap_to_projected_shortage=True,
+        single_open_lot=True,
+    )
+
+    gated = apply_quick_acceleration_segment_gates(
+        guarded,
+        hypothesis_profile="low_cost_high_confidence",
+        cautious_profile="low_cost_high_confidence_sparse",
+    )
+
+    assert gated.scenarios[0].scenario_id == "control"
+    assert gated.scenarios[1].grow_acceleration_max_unit_cost_rub == Decimal("500")
+    assert gated.scenarios[1].grow_acceleration_allowed_demand_patterns == ()
+    assert gated.scenarios[2].grow_acceleration_allowed_demand_patterns == (
+        "intermittent",
+        "lumpy",
+    )
+    assert gated.scenarios[2].grow_acceleration_max_p75_days == 90
+
+
+def test_acceleration_segment_profile_and_gate_are_explicit() -> None:
+    rule = acceleration_segment_rule("low_cost_high_confidence_sparse")
+    assert rule.allowed_demand_patterns == ("intermittent", "lumpy")
+
+    eligible = evaluate_acceleration_segment_gate(
+        demand_pattern="intermittent",
+        unit_cost_rub=Decimal("499.99"),
+        lead_time_confidence="high",
+        lead_time_p75_days=90,
+        allowed_demand_patterns=rule.allowed_demand_patterns,
+        max_unit_cost_rub=rule.max_unit_cost_rub,
+        allowed_lead_confidences=rule.allowed_lead_confidences,
+        max_p75_days=rule.max_p75_days,
+    )
+    blocked = evaluate_acceleration_segment_gate(
+        demand_pattern="smooth",
+        unit_cost_rub=Decimal("500"),
+        lead_time_confidence="medium",
+        lead_time_p75_days=91,
+        allowed_demand_patterns=rule.allowed_demand_patterns,
+        max_unit_cost_rub=rule.max_unit_cost_rub,
+        allowed_lead_confidences=rule.allowed_lead_confidences,
+        max_p75_days=rule.max_p75_days,
+    )
+
+    assert eligible.eligible is True
+    assert blocked.eligible is False
+    assert blocked.pattern_passed is False
+    assert blocked.cost_passed is False
+    assert blocked.confidence_passed is False
+    assert blocked.p75_passed is False
 
 
 def test_acceleration_uses_only_completed_past_days() -> None:
@@ -356,9 +685,9 @@ def test_single_open_guard_counts_ordinary_pipeline_once_and_open_lot_fully() ->
 
 
 def test_open_acceleration_protection_releases_arrival_or_cancellation_only() -> None:
-    assert release_open_acceleration_protection(
-        Decimal("5"), arrived_qty=Decimal("2")
-    ) == Decimal("3")
+    assert release_open_acceleration_protection(Decimal("5"), arrived_qty=Decimal("2")) == Decimal(
+        "3"
+    )
     assert release_open_acceleration_protection(
         Decimal("5"), cancelled_qty=Decimal("7")
     ) == Decimal("0")
@@ -554,6 +883,13 @@ def _run_single_open_acceleration_scenario(
     *,
     days: int,
     shortage_growth: bool = False,
+    unit_cost_rub: Decimal = Decimal("1"),
+    lead_time_confidence: str = "high",
+    segment_profile: str = "off",
+    allowed_demand_patterns: tuple[str, ...] = (),
+    max_unit_cost_rub: Decimal = Decimal("0"),
+    allowed_lead_confidences: tuple[str, ...] = (),
+    max_p75_days: int = 0,
 ) -> object:
     start = date(2026, 3, 1)
     cost = CarryingCostScenario(
@@ -595,8 +931,8 @@ def _run_single_open_acceleration_scenario(
                 "forecast_rate_sales": "0.1",
                 "lead_time_p50_days": "5",
                 "lead_time_p75_days": "5",
-                "lead_time_confidence": "high",
-                "inventory_cost_per_unit_rub": "1",
+                "lead_time_confidence": lead_time_confidence,
+                "inventory_cost_per_unit_rub": str(unit_cost_rub),
                 "gross_margin_per_unit_rub": "100",
             }
         ]
@@ -622,6 +958,11 @@ def _run_single_open_acceleration_scenario(
             grow_acceleration_min_shortage_qty=Decimal("2"),
             grow_acceleration_cap_to_projected_shortage=True,
             grow_acceleration_single_open_lot=True,
+            grow_acceleration_segment_profile=segment_profile,
+            grow_acceleration_allowed_demand_patterns=allowed_demand_patterns,
+            grow_acceleration_max_unit_cost_rub=max_unit_cost_rub,
+            grow_acceleration_allowed_lead_confidences=allowed_lead_confidences,
+            grow_acceleration_max_p75_days=max_p75_days,
         ),
         fact_rows_by_date=fact_rows,
         decision_rows_by_date=decision_rows,
@@ -678,6 +1019,23 @@ def test_single_open_acceleration_does_not_persist_in_grow_target_state() -> Non
     assert first["max_stock_qty"] == "4"
     assert second["ordinary_max_stock_qty"] == "1"
     assert second["max_stock_qty"] == "1"
+
+
+def test_segment_gate_blocks_acceleration_but_keeps_ordinary_min_max_order() -> None:
+    result = _run_single_open_acceleration_scenario(
+        days=1,
+        unit_cost_rub=Decimal("500"),
+        segment_profile="low_cost_high_confidence",
+        max_unit_cost_rub=Decimal("500"),
+        allowed_lead_confidences=("high",),
+        max_p75_days=90,
+    )
+
+    assert result.model["SKU-1"].order_qty == Decimal("1")
+    assert result.diagnostics.acceleration_guard_eligible_recalculations == 1
+    assert result.diagnostics.acceleration_segment_blocked_recalculations == 1
+    assert result.diagnostics.acceleration_segment_blocked_cost_recalculations == 1
+    assert result.diagnostics.acceleration_order_component_qty == Decimal("0")
 
 
 def test_service_floor_sku_cap_uses_whole_affordable_units() -> None:

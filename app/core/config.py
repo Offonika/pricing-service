@@ -87,6 +87,7 @@ class Settings(BaseSettings):
     sms_journal_internal_api_token: str | None = None
     sms_journal_encryption_key: str | None = None
     sms_journal_phone_hash_key: str | None = None
+    sms_journal_export_allowed_actors: str = ""
     logistics_internal_api_token: str | None = None
     expertise_internal_api_token: str | None = None
     expertise_onec_sql: str | None = None

@@ -12,6 +12,7 @@ from datetime import UTC, datetime
 from typing import Any, Callable
 from uuid import UUID, uuid4
 
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -104,6 +105,16 @@ class SmsJournalCipher:
         nonce = os.urandom(12)
         ciphertext = self._cipher.encrypt(nonce, value.encode("utf-8"), None)
         return base64.urlsafe_b64encode(nonce + ciphertext).decode("ascii")
+
+    def decrypt(self, value: str) -> str:
+        try:
+            encrypted = base64.urlsafe_b64decode(value.encode("ascii"))
+            if len(encrypted) <= 12:
+                raise ValueError("ciphertext is too short")
+            plaintext = self._cipher.decrypt(encrypted[:12], encrypted[12:], None)
+            return plaintext.decode("utf-8")
+        except (InvalidTag, ValueError, UnicodeError) as exc:
+            raise SmsJournalConfigurationError("SMS journal ciphertext is invalid") from exc
 
     def phone_hash(self, phone: str) -> str:
         return hmac.new(

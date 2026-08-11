@@ -12,16 +12,23 @@ import csv
 import hashlib
 import json
 from collections import defaultdict
-from dataclasses import dataclass
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
-from statistics import pvariance
 from typing import Any, Mapping, Sequence
 
 import nbformat
 from nbclient import NotebookClient
 
+from app.services.display_auto_order_demand_pattern import (
+    DEMAND_HISTORY_WEEKS,
+    WEEK_DAYS,
+    classify_demand_pattern,
+    completed_weekly_demand,
+)
+from app.services.display_auto_order_demand_pattern import (
+    sum_dates as _sum_dates,
+)
 from tasks import report_display_auto_order_frozen_backtest as frozen
 from tasks.build_display_auto_order_dry_run import load_auto_order_policy
 from tasks.display_auto_order_backtest_preflight import (
@@ -32,19 +39,6 @@ from tasks.display_auto_order_backtest_preflight import (
 ZERO = Decimal("0")
 ONE = Decimal("1")
 YEAR_DAYS = Decimal("365")
-WEEK_DAYS = 7
-DEMAND_HISTORY_WEEKS = 52
-ADI_THRESHOLD = Decimal("1.32")
-CV2_THRESHOLD = Decimal("0.49")
-
-
-@dataclass(frozen=True)
-class DemandPattern:
-    name: str
-    adi: Decimal | None
-    cv2: Decimal | None
-    positive_weeks: int
-    mean_weekly_demand: Decimal
 
 
 def _clean(value: Any) -> str:
@@ -87,65 +81,6 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
-
-
-def _sum_dates(
-    sales_by_day: Mapping[date, Decimal],
-    start: date,
-    end_exclusive: date,
-) -> Decimal:
-    return sum(
-        (
-            max(ZERO, quantity)
-            for business_date, quantity in sales_by_day.items()
-            if start <= business_date < end_exclusive
-        ),
-        ZERO,
-    )
-
-
-def completed_weekly_demand(
-    sales_by_day: Mapping[date, Decimal],
-    *,
-    as_of: date,
-    weeks: int = DEMAND_HISTORY_WEEKS,
-) -> list[Decimal]:
-    start = as_of - timedelta(days=weeks * WEEK_DAYS)
-    return [
-        _sum_dates(
-            sales_by_day,
-            start + timedelta(days=index * WEEK_DAYS),
-            start + timedelta(days=(index + 1) * WEEK_DAYS),
-        )
-        for index in range(weeks)
-    ]
-
-
-def classify_demand_pattern(weekly_demand: Sequence[Decimal]) -> DemandPattern:
-    values = [max(ZERO, _decimal(value)) for value in weekly_demand]
-    positive = [value for value in values if value > ZERO]
-    mean_weekly = sum(values, ZERO) / Decimal(len(values)) if values else ZERO
-    if not positive:
-        return DemandPattern("no_history", None, None, 0, mean_weekly)
-    adi = Decimal(len(values)) / Decimal(len(positive))
-    if len(positive) < 2:
-        return DemandPattern("insufficient_history", adi, None, len(positive), mean_weekly)
-    positive_mean = sum(positive, ZERO) / Decimal(len(positive))
-    cv2 = (
-        Decimal(str(pvariance([float(value) for value in positive])))
-        / (positive_mean * positive_mean)
-        if positive_mean > ZERO
-        else ZERO
-    )
-    if adi < ADI_THRESHOLD and cv2 < CV2_THRESHOLD:
-        name = "smooth"
-    elif adi >= ADI_THRESHOLD and cv2 < CV2_THRESHOLD:
-        name = "intermittent"
-    elif adi < ADI_THRESHOLD and cv2 >= CV2_THRESHOLD:
-        name = "erratic"
-    else:
-        name = "lumpy"
-    return DemandPattern(name, adi, cv2, len(positive), mean_weekly)
 
 
 def croston_sba_forecast(
@@ -322,7 +257,23 @@ def _selected_scenarios(
         hypothesis_min_shortage_qty=_decimal(guard["hypothesis_min_shortage_qty"]),
         cautious_min_shortage_qty=_decimal(guard["cautious_min_shortage_qty"]),
         cap_to_projected_shortage=bool(guard["cap_to_projected_shortage"]),
+        single_open_lot=bool(guard.get("single_open_lot")),
     )
+    hypothesis_segment_profile = (
+        _clean(guard.get("hypothesis_segment_profile")) or frozen.ACCELERATION_SEGMENT_PROFILE_OFF
+    )
+    cautious_segment_profile = (
+        _clean(guard.get("cautious_segment_profile")) or frozen.ACCELERATION_SEGMENT_PROFILE_OFF
+    )
+    if any(
+        profile != frozen.ACCELERATION_SEGMENT_PROFILE_OFF
+        for profile in (hypothesis_segment_profile, cautious_segment_profile)
+    ):
+        selection = frozen.apply_quick_acceleration_segment_gates(
+            selection,
+            hypothesis_profile=hypothesis_segment_profile,
+            cautious_profile=cautious_segment_profile,
+        )
     by_id = {scenario.scenario_id: scenario for scenario in selection.scenarios}
     return by_id[selection.scenario_roles["control"]], by_id[selection.scenario_roles["hypothesis"]]
 
@@ -372,7 +323,11 @@ def _acceleration_by_sku(
                 values["pipeline_haircut_exposure_qty"]
             ) + max(ZERO, effective_pipeline / fraction - effective_pipeline)
 
-        order_qty = _decimal(row.get("recommended_order_qty"))
+        order_qty = (
+            _decimal(row.get("acceleration_order_component_qty"))
+            if "acceleration_order_component_qty" in row
+            else _decimal(row.get("recommended_order_qty"))
+        )
         if order_qty <= ZERO:
             continue
         values["acceleration_order_lines"] = int(values["acceleration_order_lines"]) + 1
@@ -919,7 +874,45 @@ def _fmt_percent(value: Any, digits: int = 1) -> str:
     return f"{_decimal(value) * Decimal('100'):.{digits}f}%".replace(".", ",")
 
 
+def _build_segmented_markdown(summary: Mapping[str, Any]) -> str:
+    headline = summary["headline"]
+    data_quality = summary["data_quality"]
+    scenario_id = _clean(summary["scenario_ids"]["hypothesis"])
+    economic_delta = _decimal(headline["economic_delta_rub"])
+    economic_word = "положительный" if economic_delta > ZERO else "отрицательный"
+    return f"""# Сегментная диагностика ускорения автозаказа дисплеев
+
+## Вывод
+
+Сценарий `{scenario_id}` дал {economic_word} экономический вклад относительно
+контроля: {_fmt_signed(economic_delta / Decimal('1000'), 2)} тыс. ₽. Он вернул
+{_fmt_signed(headline['served_observed_delta_qty'], 1)} записанных продаж при
+изменении среднего капитала на
+{_fmt_signed(_decimal(headline['capital_delta_rub']) / Decimal('1000'), 2)} тыс. ₽
+и конечного остатка на {_fmt_signed(headline['ending_inventory_delta_qty'], 1)}
+единицы.
+
+Это результат ускорительной надбавки относительно frozen-контроля, а не
+production-разрешение и не автоматическое прохождение полного строгого
+acceptance относительно факта.
+
+## Методика
+
+- тип спроса рассчитан по 52 завершённым неделям до начала теста;
+- будущий результат отдельного SKU не использован как фильтр;
+- causal single-open компонент заказа отделён от обычного min/max;
+- исходная когорта: {data_quality['source_cohort_sku_count']} SKU, в симуляции:
+  {data_quality['simulated_sku_count']} SKU;
+- production-записей и PDF нет.
+
+Подробные разрезы находятся в `segment-diagnostics.csv` и
+`sku-diagnostics.csv`.
+"""
+
+
 def _build_markdown(summary: Mapping[str, Any]) -> str:
+    if "_segment_" in _clean(summary["scenario_ids"]["hypothesis"]):
+        return _build_segmented_markdown(summary)
     headline = summary["headline"]
     concentration = summary["concentration"]
     demand = summary["demand_patterns"]
@@ -1084,6 +1077,7 @@ def build_analysis(
     output_dir: Path,
     policy_json: Path,
     scenario_config_json: Path,
+    build_notebook: bool = True,
 ) -> dict[str, Any]:
     quick_summary = json.loads(
         (quick_result_dir / "frozen-summary.json").read_text(encoding="utf-8")
@@ -1378,7 +1372,7 @@ def build_analysis(
             "demand_pattern": "52 completed pre-period weekly buckets; ADI 1.32 and CV2 0.49",
             "forecast_benchmark": "scheduled sale-stage decisions; completed history only; next seven days fully observed",
             "economic_contribution": "gross profit minus average inventory value times annual capital+storage+obsolescence rate prorated to period",
-            "acceleration_orders": "first and repeat rows require positive acceleration allocation and positive recommended order quantity; order quantity is the full recommended row, not a causal acceleration-only decomposition",
+            "acceleration_orders": "when present, acceleration_order_component_qty identifies the causal single-open component; older runs fall back to the full recommended row",
             "recorded_acceleration_detail": "per-SKU detail contains persisted decision rows only; canonical cap totals come from quick-scenario-comparison.csv diagnostics",
         },
     }
@@ -1389,12 +1383,10 @@ def build_analysis(
     )
     report_path = output_dir / "diagnostic-analysis.md"
     report_path.write_text(_build_markdown(summary), encoding="utf-8")
-    notebook_path = _build_notebook(output_dir, summary)
 
     artifact_names = [
         "analysis-summary.json",
         "diagnostic-analysis.md",
-        notebook_path.name,
         "sku-diagnostics.csv",
         "segment-diagnostics.csv",
         "mechanism-diagnostics.csv",
@@ -1404,6 +1396,9 @@ def build_analysis(
         "coverage-benchmark.csv",
         "period-diagnostics.csv",
     ]
+    if build_notebook:
+        notebook_path = _build_notebook(output_dir, summary)
+        artifact_names.insert(2, notebook_path.name)
     manifest = {
         "schema": "display_auto_order_quick_backtest_diagnostics_manifest.v1",
         "diagnostic_only": True,
@@ -1433,6 +1428,7 @@ def _parse_args() -> argparse.Namespace:
         type=Path,
         default=Path("config/assortment/display-auto-order-backtest-scenarios.json"),
     )
+    parser.add_argument("--skip-notebook", action="store_true")
     return parser.parse_args()
 
 
@@ -1444,6 +1440,7 @@ def main() -> int:
         output_dir=args.output_dir,
         policy_json=args.auto_order_policy_json,
         scenario_config_json=args.scenario_config_json,
+        build_notebook=not args.skip_notebook,
     )
     print(json.dumps(summary, ensure_ascii=False))
     return 0

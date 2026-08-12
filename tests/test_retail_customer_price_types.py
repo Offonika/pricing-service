@@ -307,6 +307,11 @@ def test_management_endpoint_returns_price_type_recommendations(monkeypatch) -> 
             ACTION_DATA_CHECK,
             ACTION_MANAGER_RETENTION,
         }
+        assert all(
+            item["recommended_price_type"] is None
+            for item in payload["payload"]
+            if item["action"] == ACTION_DATA_CHECK
+        )
     finally:
         app.dependency_overrides = {}
         get_settings.cache_clear()

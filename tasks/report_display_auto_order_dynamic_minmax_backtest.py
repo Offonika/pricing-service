@@ -10,7 +10,6 @@ from __future__ import annotations
 import argparse
 import json
 from dataclasses import dataclass, replace
-from dateutil.relativedelta import relativedelta  # noqa: F401
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -42,9 +41,7 @@ class DynamicMinMaxProfile:
 
 PROFILES = (
     DynamicMinMaxProfile("dynamic_fast_p50", 7, 28, Decimal("2"), Decimal("1.5"), "p50"),
-    DynamicMinMaxProfile(
-        "dynamic_balanced_p50", 14, 42, Decimal("2"), Decimal("1.5"), "p50"
-    ),
+    DynamicMinMaxProfile("dynamic_balanced_p50", 14, 42, Decimal("2"), Decimal("1.5"), "p50"),
     DynamicMinMaxProfile("dynamic_fast_p75", 7, 28, Decimal("2"), Decimal("1.5"), "p75"),
 )
 
@@ -85,13 +82,9 @@ def _select_profile(period_comparison: Sequence[Mapping[str, Any]]) -> dict[str,
         candidates.append(
             {
                 "scenario_role": profile.role,
-                "pre_july_economic_contribution_delta_rub": pre[
-                    "economic_contribution_delta_rub"
-                ],
+                "pre_july_economic_contribution_delta_rub": pre["economic_contribution_delta_rub"],
                 "pre_july_served_observed_delta_qty": pre["served_observed_delta_qty"],
-                "july_economic_contribution_delta_rub": holdout[
-                    "economic_contribution_delta_rub"
-                ],
+                "july_economic_contribution_delta_rub": holdout["economic_contribution_delta_rub"],
                 "july_served_observed_delta_qty": holdout["served_observed_delta_qty"],
             }
         )
@@ -143,9 +136,7 @@ def _shadow_rows(
                 "lead_quantile": row.get("acceleration_lead_quantile"),
                 "projected_demand_qty": row.get("acceleration_projected_demand_to_p75_qty"),
                 "inventory_position_qty": row.get("acceleration_guard_inventory_position_qty"),
-                "projected_shortage_qty": row.get(
-                    "acceleration_projected_shortage_to_p75_qty"
-                ),
+                "projected_shortage_qty": row.get("acceleration_projected_shortage_to_p75_qty"),
                 "dynamic_minmax_increment_qty": str(component),
                 "human_check": (
                     "Сверить ускорение, остаток, открытые партии и реальную следующую "
@@ -227,6 +218,7 @@ def build_analysis(
     source = v23._source_scenario(quick_summary, inputs["frozen_scenarios"])
     policy = load_auto_order_policy(policy_json)
     config = load_scenario_config(scenario_config_json)
+    demand_sample_cache: dict[tuple[str, date, int], list[Decimal]] = {}
     shared = {
         "fact_rows_by_date": inputs["fact_rows_by_date"],
         "decision_rows_by_date": inputs["decision_rows_by_date"],
@@ -237,8 +229,10 @@ def build_analysis(
         "date_from": inputs["date_from"],
         "date_to": inputs["date_to"],
         "keep_detail": True,
+        "keep_decision_detail": False,
         "keep_loss_detail": False,
         "decision_service_buffers": control_schedule,
+        "demand_sample_cache": demand_sample_cache,
     }
     results = {
         CONTROL_ROLE: frozen.simulate_scenario(
@@ -259,7 +253,6 @@ def build_analysis(
     summaries: list[dict[str, Any]] = []
     model_by_role: dict[str, dict[str, Any]] = {}
     period_rows: list[dict[str, Any]] = []
-    decision_rows: list[dict[str, Any]] = []
     sku_rows: list[dict[str, Any]] = []
     for role, result in results.items():
         summary_row = frozen._summary(
@@ -281,7 +274,6 @@ def build_analysis(
                 date_to=inputs["date_to"],
             )
         )
-        decision_rows.extend({**row, "scenario_role": role} for row in result.decision_rows)
         if role != CONTROL_ROLE:
             sku_rows.extend(
                 hybrid._sku_delta_rows(
@@ -289,7 +281,9 @@ def build_analysis(
                 )
             )
     comparison = [
-        hybrid._delta_row(model_by_role[profile.role], model_by_role[CONTROL_ROLE], scenario_role=profile.role)
+        hybrid._delta_row(
+            model_by_role[profile.role], model_by_role[CONTROL_ROLE], scenario_role=profile.role
+        )
         for profile in PROFILES
     ]
     period_comparison = acceleration._period_delta_rows(
@@ -298,6 +292,20 @@ def build_analysis(
         annual_rate=source.cost.total_annual_rate,
     )
     selection = _select_profile(period_comparison)
+    selected_profile = next(
+        profile for profile in PROFILES if profile.role == selection["scenario_role"]
+    )
+    selected_detail = frozen.simulate_scenario(
+        scenario=_dynamic_scenario(source, selected_profile),
+        acceleration_require_stock_above_min=True,
+        acceleration_allowed_statuses=DYNAMIC_STATUSES,
+        acceleration_lead_quantile=selected_profile.lead_quantile,
+        acceleration_detail_only=True,
+        **{**shared, "keep_decision_detail": True},
+    )
+    decision_rows = [
+        {**row, "scenario_role": selected_profile.role} for row in selected_detail.decision_rows
+    ]
     names = {
         frozen._clean(row.get("nomenclature_code")): frozen._clean(row.get("name"))
         for rows in inputs["decision_rows_by_date"].values()
@@ -355,9 +363,7 @@ def build_analysis(
         json.dumps(summary, ensure_ascii=False, indent=2, default=str) + "\n",
         encoding="utf-8",
     )
-    (output_dir / "DYNAMIC-MINMAX-BACKTEST.md").write_text(
-        _markdown(summary), encoding="utf-8"
-    )
+    (output_dir / "DYNAMIC-MINMAX-BACKTEST.md").write_text(_markdown(summary), encoding="utf-8")
     filenames = [*artifacts, "analysis-summary.json", "DYNAMIC-MINMAX-BACKTEST.md"]
     analysis_manifest = {
         "schema": "display_auto_order_dynamic_minmax_backtest_manifest.v1",

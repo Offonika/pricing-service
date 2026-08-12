@@ -1645,6 +1645,7 @@ def simulate_scenario(
     keep_decision_detail: bool = True,
     keep_loss_detail: bool = True,
     hybrid_gap_detail_only: bool = False,
+    acceleration_detail_only: bool = False,
 ) -> SimulationResult:
     if (
         scenario.base_pipeline_lot_risk_boundary
@@ -2216,10 +2217,13 @@ def simulate_scenario(
                     ZERO,
                     pipeline_qty[candidate_code] - candidate_open_acceleration,
                 )
+                acceleration_guard_days = candidate_lead_days
+                if scenario.grow_acceleration_quantity_policy == "dynamic_minmax_shortage":
+                    acceleration_guard_days += policy.order_cadence_days
                 guard = evaluate_acceleration_shortage_guard(
                     signal=signal,
                     forecast_rate=candidate_rate,
-                    lead_time_days=candidate_lead_days + policy.order_cadence_days,
+                    lead_time_days=acceleration_guard_days,
                     model_stock_qty=stock[candidate_code],
                     effective_reserve_qty=candidate_reserve,
                     effective_pipeline_qty=(
@@ -2233,16 +2237,12 @@ def simulate_scenario(
                     require_forecast_growth=(scenario.grow_acceleration_require_forecast_growth),
                     min_shortage_qty=scenario.grow_acceleration_min_shortage_qty,
                 )
-                candidate_static_min_qty = _ceil(
-                    candidate_rate * Decimal(candidate_lead_days)
-                )
+                candidate_static_min_qty = _ceil(candidate_rate * Decimal(candidate_lead_days))
                 candidate_free_stock_qty = max(
                     ZERO,
                     stock[candidate_code] - candidate_reserve,
                 )
-                stock_above_min_passed = bool(
-                    candidate_free_stock_qty > candidate_static_min_qty
-                )
+                stock_above_min_passed = bool(candidate_free_stock_qty > candidate_static_min_qty)
                 context["guard"] = guard
                 context["static_min_qty"] = candidate_static_min_qty
                 context["free_stock_qty"] = candidate_free_stock_qty
@@ -2520,12 +2520,8 @@ def simulate_scenario(
             acceleration_requested = _decimal(acceleration_row.get("requested_qty"))
             acceleration_sku_capped = _decimal(acceleration_row.get("sku_capped_qty"))
             acceleration_allocated = _decimal(acceleration_allocations.get(code))
-            acceleration_static_min_qty = _decimal(
-                acceleration_row.get("static_min_qty")
-            )
-            acceleration_free_stock_qty = _decimal(
-                acceleration_row.get("free_stock_qty")
-            )
+            acceleration_static_min_qty = _decimal(acceleration_row.get("static_min_qty"))
+            acceleration_free_stock_qty = _decimal(acceleration_row.get("free_stock_qty"))
             acceleration_stock_above_min_passed = bool(
                 acceleration_row.get("stock_above_min_passed")
             )
@@ -2759,9 +2755,7 @@ def simulate_scenario(
                     lead_days = max(
                         lead_days,
                         int(
-                            row.get(
-                                f"lead_time_{normalized_acceleration_lead_quantile}_days"
-                            )
+                            row.get(f"lead_time_{normalized_acceleration_lead_quantile}_days")
                             or lead_days
                         ),
                     )
@@ -3101,6 +3095,11 @@ def simulate_scenario(
                     or hybrid_evaluation.coverable_shortage_qty > ZERO
                     or hybrid_order_component > ZERO
                 )
+                and (
+                    not acceleration_detail_only
+                    or acceleration_stock_above_min_passed
+                    and (acceleration_signal.triggered or acceleration_order_component > ZERO)
+                )
             ):
                 trigger = (
                     "scheduled_review"
@@ -3200,9 +3199,7 @@ def simulate_scenario(
                             acceleration_require_stock_above_min
                         ),
                         "acceleration_lead_quantile": normalized_acceleration_lead_quantile,
-                        "acceleration_static_min_stock_qty": str(
-                            acceleration_static_min_qty
-                        ),
+                        "acceleration_static_min_stock_qty": str(acceleration_static_min_qty),
                         "acceleration_free_stock_qty": str(acceleration_free_stock_qty),
                         "acceleration_stock_above_min_passed": int(
                             acceleration_stock_above_min_passed

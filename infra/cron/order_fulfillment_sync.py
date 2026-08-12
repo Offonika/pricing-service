@@ -11,6 +11,7 @@ import argparse
 import csv
 import json
 import os
+import sqlite3
 import subprocess
 import sys
 from collections import Counter, defaultdict
@@ -143,6 +144,7 @@ RTU_SIGNAL_CSV_FIELDS = (
     "latest_rtu_date",
     "assembled_rtu_count",
 )
+DEFAULT_ONEC_ASSEMBLY_CRM_STATE_PATH = REPO_ROOT / ".local/onec_assembly_crm_reconciler.sqlite3"
 
 
 @dataclass(slots=True)
@@ -2359,30 +2361,180 @@ def build_daily_digest(
         current_summary_path=current_summary_path,
         last_stamp=clean_csv_value(state.get("last_daily_digest_stamp")),
     )
-    operational_keys: set[str] = set()
+    current_stamp = clean_csv_value(current_summary.get("stamp"))
+    current_dt = parse_summary_stamp(current_stamp) or datetime.now()
+    last_dt = parse_summary_stamp(clean_csv_value(state.get("last_daily_digest_stamp")))
+    period_start = last_dt or (current_dt - timedelta(hours=24))
+    onec_activity = load_onec_assembly_crm_activity(
+        period_start=period_start,
+        period_end=current_dt,
+    )
+    applied_transitions = daily_applied_crm_transitions(summaries)
+    crm_transitions = set(applied_transitions)
+    crm_transitions.update(onec_activity["crm_transitions"])
 
+    latest_quick = latest_applied_quick_item(summaries)
+    operational_keys = set(latest_quick.get("operational_alert_keys") or [])
+    overdue_orders = daily_overdue_payment_orders(operational_keys)
+    technical_errors = daily_current_technical_errors(latest_quick)
+    action_count = len(overdue_orders) + len(technical_errors)
+
+    lines = [
+        "MASTER-MOBILE.RU: контроль интернет-заказов",
+        "Автоматически обработано за период:",
+        "- подтверждена сборка: "
+        f"{format_ru_count(len(onec_activity['assembled_orders']), 'заказ', 'заказа', 'заказов')};",
+        "- подтверждена выдача: "
+        f"{format_ru_count(len(onec_activity['issued_orders']), 'заказ', 'заказа', 'заказов')};",
+        "- выполнено переходов CRM: "
+        f"{format_ru_count(len(crm_transitions), 'переход', 'перехода', 'переходов')}.",
+    ]
+    if not action_count:
+        lines.append("Ручных действий сегодня не требуется.")
+    else:
+        lines.append(
+            "Требуется вмешательство: "
+            f"{format_ru_count(action_count, 'заказ', 'заказа', 'заказов')}."
+        )
+        action_lines: list[str] = []
+        for order_number, deal_id in overdue_orders:
+            action_lines.append(
+                f"- заказ {order_number} / сделка {deal_id}: проверить просроченную оплату."
+            )
+        for error in technical_errors:
+            action_lines.append(daily_technical_error_line(error))
+        lines.extend(action_lines[:5])
+        if len(action_lines) > 5:
+            lines.append(f"- ещё {len(action_lines) - 5}")
+    return {"message": "\n".join(lines), "summary_count": len(summaries)}
+
+
+def load_onec_assembly_crm_activity(
+    *,
+    period_start: datetime,
+    period_end: datetime,
+    state_path: Path | None = None,
+) -> dict[str, set[Any]]:
+    path = state_path or Path(
+        os.environ.get("ONEC_ASSEMBLY_CRM_STATE_PATH") or DEFAULT_ONEC_ASSEMBLY_CRM_STATE_PATH
+    )
+    result: dict[str, set[Any]] = {
+        "assembled_orders": set(),
+        "issued_orders": set(),
+        "crm_transitions": set(),
+    }
+    if not path.exists():
+        return result
+    try:
+        connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=2)
+        rows = connection.execute(
+            """
+            SELECT event_key, site_order_number, crm_response
+            FROM processed_events
+            WHERE processed_at > ? AND processed_at <= ?
+            """,
+            (
+                period_start.strftime("%Y-%m-%d %H:%M:%S"),
+                period_end.strftime("%Y-%m-%d %H:%M:%S"),
+            ),
+        ).fetchall()
+        connection.close()
+    except (OSError, sqlite3.Error):
+        return result
+    for event_key, order_number, raw_response in rows:
+        order = clean_csv_value(order_number)
+        if not order:
+            continue
+        event = clean_csv_value(event_key)
+        if event.startswith("assembled:"):
+            result["assembled_orders"].add(order)
+        elif event.startswith("issued-scan:"):
+            result["issued_orders"].add(order)
+        try:
+            response = json.loads(raw_response or "{}")
+        except (TypeError, json.JSONDecodeError):
+            response = {}
+        stage_from = clean_csv_value(response.get("stage_from"))
+        stage_to = clean_csv_value(response.get("stage_to"))
+        deal_id = clean_csv_value(response.get("deal_id"))
+        if (
+            stage_to
+            and stage_to != stage_from
+            and clean_csv_value(response.get("action")).startswith("moved_to_")
+        ):
+            result["crm_transitions"].add((order, deal_id, stage_to))
+    return result
+
+
+def daily_applied_crm_transitions(
+    summaries: list[tuple[Path, dict[str, Any]]],
+) -> set[tuple[str, str, str]]:
+    transitions: set[tuple[str, str, str]] = set()
     for _, summary in summaries:
         for item in summary.get("items") or []:
-            operational_keys.update(unique_values(item.get("operational_alert_keys") or []))
+            for row in read_csv_dicts(item.get("apply_result")):
+                if clean_csv_value(row.get("applied")) != "1":
+                    continue
+                order_number = clean_csv_value(row.get("site_order_number"))
+                deal_id = clean_csv_value(row.get("bitrix_deal_id"))
+                target_stage = clean_csv_value(row.get("target_stage"))
+                if order_number and deal_id and target_stage:
+                    transitions.add((order_number, deal_id, target_stage))
+    return transitions
 
-    overdue_orders = daily_overdue_payment_orders(operational_keys)
-    lines = ["MASTER-MOBILE.RU: контроль интернет-заказов"]
-    if not overdue_orders:
-        lines.append("На сегодня подтверждённых действий нет.")
-    else:
-        lines.extend(
-            [
-                "Ожидание оплаты больше 7 дней: "
-                f"{format_ru_count(len(overdue_orders), 'заказ', 'заказа', 'заказов')}.",
-                "Заказы:",
-            ]
-        )
-        for order_number, deal_id in overdue_orders[:5]:
-            lines.append(f"- заказ {order_number} / сделка {deal_id}")
-        if len(overdue_orders) > 5:
-            lines.append(f"- ещё {len(overdue_orders) - 5}")
-        lines.append("Действие: проверить оплату и актуальность заказа.")
-    return {"message": "\n".join(lines), "summary_count": len(summaries)}
+
+def latest_applied_quick_item(
+    summaries: list[tuple[Path, dict[str, Any]]],
+) -> dict[str, Any]:
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    for _, summary in summaries:
+        stamp = clean_csv_value(summary.get("stamp"))
+        for item in summary.get("items") or []:
+            if item.get("mode") == "quick" and not bool(item.get("dry_run", True)):
+                candidates.append((stamp, item))
+    return max(candidates, key=lambda entry: entry[0])[1] if candidates else {}
+
+
+def daily_current_technical_errors(item: dict[str, Any]) -> list[dict[str, str]]:
+    errors: dict[tuple[str, str, str], dict[str, str]] = {}
+    for row in read_csv_dicts(item.get("apply_result")):
+        if clean_csv_value(row.get("result")) not in TECHNICAL_APPLY_RESULTS:
+            continue
+        order_number = clean_csv_value(row.get("site_order_number"))
+        deal_id = clean_csv_value(row.get("bitrix_deal_id"))
+        target_stage = clean_csv_value(row.get("target_stage"))
+        if not order_number or not deal_id:
+            continue
+        errors[(order_number, deal_id, target_stage)] = {
+            "site_order_number": order_number,
+            "bitrix_deal_id": deal_id,
+            "target_stage": target_stage,
+            "reason": clean_csv_value(row.get("reason")),
+        }
+    return sorted(
+        errors.values(),
+        key=lambda row: (
+            len(row["site_order_number"]),
+            row["site_order_number"],
+            len(row["bitrix_deal_id"]),
+            row["bitrix_deal_id"],
+        ),
+    )
+
+
+def daily_technical_error_line(error: dict[str, str]) -> str:
+    target_stage = clean_csv_value(error.get("target_stage"))
+    stage_label = STAGE_RU_LABELS.get(target_stage, target_stage or "следующую стадию")
+    reason = clean_csv_value(error.get("reason")).lower()
+    explanation = (
+        "конфликт количества товаров в заказе и отгрузках"
+        if "распределен по отгрузкам" in reason or "распределён по отгрузкам" in reason
+        else "CRM не приняла автоматическое обновление"
+    )
+    return (
+        f"- заказ {error['site_order_number']} / сделка {error['bitrix_deal_id']}: "
+        f"не выполнен переход в «{stage_label}» — {explanation}."
+    )
 
 
 def daily_overdue_payment_orders(operational_keys: set[str]) -> list[tuple[str, str]]:
@@ -2419,6 +2571,8 @@ def load_daily_digest_summaries(
         stamp = clean_csv_value(payload.get("stamp"))
         stamp_dt = parse_summary_stamp(stamp)
         if last_dt and stamp_dt and stamp_dt <= last_dt:
+            continue
+        if current_dt and stamp_dt and stamp_dt > current_dt:
             continue
         if cutoff_dt and stamp_dt and stamp_dt < cutoff_dt:
             continue

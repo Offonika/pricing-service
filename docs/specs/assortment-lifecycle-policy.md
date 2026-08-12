@@ -24,6 +24,8 @@ related_code:
   - tasks/report_display_auto_order_risk_buffer_backtest.py
   - tasks/report_display_auto_order_frozen_backtest.py
   - tasks/report_display_auto_order_hybrid_gap_backtest.py
+  - tasks/report_display_auto_order_hybrid_acceleration_backtest.py
+  - tasks/report_display_auto_order_dynamic_minmax_backtest.py
   - tasks/build_display_auto_order_base_pipeline_report.py
 related_tests:
   - tests/test_assortment_lifecycle.py
@@ -41,6 +43,8 @@ related_tests:
   - tests/test_report_display_auto_order_risk_buffer_backtest.py
   - tests/test_report_display_auto_order_frozen_backtest.py
   - tests/test_report_display_auto_order_hybrid_gap_backtest.py
+  - tests/test_report_display_auto_order_hybrid_acceleration_backtest.py
+  - tests/test_report_display_auto_order_dynamic_minmax_backtest.py
   - tests/test_build_display_auto_order_base_pipeline_report.py
 contracts: []
 depends_on:
@@ -1825,6 +1829,28 @@ shortage, а не общим процентным буфером. Не боле�
 экономический вклад. До отдельного решения результат остаётся diagnostic-only:
 production-заказы и внешние записи запрещены.
 
+Полный frozen-backtest v27 выбрал без использования июля профиль
+`dynamic_balanced_p50` (`14/42` дня, минимум `2` продажи, ускорение `×1,5`,
+горизонт поставки `P50`). Относительно контроля он вернул `585,5` записанной
+продажи, добавил `650 180,55 ₽` валовой прибыли при `+1 245 490,11 ₽` среднего
+складского капитала и дал `+179 965,38 ₽` экономического вклада. На периоде
+выбора до июля вклад составил `+75 172,06 ₽`; независимый июльский holdout
+остался положительным: `+151` продажа и `+104 793,32 ₽`.
+
+Более широкое срабатывание не принимается: `dynamic_fast_p50` вернул `1 699`
+продаж, но потребовал `+6 815 939,10 ₽` среднего капитала и дал
+`−746 485,64 ₽` экономического вклада; `dynamic_fast_p75` вернул `2 407`
+продаж при `+13 347 066,54 ₽` капитала и результате `−2 654 116,29 ₽`.
+Следовательно, диагностированные `≈3,78 млн ₽` являются размером исторической
+зоны потерь, а не достижимой экономией: автоматическое покрытие всей зоны
+экономически вредно.
+
+v27 сформировал `2 131` историческую строку read-only shadow-рекомендаций по
+выбранному профилю. Это срабатывания по датам, а не уникальные SKU и не реальные
+заказы; у каждой строки `production_action=none_read_only`. Расчёт оптимизирован
+по памяти: сравнительные сценарии не хранят тяжёлую детализацию, а адресный
+detail повторно строится только для выбранного профиля.
+
 # Acceptance Criteria
 
 - [x] Зафиксирован один источник истины по формуле жизненных статусов.
@@ -1907,6 +1933,12 @@ production-заказы и внешние записи запрещены.
 
 # Changelog
 
+- 2026-08-12 — v27 подтвердил `dynamic_balanced_p50` для
+  `stock_above_min_at_last_chance`: `+585,5` записанной продажи,
+  `+650 180,55 ₽` валовой прибыли, `+1 245 490,11 ₽` среднего капитала и
+  `+179 965,38 ₽` экономического вклада; июльский holdout положительный.
+  Агрессивные варианты отклонены как капиталоёмкие и экономически отрицательные;
+  результат остаётся read-only shadow без production-заказов и внешних записей.
 - 2026-08-12 — `P50 + fast` разрешён только в read-only shadow без создания
   заказов и внешних записей; отдельным следующим frozen-экспериментом утверждён
   dynamic min/max для полного сегмента `stock_above_min_at_last_chance`, с

@@ -231,6 +231,49 @@ class CustomerPriceTypeProfileResponse(CustomerPriceTypeEnvelope):
     history: list[CustomerPriceTypeSnapshotResponse] = Field(default_factory=list)
 
 
+CustomerPriceTypeSearchState = Literal["no_change", "change_proposed", "data_issue"]
+
+
+class CustomerPriceTypeProfileSearchItem(BaseModel):
+    counterparty_ref: str
+    counterparty_code: str | None = None
+    counterparty_name: str | None = None
+    current_price_type: str | None = None
+    recommended_price_type: str | None = None
+    result_state: CustomerPriceTypeSearchState
+    result_label: str
+    can_review: bool = False
+    quality_sample_id: int | None = None
+    quality_sample_status: Literal["pending", "reviewed"] | None = None
+
+
+class CustomerPriceTypeProfileSearchResponse(CustomerPriceTypeEnvelope):
+    total: int
+    limit: int
+    offset: int
+    payload: list[CustomerPriceTypeProfileSearchItem] = Field(default_factory=list)
+
+
+class CustomerPriceTypeDataIssueItem(BaseModel):
+    counterparty_ref: str
+    counterparty_code: str | None = None
+    counterparty_name: str | None = None
+    current_price_type: str | None = None
+    issue_source: Literal["calculation", "expert"]
+    issue_text: str
+    reported_by: str | None = None
+    reported_at: datetime | None = None
+    comment: str | None = None
+    case_id: int | None = None
+
+
+class CustomerPriceTypeDataIssueListResponse(CustomerPriceTypeEnvelope):
+    total: int
+    limit: int
+    offset: int
+    payload: list[CustomerPriceTypeDataIssueItem] = Field(default_factory=list)
+
+
 class CustomerPriceTypeSessionRequest(BaseModel):
     access_token: str = Field(min_length=1)
     domain: str = Field(min_length=1)
@@ -296,7 +339,8 @@ class CustomerPriceTypeQualityPrepareResponse(CustomerPriceTypeEnvelope):
 
 
 class CustomerPriceTypeQualityReviewRequest(BaseModel):
-    correct_group: CustomerPriceTypeQualityGroup
+    review_result: Literal["correct", "incorrect", "data_issue"]
+    correct_group: CustomerPriceTypeQualityGroup | None = None
     comment: str | None = Field(default=None, max_length=2000)
     expected_version: int = Field(ge=1)
 
@@ -315,6 +359,7 @@ class CustomerPriceTypeQualitySampleResponse(BaseModel):
     stop_factors: list[str] = Field(default_factory=list)
     system_group: CustomerPriceTypeQualityGroup
     correct_group: CustomerPriceTypeQualityGroup | None = None
+    review_result: Literal["correct", "incorrect", "data_issue"] | None = None
     status: Literal["pending", "reviewed"]
     selected_by: str
     selected_at: datetime

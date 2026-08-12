@@ -5021,6 +5021,119 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/profiles:
+    get:
+      tags:
+      - customer-price-types
+      summary: Search Customer Price Type Profiles
+      operationId: search_customer_price_type_profiles_api_customer_price_types_profiles_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: search
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 2
+          maxLength: 255
+          title: Search
+      - name: snapshot_month
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Snapshot Month
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeProfileSearchResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/data-issues:
+    get:
+      tags:
+      - customer-price-types
+      summary: List Customer Price Type Data Issues
+      operationId: list_customer_price_type_data_issues_api_customer_price_types_data_issues_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: snapshot_month
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Snapshot Month
+      - name: search
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Search
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeDataIssueListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/customer-price-types/runs/{run_id}:
     get:
       tags:
@@ -13123,6 +13236,107 @@ components:
           title: Ignored Reason
       type: object
       title: CustomerPriceTypeContractCandidate
+    CustomerPriceTypeDataIssueItem:
+      properties:
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        counterparty_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Code
+        counterparty_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Name
+        current_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Price Type
+        issue_source:
+          type: string
+          enum:
+          - calculation
+          - expert
+          title: Issue Source
+        issue_text:
+          type: string
+          title: Issue Text
+        reported_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reported By
+        reported_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Reported At
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+        case_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Case Id
+      type: object
+      required:
+      - counterparty_ref
+      - issue_source
+      - issue_text
+      title: CustomerPriceTypeDataIssueItem
+    CustomerPriceTypeDataIssueListResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        total:
+          type: integer
+          title: Total
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+        payload:
+          items:
+            $ref: '#/components/schemas/CustomerPriceTypeDataIssueItem'
+          type: array
+          title: Payload
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - total
+      - limit
+      - offset
+      title: CustomerPriceTypeDataIssueListResponse
     CustomerPriceTypeNotificationDraftResponse:
       properties:
         event:
@@ -13475,6 +13689,109 @@ components:
       - is_service_card
       - is_hygiene
       title: CustomerPriceTypeProfileResponse
+    CustomerPriceTypeProfileSearchItem:
+      properties:
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        counterparty_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Code
+        counterparty_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Name
+        current_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Price Type
+        recommended_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Price Type
+        result_state:
+          type: string
+          enum:
+          - no_change
+          - change_proposed
+          - data_issue
+          title: Result State
+        result_label:
+          type: string
+          title: Result Label
+        can_review:
+          type: boolean
+          title: Can Review
+          default: false
+        quality_sample_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Quality Sample Id
+        quality_sample_status:
+          anyOf:
+          - type: string
+            enum:
+            - pending
+            - reviewed
+          - type: 'null'
+          title: Quality Sample Status
+      type: object
+      required:
+      - counterparty_ref
+      - result_state
+      - result_label
+      title: CustomerPriceTypeProfileSearchItem
+    CustomerPriceTypeProfileSearchResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        total:
+          type: integer
+          title: Total
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+        payload:
+          items:
+            $ref: '#/components/schemas/CustomerPriceTypeProfileSearchItem'
+          type: array
+          title: Payload
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - total
+      - limit
+      - offset
+      title: CustomerPriceTypeProfileSearchResponse
     CustomerPriceTypeQualityGroupMetrics:
       properties:
         population_count:
@@ -13695,16 +14012,25 @@ components:
       title: CustomerPriceTypeQualityProfileResponse
     CustomerPriceTypeQualityReviewRequest:
       properties:
-        correct_group:
+        review_result:
           type: string
           enum:
-          - manager_work
-          - isolate
-          - recovery
-          - data_check
-          - special_review
-          - downgrade_approval
-          - no_action
+          - correct
+          - incorrect
+          - data_issue
+          title: Review Result
+        correct_group:
+          anyOf:
+          - type: string
+            enum:
+            - manager_work
+            - isolate
+            - recovery
+            - data_check
+            - special_review
+            - downgrade_approval
+            - no_action
+          - type: 'null'
           title: Correct Group
         comment:
           anyOf:
@@ -13718,7 +14044,7 @@ components:
           title: Expected Version
       type: object
       required:
-      - correct_group
+      - review_result
       - expected_version
       title: CustomerPriceTypeQualityReviewRequest
     CustomerPriceTypeQualitySampleDetailResponse:
@@ -13872,6 +14198,15 @@ components:
             - no_action
           - type: 'null'
           title: Correct Group
+        review_result:
+          anyOf:
+          - type: string
+            enum:
+            - correct
+            - incorrect
+            - data_issue
+          - type: 'null'
+          title: Review Result
         status:
           type: string
           enum:

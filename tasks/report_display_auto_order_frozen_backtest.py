@@ -285,6 +285,9 @@ class ScenarioDiagnostics:
     hybrid_gap_requested_qty: Decimal = ZERO
     hybrid_gap_order_component_qty: Decimal = ZERO
     hybrid_gap_released_on_arrival_qty: Decimal = ZERO
+    hybrid_gap_acceleration_evaluations: int = 0
+    hybrid_gap_acceleration_passed_evaluations: int = 0
+    hybrid_gap_acceleration_blocked_evaluations: int = 0
 
     def as_summary_fields(self) -> dict[str, Any]:
         return {
@@ -373,6 +376,13 @@ class ScenarioDiagnostics:
             "hybrid_gap_requested_qty": str(self.hybrid_gap_requested_qty),
             "hybrid_gap_order_component_qty": str(self.hybrid_gap_order_component_qty),
             "hybrid_gap_released_on_arrival_qty": str(self.hybrid_gap_released_on_arrival_qty),
+            "hybrid_gap_acceleration_evaluations": (self.hybrid_gap_acceleration_evaluations),
+            "hybrid_gap_acceleration_passed_evaluations": (
+                self.hybrid_gap_acceleration_passed_evaluations
+            ),
+            "hybrid_gap_acceleration_blocked_evaluations": (
+                self.hybrid_gap_acceleration_blocked_evaluations
+            ),
         }
 
 
@@ -1624,18 +1634,52 @@ def simulate_scenario(
     decision_service_buffers: Mapping[tuple[date, str], Decimal] | None = None,
     hybrid_gap_arrival_quantile: str = "off",
     hybrid_gap_min_coverable_days: int = 0,
+    hybrid_gap_acceleration_recent_days: int = 0,
+    hybrid_gap_acceleration_baseline_days: int = 0,
+    hybrid_gap_acceleration_min_recent_sales: Decimal = ZERO,
+    hybrid_gap_acceleration_rate_multiplier: Decimal = ZERO,
+    hybrid_gap_acceleration_require_forecast_growth: bool = False,
+    acceleration_require_stock_above_min: bool = False,
+    acceleration_allowed_statuses: Sequence[str] = (AssortmentStatus.SALE.value,),
+    acceleration_lead_quantile: str = "p75",
     keep_decision_detail: bool = True,
     keep_loss_detail: bool = True,
     hybrid_gap_detail_only: bool = False,
 ) -> SimulationResult:
-    if scenario.base_pipeline_lot_risk_boundary and scenario.grow_acceleration_profile != "off":
+    if (
+        scenario.base_pipeline_lot_risk_boundary
+        and scenario.grow_acceleration_profile != "off"
+        and scenario.grow_acceleration_quantity_policy != "dynamic_minmax_shortage"
+    ):
         raise ValueError("base pipeline lot risk cannot be combined with acceleration")
+    normalized_acceleration_lead_quantile = _clean(acceleration_lead_quantile).lower() or "p75"
+    if normalized_acceleration_lead_quantile not in {"p50", "p75"}:
+        raise ValueError("acceleration lead quantile must be p50 or p75")
     normalized_hybrid_quantile = _clean(hybrid_gap_arrival_quantile).lower() or "off"
     if normalized_hybrid_quantile not in {"off", "p50", "p75"}:
         raise ValueError("hybrid gap arrival quantile must be off, p50, or p75")
     normalized_hybrid_min_days = int(hybrid_gap_min_coverable_days)
     if normalized_hybrid_min_days < 0:
         raise ValueError("hybrid gap minimum coverable days cannot be negative")
+    normalized_hybrid_acceleration_recent_days = int(hybrid_gap_acceleration_recent_days)
+    normalized_hybrid_acceleration_baseline_days = int(hybrid_gap_acceleration_baseline_days)
+    normalized_hybrid_acceleration_min_recent_sales = max(
+        ZERO, _decimal(hybrid_gap_acceleration_min_recent_sales)
+    )
+    normalized_hybrid_acceleration_rate_multiplier = max(
+        ZERO, _decimal(hybrid_gap_acceleration_rate_multiplier)
+    )
+    hybrid_acceleration_filter_enabled = bool(
+        normalized_hybrid_acceleration_recent_days > 0
+        and normalized_hybrid_acceleration_baseline_days > 0
+        and normalized_hybrid_acceleration_min_recent_sales > ZERO
+        and normalized_hybrid_acceleration_rate_multiplier > ONE
+    )
+    normalized_acceleration_statuses = {
+        _clean(value) for value in acceleration_allowed_statuses if _clean(value)
+    }
+    if not normalized_acceleration_statuses:
+        normalized_acceleration_statuses = {AssortmentStatus.SALE.value}
     codes = sorted(
         {
             _clean(row.get("nomenclature_code"))
@@ -2111,7 +2155,7 @@ def simulate_scenario(
                 candidate_status = _clean(candidate_fact.get("status")) or _clean(
                     candidate_row.get("status")
                 )
-                if candidate_status != AssortmentStatus.SALE.value:
+                if candidate_status not in normalized_acceleration_statuses:
                     continue
                 signal = calculate_demand_acceleration(
                     sales_by_code.get(candidate_code, {}),
@@ -2133,7 +2177,7 @@ def simulate_scenario(
                     _decimal(candidate_row.get("forecast_rate_sales")),
                 )
                 candidate_lead_days = int(
-                    candidate_row.get("lead_time_p75_days")
+                    candidate_row.get(f"lead_time_{normalized_acceleration_lead_quantile}_days")
                     or candidate_row.get("lead_time_p50_days")
                     or 52
                 )
@@ -2175,7 +2219,7 @@ def simulate_scenario(
                 guard = evaluate_acceleration_shortage_guard(
                     signal=signal,
                     forecast_rate=candidate_rate,
-                    lead_time_days=candidate_lead_days,
+                    lead_time_days=candidate_lead_days + policy.order_cadence_days,
                     model_stock_qty=stock[candidate_code],
                     effective_reserve_qty=candidate_reserve,
                     effective_pipeline_qty=(
@@ -2189,7 +2233,20 @@ def simulate_scenario(
                     require_forecast_growth=(scenario.grow_acceleration_require_forecast_growth),
                     min_shortage_qty=scenario.grow_acceleration_min_shortage_qty,
                 )
+                candidate_static_min_qty = _ceil(
+                    candidate_rate * Decimal(candidate_lead_days)
+                )
+                candidate_free_stock_qty = max(
+                    ZERO,
+                    stock[candidate_code] - candidate_reserve,
+                )
+                stock_above_min_passed = bool(
+                    candidate_free_stock_qty > candidate_static_min_qty
+                )
                 context["guard"] = guard
+                context["static_min_qty"] = candidate_static_min_qty
+                context["free_stock_qty"] = candidate_free_stock_qty
+                context["stock_above_min_passed"] = stock_above_min_passed
                 segment_gate = evaluate_acceleration_segment_gate(
                     demand_pattern=demand_pattern_by_code[candidate_code],
                     unit_cost_rub=current_cost[candidate_code],
@@ -2201,7 +2258,11 @@ def simulate_scenario(
                     max_p75_days=scenario.grow_acceleration_max_p75_days,
                 )
                 context["segment_gate"] = segment_gate
-                if not guard.eligible or not segment_gate.eligible:
+                if (
+                    not guard.eligible
+                    or not segment_gate.eligible
+                    or (acceleration_require_stock_above_min and not stock_above_min_passed)
+                ):
                     continue
                 candidate_cache_key = (
                     candidate_code,
@@ -2237,14 +2298,17 @@ def simulate_scenario(
                     candidate_economic_cap,
                     candidate_percentile_target,
                 )
-                uncapped_requested_units = acceleration_incremental_units(
-                    signal=signal,
-                    forecast_rate=candidate_rate,
-                    coverage_days=candidate_lead_days + policy.order_cadence_days,
-                    percentile_safety_units=candidate_percentile_target,
-                    ordinary_safety_units=candidate_ordinary_safety,
-                    max_units=config.safety_max_units,
-                )
+                if scenario.grow_acceleration_quantity_policy == "dynamic_minmax_shortage":
+                    uncapped_requested_units = guard.projected_shortage_qty
+                else:
+                    uncapped_requested_units = acceleration_incremental_units(
+                        signal=signal,
+                        forecast_rate=candidate_rate,
+                        coverage_days=candidate_lead_days + policy.order_cadence_days,
+                        percentile_safety_units=candidate_percentile_target,
+                        ordinary_safety_units=candidate_ordinary_safety,
+                        max_units=config.safety_max_units,
+                    )
                 requested_units = cap_acceleration_to_projected_shortage(
                     uncapped_requested_units,
                     projected_shortage_qty=guard.projected_shortage_qty,
@@ -2456,6 +2520,15 @@ def simulate_scenario(
             acceleration_requested = _decimal(acceleration_row.get("requested_qty"))
             acceleration_sku_capped = _decimal(acceleration_row.get("sku_capped_qty"))
             acceleration_allocated = _decimal(acceleration_allocations.get(code))
+            acceleration_static_min_qty = _decimal(
+                acceleration_row.get("static_min_qty")
+            )
+            acceleration_free_stock_qty = _decimal(
+                acceleration_row.get("free_stock_qty")
+            )
+            acceleration_stock_above_min_passed = bool(
+                acceleration_row.get("stock_above_min_passed")
+            )
             acceleration_pipeline_share = ONE
             acceleration_base_min_qty: Decimal | None = None
             acceleration_base_max_qty: Decimal | None = None
@@ -2474,6 +2547,10 @@ def simulate_scenario(
                 open_hybrid_protection_qty[code],
                 False,
             )
+            hybrid_acceleration_signal = DemandAccelerationSignal(
+                ZERO, ZERO, ZERO, ZERO, ZERO, False
+            )
+            hybrid_acceleration_passed = not hybrid_acceleration_filter_enabled
             hybrid_requested = ZERO
             hybrid_order_component = ZERO
             grow_protection_reason = "none"
@@ -2674,14 +2751,19 @@ def simulate_scenario(
                         else:
                             safety_units = economic_safety_cap
                 if (
-                    status == AssortmentStatus.SALE.value
+                    status in normalized_acceleration_statuses
                     and scenario.grow_acceleration_recent_days > 0
                     and acceleration_guard.eligible
                     and acceleration_allocated > ZERO
                 ):
                     lead_days = max(
                         lead_days,
-                        int(row.get("lead_time_p75_days") or lead_days),
+                        int(
+                            row.get(
+                                f"lead_time_{normalized_acceleration_lead_quantile}_days"
+                            )
+                            or lead_days
+                        ),
                     )
                     acceleration_base_min_qty = _ceil(
                         scenario_rate * Decimal(lead_days) + weighted_signals
@@ -2873,13 +2955,37 @@ def simulate_scenario(
                     open_hybrid_qty=open_hybrid_protection_qty[code],
                     min_coverable_days=normalized_hybrid_min_days,
                 )
+                if hybrid_acceleration_filter_enabled:
+                    hybrid_acceleration_signal = calculate_demand_acceleration(
+                        sales_by_code.get(code, {}),
+                        as_of=cursor,
+                        recent_days=normalized_hybrid_acceleration_recent_days,
+                        baseline_days=normalized_hybrid_acceleration_baseline_days,
+                        min_recent_sales=normalized_hybrid_acceleration_min_recent_sales,
+                        rate_multiplier=normalized_hybrid_acceleration_rate_multiplier,
+                    )
+                    hybrid_acceleration_passed = bool(
+                        hybrid_acceleration_signal.triggered
+                        and (
+                            not hybrid_gap_acceleration_require_forecast_growth
+                            or hybrid_acceleration_signal.recent_rate > rate
+                        )
+                    )
+                    if hybrid_evaluation.eligible:
+                        diagnostics.hybrid_gap_acceleration_evaluations += 1
+                        diagnostics.hybrid_gap_acceleration_passed_evaluations += int(
+                            hybrid_acceleration_passed
+                        )
+                        diagnostics.hybrid_gap_acceleration_blocked_evaluations += int(
+                            not hybrid_acceleration_passed
+                        )
                 diagnostics.hybrid_gap_evaluations += 1
                 diagnostics.hybrid_gap_eligible_evaluations += int(hybrid_evaluation.eligible)
                 diagnostics.hybrid_gap_open_lot_blocked_evaluations += int(
                     hybrid_evaluation.coverable_shortage_qty > ZERO
                     and hybrid_evaluation.open_hybrid_qty > ZERO
                 )
-                if hybrid_evaluation.eligible:
+                if hybrid_evaluation.eligible and hybrid_acceleration_passed:
                     hybrid_requested = hybrid_evaluation.coverable_shortage_qty
                     diagnostics.hybrid_gap_requested_qty += hybrid_requested
                     hybrid_raw = max(raw, _ceil(hybrid_requested))
@@ -3019,6 +3125,7 @@ def simulate_scenario(
                         "reserve_backlog_qty": str(_decimal(fact.get("reserve_backlog_qty"))),
                         "selected_lead_time_days": lead_days,
                         "simulated_arrival_lead_time_days": arrival_lead_days,
+                        "lead_time_confidence": _clean(row.get("lead_time_confidence")),
                         "unprotected_min_stock_qty": str(unprotected_min_qty),
                         "unprotected_max_stock_qty": str(unprotected_max_qty),
                         "min_stock_qty": str(min_qty),
@@ -3089,6 +3196,17 @@ def simulate_scenario(
                         ),
                         "acceleration_shortage_passed": int(acceleration_guard.shortage_passed),
                         "acceleration_guard_eligible": int(acceleration_guard.eligible),
+                        "acceleration_require_stock_above_min": int(
+                            acceleration_require_stock_above_min
+                        ),
+                        "acceleration_lead_quantile": normalized_acceleration_lead_quantile,
+                        "acceleration_static_min_stock_qty": str(
+                            acceleration_static_min_qty
+                        ),
+                        "acceleration_free_stock_qty": str(acceleration_free_stock_qty),
+                        "acceleration_stock_above_min_passed": int(
+                            acceleration_stock_above_min_passed
+                        ),
                         "acceleration_cap_to_projected_shortage": int(
                             scenario.grow_acceleration_cap_to_projected_shortage
                         ),
@@ -3173,6 +3291,43 @@ def simulate_scenario(
                         "ordinary_recommended_order_qty": str(ordinary_recommended),
                         "hybrid_gap_arrival_quantile": normalized_hybrid_quantile,
                         "hybrid_gap_min_coverable_days": normalized_hybrid_min_days,
+                        "hybrid_gap_acceleration_filter_enabled": int(
+                            hybrid_acceleration_filter_enabled
+                        ),
+                        "hybrid_gap_acceleration_recent_days": (
+                            normalized_hybrid_acceleration_recent_days
+                        ),
+                        "hybrid_gap_acceleration_baseline_days": (
+                            normalized_hybrid_acceleration_baseline_days
+                        ),
+                        "hybrid_gap_acceleration_min_recent_sales": str(
+                            normalized_hybrid_acceleration_min_recent_sales
+                        ),
+                        "hybrid_gap_acceleration_rate_multiplier": str(
+                            normalized_hybrid_acceleration_rate_multiplier
+                        ),
+                        "hybrid_gap_acceleration_require_forecast_growth": int(
+                            hybrid_gap_acceleration_require_forecast_growth
+                        ),
+                        "hybrid_gap_acceleration_recent_sales_qty": str(
+                            hybrid_acceleration_signal.recent_qty
+                        ),
+                        "hybrid_gap_acceleration_baseline_sales_qty": str(
+                            hybrid_acceleration_signal.baseline_qty
+                        ),
+                        "hybrid_gap_acceleration_recent_rate": str(
+                            hybrid_acceleration_signal.recent_rate
+                        ),
+                        "hybrid_gap_acceleration_baseline_rate": str(
+                            hybrid_acceleration_signal.baseline_rate
+                        ),
+                        "hybrid_gap_acceleration_rate_ratio": str(
+                            hybrid_acceleration_signal.rate_ratio
+                        ),
+                        "hybrid_gap_acceleration_triggered": int(
+                            hybrid_acceleration_signal.triggered
+                        ),
+                        "hybrid_gap_acceleration_passed": int(hybrid_acceleration_passed),
                         "hybrid_gap_demand_rate": str(hybrid_evaluation.demand_rate),
                         "hybrid_gap_new_arrival_date": (
                             hybrid_evaluation.new_arrival_date.isoformat()

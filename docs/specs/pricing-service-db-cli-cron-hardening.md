@@ -21,7 +21,7 @@ depends_on:
   - docs/specs/pricing-service-architecture-hardening.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-11"
+updated_at: "2026-08-12"
 ---
 
 # Назначение
@@ -110,8 +110,14 @@ JSON/CSV/XLSX артефактов сохраняются.
 - [x] Выполнить isolated zero-regression canary для
       `pricing-display-supplier-lead-time-refresh`: пять артефактов совпали побайтово.
 - [x] Переключить одну live cron-строку на active release symlink с готовым rollback.
-- [ ] Подтвердить первый штатный scheduled-run canary 2026-08-12 в 06:20 МСК;
-      до readback не переключать следующий job.
+- [x] Подтвердить первый штатный scheduled-run canary 2026-08-12 в 06:20 МСК:
+      status `0`, пять ожидаемых артефактов созданы без изменения схемы.
+- [x] Выбрать и изолированно проверить второй canary `onec_sales_kpi_sync`:
+      mutable checkout и active release дали по 56 строк с одинаковым business-state
+      SHA-256; повторный запуск не создал дублей.
+- [x] Переключить только live cron-строку `onec_sales_kpi_sync` на active release
+      symlink с сохранением расписания 03:20 МСК и адресным rollback-файлом.
+- [ ] Подтвердить первый штатный scheduled-run второго canary 2026-08-13 в 03:20 МСК.
 - [x] ОТМЕНЕНО (2026-08-11): `staffing_sync` был выбран вторым canary в режиме
       preparation-only. После диагностики job исключён из cron-canary: это
       незавершённая бизнес-интеграция без источников плана и факта смен.
@@ -153,6 +159,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 
 # Changelog
 
+- 2026-08-12 — первый canary прошёл штатный scheduled readback; rollout продолжен
+  вторым canary `onec_sales_kpi_sync`, переключённым на active release после
+  одинакового isolated результата и идемпотентного повтора.
 - ОТМЕНЕНО (2026-08-11): формулировка о «неуспешной предыдущей попытке» была
   ошибочной трактовкой сообщения пользователя.
 - 2026-08-11 — rollout переведён на canary-first с обязательным zero-regression gate.

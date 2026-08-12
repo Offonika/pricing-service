@@ -173,6 +173,19 @@ class FrozenScenario:
     legacy: bool = False
 
 
+@dataclass(frozen=True)
+class HybridGapEvaluation:
+    demand_rate: Decimal
+    new_arrival_date: date | None
+    reliable_arrival_date: date | None
+    coverable_days: int
+    stock_at_new_arrival_qty: Decimal
+    coverable_demand_qty: Decimal
+    coverable_shortage_qty: Decimal
+    open_hybrid_qty: Decimal
+    eligible: bool
+
+
 @dataclass
 class Metric:
     observed_demand_qty: Decimal = ZERO
@@ -265,6 +278,13 @@ class ScenarioDiagnostics:
     base_pipeline_lot_risk_effective_reduction_qty: Decimal = ZERO
     decision_service_buffer_positive_decisions: int = 0
     decision_service_buffer_requested_qty: Decimal = ZERO
+    hybrid_gap_evaluations: int = 0
+    hybrid_gap_eligible_evaluations: int = 0
+    hybrid_gap_positive_order_decisions: int = 0
+    hybrid_gap_open_lot_blocked_evaluations: int = 0
+    hybrid_gap_requested_qty: Decimal = ZERO
+    hybrid_gap_order_component_qty: Decimal = ZERO
+    hybrid_gap_released_on_arrival_qty: Decimal = ZERO
 
     def as_summary_fields(self) -> dict[str, Any]:
         return {
@@ -343,6 +363,19 @@ class ScenarioDiagnostics:
             ),
             "decision_service_buffer_requested_qty": str(
                 self.decision_service_buffer_requested_qty
+            ),
+            "hybrid_gap_evaluations": self.hybrid_gap_evaluations,
+            "hybrid_gap_eligible_evaluations": self.hybrid_gap_eligible_evaluations,
+            "hybrid_gap_positive_order_decisions": (
+                self.hybrid_gap_positive_order_decisions
+            ),
+            "hybrid_gap_open_lot_blocked_evaluations": (
+                self.hybrid_gap_open_lot_blocked_evaluations
+            ),
+            "hybrid_gap_requested_qty": str(self.hybrid_gap_requested_qty),
+            "hybrid_gap_order_component_qty": str(self.hybrid_gap_order_component_qty),
+            "hybrid_gap_released_on_arrival_qty": str(
+                self.hybrid_gap_released_on_arrival_qty
             ),
         }
 
@@ -1285,6 +1318,93 @@ def release_open_acceleration_protection(
     return max(ZERO, max(ZERO, open_qty) - released)
 
 
+def completed_hybrid_demand_rate(
+    sales_by_day: Mapping[date, Decimal],
+    *,
+    as_of: date,
+    forecast_rate: Decimal,
+    window_days: Sequence[int] = (30, 90, 180),
+) -> Decimal:
+    """Use only completed days before ``as_of`` and never lower the frozen forecast."""
+
+    completed_rates: list[Decimal] = []
+    for source_days in window_days:
+        days = max(1, int(source_days))
+        window_from = as_of - timedelta(days=days)
+        completed_qty = sum(
+            (
+                max(ZERO, _decimal(quantity))
+                for business_date, quantity in sales_by_day.items()
+                if window_from <= business_date < as_of
+            ),
+            ZERO,
+        )
+        completed_rates.append(completed_qty / Decimal(days))
+    return max((max(ZERO, forecast_rate), *completed_rates))
+
+
+def evaluate_hybrid_coverable_gap(
+    *,
+    as_of: date,
+    demand_rate: Decimal,
+    new_arrival_lead_days: int,
+    model_stock_qty: Decimal,
+    effective_reserve_qty: Decimal,
+    arrivals: Mapping[date, Mapping[str, Decimal]],
+    code: str,
+    open_hybrid_qty: Decimal = ZERO,
+) -> HybridGapEvaluation:
+    """Calculate only the shortage a new lot can physically cover before an open lot."""
+
+    rate = max(ZERO, demand_rate)
+    new_arrival_date = as_of + timedelta(days=max(1, int(new_arrival_lead_days)))
+    reliable_dates = sorted(
+        arrival_date
+        for arrival_date, quantities in arrivals.items()
+        if arrival_date > new_arrival_date and quantities.get(code, ZERO) > ZERO
+    )
+    reliable_arrival_date = reliable_dates[0] if reliable_dates else None
+    open_qty = max(ZERO, open_hybrid_qty)
+    free_stock = max(ZERO, model_stock_qty - max(ZERO, effective_reserve_qty))
+    if reliable_arrival_date is None or rate <= ZERO:
+        return HybridGapEvaluation(
+            demand_rate=rate,
+            new_arrival_date=new_arrival_date,
+            reliable_arrival_date=reliable_arrival_date,
+            coverable_days=0,
+            stock_at_new_arrival_qty=free_stock,
+            coverable_demand_qty=ZERO,
+            coverable_shortage_qty=ZERO,
+            open_hybrid_qty=open_qty,
+            eligible=False,
+        )
+
+    reliable_before_new = sum(
+        (
+            max(ZERO, quantities.get(code, ZERO))
+            for arrival_date, quantities in arrivals.items()
+            if as_of < arrival_date <= new_arrival_date
+        ),
+        ZERO,
+    )
+    demand_before_new = rate * Decimal((new_arrival_date - as_of).days)
+    stock_at_new = max(ZERO, free_stock + reliable_before_new - demand_before_new)
+    coverable_days = max(0, (reliable_arrival_date - new_arrival_date).days)
+    coverable_demand = rate * Decimal(coverable_days)
+    shortage = _ceil(max(ZERO, coverable_demand - stock_at_new))
+    return HybridGapEvaluation(
+        demand_rate=rate,
+        new_arrival_date=new_arrival_date,
+        reliable_arrival_date=reliable_arrival_date,
+        coverable_days=coverable_days,
+        stock_at_new_arrival_qty=stock_at_new,
+        coverable_demand_qty=coverable_demand,
+        coverable_shortage_qty=shortage,
+        open_hybrid_qty=open_qty,
+        eligible=bool(shortage > ZERO and open_qty <= ZERO),
+    )
+
+
 def cap_acceleration_to_projected_shortage(
     requested_units: Decimal,
     *,
@@ -1502,9 +1622,13 @@ def simulate_scenario(
     keep_detail: bool,
     demand_sample_cache: dict[tuple[str, date, int], list[Decimal]] | None = None,
     decision_service_buffers: Mapping[tuple[date, str], Decimal] | None = None,
+    hybrid_gap_arrival_quantile: str = "off",
 ) -> SimulationResult:
     if scenario.base_pipeline_lot_risk_boundary and scenario.grow_acceleration_profile != "off":
         raise ValueError("base pipeline lot risk cannot be combined with acceleration")
+    normalized_hybrid_quantile = _clean(hybrid_gap_arrival_quantile).lower() or "off"
+    if normalized_hybrid_quantile not in {"off", "p50", "p75"}:
+        raise ValueError("hybrid gap arrival quantile must be off, p50, or p75")
     codes = sorted(
         {
             _clean(row.get("nomenclature_code"))
@@ -1570,8 +1694,10 @@ def simulate_scenario(
     acceleration_arrivals: dict[date, dict[str, Decimal]] = defaultdict(
         lambda: defaultdict(Decimal)
     )
+    hybrid_arrivals: dict[date, dict[str, Decimal]] = defaultdict(lambda: defaultdict(Decimal))
     pipeline_qty: dict[str, Decimal] = defaultdict(Decimal)
     open_acceleration_protection_qty: dict[str, Decimal] = defaultdict(Decimal)
+    open_hybrid_protection_qty: dict[str, Decimal] = defaultdict(Decimal)
     for code, lots in initial.items():
         for arrival, qty in lots:
             arrivals[arrival][code] += qty
@@ -1606,6 +1732,16 @@ def simulate_scenario(
         for code, qty in arrivals.get(cursor, {}).items():
             stock[code] += qty
             pipeline_qty[code] = max(ZERO, pipeline_qty[code] - qty)
+            hybrid_arrived = min(
+                open_hybrid_protection_qty[code],
+                max(ZERO, hybrid_arrivals.get(cursor, {}).get(code, ZERO)),
+            )
+            if hybrid_arrived > ZERO:
+                open_hybrid_protection_qty[code] = release_open_acceleration_protection(
+                    open_hybrid_protection_qty[code],
+                    arrived_qty=hybrid_arrived,
+                )
+                diagnostics.hybrid_gap_released_on_arrival_qty += hybrid_arrived
             acceleration_arrived = min(
                 open_acceleration_protection_qty[code],
                 max(ZERO, acceleration_arrivals.get(cursor, {}).get(code, ZERO)),
@@ -2320,6 +2456,19 @@ def simulate_scenario(
             acceleration_open_before = open_acceleration_protection_qty[code]
             acceleration_open_after = acceleration_open_before
             ordinary_recommended = ZERO
+            hybrid_evaluation = HybridGapEvaluation(
+                ZERO,
+                None,
+                None,
+                0,
+                ZERO,
+                ZERO,
+                ZERO,
+                open_hybrid_protection_qty[code],
+                False,
+            )
+            hybrid_requested = ZERO
+            hybrid_order_component = ZERO
             grow_protection_reason = "none"
             manual = not scheduled_review
 
@@ -2694,6 +2843,50 @@ def simulate_scenario(
                     order_rounding_rules=policy.order_rounding_rules,
                 )
                 ordinary_recommended = recommended
+
+            if normalized_hybrid_quantile != "off" and status == AssortmentStatus.SALE.value:
+                hybrid_lead_days = int(
+                    row.get(f"lead_time_{normalized_hybrid_quantile}_days")
+                    or row.get("lead_time_p50_days")
+                    or 52
+                )
+                hybrid_rate = completed_hybrid_demand_rate(
+                    sales_by_code.get(code, {}),
+                    as_of=cursor,
+                    forecast_rate=rate,
+                )
+                hybrid_evaluation = evaluate_hybrid_coverable_gap(
+                    as_of=cursor,
+                    demand_rate=hybrid_rate,
+                    new_arrival_lead_days=hybrid_lead_days,
+                    model_stock_qty=stock[code],
+                    effective_reserve_qty=reserve,
+                    arrivals=arrivals,
+                    code=code,
+                    open_hybrid_qty=open_hybrid_protection_qty[code],
+                )
+                diagnostics.hybrid_gap_evaluations += 1
+                diagnostics.hybrid_gap_eligible_evaluations += int(hybrid_evaluation.eligible)
+                diagnostics.hybrid_gap_open_lot_blocked_evaluations += int(
+                    hybrid_evaluation.coverable_shortage_qty > ZERO
+                    and hybrid_evaluation.open_hybrid_qty > ZERO
+                )
+                if hybrid_evaluation.eligible:
+                    hybrid_requested = hybrid_evaluation.coverable_shortage_qty
+                    diagnostics.hybrid_gap_requested_qty += hybrid_requested
+                    hybrid_raw = max(raw, _ceil(hybrid_requested))
+                    hybrid_recommended = rounded_order_qty(
+                        hybrid_raw,
+                        min_order_qty=policy.min_order_qty,
+                        max_order_qty=policy.max_order_qty,
+                        order_rounding_rules=policy.order_rounding_rules,
+                    )
+                    hybrid_order_component = max(ZERO, hybrid_recommended - recommended)
+                    hybrid_order_component = min(hybrid_requested, hybrid_order_component)
+                    if hybrid_order_component > ZERO:
+                        recommended += hybrid_order_component
+                        diagnostics.hybrid_gap_positive_order_decisions += 1
+                        diagnostics.hybrid_gap_order_component_qty += hybrid_order_component
             last_evaluation_by_code[code] = {
                 "evaluation_date": cursor.isoformat(),
                 "input_decision_date": _clean(row.get("decision_date")),
@@ -2729,6 +2922,9 @@ def simulate_scenario(
                 "triggered": int(triggered),
                 "recommended_order_qty_raw": str(raw),
                 "recommended_order_qty": str(recommended),
+                "hybrid_gap_arrival_quantile": normalized_hybrid_quantile,
+                "hybrid_gap_requested_qty": str(hybrid_requested),
+                "hybrid_gap_order_component_qty": str(hybrid_order_component),
                 "expected_arrival_date": (
                     (cursor + timedelta(days=max(1, arrival_lead_days))).isoformat()
                     if recommended > ZERO
@@ -2744,7 +2940,14 @@ def simulate_scenario(
                     manual_review_action = "created"
             if recommended > ZERO:
                 arrival = cursor + timedelta(days=max(1, arrival_lead_days))
-                arrivals[arrival][code] += recommended
+                ordinary_arrival_qty = max(ZERO, recommended - hybrid_order_component)
+                if ordinary_arrival_qty > ZERO:
+                    arrivals[arrival][code] += ordinary_arrival_qty
+                if hybrid_order_component > ZERO:
+                    hybrid_arrival = hybrid_evaluation.new_arrival_date or arrival
+                    arrivals[hybrid_arrival][code] += hybrid_order_component
+                    hybrid_arrivals[hybrid_arrival][code] += hybrid_order_component
+                    open_hybrid_protection_qty[code] += hybrid_order_component
                 pipeline_qty[code] += recommended
                 if acceleration_order_component > ZERO:
                     acceleration_arrivals[arrival][code] += acceleration_order_component
@@ -2951,6 +3154,32 @@ def simulate_scenario(
                         "ordinary_min_stock_qty": str(ordinary_min_qty),
                         "ordinary_max_stock_qty": str(ordinary_max_qty),
                         "ordinary_recommended_order_qty": str(ordinary_recommended),
+                        "hybrid_gap_arrival_quantile": normalized_hybrid_quantile,
+                        "hybrid_gap_demand_rate": str(hybrid_evaluation.demand_rate),
+                        "hybrid_gap_new_arrival_date": (
+                            hybrid_evaluation.new_arrival_date.isoformat()
+                            if hybrid_evaluation.new_arrival_date
+                            else ""
+                        ),
+                        "hybrid_gap_reliable_arrival_date": (
+                            hybrid_evaluation.reliable_arrival_date.isoformat()
+                            if hybrid_evaluation.reliable_arrival_date
+                            else ""
+                        ),
+                        "hybrid_gap_coverable_days": hybrid_evaluation.coverable_days,
+                        "hybrid_gap_stock_at_new_arrival_qty": str(
+                            hybrid_evaluation.stock_at_new_arrival_qty
+                        ),
+                        "hybrid_gap_coverable_demand_qty": str(
+                            hybrid_evaluation.coverable_demand_qty
+                        ),
+                        "hybrid_gap_coverable_shortage_qty": str(
+                            hybrid_evaluation.coverable_shortage_qty
+                        ),
+                        "hybrid_gap_open_before_qty": str(hybrid_evaluation.open_hybrid_qty),
+                        "hybrid_gap_eligible": int(hybrid_evaluation.eligible),
+                        "hybrid_gap_requested_qty": str(hybrid_requested),
+                        "hybrid_gap_order_component_qty": str(hybrid_order_component),
                         "recommended_order_qty_raw": str(raw),
                         "recommended_order_qty": str(recommended),
                         "manual_review_assumed_accepted": int(manual),

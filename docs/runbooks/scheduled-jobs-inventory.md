@@ -5,7 +5,7 @@ domain: operations
 status: active
 owner: pricing-platform
 source_of_truth: true
-updated_at: "2026-08-11"
+updated_at: "2026-08-12"
 ---
 
 # Инвентарь заданий по расписанию
@@ -34,7 +34,7 @@ updated_at: "2026-08-11"
 | `onec_assembly_crm_reconciler` | каждые 30 минут | рабочая папка |
 | `order_fulfillment_sync` | каждые 30 минут, ежечасно в :05, ежедневно 11:00 | рабочая папка |
 | `pricing-onec-stock-availability` | ежедневно 03:15, еженедельно вс 02:00 | релиз |
-| `pricing-service-data-sync` | ежедневно 02:00, 02:30, 03:20 | смешанный: receivable — релиз; staffing и sales KPI — рабочая папка |
+| `pricing-service-data-sync` | ежедневно 02:00, 02:30, 03:20 | смешанный: receivable и sales KPI — релиз; staffing — рабочая папка |
 | `pricing-sku-generation-ut103` | ежедневно 02:30 | рабочая папка |
 | `pricing-service-competitors` | ежедневно 04:10, 04:45, 05:20 | релиз |
 | `pricing-display-supplier-lead-time-refresh` | ежедневно 06:20 | релиз, canary с 2026-08-11 |
@@ -53,10 +53,10 @@ updated_at: "2026-08-11"
 
 ## Известное расхождение
 
-На 2026-08-11 система всё ещё работает из двух источников одновременно:
+На 2026-08-12 система всё ещё работает из двух источников одновременно:
 
-- служба API — из релиза `card-balance-ocr-proxy-20260811-ee077fb`;
-- восемь cron entrypoints — из рабочей папки после первого canary-переключения.
+- служба API — из релиза `task-2662-sms-journal-20260812-57aeb55`;
+- семь cron entrypoints — из рабочей папки после второго canary-переключения.
 
 Между mutable checkout и active release на момент аудита было 117 различающихся
 путей. Экраны и ночные расчёты могут по-разному интерпретировать одни и те же данные.
@@ -77,8 +77,28 @@ updated_at: "2026-08-11"
 - rollback-копия cron сохранена в
   `/opt/MM/backups/pricing-service-cron-canary-20260811/`.
 
-Первый штатный запуск после cutover ожидается 2026-08-12 в 06:20 МСК. До его
-успешного readback следующий job не переключать.
+Первый штатный запуск после cutover состоялся 2026-08-12 в 06:20 МСК и завершился
+в 06:24 со status `0`. Все пять ожидаемых CSV/JSON созданы, их схемы и внутренние
+счётчики согласованы; rollback не потребовался.
+
+## Canary: 1С Sales KPI
+
+2026-08-12 `onec_sales_kpi_sync` выбран вторым canary и переведён на
+`/opt/MM/pricing-service-task43-current` с явным `REPO_DIR`. Перед cutover:
+
+- wrapper, task, worker, service, модель и env-loader в mutable checkout и active
+  release совпали побайтово;
+- обе версии прочитали один и тот же день 2026-08-11 из 1С и записали во временные
+  SQLite-базы по 56 строк с одинаковым business-state SHA-256;
+- повтор каждой версии удалил и вставил ровно те же 56 строк без дублей;
+- production PostgreSQL во время isolated проверки не изменялся;
+- сохранена полная копия `/etc/cron.d/pricing-service-data-sync` в
+  `/opt/MM/backups/pricing-service-cron-canary-20260812/`;
+- расписание 03:20 МСК, строки receivable и staffing не изменены.
+
+Cron перечитал конфигурацию 2026-08-12 в 08:39 МСК. Первый штатный запуск второго
+canary ожидается 2026-08-13 в 03:20 МСК; до успешного readback следующий job не
+переключать. Rollback — вернуть сохранённый cron-файл целиком.
 
 ## Отменённая canary-подготовка: staffing sync
 
@@ -115,6 +135,6 @@ updated_at: "2026-08-11"
 
 ## Проверка после переключения ветки в рабочей папке
 
-Переключение ветки в `/opt/MM/pricing-service` меняет код оставшихся восьми cron entrypoints.
+Переключение ветки в `/opt/MM/pricing-service` меняет код оставшихся семи cron entrypoints.
 После такого переключения проверить логи ближайших запусков — в первую очередь
 `assortment_lifecycle_classification.log` и `order_fulfillment_sync.log`.

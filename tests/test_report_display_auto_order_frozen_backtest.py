@@ -30,15 +30,81 @@ from tasks.report_display_auto_order_frozen_backtest import (
     calculate_demand_acceleration,
     cap_acceleration_to_projected_shortage,
     combine_service_floor_with_economic_stock,
+    completed_hybrid_demand_rate,
     empirical_underforecast_percentile,
     evaluate_acceleration_segment_gate,
     evaluate_acceleration_shortage_guard,
+    evaluate_hybrid_coverable_gap,
     historical_forecast_error_samples,
     release_open_acceleration_protection,
     risk_adjusted_base_pipeline_quantity,
     select_scenarios,
     simulate_scenario,
 )
+
+
+def test_completed_hybrid_rate_excludes_decision_day_and_uses_strongest_past_window() -> None:
+    as_of = date(2026, 7, 1)
+    sales = {
+        as_of - timedelta(days=1): Decimal("6"),
+        as_of - timedelta(days=40): Decimal("9"),
+        as_of: Decimal("999"),
+    }
+
+    result = completed_hybrid_demand_rate(
+        sales,
+        as_of=as_of,
+        forecast_rate=Decimal("0.1"),
+    )
+
+    assert result == Decimal("0.2")
+
+
+def test_hybrid_gap_counts_only_interval_new_lot_can_cover() -> None:
+    as_of = date(2026, 5, 1)
+    result = evaluate_hybrid_coverable_gap(
+        as_of=as_of,
+        demand_rate=Decimal("1"),
+        new_arrival_lead_days=10,
+        model_stock_qty=Decimal("12"),
+        effective_reserve_qty=Decimal("0"),
+        arrivals={
+            as_of + timedelta(days=5): {"sku": Decimal("3")},
+            as_of + timedelta(days=20): {"sku": Decimal("10")},
+        },
+        code="sku",
+    )
+
+    assert result.new_arrival_date == as_of + timedelta(days=10)
+    assert result.reliable_arrival_date == as_of + timedelta(days=20)
+    assert result.stock_at_new_arrival_qty == Decimal("5")
+    assert result.coverable_demand_qty == Decimal("10")
+    assert result.coverable_shortage_qty == Decimal("5")
+    assert result.eligible is True
+
+
+def test_hybrid_gap_requires_later_open_arrival_and_one_open_hybrid_lot() -> None:
+    as_of = date(2026, 5, 1)
+    common = {
+        "as_of": as_of,
+        "demand_rate": Decimal("1"),
+        "new_arrival_lead_days": 10,
+        "model_stock_qty": Decimal("0"),
+        "effective_reserve_qty": Decimal("0"),
+        "code": "sku",
+    }
+
+    assert (
+        evaluate_hybrid_coverable_gap(arrivals={}, open_hybrid_qty=Decimal("0"), **common).eligible
+        is False
+    )
+    blocked = evaluate_hybrid_coverable_gap(
+        arrivals={as_of + timedelta(days=20): {"sku": Decimal("10")}},
+        open_hybrid_qty=Decimal("2"),
+        **common,
+    )
+    assert blocked.coverable_shortage_qty == Decimal("10")
+    assert blocked.eligible is False
 
 
 def _selection_scenario(scenario_id: str) -> FrozenScenario:

@@ -388,12 +388,12 @@ def test_role_scopes_filters_and_pagination(tmp_path: Path) -> None:
     }
     try:
         client = TestClient(app)
-        assert client.get("/api/customer-price-types/cases").json()["total"] == 3
+        assert client.get("/api/customer-price-types/cases").json()["total"] == 2
         assert (
             client.get("/api/customer-price-types/cases", params={"worklist": "data_check"}).json()[
                 "total"
             ]
-            == 1
+            == 0
         )
         assert (
             client.get(
@@ -411,7 +411,7 @@ def test_role_scopes_filters_and_pagination(tmp_path: Path) -> None:
         page = client.get(
             "/api/customer-price-types/cases", params={"limit": 1, "offset": 1}
         ).json()
-        assert page["total"] == 3
+        assert page["total"] == 2
         assert len(page["payload"]) == 1
         assert (
             client.get(
@@ -889,6 +889,7 @@ def test_quality_sample_review_metrics_idempotency_and_permissions(tmp_path: Pat
         reviewed = client.put(
             f"/api/customer-price-types/quality/samples/{isolate['id']}",
             json={
+                "review_result": "incorrect",
                 "correct_group": "no_action",
                 "comment": "Понижение не требуется",
                 "expected_version": isolate["version"],
@@ -899,6 +900,7 @@ def test_quality_sample_review_metrics_idempotency_and_permissions(tmp_path: Pat
         stale = client.put(
             f"/api/customer-price-types/quality/samples/{isolate['id']}",
             json={
+                "review_result": "correct",
                 "correct_group": "isolate",
                 "expected_version": isolate["version"],
             },
@@ -908,6 +910,7 @@ def test_quality_sample_review_metrics_idempotency_and_permissions(tmp_path: Pat
             client.put(
                 f"/api/customer-price-types/quality/samples/{no_action['id']}",
                 json={
+                    "review_result": "correct",
                     "correct_group": "no_action",
                     "expected_version": no_action["version"],
                 },
@@ -940,6 +943,7 @@ def test_quality_sample_review_metrics_idempotency_and_permissions(tmp_path: Pat
                 try:
                     CustomerPriceTypeQualityService(session).review(
                         sample_id=isolate["id"],
+                        review_result="incorrect",
                         correct_group="no_action",
                         comment=actor,
                         expected_version=reviewed.json()["version"],
@@ -990,7 +994,7 @@ def test_quality_sample_review_metrics_idempotency_and_permissions(tmp_path: Pat
         engine.dispose()
 
 
-def test_quality_metrics_allow_missing_recommended_price_type(tmp_path: Path) -> None:
+def test_data_check_is_excluded_from_quality_sample_and_metrics(tmp_path: Path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'quality-null-target.db'}")
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
@@ -1017,21 +1021,117 @@ def test_quality_metrics_allow_missing_recommended_price_type(tmp_path: Path) ->
             ).status_code
             == 200
         )
-        sample = client.get("/api/customer-price-types/quality/samples").json()["payload"][0]
-        assert sample["recommended_price_type"] is None
-        assert (
-            client.put(
-                f"/api/customer-price-types/quality/samples/{sample['id']}",
-                json={
-                    "correct_group": "no_action",
-                    "expected_version": sample["version"],
-                },
-            ).status_code
-            == 200
-        )
+        samples = client.get("/api/customer-price-types/quality/samples").json()
+        assert samples["total"] == 0
         metrics = client.get("/api/customer-price-types/quality/metrics")
         assert metrics.status_code == 200, metrics.text
+        assert metrics.json()["population_count"] == 0
+        assert metrics.json()["selected_count"] == 0
         assert metrics.json()["critical_false_downgrade_count"] == 0
+    finally:
+        app.dependency_overrides = {}
+        engine.dispose()
+
+
+def test_profile_search_and_internal_data_issue_queue(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'data-issue-workspace.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    clean = _facts(601, owner="manager-1", department="department-1")
+    conflict = replace(
+        _facts(602, owner="manager-2", department="department-1"),
+        ledger_total_3m=Decimal("1300"),
+    )
+    CustomerPriceTypeRunService(factory).execute(
+        [clean, conflict],
+        source_statuses={"contracts": "ready"},
+        run_key="data-issue-workspace-run",
+    )
+    network = CustomerPriceTypeAccessScope(
+        actor="network-expert", role="network_head", can_view_money=True
+    )
+    app.dependency_overrides = {
+        get_db: _override_db(factory),
+        require_customer_price_type_access: lambda: network,
+    }
+    try:
+        client = TestClient(app)
+        prepared = client.post(
+            "/api/customer-price-types/quality/samples/prepare", json={"per_group": 1}
+        )
+        assert prepared.status_code == 200, prepared.text
+        assert prepared.json()["created"] == 1
+
+        search = client.get("/api/customer-price-types/profiles", params={"search": "Клиент"})
+        assert search.status_code == 200, search.text
+        by_code = {item["counterparty_code"]: item for item in search.json()["payload"]}
+        assert by_code["РБ000601"]["result_state"] == "change_proposed"
+        assert by_code["РБ000601"]["can_review"] is True
+        assert by_code["РБ000602"]["result_state"] == "data_issue"
+        assert by_code["РБ000602"]["result_label"] == "Данные проверяет техническая команда"
+        assert by_code["РБ000602"]["recommended_price_type"] is None
+        assert by_code["РБ000602"]["can_review"] is False
+        assert client.get(f"/api/customer-price-types/profiles/{_ref(602)}").status_code == 404
+        with Session(engine) as session:
+            conflict_case = session.scalar(
+                select(CustomerPriceTypeProfile.open_case_id).where(
+                    CustomerPriceTypeProfile.counterparty_ref == _ref(602)
+                )
+            )
+        assert conflict_case is not None
+        assert client.get(f"/api/customer-price-types/cases/{conflict_case}").status_code == 404
+        assert client.get("/api/customer-price-types/data-issues").status_code == 403
+        assert (
+            client.get("/api/customer-price-types/cases", params={"worklist": "data_check"}).json()[
+                "total"
+            ]
+            == 0
+        )
+
+        sample = client.get("/api/customer-price-types/quality/samples").json()["payload"][0]
+        missing_comment = client.put(
+            f"/api/customer-price-types/quality/samples/{sample['id']}",
+            json={
+                "review_result": "data_issue",
+                "expected_version": sample["version"],
+            },
+        )
+        assert missing_comment.status_code == 422
+        missing_incorrect_result = client.put(
+            f"/api/customer-price-types/quality/samples/{sample['id']}",
+            json={
+                "review_result": "incorrect",
+                "comment": "Нужен другой результат",
+                "expected_version": sample["version"],
+            },
+        )
+        assert missing_incorrect_result.status_code == 422
+        reviewed = client.put(
+            f"/api/customer-price-types/quality/samples/{sample['id']}",
+            json={
+                "review_result": "data_issue",
+                "comment": "Сумма за июнь выглядит неверно",
+                "expected_version": sample["version"],
+            },
+        )
+        assert reviewed.status_code == 200, reviewed.text
+        assert reviewed.json()["review_result"] == "data_issue"
+        assert reviewed.json()["correct_group"] == "data_check"
+
+        internal = CustomerPriceTypeAccessScope(
+            actor="internal", role="internal", can_view_money=True
+        )
+        app.dependency_overrides[require_customer_price_type_access] = lambda: internal
+        issues = client.get("/api/customer-price-types/data-issues")
+        assert issues.status_code == 200, issues.text
+        assert issues.json()["total"] == 2
+        by_source = {item["issue_source"]: item for item in issues.json()["payload"]}
+        assert by_source["calculation"]["issue_text"] == "Данные источников расходятся."
+        assert by_source["calculation"]["current_price_type"] == "2.Бронзовый"
+        assert by_source["expert"]["comment"] == "Сумма за июнь выглядит неверно"
+        metrics = client.get("/api/customer-price-types/quality/metrics").json()
+        assert metrics["selected_count"] == 0
+        assert metrics["reviewed_count"] == 0
     finally:
         app.dependency_overrides = {}
         engine.dispose()
@@ -1095,7 +1195,15 @@ def test_quality_recall_is_weighted_by_population_group_size(tmp_path: Path) -> 
             response = client.put(
                 f"/api/customer-price-types/quality/samples/{sample['id']}",
                 json={
+                    "review_result": (
+                        "correct" if correct_group == sample["system_group"] else "incorrect"
+                    ),
                     "correct_group": correct_group,
+                    **(
+                        {"comment": "Исправление экспертной оценки"}
+                        if correct_group != sample["system_group"]
+                        else {}
+                    ),
                     "expected_version": sample["version"],
                 },
             )

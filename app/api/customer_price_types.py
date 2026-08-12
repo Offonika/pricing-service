@@ -29,10 +29,14 @@ from app.schemas.customer_price_types import (
     CustomerPriceTypeCaseEventResponse,
     CustomerPriceTypeCaseItem,
     CustomerPriceTypeCaseListResponse,
+    CustomerPriceTypeDataIssueItem,
+    CustomerPriceTypeDataIssueListResponse,
     CustomerPriceTypePortfolioBucket,
     CustomerPriceTypePortfolioItem,
     CustomerPriceTypePortfolioResponse,
     CustomerPriceTypeProfileResponse,
+    CustomerPriceTypeProfileSearchItem,
+    CustomerPriceTypeProfileSearchResponse,
     CustomerPriceTypeQualityGroup,
     CustomerPriceTypeQualityMetricsResponse,
     CustomerPriceTypeQualityPrepareRequest,
@@ -203,7 +207,9 @@ def _snapshot_payload(row, access: CustomerPriceTypeAccessScope) -> dict:
         "conflicts": row.conflicts,
         "stop_factors": row.stop_factors,
         "system_recommendation": row.system_recommendation,
-        "recommended_price_type": row.recommended_price_type,
+        "recommended_price_type": (
+            None if row.case_type == "data_check" else row.recommended_price_type
+        ),
         "recommendation_reason": row.recommendation_reason,
         "action_required": row.action_required,
         "case_type": row.case_type,
@@ -260,7 +266,9 @@ def _case_payload(case, profile, snapshot) -> dict:
         "department_name": case.department_name,
         "due_at": case.due_at,
         "system_recommendation": case.system_recommendation,
-        "recommended_price_type": case.recommended_price_type,
+        "recommended_price_type": (
+            None if case.case_type == "data_check" else case.recommended_price_type
+        ),
         "human_final_decision": case.human_final_decision,
         "approval_status": case.approval_status,
         "action_required": bool(snapshot.action_required or external_control_active),
@@ -314,7 +322,11 @@ def _portfolio_payload(item, profile, snapshot, case, access) -> dict:
             else False
         ),
         "system_recommendation": snapshot.system_recommendation if snapshot else None,
-        "recommended_price_type": snapshot.recommended_price_type if snapshot else None,
+        "recommended_price_type": (
+            None
+            if snapshot is None or snapshot.case_type == "data_check"
+            else snapshot.recommended_price_type
+        ),
         "source_status": snapshot.source_status if snapshot else "missing",
         "stop_factors": list(snapshot.stop_factors) if snapshot else [],
         "review_status": review_batch_snapshot_status(snapshot),
@@ -326,6 +338,14 @@ def _portfolio_payload(item, profile, snapshot, case, access) -> dict:
 
 
 def _quality_sample_payload(sample, profile, snapshot) -> dict:
+    review_result = None
+    if sample.status == "reviewed":
+        if sample.correct_group == "data_check" and sample.system_group != "data_check":
+            review_result = "data_issue"
+        elif sample.correct_group == sample.system_group:
+            review_result = "correct"
+        else:
+            review_result = "incorrect"
     return {
         "id": sample.id,
         "run_id": sample.run_id,
@@ -334,12 +354,15 @@ def _quality_sample_payload(sample, profile, snapshot) -> dict:
         "counterparty_code": profile.counterparty_code,
         "counterparty_name": profile.counterparty_name,
         "current_price_type": snapshot.current_price_type,
-        "recommended_price_type": snapshot.recommended_price_type,
+        "recommended_price_type": (
+            None if snapshot.case_type == "data_check" else snapshot.recommended_price_type
+        ),
         "system_recommendation": snapshot.system_recommendation,
         "recommendation_reason": snapshot.recommendation_reason,
         "stop_factors": snapshot.stop_factors,
         "system_group": sample.system_group,
         "correct_group": sample.correct_group,
+        "review_result": review_result,
         "status": sample.status,
         "selected_by": sample.selected_by,
         "selected_at": sample.selected_at,
@@ -353,6 +376,62 @@ def _quality_sample_payload(sample, profile, snapshot) -> dict:
 def _ensure_quality_read_access(access: CustomerPriceTypeAccessScope) -> None:
     if access.role not in CustomerPriceTypeQualityService.READ_ROLES:
         raise HTTPException(status_code=403, detail="customer price-type quality access denied")
+
+
+def _profile_search_payload(profile, snapshot, sample) -> dict:
+    is_data_issue = snapshot.case_type == "data_check" or bool(
+        sample is not None
+        and sample.status == "reviewed"
+        and sample.system_group != "data_check"
+        and sample.correct_group == "data_check"
+    )
+    change_proposed = (
+        snapshot.recommended_price_type is not None
+        and snapshot.recommended_price_type != snapshot.current_price_type
+    )
+    if is_data_issue:
+        state = "data_issue"
+        label = "Данные проверяет техническая команда"
+    elif change_proposed:
+        state = "change_proposed"
+        label = "Система предлагает изменить тип"
+    else:
+        state = "no_change"
+        label = "Изменение не требуется"
+    return {
+        "counterparty_ref": profile.counterparty_ref,
+        "counterparty_code": profile.counterparty_code,
+        "counterparty_name": profile.counterparty_name,
+        "current_price_type": snapshot.current_price_type,
+        "recommended_price_type": None if is_data_issue else snapshot.recommended_price_type,
+        "result_state": state,
+        "result_label": label,
+        "can_review": bool(sample is not None and sample.status == "pending" and not is_data_issue),
+        "quality_sample_id": sample.id if sample is not None else None,
+        "quality_sample_status": sample.status if sample is not None else None,
+    }
+
+
+_DATA_ISSUE_TEXTS = {
+    "active_contract_missing": "Не найден однозначный действующий договор.",
+    "price_type_missing": "В рабочем договоре не указан тип цены.",
+    "price_type_marked": "Тип цены рабочего договора помечен на удаление.",
+    "unknown_price_type": "Тип цены рабочего договора не распознан.",
+    "conflicting_price_levels": "В рабочих договорах указаны разные ценовые уровни.",
+    "conflicting_price_type_variants": "В рабочих договорах указаны разные варианты типа цены.",
+    "duplicate_counterparty": "Обнаружен дубль карточки клиента.",
+    "partial_source": "Один или несколько источников загружены не полностью.",
+    "source_mismatch": "Данные источников расходятся.",
+    "return_period_mismatch": "Периоды продаж и возвратов не совпадают.",
+    "economics_missing": "Не загружены данные для проверки экономики.",
+}
+
+
+def _data_issue_text(snapshot) -> str:
+    for reason in snapshot.reasons or ():
+        if reason in _DATA_ISSUE_TEXTS:
+            return _DATA_ISSUE_TEXTS[reason]
+    return "Техническая причина не расшифрована."
 
 
 @router.get("/summary", response_model=CustomerPriceTypeSummaryResponse)
@@ -572,6 +651,12 @@ def get_customer_price_type_profile(
         latest = next((item for item in history if item.id == profile.latest_snapshot_id), None)
         if latest is None and history:
             latest = history[0]
+        if (
+            access.role == "network_head"
+            and latest is not None
+            and latest.case_type == "data_check"
+        ):
+            raise HTTPException(status_code=404, detail="customer price-type profile not found")
         open_case_row = (
             repository.get_case_scoped(profile.open_case_id, access)
             if profile.open_case_id
@@ -619,6 +704,108 @@ def get_customer_price_type_profile(
             CustomerPriceTypeSnapshotResponse.model_validate(_snapshot_payload(item, access))
             for item in history
         ],
+    )
+
+
+@router.get("/profiles", response_model=CustomerPriceTypeProfileSearchResponse)
+def search_customer_price_type_profiles(
+    access: Access,
+    search: str = Query(min_length=2, max_length=255),
+    snapshot_month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> CustomerPriceTypeProfileSearchResponse:
+    repository = SqlAlchemyCustomerPriceTypeRepository(db)
+    try:
+        run = repository.latest_run(_month(snapshot_month))
+        if run is None:
+            rows, total = [], 0
+        else:
+            rows, total = repository.search_profiles(
+                run_id=run.id,
+                access=access,
+                search=search,
+                limit=limit,
+                offset=offset,
+            )
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503, detail="customer price-type storage unavailable"
+        ) from exc
+    return CustomerPriceTypeProfileSearchResponse(
+        run_id=run.id if run else None,
+        snapshot_month=run.snapshot_month if run else _month(snapshot_month),
+        ruleset_version=run.ruleset_version if run else None,
+        source_status=run.status if run else "missing",
+        total=total,
+        limit=limit,
+        offset=offset,
+        payload=[
+            CustomerPriceTypeProfileSearchItem.model_validate(_profile_search_payload(*row))
+            for row in rows
+        ],
+    )
+
+
+@router.get("/data-issues", response_model=CustomerPriceTypeDataIssueListResponse)
+def list_customer_price_type_data_issues(
+    access: Access,
+    snapshot_month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    search: str | None = Query(default=None, max_length=255),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> CustomerPriceTypeDataIssueListResponse:
+    if access.role not in {"internal", "quality", "executive"}:
+        raise HTTPException(status_code=403, detail="customer price-type data issue access denied")
+    repository = SqlAlchemyCustomerPriceTypeRepository(db)
+    try:
+        run = repository.latest_run(_month(snapshot_month))
+        rows = repository.list_data_issues(run_id=run.id, search=search) if run is not None else []
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503, detail="customer price-type storage unavailable"
+        ) from exc
+    total = len(rows)
+    page = rows[offset : offset + limit]
+    payload = []
+    for source, profile, snapshot, source_row in page:
+        if source == "calculation":
+            payload.append(
+                CustomerPriceTypeDataIssueItem(
+                    counterparty_ref=profile.counterparty_ref,
+                    counterparty_code=profile.counterparty_code,
+                    counterparty_name=profile.counterparty_name,
+                    current_price_type=snapshot.current_price_type,
+                    issue_source="calculation",
+                    issue_text=_data_issue_text(snapshot),
+                    case_id=source_row.id if source_row is not None else None,
+                )
+            )
+        else:
+            payload.append(
+                CustomerPriceTypeDataIssueItem(
+                    counterparty_ref=profile.counterparty_ref,
+                    counterparty_code=profile.counterparty_code,
+                    counterparty_name=profile.counterparty_name,
+                    current_price_type=snapshot.current_price_type,
+                    issue_source="expert",
+                    issue_text="Эксперт заметил ошибку в исходных данных.",
+                    reported_by=source_row.reviewed_by,
+                    reported_at=source_row.reviewed_at,
+                    comment=source_row.comment,
+                )
+            )
+    return CustomerPriceTypeDataIssueListResponse(
+        run_id=run.id if run else None,
+        snapshot_month=run.snapshot_month if run else _month(snapshot_month),
+        ruleset_version=run.ruleset_version if run else None,
+        source_status=run.status if run else "missing",
+        total=total,
+        limit=limit,
+        offset=offset,
+        payload=payload,
     )
 
 
@@ -778,6 +965,7 @@ def review_customer_price_type_quality_sample(
     try:
         row = CustomerPriceTypeQualityService(db).review(
             sample_id=sample_id,
+            review_result=payload.review_result,
             correct_group=payload.correct_group,
             comment=payload.comment,
             expected_version=payload.expected_version,
@@ -788,6 +976,8 @@ def review_customer_price_type_quality_sample(
         return CustomerPriceTypeQualitySampleResponse.model_validate(_quality_sample_payload(*row))
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except CustomerPriceTypeQualityConflict as exc:

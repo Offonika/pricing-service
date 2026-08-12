@@ -176,8 +176,7 @@ def test_v2_representation_floor_skips_spike_q3_and_unknown_cost() -> None:
             "reserve": {},
             "incoming": {},
             "sales": {
-                code: {"sales_qty_window": Decimal("6")}
-                for code in ("SPIKE", "Q3", "UNKNOWN")
+                code: {"sales_qty_window": Decimal("6")} for code in ("SPIKE", "Q3", "UNKNOWN")
             },
             "returns": {},
         },

@@ -24,15 +24,11 @@ def upgrade() -> None:
         sa.Column("legacy_status", sa.String(64), nullable=False, server_default=""),
         sa.Column("target_status", sa.String(64), nullable=False, server_default=""),
         sa.Column("target_status_label", sa.String(128), nullable=False, server_default=""),
-        sa.Column(
-            "target_reason_codes", sa.JSON(), nullable=False, server_default=sa.text("'[]'")
-        ),
+        sa.Column("target_reason_codes", sa.JSON(), nullable=False, server_default=sa.text("'[]'")),
         sa.Column("target_reason_text", sa.Text(), nullable=False, server_default=""),
         sa.Column("demand_state", sa.String(32), nullable=True),
         sa.Column("demand_state_label", sa.String(64), nullable=False, server_default=""),
-        sa.Column(
-            "demand_reason_codes", sa.JSON(), nullable=False, server_default=sa.text("'[]'")
-        ),
+        sa.Column("demand_reason_codes", sa.JSON(), nullable=False, server_default=sa.text("'[]'")),
         sa.Column("demand_reason_text", sa.Text(), nullable=False, server_default=""),
         sa.Column("demand_state_since", sa.Date(), nullable=True),
         sa.Column("inventory_cost_per_unit", sa.Numeric(18, 4), nullable=True),
@@ -102,8 +98,12 @@ def downgrade() -> None:
         table_name="assortment_lifecycle_classification_history",
     )
     op.drop_table("assortment_lifecycle_classification_history")
-    op.drop_index("ix_assortment_lifecycle_target_status", table_name="assortment_lifecycle_classification")
-    op.drop_index("ix_assortment_lifecycle_demand_state", table_name="assortment_lifecycle_classification")
+    op.drop_index(
+        "ix_assortment_lifecycle_target_status", table_name="assortment_lifecycle_classification"
+    )
+    op.drop_index(
+        "ix_assortment_lifecycle_demand_state", table_name="assortment_lifecycle_classification"
+    )
     for name in (
         "days_in_sale_long",
         "days_in_sale_medium",

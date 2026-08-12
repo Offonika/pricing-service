@@ -14,8 +14,8 @@ from sqlalchemy.orm import Session
 from app.core.config import get_settings
 from app.infrastructure.db.engines import build_engine
 from app.services.assortment_lifecycle_classification_store import (
-    fetch_previous_demand_states,
     build_classification_rows,
+    fetch_previous_demand_states,
     fetch_previous_statuses,
     persist_classification_rows,
     result_to_mapping,
@@ -410,6 +410,7 @@ def _load_or_build_fact_records(
                 inventory_costs = fetch_onec_item_inventory_costs(
                     onec_engine,
                     nomenclature_codes=codes,
+                    as_of=demand_date_to,
                 )
             finally:
                 onec_engine.dispose()

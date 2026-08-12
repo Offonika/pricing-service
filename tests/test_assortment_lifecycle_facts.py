@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from datetime import date
+from contextlib import contextmanager
+from datetime import date, timedelta
 from decimal import Decimal
 
 from sqlalchemy import create_engine, text
@@ -9,11 +10,47 @@ from app.services.assortment_lifecycle_facts import (
     DocumentLineMapping,
     _chunks,
     _folder_like_patterns,
+    _sales_distribution_from_rows,
     build_assortment_lifecycle_fact_records,
     enrich_nomenclature_rows_with_product_snapshot,
+    fetch_onec_item_inventory_costs,
     validate_document_line_mapping,
     validate_warehouse_policy,
 )
+
+
+class _InventoryCostRows:
+    def mappings(self) -> _InventoryCostRows:
+        return self
+
+    def __iter__(self):
+        return iter(
+            [
+                {
+                    "nomenclature_code": "SKU-1",
+                    "party_quantity": Decimal("2"),
+                    "party_amount": Decimal("300"),
+                }
+            ]
+        )
+
+
+class _InventoryCostConnection:
+    def __init__(self, calls: list[tuple[str, dict[str, object]]]) -> None:
+        self.calls = calls
+
+    def execute(self, statement, params):
+        self.calls.append((str(statement), dict(params)))
+        return _InventoryCostRows()
+
+
+class _InventoryCostEngine:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    @contextmanager
+    def connect(self):
+        yield _InventoryCostConnection(self.calls)
 
 
 def _warehouse_policy() -> list[dict[str, object]]:
@@ -407,6 +444,61 @@ def test_full_history_receipt_bounds_preserve_old_age_after_new_receipt() -> Non
     assert fact["history_age_days"] == (date(2026, 8, 12) - date(2018, 1, 10)).days
 
 
+def test_current_inventory_cost_uses_current_party_totals_only() -> None:
+    engine = _InventoryCostEngine()
+
+    result = fetch_onec_item_inventory_costs(
+        engine,
+        nomenclature_codes=["SKU-1"],
+        as_of=date.today(),
+    )
+
+    assert result == {"SKU-1": Decimal("150")}
+    sql, params = engine.calls[0]
+    assert "FROM dbo._AccumRgT7473 AS t" in sql
+    assert "FROM dbo._AccumRg7453 AS r" not in sql
+    assert params["current_totals_period"] is not None
+
+
+def test_historical_inventory_cost_rebuilds_month_total_without_future_movements() -> None:
+    engine = _InventoryCostEngine()
+    as_of = date.today() - timedelta(days=40)
+
+    result = fetch_onec_item_inventory_costs(
+        engine,
+        nomenclature_codes=["SKU-1"],
+        as_of=as_of,
+    )
+
+    assert result == {"SKU-1": Decimal("150")}
+    sql, params = engine.calls[0]
+    assert "FROM dbo._AccumRgT7473 AS t" in sql
+    assert "FROM dbo._AccumRg7453 AS r" in sql
+    assert "r._Period >= :month_start" in sql
+    assert "r._Period < :date_to" in sql
+    assert "SUM(party.quantity) > 0" in sql
+    assert "SUM(party.amount) >= 0" in sql
+    assert params["month_start"].date() == as_of.replace(day=1)
+    assert params["date_to"].date() == as_of + timedelta(days=1)
+
+
+def test_inventory_cost_rejects_future_as_of_before_querying_onec() -> None:
+    engine = _InventoryCostEngine()
+
+    try:
+        fetch_onec_item_inventory_costs(
+            engine,
+            nomenclature_codes=["SKU-1"],
+            as_of=date.today() + timedelta(days=1),
+        )
+    except ValueError as exc:
+        assert str(exc) == "inventory_cost_as_of_cannot_be_future"
+    else:
+        raise AssertionError("future inventory cost date must be rejected")
+
+    assert engine.calls == []
+
+
 def test_cost_quartile_uses_fallback_group_and_unknown_cost_has_no_minimum() -> None:
     warehouses = [
         {
@@ -470,3 +562,36 @@ def test_cost_quartile_uses_fallback_group_and_unknown_cost_has_no_minimum() -> 
     assert unknown["inventory_cost_per_unit"] is None
     assert unknown["cost_quartile"] == ""
     assert unknown["minimum_representation_qty"] is None
+
+
+def test_sales_distribution_keeps_daily_anonymous_observations() -> None:
+    result = _sales_distribution_from_rows(
+        [
+            {
+                "nomenclature_code": "SKU-1",
+                "business_date": "2026-08-01",
+                "document_ref": "DOC-1",
+                "customer_ref": "CUSTOMER-1",
+                "sales_point_ref": "SHOP-1",
+                "quantity": "7",
+            },
+            {
+                "nomenclature_code": "SKU-1",
+                "business_date": "2026-08-02",
+                "document_ref": "DOC-2",
+                "customer_ref": "CUSTOMER-2",
+                "sales_point_ref": "SHOP-2",
+                "quantity": "3",
+            },
+        ]
+    )["SKU-1"]
+    assert result["sales_active_days_short"] == 2
+    assert result["sales_document_count_short"] == 2
+    assert result["sales_customer_count_short"] == 2
+    assert result["sales_point_count_short"] == 2
+    assert result["sales_max_day_share_short"] == "0.7"
+    observations = result["sales_observations_short"]
+    assert observations[0]["business_date"] == "2026-08-01"
+    assert observations[0]["quantity"] == "7"
+    assert observations[0]["document_id"] != "DOC-1"
+    assert observations[0]["customer_id"] != "CUSTOMER-1"

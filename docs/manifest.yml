@@ -226,14 +226,19 @@ documents:
       - app/services/assortment_lifecycle.py
       - app/services/assortment_lifecycle_facts.py
       - app/services/assortment_lifecycle_classification_store.py
+      - app/services/assortment_lifecycle_v2_policy.py
+      - app/services/assortment_lifecycle_v2_backtest.py
       - tasks/build_assortment_lifecycle_facts.py
       - tasks/build_assortment_lifecycle_updates.py
       - tasks/refresh_assortment_lifecycle_classification.py
       - tasks/diff_assortment_lifecycle_classification.py
+      - tasks/evaluate_assortment_lifecycle_v2_backtest.py
       - tasks/build_display_auto_order_dry_run.py
     related_tests:
       - tests/test_assortment_lifecycle.py
       - tests/test_assortment_lifecycle_facts.py
+      - tests/test_assortment_lifecycle_v2_policy.py
+      - tests/test_assortment_lifecycle_v2_backtest.py
       - tests/test_build_assortment_lifecycle_facts_task.py
       - tests/test_build_assortment_lifecycle_updates_task.py
       - tests/test_refresh_assortment_lifecycle_classification_task.py

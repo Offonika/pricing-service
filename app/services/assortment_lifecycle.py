@@ -7,11 +7,11 @@ from enum import StrEnum
 from math import ceil
 from typing import Iterable
 
-from app.services.exporters.ut103_nomenclature_properties import NomenclaturePropertyUpdateRow
 from app.services.assortment_lifecycle_v2_policy import (
     DEFAULT_DEMAND_STATE_POLICY,
     DemandStatePolicy,
 )
+from app.services.exporters.ut103_nomenclature_properties import NomenclaturePropertyUpdateRow
 
 STATUS_PROPERTY_NAME = "Статус ассортимента"
 STATUS_REASON_PROPERTY_NAME = "Причина статуса ассортимента"
@@ -431,6 +431,9 @@ def decide_target_assortment_status(
 
     _require_nomenclature_code(item.nomenclature_code)
     manual_status = _normalize_status(item.manual_status)
+    legacy_newborn_need = manual_status is AssortmentStatus.NEWBORN_NEED
+    if legacy_newborn_need:
+        manual_status = None
     demand = decide_demand_state(item, policy=demand_policy)
     if manual_status is not None:
         return _with_demand(_manual_status_decision(item, manual_status), demand)
@@ -460,7 +463,7 @@ def decide_target_assortment_status(
                 reason_text=(
                     "Первый заказ поставщику создан, фактического поступления на склад ещё нет."
                 ),
-                manual_review_required=item.has_need_signal,
+                manual_review_required=item.has_need_signal or legacy_newborn_need,
             ),
             demand,
         )
@@ -495,8 +498,7 @@ def decide_target_assortment_status(
                     "автоматический переход заблокирован."
                 ),
                 manual_review_required=True,
-                auto_order_allowed=preserved
-                in {AssortmentStatus.SALE, AssortmentStatus.WORKING},
+                auto_order_allowed=preserved in {AssortmentStatus.SALE, AssortmentStatus.WORKING},
                 blockers=("demand_data_missing",),
             ),
             demand,
@@ -542,9 +544,7 @@ def decide_target_assortment_status(
             else AssortmentStatus.SALES_START
         )
         reason_code = (
-            "demand_spike_unconfirmed"
-            if demand.state is DemandState.SPIKE
-            else "initial_demand"
+            "demand_spike_unconfirmed" if demand.state is DemandState.SPIKE else "initial_demand"
         )
         reason_text = (
             "Зафиксирован всплеск, но устойчивость роста ещё не подтверждена."
@@ -590,9 +590,7 @@ def decide_demand_state(
             "Во всех окнах подтверждено отсутствие продаж.",
         )
 
-    rate_short = _soft_availability_rate(
-        short, DEMAND_WINDOW_SHORT_DAYS, item.days_in_sale_short
-    )
+    rate_short = _soft_availability_rate(short, DEMAND_WINDOW_SHORT_DAYS, item.days_in_sale_short)
     rate_medium = _soft_availability_rate(
         medium, DEMAND_WINDOW_MEDIUM_DAYS, item.days_in_sale_medium
     )
@@ -601,8 +599,14 @@ def decide_demand_state(
         rate_short * policy.decline_multiplier <= rate_medium
         and rate_medium * policy.decline_multiplier <= rate_long
     )
+    apparent_declining = (
+        short / DEMAND_WINDOW_SHORT_DAYS * policy.decline_multiplier
+        <= medium / DEMAND_WINDOW_MEDIUM_DAYS
+        and medium / DEMAND_WINDOW_MEDIUM_DAYS * policy.decline_multiplier
+        <= long / DEMAND_WINDOW_LONG_DAYS
+    )
     confirmed_demand = long >= policy.confirmed_sales_qty_180
-    if declining and confirmed_demand:
+    if (declining or apparent_declining) and confirmed_demand:
         days_on_shelf = _to_optional_decimal(item.days_in_sale_medium)
         if days_on_shelf is None or days_on_shelf < policy.decline_min_days_in_sale_90:
             return _demand_state_decision(
@@ -610,15 +614,19 @@ def decide_demand_state(
                 "decline_without_proven_availability",
                 "Продажи снижаются, но достаточное наличие товара не доказано.",
             )
+        if not declining:
+            return _demand_state_decision(
+                DemandState.STABLE,
+                "calendar_decline_explained_by_availability",
+                "Календарное падение объясняется периодами отсутствия; подтверждённого снижения спроса нет.",
+            )
         return _demand_state_decision(
             DemandState.DECLINING,
             "confirmed_decline_with_availability",
             "Продажи снижаются три окна подряд при доказанном наличии товара.",
         )
 
-    accelerating = (
-        rate_short > 0 and rate_short >= rate_medium * policy.growth_multiplier
-    )
+    accelerating = rate_short > 0 and rate_short >= rate_medium * policy.growth_multiplier
     if accelerating:
         distribution_complete = all(
             value is not None
@@ -675,9 +683,7 @@ def decide_demand_state(
             reason_codes=tuple(codes),
             reason_text="Краткосрочное ускорение есть, но устойчивый рост ещё не доказан.",
             state_since=(
-                item.demand_state_since
-                if previous_state is DemandState.SPIKE
-                else item.as_of
+                item.demand_state_since if previous_state is DemandState.SPIKE else item.as_of
             ),
         )
 

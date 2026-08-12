@@ -17,10 +17,10 @@ from sqlalchemy import (
     ForeignKey,
     Integer,
     MetaData,
+    Numeric,
     String,
     Table,
     Text,
-    Numeric,
     UniqueConstraint,
     func,
     insert,
@@ -273,9 +273,7 @@ def build_classification_rows(
                     source_record, "inventory_cost_per_unit"
                 ),
                 "cost_quartile": _source_text(source_record, "cost_quartile"),
-                "comparable_group_key": _source_text(
-                    source_record, "comparable_group_key"
-                ),
+                "comparable_group_key": _source_text(source_record, "comparable_group_key"),
                 "cost_group_sample_size": _source_int(
                     source_record, "cost_group_sample_size", default=0
                 ),
@@ -320,9 +318,7 @@ def build_classification_rows(
                 "first_receipt_at": _source_date(source_record, "first_receipt_at"),
                 "last_receipt_at": _source_date(source_record, "last_receipt_at"),
                 "history_age_days": _source_int(source_record, "history_age_days", default=None),
-                "first_observed_stock_at": _source_date(
-                    source_record, "first_observed_stock_at"
-                ),
+                "first_observed_stock_at": _source_date(source_record, "first_observed_stock_at"),
                 "observation_from": _source_date(source_record, "observation_from"),
                 "observation_to": _source_date(source_record, "observation_to"),
                 "first_sale_at": _source_date(source_record, "first_sale_at"),
@@ -485,6 +481,40 @@ def persist_classification_rows(
         )
 
     with engine.begin() as conn:
+        existing_run = (
+            conn.execute(
+                select(ASSORTMENT_LIFECYCLE_RUN_TABLE).where(
+                    ASSORTMENT_LIFECYCLE_RUN_TABLE.c.run_key == run_key
+                )
+            )
+            .mappings()
+            .first()
+        )
+        if existing_run is not None:
+            existing_history = list(
+                conn.execute(
+                    select(ASSORTMENT_LIFECYCLE_HISTORY_TABLE).where(
+                        ASSORTMENT_LIFECYCLE_HISTORY_TABLE.c.run_id == int(existing_run["id"])
+                    )
+                ).mappings()
+            )
+            expected_fingerprints = sorted(_classification_fingerprint(row) for row in row_values)
+            actual_fingerprints = sorted(
+                _classification_fingerprint(dict(row.get("snapshot") or {}))
+                for row in existing_history
+            )
+            if expected_fingerprints != actual_fingerprints:
+                raise ValueError(f"assortment_lifecycle_run_key_conflict:{run_key}")
+            return AssortmentLifecycleClassificationResult(
+                run_id=int(existing_run["id"]),
+                run_key=run_key,
+                folder=str(existing_run.get("folder") or folder),
+                source=str(existing_run.get("source") or source),
+                source_status=str(existing_run.get("source_status") or "ready"),
+                items_total=int(existing_run.get("items_total") or len(row_values)),
+                written_items=0,
+                summary=dict(existing_run.get("summary") or summary),
+            )
         run_result = conn.execute(
             insert(ASSORTMENT_LIFECYCLE_RUN_TABLE).values(
                 run_key=run_key,
@@ -653,3 +683,13 @@ def _source_int(
 
 def _json_safe_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
     return json.loads(json.dumps(dict(value), ensure_ascii=False, default=str))
+
+
+def _classification_fingerprint(value: Mapping[str, Any]) -> tuple[str, str, str, str, str]:
+    return (
+        str(value.get("nomenclature_code") or ""),
+        str(value.get("status") or ""),
+        str(value.get("target_status") or ""),
+        str(value.get("demand_state") or ""),
+        str(value.get("source_hash") or ""),
+    )

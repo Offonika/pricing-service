@@ -23,8 +23,8 @@ from sqlalchemy import (
     bindparam,
     delete,
     func,
-    inspect,
     insert,
+    inspect,
     select,
     text,
     update,
@@ -647,8 +647,9 @@ def fetch_availability_observation_facts(
     first_stock: dict[str, date] = {}
     with engine.connect() as connection:
         coverage = connection.execute(
-            select(func.min(COVERAGE_TABLE.c.covered_from), func.max(COVERAGE_TABLE.c.covered_to))
-            .where(COVERAGE_TABLE.c.status == "ready")
+            select(
+                func.min(COVERAGE_TABLE.c.covered_from), func.max(COVERAGE_TABLE.c.covered_to)
+            ).where(COVERAGE_TABLE.c.status == "ready")
         ).one()
         observation_from = _date(coverage[0])
         observation_to = _date(coverage[1])

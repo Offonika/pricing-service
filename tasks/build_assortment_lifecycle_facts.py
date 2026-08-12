@@ -143,6 +143,7 @@ def main() -> int:
                 inventory_costs = fetch_onec_item_inventory_costs(
                     engine,
                     nomenclature_codes=codes,
+                    as_of=demand_date_to,
                 )
             finally:
                 engine.dispose()

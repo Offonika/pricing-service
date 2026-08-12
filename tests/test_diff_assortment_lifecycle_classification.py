@@ -1,6 +1,12 @@
 from __future__ import annotations
 
-from tasks.diff_assortment_lifecycle_classification import build_snapshot, diff_snapshots
+from tasks.diff_assortment_lifecycle_classification import (
+    _attach_order_and_capital_diff,
+    _build_target_audit_rows,
+    _target_audit_sections,
+    build_snapshot,
+    diff_snapshots,
+)
 
 
 def test_build_snapshot_captures_key_fields() -> None:
@@ -16,6 +22,33 @@ def test_build_snapshot_captures_key_fields() -> None:
     }.issubset(snapshot["A"])
     assert snapshot["A"]["demand_state"] is None
     assert snapshot["A"]["first_receipt_at"] is None
+
+
+def test_target_snapshot_captures_dates_sales_availability_and_cost() -> None:
+    record = {
+        "nomenclature_code": "FACTS",
+        "first_receipt_at": "2020-01-01",
+        "last_receipt_at": "2026-07-01",
+        "history_age_days": 2400,
+        "first_sale_at": "2020-01-10",
+        "last_sale_at": "2026-08-01",
+        "sales_qty_short": "3",
+        "sales_qty_medium": "8",
+        "sales_qty_long": "15",
+        "days_in_sale_short": "30",
+        "days_in_sale_medium": "80",
+        "days_in_sale_long": "150",
+        "inventory_cost_per_unit": "100.50",
+        "cost_quartile": "Q2",
+        "minimum_representation_qty": 13,
+    }
+
+    item = build_snapshot([record], target_model=True)["FACTS"]
+
+    assert item["first_sale_at"] == "2020-01-10"
+    assert item["sales_qty_short"] == "3"
+    assert item["days_in_sale_long"] == "150"
+    assert item["inventory_cost_per_unit"] == "100.50"
 
 
 def test_fact_overlay_changes_status_and_audit_detects_it() -> None:
@@ -71,3 +104,59 @@ def test_diff_tracks_added_and_removed() -> None:
     assert diff["removed"] == ["gone"]
     assert diff["added"] == ["fresh"]
     assert diff["summary"]["changed"] == 0
+
+
+def test_target_audit_adds_order_capital_and_required_sections() -> None:
+    before = {
+        "OLD": {"status": "sale", "demand_state": None},
+        "SPIKE": {"status": "working", "demand_state": None},
+    }
+    after = {
+        "OLD": {
+            "status": "working",
+            "demand_state": "stable",
+            "inventory_cost_per_unit": "100",
+        },
+        "SPIKE": {
+            "status": "working",
+            "demand_state": "spike",
+            "inventory_cost_per_unit": "50",
+        },
+    }
+    diff = diff_snapshots(before, after)
+    diff["audit_rows"] = _build_target_audit_rows(before, after)
+    _attach_order_and_capital_diff(
+        diff,
+        {"OLD": {"recommended_order_qty": "3"}, "SPIKE": {"recommended_order_qty": "2"}},
+        {"OLD": {"recommended_order_qty": "1"}, "SPIKE": {"recommended_order_qty": "4"}},
+    )
+    sections = _target_audit_sections(diff)
+    assert sections["exits_from_growing"] == ["OLD"]
+    assert sections["spikes"] == ["SPIKE"]
+    assert diff["summary"]["recommended_order_delta_qty"] == 0
+    assert diff["summary"]["capital_delta"] == -100
+
+
+def test_target_audit_keeps_unchanged_skus_and_special_sections_use_full_cohort() -> None:
+    before = {
+        "UNCHANGED-MANUAL": {"status": "pension", "demand_state": "stable"},
+        "UNCHANGED-UNKNOWN": {
+            "status": "sales_start",
+            "demand_state": "no_data",
+            "blockers": ["demand_data_missing"],
+        },
+    }
+    after = {code: dict(value) for code, value in before.items()}
+    diff = diff_snapshots(before, after)
+    diff["audit_rows"] = _build_target_audit_rows(before, after)
+
+    sections = _target_audit_sections(diff)
+
+    assert diff["summary"]["changed"] == 0
+    assert [row["nomenclature_code"] for row in diff["audit_rows"]] == [
+        "UNCHANGED-MANUAL",
+        "UNCHANGED-UNKNOWN",
+    ]
+    assert all(row["changed"] is False for row in diff["audit_rows"])
+    assert sections["manual_statuses"] == ["UNCHANGED-MANUAL"]
+    assert sections["unknown_facts"] == ["UNCHANGED-UNKNOWN"]

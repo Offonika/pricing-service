@@ -550,6 +550,138 @@ def test_first_supplier_order_moves_fruit_to_newborn_without_approval(
     )
 
 
+def test_v2_live_auto_applies_computed_transition_internally_and_protects_manual_status(
+    lifecycle_db,
+    sqlite_engine,
+) -> None:
+    now = datetime(2026, 8, 12, 10, 0)
+    rows = build_classification_rows(
+        records=[
+            {
+                "nomenclature_code": "V2-AUTO",
+                "previous_status": "working",
+            },
+            {
+                "nomenclature_code": "V2-MANUAL",
+                "previous_status": "working",
+                "manual_status": "pension",
+            },
+        ],
+        summaries=[
+            {
+                "nomenclature_code": "V2-AUTO",
+                "name": "Дисплей растущий",
+                "folder": "дисплеи",
+                "status": "sale",
+                "status_label": "Растим",
+                "classification_model": "v2-live",
+                "legacy_status": "working",
+                "demand_state": "growing",
+                "reason_text": "Устойчивый рост подтверждён.",
+            },
+            {
+                "nomenclature_code": "V2-MANUAL",
+                "name": "Дисплей ручной",
+                "folder": "дисплеи",
+                "status": "pension",
+                "status_label": "Допродаём",
+                "classification_model": "v2-live",
+                "legacy_status": "working",
+                "demand_state": "growing",
+                "reason_text": "Ручное решение.",
+            },
+        ],
+        source="test",
+        classified_at=now,
+    )
+    result = persist_classification_rows(
+        sqlite_engine,
+        rows=rows,
+        run_key="v2-live-auto-test",
+        folder="дисплеи",
+        source="test",
+        started_at=now,
+        finished_at=now,
+    )
+    summary = sync_lifecycle_transition_proposals(
+        lifecycle_db,
+        run_id=result.run_id,
+        settings=_settings(),
+    )
+    proposals = lifecycle_db.scalars(
+        select(ProcurementLifecycleTransitionProposal).where(
+            ProcurementLifecycleTransitionProposal.run_id == result.run_id
+        )
+    ).all()
+    assert summary["automatic"] == 1
+    assert len(proposals) == 1
+    assert proposals[0].nomenclature_code == "V2-AUTO"
+    assert proposals[0].current_status == "working"
+    assert proposals[0].target_status == "sale"
+    assert proposals[0].status == "auto_applied"
+    assert proposals[0].onec_status == "not_required"
+
+
+def test_v2_live_blocker_creates_review_and_never_applies_target_stage(
+    lifecycle_db,
+    sqlite_engine,
+) -> None:
+    now = datetime(2026, 8, 12, 11, 0)
+    rows = build_classification_rows(
+        records=[
+            {
+                "nomenclature_code": "V2-BLOCKED",
+                "previous_status": "working",
+            }
+        ],
+        summaries=[
+            {
+                "nomenclature_code": "V2-BLOCKED",
+                "name": "Дисплей с неполными данными",
+                "folder": "дисплеи",
+                "status": "sale",
+                "status_label": "Растим",
+                "classification_model": "v2-live",
+                "legacy_status": "working",
+                "demand_state": "no_data",
+                "manual_review_required": True,
+                "blockers": ["demand_data_missing"],
+                "reason_text": "Переход заблокирован до проверки данных.",
+            }
+        ],
+        source="test",
+        classified_at=now,
+    )
+    result = persist_classification_rows(
+        sqlite_engine,
+        rows=rows,
+        run_key="v2-live-blocker-test",
+        folder="дисплеи",
+        source="test",
+        started_at=now,
+        finished_at=now,
+    )
+
+    summary = sync_lifecycle_transition_proposals(
+        lifecycle_db,
+        run_id=result.run_id,
+        settings=_settings(),
+    )
+    proposal = lifecycle_db.scalar(
+        select(ProcurementLifecycleTransitionProposal).where(
+            ProcurementLifecycleTransitionProposal.run_id == result.run_id
+        )
+    )
+
+    assert summary["automatic"] == 0
+    assert proposal is not None
+    assert proposal.action_kind == "review"
+    assert proposal.current_status == "working"
+    assert proposal.target_status is None
+    assert proposal.status == "pending"
+    assert proposal.blockers == ["demand_data_missing"]
+
+
 def test_batch_approval_returns_partial_result_and_is_idempotent(
     lifecycle_db,
     sqlite_engine,

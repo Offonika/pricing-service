@@ -24,8 +24,8 @@ from app.services.assortment_lifecycle import (
     build_status_property_update_rows,
     classify_expensive_profile,
     decide_assortment_status,
-    decide_target_assortment_status,
     decide_commercial_marks,
+    decide_target_assortment_status,
     systemic_sales_point_codes,
     validate_manager_need_signal,
 )
@@ -312,9 +312,7 @@ def _lifecycle_input_from_record(record: dict[str, Any]) -> AssortmentLifecycleI
         previous_demand_state=_optional_field(
             record, "previous_demand_state", "PreviousDemandState", default=None
         ),
-        demand_state_since=_optional_date_field(
-            record, "demand_state_since", "DemandStateSince"
-        ),
+        demand_state_since=_optional_date_field(record, "demand_state_since", "DemandStateSince"),
         previous_demand_state_at=_optional_date_field(
             record, "previous_demand_state_at", "PreviousDemandStateAt"
         ),

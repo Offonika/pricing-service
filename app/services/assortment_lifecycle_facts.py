@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections import defaultdict
@@ -254,9 +255,7 @@ def build_assortment_lifecycle_fact_records(
     previous_demand_states = previous_demand_states or {}
     first_observed_stock_dates = first_observed_stock_dates or {}
     inventory_costs = inventory_costs or {}
-    cost_group_keys = {
-        key: _comparable_cost_group_keys(items_by_key[key]) for key in items_by_key
-    }
+    cost_group_keys = {key: _comparable_cost_group_keys(items_by_key[key]) for key in items_by_key}
     cost_values_by_group: dict[str, list[Decimal]] = defaultdict(list)
     for key, code in code_by_key.items():
         item_cost = _decimal(inventory_costs.get(code))
@@ -318,8 +317,8 @@ def build_assortment_lifecycle_fact_records(
                 else None
             ),
             "first_observed_stock_at": _json_date(first_observed_stock_dates.get(code)),
-            "observation_from": _json_date(observation_from or history_start),
-            "observation_to": _json_date(observation_to or as_of),
+            "observation_from": _json_date(observation_from),
+            "observation_to": _json_date(observation_to),
             # Дата первой реализации покупателю — вход в СП / Старт продаж
             # (решение 2026-08-02). None означает "продаж не было".
             "first_sale_at": _json_date(((first_sale_dates or {}).get(code) or (None, None))[0]),
@@ -369,9 +368,9 @@ def build_assortment_lifecycle_fact_records(
                 "inventory_cost_per_unit": _json_decimal(inventory_cost),
                 "cost_quartile": cost_quartile,
                 "comparable_group_key": comparable_group,
-                "cost_group_sample_size": len(cost_values_by_group.get(comparable_group, []))
-                if comparable_group
-                else 0,
+                "cost_group_sample_size": (
+                    len(cost_values_by_group.get(comparable_group, [])) if comparable_group else 0
+                ),
                 "minimum_representation_qty": (
                     _active_physical_sales_point_count(warehouse_policy) + 2
                     if cost_quartile in {"Q1", "Q2"}
@@ -616,32 +615,76 @@ def fetch_onec_item_inventory_costs(
     engine: Engine,
     *,
     nomenclature_codes: Sequence[str],
+    as_of: date | None = None,
 ) -> dict[str, Decimal]:
-    """Current per-SKU party cost from the same UT 10.3 valuation register."""
+    """Per-SKU party cost at ``as_of`` without looking into future movements."""
 
     codes = sorted({code for code in (_clean(value) for value in nomenclature_codes) if code})
     if not codes:
         return {}
-    query = text(f"""
-        SELECT NULLIF(LTRIM(RTRIM(product._Code)), N'') AS nomenclature_code,
-               SUM(CAST(t._Fld7462 AS decimal(28, 3))) AS party_quantity,
-               SUM(CAST(t._Fld7463 AS decimal(28, 2))) AS party_amount
+    effective_as_of = as_of or date.today()
+    if effective_as_of > date.today():
+        raise ValueError("inventory_cost_as_of_cannot_be_future")
+    if effective_as_of == date.today():
+        source_sql = f"""
+        SELECT t._Fld7454RRef AS item_ref,
+               CAST(t._Fld7462 AS decimal(28, 3)) AS quantity,
+               CAST(t._Fld7463 AS decimal(28, 2)) AS amount,
+               CASE WHEN t._Fld7459RRef = 0x{UNBILLED_PARTY_STATUS_HEX} THEN 1 ELSE 0 END
+                    AS is_unbilled
         FROM dbo._AccumRgT7473 AS t WITH (NOLOCK)
-        JOIN dbo._Reference62 AS product WITH (NOLOCK)
-          ON product._IDRRef = t._Fld7454RRef
         WHERE t._Period = :current_totals_period
-          AND t._Fld7459RRef <> 0x{UNBILLED_PARTY_STATUS_HEX}
+        """
+        params: dict[str, Any] = {"current_totals_period": CURRENT_TOTALS_PERIOD}
+    else:
+        month_start = effective_as_of.replace(day=1)
+        source_sql = f"""
+        SELECT t._Fld7454RRef AS item_ref,
+               CAST(t._Fld7462 AS decimal(28, 3)) AS quantity,
+               CAST(t._Fld7463 AS decimal(28, 2)) AS amount,
+               CASE WHEN t._Fld7459RRef = 0x{UNBILLED_PARTY_STATUS_HEX} THEN 1 ELSE 0 END
+                    AS is_unbilled
+        FROM dbo._AccumRgT7473 AS t WITH (NOLOCK)
+        WHERE t._Period = :month_start
+        UNION ALL
+        SELECT r._Fld7454RRef AS item_ref,
+               CAST(CASE WHEN r._RecordKind = 0 THEN r._Fld7462 ELSE -r._Fld7462 END
+                    AS decimal(28, 3)) AS quantity,
+               CAST(CASE WHEN r._RecordKind = 0 THEN r._Fld7463 ELSE -r._Fld7463 END
+                    AS decimal(28, 2)) AS amount,
+               CASE WHEN r._Fld7459RRef = 0x{UNBILLED_PARTY_STATUS_HEX} THEN 1 ELSE 0 END
+                    AS is_unbilled
+        FROM dbo._AccumRg7453 AS r WITH (NOLOCK)
+        WHERE r._Active = 0x01
+          AND r._Period >= :month_start
+          AND r._Period < :date_to
+        """
+        params = {
+            "month_start": datetime.combine(month_start, datetime.min.time()),
+            "date_to": datetime.combine(effective_as_of + timedelta(days=1), datetime.min.time()),
+        }
+    query = text(f"""
+        WITH party_source AS (
+            {source_sql}
+        )
+        SELECT NULLIF(LTRIM(RTRIM(product._Code)), N'') AS nomenclature_code,
+               SUM(party.quantity) AS party_quantity,
+               SUM(party.amount) AS party_amount
+        FROM party_source AS party
+        JOIN dbo._Reference62 AS product WITH (NOLOCK)
+          ON product._IDRRef = party.item_ref
+        WHERE party.is_unbilled = 0
           AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
         GROUP BY NULLIF(LTRIM(RTRIM(product._Code)), N'')
-        HAVING SUM(CAST(t._Fld7462 AS decimal(28, 3))) > 0
-           AND SUM(CAST(t._Fld7463 AS decimal(28, 2))) >= 0
+        HAVING SUM(party.quantity) > 0
+           AND SUM(party.amount) >= 0
         """).bindparams(bindparam("codes", expanding=True))
     result: dict[str, Decimal] = {}
     with engine.connect() as conn:
         for chunk in _chunks(codes, MAX_SQLSERVER_EXPANDING_REFS):
             for row in conn.execute(
                 query,
-                {"codes": chunk, "current_totals_period": CURRENT_TOTALS_PERIOD},
+                {"codes": chunk, **params},
             ).mappings():
                 code = _clean(row.get("nomenclature_code"))
                 qty = _decimal(row.get("party_quantity"))
@@ -751,67 +794,98 @@ def fetch_sales_distribution(
     date_from = datetime.combine(date_to - timedelta(days=window_days - 1), datetime.min.time())
     date_to_exclusive = datetime.combine(date_to + timedelta(days=1), datetime.min.time())
     query = text("""
-        WITH sales AS (
-            SELECT
-                NULLIF(LTRIM(RTRIM(product._Code)), N'') AS nomenclature_code,
-                CAST(doc._Date_Time AS date) AS business_date,
-                CONVERT(varchar(34), doc._IDRRef, 1) AS document_ref,
-                CONVERT(varchar(34), doc._Fld4942RRef, 1) AS customer_ref,
-                CONVERT(varchar(34),
-                    CASE
-                      WHEN line._Fld4983RRef <> 0x00000000000000000000000000000000
-                      THEN line._Fld4983RRef ELSE doc._Fld4940RRef
-                    END, 1) AS sales_point_ref,
-                CAST(line._Fld4971 AS decimal(18, 3)) AS quantity
-            FROM dbo._Document203 AS doc WITH (NOLOCK)
-            JOIN dbo._Document203_VT4966 AS line WITH (NOLOCK)
-              ON line._Document203_IDRRef = doc._IDRRef
-            JOIN dbo._Reference62 AS product WITH (NOLOCK)
-              ON product._IDRRef = line._Fld4974RRef
-            WHERE doc._Marked = 0x00 AND doc._Posted = 0x01
-              AND line._Fld4971 > 0
-              AND doc._Date_Time >= :date_from AND doc._Date_Time < :date_to
-              AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
-        ), daily AS (
-            SELECT nomenclature_code, business_date, SUM(quantity) AS day_qty
-            FROM sales GROUP BY nomenclature_code, business_date
-        ), totals AS (
-            SELECT nomenclature_code,
-                   SUM(quantity) AS total_qty,
-                   COUNT(DISTINCT business_date) AS active_days,
-                   COUNT(DISTINCT document_ref) AS document_count,
-                   COUNT(DISTINCT customer_ref) AS customer_count,
-                   COUNT(DISTINCT sales_point_ref) AS sales_point_count
-            FROM sales GROUP BY nomenclature_code
-        ), peaks AS (
-            SELECT nomenclature_code, MAX(day_qty) AS max_day_qty
-            FROM daily GROUP BY nomenclature_code
-        )
-        SELECT totals.*, peaks.max_day_qty
-        FROM totals JOIN peaks ON peaks.nomenclature_code = totals.nomenclature_code
+        SELECT
+            NULLIF(LTRIM(RTRIM(product._Code)), N'') AS nomenclature_code,
+            CAST(doc._Date_Time AS date) AS business_date,
+            CONVERT(varchar(34), doc._IDRRef, 1) AS document_ref,
+            CONVERT(varchar(34), doc._Fld4942RRef, 1) AS customer_ref,
+            CONVERT(varchar(34),
+                CASE
+                  WHEN line._Fld4983RRef <> 0x00000000000000000000000000000000
+                  THEN line._Fld4983RRef ELSE doc._Fld4940RRef
+                END, 1) AS sales_point_ref,
+            SUM(CAST(line._Fld4971 AS decimal(18, 3))) AS quantity
+        FROM dbo._Document203 AS doc WITH (NOLOCK)
+        JOIN dbo._Document203_VT4966 AS line WITH (NOLOCK)
+          ON line._Document203_IDRRef = doc._IDRRef
+        JOIN dbo._Reference62 AS product WITH (NOLOCK)
+          ON product._IDRRef = line._Fld4974RRef
+        WHERE doc._Marked = 0x00 AND doc._Posted = 0x01
+          AND line._Fld4971 > 0
+          AND doc._Date_Time >= :date_from AND doc._Date_Time < :date_to
+          AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
+        GROUP BY NULLIF(LTRIM(RTRIM(product._Code)), N''), CAST(doc._Date_Time AS date),
+                 doc._IDRRef, doc._Fld4942RRef,
+                 CASE WHEN line._Fld4983RRef <> 0x00000000000000000000000000000000
+                      THEN line._Fld4983RRef ELSE doc._Fld4940RRef END
         """).bindparams(bindparam("codes", expanding=True))
-    result: dict[str, dict[str, Any]] = {}
+    raw_rows: list[dict[str, Any]] = []
     with engine.connect() as conn:
         for chunk in _chunks(codes, MAX_SQLSERVER_EXPANDING_REFS):
-            for row in conn.execute(
-                query,
-                {"codes": chunk, "date_from": date_from, "date_to": date_to_exclusive},
-            ).mappings():
-                code = _clean(row.get("nomenclature_code"))
-                total = _decimal(row.get("total_qty")) or Decimal("0")
-                peak = _decimal(row.get("max_day_qty")) or Decimal("0")
-                if not code:
-                    continue
-                result[code] = {
-                    "sales_active_days_short": int(row.get("active_days") or 0),
-                    "sales_document_count_short": int(row.get("document_count") or 0),
-                    "sales_customer_count_short": int(row.get("customer_count") or 0),
-                    "sales_point_count_short": int(row.get("sales_point_count") or 0),
-                    "sales_max_day_share_short": _json_decimal(
-                        peak / total if total > 0 else Decimal("0")
-                    ),
-                }
+            raw_rows.extend(
+                dict(row)
+                for row in conn.execute(
+                    query,
+                    {"codes": chunk, "date_from": date_from, "date_to": date_to_exclusive},
+                ).mappings()
+            )
+    return _sales_distribution_from_rows(raw_rows)
+
+
+def _sales_distribution_from_rows(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    by_code: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        code = _clean(row.get("nomenclature_code"))
+        business_date = _date(row.get("business_date"))
+        quantity = _decimal(row.get("quantity"))
+        if not code or business_date is None or quantity is None or quantity <= 0:
+            continue
+        by_code[code].append(
+            {
+                "business_date": business_date.isoformat(),
+                "document_id": _anonymous_id(row.get("document_ref")),
+                "customer_id": _anonymous_id(row.get("customer_ref")),
+                "sales_point_id": _anonymous_id(row.get("sales_point_ref")),
+                "quantity": _json_decimal(quantity),
+            }
+        )
+    result: dict[str, dict[str, Any]] = {}
+    for code, observations in by_code.items():
+        totals_by_day: dict[str, Decimal] = defaultdict(Decimal)
+        for item in observations:
+            totals_by_day[item["business_date"]] += Decimal(str(item["quantity"]))
+        total = sum(totals_by_day.values(), Decimal("0"))
+        peak = max(totals_by_day.values(), default=Decimal("0"))
+        result[code] = {
+            "sales_active_days_short": len(totals_by_day),
+            "sales_document_count_short": len(
+                {item["document_id"] for item in observations if item["document_id"]}
+            ),
+            "sales_customer_count_short": len(
+                {item["customer_id"] for item in observations if item["customer_id"]}
+            ),
+            "sales_point_count_short": len(
+                {item["sales_point_id"] for item in observations if item["sales_point_id"]}
+            ),
+            "sales_max_day_share_short": _json_decimal(peak / total if total > 0 else Decimal("0")),
+            "sales_observations_short": sorted(
+                observations,
+                key=lambda item: (
+                    item["business_date"],
+                    item["document_id"],
+                    item["customer_id"],
+                    item["sales_point_id"],
+                ),
+            ),
+        }
     return result
+
+
+def _anonymous_id(value: Any) -> str:
+    text_value = _clean(value)
+    return hashlib.sha256(text_value.encode("utf-8")).hexdigest()[:16] if text_value else ""
 
 
 def fetch_onec_lifecycle_source_rows(
@@ -1524,7 +1598,9 @@ def _cost_quartile(item_cost: Decimal, group_values: Sequence[Decimal]) -> str:
     if not values:
         return ""
     total = len(values)
-    boundaries = [values[max(0, ceil(total * Decimal(part)) - 1)] for part in ("0.25", "0.50", "0.75")]
+    boundaries = [
+        values[max(0, ceil(total * Decimal(part)) - 1)] for part in ("0.25", "0.50", "0.75")
+    ]
     if item_cost <= boundaries[0]:
         return "Q1"
     if item_cost <= boundaries[1]:
@@ -1579,10 +1655,7 @@ def _active_physical_sales_point_count(
             _clean(row.get("warehouse_code") or row.get("code"))
             for row in warehouses
             if _clean(row.get("warehouse_code") or row.get("code"))
-            and (
-                not _clean(row.get("role"))
-                or _clean(row.get("role")) == "physical_sales_point"
-            )
+            and (not _clean(row.get("role")) or _clean(row.get("role")) == "physical_sales_point")
             and _bool(row.get("sells_systematically"), default=True)
             and not _bool(row.get("is_central"), default=False)
             and not _bool(row.get("is_defect_warehouse"), default=False)

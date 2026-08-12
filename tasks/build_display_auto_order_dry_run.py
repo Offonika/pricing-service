@@ -1697,9 +1697,7 @@ def build_dry_run_rows(
                 "price_segment": _clean(item.get("price_segment")),
                 "inventory_cost_per_unit": _clean(item.get("inventory_cost_per_unit")),
                 "cost_quartile": _clean(item.get("cost_quartile")),
-                "minimum_representation_qty": _clean(
-                    item.get("minimum_representation_qty")
-                ),
+                "minimum_representation_qty": _clean(item.get("minimum_representation_qty")),
                 "representation_floor_applied": "",
                 "latest_purchase_price": _out_decimal(latest_purchase_price, places=2),
                 "latest_purchase_price_at": _date_text(purchase.get("latest_purchase_price_at")),

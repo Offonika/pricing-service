@@ -264,6 +264,65 @@ def test_v2_live_is_fail_closed_until_versioned_policy_is_approved(tmp_path: Pat
     assert "assortment_lifecycle_v2_live_not_approved" in result.stderr
 
 
+def test_classification_run_key_is_idempotent_and_conflicts_fail_closed(tmp_path: Path) -> None:
+    facts_path = tmp_path / "facts.json"
+    database_url = f"sqlite:///{tmp_path / 'idempotent.db'}"
+    facts = {
+        "items": [
+            {
+                "nomenclature_code": "IDEMPOTENT-1",
+                "name": "Дисплей",
+                "folder_path": "Дисплеи",
+                "warehouses": [],
+            }
+        ]
+    }
+    facts_path.write_text(json.dumps(facts, ensure_ascii=False), encoding="utf-8")
+    engine = create_engine(database_url)
+    ASSORTMENT_LIFECYCLE_METADATA.create_all(engine)
+    engine.dispose()
+
+    first = _run_refresh(
+        facts_path=facts_path,
+        database_url=database_url,
+        run_key="same-run-key",
+        classified_at="2026-08-12T10:00:00",
+    )
+    repeated = _run_refresh(
+        facts_path=facts_path,
+        database_url=database_url,
+        run_key="same-run-key",
+        classified_at="2026-08-12T10:00:00",
+    )
+    assert repeated["run_id"] == first["run_id"]
+    assert repeated["written_items"] == 0
+
+    facts["items"][0]["name"] = "Изменённый дисплей"
+    facts_path.write_text(json.dumps(facts, ensure_ascii=False), encoding="utf-8")
+    conflict = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tasks.refresh_assortment_lifecycle_classification",
+            "--facts-json",
+            str(facts_path),
+            "--database-url",
+            database_url,
+            "--run-key",
+            "same-run-key",
+            "--classified-at",
+            "2026-08-12T10:00:00",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        cwd=PROJECT_ROOT,
+        text=True,
+    )
+    assert conflict.returncode != 0
+    assert "assortment_lifecycle_run_key_conflict:same-run-key" in conflict.stderr
+
+
 def test_refresh_assortment_lifecycle_classification_applies_fact_status_decisions(
     tmp_path: Path,
 ) -> None:

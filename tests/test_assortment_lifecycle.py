@@ -21,9 +21,9 @@ from app.services.assortment_lifecycle import (
     build_procurement_profile_property_update_row,
     classify_expensive_profile,
     decide_assortment_status,
+    decide_commercial_marks,
     decide_demand_state,
     decide_target_assortment_status,
-    decide_commercial_marks,
     systemic_sales_point_codes,
     validate_manager_need_signal,
 )
@@ -719,6 +719,20 @@ def test_target_stage_requires_receipt_and_does_not_treat_cargo_as_arrival() -> 
     )
     assert arrived.status == AssortmentStatus.NEW_ITEM
 
+    legacy_need = decide_target_assortment_status(
+        AssortmentLifecycleInput(
+            nomenclature_code="TARGET-LEGACY-NEED",
+            first_supplier_order_at=date(2026, 8, 1),
+            manual_status="newborn_need",
+            as_of=date(2026, 8, 12),
+            sales_qty_short=0,
+            sales_qty_medium=0,
+            sales_qty_long=0,
+        )
+    )
+    assert legacy_need.status == AssortmentStatus.NEWBORN
+    assert legacy_need.manual_review_required
+
 
 def test_target_demand_distinguishes_null_from_confirmed_zero() -> None:
     missing = decide_demand_state(
@@ -760,15 +774,11 @@ def test_target_growth_must_be_distributed_and_consecutive() -> None:
     assert growing.demand_state.value == "growing"
     assert growing.status == AssortmentStatus.SALE
 
-    one_customer = _target_decision(
-        **{**common, "sales_customer_count_short": 1}
-    )
+    one_customer = _target_decision(**{**common, "sales_customer_count_short": 1})
     assert one_customer.demand_state.value == "spike"
     assert one_customer.status == AssortmentStatus.WORKING
 
-    gap_in_runs = _target_decision(
-        **{**common, "previous_demand_state_at": date(2026, 8, 9)}
-    )
+    gap_in_runs = _target_decision(**{**common, "previous_demand_state_at": date(2026, 8, 9)})
     assert gap_in_runs.demand_state.value == "spike"
     assert gap_in_runs.status == AssortmentStatus.WORKING
 

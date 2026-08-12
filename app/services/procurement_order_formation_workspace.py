@@ -445,6 +445,10 @@ def list_lifecycle_transitions(
             or _dashboard_status(str(row.get("status") or "")) == normalized_status
         ]
     else:
+        snapshots_by_code = {
+            str(row.get("nomenclature_code") or ""): row
+            for row in _snapshot_rows(db, folder=folder, run_id=latest_run_id or None)
+        }
         proposal_status = "stale" if readiness == "stale" else "pending"
         proposal_filters = [
             ProcurementLifecycleTransitionProposal.folder.ilike(f"%{folder}%"),
@@ -468,7 +472,17 @@ def list_lifecycle_transitions(
                 ProcurementLifecycleTransitionProposal.created_at,
             )
         ).all()
-        serialized = [serialize_transition(item, latest_run_id=latest_run_id) for item in proposals]
+        serialized = []
+        for proposal in proposals:
+            item = serialize_transition(proposal, latest_run_id=latest_run_id)
+            snapshot = snapshots_by_code.get(proposal.nomenclature_code)
+            if snapshot is not None:
+                item.update(_lifecycle_explanation_fields(snapshot))
+                item["facts"] = {
+                    **dict(item.get("facts") or {}),
+                    **_lifecycle_explanation_facts(snapshot),
+                }
+            serialized.append(item)
     if search_key:
         serialized = [
             item
@@ -1154,6 +1168,7 @@ def serialize_transition(
         "selectable": ready,
         "stale": stale,
         "created_at": proposal.created_at,
+        **_lifecycle_explanation_fields(dict(proposal.facts or {})),
     }
 
 
@@ -1307,7 +1322,17 @@ def _transition_candidate(
         )
         target_status = row_status if row_status != current_status else None
 
-    if row_status == "newborn_need":
+    if classification_model == "v2-live" and (
+        bool(row.get("manual_review_required")) or bool(row.get("blockers"))
+    ):
+        action_kind = "review"
+        current_status = (
+            normalize_status(source.get("previous_status"))
+            or normalize_status(row.get("legacy_status"))
+            or row_status
+        )
+        target_status = None
+    elif row_status == "newborn_need":
         action_kind = "review"
         current_status = "newborn"
         target_status = None
@@ -1333,7 +1358,11 @@ def _transition_candidate(
             return None
         if target_status not in LIFECYCLE_ORDER:
             return None
-    elif current_status != "working" and row_status != "newborn_need":
+    elif (
+        classification_model != "v2-live"
+        and current_status != "working"
+        and row_status != "newborn_need"
+    ):
         return None
 
     product_ref = str(row.get("product_ref") or "").strip() or None
@@ -1343,11 +1372,7 @@ def _transition_candidate(
         for item in list(row.get("blockers") or []) + list(row.get("export_blockers") or [])
         if str(item) not in {"ut103_export_blocked", "fact_status_decision_requires_1c_approval"}
     ]
-    if (
-        action_kind == "transition"
-        and not product_guid
-        and classification_model != "v2-live"
-    ):
+    if action_kind == "transition" and not product_guid and classification_model != "v2-live":
         blockers.append("catalog_guid_missing")
     facts = {
         "reason_codes": list(row.get("reason_codes") or []),

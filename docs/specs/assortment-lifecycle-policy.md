@@ -10,10 +10,13 @@ related_code:
   - app/services/assortment_lifecycle.py
   - app/services/assortment_lifecycle_facts.py
   - app/services/assortment_lifecycle_classification_store.py
+  - app/services/assortment_lifecycle_v2_policy.py
+  - app/services/assortment_lifecycle_v2_backtest.py
   - tasks/build_assortment_lifecycle_facts.py
   - tasks/build_assortment_lifecycle_updates.py
   - tasks/refresh_assortment_lifecycle_classification.py
   - tasks/diff_assortment_lifecycle_classification.py
+  - tasks/evaluate_assortment_lifecycle_v2_backtest.py
   - tasks/build_display_auto_order_dry_run.py
   - tasks/analyze_display_auto_order_quick_backtest.py
   - tasks/analyze_display_auto_order_base_pipeline_backtest.py
@@ -31,6 +34,8 @@ related_code:
 related_tests:
   - tests/test_assortment_lifecycle.py
   - tests/test_assortment_lifecycle_facts.py
+  - tests/test_assortment_lifecycle_v2_policy.py
+  - tests/test_assortment_lifecycle_v2_backtest.py
   - tests/test_build_assortment_lifecycle_facts_task.py
   - tests/test_build_assortment_lifecycle_updates_task.py
   - tests/test_refresh_assortment_lifecycle_classification_task.py
@@ -192,6 +197,44 @@ updated_at: "2026-08-12"
 Точные пороги всплеска, число подтверждающих периодов и лимит дополнительного
 заказа не утверждены и должны быть выбраны только по backtest. До этого решение
 не разрешает изменение production-формулы.
+
+## Реализованный shadow-контур v2
+
+Первая реализация ограничена папкой `Дисплеи` и по умолчанию работает как
+`v2-shadow`. Исполняемый расчёт разделён на чистые шаги `факты → состояние
+спроса → стадия`; расчёт количества остаётся отдельным шагом. Текущая v1-стадия
+сохраняется в быстром снимке, а целевая стадия, состояние спроса, причины и
+факты записываются рядом и в неизменяемую историю `run × SKU`.
+
+Стартовый shadow-кандидат хранится в версионированной конфигурации
+`config/assortment/display-assortment-lifecycle-v2.json`: ускорение `×1,5`,
+подтверждение `14` последовательных ежедневных расчётов, максимум `70%` объёма
+в одном дне, минимум `2` независимых дня, документа, клиента и точки, минимум
+сопоставимой группы `8` SKU. До выбора отдельного лимита всплеск использует
+только обычную потребность (`ordinary_demand_only`) и не получает полного
+минимума представленности; backtest сравнивает её с ограничением ожидаемым
+дефицитом и с тем же ограничением при одной открытой защитной партии на SKU.
+Эти значения являются только одной точкой
+утверждённой backtest-сетки `×1,2/×1,5/×2`, `7/14/21` и `8/12/20`, а не
+production-порогами.
+
+`v2-live` закрыт одновременно двумя условиями: явным выбором версии запуска и
+версионированным `live_enabled=true`. В принятой конфигурации флаг равен
+`false`, поэтому live-запуск завершается fail-closed. Флаг можно изменить только
+после успешного holdout и отдельного согласования отчёта `было → стало`.
+Автоприменение после такого допуска меняет только внутренний снимок и журнал
+`pricing-service`: запись lifecycle-свойств в 1С и создание заказов этим не
+разрешаются. Ручные `Допродаём/Выводим` и блокеры не автоприменяются.
+
+Исполняемый оценщик `tasks/evaluate_assortment_lifecycle_v2_backtest.py`
+принудительно разделяет исследование на два артефакта. `select-training`
+принимает только результаты периода `2026-02-01—2026-06-30`, отбрасывает
+кандидатов с ухудшением хотя бы одного из пяти acceptance-критериев и фиксирует
+ровно один профиль вместе с hash политики и параметров. `evaluate-holdout`
+принимает только этот неизменённый профиль и период `2026-07-01—2026-07-31`;
+подмена кандидата или параметров завершается fail-closed. Даже успешный holdout
+даёт только статус `eligible_for_diff_review`: `live_enabled` не меняется,
+production не разрешается, отчёт `было → стало` требует отдельного решения.
 
 ## Факты возраста товарной истории
 
@@ -2193,6 +2236,18 @@ detail повторно строится только для выбранног�
 
 # Changelog
 
+- 2026-08-12 — добавлен строгий двухшаговый оценщик backtest-кандидатов v2:
+  профиль выбирается только по февралю—июню при прохождении всех пяти
+  acceptance-критериев, а июльский holdout принимает только зафиксированный
+  профиль без изменения параметров. Успех разрешает лишь отдельное согласование
+  diff; `live_enabled`, production, заказы и записи в 1С не включаются.
+- 2026-08-12 — реализован fail-closed shadow-контур v2 только для дисплеев:
+  полные даты поступлений, обезличенный дневной разрез продаж, состояние спроса,
+  целевая стадия, история `run × SKU`, партийная себестоимость, квартиль,
+  динамический минимум, добавочные API/UI-поля и аудит `было → стало` с влиянием
+  на заказ и капитал. Стартовые параметры вынесены в версионированную
+  конфигурацию как backtest-кандидат; `live_enabled=false`, поэтому production,
+  внешние записи и реальные заказы не включены.
 - 2026-08-12 — для дисплеев стадии `Растим` утверждена ценовая политика
   минимальной представленности: `Q1/Q2` по себестоимости получают динамический
   минимум `активные подходящие точки + 2 единицы центрального запаса для

@@ -23267,6 +23267,99 @@ components:
             format: date-time
           - type: 'null'
           title: Created At
+        demand_state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Demand State
+        demand_state_label:
+          type: string
+          title: Demand State Label
+          default: ''
+        demand_reason_text:
+          type: string
+          title: Demand Reason Text
+          default: ''
+        first_receipt_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: First Receipt At
+        last_receipt_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Last Receipt At
+        history_age_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: History Age Days
+        first_sale_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: First Sale At
+        last_sale_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Last Sale At
+        sales_qty_short:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Sales Qty Short
+        sales_qty_medium:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Sales Qty Medium
+        sales_qty_long:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Sales Qty Long
+        days_in_sale_short:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Days In Sale Short
+        days_in_sale_medium:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Days In Sale Medium
+        days_in_sale_long:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Days In Sale Long
+        inventory_cost_per_unit:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Inventory Cost Per Unit
+        cost_quartile:
+          type: string
+          title: Cost Quartile
+          default: ''
+        minimum_representation_qty:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Minimum Representation Qty
       type: object
       required:
       - nomenclature_code

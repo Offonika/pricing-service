@@ -750,7 +750,7 @@ class CustomerPriceTypeRulesEngine:
             current_price_type=current_price_type,
             price_type_variant=variant,
             recommendation="data_check",
-            recommended_price_type=current_price_type,
+            recommended_price_type=None,
             reason=f"Требуется сверка данных: {reason_code}.",
             action_required=True,
             case_type="data_check",

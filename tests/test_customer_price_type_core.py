@@ -454,6 +454,8 @@ def test_economics_and_source_mismatch_block_isolation() -> None:
     assert missing.reasons == ("economics_missing",)
     assert conflict.source_status == "conflict"
     assert conflict.reasons == ("source_mismatch",)
+    assert conflict.current_price_type == "2.Бронзовый"
+    assert conflict.recommended_price_type is None
 
 
 def test_manual_overrides_and_key_account_are_human_only() -> None:

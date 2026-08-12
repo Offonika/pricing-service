@@ -339,17 +339,39 @@ class CustomerPriceTypeQualityService:
         self,
         *,
         sample_id: int,
-        correct_group: str,
+        review_result: str,
+        correct_group: str | None,
         comment: str | None,
         expected_version: int,
         access: CustomerPriceTypeAccessScope,
     ) -> Any:
         self._require_read(access)
+        existing = self.repository.get_quality_sample(sample_id, access)
+        if existing is None:
+            raise LookupError("quality sample not found")
+        sample = existing[0]
+        normalized_comment = comment.strip() if comment and comment.strip() else None
+        if review_result == "correct":
+            if correct_group is not None and correct_group != sample.system_group:
+                raise ValueError("correct review must keep the system result")
+            resolved_group = sample.system_group
+        elif review_result == "incorrect":
+            if correct_group is None or correct_group in {sample.system_group, "data_check"}:
+                raise ValueError("incorrect review requires a different business result")
+            if normalized_comment is None:
+                raise ValueError("incorrect review requires a comment")
+            resolved_group = correct_group
+        elif review_result == "data_issue":
+            if normalized_comment is None:
+                raise ValueError("data issue review requires a comment")
+            resolved_group = "data_check"
+        else:
+            raise ValueError("unknown quality review result")
         reviewed_at = datetime.now(UTC).replace(tzinfo=None)
         updated = self.repository.update_quality_sample_review(
             sample_id=sample_id,
-            correct_group=correct_group,
-            comment=comment.strip() if comment and comment.strip() else None,
+            correct_group=resolved_group,
+            comment=normalized_comment,
             reviewed_by=access.actor,
             reviewed_at=reviewed_at,
             expected_version=expected_version,
@@ -361,7 +383,14 @@ class CustomerPriceTypeQualityService:
                 raise LookupError("quality sample not found")
             raise CustomerPriceTypeQualityConflict("quality sample version is stale")
         self.session.commit()
-        return self.repository.get_quality_sample(sample_id, access)
+        return self.repository.get_quality_sample(
+            sample_id,
+            CustomerPriceTypeAccessScope(
+                actor=access.actor,
+                role="internal",
+                can_view_money=access.can_view_money,
+            ),
+        )
 
     def metrics(
         self,

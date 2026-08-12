@@ -334,7 +334,7 @@ class RetailCustomerPriceTypeRecommendation(BaseModel):
     current_price_type: str | None = None
     current_level: str
     current_level_label: str
-    recommended_price_type: str
+    recommended_price_type: str | None = None
     recommended_level: str
     recommended_level_label: str
     action: str

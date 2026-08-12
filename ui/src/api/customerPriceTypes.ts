@@ -55,6 +55,48 @@ export interface CptCaseListResponse extends CptEnvelope {
   payload: CptCaseItem[];
 }
 
+export type CptProfileSearchState = "no_change" | "change_proposed" | "data_issue";
+
+export interface CptProfileSearchItem {
+  counterparty_ref: string;
+  counterparty_code: string | null;
+  counterparty_name: string | null;
+  current_price_type: string | null;
+  recommended_price_type: string | null;
+  result_state: CptProfileSearchState;
+  result_label: string;
+  can_review: boolean;
+  quality_sample_id: number | null;
+  quality_sample_status: "pending" | "reviewed" | null;
+}
+
+export interface CptProfileSearchResponse extends CptEnvelope {
+  total: number;
+  limit: number;
+  offset: number;
+  payload: CptProfileSearchItem[];
+}
+
+export interface CptDataIssueItem {
+  counterparty_ref: string;
+  counterparty_code: string | null;
+  counterparty_name: string | null;
+  current_price_type: string | null;
+  issue_source: "calculation" | "expert";
+  issue_text: string;
+  reported_by: string | null;
+  reported_at: string | null;
+  comment: string | null;
+  case_id: number | null;
+}
+
+export interface CptDataIssueListResponse extends CptEnvelope {
+  total: number;
+  limit: number;
+  offset: number;
+  payload: CptDataIssueItem[];
+}
+
 export interface CptContractCandidate {
   contract_ref?: string | null;
   contract_name?: string | null;
@@ -188,6 +230,7 @@ export interface CptQualitySample {
   stop_factors: string[];
   system_group: CptQualityGroup;
   correct_group: CptQualityGroup | null;
+  review_result: "correct" | "incorrect" | "data_issue" | null;
   status: "pending" | "reviewed";
   selected_by: string;
   selected_at: string;
@@ -310,6 +353,20 @@ export async function fetchCptCaseDetail(caseId: number): Promise<CptCaseDetailR
   return data;
 }
 
+export async function searchCptProfiles(search: string): Promise<CptProfileSearchResponse> {
+  const { data } = await api.get<CptProfileSearchResponse>("/customer-price-types/profiles", {
+    params: { search, limit: 50 },
+  });
+  return data;
+}
+
+export async function fetchCptDataIssues(search?: string | null): Promise<CptDataIssueListResponse> {
+  const { data } = await api.get<CptDataIssueListResponse>("/customer-price-types/data-issues", {
+    params: { ...(search ? { search } : {}), limit: 500 },
+  });
+  return data;
+}
+
 export async function prepareCptQualitySamples(perGroup: number) {
   const { data } = await api.post("/customer-price-types/quality/samples/prepare", {
     per_group: perGroup,
@@ -350,14 +407,16 @@ export async function fetchCptQualitySampleDetail(
 
 export async function reviewCptQualitySample(options: {
   sampleId: number;
-  correctGroup: CptQualityGroup;
+  reviewResult: "correct" | "incorrect" | "data_issue";
+  correctGroup?: CptQualityGroup | null;
   comment?: string | null;
   expectedVersion: number;
 }): Promise<CptQualitySample> {
   const { data } = await api.put<CptQualitySample>(
     `/customer-price-types/quality/samples/${options.sampleId}`,
     {
-      correct_group: options.correctGroup,
+      review_result: options.reviewResult,
+      correct_group: options.correctGroup ?? null,
       comment: options.comment || null,
       expected_version: options.expectedVersion,
     },

@@ -585,6 +585,151 @@ class SqlAlchemyCustomerPriceTypeRepository:
             return [CustomerPriceTypeCase.review_type.in_(("credit", "economics"))]
         return [false()]
 
+    def _profile_scope_predicates(
+        self,
+        access: CustomerPriceTypeAccessScope,
+    ) -> list[Any]:
+        if access.is_full:
+            return []
+        if access.role == "manager":
+            return [
+                (
+                    CustomerPriceTypeProfile.owner_ref == access.owner_ref
+                    if access.owner_ref
+                    else false()
+                )
+            ]
+        if access.role == "department_head":
+            return [
+                (
+                    CustomerPriceTypeProfile.department_ref.in_(access.department_refs)
+                    if access.department_refs
+                    else false()
+                )
+            ]
+        return [false()]
+
+    def search_profiles(
+        self,
+        *,
+        run_id: int,
+        access: CustomerPriceTypeAccessScope,
+        search: str,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[tuple[Any, ...]], int]:
+        pattern = f"%{search.strip()}%"
+        base = (
+            select(
+                CustomerPriceTypeProfile,
+                CustomerPriceTypeSnapshot,
+                CustomerPriceTypeQualitySample,
+            )
+            .join(
+                CustomerPriceTypeSnapshot,
+                (CustomerPriceTypeSnapshot.profile_id == CustomerPriceTypeProfile.id)
+                & (CustomerPriceTypeSnapshot.run_id == run_id),
+            )
+            .outerjoin(
+                CustomerPriceTypeQualitySample,
+                CustomerPriceTypeQualitySample.snapshot_id == CustomerPriceTypeSnapshot.id,
+            )
+            .where(
+                CustomerPriceTypeProfile.is_service_card.is_(False),
+                or_(
+                    CustomerPriceTypeProfile.counterparty_ref.ilike(pattern),
+                    CustomerPriceTypeProfile.counterparty_code.ilike(pattern),
+                    CustomerPriceTypeProfile.counterparty_name.ilike(pattern),
+                ),
+                *self._profile_scope_predicates(access),
+            )
+        )
+        total = int(
+            self.session.scalar(select(func.count()).select_from(base.order_by(None).subquery()))
+            or 0
+        )
+        rows = self.session.execute(
+            base.order_by(
+                CustomerPriceTypeProfile.counterparty_name.asc(),
+                CustomerPriceTypeProfile.id.asc(),
+            )
+            .offset(offset)
+            .limit(limit)
+        ).all()
+        return [(row[0], row[1], row[2]) for row in rows], total
+
+    def list_data_issues(
+        self,
+        *,
+        run_id: int,
+        search: str | None,
+    ) -> list[tuple[Any, ...]]:
+        profile_filter = []
+        if search:
+            pattern = f"%{search.strip()}%"
+            profile_filter.append(
+                or_(
+                    CustomerPriceTypeProfile.counterparty_ref.ilike(pattern),
+                    CustomerPriceTypeProfile.counterparty_code.ilike(pattern),
+                    CustomerPriceTypeProfile.counterparty_name.ilike(pattern),
+                )
+            )
+        automatic = self.session.execute(
+            select(
+                CustomerPriceTypeProfile,
+                CustomerPriceTypeSnapshot,
+                CustomerPriceTypeCase,
+            )
+            .join(
+                CustomerPriceTypeSnapshot,
+                CustomerPriceTypeSnapshot.profile_id == CustomerPriceTypeProfile.id,
+            )
+            .outerjoin(
+                CustomerPriceTypeCase,
+                CustomerPriceTypeCase.current_snapshot_id == CustomerPriceTypeSnapshot.id,
+            )
+            .where(
+                CustomerPriceTypeSnapshot.run_id == run_id,
+                CustomerPriceTypeSnapshot.case_type == "data_check",
+                CustomerPriceTypeProfile.is_service_card.is_(False),
+                *profile_filter,
+            )
+        ).all()
+        expert = self.session.execute(
+            select(
+                CustomerPriceTypeProfile,
+                CustomerPriceTypeSnapshot,
+                CustomerPriceTypeQualitySample,
+            )
+            .join(
+                CustomerPriceTypeSnapshot,
+                CustomerPriceTypeSnapshot.profile_id == CustomerPriceTypeProfile.id,
+            )
+            .join(
+                CustomerPriceTypeQualitySample,
+                CustomerPriceTypeQualitySample.snapshot_id == CustomerPriceTypeSnapshot.id,
+            )
+            .where(
+                CustomerPriceTypeSnapshot.run_id == run_id,
+                CustomerPriceTypeQualitySample.status == "reviewed",
+                CustomerPriceTypeQualitySample.system_group != "data_check",
+                CustomerPriceTypeQualitySample.correct_group == "data_check",
+                CustomerPriceTypeProfile.is_service_card.is_(False),
+                *profile_filter,
+            )
+        ).all()
+        result = [("calculation", row[0], row[1], row[2]) for row in automatic] + [
+            ("expert", row[0], row[1], row[2]) for row in expert
+        ]
+        return sorted(
+            result,
+            key=lambda row: (
+                str(row[1].counterparty_name or "").casefold(),
+                str(row[1].counterparty_ref),
+                row[0],
+            ),
+        )
+
     def summary(
         self,
         *,
@@ -630,7 +775,11 @@ class SqlAlchemyCustomerPriceTypeRepository:
 
         return {
             "profile_count": len(rows),
-            "actionable_count": sum(row.action_required for row in snapshots),
+            "actionable_count": sum(
+                row.action_required
+                and not (access.role == "network_head" and row.case_type == "data_check")
+                for row in snapshots
+            ),
             "levels": counts("current_level"),
             "recommendations": counts("system_recommendation"),
             "source_statuses": counts("source_status"),
@@ -666,6 +815,8 @@ class SqlAlchemyCustomerPriceTypeRepository:
         if predicates:
             statement = statement.where(*predicates)
         raw = {str(case_type): int(count) for case_type, count in self.session.execute(statement)}
+        if access.role == "network_head":
+            raw.pop("data_check", None)
         return {
             key: raw.get(key, 0)
             for key in (
@@ -702,6 +853,8 @@ class SqlAlchemyCustomerPriceTypeRepository:
         ]
         if snapshot_month is not None:
             filters.append(CustomerPriceTypeCase.snapshot_month == snapshot_month)
+        if access.role == "network_head":
+            filters.append(CustomerPriceTypeCase.case_type != "data_check")
         if worklist:
             filters.extend(
                 [
@@ -910,6 +1063,8 @@ class SqlAlchemyCustomerPriceTypeRepository:
                 *self._scope_predicates(access),
             )
         )
+        if access.role == "network_head":
+            statement = statement.where(CustomerPriceTypeCase.case_type != "data_check")
         row = self.session.execute(statement).first()
         return (row[0], row[1], row[2]) if row else None
 
@@ -1016,6 +1171,8 @@ class SqlAlchemyCustomerPriceTypeRepository:
     ) -> tuple[int, int]:
         created = 0
         for group in QUALITY_GROUPS:
+            if group == "data_check":
+                continue
             existing_count = int(
                 self.session.scalar(
                     select(func.count(CustomerPriceTypeQualitySample.id)).where(
@@ -1047,7 +1204,13 @@ class SqlAlchemyCustomerPriceTypeRepository:
                 )
             )
             if group == "no_action":
-                statement = statement.where(CustomerPriceTypeSnapshot.action_required.is_(False))
+                statement = statement.where(
+                    CustomerPriceTypeSnapshot.action_required.is_(False),
+                    or_(
+                        CustomerPriceTypeSnapshot.case_type.is_(None),
+                        CustomerPriceTypeSnapshot.case_type != "data_check",
+                    ),
+                )
             else:
                 statement = statement.where(
                     CustomerPriceTypeSnapshot.action_required.is_(True),
@@ -1076,7 +1239,12 @@ class SqlAlchemyCustomerPriceTypeRepository:
         total = int(
             self.session.scalar(
                 select(func.count(CustomerPriceTypeQualitySample.id)).where(
-                    CustomerPriceTypeQualitySample.run_id == run.id
+                    CustomerPriceTypeQualitySample.run_id == run.id,
+                    CustomerPriceTypeQualitySample.system_group != "data_check",
+                    or_(
+                        CustomerPriceTypeQualitySample.correct_group.is_(None),
+                        CustomerPriceTypeQualitySample.correct_group != "data_check",
+                    ),
                 )
             )
             or 0
@@ -1103,6 +1271,13 @@ class SqlAlchemyCustomerPriceTypeRepository:
         int,
     ]:
         filters: list[Any] = [CustomerPriceTypeQualitySample.run_id == run_id]
+        filters.append(CustomerPriceTypeQualitySample.system_group != "data_check")
+        filters.append(
+            or_(
+                CustomerPriceTypeQualitySample.correct_group.is_(None),
+                CustomerPriceTypeQualitySample.correct_group != "data_check",
+            )
+        )
         if status:
             filters.append(CustomerPriceTypeQualitySample.status == status)
         if group:
@@ -1173,6 +1348,14 @@ class SqlAlchemyCustomerPriceTypeRepository:
             statement = statement.where(
                 CustomerPriceTypeQualitySample.system_group == "special_review"
             )
+        elif access.role == "network_head":
+            statement = statement.where(
+                CustomerPriceTypeQualitySample.system_group != "data_check",
+                or_(
+                    CustomerPriceTypeQualitySample.correct_group.is_(None),
+                    CustomerPriceTypeQualitySample.correct_group != "data_check",
+                ),
+            )
         row = self.session.execute(statement).first()
         return (row[0], row[1], row[2]) if row else None
 
@@ -1227,6 +1410,10 @@ class SqlAlchemyCustomerPriceTypeRepository:
             .where(
                 CustomerPriceTypeSnapshot.run_id == run_id,
                 CustomerPriceTypeProfile.is_service_card.is_(False),
+                or_(
+                    CustomerPriceTypeSnapshot.case_type.is_(None),
+                    CustomerPriceTypeSnapshot.case_type != "data_check",
+                ),
             )
             .group_by(system_group)
         )
@@ -1251,6 +1438,13 @@ class SqlAlchemyCustomerPriceTypeRepository:
                 CustomerPriceTypeSnapshot.id == CustomerPriceTypeQualitySample.snapshot_id,
             )
             .where(CustomerPriceTypeQualitySample.run_id == run_id)
+            .where(
+                CustomerPriceTypeQualitySample.system_group != "data_check",
+                or_(
+                    CustomerPriceTypeQualitySample.correct_group.is_(None),
+                    CustomerPriceTypeQualitySample.correct_group != "data_check",
+                ),
+            )
         )
         if access.role == "quality":
             statement = statement.where(

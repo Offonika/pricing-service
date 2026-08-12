@@ -2042,3 +2042,155 @@ def test_daily_stockout_guard_uses_latest_weekly_min_max() -> None:
     assert result.model["SKU-1"].order_qty == Decimal("7")
     assert result.model["SKU-1"].manual_order_lines == 1
     assert result.decision_rows[-1]["decision_trigger"] == "stockout_guard"
+
+
+def test_decision_service_buffer_raises_reorder_point_without_look_ahead() -> None:
+    start = date(2026, 2, 1)
+    scenario = FrozenScenario(
+        scenario_id="risk-buffer",
+        stage_profile="typical",
+        kmp4_weight=Decimal("0"),
+        cost=CarryingCostScenario(
+            name="base",
+            capital_annual_rate=Decimal("0.3"),
+            storage_annual_rate=Decimal("0.1"),
+            obsolescence_annual_rate=Decimal("0.25"),
+        ),
+    )
+    common = {
+        "scenario": scenario,
+        "fact_rows_by_date": {
+            start: [
+                {
+                    "nomenclature_code": "SKU-1",
+                    "status": "sale",
+                    "physical_stock_qty": "0",
+                    "observed_sales_qty": "0",
+                    "placed_incoming_qty": "0",
+                }
+            ]
+        },
+        "decision_rows_by_date": {
+            start: [
+                {
+                    "nomenclature_code": "SKU-1",
+                    "decision_date": start.isoformat(),
+                    "scheduled_review": "1",
+                    "status": "sale",
+                    "forecast_rate_sales": "0",
+                    "lead_time_p50_days": "1",
+                    "lead_time_p75_days": "1",
+                    "lead_time_confidence": "high",
+                    "inventory_cost_per_unit_rub": "100",
+                    "gross_margin_per_unit_rub": "10",
+                }
+            ]
+        },
+        "initial_pipeline_rows": [],
+        "sales_by_code": {"SKU-1": {}},
+        "policy": AutoOrderPolicy(order_cadence_days=7),
+        "config": load_scenario_config(
+            Path("config/assortment/display-auto-order-backtest-scenarios.json")
+        ),
+        "date_from": start,
+        "date_to": start,
+        "keep_detail": True,
+    }
+
+    baseline = simulate_scenario(
+        decision_service_buffers={(start + timedelta(days=1), "SKU-1"): Decimal("99")},
+        **common,
+    )
+    protected = simulate_scenario(
+        decision_service_buffers={(start, "SKU-1"): Decimal("3")},
+        **common,
+    )
+
+    assert baseline.model["SKU-1"].order_qty == Decimal("0")
+    assert protected.model["SKU-1"].order_qty == Decimal("3")
+    assert protected.decision_rows[0]["decision_service_buffer_qty"] == "3"
+    assert protected.diagnostics.decision_service_buffer_positive_decisions == 1
+    assert protected.diagnostics.decision_service_buffer_requested_qty == Decimal("3")
+
+
+def test_decision_service_buffer_survives_event_review_until_next_scheduled_review() -> None:
+    start = date(2026, 2, 1)
+    second = start + timedelta(days=1)
+    scenario = FrozenScenario(
+        scenario_id="risk-buffer-event",
+        stage_profile="typical",
+        kmp4_weight=Decimal("0"),
+        cost=CarryingCostScenario(
+            name="base",
+            capital_annual_rate=Decimal("0.3"),
+            storage_annual_rate=Decimal("0.1"),
+            obsolescence_annual_rate=Decimal("0.25"),
+        ),
+    )
+
+    result = simulate_scenario(
+        scenario=scenario,
+        fact_rows_by_date={
+            start: [
+                {
+                    "nomenclature_code": "SKU-1",
+                    "status": "sale",
+                    "physical_stock_qty": "0",
+                    "observed_sales_qty": "0",
+                    "placed_incoming_qty": "0",
+                }
+            ],
+            second: [
+                {
+                    "nomenclature_code": "SKU-1",
+                    "status": "sale",
+                    "physical_stock_qty": "0",
+                    "observed_sales_qty": "0",
+                    "placed_incoming_qty": "0",
+                    "effective_reserve_qty": "1",
+                }
+            ],
+        },
+        decision_rows_by_date={
+            start: [
+                {
+                    "nomenclature_code": "SKU-1",
+                    "scheduled_review": "1",
+                    "status": "sale",
+                    "forecast_rate_sales": "0",
+                    "lead_time_p50_days": "10",
+                    "lead_time_p75_days": "10",
+                    "lead_time_confidence": "high",
+                    "inventory_cost_per_unit_rub": "100",
+                    "gross_margin_per_unit_rub": "10",
+                }
+            ],
+            second: [
+                {
+                    "nomenclature_code": "SKU-1",
+                    "scheduled_review": "0",
+                    "event_review": "1",
+                    "status": "sale",
+                    "forecast_rate_sales": "0",
+                    "lead_time_p50_days": "10",
+                    "lead_time_p75_days": "10",
+                    "lead_time_confidence": "high",
+                    "inventory_cost_per_unit_rub": "100",
+                    "gross_margin_per_unit_rub": "10",
+                }
+            ],
+        },
+        initial_pipeline_rows=[],
+        sales_by_code={"SKU-1": {}},
+        policy=AutoOrderPolicy(order_cadence_days=7),
+        config=load_scenario_config(
+            Path("config/assortment/display-auto-order-backtest-scenarios.json")
+        ),
+        date_from=start,
+        date_to=second,
+        keep_detail=True,
+        decision_service_buffers={(start, "SKU-1"): Decimal("3")},
+    )
+
+    assert [row["decision_service_buffer_qty"] for row in result.decision_rows] == ["3", "3"]
+    assert result.diagnostics.decision_service_buffer_positive_decisions == 1

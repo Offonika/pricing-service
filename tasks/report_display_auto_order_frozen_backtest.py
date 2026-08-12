@@ -263,6 +263,8 @@ class ScenarioDiagnostics:
     base_pipeline_lot_risk_positive_evaluations: int = 0
     base_pipeline_lot_risk_qty_evaluated: Decimal = ZERO
     base_pipeline_lot_risk_effective_reduction_qty: Decimal = ZERO
+    decision_service_buffer_positive_decisions: int = 0
+    decision_service_buffer_requested_qty: Decimal = ZERO
 
     def as_summary_fields(self) -> dict[str, Any]:
         return {
@@ -335,6 +337,12 @@ class ScenarioDiagnostics:
             "base_pipeline_lot_risk_qty_evaluated": str(self.base_pipeline_lot_risk_qty_evaluated),
             "base_pipeline_lot_risk_effective_reduction_qty": str(
                 self.base_pipeline_lot_risk_effective_reduction_qty
+            ),
+            "decision_service_buffer_positive_decisions": (
+                self.decision_service_buffer_positive_decisions
+            ),
+            "decision_service_buffer_requested_qty": str(
+                self.decision_service_buffer_requested_qty
             ),
         }
 
@@ -1493,6 +1501,7 @@ def simulate_scenario(
     date_to: date,
     keep_detail: bool,
     demand_sample_cache: dict[tuple[str, date, int], list[Decimal]] | None = None,
+    decision_service_buffers: Mapping[tuple[date, str], Decimal] | None = None,
 ) -> SimulationResult:
     if scenario.base_pipeline_lot_risk_boundary and scenario.grow_acceleration_profile != "off":
         raise ValueError("base pipeline lot risk cannot be combined with acceleration")
@@ -1587,6 +1596,7 @@ def simulate_scenario(
     daily_detail: list[dict[str, Any]] = []
     loss_detail: list[dict[str, Any]] = []
     grow_target_states: dict[str, GrowProtectionState] = {}
+    active_decision_service_buffer: dict[str, Decimal] = defaultdict(Decimal)
     manual_review_seen: set[str] = set()
     diagnostics = ScenarioDiagnostics()
 
@@ -2313,6 +2323,24 @@ def simulate_scenario(
             grow_protection_reason = "none"
             manual = not scheduled_review
 
+            if scheduled_review:
+                active_decision_service_buffer[code] = max(
+                    ZERO,
+                    _decimal((decision_service_buffers or {}).get((cursor, code))),
+                )
+                if active_decision_service_buffer[code] > ZERO:
+                    diagnostics.decision_service_buffer_positive_decisions += 1
+                    diagnostics.decision_service_buffer_requested_qty += (
+                        active_decision_service_buffer[code]
+                    )
+            decision_service_buffer = (
+                active_decision_service_buffer[code]
+                if status == AssortmentStatus.SALE.value
+                else ZERO
+            )
+            if status != AssortmentStatus.SALE.value:
+                active_decision_service_buffer[code] = ZERO
+
             if scenario.legacy:
                 if status in {
                     AssortmentStatus.FRUIT.value,
@@ -2573,6 +2601,9 @@ def simulate_scenario(
             elif status != AssortmentStatus.SALE.value:
                 grow_target_states.pop(code, None)
 
+            min_qty += decision_service_buffer
+            max_qty += decision_service_buffer
+
             ordinary_min_qty = min_qty
             ordinary_max_qty = max_qty
             target_qty = max_qty + safety_units
@@ -2676,6 +2707,7 @@ def simulate_scenario(
                 "min_stock_qty": str(min_qty),
                 "max_stock_qty": str(max_qty),
                 "safety_stock_qty": str(safety_units),
+                "decision_service_buffer_qty": str(decision_service_buffer),
                 "target_stock_qty": str(target_qty),
                 "model_stock_qty": str(stock[code]),
                 "reserve_qty": str(reserve),
@@ -2778,6 +2810,7 @@ def simulate_scenario(
                         "forecast_error_percentile_qty": str(percentile_safety_target),
                         "economic_safety_cap_qty": str(economic_safety_cap),
                         "economic_safety_stock_qty": str(safety_units),
+                        "decision_service_buffer_qty": str(decision_service_buffer),
                         "service_floor_percentile": str(scenario.grow_service_floor_percentile),
                         "service_floor_requested_qty": str(service_floor_requested),
                         "service_floor_sku_capped_qty": str(service_floor_sku_capped),

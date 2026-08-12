@@ -527,6 +527,422 @@ def _markdown(summary: Mapping[str, Any]) -> str:
     )
 
 
+def _report_artifact(
+    summary: Mapping[str, Any],
+    manual_review: Sequence[Mapping[str, Any]],
+) -> dict[str, Any]:
+    title = "Почему риск дефицита хуже сработал на июле"
+    source_id = "frozen_v20_analysis"
+    source_path = (
+        "reports/assortment_lifecycle/backtest-2026-02-01_2026-07-31/"
+        "next-stage-model-shortage-risk-drivers-v20/analysis-summary.json"
+    )
+    period_labels = {
+        "pre_final_month": "До июля",
+        "final_month_exposed": "Окна с июлем",
+    }
+    detection = _period_detection_index(summary["detection_performance"])
+    drivers = _driver_index(summary["driver_breakdown"])
+    feature_gaps = {
+        (
+            _clean(row.get("period")),
+            _clean(row.get("detection_status")),
+            _clean(row.get("feature")),
+        ): row
+        for row in summary["feature_gaps"]
+    }
+    pre_share = _decimal(detection[("pre_final_month", "detected")]["loss_share"])
+    final_share = _decimal(detection[("final_month_exposed", "detected")]["loss_share"])
+    final_missed_qty = _decimal(detection[("final_month_exposed", "missed")]["lost_observed_qty"])
+    final_pipeline_qty = sum(
+        (
+            _decimal(drivers[("final_month_exposed", "missed", driver)]["lost_observed_qty"])
+            for driver in ("pipeline_only", "pipeline_and_demand_shock")
+        ),
+        ZERO,
+    )
+    final_pipeline_share = (
+        final_pipeline_qty / final_missed_qty if final_missed_qty > ZERO else ZERO
+    )
+
+    headline_rows = [
+        {
+            "matched_loss_qty": float(_decimal(summary["headline"]["matched_loss_qty"])),
+            "same_period_pair_count": int(summary["headline"]["same_period_pair_count"]),
+            "false_alarm_pair_count": int(summary["headline"]["false_alarm_pair_count"]),
+            "pre_detected_share": float(pre_share),
+            "final_detected_share": float(final_share),
+            "detected_share_change": float(final_share - pre_share),
+            "final_pipeline_share": float(final_pipeline_share),
+        }
+    ]
+    detection_rows = [
+        {
+            "period": _clean(row.get("period")),
+            "period_label": period_labels[_clean(row.get("period"))],
+            "status": _clean(row.get("detection_status")),
+            "status_label": _clean(row.get("detection_label")),
+            "pair_count": int(_decimal(row.get("pair_count"))),
+            "loss_qty": float(_decimal(row.get("lost_observed_qty"))),
+            "loss_share": float(_decimal(row.get("loss_share"))),
+        }
+        for row in summary["detection_performance"]
+    ]
+    missed_driver_rows = [
+        {
+            "period": _clean(row.get("period")),
+            "period_label": period_labels[_clean(row.get("period"))],
+            "driver": _clean(row.get("driver")),
+            "driver_label": _clean(row.get("driver_label")),
+            "episode_count": int(_decimal(row.get("episode_count"))),
+            "pair_count": int(_decimal(row.get("pair_count"))),
+            "loss_qty": float(_decimal(row.get("lost_observed_qty"))),
+            "share_within_missed": float(_decimal(row.get("share_within_detection_status"))),
+        }
+        for row in summary["driver_breakdown"]
+        if _clean(row.get("detection_status")) == "missed"
+    ]
+    review_rows = [
+        {
+            "review_type": (
+                "Пропуск риска"
+                if _clean(row.get("review_type")) == "missed_loss"
+                else "Ложная тревога"
+            ),
+            "period_label": period_labels[_clean(row.get("period"))],
+            "category": _clean(row.get("category_label")),
+            "sku": _clean(row.get("nomenclature_code")),
+            "name": _clean(row.get("name")),
+            "decision_date": _clean(row.get("decision_date")),
+            "quantity": float(_decimal(row.get("quantity"))),
+        }
+        for row in manual_review
+    ]
+    position_gap = _decimal(
+        feature_gaps[("final_month_exposed", "missed", "position_cover")]["case_minus_control"]
+    )
+    signal_gap = _decimal(
+        feature_gaps[("final_month_exposed", "missed", "open_signal_qty")]["case_minus_control"]
+    )
+    acceleration_gap = _decimal(
+        feature_gaps[("final_month_exposed", "missed", "acceleration_30_forecast")][
+            "case_minus_control"
+        ]
+    )
+    source = {
+        "id": source_id,
+        "label": "Frozen-анализ причин риска дефицита v20",
+        "path": source_path,
+        "query": {
+            "engine": "duckdb",
+            "language": "sql",
+            "description": (
+                "Читает все замороженные выходы v20, из которых собраны карточки, "
+                "графики и таблица отчёта."
+            ),
+            "sql": "\n".join(
+                [
+                    "WITH source_rows AS (",
+                    "  SELECT 'analysis_summary' AS dataset, to_json(s) AS row_data",
+                    f"  FROM read_json_auto('{source_path}') AS s",
+                    "  UNION ALL",
+                    "  SELECT 'detection_performance', to_json(d)",
+                    f"  FROM read_csv_auto('{source_path.replace('analysis-summary.json', 'detection-performance.csv')}') AS d",
+                    "  UNION ALL",
+                    "  SELECT 'driver_breakdown', to_json(r)",
+                    f"  FROM read_csv_auto('{source_path.replace('analysis-summary.json', 'driver-breakdown.csv')}') AS r",
+                    "  UNION ALL",
+                    "  SELECT 'feature_gaps', to_json(f)",
+                    f"  FROM read_csv_auto('{source_path.replace('analysis-summary.json', 'feature-gaps.csv')}') AS f",
+                    "  UNION ALL",
+                    "  SELECT 'manual_review', to_json(m)",
+                    f"  FROM read_csv_auto('{source_path.replace('analysis-summary.json', 'manual-review.csv')}') AS m",
+                    ")",
+                    "SELECT dataset, row_data FROM source_rows",
+                ]
+            ),
+            "tables_used": [
+                "analysis-summary.json",
+                "detection-performance.csv",
+                "driver-breakdown.csv",
+                "feature-gaps.csv",
+                "manual-review.csv",
+            ],
+            "filters": [
+                "Только frozen-выходы v20",
+                "Одинаковый период результата внутри matched-пары",
+                "Только pre_final_month и final_month_exposed",
+            ],
+            "metric_definitions": [
+                "Доля распознанной потери = потеря case-пар с риском выше control / вся matched-потеря периода.",
+                "Pipeline-экспозиция = приход учтён до фактического поступления или блокировал последний шанс заказа.",
+                "Скачок спроса = наблюдавшийся спрос до первой потери превысил frozen-прогноз.",
+            ],
+        },
+    }
+    cards = [
+        {
+            "id": "detection_share",
+            "dataset": "headline",
+            "sourceId": source_id,
+            "description": "Доля matched-потери, которую модель выделила как более рискованную.",
+            "metrics": [
+                {
+                    "label": "Распознано с июлем",
+                    "field": "final_detected_share",
+                    "format": "percent",
+                },
+                {"label": "До июля", "field": "pre_detected_share", "format": "percent"},
+                {
+                    "label": "Изменение",
+                    "field": "detected_share_change",
+                    "format": "percent",
+                    "signed": True,
+                },
+            ],
+        },
+        {
+            "id": "matched_loss",
+            "dataset": "headline",
+            "sourceId": source_id,
+            "description": "Потеря продаж в сопоставленных парах.",
+            "metrics": [
+                {
+                    "label": "Matched-потеря, шт.",
+                    "field": "matched_loss_qty",
+                    "format": "number",
+                },
+                {
+                    "label": "Сопоставленных пар",
+                    "field": "same_period_pair_count",
+                    "format": "number",
+                },
+            ],
+        },
+        {
+            "id": "pipeline_share",
+            "dataset": "headline",
+            "sourceId": source_id,
+            "description": "Доля июльских scored-пропусков с pipeline-экспозицией.",
+            "metrics": [
+                {
+                    "label": "Pipeline в пропусках",
+                    "field": "final_pipeline_share",
+                    "format": "percent",
+                }
+            ],
+        },
+        {
+            "id": "false_alarms",
+            "dataset": "headline",
+            "sourceId": source_id,
+            "description": "Control выглядел рискованнее, но не получил модельную потерю.",
+            "metrics": [
+                {
+                    "label": "Ложных тревог, пар",
+                    "field": "false_alarm_pair_count",
+                    "format": "number",
+                }
+            ],
+        },
+    ]
+    charts = [
+        {
+            "id": "detected_loss_by_period",
+            "title": "Matched-потеря по результату распознавания",
+            "subtitle": (
+                "С июлем выросла и общая потеря, и доля риска, не отделённого от контроля."
+            ),
+            "type": "stackedBar",
+            "dataset": "detection_performance",
+            "sourceId": source_id,
+            "encodings": {
+                "x": {"field": "period_label", "type": "nominal", "label": "Период"},
+                "y": {
+                    "field": "loss_qty",
+                    "type": "quantitative",
+                    "label": "Потеря, шт.",
+                    "format": "number",
+                },
+                "color": {"field": "status_label", "type": "nominal", "label": "Результат"},
+                "tooltip": [
+                    {"field": "pair_count", "type": "quantitative", "label": "Пар"},
+                    {
+                        "field": "loss_share",
+                        "type": "quantitative",
+                        "label": "Доля потери периода",
+                        "format": "percent",
+                    },
+                ],
+            },
+            "xAxisTitle": "Период результата",
+            "yAxisTitle": "Потеря, шт.",
+            "valueFormat": "number",
+        },
+        {
+            "id": "missed_loss_drivers",
+            "title": "Состав пропущенной matched-потери",
+            "subtitle": (
+                "С июлем почти вся пропущенная потеря сочетает pipeline со спросом выше прогноза."
+            ),
+            "type": "stackedBar100",
+            "dataset": "missed_drivers",
+            "sourceId": source_id,
+            "encodings": {
+                "x": {"field": "period_label", "type": "nominal", "label": "Период"},
+                "y": {
+                    "field": "loss_qty",
+                    "type": "quantitative",
+                    "label": "Потеря, шт.",
+                    "format": "number",
+                },
+                "color": {"field": "driver_label", "type": "nominal", "label": "Причина"},
+                "tooltip": [
+                    {
+                        "field": "share_within_missed",
+                        "type": "quantitative",
+                        "label": "Доля пропуска",
+                        "format": "percent",
+                    },
+                    {"field": "episode_count", "type": "quantitative", "label": "Эпизодов"},
+                    {"field": "pair_count", "type": "quantitative", "label": "Пар"},
+                ],
+            },
+            "xAxisTitle": "Период результата",
+            "yAxisTitle": "Доля пропущенной потери",
+            "valueFormat": "percent",
+        },
+    ]
+    tables = [
+        {
+            "id": "manual_review_examples",
+            "title": "Примеры SKU для ручной проверки",
+            "subtitle": "Наиболее крупные примеры в каждой диагностической группе.",
+            "dataset": "manual_review",
+            "sourceId": source_id,
+            "density": "compact",
+            "defaultSort": {"field": "quantity", "direction": "desc"},
+            "columns": [
+                {"field": "review_type", "label": "Тип", "type": "text"},
+                {"field": "period_label", "label": "Период", "type": "text"},
+                {"field": "category", "label": "Причина", "type": "text"},
+                {"field": "sku", "label": "SKU", "type": "text"},
+                {"field": "name", "label": "Товар", "type": "text"},
+                {"field": "decision_date", "label": "Дата решения", "type": "date"},
+                {
+                    "field": "quantity",
+                    "label": "Потеря / риск, шт.",
+                    "type": "number",
+                    "format": "number",
+                    "align": "right",
+                },
+            ],
+        }
+    ]
+    blocks = [
+        {"id": "title", "type": "markdown", "body": f"# {title}"},
+        {
+            "id": "headline_metrics",
+            "type": "metric-strip",
+            "cardIds": ["detection_share", "matched_loss", "pipeline_share", "false_alarms"],
+        },
+        {
+            "id": "main_finding",
+            "type": "markdown",
+            "sourceId": source_id,
+            "body": (
+                "## Главный вывод\n\n"
+                f"До июля модель выделила **{_pct(pre_share)}** matched-потери, а в "
+                f"окнах с июлем — **{_pct(final_share)}**. Она не перестала работать, "
+                "но хуже отличила действительно опасные SKU от похожих безопасных. "
+                "Июльский скачок спроса наложился на pipeline, который frozen-модель "
+                "считала доступным запасом."
+            ),
+        },
+        {"id": "detection_chart_block", "type": "chart", "chartId": "detected_loss_by_period"},
+        {
+            "id": "driver_finding",
+            "type": "markdown",
+            "sourceId": source_id,
+            "body": (
+                "## Что именно пропустила модель\n\n"
+                f"В scored-пропусках с июлем потеряно **{_num(final_missed_qty)} шт.** "
+                f"Pipeline присутствует в **{_pct(final_pipeline_share)}** этой потери. "
+                "В 97,2% пропуска pipeline сочетался со спросом выше прогноза; это один "
+                "совместный механизм, а не две независимые суммы."
+            ),
+        },
+        {"id": "driver_chart_block", "type": "chart", "chartId": "missed_loss_drivers"},
+        {
+            "id": "feature_finding",
+            "type": "markdown",
+            "sourceId": source_id,
+            "body": (
+                "## Почему риск заранее не отделил июльские SKU\n\n"
+                "У пропущенных case-пар позиция запаса выглядела даже безопаснее "
+                f"контроля на **{_num(position_gap)} горизонта прогноза**. Разница "
+                f"открытых сигналов была только **{_num(signal_gap)}**, а ускорения "
+                f"спроса — **{_num(acceleration_gap)}**. Текущие агрегаты почти не "
+                "различали пары, потому что не знали надёжность конкретных партий."
+            ),
+        },
+        {"id": "review_table_block", "type": "table", "tableId": "manual_review_examples"},
+        {
+            "id": "recommendation",
+            "type": "markdown",
+            "body": (
+                "## Что изменить следующим\n\n"
+                "1. Сохранять по каждой партии исходную обещанную дату, все переносы, "
+                "частичные приходы, отмены и фактическое закрытие.\n"
+                "2. Оценивать вероятность прихода к P50/P75 отдельно по поставщику и "
+                "типу партии; в доступный запас включать только надёжную долю pipeline.\n"
+                "3. Ускорение спроса применять отдельной надбавкой поверх уже "
+                "дисконтированного pipeline.\n"
+                "4. Сначала проверить признак быстрым frozen-тестом, затем лучший вариант "
+                "отправлять в полный backtest."
+            ),
+        },
+        {
+            "id": "limitation",
+            "type": "markdown",
+            "sourceId": source_id,
+            "body": (
+                "## Ограничение\n\n"
+                "v20 доказывает механизм внутри frozen-симулятора, но не просрочку "
+                "конкретного поставщика: в наборе нет первоначальных обещанных дат и "
+                "полной истории переносов. Production-заказы и forward shadow этим "
+                "анализом не разрешены."
+            ),
+        },
+    ]
+    manifest = {
+        "version": 1,
+        "surface": "report",
+        "title": title,
+        "description": "Диагностика пропусков и ложных тревог риска на frozen-данных.",
+        "sources": [source],
+        "cards": cards,
+        "charts": charts,
+        "tables": tables,
+        "blocks": blocks,
+    }
+    return {
+        "surface": "report",
+        "manifest": manifest,
+        "snapshot": {
+            "version": 1,
+            "status": "ready",
+            "datasets": {
+                "headline": headline_rows,
+                "detection_performance": detection_rows,
+                "missed_drivers": missed_driver_rows,
+                "manual_review": review_rows,
+            },
+        },
+        "sources": [source],
+    }
+
+
 def build_analysis(
     *,
     risk_analysis_dir: Path,
@@ -616,8 +1032,13 @@ def build_analysis(
         json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
     (output_dir / "SHORTAGE-RISK-DRIVERS.md").write_text(_markdown(summary), encoding="utf-8")
+    (output_dir / "artifact.json").write_text(
+        json.dumps(_report_artifact(summary, manual_review), ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
     artifact_names = (
         "analysis-summary.json",
+        "artifact.json",
         "episode-diagnostics.csv",
         "driver-breakdown.csv",
         "detection-performance.csv",

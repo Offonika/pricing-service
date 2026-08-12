@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 
 from sqlalchemy import create_engine, text
 
@@ -380,3 +381,92 @@ def test_chunks_preserve_all_refs_for_sqlserver_parameter_limit() -> None:
     chunks = list(_chunks(refs, 2))
 
     assert chunks == [refs[0:2], refs[2:4], refs[4:5]]
+
+
+def test_full_history_receipt_bounds_preserve_old_age_after_new_receipt() -> None:
+    facts, _ = build_assortment_lifecycle_fact_records(
+        nomenclature_rows=[
+            {
+                "nomenclature_ref": "0xA",
+                "nomenclature_code": "OLD-1",
+                "folder_path": "Дисплеи",
+            }
+        ],
+        supplier_order_rows=[],
+        receipt_rows=[
+            {"nomenclature_ref": "0xA", "receipt_date": "2026-07-01"},
+        ],
+        receipt_bounds={"OLD-1": (date(2018, 1, 10), date(2026, 7, 1))},
+        warehouse_policy=_warehouse_policy(),
+        as_of=date(2026, 8, 12),
+        history_start=date(2024, 8, 1),
+    )
+    fact = facts[0]
+    assert fact["first_receipt_at"] == "2018-01-10"
+    assert fact["last_receipt_at"] == "2026-07-01"
+    assert fact["history_age_days"] == (date(2026, 8, 12) - date(2018, 1, 10)).days
+
+
+def test_cost_quartile_uses_fallback_group_and_unknown_cost_has_no_minimum() -> None:
+    warehouses = [
+        {
+            "warehouse_code": f"shop-{index}",
+            "role": "physical_sales_point",
+            "sells_systematically": True,
+        }
+        for index in range(11)
+    ] + [
+        {
+            "warehouse_code": "site",
+            "role": "online_site_reserve",
+            "sells_systematically": True,
+        },
+        {
+            "warehouse_code": "wholesale",
+            "role": "wholesale",
+            "sells_systematically": True,
+        },
+        {
+            "warehouse_code": "cdek",
+            "role": "central_transfer_stock",
+            "sells_systematically": False,
+            "is_transit": True,
+        },
+    ]
+    rows = [
+        {
+            "nomenclature_ref": f"0x{index}",
+            "nomenclature_code": f"SKU-{index}",
+            "folder_path": "Дисплеи",
+            "quality_raw": "Original",
+            "brand_compatibility": f"Brand-{index}",
+            "name": f"Дисплей {index}",
+        }
+        for index in range(8)
+    ]
+    rows.append(
+        {
+            "nomenclature_ref": "0xUNKNOWN",
+            "nomenclature_code": "SKU-UNKNOWN",
+            "folder_path": "Дисплеи",
+            "quality_raw": "Original",
+            "name": "Дисплей без себестоимости",
+        }
+    )
+    costs = {f"SKU-{index}": Decimal(str((index + 1) * 100)) for index in range(8)}
+    facts, _ = build_assortment_lifecycle_fact_records(
+        nomenclature_rows=rows,
+        supplier_order_rows=[],
+        receipt_rows=[],
+        warehouse_policy=warehouses,
+        inventory_costs=costs,
+        comparable_group_min_size=8,
+    )
+    cheapest = next(item for item in facts if item["nomenclature_code"] == "SKU-0")
+    unknown = next(item for item in facts if item["nomenclature_code"] == "SKU-UNKNOWN")
+    assert cheapest["cost_quartile"] == "Q1"
+    assert cheapest["cost_group_sample_size"] == 8
+    assert cheapest["minimum_representation_qty"] == 13
+    assert unknown["inventory_cost_per_unit"] is None
+    assert unknown["cost_quartile"] == ""
+    assert unknown["minimum_representation_qty"] is None

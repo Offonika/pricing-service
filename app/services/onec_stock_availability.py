@@ -22,6 +22,8 @@ from sqlalchemy import (
     and_,
     bindparam,
     delete,
+    func,
+    inspect,
     insert,
     select,
     text,
@@ -626,6 +628,45 @@ def fetch_days_in_sale_by_code(
                     point_days = Decimal(str(row.get("available_point_days") or 0))
                     result[code][window_days] = point_days / store_count
     return result
+
+
+def fetch_availability_observation_facts(
+    engine: Engine,
+    *,
+    codes: Sequence[str],
+    warehouse_codes: Sequence[str],
+) -> tuple[date | None, date | None, dict[str, date]]:
+    """Return coverage bounds and first observed positive stock by SKU."""
+
+    if not inspect(engine).has_table(COVERAGE_TABLE.name) or not inspect(engine).has_table(
+        INTERVAL_TABLE.name
+    ):
+        return None, None, {}
+    observation_from: date | None = None
+    observation_to: date | None = None
+    first_stock: dict[str, date] = {}
+    with engine.connect() as connection:
+        coverage = connection.execute(
+            select(func.min(COVERAGE_TABLE.c.covered_from), func.max(COVERAGE_TABLE.c.covered_to))
+            .where(COVERAGE_TABLE.c.status == "ready")
+        ).one()
+        observation_from = _date(coverage[0])
+        observation_to = _date(coverage[1])
+        statement = select(
+            INTERVAL_TABLE.c.product_code,
+            func.min(INTERVAL_TABLE.c.available_from).label("first_observed_stock_at"),
+        ).where(INTERVAL_TABLE.c.product_code.in_(sorted(set(codes))))
+        if warehouse_codes:
+            statement = statement.where(
+                INTERVAL_TABLE.c.warehouse_code.in_(sorted(set(warehouse_codes)))
+            )
+        statement = statement.group_by(INTERVAL_TABLE.c.product_code)
+        for row in connection.execute(statement).mappings():
+            code = _clean(row.get("product_code"))
+            first = _date(row.get("first_observed_stock_at"))
+            if code and first is not None:
+                first_stock[code] = first
+    return observation_from, observation_to, first_stock
 
 
 def attach_effective_availability_shadow_to_facts(

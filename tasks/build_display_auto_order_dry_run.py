@@ -49,9 +49,15 @@ CSV_COLUMNS = [
     "nomenclature_code",
     "name",
     "status_label",
+    "demand_state",
+    "demand_state_label",
     "quality_raw",
     "quality_normalized",
     "price_segment",
+    "inventory_cost_per_unit",
+    "cost_quartile",
+    "minimum_representation_qty",
+    "representation_floor_applied",
     "latest_purchase_price",
     "latest_purchase_price_at",
     "analog_group_id",
@@ -78,6 +84,7 @@ CSV_COLUMNS = [
     "central_stock_qty",
     "total_stock_qty",
     "incoming_qty",
+    "reliable_incoming_qty",
     "incoming_order_count",
     "sales_qty_window",
     "sales_qty_window_medium",
@@ -573,6 +580,7 @@ def main() -> int:
         b2b_customer_demand_profiles=b2b_customer_demand_profiles,
         b2b_customer_demand_error=b2b_customer_demand_error,
         as_of=args.as_of,
+        lifecycle_model_version=args.lifecycle_model_version,
     )
     write_csv(args.output_csv, rows)
     summary = build_summary(rows, run_id=run_id, source_errors=source_errors)
@@ -1341,7 +1349,10 @@ def build_dry_run_rows(
     b2b_customer_demand_profiles: Mapping[str, B2BSkuDemandProfile] | None = None,
     b2b_customer_demand_error: str = "",
     as_of: date | None = None,
+    lifecycle_model_version: str = "v1",
 ) -> list[dict[str, Any]]:
+    if lifecycle_model_version not in {"v1", "v2-shadow", "v2-live"}:
+        raise ValueError(f"unsupported assortment lifecycle model: {lifecycle_model_version}")
     rows: list[dict[str, Any]] = []
     supported_analog_policy = supported_analog_policy or SupportedAnalogPolicy()
     if supplier_assembly_days:
@@ -1377,6 +1388,7 @@ def build_dry_run_rows(
         pipeline_later_qty = _decimal(incoming.get("pipeline_later_qty"))
         pipeline_no_date_qty = _decimal(incoming.get("pipeline_no_date_qty"))
         pipeline_cargo_handoff_qty = _decimal(incoming.get("pipeline_cargo_handoff_qty"))
+        reliable_incoming_qty = pipeline_cargo_handoff_qty
         pipeline_supplier_processing_qty = _decimal(
             incoming.get("pipeline_supplier_processing_qty")
         )
@@ -1677,10 +1689,18 @@ def build_dry_run_rows(
                 "name": _clean(item.get("name")),
                 "status_label": _clean(item.get("status_label")),
                 "_assortment_status": _clean(item.get("status")),
+                "demand_state": _clean(item.get("demand_state")),
+                "demand_state_label": _clean(item.get("demand_state_label")),
                 "_auto_order_allowed": bool(item.get("auto_order_allowed", True)),
                 "quality_raw": _clean(item.get("quality_raw")),
                 "quality_normalized": _clean(item.get("quality_normalized")),
                 "price_segment": _clean(item.get("price_segment")),
+                "inventory_cost_per_unit": _clean(item.get("inventory_cost_per_unit")),
+                "cost_quartile": _clean(item.get("cost_quartile")),
+                "minimum_representation_qty": _clean(
+                    item.get("minimum_representation_qty")
+                ),
+                "representation_floor_applied": "",
                 "latest_purchase_price": _out_decimal(latest_purchase_price, places=2),
                 "latest_purchase_price_at": _date_text(purchase.get("latest_purchase_price_at")),
                 "analog_group_id": "",
@@ -1707,6 +1727,7 @@ def build_dry_run_rows(
                 "central_stock_qty": _out_decimal(central_stock_qty),
                 "total_stock_qty": _out_decimal(total_stock_qty),
                 "incoming_qty": _out_decimal(incoming_qty),
+                "reliable_incoming_qty": _out_decimal(reliable_incoming_qty),
                 "incoming_order_count": int(incoming.get("incoming_order_count") or 0),
                 "sales_qty_window": _out_decimal(sales_qty),
                 "sales_qty_window_medium": _out_decimal(sales_qty_medium),
@@ -1847,6 +1868,13 @@ def build_dry_run_rows(
         max_order_qty=max_order_qty,
         order_rounding_rules=order_rounding_rules,
     )
+    if lifecycle_model_version in {"v2-shadow", "v2-live"}:
+        apply_target_representation_floor(
+            rows,
+            min_order_qty=min_order_qty,
+            max_order_qty=max_order_qty,
+            order_rounding_rules=order_rounding_rules,
+        )
     # Финальный барьер, не обойти ни одним из шагов выше (apply_analog_group_
     # decisions/_mark_analog_winner уже проверяли blockers по отдельности, но
     # на реальном прогоне 2026-07-31 нашлось ЕЩЁ ДВЕ утечки в других шагах
@@ -1914,6 +1942,54 @@ def build_dry_run_rows(
             f"{row.get('reason_ru', '')}"
         ).strip()
     return rows
+
+
+def apply_target_representation_floor(
+    rows: list[dict[str, Any]],
+    *,
+    min_order_qty: int,
+    max_order_qty: int | None,
+    order_rounding_rules: Sequence[OrderRoundingRule],
+) -> None:
+    """Apply the v2 Q1/Q2 representation minimum as a target floor once."""
+
+    for row in rows:
+        if _clean(row.get("_assortment_status")) != "sale":
+            continue
+        if _clean(row.get("demand_state")) == "spike":
+            continue
+        if _clean(row.get("cost_quartile")) not in {"Q1", "Q2"}:
+            continue
+        minimum_qty = _decimal(row.get("minimum_representation_qty"))
+        if minimum_qty <= 0 or _clean(row.get("blockers")):
+            continue
+        demand_target_qty = _decimal(row.get("target_stock_qty"))
+        target_stock_qty = max(demand_target_qty, minimum_qty)
+        if target_stock_qty == demand_target_qty:
+            continue
+        free_stock_qty = _decimal(row.get("free_stock_qty"))
+        reliable_incoming_qty = _decimal(row.get("reliable_incoming_qty"))
+        raw = _ceil_decimal(
+            max(Decimal("0"), target_stock_qty - free_stock_qty - reliable_incoming_qty)
+        )
+        qty = rounded_order_qty(
+            raw,
+            min_order_qty=min_order_qty,
+            max_order_qty=max_order_qty,
+            order_rounding_rules=order_rounding_rules,
+        )
+        row["target_stock_qty"] = _out_decimal(target_stock_qty)
+        row["recommended_order_qty_raw"] = _out_decimal(raw)
+        row["recommended_order_qty"] = _out_decimal(qty)
+        row["representation_floor_applied"] = "yes"
+        row["dry_run_decision"] = "order" if qty > 0 else "do_not_order"
+        _append_warning(row, "minimum_representation_floor_applied")
+        row["reason_ru"] = (
+            f"Минимальная представленность {minimum_qty} шт задаёт нижнюю границу цели; "
+            f"расчётный спрос {demand_target_qty} шт не прибавляется к ней повторно. "
+            f"Свободно {free_stock_qty} шт, надёжно в пути {reliable_incoming_qty} шт, "
+            f"рекомендуем {qty} шт."
+        )
 
 
 def apply_price_batch_policy(
@@ -3617,6 +3693,15 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--database-url", default="")
     parser.add_argument("--onec-database-url", default="")
     parser.add_argument("--folder", default="дисплеи")
+    parser.add_argument(
+        "--lifecycle-model-version",
+        choices=("v1", "v2-shadow", "v2-live"),
+        default="v1",
+        help=(
+            "v2-shadow applies the candidate representation floor only to the read-only "
+            "report; v1 preserves the legacy quantity calculation."
+        ),
+    )
     parser.add_argument(
         "--include-sale-review-candidates",
         action="store_true",

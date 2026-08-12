@@ -21,6 +21,8 @@ from app.services.assortment_lifecycle import (
     build_procurement_profile_property_update_row,
     classify_expensive_profile,
     decide_assortment_status,
+    decide_demand_state,
+    decide_target_assortment_status,
     decide_commercial_marks,
     systemic_sales_point_codes,
     validate_manager_need_signal,
@@ -672,3 +674,132 @@ def test_days_without_stock_are_restored_softly_not_by_exclusion() -> None:
     hard = Decimal("30") / Decimal("30")
     calendar = Decimal("30") / Decimal("90")
     assert calendar < soft < hard
+
+
+def _target_decision(**kwargs) -> AssortmentLifecycleDecision:
+    values = {
+        "first_supplier_order_at": date(2025, 1, 1),
+        "first_receipt_at": date(2025, 1, 10),
+        "first_sale_at": date(2025, 1, 15),
+        "as_of": date(2026, 8, 12),
+        "sales_qty_short": Decimal("0"),
+        "sales_qty_medium": Decimal("0"),
+        "sales_qty_long": Decimal("0"),
+    }
+    values.update(kwargs)
+    return decide_target_assortment_status(
+        AssortmentLifecycleInput(nomenclature_code="TARGET-1", **values)
+    )
+
+
+def test_target_stage_requires_receipt_and_does_not_treat_cargo_as_arrival() -> None:
+    decision = decide_target_assortment_status(
+        AssortmentLifecycleInput(
+            nomenclature_code="TARGET-CARGO",
+            first_supplier_order_at=date(2026, 8, 1),
+            supplier_order_cargo_handoff_dates=(date(2026, 8, 5),),
+            as_of=date(2026, 8, 12),
+            sales_qty_short=0,
+            sales_qty_medium=0,
+            sales_qty_long=0,
+        )
+    )
+    assert decision.status == AssortmentStatus.NEWBORN
+
+    arrived = decide_target_assortment_status(
+        AssortmentLifecycleInput(
+            nomenclature_code="TARGET-RECEIPT",
+            first_supplier_order_at=date(2026, 8, 1),
+            first_receipt_at=date(2026, 8, 10),
+            as_of=date(2026, 8, 12),
+            sales_qty_short=0,
+            sales_qty_medium=0,
+            sales_qty_long=0,
+        )
+    )
+    assert arrived.status == AssortmentStatus.NEW_ITEM
+
+
+def test_target_demand_distinguishes_null_from_confirmed_zero() -> None:
+    missing = decide_demand_state(
+        AssortmentLifecycleInput(
+            nomenclature_code="NULL",
+            sales_qty_short=None,
+            sales_qty_medium=0,
+            sales_qty_long=0,
+        )
+    )
+    zero = decide_demand_state(
+        AssortmentLifecycleInput(
+            nomenclature_code="ZERO",
+            sales_qty_short=0,
+            sales_qty_medium=0,
+            sales_qty_long=0,
+        )
+    )
+    assert missing.state.value == "no_data"
+    assert zero.state.value == "no_sales"
+
+
+def test_target_growth_must_be_distributed_and_consecutive() -> None:
+    common = {
+        "sales_qty_short": Decimal("18"),
+        "sales_qty_medium": Decimal("30"),
+        "sales_qty_long": Decimal("45"),
+        "previous_status": AssortmentStatus.WORKING,
+        "previous_demand_state": "spike",
+        "demand_state_since": date(2026, 7, 29),
+        "previous_demand_state_at": date(2026, 8, 11),
+        "sales_active_days_short": 3,
+        "sales_document_count_short": 3,
+        "sales_customer_count_short": 3,
+        "sales_point_count_short": 3,
+        "sales_max_day_share_short": Decimal("0.50"),
+    }
+    growing = _target_decision(**common)
+    assert growing.demand_state.value == "growing"
+    assert growing.status == AssortmentStatus.SALE
+
+    one_customer = _target_decision(
+        **{**common, "sales_customer_count_short": 1}
+    )
+    assert one_customer.demand_state.value == "spike"
+    assert one_customer.status == AssortmentStatus.WORKING
+
+    gap_in_runs = _target_decision(
+        **{**common, "previous_demand_state_at": date(2026, 8, 9)}
+    )
+    assert gap_in_runs.demand_state.value == "spike"
+    assert gap_in_runs.status == AssortmentStatus.WORKING
+
+
+def test_target_stable_declining_shortage_and_manual_statuses() -> None:
+    stable = _target_decision(
+        sales_qty_short=Decimal("5"),
+        sales_qty_medium=Decimal("15"),
+        sales_qty_long=Decimal("30"),
+    )
+    assert stable.demand_state.value == "stable"
+    assert stable.status == AssortmentStatus.WORKING
+
+    decline = {
+        "sales_qty_short": Decimal("2"),
+        "sales_qty_medium": Decimal("18"),
+        "sales_qty_long": Decimal("60"),
+        "previous_status": AssortmentStatus.SALE,
+    }
+    declining = _target_decision(**decline, days_in_sale_medium=Decimal("90"))
+    shortage = _target_decision(**decline, days_in_sale_medium=Decimal("5"))
+    assert declining.demand_state.value == "declining"
+    assert declining.status == AssortmentStatus.WORKING
+    assert shortage.demand_state.value == "shortage_limited"
+    assert shortage.status == AssortmentStatus.SALE
+
+    for manual_status in ("pension", "nonliquid"):
+        manual = _target_decision(
+            manual_status=manual_status,
+            manual_reason="Решение ответственного",
+            manual_approved_by="Омар",
+            manual_changed_at=date(2026, 8, 12),
+        )
+        assert manual.status.value == manual_status

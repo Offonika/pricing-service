@@ -8,6 +8,10 @@ from math import ceil
 from typing import Iterable
 
 from app.services.exporters.ut103_nomenclature_properties import NomenclaturePropertyUpdateRow
+from app.services.assortment_lifecycle_v2_policy import (
+    DEFAULT_DEMAND_STATE_POLICY,
+    DemandStatePolicy,
+)
 
 STATUS_PROPERTY_NAME = "Статус ассортимента"
 STATUS_REASON_PROPERTY_NAME = "Причина статуса ассортимента"
@@ -26,6 +30,7 @@ MANUAL_MIN_STOCK_PROPERTY_NAME = "Ручной минимальный остат
 AVAILABILITY_RULE_REVIEW_AT_PROPERTY_NAME = "Дата пересмотра правила наличия"
 
 DEFAULT_STATUS_SOURCE = "assortment_lifecycle_v1"
+TARGET_STATUS_SOURCE = "assortment_lifecycle_v2_shadow"
 DEFAULT_EXCLUSIVE_REVIEW_PERIOD_DAYS = 30
 WORKING_RECEIPT_WINDOW_DAYS = 180
 WORKING_MIN_RECEIPTS = 5
@@ -94,6 +99,17 @@ class AssortmentStatus(StrEnum):
     PENSION = "pension"
 
 
+class DemandState(StrEnum):
+    NO_DATA = "no_data"
+    NO_SALES = "no_sales"
+    INITIAL = "initial"
+    SPIKE = "spike"
+    GROWING = "growing"
+    STABLE = "stable"
+    DECLINING = "declining"
+    SHORTAGE_LIMITED = "shortage_limited"
+
+
 class ProcurementBehaviorProfile(StrEnum):
     FAST_EXPENSIVE = "fast_expensive"
     SLOW_EXPENSIVE = "slow_expensive"
@@ -126,6 +142,17 @@ ASSORTMENT_STATUS_LABELS = {
     AssortmentStatus.NONLIQUID: "Выводим",
     AssortmentStatus.DO_NOT_ORDER: "Не закупаем",
     AssortmentStatus.PENSION: "Допродаём",
+}
+
+DEMAND_STATE_LABELS = {
+    DemandState.NO_DATA: "Нет данных",
+    DemandState.NO_SALES: "Нет продаж",
+    DemandState.INITIAL: "Начальный",
+    DemandState.SPIKE: "Всплеск",
+    DemandState.GROWING: "Растёт",
+    DemandState.STABLE: "Стабилен",
+    DemandState.DECLINING: "Снижается",
+    DemandState.SHORTAGE_LIMITED: "Ограничен дефицитом",
 }
 
 # Значения свойства «Статус ассортимента» для обмена с 1С. Держим отдельно от
@@ -189,6 +216,8 @@ class AssortmentLifecycleInput:
     first_supplier_order_at: date | None = None
     supplier_order_cargo_handoff_dates: tuple[date, ...] = ()
     receipt_dates: tuple[date, ...] = ()
+    first_receipt_at: date | None = None
+    last_receipt_at: date | None = None
     # Дата первой реализации покупателю. Определяет вход в СП / Старт продаж:
     # решение 2026-08-02 — статус называется "стартанули продажи" и должен
     # означать факт продажи, а не второй заказ поставщику. Пусто = продаж не
@@ -218,6 +247,14 @@ class AssortmentLifecycleInput:
     # рост достаточно двух окон, для вывода в угасание нужны три, а плоская
     # карточка остаётся там, где стояла, и не дёргается от прогона к прогону.
     previous_status: AssortmentStatus | str | None = None
+    previous_demand_state: DemandState | str | None = None
+    demand_state_since: date | None = None
+    previous_demand_state_at: date | None = None
+    sales_active_days_short: int | None = None
+    sales_document_count_short: int | None = None
+    sales_customer_count_short: int | None = None
+    sales_point_count_short: int | None = None
+    sales_max_day_share_short: Decimal | int | str | None = None
     has_need_signal: bool = False
     working_confirmed_by_folder_responsible: bool = False
     analog_winner_confirmed_by_folder_responsible: bool = False
@@ -245,6 +282,11 @@ class AssortmentLifecycleDecision:
     approved_by: str = ""
     exclusive_review_at: date | None = None
     exclusive_min_stock_qty: Decimal | None = None
+    demand_state: DemandState | None = None
+    demand_state_label: str = ""
+    demand_reason_codes: tuple[str, ...] = ()
+    demand_reason_text: str = ""
+    demand_state_since: date | None = None
 
     @property
     def recommended_status_label(self) -> str:
@@ -299,6 +341,15 @@ class ManagerNeedSignalDecision:
     accepted: bool
     suspicious: bool
     issues: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class DemandStateDecision:
+    state: DemandState
+    state_label: str
+    reason_codes: tuple[str, ...]
+    reason_text: str
+    state_since: date | None = None
 
 
 @dataclass(frozen=True)
@@ -363,6 +414,325 @@ def decide_assortment_status(item: AssortmentLifecycleInput) -> AssortmentLifecy
             auto_order_allowed=False,
         )
     return decision
+
+
+def decide_target_assortment_status(
+    item: AssortmentLifecycleInput,
+    *,
+    demand_policy: DemandStatePolicy = DEFAULT_DEMAND_STATE_POLICY,
+) -> AssortmentLifecycleDecision:
+    """Return the accepted v2 shadow stage without mutating the v1 snapshot.
+
+    The target model deliberately separates demand interpretation from the
+    assortment stage.  It also uses an actual receipt, never cargo, for the
+    ``new_item`` boundary.  Rollout code decides whether this shadow result may
+    replace the current snapshot.
+    """
+
+    _require_nomenclature_code(item.nomenclature_code)
+    manual_status = _normalize_status(item.manual_status)
+    demand = decide_demand_state(item, policy=demand_policy)
+    if manual_status is not None:
+        return _with_demand(_manual_status_decision(item, manual_status), demand)
+
+    previous_status = _previous_status(item.previous_status)
+    first_receipt_at = item.first_receipt_at or (
+        min(item.receipt_dates) if item.receipt_dates else None
+    )
+    manual_review_required = False
+    blockers: tuple[str, ...] = ()
+    if item.first_supplier_order_at is None:
+        return _with_demand(
+            _decision(
+                item,
+                AssortmentStatus.FRUIT,
+                "product_created",
+                reason_text="Карточка создана, первого заказа поставщику ещё нет.",
+            ),
+            demand,
+        )
+    if first_receipt_at is None:
+        return _with_demand(
+            _decision(
+                item,
+                AssortmentStatus.NEWBORN,
+                "first_supplier_order_created",
+                reason_text=(
+                    "Первый заказ поставщику создан, фактического поступления на склад ещё нет."
+                ),
+                manual_review_required=item.has_need_signal,
+            ),
+            demand,
+        )
+    if item.first_sale_at is None:
+        return _with_demand(
+            _decision(
+                item,
+                AssortmentStatus.NEW_ITEM,
+                "first_receipt_registered",
+                reason_text=(
+                    f"Первое фактическое поступление зарегистрировано {first_receipt_at:%d.%m.%Y}; "
+                    "продаж ещё не было."
+                ),
+            ),
+            demand,
+        )
+
+    if demand.state is DemandState.NO_DATA:
+        preserved = (
+            previous_status
+            if previous_status
+            in {AssortmentStatus.SALES_START, AssortmentStatus.SALE, AssortmentStatus.WORKING}
+            else AssortmentStatus.SALES_START
+        )
+        return _with_demand(
+            _decision(
+                item,
+                preserved,
+                "demand_data_missing",
+                reason_text=(
+                    "Продажа зарегистрирована, но обязательные данные спроса неполны; "
+                    "автоматический переход заблокирован."
+                ),
+                manual_review_required=True,
+                auto_order_allowed=preserved
+                in {AssortmentStatus.SALE, AssortmentStatus.WORKING},
+                blockers=("demand_data_missing",),
+            ),
+            demand,
+        )
+
+    if demand.state is DemandState.GROWING:
+        status = AssortmentStatus.SALE
+        reason_code = "sustained_demand_growth"
+        reason_text = "Устойчивый распределённый рост подтверждён повторными расчётами."
+    elif demand.state in {DemandState.STABLE, DemandState.DECLINING}:
+        status = AssortmentStatus.WORKING
+        reason_code = (
+            "confirmed_demand_stable"
+            if demand.state is DemandState.STABLE
+            else "confirmed_demand_declining"
+        )
+        reason_text = (
+            "Спрос подтверждён, устойчивого роста сейчас нет."
+            if demand.state is DemandState.STABLE
+            else "Спрос подтверждён и снижается при доказанном наличии товара."
+        )
+    elif demand.state is DemandState.SHORTAGE_LIMITED:
+        status = (
+            previous_status
+            if previous_status in {AssortmentStatus.SALE, AssortmentStatus.WORKING}
+            else AssortmentStatus.SALES_START
+        )
+        reason_code = "demand_limited_by_shortage"
+        reason_text = "Спрос искажён дефицитом; активную стадию автоматически не понижаем."
+        manual_review_required = True
+    elif demand.state is DemandState.NO_SALES and previous_status in {
+        AssortmentStatus.SALE,
+        AssortmentStatus.WORKING,
+    }:
+        status = previous_status
+        reason_code = "no_recent_sales_keep_active_stage"
+        reason_text = "В окнах нет продаж; активную стадию сохраняем до отдельного решения."
+    else:
+        status = (
+            previous_status
+            if demand.state is DemandState.SPIKE
+            and previous_status in {AssortmentStatus.SALE, AssortmentStatus.WORKING}
+            else AssortmentStatus.SALES_START
+        )
+        reason_code = (
+            "demand_spike_unconfirmed"
+            if demand.state is DemandState.SPIKE
+            else "initial_demand"
+        )
+        reason_text = (
+            "Зафиксирован всплеск, но устойчивость роста ещё не подтверждена."
+            if demand.state is DemandState.SPIKE
+            else "Продажи начались, но спрос ещё недостаточно устойчив."
+        )
+        manual_review_required = demand.state is DemandState.SPIKE
+
+    decision = _decision(
+        item,
+        status,
+        reason_code,
+        reason_text=reason_text,
+        auto_order_allowed=status in {AssortmentStatus.SALE, AssortmentStatus.WORKING},
+        manual_review_required=manual_review_required,
+        blockers=blockers,
+    )
+    return _with_demand(decision, demand)
+
+
+def decide_demand_state(
+    item: AssortmentLifecycleInput,
+    *,
+    policy: DemandStatePolicy = DEFAULT_DEMAND_STATE_POLICY,
+) -> DemandStateDecision:
+    """Classify demand independently from the assortment stage."""
+
+    sales = tuple(
+        _to_optional_decimal(value)
+        for value in (item.sales_qty_short, item.sales_qty_medium, item.sales_qty_long)
+    )
+    if any(value is None for value in sales):
+        return _demand_state_decision(
+            DemandState.NO_DATA,
+            "demand_windows_missing",
+            "Не переданы все обязательные окна продаж 30/90/180 дней.",
+        )
+    short, medium, long = (value or Decimal("0") for value in sales)
+    if short == medium == long == 0:
+        return _demand_state_decision(
+            DemandState.NO_SALES,
+            "sales_zero_confirmed",
+            "Во всех окнах подтверждено отсутствие продаж.",
+        )
+
+    rate_short = _soft_availability_rate(
+        short, DEMAND_WINDOW_SHORT_DAYS, item.days_in_sale_short
+    )
+    rate_medium = _soft_availability_rate(
+        medium, DEMAND_WINDOW_MEDIUM_DAYS, item.days_in_sale_medium
+    )
+    rate_long = _soft_availability_rate(long, DEMAND_WINDOW_LONG_DAYS, item.days_in_sale_long)
+    declining = (
+        rate_short * policy.decline_multiplier <= rate_medium
+        and rate_medium * policy.decline_multiplier <= rate_long
+    )
+    confirmed_demand = long >= policy.confirmed_sales_qty_180
+    if declining and confirmed_demand:
+        days_on_shelf = _to_optional_decimal(item.days_in_sale_medium)
+        if days_on_shelf is None or days_on_shelf < policy.decline_min_days_in_sale_90:
+            return _demand_state_decision(
+                DemandState.SHORTAGE_LIMITED,
+                "decline_without_proven_availability",
+                "Продажи снижаются, но достаточное наличие товара не доказано.",
+            )
+        return _demand_state_decision(
+            DemandState.DECLINING,
+            "confirmed_decline_with_availability",
+            "Продажи снижаются три окна подряд при доказанном наличии товара.",
+        )
+
+    accelerating = (
+        rate_short > 0 and rate_short >= rate_medium * policy.growth_multiplier
+    )
+    if accelerating:
+        distribution_complete = all(
+            value is not None
+            for value in (
+                item.sales_active_days_short,
+                item.sales_document_count_short,
+                item.sales_customer_count_short,
+                item.sales_point_count_short,
+                _to_optional_decimal(item.sales_max_day_share_short),
+            )
+        )
+        concentrated = not distribution_complete or any(
+            (value or 0) < policy.min_independent_sales
+            for value in (
+                item.sales_active_days_short,
+                item.sales_document_count_short,
+                item.sales_customer_count_short,
+                item.sales_point_count_short,
+            )
+        )
+        max_day_share = _to_optional_decimal(item.sales_max_day_share_short)
+        if max_day_share is not None and max_day_share > policy.max_single_day_share:
+            concentrated = True
+        previous_state = _normalize_demand_state(item.previous_demand_state)
+        held_days = (
+            (item.as_of - item.demand_state_since).days
+            if item.as_of is not None and item.demand_state_since is not None
+            else 0
+        )
+        sustained = (
+            previous_state in {DemandState.SPIKE, DemandState.GROWING}
+            and held_days >= policy.confirmation_days
+            and item.previous_demand_state_at is not None
+            and item.as_of is not None
+            and (item.as_of - item.previous_demand_state_at).days <= 1
+        )
+        if confirmed_demand and sustained and not concentrated:
+            return _demand_state_decision(
+                DemandState.GROWING,
+                "sustained_distributed_growth",
+                "Ускорение подтверждено по времени и распределено между независимыми продажами.",
+                state_since=item.demand_state_since,
+            )
+        codes = ["short_term_acceleration"]
+        if not distribution_complete:
+            codes.append("sales_distribution_missing")
+        elif concentrated:
+            codes.append("sales_concentrated")
+        if not sustained:
+            codes.append("growth_confirmation_pending")
+        return DemandStateDecision(
+            state=DemandState.SPIKE,
+            state_label=DEMAND_STATE_LABELS[DemandState.SPIKE],
+            reason_codes=tuple(codes),
+            reason_text="Краткосрочное ускорение есть, но устойчивый рост ещё не доказан.",
+            state_since=(
+                item.demand_state_since
+                if previous_state is DemandState.SPIKE
+                else item.as_of
+            ),
+        )
+
+    if not confirmed_demand:
+        return _demand_state_decision(
+            DemandState.INITIAL,
+            "demand_history_insufficient",
+            "Продажи есть, но подтверждённого объёма спроса пока недостаточно.",
+        )
+    return _demand_state_decision(
+        DemandState.STABLE,
+        "confirmed_demand_without_growth",
+        "Спрос подтверждён, устойчивого роста или падения сейчас нет.",
+    )
+
+
+def _demand_state_decision(
+    state: DemandState,
+    reason_code: str,
+    reason_text: str,
+    *,
+    state_since: date | None = None,
+) -> DemandStateDecision:
+    return DemandStateDecision(
+        state=state,
+        state_label=DEMAND_STATE_LABELS[state],
+        reason_codes=(reason_code,),
+        reason_text=reason_text,
+        state_since=state_since,
+    )
+
+
+def _with_demand(
+    decision: AssortmentLifecycleDecision,
+    demand: DemandStateDecision,
+) -> AssortmentLifecycleDecision:
+    return replace(
+        decision,
+        demand_state=demand.state,
+        demand_state_label=demand.state_label,
+        demand_reason_codes=demand.reason_codes,
+        demand_reason_text=demand.reason_text,
+        demand_state_since=demand.state_since,
+    )
+
+
+def _normalize_demand_state(value: DemandState | str | None) -> DemandState | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, DemandState):
+        return value
+    try:
+        return DemandState(str(value).strip())
+    except ValueError:
+        return None
 
 
 def _decide_by_events(item: AssortmentLifecycleInput) -> AssortmentLifecycleDecision:

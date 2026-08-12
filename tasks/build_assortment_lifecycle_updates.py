@@ -24,9 +24,15 @@ from app.services.assortment_lifecycle import (
     build_status_property_update_rows,
     classify_expensive_profile,
     decide_assortment_status,
+    decide_target_assortment_status,
     decide_commercial_marks,
     systemic_sales_point_codes,
     validate_manager_need_signal,
+)
+from app.services.assortment_lifecycle_v2_policy import (
+    DEFAULT_ASSORTMENT_LIFECYCLE_V2_POLICY_PATH,
+    AssortmentLifecycleV2Policy,
+    load_assortment_lifecycle_v2_policy,
 )
 from app.services.exporters.ut103_exchange import load_ut103_env_file, resolve_ut103_exchange_root
 from app.services.exporters.ut103_nomenclature_properties import (
@@ -53,12 +59,15 @@ def main() -> int:
             "use pricing-service classification output"
         )
     records = _load_records(args.input_json)
+    v2_policy = load_assortment_lifecycle_v2_policy(args.v2_policy_json)
     rows, items = build_updates_from_records(
         records,
         folder_filter=args.folder,
         changed_at=args.changed_at,
         source=args.source,
         suspicious_quantity_threshold=args.suspicious_quantity_threshold,
+        model_version=args.model_version,
+        v2_policy=v2_policy,
     )
     message_id = args.message_id or (
         f"assortment-lifecycle-{datetime.now().strftime('%Y%m%d%H%M%S')}"
@@ -114,15 +123,25 @@ def build_updates_from_records(
     changed_at: date | None = None,
     source: str = DEFAULT_TASK_SOURCE,
     suspicious_quantity_threshold: Decimal | int | str | None = None,
+    model_version: str = "v1",
+    v2_policy: AssortmentLifecycleV2Policy | None = None,
 ) -> tuple[list[NomenclaturePropertyUpdateRow], list[dict[str, Any]]]:
+    v2_policy = v2_policy or load_assortment_lifecycle_v2_policy()
     rows: list[NomenclaturePropertyUpdateRow] = []
     summaries: list[dict[str, Any]] = []
     for record in records:
         if folder_filter and not _matches_folder(record, folder_filter):
             continue
         lifecycle_input = _lifecycle_input_from_record(record)
-        status_decision = decide_assortment_status(lifecycle_input)
-        status_decision = _fact_status_decision_from_record(record, status_decision)
+        legacy_decision = decide_assortment_status(lifecycle_input)
+        legacy_decision = _fact_status_decision_from_record(record, legacy_decision)
+        target_decision = decide_target_assortment_status(
+            lifecycle_input,
+            demand_policy=v2_policy.demand,
+        )
+        if model_version not in {"v1", "v2-shadow", "v2-live"}:
+            raise ValueError(f"unsupported assortment lifecycle model: {model_version}")
+        status_decision = target_decision if model_version == "v2-live" else legacy_decision
         commercial_decision = decide_commercial_marks(_commercial_marks_input_from_record(record))
         profile_decision = _profile_decision_from_record(record)
         sales_point_codes = systemic_sales_point_codes(_warehouses_from_record(record))
@@ -167,6 +186,9 @@ def build_updates_from_records(
                 sales_point_codes,
                 signal_summaries,
                 export_blockers,
+                legacy_decision=legacy_decision,
+                target_decision=target_decision,
+                model_version=model_version,
             )
         )
     return rows, summaries
@@ -185,6 +207,17 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--mode", choices=("dry_run", "apply"), default="dry_run")
     parser.add_argument("--approved-by", default="", help="Required for apply mode")
     parser.add_argument("--source", default=DEFAULT_TASK_SOURCE)
+    parser.add_argument(
+        "--model-version",
+        choices=("v1", "v2-shadow", "v2-live"),
+        default="v1",
+        help="v2-shadow adds target fields but keeps the persisted v1 stage",
+    )
+    parser.add_argument(
+        "--v2-policy-json",
+        type=Path,
+        default=DEFAULT_ASSORTMENT_LIFECYCLE_V2_POLICY_PATH,
+    )
     parser.add_argument("--changed-at", type=_parse_date, default=None)
     parser.add_argument("--suspicious-quantity-threshold", default=None)
     parser.add_argument("--output-json", type=Path, help="Write rows JSON for export task")
@@ -251,6 +284,8 @@ def _lifecycle_input_from_record(record: dict[str, Any]) -> AssortmentLifecycleI
         receipt_dates=_date_tuple(
             _optional_field(record, "receipt_dates", "ReceiptDates", default=[])
         ),
+        first_receipt_at=_optional_date_field(record, "first_receipt_at", "FirstReceiptAt"),
+        last_receipt_at=_optional_date_field(record, "last_receipt_at", "LastReceiptAt"),
         first_sale_at=_optional_date_field(record, "first_sale_at", "FirstSaleAt"),
         last_sale_at=_optional_date_field(record, "last_sale_at", "LastSaleAt"),
         # Дата расчёта приходит из факта (сборщик проставляет as_of при выгрузке).
@@ -274,6 +309,30 @@ def _lifecycle_input_from_record(record: dict[str, Any]) -> AssortmentLifecycleI
             record, "days_in_sale_long", "DaysInSaleLong", default=None
         ),
         previous_status=_optional_field(record, "previous_status", "PreviousStatus", default=None),
+        previous_demand_state=_optional_field(
+            record, "previous_demand_state", "PreviousDemandState", default=None
+        ),
+        demand_state_since=_optional_date_field(
+            record, "demand_state_since", "DemandStateSince"
+        ),
+        previous_demand_state_at=_optional_date_field(
+            record, "previous_demand_state_at", "PreviousDemandStateAt"
+        ),
+        sales_active_days_short=_optional_int_field(
+            record, "sales_active_days_short", "SalesActiveDaysShort"
+        ),
+        sales_document_count_short=_optional_int_field(
+            record, "sales_document_count_short", "SalesDocumentCountShort"
+        ),
+        sales_customer_count_short=_optional_int_field(
+            record, "sales_customer_count_short", "SalesCustomerCountShort"
+        ),
+        sales_point_count_short=_optional_int_field(
+            record, "sales_point_count_short", "SalesPointCountShort"
+        ),
+        sales_max_day_share_short=_optional_field(
+            record, "sales_max_day_share_short", "SalesMaxDayShareShort", default=None
+        ),
         has_need_signal=_bool_field(record, "has_need_signal", "HasNeedSignal", default=False),
         working_confirmed_by_folder_responsible=_bool_field(
             record,
@@ -580,6 +639,10 @@ def _item_summary(
     sales_point_codes: tuple[str, ...],
     signal_summaries: list[dict[str, Any]],
     export_blockers: tuple[str, ...],
+    *,
+    legacy_decision: AssortmentLifecycleDecision,
+    target_decision: AssortmentLifecycleDecision,
+    model_version: str,
 ) -> dict[str, Any]:
     summary = {
         "nomenclature_code": status_decision.nomenclature_code,
@@ -603,6 +666,21 @@ def _item_summary(
         "commercial_marks": [mark.value for mark in commercial_decision.commercial_marks],
         "commercial_mark_labels": list(commercial_decision.commercial_mark_labels),
         "commercial_mark_blockers": list(commercial_decision.blockers),
+        "classification_model": model_version,
+        "legacy_status": legacy_decision.status.value,
+        "legacy_status_label": legacy_decision.status_label,
+        "target_status": target_decision.status.value,
+        "target_status_label": target_decision.status_label,
+        "stage_changed_in_target": legacy_decision.status != target_decision.status,
+        "demand_state": (
+            target_decision.demand_state.value if target_decision.demand_state else None
+        ),
+        "demand_state_label": target_decision.demand_state_label,
+        "demand_reason_codes": list(target_decision.demand_reason_codes),
+        "demand_reason_text": target_decision.demand_reason_text,
+        "demand_state_since": _json_value(target_decision.demand_state_since),
+        "target_reason_codes": list(target_decision.reason_codes),
+        "target_reason_text": target_decision.reason_text,
     }
     if commercial_decision.exclusive_kind or "exclusive" in summary["commercial_marks"]:
         summary["exclusive_kind"] = commercial_decision.exclusive_kind
@@ -720,6 +798,13 @@ def _optional_field(item: dict[str, Any], *names: str, default: Any = None) -> A
 def _optional_date_field(item: dict[str, Any], *names: str) -> date | None:
     value = _optional_field(item, *names, default=None)
     return _optional_date_from_value(value)
+
+
+def _optional_int_field(item: dict[str, Any], *names: str) -> int | None:
+    value = _optional_field(item, *names, default=None)
+    if value in (None, ""):
+        return None
+    return int(value)
 
 
 def _optional_date_from_value(value: Any) -> date | None:

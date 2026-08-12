@@ -7,13 +7,15 @@ def test_build_snapshot_captures_key_fields() -> None:
     records = [{"nomenclature_code": "A"}]
     snapshot = build_snapshot(records)
     assert snapshot["A"]["status"] == "fruit"
-    assert set(snapshot["A"]) == {
+    assert {
         "status",
         "auto_order_allowed",
         "blockers",
         "manual_review_required",
         "recommended_status",
-    }
+    }.issubset(snapshot["A"])
+    assert snapshot["A"]["demand_state"] is None
+    assert snapshot["A"]["first_receipt_at"] is None
 
 
 def test_fact_overlay_changes_status_and_audit_detects_it() -> None:

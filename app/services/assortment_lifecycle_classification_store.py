@@ -4,13 +4,15 @@ import hashlib
 import json
 from collections import Counter
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
+from decimal import Decimal, InvalidOperation
 from typing import Any, Mapping, Sequence
 
 from sqlalchemy import (
     JSON,
     Boolean,
     Column,
+    Date,
     DateTime,
     ForeignKey,
     Integer,
@@ -18,6 +20,8 @@ from sqlalchemy import (
     String,
     Table,
     Text,
+    Numeric,
+    UniqueConstraint,
     func,
     insert,
     inspect,
@@ -55,6 +59,17 @@ ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE = Table(
     Column("status", String(64), nullable=False),
     Column("status_label", String(128), nullable=False),
     Column("recommended_status", String(64), nullable=True),
+    Column("classification_model", String(32), nullable=False, default="v1"),
+    Column("legacy_status", String(64), nullable=False, default=""),
+    Column("target_status", String(64), nullable=False, default=""),
+    Column("target_status_label", String(128), nullable=False, default=""),
+    Column("target_reason_codes", JSON, nullable=False, default=list),
+    Column("target_reason_text", Text, nullable=False, default=""),
+    Column("demand_state", String(32), nullable=True),
+    Column("demand_state_label", String(64), nullable=False, default=""),
+    Column("demand_reason_codes", JSON, nullable=False, default=list),
+    Column("demand_reason_text", Text, nullable=False, default=""),
+    Column("demand_state_since", Date, nullable=True),
     Column("reason_codes", JSON, nullable=False, default=list),
     Column("reason_text", Text, nullable=False, default=""),
     Column("blockers", JSON, nullable=False, default=list),
@@ -88,6 +103,11 @@ ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE = Table(
     Column("quality_normalized", String(128), nullable=False, default=""),
     Column("characteristic_values", JSON, nullable=False, default=dict),
     Column("price_segment", String(64), nullable=False, default=""),
+    Column("inventory_cost_per_unit", Numeric(18, 4), nullable=True),
+    Column("cost_quartile", String(8), nullable=False, default=""),
+    Column("comparable_group_key", Text, nullable=False, default=""),
+    Column("cost_group_sample_size", Integer, nullable=False, default=0),
+    Column("minimum_representation_qty", Integer, nullable=True),
     Column("data_quality_score", String(16), nullable=False, default=""),
     Column("missing_required_attributes", JSON, nullable=False, default=list),
     Column("future_ka_mapping_status", String(32), nullable=False, default=""),
@@ -101,6 +121,20 @@ ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE = Table(
     Column("demand_method_confidence", String(16), nullable=False, default=""),
     Column("sales_point_warehouse_codes", JSON, nullable=False, default=list),
     Column("manager_need_signals", JSON, nullable=False, default=list),
+    Column("first_receipt_at", Date, nullable=True),
+    Column("last_receipt_at", Date, nullable=True),
+    Column("history_age_days", Integer, nullable=True),
+    Column("first_observed_stock_at", Date, nullable=True),
+    Column("observation_from", Date, nullable=True),
+    Column("observation_to", Date, nullable=True),
+    Column("first_sale_at", Date, nullable=True),
+    Column("last_sale_at", Date, nullable=True),
+    Column("sales_qty_short", Numeric(28, 3), nullable=True),
+    Column("sales_qty_medium", Numeric(28, 3), nullable=True),
+    Column("sales_qty_long", Numeric(28, 3), nullable=True),
+    Column("days_in_sale_short", Numeric(28, 3), nullable=True),
+    Column("days_in_sale_medium", Numeric(28, 3), nullable=True),
+    Column("days_in_sale_long", Numeric(28, 3), nullable=True),
     Column("source_record", JSON, nullable=False, default=dict),
     Column("source_hash", String(64), nullable=False),
     Column("source", String(64), nullable=False),
@@ -113,6 +147,27 @@ ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE = Table(
     ),
     Column("created_at", DateTime, nullable=False, server_default=func.now()),
     Column("updated_at", DateTime, nullable=False, server_default=func.now(), onupdate=func.now()),
+)
+
+ASSORTMENT_LIFECYCLE_HISTORY_TABLE = Table(
+    "assortment_lifecycle_classification_history",
+    ASSORTMENT_LIFECYCLE_METADATA,
+    Column("id", Integer, primary_key=True, autoincrement=True),
+    Column(
+        "run_id",
+        Integer,
+        ForeignKey("assortment_lifecycle_classification_run.id", ondelete="CASCADE"),
+        nullable=False,
+    ),
+    Column("nomenclature_code", String(64), nullable=False),
+    Column("status", String(64), nullable=False),
+    Column("target_status", String(64), nullable=False, default=""),
+    Column("demand_state", String(32), nullable=True),
+    Column("source_hash", String(64), nullable=False),
+    Column("snapshot", JSON, nullable=False),
+    Column("classified_at", DateTime, nullable=False),
+    Column("created_at", DateTime, nullable=False, server_default=func.now()),
+    UniqueConstraint("run_id", "nomenclature_code", name="uq_assortment_lifecycle_history_run_sku"),
 )
 
 
@@ -158,6 +213,17 @@ def build_classification_rows(
                 "status": str(summary.get("status") or ""),
                 "status_label": str(summary.get("status_label") or ""),
                 "recommended_status": summary.get("recommended_status"),
+                "classification_model": str(summary.get("classification_model") or "v1"),
+                "legacy_status": str(summary.get("legacy_status") or ""),
+                "target_status": str(summary.get("target_status") or ""),
+                "target_status_label": str(summary.get("target_status_label") or ""),
+                "target_reason_codes": _json_list(summary.get("target_reason_codes")),
+                "target_reason_text": str(summary.get("target_reason_text") or ""),
+                "demand_state": summary.get("demand_state"),
+                "demand_state_label": str(summary.get("demand_state_label") or ""),
+                "demand_reason_codes": _json_list(summary.get("demand_reason_codes")),
+                "demand_reason_text": str(summary.get("demand_reason_text") or ""),
+                "demand_state_since": _value_date(summary.get("demand_state_since")),
                 "reason_codes": _json_list(summary.get("reason_codes")),
                 "reason_text": str(summary.get("reason_text") or ""),
                 "blockers": _json_list(summary.get("blockers")),
@@ -203,6 +269,19 @@ def build_classification_rows(
                 "quality_normalized": _source_text(source_record, "quality_normalized"),
                 "characteristic_values": _json_object(source_record.get("characteristic_values")),
                 "price_segment": _source_text(source_record, "price_segment"),
+                "inventory_cost_per_unit": _source_decimal(
+                    source_record, "inventory_cost_per_unit"
+                ),
+                "cost_quartile": _source_text(source_record, "cost_quartile"),
+                "comparable_group_key": _source_text(
+                    source_record, "comparable_group_key"
+                ),
+                "cost_group_sample_size": _source_int(
+                    source_record, "cost_group_sample_size", default=0
+                ),
+                "minimum_representation_qty": _source_int(
+                    source_record, "minimum_representation_qty", default=None
+                ),
                 "data_quality_score": _source_text(source_record, "data_quality_score"),
                 "missing_required_attributes": _json_list(
                     source_record.get("missing_required_attributes")
@@ -238,6 +317,22 @@ def build_classification_rows(
                     summary.get("sales_point_warehouse_codes")
                 ),
                 "manager_need_signals": _json_list(summary.get("manager_need_signals")),
+                "first_receipt_at": _source_date(source_record, "first_receipt_at"),
+                "last_receipt_at": _source_date(source_record, "last_receipt_at"),
+                "history_age_days": _source_int(source_record, "history_age_days", default=None),
+                "first_observed_stock_at": _source_date(
+                    source_record, "first_observed_stock_at"
+                ),
+                "observation_from": _source_date(source_record, "observation_from"),
+                "observation_to": _source_date(source_record, "observation_to"),
+                "first_sale_at": _source_date(source_record, "first_sale_at"),
+                "last_sale_at": _source_date(source_record, "last_sale_at"),
+                "sales_qty_short": _source_decimal(source_record, "sales_qty_short"),
+                "sales_qty_medium": _source_decimal(source_record, "sales_qty_medium"),
+                "sales_qty_long": _source_decimal(source_record, "sales_qty_long"),
+                "days_in_sale_short": _source_decimal(source_record, "days_in_sale_short"),
+                "days_in_sale_medium": _source_decimal(source_record, "days_in_sale_medium"),
+                "days_in_sale_long": _source_decimal(source_record, "days_in_sale_long"),
                 "source_record": source_record,
                 "source_hash": _source_hash(source_record),
                 "source": source,
@@ -260,6 +355,14 @@ def build_classification_summary(rows: Sequence[Mapping[str, Any]]) -> dict[str,
         "manual_review_required": sum(1 for row in rows if row.get("manual_review_required")),
         "export_blocked": sum(1 for row in rows if row.get("export_blockers")),
         "auto_order_allowed": sum(1 for row in rows if row.get("auto_order_allowed")),
+        "demand_states": dict(
+            sorted(Counter(str(row.get("demand_state") or "no_data") for row in rows).items())
+        ),
+        "target_status_changes": sum(
+            1
+            for row in rows
+            if row.get("target_status") and row.get("legacy_status") != row.get("target_status")
+        ),
         "feature_snapshot_ready": sum(
             1 for row in rows if row.get("future_ka_mapping_status") == "ready"
         ),
@@ -316,6 +419,38 @@ def fetch_previous_statuses(
     return result
 
 
+def fetch_previous_demand_states(
+    engine: Engine,
+    *,
+    nomenclature_codes: Sequence[str] = (),
+) -> dict[str, dict[str, Any]]:
+    if not inspect(engine).has_table(ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.name):
+        return {}
+    codes = [code for code in {str(value or "").strip() for value in nomenclature_codes} if code]
+    statement = select(
+        ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.nomenclature_code,
+        ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.demand_state,
+        ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.demand_state_since,
+        ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.classified_at,
+    )
+    if codes:
+        statement = statement.where(
+            ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.nomenclature_code.in_(codes)
+        )
+    result: dict[str, dict[str, Any]] = {}
+    with engine.connect() as connection:
+        for row in connection.execute(statement).mappings():
+            code = str(row.get("nomenclature_code") or "").strip()
+            state = str(row.get("demand_state") or "").strip()
+            if code and state:
+                result[code] = {
+                    "demand_state": state,
+                    "demand_state_since": row.get("demand_state_since"),
+                    "classified_at": row.get("classified_at"),
+                }
+    return result
+
+
 def _collect_previous_status(result: dict[str, str], row: Mapping[str, Any]) -> None:
     code = str(row.get("nomenclature_code") or "").strip()
     status = str(row.get("status") or "").strip()
@@ -365,6 +500,22 @@ def persist_classification_rows(
         run_id = int(run_result.inserted_primary_key[0])
         if row_values:
             values_with_run = [{**row, "last_run_id": run_id} for row in row_values]
+            conn.execute(
+                insert(ASSORTMENT_LIFECYCLE_HISTORY_TABLE),
+                [
+                    {
+                        "run_id": run_id,
+                        "nomenclature_code": str(row["nomenclature_code"]),
+                        "status": str(row["status"]),
+                        "target_status": str(row.get("target_status") or ""),
+                        "demand_state": row.get("demand_state"),
+                        "source_hash": str(row["source_hash"]),
+                        "snapshot": _json_safe_mapping(row),
+                        "classified_at": row["classified_at"],
+                    }
+                    for row in row_values
+                ],
+            )
             conn.execute(_upsert_classification_statement(engine, values_with_run))
 
     return AssortmentLifecycleClassificationResult(
@@ -441,3 +592,64 @@ def _source_text(source_record: Mapping[str, Any], *names: str) -> str:
         if value not in (None, ""):
             return str(value)
     return ""
+
+
+def _source_date(source_record: Mapping[str, Any], *names: str) -> date | None:
+    for name in names:
+        value = source_record.get(name)
+        if value in (None, ""):
+            continue
+        if isinstance(value, datetime):
+            return value.date()
+        if isinstance(value, date):
+            return value
+        try:
+            return date.fromisoformat(str(value).split("T", 1)[0])
+        except ValueError:
+            return None
+    return None
+
+
+def _value_date(value: Any) -> date | None:
+    if value in (None, ""):
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return date.fromisoformat(str(value).split("T", 1)[0])
+    except ValueError:
+        return None
+
+
+def _source_decimal(source_record: Mapping[str, Any], *names: str) -> Decimal | None:
+    for name in names:
+        value = source_record.get(name)
+        if value in (None, ""):
+            continue
+        try:
+            return Decimal(str(value).replace(" ", "").replace(",", "."))
+        except (InvalidOperation, ValueError):
+            return None
+    return None
+
+
+def _source_int(
+    source_record: Mapping[str, Any],
+    *names: str,
+    default: int | None,
+) -> int | None:
+    for name in names:
+        value = source_record.get(name)
+        if value in (None, ""):
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+    return default
+
+
+def _json_safe_mapping(value: Mapping[str, Any]) -> dict[str, Any]:
+    return json.loads(json.dumps(dict(value), ensure_ascii=False, default=str))

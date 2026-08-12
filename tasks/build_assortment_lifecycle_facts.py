@@ -10,7 +10,10 @@ from typing import Any
 
 from app.core.config import get_settings
 from app.infrastructure.db.engines import build_engine
-from app.services.assortment_lifecycle_classification_store import fetch_previous_statuses
+from app.services.assortment_lifecycle_classification_store import (
+    fetch_previous_demand_states,
+    fetch_previous_statuses,
+)
 from app.services.assortment_lifecycle_facts import (
     DEFAULT_HISTORY_MONTHS,
     DEMAND_WINDOWS_DAYS,
@@ -21,11 +24,18 @@ from app.services.assortment_lifecycle_facts import (
     default_history_start,
     enrich_nomenclature_rows_with_product_snapshot,
     fetch_first_sale_dates,
+    fetch_onec_item_inventory_costs,
     fetch_onec_lifecycle_source_rows,
+    fetch_receipt_date_bounds,
+    fetch_sales_distribution,
     fetch_sales_window_totals,
     normalize_manager_signals,
     normalize_manual_overrides,
     validate_warehouse_policy,
+)
+from app.services.assortment_lifecycle_v2_policy import (
+    DEFAULT_ASSORTMENT_LIFECYCLE_V2_POLICY_PATH,
+    load_assortment_lifecycle_v2_policy,
 )
 from app.services.exporters.ut103_exchange import load_ut103_env_file
 from app.services.onec_stock_availability import (
@@ -33,6 +43,7 @@ from app.services.onec_stock_availability import (
 )
 from app.services.onec_stock_availability import (
     attach_effective_availability_shadow_to_facts,
+    fetch_availability_observation_facts,
     fetch_days_in_sale_by_code,
     physical_sales_point_codes,
 )
@@ -50,13 +61,21 @@ def main() -> int:
     history_start = default_history_start(args.today, history_months=args.history_months)
     # Заполняется только при чтении из 1С; для готового --input-json даты первой
     # продажи берутся из самих записей, если они там уже есть.
-    first_sale_dates: dict[str, date] = {}
+    first_sale_dates: dict[str, tuple[date, date]] = {}
+    receipt_bounds: dict[str, tuple[date, date]] = {}
     sales_window_totals: dict[str, dict[int, Decimal]] = {}
+    sales_distribution: dict[str, dict[str, Any]] = {}
     days_in_sale_totals: dict[str, dict[int, Decimal]] = {}
     previous_statuses: dict[str, str] = {}
+    previous_demand_states: dict[str, dict[str, Any]] = {}
+    inventory_costs: dict[str, Decimal] = {}
+    observation_from: date | None = None
+    observation_to: date | None = None
+    first_observed_stock_dates: dict[str, date] = {}
     # Витрина наличия закрыта по вчерашний день — спрос меряем на ту же дату,
     # иначе последнее окно у продаж и у дней на полке разъедется.
     demand_date_to = (args.today or date.today()) - timedelta(days=1)
+    v2_policy = load_assortment_lifecycle_v2_policy(args.v2_policy_json)
 
     try:
         if args.input_json:
@@ -111,6 +130,20 @@ def main() -> int:
                     nomenclature_codes=codes,
                     date_to=demand_date_to,
                 )
+                receipt_bounds = fetch_receipt_date_bounds(
+                    engine,
+                    nomenclature_codes=codes,
+                    receipt_mapping=receipt_mapping,
+                )
+                sales_distribution = fetch_sales_distribution(
+                    engine,
+                    nomenclature_codes=codes,
+                    date_to=demand_date_to,
+                )
+                inventory_costs = fetch_onec_item_inventory_costs(
+                    engine,
+                    nomenclature_codes=codes,
+                )
             finally:
                 engine.dispose()
             product_engine = build_engine(settings.database_url, pool_pre_ping=True)
@@ -129,6 +162,16 @@ def main() -> int:
                     windows_days=DEMAND_WINDOWS_DAYS,
                 )
                 previous_statuses = fetch_previous_statuses(product_engine)
+                previous_demand_states = fetch_previous_demand_states(product_engine)
+                (
+                    observation_from,
+                    observation_to,
+                    first_observed_stock_dates,
+                ) = fetch_availability_observation_facts(
+                    product_engine,
+                    codes=codes,
+                    warehouse_codes=physical_sales_point_codes(warehouse_policy),
+                )
             finally:
                 product_engine.dispose()
     except ValueError as exc:
@@ -146,6 +189,7 @@ def main() -> int:
         nomenclature_rows=nomenclature_rows,
         supplier_order_rows=supplier_order_rows,
         receipt_rows=receipt_rows,
+        receipt_bounds=receipt_bounds,
         warehouse_policy=warehouse_policy,
         manual_overrides=manual_overrides,
         manager_signals=manager_signals,
@@ -153,8 +197,15 @@ def main() -> int:
         first_sale_dates=first_sale_dates,
         as_of=args.today or date.today(),
         sales_window_totals=sales_window_totals,
+        sales_distribution=sales_distribution,
         days_in_sale_totals=days_in_sale_totals,
         previous_statuses=previous_statuses,
+        previous_demand_states=previous_demand_states,
+        observation_from=observation_from,
+        observation_to=observation_to,
+        first_observed_stock_dates=first_observed_stock_dates,
+        inventory_costs=inventory_costs,
+        comparable_group_min_size=v2_policy.comparable_group_min_size,
     )
     if not args.input_json:
         product_engine = build_engine(settings.database_url, pool_pre_ping=True)
@@ -226,6 +277,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--receipt-mapping-json", type=Path)
     parser.add_argument("--manual-overrides-json", type=Path)
     parser.add_argument("--manager-signals-json", type=Path)
+    parser.add_argument(
+        "--v2-policy-json",
+        type=Path,
+        default=DEFAULT_ASSORTMENT_LIFECYCLE_V2_POLICY_PATH,
+    )
     parser.add_argument("--output-json", type=Path, default=DEFAULT_OUTPUT_PATH)
     parser.add_argument("--json", action="store_true", help="Print machine-readable summary")
     args = parser.parse_args()

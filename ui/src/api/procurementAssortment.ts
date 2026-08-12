@@ -361,6 +361,23 @@ export interface ProcurementLifecycleTransition {
   selectable: boolean;
   stale: boolean;
   created_at?: string | null;
+  demand_state?: string | null;
+  demand_state_label: string;
+  demand_reason_text: string;
+  first_receipt_at?: string | null;
+  last_receipt_at?: string | null;
+  history_age_days?: number | null;
+  first_sale_at?: string | null;
+  last_sale_at?: string | null;
+  sales_qty_short?: string | number | null;
+  sales_qty_medium?: string | number | null;
+  sales_qty_long?: string | number | null;
+  days_in_sale_short?: string | number | null;
+  days_in_sale_medium?: string | number | null;
+  days_in_sale_long?: string | number | null;
+  inventory_cost_per_unit?: string | number | null;
+  cost_quartile: string;
+  minimum_representation_qty?: number | null;
 }
 
 export interface ProcurementLifecycleTransitionList {

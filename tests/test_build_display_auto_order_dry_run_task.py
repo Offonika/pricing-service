@@ -108,6 +108,87 @@ def test_sales_totals_query_includes_90_and_30_day_trend_windows() -> None:
     assert "window_short_from" in sales_sql
 
 
+def test_v2_representation_floor_is_shadow_gated_and_uses_reliable_incoming_once() -> None:
+    item = {
+        "nomenclature_code": "RB-FLOOR",
+        "name": "Display floor",
+        "status": "sale",
+        "status_label": "Растим",
+        "demand_state": "growing",
+        "cost_quartile": "Q1",
+        "minimum_representation_qty": 13,
+        "quality_raw": "Original",
+    }
+    facts = {
+        "stock": {"RB-FLOOR": {"sellable_stock_qty": Decimal("4")}},
+        "reserve": {},
+        "incoming": {
+            "RB-FLOOR": {
+                "incoming_qty": Decimal("8"),
+                "pipeline_cargo_handoff_qty": Decimal("3"),
+            }
+        },
+        "sales": {"RB-FLOOR": {"sales_qty_window": Decimal("6")}},
+        "returns": {},
+    }
+    legacy = build_dry_run_rows(
+        [item],
+        facts=facts,
+        source_errors={},
+        target_days=30,
+        sales_window_days=180,
+        lifecycle_model_version="v1",
+    )[0]
+    shadow = build_dry_run_rows(
+        [item],
+        facts=facts,
+        source_errors={},
+        target_days=30,
+        sales_window_days=180,
+        lifecycle_model_version="v2-shadow",
+    )[0]
+
+    assert legacy["representation_floor_applied"] == ""
+    assert shadow["target_stock_qty"] == "13"
+    assert shadow["recommended_order_qty_raw"] == "6"
+    assert shadow["recommended_order_qty"] == "6"
+    assert shadow["reliable_incoming_qty"] == "3"
+    assert shadow["representation_floor_applied"] == "yes"
+
+
+def test_v2_representation_floor_skips_spike_q3_and_unknown_cost() -> None:
+    base = {
+        "name": "Display",
+        "status": "sale",
+        "status_label": "Растим",
+        "minimum_representation_qty": 13,
+        "quality_raw": "Original",
+    }
+    items = [
+        {**base, "nomenclature_code": "SPIKE", "demand_state": "spike", "cost_quartile": "Q1"},
+        {**base, "nomenclature_code": "Q3", "demand_state": "stable", "cost_quartile": "Q3"},
+        {**base, "nomenclature_code": "UNKNOWN", "demand_state": "stable", "cost_quartile": ""},
+    ]
+    rows = build_dry_run_rows(
+        items,
+        facts={
+            "stock": {},
+            "reserve": {},
+            "incoming": {},
+            "sales": {
+                code: {"sales_qty_window": Decimal("6")}
+                for code in ("SPIKE", "Q3", "UNKNOWN")
+            },
+            "returns": {},
+        },
+        source_errors={},
+        target_days=30,
+        sales_window_days=180,
+        lifecycle_model_version="v2-shadow",
+    )
+    assert all(row["representation_floor_applied"] == "" for row in rows)
+
+
 def test_display_auto_order_b2b_customer_demand_is_advisory_only() -> None:
     rows = build_dry_run_rows(
         [

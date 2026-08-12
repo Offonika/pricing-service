@@ -9,6 +9,7 @@ from sqlalchemy import create_engine, select
 
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
+    ASSORTMENT_LIFECYCLE_HISTORY_TABLE,
     ASSORTMENT_LIFECYCLE_METADATA,
     ASSORTMENT_LIFECYCLE_RUN_TABLE,
 )
@@ -144,10 +145,18 @@ def test_refresh_assortment_lifecycle_classification_task_upserts_current_rows(
             .all()
         )
         runs = conn.execute(select(ASSORTMENT_LIFECYCLE_RUN_TABLE)).mappings().all()
+        history = conn.execute(select(ASSORTMENT_LIFECYCLE_HISTORY_TABLE)).mappings().all()
     engine.dispose()
 
     assert len(rows) == 2
     assert len(runs) == 2
+    assert len(history) == 4
+    assert {(row["run_id"], row["nomenclature_code"]) for row in history} == {
+        (runs[0]["id"], "РБ0001"),
+        (runs[0]["id"], "РБ0002"),
+        (runs[1]["id"], "РБ0001"),
+        (runs[1]["id"], "РБ0002"),
+    }
     assert rows[0]["status"] == "working"
     assert rows[0]["recommended_status"] is None
     assert rows[0]["manual_review_required"] is False
@@ -212,6 +221,47 @@ def test_refresh_assortment_lifecycle_classification_task_dry_run_skips_db_write
     engine.dispose()
 
     assert count == 0
+
+
+def test_v2_live_is_fail_closed_until_versioned_policy_is_approved(tmp_path: Path) -> None:
+    facts_path = tmp_path / "facts.json"
+    facts_path.write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "nomenclature_code": "LIVE-BLOCKED",
+                        "name": "Дисплей",
+                        "folder_path": "Дисплеи",
+                        "warehouses": [],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tasks.refresh_assortment_lifecycle_classification",
+            "--facts-json",
+            str(facts_path),
+            "--database-url",
+            f"sqlite:///{tmp_path / 'live.db'}",
+            "--model-version",
+            "v2-live",
+            "--dry-run",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        cwd=PROJECT_ROOT,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "assortment_lifecycle_v2_live_not_approved" in result.stderr
 
 
 def test_refresh_assortment_lifecycle_classification_applies_fact_status_decisions(

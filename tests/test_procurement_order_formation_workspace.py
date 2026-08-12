@@ -414,7 +414,7 @@ def test_queue_starts_unselected_and_only_ready_rows_are_selectable(
     )
     assert review["current_status"] == "newborn"
     assert review["target_status"] is None
-    assert transition["reason"].startswith("Рекомендуется переход Новорожденный → Новинка.")
+    assert transition["reason"].startswith("Рекомендуется переход Заказали → Завезли.")
 
 
 def test_queue_filters_manual_reviews_and_opens_exact_proposal(

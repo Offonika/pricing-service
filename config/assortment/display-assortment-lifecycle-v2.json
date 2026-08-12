@@ -1,0 +1,44 @@
+{
+  "schema": "display_assortment_lifecycle_v2_policy.v1",
+  "live_enabled": false,
+  "shadow_policy": {
+    "policy_id": "display-shadow-x1.5-d14-i2-g8",
+    "demand": {
+      "growth_multiplier": 1.5,
+      "confirmation_days": 14,
+      "max_single_day_share": 0.7,
+      "min_independent_sales": 2,
+      "confirmed_sales_qty_180": 12,
+      "decline_multiplier": 1.2,
+      "decline_min_days_in_sale_90": 15
+    },
+    "comparable_group_min_size": 8,
+    "reliable_incoming_basis": "cargo_handoff"
+  },
+  "backtest_grid": {
+    "growth_multipliers": [1.2, 1.5, 2.0],
+    "confirmation_days": [7, 14, 21],
+    "max_single_day_shares": [0.5, 0.7, 0.8],
+    "min_independent_sales": [2, 3],
+    "comparable_group_min_sizes": [8, 12, 20],
+    "comparable_group_levels": [
+      "brand_quality_construction",
+      "quality_construction",
+      "quality",
+      "all_displays"
+    ]
+  },
+  "periods": {
+    "training_from": "2026-02-01",
+    "training_to": "2026-06-30",
+    "holdout_from": "2026-07-01",
+    "holdout_to": "2026-07-31"
+  },
+  "acceptance": {
+    "served_sales_not_worse": true,
+    "gross_profit_not_worse": true,
+    "economic_effect_non_negative": true,
+    "gmroi_not_worse": true,
+    "ending_excess_stock_not_worse": true
+  }
+}

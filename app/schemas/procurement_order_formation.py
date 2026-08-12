@@ -418,6 +418,23 @@ class ProcurementLifecycleTransitionRead(BaseModel):
     selectable: bool = False
     stale: bool = False
     created_at: datetime | None = None
+    demand_state: str | None = None
+    demand_state_label: str = ""
+    demand_reason_text: str = ""
+    first_receipt_at: date | None = None
+    last_receipt_at: date | None = None
+    history_age_days: int | None = None
+    first_sale_at: date | None = None
+    last_sale_at: date | None = None
+    sales_qty_short: Decimal | None = None
+    sales_qty_medium: Decimal | None = None
+    sales_qty_long: Decimal | None = None
+    days_in_sale_short: Decimal | None = None
+    days_in_sale_medium: Decimal | None = None
+    days_in_sale_long: Decimal | None = None
+    inventory_cost_per_unit: Decimal | None = None
+    cost_quartile: str = ""
+    minimum_representation_qty: int | None = None
 
 
 class ProcurementLifecycleTransitionList(BaseModel):

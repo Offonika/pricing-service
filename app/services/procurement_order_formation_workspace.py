@@ -65,20 +65,21 @@ DISPLAY_FOLDER = "дисплеи"
 DISPLAY_RESPONSIBLE_NAME = "Омар"
 LIFECYCLE_ORDER = ("fruit", "newborn", "new_item", "sales_start", "sale", "working")
 LIFECYCLE_LABELS = {
-    "fruit": "Плод",
-    "newborn": "Новорожденный",
-    "newborn_need": "ДН / Добор новорождённого",
-    "new_item": "Новинка",
-    "sales_start": "СП / Старт продаж",
-    "sale": "ПРОДАЖА",
-    "working": "Рабочий",
-    "review": "Review / разбор",
+    "fruit": "Рассматриваем",
+    "newborn": "Заказали",
+    "newborn_need": "Заказали + Добираем",
+    "new_item": "Завезли",
+    "sales_start": "Пошли продажи",
+    "sale": "Растим",
+    "working": "Поддерживаем",
+    "review": "На разборе",
 }
 MANUAL_STATUS_ORDER = (
     "matrix",
     "on_demand",
     "replace_candidate",
     "nonliquid",
+    "pension",
     "do_not_order",
     "review",
 )
@@ -86,7 +87,8 @@ MANUAL_STATUS_LABELS = {
     "matrix": "Матричный",
     "on_demand": "Под заказ",
     "replace_candidate": "Кандидат на замену",
-    "nonliquid": "Кандидат на неликвид",
+    "nonliquid": "Выводим",
+    "pension": "Допродаём",
     "do_not_order": "Не закупать",
     "review": "Review / разбор",
 }
@@ -1285,6 +1287,7 @@ def _transition_candidate(
 ) -> dict[str, Any] | None:
     source = dict(row.get("source_record") or {})
     row_status = normalize_status(row.get("status")) or str(row.get("status") or "")
+    classification_model = str(row.get("classification_model") or "v1")
     manual_status = normalize_status(
         source.get("manual_status")
         or source.get("ManualStatus")
@@ -1295,6 +1298,14 @@ def _transition_candidate(
     current_status = manual_status or row_status
     target_status = normalize_status(row.get("recommended_status"))
     reason = str(row.get("reason_text") or "")
+
+    if classification_model == "v2-live" and manual_status is None:
+        current_status = (
+            normalize_status(source.get("previous_status"))
+            or normalize_status(row.get("legacy_status"))
+            or row_status
+        )
+        target_status = row_status if row_status != current_status else None
 
     if row_status == "newborn_need":
         action_kind = "review"
@@ -1332,12 +1343,19 @@ def _transition_candidate(
         for item in list(row.get("blockers") or []) + list(row.get("export_blockers") or [])
         if str(item) not in {"ut103_export_blocked", "fact_status_decision_requires_1c_approval"}
     ]
-    if action_kind == "transition" and not product_guid:
+    if (
+        action_kind == "transition"
+        and not product_guid
+        and classification_model != "v2-live"
+    ):
         blockers.append("catalog_guid_missing")
     facts = {
         "reason_codes": list(row.get("reason_codes") or []),
         "source": row.get("source"),
         "classified_at": _jsonable(row.get("classified_at")),
+        "classification_model": classification_model,
+        "demand_state": row.get("demand_state"),
+        "demand_reason_codes": list(row.get("demand_reason_codes") or []),
         "evidence": dict((source.get("fact_status_decision") or {}).get("evidence") or {}),
     }
     run_id = int(run["id"])
@@ -1375,6 +1393,20 @@ def _is_automatic_lifecycle_transition(
     row: Mapping[str, Any],
     candidate: Mapping[str, Any],
 ) -> bool:
+    if str(row.get("classification_model") or "") == "v2-live":
+        source = dict(row.get("source_record") or {})
+        manual_status = normalize_status(
+            source.get("manual_status")
+            or source.get("ManualStatus")
+            or source.get("current_status")
+            or source.get("assortment_status")
+        )
+        return (
+            manual_status is None
+            and candidate.get("action_kind") == "transition"
+            and candidate.get("target_status") in LIFECYCLE_ORDER
+            and not candidate.get("blockers")
+        )
     if candidate.get("current_status") != "fruit" or candidate.get("target_status") != "newborn":
         return False
     reason_codes = {str(item) for item in row.get("reason_codes") or []}
@@ -1501,11 +1533,11 @@ def _serialize_snapshot_row(
         "action_kind": "view",
         "current_status": status_code,
         "current_status_label": _status_label(status_code),
-        "target_status": None,
-        "target_status_label": None,
+        "target_status": str(row.get("target_status") or "") or None,
+        "target_status_label": str(row.get("target_status_label") or "") or None,
         "proposal_status": "snapshot",
         "reason": str(row.get("reason_text") or ""),
-        "facts": {"reason_codes": list(row.get("reason_codes") or [])},
+        "facts": _lifecycle_explanation_facts(row),
         "blockers": list(row.get("blockers") or []),
         "risk_codes": list(row.get("reason_codes") or []),
         "run_id": run_id,
@@ -1518,6 +1550,37 @@ def _serialize_snapshot_row(
         "selectable": False,
         "stale": False,
         "created_at": row.get("classified_at"),
+        **_lifecycle_explanation_fields(row),
+    }
+
+
+def _lifecycle_explanation_fields(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "demand_state": row.get("demand_state"),
+        "demand_state_label": str(row.get("demand_state_label") or ""),
+        "demand_reason_text": str(row.get("demand_reason_text") or ""),
+        "first_receipt_at": row.get("first_receipt_at"),
+        "last_receipt_at": row.get("last_receipt_at"),
+        "history_age_days": row.get("history_age_days"),
+        "first_sale_at": row.get("first_sale_at"),
+        "last_sale_at": row.get("last_sale_at"),
+        "sales_qty_short": row.get("sales_qty_short"),
+        "sales_qty_medium": row.get("sales_qty_medium"),
+        "sales_qty_long": row.get("sales_qty_long"),
+        "days_in_sale_short": row.get("days_in_sale_short"),
+        "days_in_sale_medium": row.get("days_in_sale_medium"),
+        "days_in_sale_long": row.get("days_in_sale_long"),
+        "inventory_cost_per_unit": row.get("inventory_cost_per_unit"),
+        "cost_quartile": str(row.get("cost_quartile") or ""),
+        "minimum_representation_qty": row.get("minimum_representation_qty"),
+    }
+
+
+def _lifecycle_explanation_facts(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "reason_codes": list(row.get("reason_codes") or []),
+        "demand_reason_codes": list(row.get("demand_reason_codes") or []),
+        **_lifecycle_explanation_fields(row),
     }
 
 

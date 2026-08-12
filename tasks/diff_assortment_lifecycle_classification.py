@@ -32,7 +32,10 @@ import json
 from pathlib import Path
 from typing import Any
 
-from app.services.assortment_lifecycle import decide_assortment_status
+from app.services.assortment_lifecycle import (
+    decide_assortment_status,
+    decide_target_assortment_status,
+)
 from tasks.build_assortment_lifecycle_updates import (
     _fact_status_decision_from_record,
     _lifecycle_input_from_record,
@@ -41,7 +44,18 @@ from tasks.build_assortment_lifecycle_updates import (
 )
 
 # Поля снимка, по которым считаем расхождение (требование ревью контура).
-DIFF_FIELDS = ("status", "auto_order_allowed", "blockers", "manual_review_required")
+DIFF_FIELDS = (
+    "status",
+    "demand_state",
+    "auto_order_allowed",
+    "blockers",
+    "manual_review_required",
+    "first_receipt_at",
+    "last_receipt_at",
+    "history_age_days",
+    "cost_quartile",
+    "minimum_representation_qty",
+)
 
 
 def build_snapshot(
@@ -49,6 +63,7 @@ def build_snapshot(
     *,
     folder_filter: str = "",
     fact_overlay: bool = True,
+    target_model: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Построить снимок ``{nomenclature_code: {status, auto_order_allowed, ...}}``."""
 
@@ -57,8 +72,12 @@ def build_snapshot(
         if folder_filter and not _matches_folder(record, folder_filter):
             continue
         lifecycle_input = _lifecycle_input_from_record(record)
-        decision = decide_assortment_status(lifecycle_input)
-        if fact_overlay:
+        decision = (
+            decide_target_assortment_status(lifecycle_input)
+            if target_model
+            else decide_assortment_status(lifecycle_input)
+        )
+        if fact_overlay and not target_model:
             decision = _fact_status_decision_from_record(record, decision)
         snapshot[decision.nomenclature_code] = {
             "status": decision.status.value,
@@ -68,6 +87,15 @@ def build_snapshot(
             "recommended_status": (
                 decision.recommended_status.value if decision.recommended_status else None
             ),
+            "demand_state": decision.demand_state.value if decision.demand_state else None,
+            "demand_state_label": decision.demand_state_label,
+            "demand_reason_codes": list(decision.demand_reason_codes),
+            "reason_codes": list(decision.reason_codes),
+            "first_receipt_at": record.get("first_receipt_at"),
+            "last_receipt_at": record.get("last_receipt_at"),
+            "history_age_days": record.get("history_age_days"),
+            "cost_quartile": record.get("cost_quartile"),
+            "minimum_representation_qty": record.get("minimum_representation_qty"),
         }
     return snapshot
 
@@ -106,7 +134,14 @@ def diff_snapshots(
         }
         if not field_changes:
             continue
-        changed.append({"nomenclature_code": code, "changes": field_changes})
+        changed.append(
+            {
+                "nomenclature_code": code,
+                "changes": field_changes,
+                "before": b,
+                "after": a,
+            }
+        )
         if "status" in field_changes:
             key = f"{b.get('status')} -> {a.get('status')}"
             transition_counts[key] = transition_counts.get(key, 0) + 1
@@ -182,12 +217,14 @@ def _cmd_snapshot(args: argparse.Namespace) -> int:
         records,
         folder_filter=args.folder,
         fact_overlay=not args.no_fact_overlay,
+        target_model=args.target_model,
     )
     payload = {
         "_meta": {
             "input_json": str(args.input_json),
             "folder": args.folder,
             "fact_overlay": not args.no_fact_overlay,
+            "target_model": args.target_model,
             "count": len(snapshot),
         },
         "items": snapshot,
@@ -224,6 +261,31 @@ def _cmd_overlay_audit(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_target_audit(args: argparse.Namespace) -> int:
+    records = _load_records(args.input_json)
+    before = build_snapshot(records, folder_filter=args.folder, fact_overlay=True)
+    after = build_snapshot(
+        records,
+        folder_filter=args.folder,
+        fact_overlay=False,
+        target_model=True,
+    )
+    diff = diff_snapshots(before, after)
+    diff["_meta"] = {
+        "scope": args.folder,
+        "before_model": "v1_with_fact_overlay",
+        "after_model": "v2_shadow",
+        "production_action": "none_read_only",
+    }
+    if args.output_json:
+        args.output_json.parent.mkdir(parents=True, exist_ok=True)
+        args.output_json.write_text(
+            json.dumps(diff, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    _print_diff(diff, as_json=args.json)
+    return 0
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -232,6 +294,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     snap.add_argument(
         "--input-json", type=Path, required=True, help="JSON список или {items:[...]}"
     )
+    snap.add_argument("--target-model", action="store_true", help="Build accepted v2 shadow")
     snap.add_argument("--folder", default="", help="Фильтр по папке, напр. дисплеи")
     snap.add_argument(
         "--no-fact-overlay",
@@ -240,6 +303,15 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     snap.add_argument("--output-json", type=Path, help="Куда записать снимок")
     snap.set_defaults(func=_cmd_snapshot)
+
+    audit_v2 = sub.add_parser(
+        "target-audit", help="Compare current v1 and accepted v2 shadow on one input"
+    )
+    audit_v2.add_argument("--input-json", type=Path, required=True)
+    audit_v2.add_argument("--folder", default="дисплеи")
+    audit_v2.add_argument("--output-json", type=Path)
+    audit_v2.add_argument("--json", action="store_true")
+    audit_v2.set_defaults(func=_cmd_target_audit)
 
     dcmd = sub.add_parser("diff", help="Сравнить два снимка")
     dcmd.add_argument("--before", type=Path, required=True)

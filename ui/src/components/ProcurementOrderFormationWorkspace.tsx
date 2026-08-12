@@ -54,7 +54,8 @@ const MANUAL_STATUS_LABELS: Record<string, string> = {
   matrix: "Матричный",
   on_demand: "Под заказ",
   replace_candidate: "Кандидат на замену",
-  nonliquid: "Кандидат на неликвид",
+  nonliquid: "Выводим",
+  pension: "Допродаём",
   do_not_order: "Не закупать",
   review: "Review / разбор",
 };
@@ -71,12 +72,12 @@ const ORDER_STATUS_LABELS: Record<string, string> = {
 };
 
 const LIFECYCLE_STATUS_LABELS: Record<string, string> = {
-  fruit: "Плод",
-  newborn: "Новорожденный",
-  new_item: "Новинка",
-  sales_start: "СП / Старт продаж",
-  sale: "ПРОДАЖА",
-  working: "Рабочий",
+  fruit: "Рассматриваем",
+  newborn: "Заказали",
+  new_item: "Завезли",
+  sales_start: "Пошли продажи",
+  sale: "Растим",
+  working: "Поддерживаем",
 };
 
 const LIFECYCLE_FACT_LABELS: Record<string, string> = {
@@ -528,7 +529,7 @@ function LifecycleQueue({
     : scope === "all"
     ? `${statusLabel}: все товары`
     : status === "working"
-      ? "Рабочий: товары на пересмотр"
+      ? "Поддерживаем: товары на пересмотр"
       : `${statusLabel}: требуется решение`;
   const subtitle = readiness === "stale"
     ? "Старые предложения сохранены для истории и недоступны для утверждения"
@@ -679,20 +680,44 @@ function LifecycleQueue({
                         <span className="transition-pill">
                           {item.action_kind === "review"
                             ? item.current_status === "newborn"
-                              ? "ДН / Добор новорождённого"
-                              : "Рабочий → Review"
+                              ? "Заказали + Добираем"
+                              : "Поддерживаем → На разборе"
                             : `${item.current_status_label} → ${item.target_status_label}`}
                         </span>
                       </td>
                       <td className="queue-reason">
                         <strong>{item.reason || "Нужна проверка фактов"}</strong>
+                        {item.demand_state_label ? (
+                          <span>Спрос: {item.demand_state_label}</span>
+                        ) : null}
+                        {item.demand_reason_text ? <small>{item.demand_reason_text}</small> : null}
                         <span>Основание расчёта</span>
                         <small>Расчёт: {item.run_key}</small>
                       </td>
                       <td>
                         <div className="queue-facts">
+                          <div className="queue-facts__item">
+                            <span>Первое / последнее поступление</span>
+                            <strong>{dateTime(item.first_receipt_at)} / {dateTime(item.last_receipt_at)}</strong>
+                          </div>
+                          <div className="queue-facts__item">
+                            <span>Возраст товарной истории</span>
+                            <strong>{item.history_age_days == null ? "—" : `${number(item.history_age_days)} дн.`}</strong>
+                          </div>
+                          <div className="queue-facts__item">
+                            <span>Продажи 30 / 90 / 180</span>
+                            <strong>{lifecycleFactValue(item.sales_qty_short)} / {lifecycleFactValue(item.sales_qty_medium)} / {lifecycleFactValue(item.sales_qty_long)}</strong>
+                          </div>
+                          <div className="queue-facts__item">
+                            <span>Дни наличия 30 / 90 / 180</span>
+                            <strong>{lifecycleFactValue(item.days_in_sale_short)} / {lifecycleFactValue(item.days_in_sale_medium)} / {lifecycleFactValue(item.days_in_sale_long)}</strong>
+                          </div>
+                          <div className="queue-facts__item">
+                            <span>Себестоимость / квартиль / минимум</span>
+                            <strong>{item.inventory_cost_per_unit == null ? "—" : number(item.inventory_cost_per_unit)} / {item.cost_quartile || "—"} / {item.minimum_representation_qty ?? "—"}</strong>
+                          </div>
                           {facts && Object.keys(facts).length > 0
-                            ? Object.entries(facts).slice(0, 4).map(([key, value]) => (
+                            ? Object.entries(facts).slice(0, 2).map(([key, value]) => (
                                 <div className="queue-facts__item" key={key}>
                                   <span>{lifecycleFactLabel(key)}</span>
                                   <strong>{lifecycleFactValue(value)}</strong>

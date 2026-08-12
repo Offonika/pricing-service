@@ -362,6 +362,25 @@ class Settings(BaseSettings):
     customer_price_type_bitrix_session_secret: str | None = None
     customer_price_type_bitrix_session_ttl_seconds: int = 3600
     customer_price_type_bitrix_rest_timeout_seconds: float = 6.0
+    # Review decisions are persisted in test mode until this explicit gate is enabled.
+    # Each 1C direction has an additional allowlist gate and cannot be activated later
+    # for decisions that were made while writes were disabled.
+    customer_price_type_external_actions_enabled: bool = False
+    customer_price_type_bitrix_case_actions_enabled: bool = False
+    customer_price_type_onec_actions_enabled: bool = False
+    customer_price_type_onec_enabled_directions: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    customer_price_type_bitrix_webhook_url: str | None = None
+    customer_price_type_bitrix_entity_type_id: int | None = None
+    customer_price_type_bitrix_category_id: int | None = None
+    customer_price_type_bitrix_stage_map: dict[str, str] = Field(default_factory=dict)
+    customer_price_type_bitrix_field_map: dict[str, str] = Field(default_factory=dict)
+    customer_price_type_bitrix_quality_user_id: int | None = None
+    customer_price_type_bitrix_finance_user_id: int | None = None
+    customer_price_type_bitrix_internal_user_id: int | None = None
+    customer_price_type_external_action_batch_size: int = 50
+    customer_price_type_onec_result_timeout_seconds: int = 900
     management_receivables_max_lag_days: int = 1
     management_staffing_max_lag_days: int = 1
     management_task_payloads_max_lag_days: int = 1
@@ -587,6 +606,7 @@ class Settings(BaseSettings):
         "customer_price_type_bitrix_allowed_domains",
         "customer_price_type_bitrix_allowed_member_ids",
         "customer_price_type_bitrix_full_access_user_ids",
+        "customer_price_type_onec_enabled_directions",
         mode="before",
     )
     @classmethod

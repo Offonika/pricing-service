@@ -296,8 +296,8 @@ class CustomerPriceTypeQualityService:
         "downgrade_approval",
         "no_action",
     )
-    READ_ROLES = {"internal", "executive", "network_head", "quality"}
-    PREPARE_ROLES = {"internal", "executive", "network_head"}
+    READ_ROLES = {"internal", "executive", "quality"}
+    PREPARE_ROLES = {"internal", "executive"}
 
     def __init__(self, session: Session) -> None:
         self.session = session

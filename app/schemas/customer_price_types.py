@@ -274,6 +274,114 @@ class CustomerPriceTypeDataIssueListResponse(CustomerPriceTypeEnvelope):
     payload: list[CustomerPriceTypeDataIssueItem] = Field(default_factory=list)
 
 
+CustomerPriceTypeReviewKind = Literal["price_type", "client_action"]
+CustomerPriceTypeReviewResult = Literal["confirm", "correct", "no_action", "data_issue"]
+CustomerPriceTypeExternalState = Literal[
+    "not_created",
+    "held",
+    "pending",
+    "preflight",
+    "ready_to_apply",
+    "applying",
+    "applied",
+    "cancelled",
+    "technical_review",
+]
+
+
+class CustomerPriceTypeReviewCommand(BaseModel):
+    result: CustomerPriceTypeReviewResult
+    corrected_value: str | None = Field(default=None, max_length=255)
+    comment: str | None = Field(default=None, max_length=2000)
+    expected_version: int = Field(ge=0)
+    snapshot_hash: str = Field(min_length=64, max_length=64, pattern=r"^[0-9a-f]{64}$")
+
+
+class CustomerPriceTypeReviewDimension(BaseModel):
+    kind: CustomerPriceTypeReviewKind
+    system_value: str | None = None
+    system_label: str
+    can_review: bool
+    unavailable_reason: str | None = None
+    allowed_results: list[CustomerPriceTypeReviewResult] = Field(default_factory=list)
+    allowed_corrected_values: list[str] = Field(default_factory=list)
+    review_id: int | None = None
+    result: CustomerPriceTypeReviewResult | None = None
+    final_value: str | None = None
+    comment: str | None = None
+    reviewed_by: str | None = None
+    reviewed_at: datetime | None = None
+    version: int = 0
+    decision_mode: Literal["test", "live"] | None = None
+    external_state: CustomerPriceTypeExternalState = "not_created"
+    external_message: str | None = None
+
+
+class CustomerPriceTypeReviewCard(BaseModel):
+    snapshot_id: int
+    case_id: int | None = None
+    counterparty_ref: str
+    counterparty_code: str | None = None
+    counterparty_name: str | None = None
+    owner_name: str | None = None
+    department_name: str | None = None
+    snapshot_month: date
+    current_price_type: str | None = None
+    recommended_price_type: str | None = None
+    recommendation_text: str
+    data_state: Literal["ready", "technical_review", "insufficient_history", "new_client"]
+    data_state_label: str
+    snapshot_hash: str
+    contracts: list[CustomerPriceTypeContractCandidate] = Field(default_factory=list)
+    price_type: CustomerPriceTypeReviewDimension
+    client_action: CustomerPriceTypeReviewDimension
+
+
+class CustomerPriceTypeReviewCardListResponse(CustomerPriceTypeEnvelope):
+    total: int
+    limit: int
+    offset: int
+    payload: list[CustomerPriceTypeReviewCard] = Field(default_factory=list)
+
+
+class CustomerPriceTypeReviewCardResponse(CustomerPriceTypeEnvelope):
+    card: CustomerPriceTypeReviewCard
+
+
+class CustomerPriceTypeReviewSaveResponse(CustomerPriceTypeEnvelope):
+    card: CustomerPriceTypeReviewCard
+    saved_kind: CustomerPriceTypeReviewKind
+
+
+class CustomerPriceTypeCancelChangeRequest(BaseModel):
+    comment: str = Field(min_length=1, max_length=2000)
+    expected_version: int = Field(ge=1)
+
+
+class CustomerPriceTypeCancelChangeResponse(BaseModel):
+    case_id: int
+    action_id: int
+    status: Literal["cancelled"]
+    cancelled_by: str
+    cancelled_at: datetime
+    comment: str
+    version: int
+
+
+class CustomerPriceTypeReviewKindMetrics(BaseModel):
+    reviewed_count: int = 0
+    confirmed_count: int = 0
+    corrected_count: int = 0
+    no_action_count: int = 0
+    data_issue_count: int = 0
+    correction_rate: float = 0.0
+
+
+class CustomerPriceTypeReviewMetricsResponse(CustomerPriceTypeEnvelope):
+    price_type: CustomerPriceTypeReviewKindMetrics
+    client_action: CustomerPriceTypeReviewKindMetrics
+
+
 class CustomerPriceTypeSessionRequest(BaseModel):
     access_token: str = Field(min_length=1)
     domain: str = Field(min_length=1)

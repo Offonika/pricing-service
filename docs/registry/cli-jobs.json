@@ -44,6 +44,16 @@
     }
   ],
   "commands": {
+    "run_customer_price_type_external_actions.py": {
+      "owner": "pricing-platform",
+      "kind": "permanent_cli",
+      "dry_run": "not_supported",
+      "idempotency": "verified_by_transactional_outbox_and_external_readback",
+      "side_effect_level": "mixed",
+      "db_access": "mixed",
+      "spec": "docs/specs/customer-price-type-management-v1.md",
+      "remove_after": null
+    },
     "competitor_matching_watchdog.py": {
       "owner": "matching",
       "kind": "permanent_cli",
@@ -237,6 +247,16 @@
     "report_display_auto_order_dynamic_minmax_backtest.py": {
       "owner": "procurement",
       "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "none",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "export_display_auto_order_shadow_workbook.py": {
+      "owner": "procurement",
+      "kind": "export",
       "dry_run": "not_applicable",
       "idempotency": "artifact_replace_by_requested_path",
       "side_effect_level": "artifact_write",

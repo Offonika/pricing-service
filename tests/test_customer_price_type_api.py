@@ -853,12 +853,12 @@ def test_quality_sample_review_metrics_idempotency_and_permissions(tmp_path: Pat
         source_statuses={"contracts": "ready"},
         run_key="quality-review-run",
     )
-    network = CustomerPriceTypeAccessScope(
-        actor="network-expert", role="network_head", can_view_money=True
+    internal = CustomerPriceTypeAccessScope(
+        actor="internal-expert", role="internal", can_view_money=True
     )
     app.dependency_overrides = {
         get_db: _override_db(factory),
-        require_customer_price_type_access: lambda: network,
+        require_customer_price_type_access: lambda: internal,
     }
     try:
         client = TestClient(app)
@@ -935,9 +935,7 @@ def test_quality_sample_review_metrics_idempotency_and_permissions(tmp_path: Pat
         barrier = Barrier(2)
 
         def concurrent_review(actor: str) -> int:
-            access = CustomerPriceTypeAccessScope(
-                actor=actor, role="network_head", can_view_money=True
-            )
+            access = CustomerPriceTypeAccessScope(actor=actor, role="internal", can_view_money=True)
             with factory() as session:
                 barrier.wait()
                 try:
@@ -1006,12 +1004,12 @@ def test_data_check_is_excluded_from_quality_sample_and_metrics(tmp_path: Path) 
         source_statuses={"contracts": "ready"},
         run_key="quality-null-target-run",
     )
-    network = CustomerPriceTypeAccessScope(
-        actor="network-expert", role="network_head", can_view_money=True
+    internal = CustomerPriceTypeAccessScope(
+        actor="internal-expert", role="internal", can_view_money=True
     )
     app.dependency_overrides = {
         get_db: _override_db(factory),
-        require_customer_price_type_access: lambda: network,
+        require_customer_price_type_access: lambda: internal,
     }
     try:
         client = TestClient(app)
@@ -1047,12 +1045,12 @@ def test_profile_search_and_internal_data_issue_queue(tmp_path: Path) -> None:
         source_statuses={"contracts": "ready"},
         run_key="data-issue-workspace-run",
     )
-    network = CustomerPriceTypeAccessScope(
-        actor="network-expert", role="network_head", can_view_money=True
+    internal = CustomerPriceTypeAccessScope(
+        actor="internal-expert", role="internal", can_view_money=True
     )
     app.dependency_overrides = {
         get_db: _override_db(factory),
-        require_customer_price_type_access: lambda: network,
+        require_customer_price_type_access: lambda: internal,
     }
     try:
         client = TestClient(app)
@@ -1062,6 +1060,10 @@ def test_profile_search_and_internal_data_issue_queue(tmp_path: Path) -> None:
         assert prepared.status_code == 200, prepared.text
         assert prepared.json()["created"] == 1
 
+        network = CustomerPriceTypeAccessScope(
+            actor="network-expert", role="network_head", can_view_money=True
+        )
+        app.dependency_overrides[require_customer_price_type_access] = lambda: network
         search = client.get("/api/customer-price-types/profiles", params={"search": "Клиент"})
         assert search.status_code == 200, search.text
         by_code = {item["counterparty_code"]: item for item in search.json()["payload"]}
@@ -1088,6 +1090,7 @@ def test_profile_search_and_internal_data_issue_queue(tmp_path: Path) -> None:
             == 0
         )
 
+        app.dependency_overrides[require_customer_price_type_access] = lambda: internal
         sample = client.get("/api/customer-price-types/quality/samples").json()["payload"][0]
         missing_comment = client.put(
             f"/api/customer-price-types/quality/samples/{sample['id']}",
@@ -1118,10 +1121,6 @@ def test_profile_search_and_internal_data_issue_queue(tmp_path: Path) -> None:
         assert reviewed.json()["review_result"] == "data_issue"
         assert reviewed.json()["correct_group"] == "data_check"
 
-        internal = CustomerPriceTypeAccessScope(
-            actor="internal", role="internal", can_view_money=True
-        )
-        app.dependency_overrides[require_customer_price_type_access] = lambda: internal
         issues = client.get("/api/customer-price-types/data-issues")
         assert issues.status_code == 200, issues.text
         assert issues.json()["total"] == 2
@@ -1168,12 +1167,12 @@ def test_quality_recall_is_weighted_by_population_group_size(tmp_path: Path) -> 
         source_statuses={"contracts": "ready"},
         run_key="quality-weighted-run",
     )
-    network = CustomerPriceTypeAccessScope(
-        actor="network-expert", role="network_head", can_view_money=True
+    internal = CustomerPriceTypeAccessScope(
+        actor="internal-expert", role="internal", can_view_money=True
     )
     app.dependency_overrides = {
         get_db: _override_db(factory),
-        require_customer_price_type_access: lambda: network,
+        require_customer_price_type_access: lambda: internal,
     }
     try:
         client = TestClient(app)

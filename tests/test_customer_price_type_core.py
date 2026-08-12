@@ -721,7 +721,7 @@ def test_resolved_data_check_is_closed_or_reclassified_without_duplicate_case(
             ).all()
             assert profile.open_case_id == case.id
             assert case.case_type == "isolate"
-            assert case.stage == "NEW"
+            assert case.stage == "NEW_SNAPSHOT"
             assert session.scalar(select(func_count(CustomerPriceTypeCase))) == 1
             assert events[-1].event_type == "case_reclassified"
     finally:

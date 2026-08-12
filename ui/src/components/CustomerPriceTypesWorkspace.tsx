@@ -10,13 +10,20 @@ import {
   fetchCptQualityMetrics,
   fetchCptQualitySampleDetail,
   fetchCptQualitySamples,
+  fetchCptReviewCards,
+  fetchCptReviewMetrics,
   fetchCptSummary,
   fetchCptWorklists,
   prepareCptQualitySamples,
   reviewCptQualitySample,
+  saveCptReview,
   searchCptProfiles,
   type CptQualityGroup,
   type CptQualitySample,
+  type CptReviewCard,
+  type CptReviewDimension,
+  type CptReviewKind,
+  type CptReviewResult,
   type CptPortfolioBucket,
   type CptWorklist,
 } from "../api/customerPriceTypes";
@@ -147,7 +154,7 @@ export function CustomerPriceTypesWorkspace({
   const [portfolioBucket, setPortfolioBucket] =
     useState<Exclude<CptPortfolioBucket, "all">>("working_bronze");
   const [selectedCaseId, setSelectedCaseId] = useState<number | null>(null);
-  const [section, setSection] = useState<"portfolio" | "quality">("portfolio");
+  const [section, setSection] = useState<"portfolio" | "reviews" | "quality">("portfolio");
 
   const summaryQuery = useQuery({
     queryKey: ["cpt", "summary"],
@@ -187,7 +194,7 @@ export function CustomerPriceTypesWorkspace({
     ? WORKLIST_ORDER.filter((item) => item !== "data_check")
     : WORKLIST_ORDER;
 
-  if (section === "quality" && canViewQuality) {
+  if (section === "reviews" && canViewQuality) {
     return (
       <div style={shell}>
         <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16 }}>
@@ -195,7 +202,26 @@ export function CustomerPriceTypesWorkspace({
             <p style={{ margin: 0, color: "var(--color-primary, #2563eb)", fontWeight: 800, fontSize: 12, letterSpacing: "0.08em", textTransform: "uppercase" }}>
               Управление типами цен
             </p>
-            <h1 style={{ margin: "4px 0 0", fontSize: 24 }}>Экспертная оценка</h1>
+            <h1 style={{ margin: "4px 0 0", fontSize: 24 }}>Проверка решений</h1>
+          </div>
+          <button type="button" onClick={() => setSection("portfolio")} style={secondaryButton}>
+            Вернуться к портфелю
+          </button>
+        </header>
+        <ReviewWorkspace role={role} />
+      </div>
+    );
+  }
+
+  if (section === "quality" && canViewTechnicalWorkspace) {
+    return (
+      <div style={shell}>
+        <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16 }}>
+          <div>
+            <p style={{ margin: 0, color: "var(--color-primary, #2563eb)", fontWeight: 800, fontSize: 12, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+              Управление типами цен
+            </p>
+            <h1 style={{ margin: "4px 0 0", fontSize: 24 }}>Исторический контроль качества</h1>
           </div>
           <button type="button" onClick={() => setSection("portfolio")} style={secondaryButton}>
             Вернуться к портфелю
@@ -224,8 +250,13 @@ export function CustomerPriceTypesWorkspace({
           {bitrixUserName && <div>{bitrixUserName}</div>}
           {role && <div>Роль: {roleLabel(role)}{canViewMoney ? " · суммы доступны" : ""}</div>}
           {canViewQuality && (
-            <button type="button" onClick={() => setSection("quality")} style={{ ...primaryActionButton, marginTop: 10 }}>
-              Экспертная оценка →
+            <button type="button" onClick={() => setSection("reviews")} style={{ ...primaryActionButton, marginTop: 10 }}>
+              Проверка решений →
+            </button>
+          )}
+          {canViewTechnicalWorkspace && (
+            <button type="button" onClick={() => setSection("quality")} style={{ ...secondaryButton, marginTop: 8, marginLeft: 8 }}>
+              Исторический контроль
             </button>
           )}
         </div>
@@ -612,6 +643,216 @@ function percent(value: number | null | undefined): string {
   return `${(value * 100).toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`;
 }
 
+const CLIENT_ACTION_LABELS: Record<string, string> = {
+  presignal: "Предсигнал",
+  retention: "Удержание клиента",
+  isolate: "Изолятор на полный месяц",
+  recovery: "Реанимация клиента",
+  quality: "Проверка качества",
+  credit: "Проверка кредита",
+  economics: "Проверка экономики",
+};
+
+function reviewValueLabel(kind: CptReviewKind, value: string | null): string {
+  if (!value) return "Не требуется";
+  return kind === "client_action" ? CLIENT_ACTION_LABELS[value] ?? "Неизвестное действие" : value;
+}
+
+function ReviewWorkspace({ role }: { role?: string }) {
+  const queryClient = useQueryClient();
+  const [queue, setQueue] = useState<CptReviewKind>("price_type");
+  const [showReviewed, setShowReviewed] = useState(false);
+  const [search, setSearch] = useState("");
+  const [selectedSnapshotId, setSelectedSnapshotId] = useState<number | null>(null);
+  const canDecide = role === "network_head";
+
+  const cardsQuery = useQuery({
+    queryKey: ["cpt", "reviews", queue, showReviewed, search],
+    queryFn: () => fetchCptReviewCards({
+      reviewKind: queue,
+      pendingOnly: !showReviewed,
+      search: search.trim() || null,
+      limit: 200,
+    }),
+  });
+  const metricsQuery = useQuery({
+    queryKey: ["cpt", "reviews", "metrics"],
+    queryFn: fetchCptReviewMetrics,
+  });
+  const cards = cardsQuery.data?.payload ?? [];
+  const selected = cards.find((item) => item.snapshot_id === selectedSnapshotId) ?? cards[0] ?? null;
+
+  const refresh = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["cpt", "reviews"] }),
+      queryClient.invalidateQueries({ queryKey: ["cpt", "data-issues"] }),
+      queryClient.invalidateQueries({ queryKey: ["cpt", "profile-search"] }),
+    ]);
+  };
+
+  return (
+    <>
+      <section role="note" style={{ ...card, background: "var(--color-surface-muted, #f8fafc)" }}>
+        <strong>Здесь проверяются два разных результата</strong>
+        <p style={{ margin: "6px 0 0", fontSize: 13 }}>
+          «Тип цены» разрешает готовое изменение после завершения работы с клиентом. «Действие с клиентом» создаёт отдельную работу в Bitrix24. Совпадающие типы руководитель сети не подтверждает.
+        </p>
+      </section>
+
+      <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+        <button type="button" onClick={() => { setQueue("price_type"); setSelectedSnapshotId(null); }} style={{ ...card, textAlign: "left", cursor: "pointer", borderColor: queue === "price_type" ? "var(--color-primary, #2563eb)" : "var(--color-border, #e2e2e2)" }}>
+          <div style={{ fontSize: 22, fontWeight: 800 }}>{metricsQuery.data?.price_type.reviewed_count ?? "…"}</div>
+          <div>Изменения типа</div>
+          <small>Только готовые изменения на одну ступень</small>
+        </button>
+        <button type="button" onClick={() => { setQueue("client_action"); setSelectedSnapshotId(null); }} style={{ ...card, textAlign: "left", cursor: "pointer", borderColor: queue === "client_action" ? "var(--color-primary, #2563eb)" : "var(--color-border, #e2e2e2)" }}>
+          <div style={{ fontSize: 22, fontWeight: 800 }}>{metricsQuery.data?.client_action.reviewed_count ?? "…"}</div>
+          <div>Действия с клиентами</div>
+          <small>Удержание, изолятор, реанимация и проверки</small>
+        </button>
+      </section>
+
+      <section style={{ ...card, display: "grid", gap: 10 }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <input
+            type="search"
+            aria-label="Поиск клиента в проверках"
+            placeholder="Название, код или идентификатор 1С…"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            style={{ flex: "1 1 300px", minHeight: 40, padding: "0 12px", border: "1px solid var(--color-border, #d0d5dd)", borderRadius: 8, font: "inherit" }}
+          />
+          <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 13 }}>
+            <input type="checkbox" checked={showReviewed} onChange={(event) => setShowReviewed(event.target.checked)} />
+            Показать проверенные
+          </label>
+        </div>
+        {cardsQuery.isLoading && <p>Загрузка карточек…</p>}
+        {cardsQuery.isError && <p style={{ color: "var(--color-danger, #d92d20)" }}>Не удалось загрузить карточки.</p>}
+        {!cardsQuery.isLoading && cards.length === 0 && <p>В этой очереди карточек нет.</p>}
+      </section>
+
+      {cards.length > 0 && (
+        <section style={{ display: "grid", gridTemplateColumns: "minmax(240px, 0.7fr) minmax(0, 1.7fr)", gap: 14, alignItems: "start" }}>
+          <div style={{ ...card, display: "grid", gap: 8 }}>
+            {cards.map((item) => (
+              <button key={item.snapshot_id} type="button" onClick={() => setSelectedSnapshotId(item.snapshot_id)} style={{ padding: 12, borderRadius: 8, border: item.snapshot_id === selected?.snapshot_id ? "2px solid var(--color-primary, #2563eb)" : "1px solid var(--color-border, #e2e2e2)", background: "var(--color-surface, #fff)", textAlign: "left", cursor: "pointer" }}>
+                <strong>{item.counterparty_code ?? "—"} · {item.counterparty_name ?? "—"}</strong>
+                <small style={{ display: "block", marginTop: 4 }}>{item[queue].system_label}</small>
+                <small style={{ display: "block", color: "var(--color-text-muted, #667085)" }}>{item[queue].review_id ? "Проверено" : item.data_state_label}</small>
+              </button>
+            ))}
+          </div>
+          {selected && <ReviewCardView cardData={selected} canDecide={canDecide} onSaved={refresh} />}
+        </section>
+      )}
+    </>
+  );
+}
+
+function ReviewCardView({ cardData, canDecide, onSaved }: { cardData: CptReviewCard; canDecide: boolean; onSaved: () => Promise<void> }) {
+  return (
+    <article style={{ ...card, display: "grid", gap: 14 }}>
+      <div>
+        <h2 style={{ margin: 0, fontSize: 20 }}>{cardData.counterparty_code ?? "—"} · {cardData.counterparty_name ?? "—"}</h2>
+        <p style={{ margin: "5px 0 0", color: "var(--color-text-muted, #667085)", fontSize: 13 }}>
+          {cardData.department_name ?? "Подразделение не указано"} · {cardData.owner_name ?? "Ответственный не указан"}
+        </p>
+      </div>
+      <div role="status" style={{ padding: 10, borderRadius: 8, background: cardData.data_state === "ready" ? "#ecfdf3" : "#fff8e1" }}>
+        {cardData.data_state_label}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
+        <Row k="Текущий тип" v={cardData.current_price_type ?? "Не определён"} />
+        <Row k="Рекомендуемый тип" v={cardData.recommended_price_type ?? "Рекомендация не сформирована"} />
+        <Row k="Расчётный месяц" v={snapshotMonthLabel(cardData.snapshot_month)} />
+      </div>
+      <p style={{ margin: 0 }}>{cardData.recommendation_text}</p>
+      <div>
+        <strong>Рабочие договоры</strong>
+        {cardData.contracts.filter((item) => item.is_working).map((item) => (
+          <div key={item.contract_ref ?? item.contract_name} style={{ marginTop: 5, fontSize: 13 }}>
+            {item.contract_name ?? "Без названия"} · {item.price_type_name ?? "тип не указан"}
+          </div>
+        ))}
+      </div>
+      <ReviewDimensionBlock cardData={cardData} dimension={cardData.price_type} title="Тип цены" canDecide={canDecide} onSaved={onSaved} />
+      <ReviewDimensionBlock cardData={cardData} dimension={cardData.client_action} title="Действие с клиентом" canDecide={canDecide} onSaved={onSaved} />
+    </article>
+  );
+}
+
+function ReviewDimensionBlock({ cardData, dimension, title, canDecide, onSaved }: { cardData: CptReviewCard; dimension: CptReviewDimension; title: string; canDecide: boolean; onSaved: () => Promise<void> }) {
+  const [choice, setChoice] = useState<CptReviewResult | null>(null);
+  const [correctedValue, setCorrectedValue] = useState("");
+  const [comment, setComment] = useState("");
+  const mutation = useMutation({
+    mutationFn: () => saveCptReview({
+      snapshotId: cardData.snapshot_id,
+      reviewKind: dimension.kind,
+      result: choice as CptReviewResult,
+      correctedValue: choice === "correct" ? correctedValue : null,
+      comment,
+      expectedVersion: dimension.version,
+      snapshotHash: cardData.snapshot_hash,
+    }),
+    onSuccess: async (saved) => {
+      await onSaved();
+      const stored = saved.card[dimension.kind];
+      toast.success(`Решение сохранено. ${stored.reviewed_by ?? "Пользователь"}, ${new Date(stored.reviewed_at ?? Date.now()).toLocaleString("ru-RU")}`);
+    },
+    onError: () => toast.error("Не удалось сохранить решение. Обновите карточку и повторите."),
+  });
+  const requiresComment = choice === "correct" || choice === "data_issue";
+  const valid = Boolean(choice && (!requiresComment || comment.trim()) && (choice !== "correct" || correctedValue));
+
+  return (
+    <section style={{ border: "1px solid var(--color-border, #d0d5dd)", borderRadius: 10, padding: 14, display: "grid", gap: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <strong>{title}</strong>
+        <span>{dimension.review_id ? "Решение сохранено" : dimension.can_review ? "Ожидает решения" : "Только просмотр"}</span>
+      </div>
+      <div>{dimension.system_label}</div>
+      {dimension.review_id && (
+        <div role="status" style={{ padding: 10, borderRadius: 8, background: "#ecfdf3", fontSize: 13 }}>
+          Итог: {reviewValueLabel(dimension.kind, dimension.final_value)}. {dimension.reviewed_by ?? "Пользователь"}, {dimension.reviewed_at ? new Date(dimension.reviewed_at).toLocaleString("ru-RU") : "время не указано"}.
+          {dimension.comment ? ` Комментарий: ${dimension.comment}` : ""}
+          {dimension.external_message ? <div style={{ marginTop: 4 }}>{dimension.external_message}</div> : null}
+        </div>
+      )}
+      {!dimension.review_id && !dimension.can_review && <small>{dimension.unavailable_reason ?? "Решение не назначено."}</small>}
+      {dimension.can_review && canDecide && (
+        <>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {dimension.allowed_results.map((result) => {
+              const labels: Record<CptReviewResult, string> = dimension.kind === "price_type"
+                ? { confirm: "Подтвердить и запустить изменение", correct: "Указать правильный тип", no_action: "Действие не требуется", data_issue: "Ошибка в данных" }
+                : { confirm: "Подтвердить действие", correct: "Выбрать правильное действие", no_action: "Действие не требуется", data_issue: "Ошибка в данных" };
+              return <button key={result} type="button" onClick={() => setChoice(result)} style={result === "confirm" ? primaryActionButton : secondaryButton}>{labels[result]}</button>;
+            })}
+          </div>
+          {choice === "correct" && (
+            <label style={{ display: "grid", gap: 4, fontSize: 13 }}>
+              Правильный результат
+              <select value={correctedValue} onChange={(event) => setCorrectedValue(event.target.value)} style={{ minHeight: 38, padding: "0 10px", borderRadius: 8, border: "1px solid var(--color-border, #d0d5dd)" }}>
+                <option value="">Выберите…</option>
+                {dimension.allowed_corrected_values.map((value) => <option key={value} value={value}>{reviewValueLabel(dimension.kind, value)}</option>)}
+              </select>
+            </label>
+          )}
+          {(choice === "correct" || choice === "data_issue") && (
+            <label style={{ display: "grid", gap: 4, fontSize: 13 }}>
+              Комментарий <span aria-hidden="true">*</span>
+              <textarea value={comment} onChange={(event) => setComment(event.target.value)} maxLength={2000} rows={3} style={{ padding: 10, borderRadius: 8, border: "1px solid var(--color-border, #d0d5dd)", font: "inherit" }} />
+            </label>
+          )}
+          {choice && <button type="button" disabled={!valid || mutation.isPending} onClick={() => mutation.mutate()} style={secondaryButton}>{mutation.isPending ? "Сохранение…" : "Сохранить решение"}</button>}
+        </>
+      )}
+    </section>
+  );
+}
+
 function QualityModule({ role }: { role?: string }) {
   const queryClient = useQueryClient();
   const [perGroup, setPerGroup] = useState(30);
@@ -622,7 +863,7 @@ function QualityModule({ role }: { role?: string }) {
   const [expandedSampleId, setExpandedSampleId] = useState<number | null>(null);
   const [globalSearch, setGlobalSearch] = useState("");
   const [dataIssueSearch, setDataIssueSearch] = useState("");
-  const canPrepare = role === "internal" || role === "executive" || role === "network_head";
+  const canPrepare = role === "internal" || role === "executive";
   const canViewDataIssues = role === "internal" || role === "executive" || role === "quality";
 
   const metricsQuery = useQuery({
@@ -783,7 +1024,7 @@ function QualityModule({ role }: { role?: string }) {
           </select>
         </div>
         <p role="note" style={{ margin: 0, padding: 10, borderRadius: 8, background: "var(--color-surface-muted, #f8fafc)", fontSize: 13 }}>
-          Оценка проверяет качество расчёта и не утверждает изменение типа цены. Никакие данные в 1С отсюда не изменяются.
+          Исторический контроль не утверждает изменение типа цены и не создаёт внешних действий. Новые решения руководителя находятся в разделе «Проверка решений».
         </p>
         {samplesQuery.isLoading && <p>Загрузка выборки…</p>}
         {samplesQuery.isError && <p style={{ color: "var(--color-danger, #d92d20)" }}>Не удалось загрузить выборку.</p>}

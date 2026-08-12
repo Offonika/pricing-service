@@ -112,8 +112,8 @@ STAGE_SPECS = [
     },
     {
         "logical_key": "credit_check",
-        "code": "CREDIT_CHECK",
-        "name": "Проверка платежей и кредита",
+        "code": "CREDIT_ECONOMICS_CHECK",
+        "name": "Проверка кредита и экономики",
         "sort": 700,
         "semantics": None,
     },

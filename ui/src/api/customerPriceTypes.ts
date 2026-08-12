@@ -97,6 +97,85 @@ export interface CptDataIssueListResponse extends CptEnvelope {
   payload: CptDataIssueItem[];
 }
 
+export type CptReviewKind = "price_type" | "client_action";
+export type CptReviewResult = "confirm" | "correct" | "no_action" | "data_issue";
+export type CptExternalState =
+  | "not_created"
+  | "held"
+  | "pending"
+  | "preflight"
+  | "ready_to_apply"
+  | "applying"
+  | "applied"
+  | "cancelled"
+  | "technical_review";
+
+export interface CptReviewDimension {
+  kind: CptReviewKind;
+  system_value: string | null;
+  system_label: string;
+  can_review: boolean;
+  unavailable_reason: string | null;
+  allowed_results: CptReviewResult[];
+  allowed_corrected_values: string[];
+  review_id: number | null;
+  result: CptReviewResult | null;
+  final_value: string | null;
+  comment: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  version: number;
+  decision_mode: "test" | "live" | null;
+  external_state: CptExternalState;
+  external_message: string | null;
+}
+
+export interface CptReviewCard {
+  snapshot_id: number;
+  case_id: number | null;
+  counterparty_ref: string;
+  counterparty_code: string | null;
+  counterparty_name: string | null;
+  owner_name: string | null;
+  department_name: string | null;
+  snapshot_month: string;
+  current_price_type: string | null;
+  recommended_price_type: string | null;
+  recommendation_text: string;
+  data_state: "ready" | "technical_review" | "insufficient_history" | "new_client";
+  data_state_label: string;
+  snapshot_hash: string;
+  contracts: CptContractCandidate[];
+  price_type: CptReviewDimension;
+  client_action: CptReviewDimension;
+}
+
+export interface CptReviewCardListResponse extends CptEnvelope {
+  total: number;
+  limit: number;
+  offset: number;
+  payload: CptReviewCard[];
+}
+
+export interface CptReviewSaveResponse extends CptEnvelope {
+  card: CptReviewCard;
+  saved_kind: CptReviewKind;
+}
+
+export interface CptReviewKindMetrics {
+  reviewed_count: number;
+  confirmed_count: number;
+  corrected_count: number;
+  no_action_count: number;
+  data_issue_count: number;
+  correction_rate: number;
+}
+
+export interface CptReviewMetricsResponse extends CptEnvelope {
+  price_type: CptReviewKindMetrics;
+  client_action: CptReviewKindMetrics;
+}
+
 export interface CptContractCandidate {
   contract_ref?: string | null;
   contract_name?: string | null;
@@ -364,6 +443,58 @@ export async function fetchCptDataIssues(search?: string | null): Promise<CptDat
   const { data } = await api.get<CptDataIssueListResponse>("/customer-price-types/data-issues", {
     params: { ...(search ? { search } : {}), limit: 500 },
   });
+  return data;
+}
+
+export async function fetchCptReviewCards(options: {
+  reviewKind?: CptReviewKind | null;
+  pendingOnly?: boolean;
+  search?: string | null;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<CptReviewCardListResponse> {
+  const { data } = await api.get<CptReviewCardListResponse>(
+    "/customer-price-types/reviews/cards",
+    {
+      params: {
+        ...(options.reviewKind ? { review_kind: options.reviewKind } : {}),
+        ...(options.pendingOnly != null ? { pending_only: options.pendingOnly } : {}),
+        ...(options.search ? { search: options.search } : {}),
+        limit: options.limit ?? 100,
+        offset: options.offset ?? 0,
+      },
+    },
+  );
+  return data;
+}
+
+export async function fetchCptReviewMetrics(): Promise<CptReviewMetricsResponse> {
+  const { data } = await api.get<CptReviewMetricsResponse>(
+    "/customer-price-types/reviews/metrics",
+  );
+  return data;
+}
+
+export async function saveCptReview(options: {
+  snapshotId: number;
+  reviewKind: CptReviewKind;
+  result: CptReviewResult;
+  correctedValue?: string | null;
+  comment?: string | null;
+  expectedVersion: number;
+  snapshotHash: string;
+}): Promise<CptReviewSaveResponse> {
+  const suffix = options.reviewKind === "price_type" ? "price-type" : "client-action";
+  const { data } = await api.put<CptReviewSaveResponse>(
+    `/customer-price-types/reviews/cards/${options.snapshotId}/${suffix}`,
+    {
+      result: options.result,
+      corrected_value: options.correctedValue ?? null,
+      comment: options.comment?.trim() || null,
+      expected_version: options.expectedVersion,
+      snapshot_hash: options.snapshotHash,
+    },
+  );
   return data;
 }
 

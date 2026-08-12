@@ -4706,6 +4706,208 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/reviews/cards:
+    get:
+      tags:
+      - customer-price-types
+      summary: List Customer Price Type Review Cards
+      operationId: list_customer_price_type_review_cards_api_customer_price_types_reviews_cards_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: snapshot_month
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Snapshot Month
+      - name: review_kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - price_type
+            - client_action
+            type: string
+          - type: 'null'
+          title: Review Kind
+      - name: pending_only
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Pending Only
+      - name: search
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Search
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeReviewCardListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/reviews/cards/{snapshot_id}:
+    get:
+      tags:
+      - customer-price-types
+      summary: Get Customer Price Type Review Card
+      operationId: get_customer_price_type_review_card_api_customer_price_types_reviews_cards__snapshot_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: snapshot_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Snapshot Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeReviewCardResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/reviews/cards/{snapshot_id}/price-type:
+    put:
+      tags:
+      - customer-price-types
+      summary: Review Customer Price Type Dimension
+      operationId: review_customer_price_type_dimension_api_customer_price_types_reviews_cards__snapshot_id__price_type_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: snapshot_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Snapshot Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerPriceTypeReviewCommand'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeReviewSaveResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/reviews/cards/{snapshot_id}/client-action:
+    put:
+      tags:
+      - customer-price-types
+      summary: Review Customer Client Action Dimension
+      operationId: review_customer_client_action_dimension_api_customer_price_types_reviews_cards__snapshot_id__client_action_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: snapshot_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Snapshot Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerPriceTypeReviewCommand'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeReviewSaveResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/reviews/metrics:
+    get:
+      tags:
+      - customer-price-types
+      summary: Get Customer Price Type Review Metrics
+      operationId: get_customer_price_type_review_metrics_api_customer_price_types_reviews_metrics_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: snapshot_month
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Snapshot Month
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeReviewMetricsResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/customer-price-types/summary:
     get:
       tags:
@@ -4959,6 +5161,40 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CustomerPriceTypeCaseListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/cases/{case_id}/cancel-change:
+    post:
+      tags:
+      - customer-price-types
+      summary: Cancel Customer Price Type Change
+      operationId: cancel_customer_price_type_change_api_customer_price_types_cases__case_id__cancel_change_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Case Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerPriceTypeCancelChangeRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeCancelChangeResponse'
         '422':
           description: Validation Error
           content:
@@ -12907,6 +13143,57 @@ components:
       required:
       - order_lamp
       title: CustomerPriceTypeAdvisoryPreviewResponse
+    CustomerPriceTypeCancelChangeRequest:
+      properties:
+        comment:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Comment
+        expected_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Version
+      type: object
+      required:
+      - comment
+      - expected_version
+      title: CustomerPriceTypeCancelChangeRequest
+    CustomerPriceTypeCancelChangeResponse:
+      properties:
+        case_id:
+          type: integer
+          title: Case Id
+        action_id:
+          type: integer
+          title: Action Id
+        status:
+          type: string
+          const: cancelled
+          title: Status
+        cancelled_by:
+          type: string
+          title: Cancelled By
+        cancelled_at:
+          type: string
+          format: date-time
+          title: Cancelled At
+        comment:
+          type: string
+          title: Comment
+        version:
+          type: integer
+          title: Version
+      type: object
+      required:
+      - case_id
+      - action_id
+      - status
+      - cancelled_by
+      - cancelled_at
+      - comment
+      - version
+      title: CustomerPriceTypeCancelChangeResponse
     CustomerPriceTypeCaseDetailResponse:
       properties:
         run_id:
@@ -14253,6 +14540,417 @@ components:
       - selected_at
       - version
       title: CustomerPriceTypeQualitySampleResponse
+    CustomerPriceTypeReviewCard:
+      properties:
+        snapshot_id:
+          type: integer
+          title: Snapshot Id
+        case_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Case Id
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        counterparty_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Code
+        counterparty_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Name
+        owner_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Name
+        department_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Name
+        snapshot_month:
+          type: string
+          format: date
+          title: Snapshot Month
+        current_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Price Type
+        recommended_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Price Type
+        recommendation_text:
+          type: string
+          title: Recommendation Text
+        data_state:
+          type: string
+          enum:
+          - ready
+          - technical_review
+          - insufficient_history
+          - new_client
+          title: Data State
+        data_state_label:
+          type: string
+          title: Data State Label
+        snapshot_hash:
+          type: string
+          title: Snapshot Hash
+        contracts:
+          items:
+            $ref: '#/components/schemas/CustomerPriceTypeContractCandidate'
+          type: array
+          title: Contracts
+        price_type:
+          $ref: '#/components/schemas/CustomerPriceTypeReviewDimension'
+        client_action:
+          $ref: '#/components/schemas/CustomerPriceTypeReviewDimension'
+      type: object
+      required:
+      - snapshot_id
+      - counterparty_ref
+      - snapshot_month
+      - recommendation_text
+      - data_state
+      - data_state_label
+      - snapshot_hash
+      - price_type
+      - client_action
+      title: CustomerPriceTypeReviewCard
+    CustomerPriceTypeReviewCardListResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        total:
+          type: integer
+          title: Total
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+        payload:
+          items:
+            $ref: '#/components/schemas/CustomerPriceTypeReviewCard'
+          type: array
+          title: Payload
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - total
+      - limit
+      - offset
+      title: CustomerPriceTypeReviewCardListResponse
+    CustomerPriceTypeReviewCardResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        card:
+          $ref: '#/components/schemas/CustomerPriceTypeReviewCard'
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - card
+      title: CustomerPriceTypeReviewCardResponse
+    CustomerPriceTypeReviewCommand:
+      properties:
+        result:
+          type: string
+          enum:
+          - confirm
+          - correct
+          - no_action
+          - data_issue
+          title: Result
+        corrected_value:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Corrected Value
+        comment:
+          anyOf:
+          - type: string
+            maxLength: 2000
+          - type: 'null'
+          title: Comment
+        expected_version:
+          type: integer
+          minimum: 0.0
+          title: Expected Version
+        snapshot_hash:
+          type: string
+          maxLength: 64
+          minLength: 64
+          pattern: ^[0-9a-f]{64}$
+          title: Snapshot Hash
+      type: object
+      required:
+      - result
+      - expected_version
+      - snapshot_hash
+      title: CustomerPriceTypeReviewCommand
+    CustomerPriceTypeReviewDimension:
+      properties:
+        kind:
+          type: string
+          enum:
+          - price_type
+          - client_action
+          title: Kind
+        system_value:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: System Value
+        system_label:
+          type: string
+          title: System Label
+        can_review:
+          type: boolean
+          title: Can Review
+        unavailable_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Unavailable Reason
+        allowed_results:
+          items:
+            type: string
+            enum:
+            - confirm
+            - correct
+            - no_action
+            - data_issue
+          type: array
+          title: Allowed Results
+        allowed_corrected_values:
+          items:
+            type: string
+          type: array
+          title: Allowed Corrected Values
+        review_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Review Id
+        result:
+          anyOf:
+          - type: string
+            enum:
+            - confirm
+            - correct
+            - no_action
+            - data_issue
+          - type: 'null'
+          title: Result
+        final_value:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Final Value
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+        reviewed_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reviewed By
+        reviewed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Reviewed At
+        version:
+          type: integer
+          title: Version
+          default: 0
+        decision_mode:
+          anyOf:
+          - type: string
+            enum:
+            - test
+            - live
+          - type: 'null'
+          title: Decision Mode
+        external_state:
+          type: string
+          enum:
+          - not_created
+          - held
+          - pending
+          - preflight
+          - ready_to_apply
+          - applying
+          - applied
+          - cancelled
+          - technical_review
+          title: External State
+          default: not_created
+        external_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: External Message
+      type: object
+      required:
+      - kind
+      - system_label
+      - can_review
+      title: CustomerPriceTypeReviewDimension
+    CustomerPriceTypeReviewKindMetrics:
+      properties:
+        reviewed_count:
+          type: integer
+          title: Reviewed Count
+          default: 0
+        confirmed_count:
+          type: integer
+          title: Confirmed Count
+          default: 0
+        corrected_count:
+          type: integer
+          title: Corrected Count
+          default: 0
+        no_action_count:
+          type: integer
+          title: No Action Count
+          default: 0
+        data_issue_count:
+          type: integer
+          title: Data Issue Count
+          default: 0
+        correction_rate:
+          type: number
+          title: Correction Rate
+          default: 0.0
+      type: object
+      title: CustomerPriceTypeReviewKindMetrics
+    CustomerPriceTypeReviewMetricsResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        price_type:
+          $ref: '#/components/schemas/CustomerPriceTypeReviewKindMetrics'
+        client_action:
+          $ref: '#/components/schemas/CustomerPriceTypeReviewKindMetrics'
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - price_type
+      - client_action
+      title: CustomerPriceTypeReviewMetricsResponse
+    CustomerPriceTypeReviewSaveResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        card:
+          $ref: '#/components/schemas/CustomerPriceTypeReviewCard'
+        saved_kind:
+          type: string
+          enum:
+          - price_type
+          - client_action
+          title: Saved Kind
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - card
+      - saved_kind
+      title: CustomerPriceTypeReviewSaveResponse
     CustomerPriceTypeRunResponse:
       properties:
         run_id:

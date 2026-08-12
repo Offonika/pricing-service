@@ -60,6 +60,8 @@ class BitrixCaseGateway(Protocol):
         fields: dict[str, Any],
     ) -> str: ...
 
+    def read_case(self, *, item_id: str) -> dict[str, Any]: ...
+
 
 class AmbiguousExternalResult(RuntimeError):
     """An external result cannot be safely retried or interpreted."""
@@ -148,6 +150,12 @@ class RestBitrixCaseGateway:
             raise AmbiguousExternalResult("Bitrix24 не подтвердил исполнителя рабочего кейса.")
         return item_id
 
+    def read_case(self, *, item_id: str) -> dict[str, Any]:
+        return self.client.get_smart_process_item(
+            entity_type_id=self.entity_type_id,
+            item_id=item_id,
+        )
+
 
 def run_customer_price_type_external_actions_once(
     db: Session,
@@ -234,6 +242,103 @@ def run_customer_price_type_external_actions_once(
                 db.commit()
             counters["errors"] += 1
     return counters
+
+
+def sync_customer_price_type_bitrix_completions_once(
+    db: Session,
+    *,
+    settings: Settings | None = None,
+    bitrix_gateway: BitrixCaseGateway | None = None,
+    now: datetime | None = None,
+) -> dict[str, int]:
+    """Persist trusted completion evidence after an explicit Bitrix24 readback."""
+
+    settings = settings or get_settings()
+    summary = {"scanned": 0, "completed": 0, "waiting": 0, "errors": 0}
+    if not (
+        settings.customer_price_type_external_actions_enabled
+        and settings.customer_price_type_bitrix_case_actions_enabled
+        and settings.customer_price_type_bitrix_completed_stage_ids
+    ):
+        return summary
+    gateway = bitrix_gateway or RestBitrixCaseGateway(settings)
+    current_time = _naive_utc(now)
+    completed_stages = set(settings.customer_price_type_bitrix_completed_stage_ids)
+    actions = list(
+        db.scalars(
+            select(CustomerPriceTypeExternalAction)
+            .where(
+                CustomerPriceTypeExternalAction.action_kind == "bitrix_case",
+                CustomerPriceTypeExternalAction.status == "applied",
+                CustomerPriceTypeExternalAction.external_ref.is_not(None),
+            )
+            .order_by(
+                CustomerPriceTypeExternalAction.updated_at, CustomerPriceTypeExternalAction.id
+            )
+            .limit(settings.customer_price_type_external_action_batch_size)
+        )
+    )
+    for action in actions:
+        summary["scanned"] += 1
+        try:
+            review, snapshot, profile, case = _action_context(db, action)
+            if case is None:
+                summary["waiting"] += 1
+                continue
+            current = dict(case.manager_action_completeness or {})
+            if (
+                current.get("status") == "completed"
+                and current.get("external_action_id") == action.id
+            ):
+                summary["completed"] += 1
+                continue
+            item = gateway.read_case(item_id=str(action.external_ref))
+            stage_id = str(item.get("stageId") or "").strip()
+            if str(item.get("id") or "").strip() != str(action.external_ref) or not stage_id:
+                raise AmbiguousExternalResult(
+                    "Bitrix24 не подтвердил состояние рабочего кейса для нового расчёта."
+                )
+            if stage_id not in completed_stages:
+                summary["waiting"] += 1
+                continue
+            client_action = str(review.final_value or "")
+            if client_action not in {"retention", "isolate", "recovery"}:
+                summary["waiting"] += 1
+                continue
+            case.manager_action_completeness = {
+                "status": "completed",
+                "source": "bitrix_readback",
+                "action": client_action,
+                "current_price_type": snapshot.current_price_type,
+                "snapshot_month": snapshot.snapshot_month.isoformat(),
+                "snapshot_hash": snapshot.snapshot_hash,
+                "bitrix_item_id": str(action.external_ref),
+                "bitrix_stage_id": stage_id,
+                "completed_at": current_time.isoformat(),
+                "external_action_id": action.id,
+            }
+            case.stage = "CLOSED_KEEP"
+            case.version += 1
+            _append_event(
+                db,
+                case,
+                action,
+                event_type="bitrix_client_action_completed",
+                source="bitrix",
+                before=ACTION_STAGE_KEYS[client_action],
+                after="CLOSED_KEEP",
+                comment=(
+                    "Bitrix24 подтвердил завершение действия. Возможность изменения "
+                    "типа определит только новый месячный расчёт."
+                ),
+                metadata={"bitrix_item_id": action.external_ref, "bitrix_stage_id": stage_id},
+            )
+            db.commit()
+            summary["completed"] += 1
+        except Exception:  # noqa: BLE001 - readback is retried without changing external state
+            db.rollback()
+            summary["errors"] += 1
+    return summary
 
 
 def _deliver_bitrix_case(

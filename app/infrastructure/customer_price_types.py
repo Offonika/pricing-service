@@ -53,6 +53,26 @@ _REVIEW_REQUIRED_SOURCES = (
 )
 
 
+def _initial_case_stage(decision: CustomerPriceTypeDecision) -> str:
+    if decision.case_type == "upgrade_approval":
+        return "UPGRADE_APPROVAL"
+    if decision.case_type == "downgrade_approval":
+        return "DOWNGRADE_APPROVAL"
+    if decision.case_type == "manager_work":
+        return "RETENTION_WORK"
+    if decision.case_type == "isolate":
+        return "ISOLATE_1M"
+    if decision.case_type == "recovery":
+        return "RECOVERY_CONTROL"
+    if decision.case_type == "data_check":
+        return "DATA_CHECK"
+    if decision.review_type == "quality":
+        return "QUALITY_CHECK"
+    if decision.review_type in {"credit", "economics"}:
+        return "CREDIT_ECONOMICS_CHECK"
+    return "NEW_SNAPSHOT"
+
+
 class CustomerPriceTypePersistenceConflict(RuntimeError):
     """Raised when an idempotency key is reused for different source facts."""
 
@@ -174,6 +194,44 @@ class SqlAlchemyCustomerPriceTypeRepository:
         row.status = "failed"
         row.error_summary = error[:4000]
         row.completed_at = _utcnow()
+
+    def previous_action_completions(
+        self,
+        *,
+        counterparty_refs: Sequence[str],
+        before_month: date,
+    ) -> dict[str, dict[str, Any]]:
+        """Return only persisted Bitrix-readback evidence from an earlier month."""
+
+        if not counterparty_refs:
+            return {}
+        rows = self.session.execute(
+            select(CustomerPriceTypeProfile.counterparty_ref, CustomerPriceTypeCase)
+            .join(
+                CustomerPriceTypeCase,
+                CustomerPriceTypeCase.profile_id == CustomerPriceTypeProfile.id,
+            )
+            .where(
+                CustomerPriceTypeProfile.counterparty_ref.in_(counterparty_refs),
+                CustomerPriceTypeCase.snapshot_month < before_month,
+            )
+            .order_by(
+                CustomerPriceTypeProfile.counterparty_ref,
+                CustomerPriceTypeCase.snapshot_month.desc(),
+                CustomerPriceTypeCase.id.desc(),
+            )
+        ).all()
+        result: dict[str, dict[str, Any]] = {}
+        for counterparty_ref, case_row in rows:
+            if counterparty_ref in result:
+                continue
+            evidence = dict(case_row.manager_action_completeness or {})
+            if (
+                evidence.get("status") == "completed"
+                and evidence.get("source") == "bitrix_readback"
+            ):
+                result[counterparty_ref] = evidence
+        return result
 
     def persist_results(
         self,
@@ -380,7 +438,7 @@ class SqlAlchemyCustomerPriceTypeRepository:
                     case_type=decision.case_type or "special_review",
                     review_type=decision.review_type,
                     reasons=list(decision.reasons),
-                    stage="NEW_SNAPSHOT",
+                    stage=_initial_case_stage(decision),
                     owner_ref=fact.owner_ref,
                     owner_name=fact.owner_name,
                     department_ref=fact.department_ref,
@@ -403,7 +461,7 @@ class SqlAlchemyCustomerPriceTypeRepository:
                         event_type="case_created",
                         actor="system",
                         source="calculation",
-                        after_status="NEW_SNAPSHOT",
+                        after_status=_initial_case_stage(decision),
                         comment=decision.recommendation_reason,
                         metadata_json={"snapshot_hash": decision.snapshot_hash, "run_id": run.id},
                         idempotency_key=f"case-created:{case.case_key}",
@@ -501,11 +559,11 @@ class SqlAlchemyCustomerPriceTypeRepository:
             if reclassified:
                 event_type = "case_reclassified"
                 comment = "Новый расчёт изменил операционную очередь кейса."
-                case.stage = "NEW_SNAPSHOT"
+                case.stage = _initial_case_stage(decision)
             elif reopened:
                 event_type = "case_reopened"
                 comment = "Новый расчёт снова требует операционного действия."
-                case.stage = "NEW_SNAPSHOT"
+                case.stage = _initial_case_stage(decision)
             self.session.add(
                 CustomerPriceTypeCaseEvent(
                     case_id=case.id,
@@ -627,6 +685,12 @@ class SqlAlchemyCustomerPriceTypeRepository:
                 CustomerPriceTypeProfile,
                 CustomerPriceTypeSnapshot,
                 CustomerPriceTypeQualitySample,
+                exists(
+                    select(CustomerPriceTypeReview.id).where(
+                        CustomerPriceTypeReview.snapshot_id == CustomerPriceTypeSnapshot.id,
+                        CustomerPriceTypeReview.result == "data_issue",
+                    )
+                ).label("current_data_issue"),
             )
             .join(
                 CustomerPriceTypeSnapshot,
@@ -659,7 +723,7 @@ class SqlAlchemyCustomerPriceTypeRepository:
             .offset(offset)
             .limit(limit)
         ).all()
-        return [(row[0], row[1], row[2]) for row in rows], total
+        return [(row[0], row[1], row[2], bool(row[3])) for row in rows], total
 
     def list_data_issues(
         self,

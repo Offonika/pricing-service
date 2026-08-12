@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -23,6 +24,7 @@ from app.models.customer_price_type import (
 )
 from app.services.customer_price_type_external_actions import (
     run_customer_price_type_external_actions_once,
+    sync_customer_price_type_bitrix_completions_once,
 )
 from app.services.customer_price_type_reviews import CustomerPriceTypeReviewService
 from app.services.customer_price_types import CustomerPriceTypeRunService
@@ -51,9 +53,9 @@ def _facts(value: int, *, quality: bool = False) -> CustomerPriceTypeFacts:
             ),
         ),
         monthly_sales={
-            "2026-05": Decimal("1"),
-            "2026-06": Decimal("1"),
-            "2026-07": Decimal("1"),
+            "2026-05": Decimal("120000"),
+            "2026-06": Decimal("120000"),
+            "2026-07": Decimal("120000"),
         },
         source_statuses={
             "contracts": "ready",
@@ -66,8 +68,8 @@ def _facts(value: int, *, quality: bool = False) -> CustomerPriceTypeFacts:
         department_ref="department-1",
         department_name="Розничная сеть",
         history_coverage_months=12,
-        direct_onec_total_3m=Decimal("3"),
-        ledger_total_3m=Decimal("3"),
+        direct_onec_total_3m=Decimal("360000"),
+        ledger_total_3m=Decimal("360000"),
         economics_status="ok",
         economics={"status": "ok"},
         return_review_type="quality" if quality else None,
@@ -80,39 +82,17 @@ def _factory(tmp_path: Path, name: str):
     return engine, sessionmaker(bind=engine, expire_on_commit=False)
 
 
-def _force_ready_change(factory, snapshot_id: int) -> None:
-    with factory() as db:
-        snapshot = db.get(CustomerPriceTypeSnapshot, snapshot_id)
-        case = db.scalar(
-            select(CustomerPriceTypeCase).where(
-                CustomerPriceTypeCase.current_snapshot_id == snapshot_id
-            )
-        )
-        snapshot.case_type = "downgrade_approval"
-        snapshot.review_type = "economics"
-        snapshot.system_recommendation = "downgrade_proposed"
-        snapshot.recommended_price_type = "Розница"
-        snapshot.action_required = True
-        snapshot.stop_factors = []
-        case.case_type = "downgrade_approval"
-        case.recommended_price_type = "Розница"
-        case.system_recommendation = "downgrade_proposed"
-        case.stage = "DOWNGRADE_APPROVAL"
-        db.commit()
-
-
 def _save_live_price_review(factory) -> tuple[int, str, str]:
     CustomerPriceTypeRunService(factory).execute(
         [_facts(10)], source_statuses={"contracts": "ready"}
     )
     with factory() as db:
         snapshot_id = db.scalar(select(CustomerPriceTypeSnapshot.id))
-    _force_ready_change(factory, snapshot_id)
     settings = Settings(
         _env_file=None,
         customer_price_type_external_actions_enabled=True,
         customer_price_type_onec_actions_enabled=True,
-        customer_price_type_onec_enabled_directions=["bronze_to_retail"],
+        customer_price_type_onec_enabled_directions=["bronze_to_silver"],
     )
     with factory() as db:
         snapshot = db.get(CustomerPriceTypeSnapshot, snapshot_id)
@@ -178,7 +158,7 @@ def test_onec_worker_preflights_applies_and_reads_back_once(tmp_path: Path) -> N
         _env_file=None,
         customer_price_type_external_actions_enabled=True,
         customer_price_type_onec_actions_enabled=True,
-        customer_price_type_onec_enabled_directions=["bronze_to_retail"],
+        customer_price_type_onec_enabled_directions=["bronze_to_silver"],
     )
     exchange_root = tmp_path / "exchange"
     with factory() as db:
@@ -231,7 +211,7 @@ def test_onec_worker_preflights_applies_and_reads_back_once(tmp_path: Path) -> N
         contract_ref=contract_ref,
         phase="apply",
         result="applied",
-        readback="Розница",
+        readback="3.Серебряный",
         all_ready=True,
         atomically=True,
     )
@@ -249,7 +229,7 @@ def test_onec_worker_preflights_applies_and_reads_back_once(tmp_path: Path) -> N
         assert fourth["applied"] == 1
         assert action.status == "applied"
         assert line.status == "applied"
-        assert line.actual_price_type == "Розница"
+        assert line.actual_price_type == "3.Серебряный"
         assert case.stage == "CLOSED_CHANGED"
         assert case.onec_readback_status == "confirmed"
         assert (
@@ -268,7 +248,7 @@ def test_partial_onec_result_stops_automatic_retries(tmp_path: Path) -> None:
         _env_file=None,
         customer_price_type_external_actions_enabled=True,
         customer_price_type_onec_actions_enabled=True,
-        customer_price_type_onec_enabled_directions=["bronze_to_retail"],
+        customer_price_type_onec_enabled_directions=["bronze_to_silver"],
     )
     exchange_root = tmp_path / "exchange"
     with factory() as db:
@@ -324,6 +304,9 @@ class FakeBitrixGateway:
         item = self.items.setdefault(idempotency_key, {"id": str(len(self.items) + 1)})
         item.update(fields)
         return str(item["id"])
+
+    def read_case(self, *, item_id: str) -> dict:
+        return next(item for item in self.items.values() if str(item["id"]) == str(item_id))
 
 
 def test_bitrix_case_is_idempotent_and_has_responsible_stage_and_sla(tmp_path: Path) -> None:
@@ -391,4 +374,69 @@ def test_bitrix_case_is_idempotent_and_has_responsible_stage_and_sla(tmp_path: P
         assert second["applied"] == 1
         assert len(gateway.items) == 1
         assert gateway.calls == 2
+    engine.dispose()
+
+
+def test_bitrix_completion_requires_configured_terminal_readback(tmp_path: Path) -> None:
+    engine, factory = _factory(tmp_path, "bitrix-completion-isolate.db")
+    isolate_facts = _facts(22)
+    isolate_facts = replace(
+        isolate_facts,
+        monthly_sales={
+            "2026-05": Decimal("1"),
+            "2026-06": Decimal("1"),
+            "2026-07": Decimal("1"),
+        },
+        direct_onec_total_3m=Decimal("3"),
+        ledger_total_3m=Decimal("3"),
+    )
+    CustomerPriceTypeRunService(factory).execute(
+        [isolate_facts], source_statuses={"contracts": "ready"}
+    )
+    settings = Settings(
+        _env_file=None,
+        customer_price_type_external_actions_enabled=True,
+        customer_price_type_bitrix_case_actions_enabled=True,
+        customer_price_type_bitrix_category_id=77,
+        customer_price_type_bitrix_stage_map={"isolate": "DT1188_77:ISOLATE_1M"},
+        customer_price_type_bitrix_field_map={"stable_key": "stableKey"},
+        customer_price_type_bitrix_internal_user_id=42,
+        customer_price_type_bitrix_completed_stage_ids=["DT1188_77:CLOSED_KEEP"],
+    )
+    with factory() as db:
+        snapshot = db.scalar(select(CustomerPriceTypeSnapshot))
+        CustomerPriceTypeReviewService(db, settings=settings).save(
+            snapshot_id=snapshot.id,
+            review_kind="client_action",
+            result="confirm",
+            corrected_value=None,
+            comment=None,
+            expected_version=0,
+            snapshot_hash=snapshot.snapshot_hash,
+            access=CustomerPriceTypeAccessScope(
+                actor="arsen", role="network_head", can_view_money=True
+            ),
+        )
+    gateway = FakeBitrixGateway()
+    with factory() as db:
+        delivered = run_customer_price_type_external_actions_once(
+            db, settings=settings, bitrix_gateway=gateway, now=NOW
+        )
+        assert delivered["applied"] == 1, delivered
+        waiting = sync_customer_price_type_bitrix_completions_once(
+            db, settings=settings, bitrix_gateway=gateway, now=NOW
+        )
+        assert waiting["waiting"] == 1
+        case = db.scalar(select(CustomerPriceTypeCase))
+        assert case.manager_action_completeness == {}
+        item = next(iter(gateway.items.values()))
+        item["stageId"] = "DT1188_77:CLOSED_KEEP"
+        completed = sync_customer_price_type_bitrix_completions_once(
+            db, settings=settings, bitrix_gateway=gateway, now=NOW
+        )
+        assert completed["completed"] == 1
+        case = db.scalar(select(CustomerPriceTypeCase))
+        assert case.manager_action_completeness["source"] == "bitrix_readback"
+        assert case.manager_action_completeness["action"] == "isolate"
+        assert case.stage == "CLOSED_KEEP"
     engine.dispose()

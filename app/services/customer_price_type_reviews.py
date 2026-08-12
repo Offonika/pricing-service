@@ -92,10 +92,10 @@ def _utcnow() -> datetime:
 
 
 def _client_action(snapshot: Any) -> str | None:
-    if snapshot.review_type in {"quality", "credit", "economics"}:
-        return str(snapshot.review_type)
     if snapshot.case_type in _CASE_ACTIONS:
         return _CASE_ACTIONS[snapshot.case_type]
+    if snapshot.review_type in {"quality", "credit", "economics"}:
+        return str(snapshot.review_type)
     if snapshot.case_type == "special_review":
         return "quality"
     if snapshot.system_recommendation in CLIENT_ACTIONS:
@@ -332,15 +332,17 @@ class CustomerPriceTypeReviewService:
         self.session.add(review)
         try:
             self.session.flush()
-            external_action = self._create_external_action(
-                review=review,
-                profile=profile,
-                snapshot=snapshot,
-                case=case,
-                result=result,
-                final_value=final_value,
-                execution_allowed=execution_allowed,
-            )
+            external_action = None
+            if not internal_no_change_audit:
+                external_action = self._create_external_action(
+                    review=review,
+                    profile=profile,
+                    snapshot=snapshot,
+                    case=case,
+                    result=result,
+                    final_value=final_value,
+                    execution_allowed=execution_allowed,
+                )
             if result == "data_issue":
                 self._block_external_actions(snapshot_id=snapshot.id, now=now)
             if case is not None:

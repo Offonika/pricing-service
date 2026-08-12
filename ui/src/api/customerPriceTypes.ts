@@ -498,13 +498,6 @@ export async function saveCptReview(options: {
   return data;
 }
 
-export async function prepareCptQualitySamples(perGroup: number) {
-  const { data } = await api.post("/customer-price-types/quality/samples/prepare", {
-    per_group: perGroup,
-  });
-  return data;
-}
-
 export async function fetchCptQualitySamples(options: {
   status?: "pending" | "reviewed" | null;
 } = {}): Promise<CptQualitySampleListResponse> {
@@ -532,25 +525,6 @@ export async function fetchCptQualitySampleDetail(
 ): Promise<CptQualitySampleDetailResponse> {
   const { data } = await api.get<CptQualitySampleDetailResponse>(
     `/customer-price-types/quality/samples/${sampleId}`,
-  );
-  return data;
-}
-
-export async function reviewCptQualitySample(options: {
-  sampleId: number;
-  reviewResult: "correct" | "incorrect" | "data_issue";
-  correctGroup?: CptQualityGroup | null;
-  comment?: string | null;
-  expectedVersion: number;
-}): Promise<CptQualitySample> {
-  const { data } = await api.put<CptQualitySample>(
-    `/customer-price-types/quality/samples/${options.sampleId}`,
-    {
-      review_result: options.reviewResult,
-      correct_group: options.correctGroup ?? null,
-      comment: options.comment || null,
-      expected_version: options.expectedVersion,
-    },
   );
   return data;
 }

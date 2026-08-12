@@ -5417,12 +5417,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CustomerPriceTypeQualityPrepareResponse'
+        '410':
+          description: Историческая выборка заморожена
         '422':
           description: Validation Error
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+      deprecated: true
       security:
       - HTTPBearer: []
   /api/customer-price-types/quality/samples:
@@ -5533,6 +5536,7 @@ paths:
       - customer-price-types
       summary: Review Customer Price Type Quality Sample
       operationId: review_customer_price_type_quality_sample_api_customer_price_types_quality_samples__sample_id__put
+      deprecated: true
       security:
       - HTTPBearer: []
       parameters:
@@ -5555,6 +5559,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CustomerPriceTypeQualitySampleResponse'
+        '410':
+          description: Историческая разметка заморожена
         '422':
           description: Validation Error
           content:

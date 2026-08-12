@@ -375,6 +375,9 @@ class Settings(BaseSettings):
     customer_price_type_bitrix_entity_type_id: int | None = None
     customer_price_type_bitrix_category_id: int | None = None
     customer_price_type_bitrix_stage_map: dict[str, str] = Field(default_factory=dict)
+    customer_price_type_bitrix_completed_stage_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
     customer_price_type_bitrix_field_map: dict[str, str] = Field(default_factory=dict)
     customer_price_type_bitrix_quality_user_id: int | None = None
     customer_price_type_bitrix_finance_user_id: int | None = None
@@ -548,6 +551,8 @@ class Settings(BaseSettings):
         "receivable_bitrix_field_map",
         "receivable_credit_decision_stage_map",
         "receivable_credit_decision_field_map",
+        "customer_price_type_bitrix_stage_map",
+        "customer_price_type_bitrix_field_map",
         "telephony_service_line_labels",
         mode="before",
     )
@@ -607,6 +612,7 @@ class Settings(BaseSettings):
         "customer_price_type_bitrix_allowed_member_ids",
         "customer_price_type_bitrix_full_access_user_ids",
         "customer_price_type_onec_enabled_directions",
+        "customer_price_type_bitrix_completed_stage_ids",
         mode="before",
     )
     @classmethod

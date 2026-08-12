@@ -14,12 +14,9 @@ import {
   fetchCptReviewMetrics,
   fetchCptSummary,
   fetchCptWorklists,
-  prepareCptQualitySamples,
-  reviewCptQualitySample,
   saveCptReview,
   searchCptProfiles,
   type CptQualityGroup,
-  type CptQualitySample,
   type CptReviewCard,
   type CptReviewDimension,
   type CptReviewKind,
@@ -664,7 +661,7 @@ function ReviewWorkspace({ role }: { role?: string }) {
   const [showReviewed, setShowReviewed] = useState(false);
   const [search, setSearch] = useState("");
   const [selectedSnapshotId, setSelectedSnapshotId] = useState<number | null>(null);
-  const canDecide = role === "network_head";
+  const canDecide = role === "network_head" || role === "internal" || role === "executive";
 
   const cardsQuery = useQuery({
     queryKey: ["cpt", "reviews", queue, showReviewed, search],
@@ -854,16 +851,10 @@ function ReviewDimensionBlock({ cardData, dimension, title, canDecide, onSaved }
 }
 
 function QualityModule({ role }: { role?: string }) {
-  const queryClient = useQueryClient();
-  const [perGroup, setPerGroup] = useState(30);
   const [statusFilter, setStatusFilter] = useState<"pending" | "reviewed" | null>("pending");
-  const [groups, setGroups] = useState<Record<number, CptQualityGroup>>({});
-  const [comments, setComments] = useState<Record<number, string>>({});
-  const [reviewActions, setReviewActions] = useState<Record<number, "incorrect" | "data_issue" | null>>({});
   const [expandedSampleId, setExpandedSampleId] = useState<number | null>(null);
   const [globalSearch, setGlobalSearch] = useState("");
   const [dataIssueSearch, setDataIssueSearch] = useState("");
-  const canPrepare = role === "internal" || role === "executive";
   const canViewDataIssues = role === "internal" || role === "executive" || role === "quality";
 
   const metricsQuery = useQuery({
@@ -888,38 +879,6 @@ function QualityModule({ role }: { role?: string }) {
     queryKey: ["cpt", "quality", "sample", expandedSampleId],
     queryFn: () => fetchCptQualitySampleDetail(expandedSampleId as number),
     enabled: expandedSampleId != null,
-  });
-  const refreshQuality = async () => {
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["cpt", "quality", "metrics"] }),
-      queryClient.invalidateQueries({ queryKey: ["cpt", "quality", "samples"] }),
-    ]);
-  };
-  const prepareMutation = useMutation({
-    mutationFn: () => prepareCptQualitySamples(perGroup),
-    onSuccess: refreshQuality,
-  });
-  const reviewMutation = useMutation({
-    mutationFn: ({ sample, reviewResult, correctGroup, comment }: { sample: CptQualitySample; reviewResult: "correct" | "incorrect" | "data_issue"; correctGroup?: CptQualityGroup | null; comment?: string }) =>
-      reviewCptQualitySample({
-        sampleId: sample.id,
-        reviewResult,
-        correctGroup,
-        comment,
-        expectedVersion: sample.version,
-      }),
-    onSuccess: async (saved) => {
-      await refreshQuality();
-      await queryClient.invalidateQueries({ queryKey: ["cpt", "profile-search"] });
-      await queryClient.invalidateQueries({ queryKey: ["cpt", "data-issues"] });
-      const result = saved.review_result === "data_issue"
-        ? "Ошибка в данных передана технической команде"
-        : saved.review_result === "incorrect"
-          ? "Исправленная оценка сохранена"
-          : "Результат подтверждён";
-      toast.success(`${result}. ${saved.reviewed_by ?? "Пользователь"}, ${new Date(saved.reviewed_at ?? Date.now()).toLocaleString("ru-RU")}`);
-    },
-    onError: () => toast.error("Не удалось сохранить оценку. Обновите выборку и повторите."),
   });
 
   const metrics = metricsQuery.data;
@@ -957,8 +916,8 @@ function QualityModule({ role }: { role?: string }) {
                     {item.result_state === "change_proposed" ? ` · Предлагается: ${item.recommended_price_type ?? "—"}` : ""}
                   </small>
                 </div>
-                {item.can_review ? (
-                  <button type="button" onClick={() => setExpandedSampleId(item.quality_sample_id)} style={secondaryButton}>Перейти к оценке</button>
+                {item.quality_sample_id ? (
+                  <button type="button" onClick={() => setExpandedSampleId(item.quality_sample_id)} style={secondaryButton}>Показать историческую запись</button>
                 ) : (
                   <span style={{ fontSize: 12, color: "var(--color-text-muted, #667085)" }}>
                     {item.quality_sample_status === "reviewed" ? "Уже проверено" : "Только просмотр"}
@@ -995,25 +954,6 @@ function QualityModule({ role }: { role?: string }) {
         </p>
       )}
 
-      {canPrepare && (
-        <section style={{ ...card, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ flex: "1 1 360px" }}>
-            <strong>Контрольная выборка</strong>
-            <p style={{ margin: "4px 0 0", color: "var(--color-text-muted, #667085)", fontSize: 13 }}>
-              Система добавит указанное число клиентов из каждой очереди и из группы без действий. Повторный запуск не создаёт дубли.
-            </p>
-          </div>
-          <label style={{ display: "grid", gap: 4, fontSize: 13 }}>
-            На каждую группу
-            <input type="number" min={1} max={200} value={perGroup} onChange={(event) => setPerGroup(Number(event.target.value))} style={{ width: 100, minHeight: 36, padding: "0 8px", border: "1px solid var(--color-border, #d0d5dd)", borderRadius: 8 }} />
-          </label>
-          <button type="button" disabled={prepareMutation.isPending || perGroup < 1 || perGroup > 200} onClick={() => prepareMutation.mutate()} style={secondaryButton}>
-            {prepareMutation.isPending ? "Подготовка…" : "Подготовить выборку"}
-          </button>
-          {prepareMutation.isError && <span style={{ color: "var(--color-danger, #d92d20)" }}>Не удалось подготовить выборку.</span>}
-        </section>
-      )}
-
       <section style={{ ...card, display: "grid", gap: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
           <strong>Оценки эксперта</strong>
@@ -1034,16 +974,6 @@ function QualityModule({ role }: { role?: string }) {
           </p>
         )}
         {samples.map((sample) => {
-          const selectedAction = reviewActions[sample.id] ?? null;
-          const alternativeGroups = QUALITY_GROUPS.filter((group) => group !== "data_check" && group !== sample.system_group);
-          const selectedGroup = groups[sample.id] ?? sample.correct_group ?? (selectedAction === "incorrect" ? alternativeGroups[0] : sample.system_group);
-          const comment = comments[sample.id] ?? sample.comment ?? "";
-          const needsComment = selectedAction === "incorrect" || selectedAction === "data_issue";
-          const canSubmitAlternative = Boolean(
-            selectedAction
-            && (!needsComment || comment.trim())
-            && (selectedAction !== "incorrect" || (selectedGroup !== sample.system_group && selectedGroup !== "data_check"))
-          );
           return (
             <article key={sample.id} style={{ borderTop: "1px solid var(--color-border, #eaecf0)", paddingTop: 14, display: "grid", gap: 10 }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
@@ -1109,30 +1039,9 @@ function QualityModule({ role }: { role?: string }) {
                   )}
                 </div>
               )}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10, alignItems: "end" }}>
-                <button type="button" disabled={reviewMutation.isPending || sample.status === "reviewed"} onClick={() => reviewMutation.mutate({ sample, reviewResult: "correct" })} style={primaryActionButton}>
-                  Результат верный
-                </button>
-                <button type="button" disabled={sample.status === "reviewed"} onClick={() => setReviewActions((current) => ({ ...current, [sample.id]: current[sample.id] === "incorrect" ? null : "incorrect" }))} style={secondaryButton}>Результат неверный</button>
-                <button type="button" disabled={sample.status === "reviewed"} onClick={() => setReviewActions((current) => ({ ...current, [sample.id]: current[sample.id] === "data_issue" ? null : "data_issue" }))} style={secondaryButton}>Ошибка в данных</button>
-              </div>
-              {selectedAction && sample.status !== "reviewed" && (
-                <div style={{ ...card, padding: 12, display: "grid", gap: 10, background: "var(--color-surface-muted, #f8fafc)" }}>
-                  {selectedAction === "incorrect" && (
-                    <label style={{ display: "grid", gap: 4, fontSize: 13 }}>
-                      Правильный результат
-                      <select value={selectedGroup} onChange={(event) => setGroups((current) => ({ ...current, [sample.id]: event.target.value as CptQualityGroup }))} style={{ minHeight: 38, padding: "0 10px", border: "1px solid var(--color-border, #d0d5dd)", borderRadius: 8, background: "var(--color-surface, #fff)" }}>
-                        {alternativeGroups.map((group) => <option key={group} value={group}>{QUALITY_GROUP_LABELS[group]}</option>)}
-                      </select>
-                    </label>
-                  )}
-                  <label style={{ display: "grid", gap: 4, fontSize: 13 }}>
-                    Комментарий <span aria-hidden="true">*</span>
-                    <input required value={comment} maxLength={2000} placeholder={selectedAction === "data_issue" ? "Какие данные выглядят неверно" : "Почему результат требует исправления"} onChange={(event) => setComments((current) => ({ ...current, [sample.id]: event.target.value }))} style={{ minHeight: 38, padding: "0 10px", border: "1px solid var(--color-border, #d0d5dd)", borderRadius: 8 }} />
-                  </label>
-                  <button type="button" disabled={reviewMutation.isPending || !canSubmitAlternative} onClick={() => reviewMutation.mutate({ sample, reviewResult: selectedAction, correctGroup: selectedAction === "incorrect" ? selectedGroup : null, comment })} style={secondaryButton}>
-                    {selectedAction === "data_issue" ? "Передать технической команде" : "Сохранить исправленную оценку"}
-                  </button>
+              {sample.status !== "reviewed" && (
+                <div role="note" style={{ padding: 10, borderRadius: 8, background: "var(--color-surface-muted, #f8fafc)", fontSize: 13 }}>
+                  Историческая строка заморожена и доступна только для просмотра. Новую проверку выполняйте в разделе «Проверка решений».
                 </div>
               )}
               {sample.status === "reviewed" && (
@@ -1143,7 +1052,6 @@ function QualityModule({ role }: { role?: string }) {
             </article>
           );
         })}
-        {reviewMutation.isError && <p style={{ color: "var(--color-danger, #d92d20)" }}>Не удалось сохранить оценку. Обновите выборку и повторите.</p>}
       </section>
 
       {canViewDataIssues && (

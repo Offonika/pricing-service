@@ -9,6 +9,7 @@ from app.core.config import get_settings
 from app.infrastructure.db import get_application_engine
 from app.services.customer_price_type_external_actions import (
     run_customer_price_type_external_actions_once,
+    sync_customer_price_type_bitrix_completions_once,
 )
 from app.services.exporters.ut103_exchange import (
     load_ut103_env_file,
@@ -33,8 +34,20 @@ def main() -> int:
             exchange_root=exchange_root,
             settings=settings,
         )
+        result["bitrix_completion_sync"] = sync_customer_price_type_bitrix_completions_once(
+            db,
+            settings=settings,
+        )
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
-    return 1 if result["errors"] or result["technical_review"] else 0
+    return (
+        1
+        if (
+            result["errors"]
+            or result["technical_review"]
+            or result["bitrix_completion_sync"]["errors"]
+        )
+        else 0
+    )
 
 
 if __name__ == "__main__":

@@ -85,6 +85,7 @@ from app.services.customer_price_type_reviews import (
 )
 from app.services.customer_price_types import (
     CustomerPriceTypeQualityConflict,
+    CustomerPriceTypeQualityFrozen,
     CustomerPriceTypeQualityService,
     CustomerPriceTypeReadService,
     customer_price_type_case_guidance,
@@ -439,12 +440,15 @@ def _ensure_quality_read_access(access: CustomerPriceTypeAccessScope) -> None:
         raise HTTPException(status_code=403, detail="customer price-type quality access denied")
 
 
-def _profile_search_payload(profile, snapshot, sample) -> dict:
+def _profile_search_payload(profile, snapshot, sample, current_data_issue: bool) -> dict:
     is_data_issue = snapshot.case_type == "data_check" or bool(
-        sample is not None
-        and sample.status == "reviewed"
-        and sample.system_group != "data_check"
-        and sample.correct_group == "data_check"
+        current_data_issue
+        or (
+            sample is not None
+            and sample.status == "reviewed"
+            and sample.system_group != "data_check"
+            and sample.correct_group == "data_check"
+        )
     )
     change_proposed = (
         snapshot.recommended_price_type is not None
@@ -467,7 +471,7 @@ def _profile_search_payload(profile, snapshot, sample) -> dict:
         "recommended_price_type": None if is_data_issue else snapshot.recommended_price_type,
         "result_state": state,
         "result_label": label,
-        "can_review": bool(sample is not None and sample.status == "pending" and not is_data_issue),
+        "can_review": False,
         "quality_sample_id": sample.id if sample is not None else None,
         "quality_sample_status": sample.status if sample is not None else None,
     }
@@ -1110,6 +1114,8 @@ def get_customer_price_type_run(
 @router.post(
     "/quality/samples/prepare",
     response_model=CustomerPriceTypeQualityPrepareResponse,
+    deprecated=True,
+    responses={410: {"description": "Историческая выборка заморожена"}},
 )
 def prepare_customer_price_type_quality_samples(
     payload: CustomerPriceTypeQualityPrepareRequest,
@@ -1123,6 +1129,8 @@ def prepare_customer_price_type_quality_samples(
             access=access,
         )
         return CustomerPriceTypeQualityPrepareResponse.model_validate(result)
+    except CustomerPriceTypeQualityFrozen as exc:
+        raise HTTPException(status_code=410, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
@@ -1228,6 +1236,8 @@ def get_customer_price_type_quality_sample(
 @router.put(
     "/quality/samples/{sample_id}",
     response_model=CustomerPriceTypeQualitySampleResponse,
+    deprecated=True,
+    responses={410: {"description": "Историческая разметка заморожена"}},
 )
 def review_customer_price_type_quality_sample(
     sample_id: int,
@@ -1247,6 +1257,8 @@ def review_customer_price_type_quality_sample(
         if row is None:
             raise LookupError("quality sample not found")
         return CustomerPriceTypeQualitySampleResponse.model_validate(_quality_sample_payload(*row))
+    except CustomerPriceTypeQualityFrozen as exc:
+        raise HTTPException(status_code=410, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:

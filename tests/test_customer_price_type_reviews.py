@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -93,25 +94,8 @@ def _client(factory, access: CustomerPriceTypeAccessScope) -> TestClient:
     return TestClient(app)
 
 
-def _force_ready_change(factory, snapshot_id: int) -> None:
-    with factory() as session:
-        snapshot = session.get(CustomerPriceTypeSnapshot, snapshot_id)
-        case = session.scalar(
-            select(CustomerPriceTypeCase).where(
-                CustomerPriceTypeCase.current_snapshot_id == snapshot_id
-            )
-        )
-        snapshot.case_type = "downgrade_approval"
-        snapshot.review_type = "economics"
-        snapshot.system_recommendation = "downgrade_proposed"
-        snapshot.recommended_price_type = "Розница"
-        snapshot.action_required = True
-        snapshot.stop_factors = []
-        case.case_type = "downgrade_approval"
-        case.recommended_price_type = "Розница"
-        case.system_recommendation = "downgrade_proposed"
-        case.stage = "DOWNGRADE_APPROVAL"
-        session.commit()
+def _upgrade_facts(value: int) -> CustomerPriceTypeFacts:
+    return _facts(value, monthly=("120000", "120000", "120000"))
 
 
 def test_review_cards_separate_price_type_and_client_action(tmp_path: Path) -> None:
@@ -186,12 +170,11 @@ def test_price_review_validates_hash_and_creates_exact_contract_outbox(tmp_path:
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     CustomerPriceTypeRunService(factory).execute(
-        [_facts(10)], source_statuses={"contracts": "ready"}
+        [_upgrade_facts(10)], source_statuses={"contracts": "ready"}
     )
     with Session(engine) as session:
         snapshot = session.scalar(select(CustomerPriceTypeSnapshot))
         snapshot_id = snapshot.id
-    _force_ready_change(factory, snapshot_id)
     with Session(engine) as session:
         snapshot = session.get(CustomerPriceTypeSnapshot, snapshot_id)
         snapshot_hash = snapshot.snapshot_hash
@@ -239,7 +222,7 @@ def test_price_review_validates_hash_and_creates_exact_contract_outbox(tmp_path:
             assert action.execution_allowed_at_decision is False
             assert line.contract_ref == _ref(1010)
             assert line.expected_price_type == "2.Бронзовый"
-            assert line.target_price_type == "Розница"
+            assert line.target_price_type == "3.Серебряный"
             action_id = action.id
             action_version = action.version
 
@@ -260,11 +243,10 @@ def test_correcting_to_current_type_does_not_create_onec_action(tmp_path: Path) 
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     CustomerPriceTypeRunService(factory).execute(
-        [_facts(20)], source_statuses={"contracts": "ready"}
+        [_upgrade_facts(20)], source_statuses={"contracts": "ready"}
     )
     with Session(engine) as session:
         snapshot_id = session.scalar(select(CustomerPriceTypeSnapshot.id))
-    _force_ready_change(factory, snapshot_id)
     with Session(engine) as session:
         snapshot = session.get(CustomerPriceTypeSnapshot, snapshot_id)
         command = {
@@ -296,15 +278,14 @@ def test_enabled_direction_is_captured_only_at_decision_time(tmp_path: Path) -> 
     Base.metadata.create_all(engine)
     factory = sessionmaker(bind=engine, expire_on_commit=False)
     CustomerPriceTypeRunService(factory).execute(
-        [_facts(30)], source_statuses={"contracts": "ready"}
+        [_upgrade_facts(30)], source_statuses={"contracts": "ready"}
     )
     with Session(engine) as session:
         snapshot_id = session.scalar(select(CustomerPriceTypeSnapshot.id))
-    _force_ready_change(factory, snapshot_id)
     settings = Settings(
         customer_price_type_external_actions_enabled=True,
         customer_price_type_onec_actions_enabled=True,
-        customer_price_type_onec_enabled_directions=["bronze_to_retail"],
+        customer_price_type_onec_enabled_directions=["bronze_to_silver"],
     )
     access = CustomerPriceTypeAccessScope(actor="arsen", role="network_head", can_view_money=True)
     with factory() as session:
@@ -324,4 +305,55 @@ def test_enabled_direction_is_captured_only_at_decision_time(tmp_path: Path) -> 
         action = session.scalar(select(CustomerPriceTypeExternalAction))
         assert action.status == "pending"
         assert action.execution_allowed_at_decision is True
+    engine.dispose()
+
+
+def test_real_rules_do_not_offer_downgrade_until_completed_action_and_new_run(
+    tmp_path: Path,
+) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'real-downgrade.db'}")
+    Base.metadata.create_all(engine)
+    factory = sessionmaker(bind=engine, expire_on_commit=False)
+    june = _facts(40)
+    service = CustomerPriceTypeRunService(factory)
+    service.execute([june], source_statuses={"contracts": "ready"}, run_key="june")
+    with Session(engine) as session:
+        june_snapshot = session.scalar(select(CustomerPriceTypeSnapshot))
+        june_case = session.scalar(select(CustomerPriceTypeCase))
+        assert june_snapshot.case_type == "isolate"
+        assert june_snapshot.recommended_price_type == "Розница"
+        assert june_snapshot.stop_factors
+        assert june_case.stage == "ISOLATE_1M"
+        june_case.manager_action_completeness = {
+            "status": "completed",
+            "source": "bitrix_readback",
+            "action": "isolate",
+            "current_price_type": "2.Бронзовый",
+            "snapshot_month": "2026-06-01",
+            "snapshot_hash": june_snapshot.snapshot_hash,
+            "bitrix_item_id": "777",
+            "bitrix_stage_id": "DT1188_77:CLOSED_KEEP",
+        }
+        session.commit()
+
+    july = replace(
+        june,
+        snapshot_month=date(2026, 7, 1),
+        monthly_sales={
+            "2026-05": Decimal("1"),
+            "2026-06": Decimal("1"),
+            "2026-07": Decimal("1"),
+        },
+    )
+    service.execute([july], source_statuses={"contracts": "ready"}, run_key="july")
+    with Session(engine) as session:
+        july_snapshot = session.scalar(
+            select(CustomerPriceTypeSnapshot).where(
+                CustomerPriceTypeSnapshot.snapshot_month == date(2026, 7, 1)
+            )
+        )
+        assert july_snapshot.system_recommendation == "downgrade_proposed"
+        assert july_snapshot.case_type == "downgrade_approval"
+        assert july_snapshot.recommended_price_type == "Розница"
+        assert july_snapshot.stop_factors == []
     engine.dispose()

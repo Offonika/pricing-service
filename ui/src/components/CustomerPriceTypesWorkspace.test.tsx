@@ -20,7 +20,6 @@ vi.mock("../api/customerPriceTypes", async (importOriginal) => {
     fetchCptReviewMetrics: vi.fn(),
     fetchCptSummary: vi.fn(),
     fetchCptWorklists: vi.fn(),
-    reviewCptQualitySample: vi.fn(),
     saveCptReview: vi.fn(),
     searchCptProfiles: vi.fn(),
   };

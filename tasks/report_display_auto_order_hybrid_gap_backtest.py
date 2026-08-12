@@ -79,9 +79,9 @@ def _sku_delta_rows(
         right = candidate.model.get(code, frozen.Metric())
         exposure = hybrid_decisions.get(code, {"decisions": 0, "quantity": ZERO})
         service_delta = right.served_observed_qty - left.served_observed_qty
-        capital_delta = (
-            right.inventory_value_days_rub - left.inventory_value_days_rub
-        ) / Decimal(period_days)
+        capital_delta = (right.inventory_value_days_rub - left.inventory_value_days_rub) / Decimal(
+            period_days
+        )
         ending_delta = right.ending_inventory_qty - left.ending_inventory_qty
         if service_delta > ZERO:
             outcome = "service_gain"
@@ -131,9 +131,12 @@ def _period_delta_rows(
             served_delta = frozen._decimal(candidate["served_qty"]) - frozen._decimal(
                 control["served_qty"]
             )
-            gross_profit_delta = frozen._decimal(
-                candidate["gross_profit_rub"]
-            ) - frozen._decimal(control["gross_profit_rub"])
+            served_observed_delta = frozen._decimal(
+                candidate["served_observed_qty"]
+            ) - frozen._decimal(control["served_observed_qty"])
+            gross_profit_delta = frozen._decimal(candidate["gross_profit_rub"]) - frozen._decimal(
+                control["gross_profit_rub"]
+            )
             capital_delta = frozen._decimal(
                 candidate["average_inventory_value_rub"]
             ) - frozen._decimal(control["average_inventory_value_rub"])
@@ -145,6 +148,7 @@ def _period_delta_rows(
                     "date_from": candidate["date_from"],
                     "date_to": candidate["date_to"],
                     "served_delta_qty": str(served_delta),
+                    "served_observed_delta_qty": str(served_observed_delta),
                     "gross_profit_delta_rub": str(gross_profit_delta),
                     "average_inventory_value_delta_rub": str(capital_delta),
                     "carrying_cost_delta_rub": str(carrying_cost_delta),
@@ -158,13 +162,19 @@ def _period_delta_rows(
 
 def _markdown(summary: Mapping[str, Any]) -> str:
     rows = {row["scenario_role"]: row for row in summary["comparison"]}
+    min_days = int(summary["method"].get("p50_min_coverable_days") or 0)
+    filter_text = (
+        f" Для P50 дополнительно требуется разрыв не короче {min_days} дней."
+        if min_days > 0
+        else ""
+    )
     return f"""# Тест гибридного правила на замороженных исторических данных
 
 ## Итог
 
 Контроль v19 сравнивается с одним динамическим правилом, где новая партия
 моделируется по P50 и P75. Правило действует только на доказуемый дефицит между
-приходом новой партии и ближайшим уже открытым приходом.
+приходом новой партии и ближайшим уже открытым приходом.{filter_text}
 
 | Вариант | Записанные продажи к контролю | Валовая прибыль | Средний капитал | Конечный остаток | Экономический вклад |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -188,7 +198,10 @@ def build_analysis(
     output_dir: Path,
     policy_json: Path,
     scenario_config_json: Path,
+    p50_min_coverable_days: int = 0,
 ) -> dict[str, Any]:
+    if p50_min_coverable_days < 0:
+        raise ValueError("P50 minimum coverable days cannot be negative")
     frozen.validate_preflight_directory(preflight_dir)
     v23_manifest = json.loads((source_v23_dir / "analysis-manifest.json").read_text())
     for name, expected in v23_manifest["files"].items():
@@ -220,6 +233,8 @@ def build_analysis(
         "date_from": inputs["date_from"],
         "date_to": inputs["date_to"],
         "keep_detail": True,
+        "keep_loss_detail": False,
+        "hybrid_gap_detail_only": True,
         "demand_sample_cache": shared_cache,
         "decision_service_buffers": control_schedule,
     }
@@ -232,6 +247,7 @@ def build_analysis(
         results[role] = frozen.simulate_scenario(
             scenario=replace(source, scenario_id=f"{source.scenario_id}_{role}"),
             hybrid_gap_arrival_quantile=quantile,
+            hybrid_gap_min_coverable_days=(p50_min_coverable_days if role == P50_ROLE else 0),
             **simulation_args,
         )
 
@@ -305,7 +321,8 @@ def build_analysis(
         "production_authorized": False,
         "date_from": inputs["date_from"].isoformat(),
         "date_to": inputs["date_to"].isoformat(),
-        "cohort_sku_count": len(results[CONTROL_ROLE].model),
+        "source_cohort_sku_count": 2662,
+        "active_simulation_sku_count": len(results[CONTROL_ROLE].model),
         "source_scenario_id": source.scenario_id,
         "method": {
             "control": "unchanged v19 top-50 decision buffer on the v23 source scenario",
@@ -313,6 +330,7 @@ def build_analysis(
             "demand_rate": "maximum of frozen forecast and completed 30/90/180 calendar-day rates; decision day excluded",
             "single_open_lot": True,
             "order_change_required": True,
+            "p50_min_coverable_days": p50_min_coverable_days,
             "no_look_ahead": True,
         },
         "scenario_summaries": summaries,
@@ -390,6 +408,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--source-v23-dir", type=Path, required=True)
     parser.add_argument("--source-quick-summary-json", type=Path, required=True)
     parser.add_argument("--output-dir", type=Path, required=True)
+    parser.add_argument("--p50-min-coverable-days", type=int, default=0)
     parser.add_argument(
         "--auto-order-policy-json",
         type=Path,
@@ -412,6 +431,7 @@ def main() -> int:
         output_dir=args.output_dir,
         policy_json=args.auto_order_policy_json,
         scenario_config_json=args.scenario_config_json,
+        p50_min_coverable_days=args.p50_min_coverable_days,
     )
     print(json.dumps(summary, ensure_ascii=False))
     return 0

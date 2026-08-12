@@ -366,17 +366,13 @@ class ScenarioDiagnostics:
             ),
             "hybrid_gap_evaluations": self.hybrid_gap_evaluations,
             "hybrid_gap_eligible_evaluations": self.hybrid_gap_eligible_evaluations,
-            "hybrid_gap_positive_order_decisions": (
-                self.hybrid_gap_positive_order_decisions
-            ),
+            "hybrid_gap_positive_order_decisions": (self.hybrid_gap_positive_order_decisions),
             "hybrid_gap_open_lot_blocked_evaluations": (
                 self.hybrid_gap_open_lot_blocked_evaluations
             ),
             "hybrid_gap_requested_qty": str(self.hybrid_gap_requested_qty),
             "hybrid_gap_order_component_qty": str(self.hybrid_gap_order_component_qty),
-            "hybrid_gap_released_on_arrival_qty": str(
-                self.hybrid_gap_released_on_arrival_qty
-            ),
+            "hybrid_gap_released_on_arrival_qty": str(self.hybrid_gap_released_on_arrival_qty),
         }
 
 
@@ -1353,9 +1349,13 @@ def evaluate_hybrid_coverable_gap(
     arrivals: Mapping[date, Mapping[str, Decimal]],
     code: str,
     open_hybrid_qty: Decimal = ZERO,
+    min_coverable_days: int = 0,
 ) -> HybridGapEvaluation:
     """Calculate only the shortage a new lot can physically cover before an open lot."""
 
+    minimum_days = int(min_coverable_days)
+    if minimum_days < 0:
+        raise ValueError("hybrid gap minimum coverable days cannot be negative")
     rate = max(ZERO, demand_rate)
     new_arrival_date = as_of + timedelta(days=max(1, int(new_arrival_lead_days)))
     reliable_dates = sorted(
@@ -1401,7 +1401,7 @@ def evaluate_hybrid_coverable_gap(
         coverable_demand_qty=coverable_demand,
         coverable_shortage_qty=shortage,
         open_hybrid_qty=open_qty,
-        eligible=bool(shortage > ZERO and open_qty <= ZERO),
+        eligible=bool(shortage > ZERO and open_qty <= ZERO and coverable_days >= minimum_days),
     )
 
 
@@ -1623,12 +1623,19 @@ def simulate_scenario(
     demand_sample_cache: dict[tuple[str, date, int], list[Decimal]] | None = None,
     decision_service_buffers: Mapping[tuple[date, str], Decimal] | None = None,
     hybrid_gap_arrival_quantile: str = "off",
+    hybrid_gap_min_coverable_days: int = 0,
+    keep_decision_detail: bool = True,
+    keep_loss_detail: bool = True,
+    hybrid_gap_detail_only: bool = False,
 ) -> SimulationResult:
     if scenario.base_pipeline_lot_risk_boundary and scenario.grow_acceleration_profile != "off":
         raise ValueError("base pipeline lot risk cannot be combined with acceleration")
     normalized_hybrid_quantile = _clean(hybrid_gap_arrival_quantile).lower() or "off"
     if normalized_hybrid_quantile not in {"off", "p50", "p75"}:
         raise ValueError("hybrid gap arrival quantile must be off, p50, or p75")
+    normalized_hybrid_min_days = int(hybrid_gap_min_coverable_days)
+    if normalized_hybrid_min_days < 0:
+        raise ValueError("hybrid gap minimum coverable days cannot be negative")
     codes = sorted(
         {
             _clean(row.get("nomenclature_code"))
@@ -1877,7 +1884,7 @@ def simulate_scenario(
             model_row.inventory_value_days_rub += stock[code] * cost
             model_row.ending_inventory_qty = stock[code]
             lost_observed = observed - served_observed
-            if keep_detail and lost_observed > ZERO:
+            if keep_detail and keep_loss_detail and lost_observed > ZERO:
                 prior = last_evaluation_by_code.get(code, {})
                 pending_arrival_dates = [
                     arrival_date
@@ -2864,6 +2871,7 @@ def simulate_scenario(
                     arrivals=arrivals,
                     code=code,
                     open_hybrid_qty=open_hybrid_protection_qty[code],
+                    min_coverable_days=normalized_hybrid_min_days,
                 )
                 diagnostics.hybrid_gap_evaluations += 1
                 diagnostics.hybrid_gap_eligible_evaluations += int(hybrid_evaluation.eligible)
@@ -2974,10 +2982,19 @@ def simulate_scenario(
                 stage_metric.manual_review_created += int(manual_review_action == "created")
                 stage_metric.manual_review_updated += int(manual_review_action == "updated")
                 stage_metric.safety_stock_units_ordered += safety_units
-            if keep_detail and (
-                scheduled_review
-                or recommended > ZERO
-                or (fresh_decision and (rate > ZERO or weighted_signals > ZERO))
+            if (
+                keep_detail
+                and keep_decision_detail
+                and (
+                    scheduled_review
+                    or recommended > ZERO
+                    or (fresh_decision and (rate > ZERO or weighted_signals > ZERO))
+                )
+                and (
+                    not hybrid_gap_detail_only
+                    or hybrid_evaluation.coverable_shortage_qty > ZERO
+                    or hybrid_order_component > ZERO
+                )
             ):
                 trigger = (
                     "scheduled_review"
@@ -3155,6 +3172,7 @@ def simulate_scenario(
                         "ordinary_max_stock_qty": str(ordinary_max_qty),
                         "ordinary_recommended_order_qty": str(ordinary_recommended),
                         "hybrid_gap_arrival_quantile": normalized_hybrid_quantile,
+                        "hybrid_gap_min_coverable_days": normalized_hybrid_min_days,
                         "hybrid_gap_demand_rate": str(hybrid_evaluation.demand_rate),
                         "hybrid_gap_new_arrival_date": (
                             hybrid_evaluation.new_arrival_date.isoformat()
@@ -3361,6 +3379,10 @@ def _period_summary_rows(
             )
             hidden = sum((_decimal(row.get("actual_hidden_demand_qty")) for row in selected), ZERO)
             served = sum((_decimal(row.get(f"{strategy}_served_qty")) for row in selected), ZERO)
+            served_observed = sum(
+                (_decimal(row.get(f"{strategy}_served_observed_qty")) for row in selected),
+                ZERO,
+            )
             potential = observed + hidden
             gross_profit = sum(
                 (_decimal(row.get(f"{strategy}_gross_profit_rub")) for row in selected),
@@ -3381,8 +3403,13 @@ def _period_summary_rows(
                     "hidden_demand_qty": str(hidden),
                     "potential_demand_qty": str(potential),
                     "served_qty": str(served),
+                    "served_observed_qty": str(served_observed),
                     "lost_qty": str(potential - served),
+                    "lost_observed_qty": str(observed - served_observed),
                     "fill_rate": str(served / potential if potential > ZERO else ONE),
+                    "observed_fill_rate": str(
+                        served_observed / observed if observed > ZERO else ONE
+                    ),
                     "gross_profit_rub": str(gross_profit),
                     "average_inventory_value_rub": str(average_inventory),
                 }

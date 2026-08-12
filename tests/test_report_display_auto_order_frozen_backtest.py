@@ -14,6 +14,7 @@ from tasks.report_display_auto_order_frozen_backtest import (
     FrozenScenario,
     ServiceFloorCandidate,
     _free_initial_pipeline,
+    _period_summary_rows,
     acceleration_incremental_units,
     acceleration_pipeline_fraction,
     acceleration_segment_rule,
@@ -105,6 +106,66 @@ def test_hybrid_gap_requires_later_open_arrival_and_one_open_hybrid_lot() -> Non
     )
     assert blocked.coverable_shortage_qty == Decimal("10")
     assert blocked.eligible is False
+
+
+def test_hybrid_gap_can_require_minimum_coverable_duration() -> None:
+    as_of = date(2026, 5, 1)
+    common = {
+        "as_of": as_of,
+        "demand_rate": Decimal("1"),
+        "new_arrival_lead_days": 10,
+        "model_stock_qty": Decimal("0"),
+        "effective_reserve_qty": Decimal("0"),
+        "code": "sku",
+        "min_coverable_days": 5,
+    }
+
+    short_gap = evaluate_hybrid_coverable_gap(
+        arrivals={as_of + timedelta(days=14): {"sku": Decimal("10")}},
+        **common,
+    )
+    accepted_gap = evaluate_hybrid_coverable_gap(
+        arrivals={as_of + timedelta(days=15): {"sku": Decimal("10")}},
+        **common,
+    )
+
+    assert short_gap.coverable_days == 4
+    assert short_gap.coverable_shortage_qty == Decimal("4")
+    assert short_gap.eligible is False
+    assert accepted_gap.coverable_days == 5
+    assert accepted_gap.coverable_shortage_qty == Decimal("5")
+    assert accepted_gap.eligible is True
+
+
+def test_period_summary_keeps_observed_service_separate_from_hidden_service() -> None:
+    rows = [
+        {
+            "scenario_id": "scenario",
+            "business_date": "2026-07-01",
+            "actual_observed_demand_qty": "10",
+            "actual_hidden_demand_qty": "2",
+            "actual_served_qty": "12",
+            "actual_served_observed_qty": "10",
+            "model_served_qty": "9",
+            "model_served_observed_qty": "8",
+            "actual_gross_profit_rub": "100",
+            "model_gross_profit_rub": "80",
+            "actual_inventory_value_rub": "50",
+            "model_inventory_value_rub": "40",
+        }
+    ]
+
+    result = _period_summary_rows(
+        rows,
+        scenario_id="scenario",
+        date_from=date(2026, 7, 1),
+        date_to=date(2026, 7, 1),
+    )
+
+    model = next(row for row in result if row["strategy"] == "model")
+    assert model["served_observed_qty"] == "8"
+    assert model["lost_observed_qty"] == "2"
+    assert model["observed_fill_rate"] == "0.8"
 
 
 def _selection_scenario(scenario_id: str) -> FrozenScenario:

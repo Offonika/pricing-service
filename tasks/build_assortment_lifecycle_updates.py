@@ -23,8 +23,8 @@ from app.services.assortment_lifecycle import (
     build_procurement_profile_property_update_row,
     build_status_property_update_rows,
     classify_expensive_profile,
-    decide_assortment_status,
     decide_commercial_marks,
+    decide_legacy_assortment_status,
     decide_target_assortment_status,
     systemic_sales_point_codes,
     validate_manager_need_signal,
@@ -123,7 +123,7 @@ def build_updates_from_records(
     changed_at: date | None = None,
     source: str = DEFAULT_TASK_SOURCE,
     suspicious_quantity_threshold: Decimal | int | str | None = None,
-    model_version: str = "v1",
+    model_version: str = "v2-shadow",
     v2_policy: AssortmentLifecycleV2Policy | None = None,
 ) -> tuple[list[NomenclaturePropertyUpdateRow], list[dict[str, Any]]]:
     v2_policy = v2_policy or load_assortment_lifecycle_v2_policy()
@@ -133,7 +133,7 @@ def build_updates_from_records(
         if folder_filter and not _matches_folder(record, folder_filter):
             continue
         lifecycle_input = _lifecycle_input_from_record(record)
-        legacy_decision = decide_assortment_status(lifecycle_input)
+        legacy_decision = decide_legacy_assortment_status(lifecycle_input)
         legacy_decision = _fact_status_decision_from_record(record, legacy_decision)
         target_decision = decide_target_assortment_status(
             lifecycle_input,
@@ -210,8 +210,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-version",
         choices=("v1", "v2-shadow", "v2-live"),
-        default="v1",
-        help="v2-shadow adds target fields but keeps the persisted v1 stage",
+        default="v2-shadow",
+        help=(
+            "v2-shadow calculates the accepted v2 target while keeping the persisted "
+            "legacy stage; v2-live requires separately approved live_enabled=true"
+        ),
     )
     parser.add_argument(
         "--v2-policy-json",

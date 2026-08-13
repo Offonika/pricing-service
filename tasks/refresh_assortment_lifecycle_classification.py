@@ -239,7 +239,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--model-version",
         choices=("v1", "v2-shadow", "v2-live"),
-        default=os.getenv("ASSORTMENT_LIFECYCLE_MODEL_VERSION", "v1"),
+        default=os.getenv("ASSORTMENT_LIFECYCLE_MODEL_VERSION", "v2-shadow"),
     )
     parser.add_argument(
         "--v2-policy-json",

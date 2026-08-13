@@ -1,6 +1,6 @@
 """Diff-инструмент классификации статусов ассортимента.
 
-Строит per-SKU снимок решения ``decide_assortment_status`` по одному и тому же
+Строит per-SKU снимок legacy/v2-решения по одному и тому же
 входу и сравнивает два снимка по критичным для авто-заказа полям:
 ``status``, ``auto_order_allowed``, ``blockers``, ``manual_review_required``
 (и ``recommended_status`` для контекста).
@@ -34,7 +34,7 @@ from pathlib import Path
 from typing import Any
 
 from app.services.assortment_lifecycle import (
-    decide_assortment_status,
+    decide_legacy_assortment_status,
     decide_target_assortment_status,
 )
 from tasks.build_assortment_lifecycle_updates import (
@@ -77,7 +77,7 @@ def build_snapshot(
         decision = (
             decide_target_assortment_status(lifecycle_input)
             if target_model
-            else decide_assortment_status(lifecycle_input)
+            else decide_legacy_assortment_status(lifecycle_input)
         )
         if fact_overlay and not target_model:
             decision = _fact_status_decision_from_record(record, decision)

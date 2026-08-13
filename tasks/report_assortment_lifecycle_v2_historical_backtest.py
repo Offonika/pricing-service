@@ -24,6 +24,7 @@ from app.core.config import get_settings
 from app.infrastructure.db.engines import build_engine
 from app.services.assortment_lifecycle import (
     AssortmentStatus,
+    decide_assortment_status,
     decide_demand_state,
     decide_target_assortment_status,
 )
@@ -179,6 +180,7 @@ def v2_replay_policy_hash(policy: DemandStatePolicy) -> str:
             "model_version": V2_REPLAY_MODEL_VERSION,
             "demand_policy": demand_policy_parameters(policy),
             "decide_demand_state": inspect.getsource(decide_demand_state),
+            "decide_assortment_status": inspect.getsource(decide_assortment_status),
             "decide_target_assortment_status": inspect.getsource(decide_target_assortment_status),
             "build_trajectory": inspect.getsource(build_assortment_lifecycle_v2_trajectory),
         }

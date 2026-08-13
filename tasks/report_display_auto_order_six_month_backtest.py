@@ -36,7 +36,7 @@ from app.services.assortment_lifecycle import (
     AssortmentLifecycleDecision,
     AssortmentLifecycleInput,
     AssortmentStatus,
-    decide_assortment_status,
+    decide_legacy_assortment_status,
 )
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
@@ -981,7 +981,7 @@ def historical_lifecycle_decision(
     manual_status = (
         source.get("manual_status") if manual_changed_at and manual_changed_at <= as_of else None
     )
-    decision = decide_assortment_status(
+    decision = decide_legacy_assortment_status(
         AssortmentLifecycleInput(
             nomenclature_code=_clean(item.get("nomenclature_code")),
             created_at=_item_created_at(item),
@@ -1224,7 +1224,7 @@ def load_or_build_historical_lifecycle_trajectory(
         facts=facts,
         source_manifest=source_manifest,
     )
-    lifecycle_module_path = Path(inspect.getsourcefile(decide_assortment_status) or "")
+    lifecycle_module_path = Path(inspect.getsourcefile(decide_legacy_assortment_status) or "")
     policy_hash = stable_hash(
         {
             "model_version": LEGACY_REPLAY_MODEL_VERSION,

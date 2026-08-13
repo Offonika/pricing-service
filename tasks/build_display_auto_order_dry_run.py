@@ -669,7 +669,7 @@ def load_auto_order_items_from_facts(
 
     from app.services.assortment_lifecycle import (
         ASSORTMENT_STATUS_LABELS,
-        decide_assortment_status,
+        decide_legacy_assortment_status,
         decide_target_assortment_status,
     )
     from tasks.build_assortment_lifecycle_updates import (
@@ -691,7 +691,7 @@ def load_auto_order_items_from_facts(
         lifecycle_input = _lifecycle_input_from_record(raw)
         legacy = _fact_status_decision_from_record(
             raw,
-            decide_assortment_status(lifecycle_input),
+            decide_legacy_assortment_status(lifecycle_input),
         )
         target = decide_target_assortment_status(
             lifecycle_input,
@@ -1448,7 +1448,7 @@ def build_dry_run_rows(
     b2b_customer_demand_profiles: Mapping[str, B2BSkuDemandProfile] | None = None,
     b2b_customer_demand_error: str = "",
     as_of: date | None = None,
-    lifecycle_model_version: str = "v1",
+    lifecycle_model_version: str = "v2-shadow",
 ) -> list[dict[str, Any]]:
     if lifecycle_model_version not in {"v1", "v2-shadow", "v2-live"}:
         raise ValueError(f"unsupported assortment lifecycle model: {lifecycle_model_version}")
@@ -3798,7 +3798,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--lifecycle-model-version",
         choices=("v1", "v2-shadow", "v2-live"),
-        default="v1",
+        default="v2-shadow",
         help=(
             "v2-shadow applies the candidate representation floor only to the read-only "
             "report; v1 preserves the legacy quantity calculation."

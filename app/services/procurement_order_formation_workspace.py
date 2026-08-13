@@ -24,7 +24,7 @@ from app.models.procurement_order_formation import (
 )
 from app.services.assortment_lifecycle import (
     AssortmentLifecycleInput,
-    decide_assortment_status,
+    decide_legacy_assortment_status,
 )
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
@@ -1450,7 +1450,7 @@ def _is_automatic_lifecycle_transition(
 
 def _fact_target_from_source(source: Mapping[str, Any], nomenclature_code: str) -> str | None:
     try:
-        decision = decide_assortment_status(
+        decision = decide_legacy_assortment_status(
             AssortmentLifecycleInput(
                 nomenclature_code=nomenclature_code,
                 created_at=_parse_date(source.get("created_at")),

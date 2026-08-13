@@ -23,6 +23,7 @@ from app.services.assortment_lifecycle import (
     decide_assortment_status,
     decide_commercial_marks,
     decide_demand_state,
+    decide_legacy_assortment_status,
     decide_target_assortment_status,
     systemic_sales_point_codes,
     validate_manager_need_signal,
@@ -30,7 +31,9 @@ from app.services.assortment_lifecycle import (
 
 
 def _decision(**kwargs) -> AssortmentLifecycleDecision:
-    return decide_assortment_status(AssortmentLifecycleInput(nomenclature_code="РБ0001", **kwargs))
+    return decide_legacy_assortment_status(
+        AssortmentLifecycleInput(nomenclature_code="РБ0001", **kwargs)
+    )
 
 
 def test_assortment_lifecycle_status_ladder() -> None:
@@ -542,8 +545,8 @@ def _demand_decision(**kwargs) -> AssortmentLifecycleDecision:
     return _decision(**demand)
 
 
-def test_sale_entered_by_twelve_sales_not_by_receipts() -> None:
-    # Порог 12 продаж за 180 дней = две продажи в месяц.
+def test_legacy_sale_entered_by_twelve_sales_not_by_receipts() -> None:
+    # Зафиксированный legacy-контроль: порог 12 продаж напрямую давал «Растим».
     below = _demand_decision(
         sales_qty_short=Decimal("2"),
         sales_qty_medium=Decimal("6"),
@@ -558,6 +561,27 @@ def test_sale_entered_by_twelve_sales_not_by_receipts() -> None:
     )
     assert reached.status == AssortmentStatus.SALE
     assert reached.auto_order_allowed
+
+
+def test_current_model_does_not_treat_twelve_sales_as_growth() -> None:
+    decision = decide_assortment_status(
+        AssortmentLifecycleInput(
+            nomenclature_code="CURRENT-12",
+            first_supplier_order_at=date(2025, 1, 1),
+            first_receipt_at=date(2025, 1, 10),
+            first_stock_inflow_at=date(2025, 1, 10),
+            first_sale_at=date(2025, 1, 15),
+            as_of=date(2026, 8, 13),
+            sales_qty_short=Decimal("2"),
+            sales_qty_medium=Decimal("6"),
+            sales_qty_long=Decimal("12"),
+        )
+    )
+
+    assert decision.demand_state is not None
+    assert decision.demand_state.value == "stable"
+    assert decision.status == AssortmentStatus.WORKING
+    assert decision.reason_codes == ("confirmed_demand_stable",)
 
 
 def test_five_receipts_no_longer_grant_working_when_demand_is_known() -> None:

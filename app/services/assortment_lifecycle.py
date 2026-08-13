@@ -41,11 +41,10 @@ WORKING_MIN_RECEIPTS = 5
 DEMAND_WINDOW_SHORT_DAYS = 30
 DEMAND_WINDOW_MEDIUM_DAYS = 90
 DEMAND_WINDOW_LONG_DAYS = 180
-# Вход в «Растим»: 12 продаж за 180 дней = две продажи в месяц. Решение
-# пользователя 2026-08-02 на реальном распределении дисплеев (порог отсекает
-# нижние 19%, 246 карточек из 1294). Условие «30 дней на полке» намеренно
-# отвергнуто: оно меряет работу закупщика, а не товар, и бьёт по дефицитным
-# ходовым позициям (РБ000051864 — 63 продажи за 23 дня на полке).
+# Legacy v1: 12 продаж за 180 дней напрямую давали «Растим». Правило сохранено
+# только для контрольного сравнения «было → стало». В действующей v2-политике
+# этот порог подтверждает объём спроса, но сам по себе не доказывает рост и не
+# назначает «Растим».
 SALE_MIN_SALES_QTY = Decimal("12")
 # Насколько окно должно отличаться от соседнего, чтобы это считалось трендом,
 # а не шумом. Тот же множитель, что в автозаказе
@@ -389,8 +388,10 @@ class CommercialMarksDecision:
     exclusive_min_stock_qty: Decimal | None = None
 
 
-def decide_assortment_status(item: AssortmentLifecycleInput) -> AssortmentLifecycleDecision:
-    """Return the v1 assortment lifecycle status from immutable product events."""
+def decide_legacy_assortment_status(
+    item: AssortmentLifecycleInput,
+) -> AssortmentLifecycleDecision:
+    """Return the frozen v1 control status for historical comparisons only."""
 
     _require_nomenclature_code(item.nomenclature_code)
     manual_status = _normalize_status(item.manual_status)
@@ -421,17 +422,18 @@ def decide_assortment_status(item: AssortmentLifecycleInput) -> AssortmentLifecy
     return decision
 
 
-def decide_target_assortment_status(
+def decide_assortment_status(
     item: AssortmentLifecycleInput,
     *,
     demand_policy: DemandStatePolicy = DEFAULT_DEMAND_STATE_POLICY,
 ) -> AssortmentLifecycleDecision:
-    """Return the accepted v2 shadow stage without mutating the v1 snapshot.
+    """Return the assortment stage according to the accepted v2 policy.
 
     The target model deliberately separates demand interpretation from the
     assortment stage.  It also uses an actual receipt, never cargo, for the
-    ``new_item`` boundary.  Rollout code decides whether this shadow result may
-    replace the current snapshot.
+    ``new_item`` boundary.  Rollout code still decides whether this result may
+    replace the current persisted snapshot; calling this pure function does not
+    enable production transitions or any 1C writes.
     """
 
     _require_nomenclature_code(item.nomenclature_code)
@@ -638,6 +640,16 @@ def decide_target_assortment_status(
         supplier_receipt_incomplete=supplier_receipt_warning,
     )
     return _with_demand(decision, demand)
+
+
+def decide_target_assortment_status(
+    item: AssortmentLifecycleInput,
+    *,
+    demand_policy: DemandStatePolicy = DEFAULT_DEMAND_STATE_POLICY,
+) -> AssortmentLifecycleDecision:
+    """Compatibility alias for shadow/backtest callers of the accepted v2 policy."""
+
+    return decide_assortment_status(item, demand_policy=demand_policy)
 
 
 def _with_target_fact_warnings(
@@ -973,10 +985,10 @@ def _demand_data_available(item: AssortmentLifecycleInput) -> bool:
 
 
 def _demand_stage(item: AssortmentLifecycleInput) -> tuple[AssortmentStatus, str, str]:
-    """Ступень лестницы после первого карго — по динамике спроса, не по поставкам.
+    """Legacy v1 stage after cargo, retained only as the comparison control.
 
-    Решение пользователя 2026-08-02: «Растим» и «Поддерживаем» описывают товар,
-    а не работу закупщика, поэтому определять их числом поступлений неверно.
+    Историческая формула от 2026-08-02 определяла стадии спросом, а не числом
+    поступлений, но ещё не отделяла подтверждённый объём от устойчивого роста:
       * «Пошли продажи» -> «Растим»: 12 продаж за 180 дней;
       * «Растим» -> «Поддерживаем»: спад по трём окнам И товар был на полке;
       * «Поддерживаем» -> «Растим»: рост по двум окнам;

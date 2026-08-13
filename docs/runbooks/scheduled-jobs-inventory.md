@@ -29,7 +29,7 @@ updated_at: "2026-08-13"
 
 | Задание | Расписание (МСК) | Источник |
 |---|---|---|
-| `pricing-assortment-lifecycle-classification` | ежечасно в :00 | рабочая папка |
+| `pricing-assortment-lifecycle-classification` | ежечасно в :00 | рабочая папка, cutover заблокирован 2026-08-13 |
 | `pricing-sku-result-sync-ut103` | ежечасно в :45 | релиз, canary с 2026-08-13 |
 | `onec_assembly_crm_reconciler` | каждые 30 минут | рабочая папка |
 | `order_fulfillment_sync` | каждые 30 минут, ежечасно в :05, ежедневно 11:00 | рабочая папка |
@@ -117,9 +117,34 @@ Rollback не потребовался.
   `/opt/MM/backups/pricing-service-cron-canary-20260813/`;
 - ежечасное расписание `:45` не изменено.
 
-Cron перечитал конфигурацию 2026-08-13 в 08:10 МСК. Первый штатный запуск третьего
-canary ожидается 2026-08-13 в 08:45 МСК; до успешного readback следующий job не
-переключать. Rollback — вернуть сохранённый cron-файл целиком.
+Cron перечитал конфигурацию 2026-08-13 в 08:10 МСК. Штатные запуски 08:45, 09:45,
+10:45 и 11:45 завершились со status `0`: каждый обработал 104 файла и 30 289
+SKU-результатов. Итоговый SHA-256 состояния 38 334 товаров во всех проверках:
+`532217e25e9a53a5a841f05cf5868194a2bc7e50afc465063aa872d64172119d`.
+Rollback не потребовался.
+
+## Остановленная canary-подготовка: assortment lifecycle classification
+
+2026-08-13 `assortment_lifecycle_classification` рассматривался четвёртым canary,
+но live cron не переключался. Диагностика показала старый production-дефект:
+
+- действующий cron каждый час запускает mutable checkout; с 00:00 все завершённые
+  запуски имеют status `1`;
+- production DB находится на Alembic revision `c3e5a7b9d1f2`: в таблице current
+  нет v2-полей, включая `demand_state`, и отсутствует таблица
+  `assortment_lifecycle_classification_history`;
+- mutable-код уже требует миграцию `e5a7c9d1f3b4`, которой нет в active release;
+- сначала ошибки были `UndefinedColumn`, после изменения mutable-кода —
+  `UndefinedTable`; запуск 12:00 завершился в 12:17 тем же status `1`;
+- run, history и current пишутся внутри одной DB-транзакции. При ошибке она
+  откатывается целиком: последний успешный run остаётся `1158` от 2026-08-12
+  19:00, частичных записей от неудачных запусков нет.
+
+Canary и применение миграции запрещены этим runbook. Возобновлять контур можно
+только отдельным неизменяемым release, содержащим совместимые schema+code, после
+backup, проверки миграции на копии production-схемы, zero-regression и готового
+rollback. Переход к jobs с внешними side effects без отдельной оценки также не
+разрешён.
 
 ## Отменённая canary-подготовка: staffing sync
 

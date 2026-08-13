@@ -55,6 +55,12 @@ def test_streaming_replay_audit_writes_diff_and_latest_summary(tmp_path: Path) -
                 "first_receipt_at": "2026-01-01",
                 "first_sale_at": "2026-01-02",
                 "history_age_days": 31,
+                "sales_30": "1",
+                "sales_90": "2",
+                "sales_180": "3",
+                "available_days_30": 30,
+                "available_days_90": 90,
+                "available_days_180": 180,
             }
         ],
     )

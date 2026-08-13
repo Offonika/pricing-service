@@ -172,6 +172,8 @@ class _HistoricalTrajectoryAudit:
         self.stage_fact_conflict_skus: set[str] = set()
         self.future_evidence_skus: set[str] = set()
         self.history_age_mismatch_skus: set[str] = set()
+        self.sales_window_issue_skus: set[str] = set()
+        self.availability_window_issue_skus: set[str] = set()
         self.non_contiguous_skus: set[str] = set()
         self.previous_status_mismatch_skus: set[str] = set()
         self.growing_rule_violation_skus: set[str] = set()
@@ -261,6 +263,8 @@ class _HistoricalTrajectoryAudit:
             + len(self.stage_fact_conflict_skus)
             + len(self.future_evidence_skus)
             + len(self.history_age_mismatch_skus)
+            + len(self.sales_window_issue_skus)
+            + len(self.availability_window_issue_skus)
             + len(self.non_contiguous_skus)
             + len(self.previous_status_mismatch_skus)
             + len(self.growing_rule_violation_skus)
@@ -294,6 +298,8 @@ class _HistoricalTrajectoryAudit:
             "invariants": {
                 "future_evidence_sku_count": len(self.future_evidence_skus),
                 "history_age_mismatch_sku_count": len(self.history_age_mismatch_skus),
+                "sales_window_issue_sku_count": len(self.sales_window_issue_skus),
+                "availability_window_issue_sku_count": len(self.availability_window_issue_skus),
                 "non_contiguous_sku_count": len(self.non_contiguous_skus),
                 "previous_status_mismatch_sku_count": len(self.previous_status_mismatch_skus),
                 "growing_rule_violation_sku_count": len(self.growing_rule_violation_skus),
@@ -375,6 +381,24 @@ class _HistoricalTrajectoryAudit:
             else:
                 if age_days != (business_date - receipt_at).days:
                     self.history_age_mismatch_skus.add(code)
+        sales_windows = tuple(
+            _optional_float(row.get(field)) for field in ("sales_30", "sales_90", "sales_180")
+        )
+        if (
+            any(value is None or value < 0 for value in sales_windows)
+            or not sales_windows[0] <= sales_windows[1] <= sales_windows[2]
+        ):
+            self.sales_window_issue_skus.add(code)
+        availability_windows = tuple(
+            _optional_float(row.get(field))
+            for field in ("available_days_30", "available_days_90", "available_days_180")
+        )
+        if any(value is None for value in availability_windows) or not (
+            0 <= availability_windows[0] <= 30
+            and availability_windows[0] <= availability_windows[1] <= 90
+            and availability_windows[1] <= availability_windows[2] <= 180
+        ):
+            self.availability_window_issue_skus.add(code)
         if demand_state == "growing":
             since = evidence["demand_state_since"]
             independent_fields = (
@@ -439,6 +463,15 @@ def _float(value: Any, *, default: float = 0) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None or isinstance(value, str) and not value.strip():
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
 
 def _diff_row(legacy: Mapping[str, Any], target: Mapping[str, Any]) -> dict[str, Any]:

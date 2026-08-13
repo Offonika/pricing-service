@@ -124,7 +124,16 @@ JSON/CSV/XLSX артефактов сохраняются.
       30 289 SKU-результатов; повтор сохранил одинаковый state 38 334 товаров.
 - [x] Переключить только live cron-строку `sku_result_sync_ut103` на active release
       symlink с сохранением ежечасного расписания `:45` и адресным rollback-файлом.
-- [ ] Подтвердить первый штатный scheduled-run третьего canary 2026-08-13 в 08:45 МСК.
+- [x] Подтвердить штатные scheduled-run третьего canary 2026-08-13 в 08:45,
+      09:45, 10:45 и 11:45 МСК: status `0`, одинаковые 104 файла и 30 289
+      SKU-результатов; итоговый state 38 334 товаров не изменился.
+- [x] ОСТАНОВЛЕНО (2026-08-13): четвёртый кандидат
+      `assortment_lifecycle_classification` не переключать. Mutable-код с 00:00
+      ежечасно падает: production DB находится на Alembic revision
+      `c3e5a7b9d1f2`, а код требует ещё не выпущенную миграцию
+      `e5a7c9d1f3b4` с v2-полями и таблицей истории. Ошибки атомарно откатываются,
+      частичных run/current/history записей нет. Возобновление — только отдельным
+      согласованным release schema+code с zero-regression и rollback.
 - [x] ОТМЕНЕНО (2026-08-11): `staffing_sync` был выбран вторым canary в режиме
       preparation-only. После диагностики job исключён из cron-canary: это
       незавершённая бизнес-интеграция без источников плана и факта смен.
@@ -166,6 +175,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 
 # Changelog
 
+- 2026-08-13 — третий canary `sku_result_sync_ut103` подтверждён четырьмя штатными
+  запусками; четвёртый кандидат `assortment_lifecycle_classification` остановлен до
+  отдельного выпуска schema+code: действующий mutable-код несовместим с production DB.
 - 2026-08-13 — второй canary `onec_sales_kpi_sync` прошёл штатный readback; rollout
   продолжен третьим canary `sku_result_sync_ut103`, переключённым на active release
   после одинакового isolated результата и проверки итогового состояния при повторе.

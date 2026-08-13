@@ -762,7 +762,14 @@ def _matches_folder(record: dict[str, Any], folder_filter: str) -> bool:
     folder_text = _folder_text(record).casefold()
     if needle in folder_text:
         return True
-    return _is_display_scope_text(needle) and _is_display_scope_text(folder_text)
+    if not _is_display_scope_text(needle):
+        return False
+    if _is_display_scope_text(folder_text):
+        return True
+    subject = str(
+        _optional_field(record, "subject_1c", "subject", "Предмет", default="")
+    ).casefold().strip()
+    return subject in {"дисплей", "матрица"}
 
 
 def _folder_text(record: dict[str, Any]) -> str:

@@ -420,7 +420,18 @@ def fetch_previous_demand_states(
     *,
     nomenclature_codes: Sequence[str] = (),
 ) -> dict[str, dict[str, Any]]:
-    if not inspect(engine).has_table(ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.name):
+    inspector = inspect(engine)
+    table_name = ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.name
+    if not inspector.has_table(table_name):
+        return {}
+    available_columns = {column["name"] for column in inspector.get_columns(table_name)}
+    required_columns = {
+        "nomenclature_code",
+        "demand_state",
+        "demand_state_since",
+        "classified_at",
+    }
+    if not required_columns.issubset(available_columns):
         return {}
     codes = [code for code in {str(value or "").strip() for value in nomenclature_codes} if code]
     statement = select(

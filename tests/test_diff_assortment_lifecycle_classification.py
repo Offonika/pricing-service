@@ -24,6 +24,27 @@ def test_build_snapshot_captures_key_fields() -> None:
     assert snapshot["A"]["first_receipt_at"] is None
 
 
+def test_display_snapshot_keeps_archived_display_and_rejects_matrix_accessory() -> None:
+    snapshot = build_snapshot(
+        [
+            {
+                "nomenclature_code": "DISPLAY",
+                "folder_path": "Архив",
+                "subject_1c": "Дисплей",
+            },
+            {
+                "nomenclature_code": "GLUE",
+                "folder_path": "Проклейки для Apple MacBook",
+                "subject_1c": "скотч",
+                "name": "Проклейка матрицы Apple MacBook Air",
+            },
+        ],
+        folder_filter="дисплеи",
+    )
+
+    assert set(snapshot) == {"DISPLAY"}
+
+
 def test_target_snapshot_captures_dates_sales_availability_and_cost() -> None:
     record = {
         "nomenclature_code": "FACTS",
@@ -72,6 +93,20 @@ def test_fact_overlay_changes_status_and_audit_detects_it() -> None:
     assert diff["summary"]["changed"] == 1
     assert diff["summary"]["status_transitions"] == {"sales_start -> fruit": 1}
     assert diff["changed"][0]["nomenclature_code"] == "B"
+
+
+def test_current_audit_snapshot_uses_persisted_previous_stage() -> None:
+    snapshot = build_snapshot(
+        [
+            {
+                "nomenclature_code": "OLD",
+                "previous_status": "working",
+            }
+        ],
+        use_previous_status=True,
+    )
+
+    assert snapshot["OLD"]["status"] == "working"
 
 
 def test_diff_reports_auto_order_and_review_flips() -> None:

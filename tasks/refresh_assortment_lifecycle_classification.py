@@ -31,6 +31,7 @@ from app.services.assortment_lifecycle_facts import (
     default_history_start,
     enrich_nomenclature_rows_with_product_snapshot,
     fetch_first_sale_dates,
+    fetch_first_supplier_order_dates,
     fetch_onec_item_inventory_costs,
     fetch_onec_lifecycle_source_rows,
     fetch_receipt_date_bounds,
@@ -58,6 +59,10 @@ from app.services.onec_stock_availability import (
 )
 from app.services.procurement_order_formation_workspace import (
     sync_lifecycle_transition_proposals,
+)
+from tasks.build_assortment_lifecycle_facts import (
+    _build_lifecycle_onec_engine,
+    _codes_with_positive_short_sales,
 )
 from tasks.build_assortment_lifecycle_updates import build_updates_from_records
 
@@ -329,6 +334,7 @@ def _load_or_build_fact_records(
         # полке меряем на ту же дату — иначе последнее окно у них разъедется.
         demand_date_to = (args.today or date.today()) - timedelta(days=1)
         first_sale_dates: dict[str, tuple[date, date]] = {}
+        first_supplier_order_dates: dict[str, date] = {}
         receipt_bounds: dict[str, tuple[date, date]] = {}
         sales_window_totals: dict[str, dict[int, Decimal]] = {}
         sales_distribution: dict[str, dict[str, Any]] = {}
@@ -365,7 +371,12 @@ def _load_or_build_fact_records(
             receipt_mapping = DocumentLineMapping.from_mapping(
                 _load_json_object(args.receipt_mapping_json)
             )
-            onec_engine = build_engine(onec_database_url, pool_pre_ping=True)
+            settings = get_settings()
+            onec_engine = _build_lifecycle_onec_engine(
+                onec_database_url,
+                query_timeout_seconds=settings.onec_query_timeout_seconds,
+                login_timeout_seconds=settings.onec_login_timeout_seconds,
+            )
             try:
                 (
                     nomenclature_rows,
@@ -391,6 +402,15 @@ def _load_or_build_fact_records(
                     onec_engine,
                     nomenclature_codes=codes,
                 )
+                first_supplier_order_dates = fetch_first_supplier_order_dates(
+                    onec_engine,
+                    nomenclature_refs_by_code={
+                        str(row.get("nomenclature_code") or row.get("code") or ""):
+                        str(row.get("nomenclature_ref") or row.get("ref") or "")
+                        for row in nomenclature_rows
+                    },
+                    supplier_mapping=supplier_mapping,
+                )
                 # Продажи по окнам 30/90/180 — вход переходов по динамике спроса.
                 sales_window_totals = fetch_sales_window_totals(
                     onec_engine,
@@ -404,7 +424,9 @@ def _load_or_build_fact_records(
                 )
                 sales_distribution = fetch_sales_distribution(
                     onec_engine,
-                    nomenclature_codes=codes,
+                    nomenclature_codes=_codes_with_positive_short_sales(
+                        sales_window_totals,
+                    ),
                     date_to=demand_date_to,
                 )
                 inventory_costs = fetch_onec_item_inventory_costs(
@@ -455,6 +477,7 @@ def _load_or_build_fact_records(
         facts, _ = build_assortment_lifecycle_fact_records(
             nomenclature_rows=nomenclature_rows,
             supplier_order_rows=supplier_order_rows,
+            first_supplier_order_dates=first_supplier_order_dates,
             receipt_rows=receipt_rows,
             receipt_bounds=receipt_bounds,
             warehouse_policy=warehouse_policy,

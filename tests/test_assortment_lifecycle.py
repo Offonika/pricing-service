@@ -734,6 +734,24 @@ def test_target_stage_requires_receipt_and_does_not_treat_cargo_as_arrival() -> 
     assert legacy_need.manual_review_required
 
 
+def test_target_missing_first_order_fact_preserves_launched_stage_and_blocks_transition() -> None:
+    decision = decide_target_assortment_status(
+        AssortmentLifecycleInput(
+            nomenclature_code="TARGET-MISSING-ORDER",
+            previous_status="newborn",
+            as_of=date(2026, 8, 12),
+            sales_qty_short=0,
+            sales_qty_medium=0,
+            sales_qty_long=0,
+        )
+    )
+
+    assert decision.status == AssortmentStatus.NEWBORN
+    assert decision.blockers == ("first_supplier_order_fact_missing",)
+    assert decision.manual_review_required
+    assert not decision.auto_order_allowed
+
+
 def test_target_demand_distinguishes_null_from_confirmed_zero() -> None:
     missing = decide_demand_state(
         AssortmentLifecycleInput(

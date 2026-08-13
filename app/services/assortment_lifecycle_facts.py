@@ -10,7 +10,7 @@ from decimal import Decimal, InvalidOperation
 from math import ceil
 from typing import Any, Iterable, Mapping, Sequence
 
-from sqlalchemy import bindparam, inspect, text
+from sqlalchemy import LargeBinary, bindparam, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import NoSuchTableError
 
@@ -181,6 +181,7 @@ def build_assortment_lifecycle_fact_records(
     *,
     nomenclature_rows: Sequence[Mapping[str, Any]],
     supplier_order_rows: Sequence[Mapping[str, Any]],
+    first_supplier_order_dates: Mapping[str, date] | None = None,
     receipt_rows: Sequence[Mapping[str, Any]],
     receipt_bounds: Mapping[str, tuple[date, date]] | None = None,
     warehouse_policy: Sequence[Mapping[str, Any]],
@@ -269,7 +270,9 @@ def build_assortment_lifecycle_fact_records(
     for key, item in sorted(items_by_key.items(), key=lambda pair: code_by_key[pair[0]]):
         code = code_by_key[key]
         warnings: list[str] = []
-        first_supplier_order_at = _min_date(supplier_dates.get(key, ()))
+        first_supplier_order_at = (first_supplier_order_dates or {}).get(code) or _min_date(
+            supplier_dates.get(key, ())
+        )
         first_receipt_at, last_receipt_at = receipt_bounds.get(
             code,
             (
@@ -608,6 +611,62 @@ def fetch_receipt_date_bounds(
                 last = _date(row.get("last_receipt_at"))
                 if code and first is not None and last is not None:
                     result[code] = (first, last)
+    return result
+
+
+def fetch_first_supplier_order_dates(
+    engine: Engine,
+    *,
+    nomenclature_refs_by_code: Mapping[str, str],
+    supplier_mapping: DocumentLineMapping,
+) -> dict[str, date]:
+    """Return the first posted supplier-order date across the full 1C history.
+
+    Supplier-order detail remains bounded by ``history_start`` because it is
+    needed for recent cargo/route analysis.  The lifecycle boundary itself is
+    a durable fact, so it must come from a separate aggregate without that
+    rolling-window predicate.
+    """
+
+    issues = validate_document_line_mapping(engine, supplier_mapping)
+    if issues:
+        raise ValueError(f"{SUPPLIER_ORDER_MAPPING_UNRESOLVED}: {', '.join(issues)}")
+    code_by_ref: dict[str, str] = {}
+    binary_ref_by_text: dict[str, bytes] = {}
+    for raw_code, raw_ref in nomenclature_refs_by_code.items():
+        code = _clean(raw_code)
+        ref = _clean(raw_ref).upper()
+        binary_ref = _onec_binary_ref(ref)
+        if code and ref and binary_ref is not None:
+            code_by_ref[ref] = code
+            binary_ref_by_text[ref] = binary_ref
+    if not binary_ref_by_text:
+        return {}
+    query = text(f"""
+        SELECT CONVERT(varchar(34), line.{_ident(supplier_mapping.line_nomenclature_column)}, 1)
+                   AS nomenclature_ref,
+               MIN(doc.{_ident(supplier_mapping.document_date_column)})
+                   AS first_supplier_order_at
+        FROM dbo.{_ident(supplier_mapping.line_table)} AS line WITH (NOLOCK)
+        JOIN dbo.{_ident(supplier_mapping.document_table)} AS doc WITH (NOLOCK)
+          ON doc.{_ident(supplier_mapping.document_id_column)} =
+             line.{_ident(supplier_mapping.line_document_column)}
+        WHERE doc.{_ident(supplier_mapping.marked_column)} = 0x00
+          AND doc.{_ident(supplier_mapping.posted_column)} = 0x01
+          AND line.{_ident(supplier_mapping.line_nomenclature_column)} IN :refs
+        GROUP BY line.{_ident(supplier_mapping.line_nomenclature_column)}
+        """).bindparams(bindparam("refs", expanding=True, type_=LargeBinary(16)))
+    result: dict[str, date] = {}
+    with engine.connect() as conn:
+        for chunk in _chunks(sorted(binary_ref_by_text), MAX_SQLSERVER_EXPANDING_REFS):
+            for row in conn.execute(
+                query,
+                {"refs": [binary_ref_by_text[ref] for ref in chunk]},
+            ).mappings():
+                code = code_by_ref.get(_clean(row.get("nomenclature_ref")).upper(), "")
+                first = _date(row.get("first_supplier_order_at"))
+                if code and first is not None:
+                    result[code] = first
     return result
 
 
@@ -1105,6 +1164,8 @@ def _fetch_nomenclature_rows(engine: Engine, *, folder: str, limit: int) -> list
         for key, value in property_values.items():
             if value and not _clean(row.get(key)):
                 row[key] = value
+    if _is_display_scope_text(folder):
+        rows = [row for row in rows if is_display_assortment_record(row)]
     return rows
 
 
@@ -1554,6 +1615,16 @@ def _is_display_scope_text(value: str) -> bool:
     return any(marker in normalized for marker in DISPLAY_SCOPE_MARKERS)
 
 
+def is_display_assortment_record(item: Mapping[str, Any]) -> bool:
+    """Return whether a selected 1C row is a display, not an accessory mentioning one."""
+
+    folder_path = _clean(item.get("folder_path") or item.get("folder"))
+    if _is_display_scope_text(folder_path):
+        return True
+    subject = _first_text(item, "subject_1c", "subject", "Предмет").casefold()
+    return subject in {"дисплей", "матрица"}
+
+
 def _folder_like_patterns(folder: str) -> tuple[str, ...]:
     folder_value = _clean(folder)
     if not folder_value:
@@ -1812,6 +1883,16 @@ def _bool(value: Any, *, default: bool) -> bool:
 
 def _clean(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _onec_binary_ref(value: str) -> bytes | None:
+    normalized = _clean(value).removeprefix("0x").removeprefix("0X")
+    if len(normalized) != 32:
+        return None
+    try:
+        return bytes.fromhex(normalized)
+    except ValueError:
+        return None
 
 
 def _required_text(payload: Mapping[str, Any], key: str) -> str:

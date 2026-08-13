@@ -19,6 +19,7 @@ from app.infrastructure.db.engines import build_engine
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
 )
+from app.services.assortment_lifecycle_v2_policy import load_assortment_lifecycle_v2_policy
 from app.services.onec_stock_availability import merged_interval_days
 from app.services.procurement_b2b_customer_demand import (
     B2BSkuDemandProfile,
@@ -450,18 +451,30 @@ def main() -> int:
         or settings.onec_database_url
         or ""
     )
-    app_engine = build_engine(database_url, pool_pre_ping=True)
-    try:
-        items, run_id = load_auto_order_items(
-            app_engine,
+    if args.lifecycle_facts_json:
+        items = load_auto_order_items_from_facts(
+            args.lifecycle_facts_json,
             folder=args.folder,
+            lifecycle_model_version=args.lifecycle_model_version,
             include_sale_review_candidates=(
                 args.include_sale_review_candidates
                 or auto_order_policy.include_sale_review_candidates
             ),
         )
-    finally:
-        app_engine.dispose()
+        run_id = None
+    else:
+        app_engine = build_engine(database_url, pool_pre_ping=True)
+        try:
+            items, run_id = load_auto_order_items(
+                app_engine,
+                folder=args.folder,
+                include_sale_review_candidates=(
+                    args.include_sale_review_candidates
+                    or auto_order_policy.include_sale_review_candidates
+                ),
+            )
+        finally:
+            app_engine.dispose()
 
     policy = load_warehouse_policy(args.warehouse_policy_json)
     source_errors: dict[str, str] = {}
@@ -635,6 +648,80 @@ def load_auto_order_items(
             .all()
         )
     return [dict(row) for row in rows], run_id
+
+
+def load_auto_order_items_from_facts(
+    path: Path,
+    *,
+    folder: str,
+    lifecycle_model_version: str,
+    include_sale_review_candidates: bool = False,
+) -> list[dict[str, Any]]:
+    """Build the dry-run cohort from one immutable lifecycle fact snapshot."""
+
+    from app.services.assortment_lifecycle import (
+        ASSORTMENT_STATUS_LABELS,
+        decide_assortment_status,
+        decide_target_assortment_status,
+    )
+    from tasks.build_assortment_lifecycle_updates import (
+        _fact_status_decision_from_record,
+        _lifecycle_input_from_record,
+        _load_records,
+        _matches_folder,
+    )
+
+    policy = load_assortment_lifecycle_v2_policy()
+    items: list[dict[str, Any]] = []
+    for raw in _load_records(path):
+        if folder and not _matches_folder(raw, folder):
+            continue
+        lifecycle_input = _lifecycle_input_from_record(raw)
+        legacy = _fact_status_decision_from_record(
+            raw,
+            decide_assortment_status(lifecycle_input),
+        )
+        target = decide_target_assortment_status(
+            lifecycle_input,
+            demand_policy=policy.demand,
+        )
+        decision = target if lifecycle_model_version in {"v2-shadow", "v2-live"} else legacy
+        effective_status = decision.status
+        effective_status_label = decision.status_label
+        effective_manual_review_required = decision.manual_review_required
+        effective_auto_order_allowed = decision.auto_order_allowed
+        if lifecycle_model_version == "v1" and raw.get("previous_status"):
+            try:
+                persisted_status = type(decision.status)(raw["previous_status"])
+                effective_status = persisted_status
+                effective_status_label = ASSORTMENT_STATUS_LABELS[persisted_status]
+                effective_manual_review_required = False
+                effective_auto_order_allowed = persisted_status in {
+                    type(decision.status).SALE,
+                    type(decision.status).WORKING,
+                }
+            except ValueError:
+                pass
+        if include_sale_review_candidates:
+            if effective_status.value not in {"working", "sale"} or (
+                effective_manual_review_required
+            ):
+                continue
+        elif not effective_auto_order_allowed or effective_status.value != "working":
+            continue
+        items.append(
+            {
+                **raw,
+                "status": effective_status.value,
+                "status_label": effective_status_label,
+                "demand_state": decision.demand_state.value if decision.demand_state else "",
+                "demand_state_label": decision.demand_state_label,
+                "auto_order_allowed": effective_auto_order_allowed,
+                "manual_review_required": effective_manual_review_required,
+                "blockers": list(decision.blockers),
+            }
+        )
+    return items
 
 
 def load_warehouse_policy(path: Path) -> WarehousePolicy:
@@ -3691,6 +3778,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--database-url", default="")
     parser.add_argument("--onec-database-url", default="")
     parser.add_argument("--folder", default="дисплеи")
+    parser.add_argument(
+        "--lifecycle-facts-json",
+        type=Path,
+        help="Immutable lifecycle fact snapshot for DB-free legacy/v2 quantity comparison.",
+    )
     parser.add_argument(
         "--lifecycle-model-version",
         choices=("v1", "v2-shadow", "v2-live"),

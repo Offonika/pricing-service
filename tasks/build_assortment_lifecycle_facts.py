@@ -8,8 +8,10 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.engine import Engine, make_url
+
 from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
+from app.infrastructure.db.engines import build_engine, build_onec_engine
 from app.services.assortment_lifecycle_classification_store import (
     fetch_previous_demand_states,
     fetch_previous_statuses,
@@ -24,6 +26,7 @@ from app.services.assortment_lifecycle_facts import (
     default_history_start,
     enrich_nomenclature_rows_with_product_snapshot,
     fetch_first_sale_dates,
+    fetch_first_supplier_order_dates,
     fetch_onec_item_inventory_costs,
     fetch_onec_lifecycle_source_rows,
     fetch_receipt_date_bounds,
@@ -62,6 +65,7 @@ def main() -> int:
     # Заполняется только при чтении из 1С; для готового --input-json даты первой
     # продажи берутся из самих записей, если они там уже есть.
     first_sale_dates: dict[str, tuple[date, date]] = {}
+    first_supplier_order_dates: dict[str, date] = {}
     receipt_bounds: dict[str, tuple[date, date]] = {}
     sales_window_totals: dict[str, dict[int, Decimal]] = {}
     sales_distribution: dict[str, dict[str, Any]] = {}
@@ -100,7 +104,11 @@ def main() -> int:
                 args.receipt_mapping_json,
                 error_code=RECEIPT_MAPPING_UNRESOLVED,
             )
-            engine = build_engine(onec_database_url, pool_pre_ping=True)
+            engine = _build_lifecycle_onec_engine(
+                onec_database_url,
+                query_timeout_seconds=settings.onec_query_timeout_seconds,
+                login_timeout_seconds=settings.onec_login_timeout_seconds,
+            )
             try:
                 nomenclature_rows, supplier_order_rows, receipt_rows = (
                     fetch_onec_lifecycle_source_rows(
@@ -123,6 +131,15 @@ def main() -> int:
                     engine,
                     nomenclature_codes=codes,
                 )
+                first_supplier_order_dates = fetch_first_supplier_order_dates(
+                    engine,
+                    nomenclature_refs_by_code={
+                        str(row.get("nomenclature_code") or row.get("code") or ""):
+                        str(row.get("nomenclature_ref") or row.get("ref") or "")
+                        for row in nomenclature_rows
+                    },
+                    supplier_mapping=supplier_mapping,
+                )
                 # Продажи за 30/90/180 дней — вход переходов «Пошли продажи ->
                 # Растим -> Поддерживаем» по динамике спроса.
                 sales_window_totals = fetch_sales_window_totals(
@@ -137,7 +154,9 @@ def main() -> int:
                 )
                 sales_distribution = fetch_sales_distribution(
                     engine,
-                    nomenclature_codes=codes,
+                    nomenclature_codes=_codes_with_positive_short_sales(
+                        sales_window_totals,
+                    ),
                     date_to=demand_date_to,
                 )
                 inventory_costs = fetch_onec_item_inventory_costs(
@@ -189,6 +208,7 @@ def main() -> int:
     facts, summary = build_assortment_lifecycle_fact_records(
         nomenclature_rows=nomenclature_rows,
         supplier_order_rows=supplier_order_rows,
+        first_supplier_order_dates=first_supplier_order_dates,
         receipt_rows=receipt_rows,
         receipt_bounds=receipt_bounds,
         warehouse_policy=warehouse_policy,
@@ -326,6 +346,31 @@ def _source_rows_from_payload(
         _list_field(payload, "nomenclature_rows"),
         _list_field(payload, "supplier_order_rows"),
         _list_field(payload, "receipt_rows"),
+    )
+
+
+def _codes_with_positive_short_sales(
+    sales_window_totals: dict[str, dict[int, Decimal]],
+) -> list[str]:
+    return sorted(
+        code
+        for code, windows in sales_window_totals.items()
+        if (windows.get(30) or Decimal("0")) > 0
+    )
+
+
+def _build_lifecycle_onec_engine(
+    database_url: str,
+    *,
+    query_timeout_seconds: int | float,
+    login_timeout_seconds: int | float,
+) -> Engine:
+    if make_url(database_url).get_backend_name() == "sqlite":
+        return build_engine(database_url, pool_pre_ping=True)
+    return build_onec_engine(
+        database_url,
+        query_timeout_seconds=query_timeout_seconds,
+        login_timeout_seconds=login_timeout_seconds,
     )
 
 

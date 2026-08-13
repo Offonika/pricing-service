@@ -14,6 +14,7 @@ from app.services.assortment_lifecycle_facts import (
     build_assortment_lifecycle_fact_records,
     enrich_nomenclature_rows_with_product_snapshot,
     fetch_onec_item_inventory_costs,
+    is_display_assortment_record,
     validate_document_line_mapping,
     validate_warehouse_policy,
 )
@@ -319,6 +320,19 @@ def test_matrix_folder_is_treated_as_display_scope() -> None:
     assert _folder_like_patterns("дисплеи") == ("%дисплеи%", "%Матриц%")
 
 
+def test_display_scope_keeps_archived_display_but_rejects_matrix_accessories() -> None:
+    assert is_display_assortment_record(
+        {"folder_path": "Архив", "subject_1c": "Дисплей"}
+    )
+    assert not is_display_assortment_record(
+        {
+            "folder_path": "Проклейки для Apple MacBook",
+            "subject_1c": "скотч",
+            "name": "Проклейка матрицы Apple MacBook Air",
+        }
+    )
+
+
 def test_enrich_nomenclature_rows_with_product_snapshot_adds_product_attributes() -> None:
     engine = create_engine("sqlite:///:memory:")
     with engine.begin() as conn:
@@ -442,6 +456,26 @@ def test_full_history_receipt_bounds_preserve_old_age_after_new_receipt() -> Non
     assert fact["first_receipt_at"] == "2018-01-10"
     assert fact["last_receipt_at"] == "2026-07-01"
     assert fact["history_age_days"] == (date(2026, 8, 12) - date(2018, 1, 10)).days
+
+
+def test_full_history_supplier_order_date_prevents_old_item_becoming_fruit() -> None:
+    facts, _ = build_assortment_lifecycle_fact_records(
+        nomenclature_rows=[
+            {
+                "nomenclature_ref": "0xA",
+                "nomenclature_code": "OLD-ORDER-1",
+                "folder_path": "Дисплеи",
+            }
+        ],
+        supplier_order_rows=[],
+        first_supplier_order_dates={"OLD-ORDER-1": date(2014, 6, 1)},
+        receipt_rows=[],
+        warehouse_policy=_warehouse_policy(),
+        history_start=date(2024, 8, 1),
+    )
+
+    assert facts[0]["first_supplier_order_at"] == "2014-06-01"
+    assert "history_truncated" not in facts[0]["warnings"]
 
 
 def test_current_inventory_cost_uses_current_party_totals_only() -> None:

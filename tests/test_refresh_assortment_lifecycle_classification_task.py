@@ -5,13 +5,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, text
 
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
     ASSORTMENT_LIFECYCLE_HISTORY_TABLE,
     ASSORTMENT_LIFECYCLE_METADATA,
     ASSORTMENT_LIFECYCLE_RUN_TABLE,
+    fetch_previous_demand_states,
 )
 from tasks.refresh_assortment_lifecycle_classification import (
     _default_history_months,
@@ -37,6 +38,22 @@ def test_refresh_assortment_lifecycle_classification_task_uses_safe_default_limi
 
     monkeypatch.setenv("ASSORTMENT_LIFECYCLE_LIMIT", "1200")
     assert _default_limit() == 1200
+
+
+def test_previous_demand_state_is_empty_before_v2_migration(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'legacy-classification.db'}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE assortment_lifecycle_classification ("
+                "nomenclature_code VARCHAR(64) NOT NULL, "
+                "status VARCHAR(64) NOT NULL, "
+                "classified_at DATETIME NOT NULL)"
+            )
+        )
+
+    assert fetch_previous_demand_states(engine) == {}
+    engine.dispose()
 
 
 def test_refresh_assortment_lifecycle_classification_task_upserts_current_rows(

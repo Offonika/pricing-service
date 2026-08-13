@@ -3,11 +3,16 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from decimal import Decimal
 from pathlib import Path
 
 from sqlalchemy import create_engine, text
 
-from tasks.build_assortment_lifecycle_facts import _default_history_months, _default_limit
+from tasks.build_assortment_lifecycle_facts import (
+    _codes_with_positive_short_sales,
+    _default_history_months,
+    _default_limit,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
@@ -28,6 +33,16 @@ def test_build_assortment_lifecycle_facts_task_uses_safe_default_limit(
 
     monkeypatch.setenv("ASSORTMENT_LIFECYCLE_LIMIT", "1200")
     assert _default_limit() == 1200
+
+
+def test_sales_distribution_scope_contains_only_skus_with_short_window_sales() -> None:
+    assert _codes_with_positive_short_sales(
+        {
+            "ZERO": {30: Decimal("0"), 180: Decimal("20")},
+            "POSITIVE": {30: Decimal("1"), 180: Decimal("1")},
+            "MISSING": {180: Decimal("5")},
+        }
+    ) == ["POSITIVE"]
 
 
 def test_build_assortment_lifecycle_facts_task_feeds_updates_task(tmp_path: Path) -> None:

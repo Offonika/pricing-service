@@ -65,6 +65,7 @@ def build_snapshot(
     folder_filter: str = "",
     fact_overlay: bool = True,
     target_model: bool = False,
+    use_previous_status: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Построить снимок ``{nomenclature_code: {status, auto_order_allowed, ...}}``."""
 
@@ -80,8 +81,13 @@ def build_snapshot(
         )
         if fact_overlay and not target_model:
             decision = _fact_status_decision_from_record(record, decision)
+        status = decision.status.value
+        if use_previous_status:
+            previous_status = str(record.get("previous_status") or "").strip()
+            if previous_status:
+                status = previous_status
         snapshot[decision.nomenclature_code] = {
-            "status": decision.status.value,
+            "status": status,
             "auto_order_allowed": bool(decision.auto_order_allowed),
             "blockers": sorted(decision.blockers),
             "manual_review_required": bool(decision.manual_review_required),
@@ -273,7 +279,12 @@ def _cmd_overlay_audit(args: argparse.Namespace) -> int:
 
 def _cmd_target_audit(args: argparse.Namespace) -> int:
     records = _load_records(args.input_json)
-    before = build_snapshot(records, folder_filter=args.folder, fact_overlay=True)
+    before = build_snapshot(
+        records,
+        folder_filter=args.folder,
+        fact_overlay=True,
+        use_previous_status=True,
+    )
     after = build_snapshot(
         records,
         folder_filter=args.folder,
@@ -288,7 +299,7 @@ def _cmd_target_audit(args: argparse.Namespace) -> int:
     diff["audit_sections"] = _target_audit_sections(diff)
     diff["_meta"] = {
         "scope": args.folder,
-        "before_model": "v1_with_fact_overlay",
+        "before_model": "current_persisted_stage",
         "after_model": "v2_shadow",
         "production_action": "none_read_only",
     }

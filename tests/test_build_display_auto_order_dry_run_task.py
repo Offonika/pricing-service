@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal
 
@@ -18,6 +19,7 @@ from tasks.build_display_auto_order_dry_run import (
     fetch_reserved_totals,
     fetch_sales_totals,
     fetch_stock_totals,
+    load_auto_order_items_from_facts,
     load_auto_order_policy,
     load_warehouse_policy,
     rounded_order_qty,
@@ -154,6 +156,48 @@ def test_v2_representation_floor_is_shadow_gated_and_uses_reliable_incoming_once
     assert shadow["recommended_order_qty"] == "6"
     assert shadow["reliable_incoming_qty"] == "3"
     assert shadow["representation_floor_applied"] == "yes"
+
+
+def test_fact_snapshot_loader_uses_persisted_legacy_and_computed_v2_stages(tmp_path) -> None:
+    path = tmp_path / "facts.json"
+    path.write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "nomenclature_code": "RB-STAGE",
+                        "folder_path": "Дисплеи",
+                        "subject_1c": "Дисплей",
+                        "previous_status": "sale",
+                        "first_supplier_order_at": "2025-01-01",
+                        "first_receipt_at": "2025-01-10",
+                        "first_sale_at": "2025-01-15",
+                        "sales_qty_short": "5",
+                        "sales_qty_medium": "15",
+                        "sales_qty_long": "30",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    legacy = load_auto_order_items_from_facts(
+        path,
+        folder="дисплеи",
+        lifecycle_model_version="v1",
+        include_sale_review_candidates=True,
+    )
+    target = load_auto_order_items_from_facts(
+        path,
+        folder="дисплеи",
+        lifecycle_model_version="v2-shadow",
+        include_sale_review_candidates=True,
+    )
+
+    assert legacy[0]["status"] == "sale"
+    assert target[0]["status"] == "working"
 
 
 def test_v2_representation_floor_skips_spike_q3_and_unknown_cost() -> None:

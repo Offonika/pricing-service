@@ -445,6 +445,29 @@ def decide_target_assortment_status(
     manual_review_required = False
     blockers: tuple[str, ...] = ()
     if item.first_supplier_order_at is None:
+        if previous_status in {
+            AssortmentStatus.NEWBORN,
+            AssortmentStatus.NEW_ITEM,
+            AssortmentStatus.SALES_START,
+            AssortmentStatus.SALE,
+            AssortmentStatus.WORKING,
+        }:
+            return _with_demand(
+                _decision(
+                    item,
+                    previous_status,
+                    "first_supplier_order_fact_missing",
+                    reason_text=(
+                        "Текущая стадия подтверждает, что товар уже запускался, но "
+                        "проведённый заказ поставщику в полной истории 1С не найден; "
+                        "автоматический переход заблокирован до сверки фактов."
+                    ),
+                    manual_review_required=True,
+                    auto_order_allowed=False,
+                    blockers=("first_supplier_order_fact_missing",),
+                ),
+                demand,
+            )
         return _with_demand(
             _decision(
                 item,

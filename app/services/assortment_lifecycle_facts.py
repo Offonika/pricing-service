@@ -56,6 +56,7 @@ DISPLAY_DESCRIPTION_MARKERS = (
 )
 GENERIC_DISPLAY_FOLDER_BRANDS = {"планшетов", "телефонов", "смартфонов"}
 DISPLAY_SCOPE_MARKERS = ("диспле", "матриц")
+DISPLAY_ACCESSORY_MARKERS = ("шлейф", "коннектор", "проклейк", "скотч")
 ONEC_NOMENCLATURE_PROPERTY_ALIASES = {
     "Качество": "quality_raw",
     "Класс дисплея": "display_quality_raw",
@@ -194,6 +195,7 @@ def build_assortment_lifecycle_fact_records(
     sales_distribution: Mapping[str, Mapping[str, Any]] | None = None,
     days_in_sale_totals: Mapping[str, Mapping[int, Decimal]] | None = None,
     previous_statuses: Mapping[str, str] | None = None,
+    previous_classifications: Mapping[str, Mapping[str, Any]] | None = None,
     previous_demand_states: Mapping[str, Mapping[str, Any]] | None = None,
     observation_from: date | None = None,
     observation_to: date | None = None,
@@ -254,6 +256,7 @@ def build_assortment_lifecycle_fact_records(
     receipt_bounds = receipt_bounds or {}
     sales_distribution = sales_distribution or {}
     previous_demand_states = previous_demand_states or {}
+    previous_classifications = previous_classifications or {}
     first_observed_stock_dates = first_observed_stock_dates or {}
     inventory_costs = inventory_costs or {}
     cost_group_keys = {key: _comparable_cost_group_keys(items_by_key[key]) for key in items_by_key}
@@ -339,7 +342,24 @@ def build_assortment_lifecycle_fact_records(
             **dict(sales_distribution.get(code) or {}),
             # Прошлый статус нужен гистерезису: плоская карточка остаётся там,
             # где стояла, и не дёргается между «Растим» и «Поддерживаем».
-            "previous_status": (previous_statuses or {}).get(code) or None,
+            "previous_status": (
+                (previous_statuses or {}).get(code)
+                or (previous_classifications.get(code) or {}).get("status")
+                or None
+            ),
+            "previous_auto_order_allowed": (
+                (previous_classifications.get(code) or {}).get("auto_order_allowed")
+            ),
+            "previous_classification_available": code in previous_classifications,
+            "previous_manual_review_required": (
+                (previous_classifications.get(code) or {}).get("manual_review_required")
+            ),
+            "previous_blockers": list(
+                (previous_classifications.get(code) or {}).get("blockers") or []
+            ),
+            "previous_reason_codes": list(
+                (previous_classifications.get(code) or {}).get("reason_codes") or []
+            ),
             "previous_demand_state": str(
                 (previous_demand_states.get(code) or {}).get("demand_state") or ""
             )
@@ -1622,7 +1642,15 @@ def is_display_assortment_record(item: Mapping[str, Any]) -> bool:
     if _is_display_scope_text(folder_path):
         return True
     subject = _first_text(item, "subject_1c", "subject", "Предмет").casefold()
-    return subject in {"дисплей", "матрица"}
+    if subject in {"дисплей", "матрица"}:
+        return True
+
+    category = _first_text(item, "category_1c", "category", "Категория").casefold()
+    name = _clean(item.get("name") or item.get("description")).casefold()
+    accessory_context = " ".join((folder_path.casefold(), subject, category, name))
+    if any(marker in accessory_context for marker in DISPLAY_ACCESSORY_MARKERS):
+        return False
+    return _is_display_scope_text(category) or "диспле" in name
 
 
 def _folder_like_patterns(folder: str) -> tuple[str, ...]:

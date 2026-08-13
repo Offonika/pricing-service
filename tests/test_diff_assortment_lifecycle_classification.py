@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from tasks.diff_assortment_lifecycle_classification import (
     _attach_order_and_capital_diff,
     _build_target_audit_rows,
+    _load_order_rows,
     _target_audit_sections,
     build_snapshot,
     diff_snapshots,
@@ -109,6 +112,28 @@ def test_current_audit_snapshot_uses_persisted_previous_stage() -> None:
     assert snapshot["OLD"]["status"] == "working"
 
 
+def test_current_audit_snapshot_uses_persisted_previous_flags() -> None:
+    item = build_snapshot(
+        [
+            {
+                "nomenclature_code": "OLD",
+                "previous_status": "working",
+                "previous_classification_available": True,
+                "previous_auto_order_allowed": False,
+                "previous_manual_review_required": True,
+                "previous_blockers": ["legacy_blocker"],
+                "previous_reason_codes": ["legacy_reason"],
+            }
+        ],
+        use_previous_status=True,
+    )["OLD"]
+
+    assert item["auto_order_allowed"] is False
+    assert item["manual_review_required"] is True
+    assert item["blockers"] == ["legacy_blocker"]
+    assert item["reason_codes"] == ["legacy_reason"]
+
+
 def test_diff_reports_auto_order_and_review_flips() -> None:
     before = {
         "X": {
@@ -180,6 +205,11 @@ def test_target_audit_keeps_unchanged_skus_and_special_sections_use_full_cohort(
             "demand_state": "no_data",
             "blockers": ["demand_data_missing"],
         },
+        "UNCHANGED-MISSING-ORDER": {
+            "status": "newborn",
+            "demand_state": "no_sales",
+            "blockers": ["first_supplier_order_fact_missing"],
+        },
     }
     after = {code: dict(value) for code, value in before.items()}
     diff = diff_snapshots(before, after)
@@ -190,8 +220,24 @@ def test_target_audit_keeps_unchanged_skus_and_special_sections_use_full_cohort(
     assert diff["summary"]["changed"] == 0
     assert [row["nomenclature_code"] for row in diff["audit_rows"]] == [
         "UNCHANGED-MANUAL",
+        "UNCHANGED-MISSING-ORDER",
         "UNCHANGED-UNKNOWN",
     ]
     assert all(row["changed"] is False for row in diff["audit_rows"])
     assert sections["manual_statuses"] == ["UNCHANGED-MANUAL"]
-    assert sections["unknown_facts"] == ["UNCHANGED-UNKNOWN"]
+    assert sections["unknown_facts"] == [
+        "UNCHANGED-MISSING-ORDER",
+        "UNCHANGED-UNKNOWN",
+    ]
+
+
+def test_order_audit_loader_accepts_dry_run_csv(tmp_path: Path) -> None:
+    path = tmp_path / "orders.csv"
+    path.write_text(
+        "nomenclature_code,recommended_order_qty\nSKU-1,7\n",
+        encoding="utf-8",
+    )
+
+    assert _load_order_rows(path) == {
+        "SKU-1": {"nomenclature_code": "SKU-1", "recommended_order_qty": "7"}
+    }

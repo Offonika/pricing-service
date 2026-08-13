@@ -175,6 +175,8 @@ def test_fact_snapshot_loader_uses_persisted_legacy_and_computed_v2_stages(tmp_p
                         "sales_qty_short": "5",
                         "sales_qty_medium": "15",
                         "sales_qty_long": "30",
+                        "future_ka_mapping_status": "ready",
+                        "demand_method_code": "available_days_average",
                     }
                 ]
             },

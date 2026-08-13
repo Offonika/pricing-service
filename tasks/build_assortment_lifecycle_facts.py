@@ -13,6 +13,7 @@ from sqlalchemy.engine import Engine, make_url
 from app.core.config import get_settings
 from app.infrastructure.db.engines import build_engine, build_onec_engine
 from app.services.assortment_lifecycle_classification_store import (
+    fetch_previous_classification_states,
     fetch_previous_demand_states,
     fetch_previous_statuses,
 )
@@ -71,6 +72,7 @@ def main() -> int:
     sales_distribution: dict[str, dict[str, Any]] = {}
     days_in_sale_totals: dict[str, dict[int, Decimal]] = {}
     previous_statuses: dict[str, str] = {}
+    previous_classifications: dict[str, dict[str, Any]] = {}
     previous_demand_states: dict[str, dict[str, Any]] = {}
     inventory_costs: dict[str, Decimal] = {}
     observation_from: date | None = None
@@ -134,8 +136,9 @@ def main() -> int:
                 first_supplier_order_dates = fetch_first_supplier_order_dates(
                     engine,
                     nomenclature_refs_by_code={
-                        str(row.get("nomenclature_code") or row.get("code") or ""):
-                        str(row.get("nomenclature_ref") or row.get("ref") or "")
+                        str(row.get("nomenclature_code") or row.get("code") or ""): str(
+                            row.get("nomenclature_ref") or row.get("ref") or ""
+                        )
                         for row in nomenclature_rows
                     },
                     supplier_mapping=supplier_mapping,
@@ -182,6 +185,10 @@ def main() -> int:
                     windows_days=DEMAND_WINDOWS_DAYS,
                 )
                 previous_statuses = fetch_previous_statuses(product_engine)
+                previous_classifications = fetch_previous_classification_states(
+                    product_engine,
+                    nomenclature_codes=codes,
+                )
                 previous_demand_states = fetch_previous_demand_states(product_engine)
                 (
                     observation_from,
@@ -221,6 +228,7 @@ def main() -> int:
         sales_distribution=sales_distribution,
         days_in_sale_totals=days_in_sale_totals,
         previous_statuses=previous_statuses,
+        previous_classifications=previous_classifications,
         previous_demand_states=previous_demand_states,
         observation_from=observation_from,
         observation_to=observation_to,

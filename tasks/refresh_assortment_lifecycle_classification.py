@@ -15,6 +15,7 @@ from app.core.config import get_settings
 from app.infrastructure.db.engines import build_engine
 from app.services.assortment_lifecycle_classification_store import (
     build_classification_rows,
+    fetch_previous_classification_states,
     fetch_previous_demand_states,
     fetch_previous_statuses,
     persist_classification_rows,
@@ -343,6 +344,7 @@ def _load_or_build_fact_records(
         observation_to: date | None = None
         first_observed_stock_dates: dict[str, date] = {}
         previous_demand_states: dict[str, dict[str, Any]] = {}
+        previous_classifications: dict[str, dict[str, Any]] = {}
 
         if args.source_rows_json:
             raw_payload = _load_json_object(args.source_rows_json)
@@ -405,8 +407,9 @@ def _load_or_build_fact_records(
                 first_supplier_order_dates = fetch_first_supplier_order_dates(
                     onec_engine,
                     nomenclature_refs_by_code={
-                        str(row.get("nomenclature_code") or row.get("code") or ""):
-                        str(row.get("nomenclature_ref") or row.get("ref") or "")
+                        str(row.get("nomenclature_code") or row.get("code") or ""): str(
+                            row.get("nomenclature_ref") or row.get("ref") or ""
+                        )
                         for row in nomenclature_rows
                     },
                     supplier_mapping=supplier_mapping,
@@ -458,6 +461,13 @@ def _load_or_build_fact_records(
                 windows_days=DEMAND_WINDOWS_DAYS,
             )
             previous_statuses = fetch_previous_statuses(product_engine)
+            previous_classifications = fetch_previous_classification_states(
+                product_engine,
+                nomenclature_codes=[
+                    str(row.get("nomenclature_code") or row.get("code") or "")
+                    for row in nomenclature_rows
+                ],
+            )
             previous_demand_states = fetch_previous_demand_states(product_engine)
             (
                 observation_from,
@@ -490,6 +500,7 @@ def _load_or_build_fact_records(
             sales_distribution=sales_distribution,
             days_in_sale_totals=days_in_sale_totals,
             previous_statuses=previous_statuses,
+            previous_classifications=previous_classifications,
             previous_demand_states=previous_demand_states,
             observation_from=observation_from,
             observation_to=observation_to,

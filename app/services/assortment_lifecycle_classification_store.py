@@ -415,6 +415,52 @@ def fetch_previous_statuses(
     return result
 
 
+def fetch_previous_classification_states(
+    engine: Engine,
+    *,
+    nomenclature_codes: Sequence[str] = (),
+) -> dict[str, dict[str, Any]]:
+    """Return persisted audit fields without requiring the v2 migration."""
+
+    inspector = inspect(engine)
+    table_name = ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.name
+    if not inspector.has_table(table_name):
+        return {}
+    available_columns = {str(column["name"]) for column in inspector.get_columns(table_name)}
+    required_columns = {
+        "nomenclature_code",
+        "status",
+        "auto_order_allowed",
+        "manual_review_required",
+        "blockers",
+        "reason_codes",
+    }
+    if not required_columns.issubset(available_columns):
+        return {}
+    codes = [code for code in {str(value or "").strip() for value in nomenclature_codes} if code]
+    statement = select(
+        *(ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c[name] for name in sorted(required_columns))
+    )
+    if codes:
+        statement = statement.where(
+            ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE.c.nomenclature_code.in_(codes)
+        )
+    result: dict[str, dict[str, Any]] = {}
+    with engine.connect() as connection:
+        for row in connection.execute(statement).mappings():
+            code = str(row.get("nomenclature_code") or "").strip()
+            if not code:
+                continue
+            result[code] = {
+                "status": str(row.get("status") or "").strip(),
+                "auto_order_allowed": bool(row.get("auto_order_allowed")),
+                "manual_review_required": bool(row.get("manual_review_required")),
+                "blockers": _json_list(row.get("blockers")),
+                "reason_codes": _json_list(row.get("reason_codes")),
+            }
+    return result
+
+
 def fetch_previous_demand_states(
     engine: Engine,
     *,

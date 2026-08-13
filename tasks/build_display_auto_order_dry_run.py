@@ -12,7 +12,7 @@ from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy import bindparam, func, select, text
+from sqlalchemy import bindparam, func, inspect, select, text
 
 from app.core.config import get_settings
 from app.infrastructure.db.engines import build_engine
@@ -619,6 +619,9 @@ def load_auto_order_items(
 ) -> tuple[list[dict[str, Any]], int | None]:
     table = ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE
     with engine.connect() as conn:
+        available_columns = {
+            str(column["name"]) for column in inspect(engine).get_columns(table.name)
+        }
         run_id = conn.execute(
             select(func.max(table.c.last_run_id)).where(table.c.folder.ilike(f"%{folder}%"))
         ).scalar()
@@ -642,8 +645,13 @@ def load_auto_order_items(
                     table.c.status == "working",
                 ]
             )
+        selectable_columns = [column for column in table.c if column.name in available_columns]
         rows = (
-            conn.execute(select(table).where(*conditions).order_by(table.c.nomenclature_code.asc()))
+            conn.execute(
+                select(*selectable_columns)
+                .where(*conditions)
+                .order_by(table.c.nomenclature_code.asc())
+            )
             .mappings()
             .all()
         )
@@ -675,6 +683,10 @@ def load_auto_order_items_from_facts(
     items: list[dict[str, Any]] = []
     for raw in _load_records(path):
         if folder and not _matches_folder(raw, folder):
+            continue
+        if raw.get("future_ka_mapping_status") != "ready":
+            continue
+        if raw.get("demand_method_code") != "available_days_average":
             continue
         lifecycle_input = _lifecycle_input_from_record(raw)
         legacy = _fact_status_decision_from_record(

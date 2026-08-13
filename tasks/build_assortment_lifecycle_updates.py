@@ -766,9 +766,11 @@ def _matches_folder(record: dict[str, Any], folder_filter: str) -> bool:
         return False
     if _is_display_scope_text(folder_text):
         return True
-    subject = str(
-        _optional_field(record, "subject_1c", "subject", "Предмет", default="")
-    ).casefold().strip()
+    subject = (
+        str(_optional_field(record, "subject_1c", "subject", "Предмет", default=""))
+        .casefold()
+        .strip()
+    )
     return subject in {"дисплей", "матрица"}
 
 

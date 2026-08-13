@@ -321,14 +321,32 @@ def test_matrix_folder_is_treated_as_display_scope() -> None:
 
 
 def test_display_scope_keeps_archived_display_but_rejects_matrix_accessories() -> None:
+    assert is_display_assortment_record({"folder_path": "Архив", "subject_1c": "Дисплей"})
     assert is_display_assortment_record(
-        {"folder_path": "Архив", "subject_1c": "Дисплей"}
+        {
+            "folder_path": "Архив",
+            "name": "Дубликат Дисплей iPhone 6S в сборе с тачскрином",
+        }
+    )
+    assert is_display_assortment_record(
+        {
+            "folder_path": "удалить",
+            "name": "Дисплеи для Lenovo IdeaPhone A606",
+            "category_1c": "Дисплеи для телефонов",
+        }
     )
     assert not is_display_assortment_record(
         {
             "folder_path": "Проклейки для Apple MacBook",
             "subject_1c": "скотч",
             "name": "Проклейка матрицы Apple MacBook Air",
+        }
+    )
+    assert not is_display_assortment_record(
+        {
+            "folder_path": "Шлейфы для Apple MacBook",
+            "category_1c": "Шлейфы для ноутбуков",
+            "name": "Шлейф для Apple MacBook с компонентами на матрицу",
         }
     )
 
@@ -476,6 +494,38 @@ def test_full_history_supplier_order_date_prevents_old_item_becoming_fruit() -> 
 
     assert facts[0]["first_supplier_order_at"] == "2014-06-01"
     assert "history_truncated" not in facts[0]["warnings"]
+
+
+def test_fact_snapshot_carries_previous_classification_audit_fields() -> None:
+    facts, _ = build_assortment_lifecycle_fact_records(
+        nomenclature_rows=[
+            {
+                "nomenclature_ref": "0xA",
+                "nomenclature_code": "PREVIOUS-1",
+                "folder_path": "Дисплеи",
+            }
+        ],
+        supplier_order_rows=[],
+        receipt_rows=[],
+        warehouse_policy=_warehouse_policy(),
+        previous_classifications={
+            "PREVIOUS-1": {
+                "status": "working",
+                "auto_order_allowed": False,
+                "manual_review_required": True,
+                "blockers": ["legacy_blocker"],
+                "reason_codes": ["legacy_reason"],
+            }
+        },
+    )
+
+    fact = facts[0]
+    assert fact["previous_status"] == "working"
+    assert fact["previous_classification_available"] is True
+    assert fact["previous_auto_order_allowed"] is False
+    assert fact["previous_manual_review_required"] is True
+    assert fact["previous_blockers"] == ["legacy_blocker"]
+    assert fact["previous_reason_codes"] == ["legacy_reason"]
 
 
 def test_current_inventory_cost_uses_current_party_totals_only() -> None:

@@ -86,18 +86,35 @@ def build_snapshot(
             previous_status = str(record.get("previous_status") or "").strip()
             if previous_status:
                 status = previous_status
+            if previous_status and record.get("previous_classification_available"):
+                decision_auto_order_allowed = bool(record.get("previous_auto_order_allowed"))
+                decision_manual_review_required = bool(
+                    record.get("previous_manual_review_required")
+                )
+                decision_blockers = sorted(record.get("previous_blockers") or [])
+                decision_reason_codes = list(record.get("previous_reason_codes") or [])
+            else:
+                decision_auto_order_allowed = bool(decision.auto_order_allowed)
+                decision_manual_review_required = bool(decision.manual_review_required)
+                decision_blockers = sorted(decision.blockers)
+                decision_reason_codes = list(decision.reason_codes)
+        else:
+            decision_auto_order_allowed = bool(decision.auto_order_allowed)
+            decision_manual_review_required = bool(decision.manual_review_required)
+            decision_blockers = sorted(decision.blockers)
+            decision_reason_codes = list(decision.reason_codes)
         snapshot[decision.nomenclature_code] = {
             "status": status,
-            "auto_order_allowed": bool(decision.auto_order_allowed),
-            "blockers": sorted(decision.blockers),
-            "manual_review_required": bool(decision.manual_review_required),
+            "auto_order_allowed": decision_auto_order_allowed,
+            "blockers": decision_blockers,
+            "manual_review_required": decision_manual_review_required,
             "recommended_status": (
                 decision.recommended_status.value if decision.recommended_status else None
             ),
             "demand_state": decision.demand_state.value if decision.demand_state else None,
             "demand_state_label": decision.demand_state_label,
             "demand_reason_codes": list(decision.demand_reason_codes),
-            "reason_codes": list(decision.reason_codes),
+            "reason_codes": decision_reason_codes,
             "first_receipt_at": record.get("first_receipt_at"),
             "last_receipt_at": record.get("last_receipt_at"),
             "history_age_days": record.get("history_age_days"),
@@ -373,6 +390,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def _load_order_rows(path: Path | None) -> dict[str, dict[str, Any]]:
     if path is None:
         return {}
+    if path.suffix.casefold() == ".csv":
+        with path.open(encoding="utf-8-sig", newline="") as handle:
+            return {
+                str(item.get("nomenclature_code") or "").strip(): dict(item)
+                for item in csv.DictReader(handle)
+                if str(item.get("nomenclature_code") or "").strip()
+            }
     payload = json.loads(path.read_text(encoding="utf-8-sig"))
     items = payload.get("items") or payload.get("rows") if isinstance(payload, dict) else payload
     if not isinstance(items, list):
@@ -418,6 +442,12 @@ def _attach_order_and_capital_diff(
 
 def _target_audit_sections(diff: dict[str, Any]) -> dict[str, list[str]]:
     rows = diff.get("audit_rows", diff["changed"])
+    unknown_fact_blockers = {
+        "demand_data_missing",
+        "first_supplier_order_fact_missing",
+        "first_receipt_fact_missing",
+        "sales_fact_missing",
+    }
     return {
         "exits_from_growing": [
             item["nomenclature_code"]
@@ -433,7 +463,7 @@ def _target_audit_sections(diff: dict[str, Any]) -> dict[str, list[str]]:
             item["nomenclature_code"]
             for item in rows
             if item["after"].get("demand_state") == "no_data"
-            or "demand_data_missing" in item["after"].get("blockers", [])
+            or unknown_fact_blockers.intersection(item["after"].get("blockers", []))
         ],
         "manual_statuses": [
             item["nomenclature_code"]

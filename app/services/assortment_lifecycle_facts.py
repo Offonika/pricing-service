@@ -911,6 +911,103 @@ def fetch_sales_distribution(
     return _sales_distribution_from_rows(raw_rows)
 
 
+def fetch_historical_sales_observations(
+    engine: Engine,
+    *,
+    nomenclature_codes: Sequence[str],
+    date_from: date,
+    date_to: date,
+    warehouse_codes: Sequence[str] = (),
+) -> list[dict[str, Any]]:
+    """Return dated, anonymized sale observations for walk-forward replay.
+
+    Raw 1C refs never leave this function.  The result intentionally keeps one
+    row per day/document/customer/point so demand concentration can be proved
+    without retaining personal or source-system identifiers.
+    """
+
+    codes = sorted({code for code in (_clean(value) for value in nomenclature_codes) if code})
+    warehouses = sorted({code for code in (_clean(value) for value in warehouse_codes) if code})
+    if not codes or date_from > date_to:
+        return []
+    warehouse_join = ""
+    warehouse_filter = ""
+    if warehouses:
+        warehouse_join = """
+        JOIN dbo._Reference80 AS warehouse WITH (NOLOCK)
+          ON warehouse._IDRRef = CASE
+            WHEN line._Fld4983RRef <> 0x00000000000000000000000000000000
+            THEN line._Fld4983RRef ELSE doc._Fld4940RRef END
+        """
+        warehouse_filter = "AND NULLIF(LTRIM(RTRIM(warehouse._Code)), N'') IN :warehouses"
+    query = text(f"""
+        SELECT
+            NULLIF(LTRIM(RTRIM(product._Code)), N'') AS nomenclature_code,
+            CAST(doc._Date_Time AS date) AS business_date,
+            CONVERT(varchar(34), doc._IDRRef, 1) AS document_ref,
+            CONVERT(varchar(34), doc._Fld4942RRef, 1) AS customer_ref,
+            CONVERT(varchar(34),
+                CASE
+                  WHEN line._Fld4983RRef <> 0x00000000000000000000000000000000
+                  THEN line._Fld4983RRef ELSE doc._Fld4940RRef
+                END, 1) AS sales_point_ref,
+            SUM(CAST(line._Fld4971 AS decimal(18, 3))) AS quantity
+        FROM dbo._Document203 AS doc WITH (NOLOCK)
+        JOIN dbo._Document203_VT4966 AS line WITH (NOLOCK)
+          ON line._Document203_IDRRef = doc._IDRRef
+        JOIN dbo._Reference62 AS product WITH (NOLOCK)
+          ON product._IDRRef = line._Fld4974RRef
+        {warehouse_join}
+        WHERE doc._Marked = 0x00 AND doc._Posted = 0x01
+          AND line._Fld4971 > 0
+          AND doc._Date_Time >= :date_from AND doc._Date_Time < :date_to
+          AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
+          {warehouse_filter}
+        GROUP BY NULLIF(LTRIM(RTRIM(product._Code)), N''), CAST(doc._Date_Time AS date),
+                 doc._IDRRef, doc._Fld4942RRef,
+                 CASE WHEN line._Fld4983RRef <> 0x00000000000000000000000000000000
+                      THEN line._Fld4983RRef ELSE doc._Fld4940RRef END
+        """).bindparams(bindparam("codes", expanding=True))
+    if warehouses:
+        query = query.bindparams(bindparam("warehouses", expanding=True))
+    params: dict[str, Any] = {
+        "date_from": datetime.combine(date_from, datetime.min.time()),
+        "date_to": datetime.combine(date_to + timedelta(days=1), datetime.min.time()),
+    }
+    rows: list[dict[str, Any]] = []
+    with engine.connect() as conn:
+        for chunk in _chunks(codes, MAX_SQLSERVER_EXPANDING_REFS):
+            chunk_params = {**params, "codes": chunk}
+            if warehouses:
+                chunk_params["warehouses"] = warehouses
+            for row in conn.execute(query, chunk_params).mappings():
+                code = _clean(row.get("nomenclature_code"))
+                business_date = _date(row.get("business_date"))
+                quantity = _decimal(row.get("quantity"))
+                if not code or business_date is None or quantity is None or quantity <= 0:
+                    continue
+                rows.append(
+                    {
+                        "business_date": business_date.isoformat(),
+                        "nomenclature_code": code,
+                        "document_id": _anonymous_id(row.get("document_ref")),
+                        "customer_id": _anonymous_id(row.get("customer_ref")),
+                        "sales_point_id": _anonymous_id(row.get("sales_point_ref")),
+                        "quantity": _json_decimal(quantity),
+                    }
+                )
+    rows.sort(
+        key=lambda row: (
+            row["business_date"],
+            row["nomenclature_code"],
+            row["document_id"],
+            row["customer_id"],
+            row["sales_point_id"],
+        )
+    )
+    return rows
+
+
 def _sales_distribution_from_rows(
     rows: Sequence[Mapping[str, Any]],
 ) -> dict[str, dict[str, Any]]:

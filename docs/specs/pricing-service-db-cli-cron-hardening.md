@@ -21,7 +21,7 @@ depends_on:
   - docs/specs/pricing-service-architecture-hardening.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-12"
+updated_at: "2026-08-13"
 ---
 
 # Назначение
@@ -117,7 +117,14 @@ JSON/CSV/XLSX артефактов сохраняются.
       SHA-256; повторный запуск не создал дублей.
 - [x] Переключить только live cron-строку `onec_sales_kpi_sync` на active release
       symlink с сохранением расписания 03:20 МСК и адресным rollback-файлом.
-- [ ] Подтвердить первый штатный scheduled-run второго canary 2026-08-13 в 03:20 МСК.
+- [x] Подтвердить первый штатный scheduled-run второго canary 2026-08-13 в 03:20 МСК:
+      status `0`, 2012 строк за 36 дней, дублей по ключу дня/менеджера/магазина нет.
+- [x] Выбрать и изолированно проверить третий canary `sku_result_sync_ut103`:
+      mutable checkout и active release обработали одинаковые 104 XML-файла и
+      30 289 SKU-результатов; повтор сохранил одинаковый state 38 334 товаров.
+- [x] Переключить только live cron-строку `sku_result_sync_ut103` на active release
+      symlink с сохранением ежечасного расписания `:45` и адресным rollback-файлом.
+- [ ] Подтвердить первый штатный scheduled-run третьего canary 2026-08-13 в 08:45 МСК.
 - [x] ОТМЕНЕНО (2026-08-11): `staffing_sync` был выбран вторым canary в режиме
       preparation-only. После диагностики job исключён из cron-canary: это
       незавершённая бизнес-интеграция без источников плана и факта смен.
@@ -159,6 +166,9 @@ JSON/CSV/XLSX артефактов сохраняются.
 
 # Changelog
 
+- 2026-08-13 — второй canary `onec_sales_kpi_sync` прошёл штатный readback; rollout
+  продолжен третьим canary `sku_result_sync_ut103`, переключённым на active release
+  после одинакового isolated результата и проверки итогового состояния при повторе.
 - 2026-08-12 — первый canary прошёл штатный scheduled readback; rollout продолжен
   вторым canary `onec_sales_kpi_sync`, переключённым на active release после
   одинакового isolated результата и идемпотентного повтора.

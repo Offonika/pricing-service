@@ -104,6 +104,16 @@
       "spec": "docs/specs/assortment-lifecycle-policy.md",
       "remove_after": null
     },
+    "manage_assortment_lifecycle_replay_store.py": {
+      "owner": "procurement",
+      "kind": "permanent_cli",
+      "dry_run": "not_applicable",
+      "idempotency": "append_only_by_content_hash",
+      "side_effect_level": "artifact_write",
+      "db_access": "none",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
     "build_display_auto_order_frozen_report.py": {
       "owner": "procurement",
       "kind": "report",

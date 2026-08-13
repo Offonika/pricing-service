@@ -12,11 +12,13 @@ related_code:
   - app/services/assortment_lifecycle_classification_store.py
   - app/services/assortment_lifecycle_v2_policy.py
   - app/services/assortment_lifecycle_v2_backtest.py
+  - app/services/assortment_lifecycle_replay_store.py
   - tasks/build_assortment_lifecycle_facts.py
   - tasks/build_assortment_lifecycle_updates.py
   - tasks/refresh_assortment_lifecycle_classification.py
   - tasks/diff_assortment_lifecycle_classification.py
   - tasks/evaluate_assortment_lifecycle_v2_backtest.py
+  - tasks/manage_assortment_lifecycle_replay_store.py
   - tasks/build_display_auto_order_dry_run.py
   - tasks/analyze_display_auto_order_quick_backtest.py
   - tasks/analyze_display_auto_order_base_pipeline_backtest.py
@@ -36,6 +38,8 @@ related_tests:
   - tests/test_assortment_lifecycle_facts.py
   - tests/test_assortment_lifecycle_v2_policy.py
   - tests/test_assortment_lifecycle_v2_backtest.py
+  - tests/test_assortment_lifecycle_replay_store.py
+  - tests/test_manage_assortment_lifecycle_replay_store_task.py
   - tests/test_build_assortment_lifecycle_facts_task.py
   - tests/test_build_assortment_lifecycle_updates_task.py
   - tests/test_refresh_assortment_lifecycle_classification_task.py
@@ -58,7 +62,7 @@ depends_on:
   - docs/specs/onec-stock-effective-availability.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-12"
+updated_at: "2026-08-13"
 ---
 
 # Назначение
@@ -267,6 +271,44 @@ acceptance-метриками за `2026-02-01—2026-06-30` и отдельны
 - `reports/assortment_lifecycle/2026-08-12/assortment-lifecycle-v2-target-audit.json`;
 - `reports/assortment_lifecycle/2026-08-12/assortment-lifecycle-v2-target-audit.csv`;
 - `reports/assortment_lifecycle/2026-08-12/order-comparison/`.
+
+### Неизменяемый store исторического replay
+
+Исторические факты и восстановленные дневные стадии не пересчитываются при
+каждом сценарии. Шестимесячный backtest сначала строит либо находит один
+замороженный dataset, затем один раз строит legacy-траекторию и передаёт её
+всем сценариям количества. Следующий запуск с теми же входами читает готовую
+траекторию из store.
+
+Долговечный backtest-store реализован как отдельная append-only SQLite-БД
+`.local/assortment-lifecycle-backtest-store.sqlite3`. Это не production-БД и не
+таблица рабочей классификации. Store содержит:
+
+- `replay_dataset` и `replay_dataset_fact` — датированные исходные факты;
+- `replay_trajectory` и `replay_trajectory_row` — ежедневные стадии, причины,
+  состояние допуска заказа и доказательства на дату решения;
+- SHA-256 dataset, траектории и каждой строки;
+- запрет `UPDATE/DELETE` SQLite-триггерами и проверку checksum при чтении.
+
+Ключ dataset вычисляется из scope, периода наблюдения и канонически
+отсортированных фактов. Ключ повторного использования траектории содержит:
+
+`dataset_hash + model_version + policy_hash + period_from + period_to`.
+
+Для legacy `policy_hash` включает исходный код исполняемой формулы и replay,
+поэтому изменение реализации автоматически создаёт новую траекторию. Для v2
+каждый набор параметров хранится отдельно по собственному `policy_hash`.
+Повторная запись полностью совпадающего результата идемпотентна; другой
+результат под существующим ключом завершается ошибкой. Удаление или замена
+старых траекторий не допускаются.
+
+Управляющий CLI `tasks/manage_assortment_lifecycle_replay_store.py` показывает
+manifest, экспортирует траекторию по hash и позволяет зарегистрировать готовую
+legacy/v2-траекторию для уже существующего dataset. Файлы в
+`build/assortment/backtest-cache/<dataset_hash>/` и отчёты в
+`reports/assortment_lifecycle/backtest-<период>/<run_id>/` остаются
+восстанавливаемыми кешами и экспортами, а не источником истины. Store не
+разрешает изменение production-стадий, создание заказов или записи в 1С.
 
 ## Факты возраста товарной истории
 
@@ -2270,6 +2312,12 @@ detail повторно строится только для выбранног�
 
 # Changelog
 
+- 2026-08-13 — реализован отдельный неизменяемый backtest-store исторического
+  replay: датированные факты, legacy/v2-траектории, ключи по hash фактов,
+  модели, политики и периода, идемпотентное переиспользование, запрет
+  перезаписи и проверка checksum. Шестимесячный backtest теперь строит
+  legacy-траекторию один раз и переиспользует её во всех сценариях; рабочая БД,
+  production-стадии, заказы и 1С не затрагиваются.
 - 2026-08-12 — завершён полный read-only shadow-аудит v2 по `2 739` дисплеям:
   сформированы снимок фактов, сравнение стадий и dry-run количества
   `7 253 → 5 571` единиц. Зафиксированы `1 361` выход из `Растим`, `512`

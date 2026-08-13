@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import json
 from datetime import date, timedelta
 from decimal import Decimal
 from pathlib import Path
 
+from sqlalchemy import create_engine, text
+
+from app.services.assortment_lifecycle_replay_store import AssortmentLifecycleReplayStore
 from tasks.build_display_auto_order_dry_run import load_auto_order_policy
 from tasks.report_display_auto_order_six_month_backtest import (
     LaunchProfile,
@@ -18,10 +22,13 @@ from tasks.report_display_auto_order_six_month_backtest import (
     historical_lifecycle_decision,
     initial_pipeline,
     item_active_as_of,
+    load_backtest_items,
+    load_or_build_historical_lifecycle_trajectory,
     run_simulation,
     select_launch_profile,
     stage_model_scenario,
     stage_recommendation,
+    write_replay_only_artifacts,
 )
 
 POLICY_PATH = Path("config/assortment/display-auto-order-policy.json")
@@ -41,6 +48,144 @@ def _sales(date_from: date, date_to: date, qty: str = "1") -> dict[date, Decimal
         date_from + timedelta(days=offset): Decimal(qty)
         for offset in range((date_to - date_from).days + 1)
     }
+
+
+def test_load_backtest_items_tolerates_legacy_database_schema() -> None:
+    engine = create_engine("sqlite://")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE assortment_lifecycle_classification ("
+                "id INTEGER PRIMARY KEY, nomenclature_code TEXT NOT NULL, "
+                "name TEXT NOT NULL, folder TEXT NOT NULL, status TEXT NOT NULL, "
+                "last_run_id INTEGER)"
+            )
+        )
+        connection.execute(
+            text(
+                "INSERT INTO assortment_lifecycle_classification "
+                "(nomenclature_code, name, folder, status, last_run_id) "
+                "VALUES ('SKU-1', 'Дисплей', 'дисплеи', 'working', 7)"
+            )
+        )
+
+    rows, run_id = load_backtest_items(engine, folder="дисплеи")
+
+    assert run_id == 7
+    assert rows == [
+        {
+            "id": 1,
+            "nomenclature_code": "SKU-1",
+            "name": "Дисплей",
+            "folder": "дисплеи",
+            "status": "working",
+            "last_run_id": 7,
+        }
+    ]
+
+
+def test_historical_lifecycle_trajectory_is_cached_and_reused(tmp_path: Path) -> None:
+    store = AssortmentLifecycleReplayStore(tmp_path / "replay.sqlite3")
+    history_start = date(2025, 8, 1)
+    date_from = date(2026, 2, 1)
+    date_to = date(2026, 2, 2)
+    item = {
+        **_item(),
+        "created_at": "2025-08-01",
+        "first_supplier_order_at": "2025-09-01",
+        "receipt_dates": ["2025-09-10"],
+        "first_sale_at": "2025-09-15",
+        "last_sale_at": "2026-02-02",
+    }
+    sales = {"SKU-1": _sales(history_start, date_to)}
+    availability = {"SKU-1": set(sales["SKU-1"])}
+    common = {
+        "store": store,
+        "items": [item],
+        "sales_by_code": sales,
+        "availability_by_code": availability,
+        "purchase_history": {},
+        "receipt_history": {},
+        "history_start": history_start,
+        "date_from": date_from,
+        "date_to": date_to,
+        "scope": "дисплеи",
+    }
+
+    first_rows, first_meta = load_or_build_historical_lifecycle_trajectory(**common)
+    second_rows, second_meta = load_or_build_historical_lifecycle_trajectory(**common)
+
+    assert len(first_rows) == 2
+    assert first_rows == second_rows
+    assert first_meta["trajectory_reused"] is False
+    assert second_meta["dataset_reused"] is True
+    assert second_meta["trajectory_reused"] is True
+
+    result = run_simulation(
+        items=[item],
+        sales_by_code=sales,
+        availability_by_code=availability,
+        actual_stock_by_day={date_from - timedelta(days=1): {"SKU-1": Decimal("10")}},
+        purchase_history={},
+        initial_pipeline_by_code={},
+        policy=load_auto_order_policy(POLICY_PATH),
+        date_from=date_from,
+        date_to=date_to,
+        lead_time_days=52,
+        scenario="cached-trajectory",
+        use_historical_lifecycle=True,
+        historical_lifecycle_trajectory=second_rows,
+    )
+    assert len(result.lifecycle_rows) == 2
+
+
+def test_replay_only_artifacts_are_explicitly_read_only(tmp_path: Path) -> None:
+    rows = [
+        {
+            "business_date": "2026-02-01",
+            "nomenclature_code": "SKU-1",
+            "status": "working",
+        }
+    ]
+
+    payload = write_replay_only_artifacts(
+        output_dir=tmp_path / "report",
+        lifecycle_rows=rows,
+        replay_store={
+            "dataset_hash": "dataset",
+            "dataset_reused": True,
+            "trajectory_hash": "trajectory",
+            "trajectory_reused": True,
+            "policy_hash": "policy",
+            "row_count": 1,
+        },
+        replay_store_path=tmp_path / "replay.sqlite3",
+        date_from=date(2026, 2, 1),
+        date_to=date(2026, 7, 31),
+        history_start=date(2025, 1, 1),
+        preflight_dir=tmp_path / "preflight",
+        preflight_manifest={
+            "schema": "display_auto_order_backtest_preflight.v1",
+            "preflight_status": "PASS",
+            "files": {},
+        },
+        classification_run_id="run-1",
+        scope="дисплеи",
+        sku_count=1,
+        daily_sales_sku_count=1,
+        supplier_order_row_count=2,
+        receipt_row_count=1,
+        stock_counts={"stock_day_count": 181},
+    )
+
+    stored = json.loads((tmp_path / "report" / "summary.json").read_text())
+    history = (tmp_path / "report" / "lifecycle-history.csv").read_text(encoding="utf-8-sig")
+    assert payload == stored
+    assert stored["mode"] == "replay_only"
+    assert stored["production_action"] == "none_read_only"
+    assert stored["historical_replay_store"]["trajectory_reused"] is True
+    assert "SKU-1" in history
+    assert not (tmp_path / "report" / "decision-detail.csv").exists()
 
 
 def test_forecast_rate_does_not_use_future_sales() -> None:

@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import inspect
 import json
 import math
 import os
@@ -26,6 +27,7 @@ from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
 from sqlalchemy import bindparam, func, select, text
+from sqlalchemy import inspect as sa_inspect
 
 from app.core.config import get_settings
 from app.infrastructure.db.engines import build_engine
@@ -38,6 +40,11 @@ from app.services.assortment_lifecycle import (
 )
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
+)
+from app.services.assortment_lifecycle_replay_store import (
+    DEFAULT_REPLAY_STORE_PATH,
+    AssortmentLifecycleReplayStore,
+    stable_hash,
 )
 from app.services.onec_stock_availability import (
     MOVEMENT_SQL,
@@ -76,6 +83,7 @@ LAUNCH_PROFILE_OBSERVATION_DAYS = 30
 LAUNCH_PROFILE_MIN_AVAILABILITY_DAYS = 7
 DEFAULT_LAUNCH_PROFILE_MIN_SAMPLES = 8
 STAGE_MODEL_SCENARIO_NAMES = ("legacy", "conservative", "typical", "service")
+LEGACY_REPLAY_MODEL_VERSION = "legacy-v1-reconstructed"
 
 
 @dataclass(frozen=True)
@@ -266,6 +274,17 @@ def load_backtest_items(app_engine: Any, *, folder: str) -> tuple[list[dict[str,
 
     table = ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE
     with app_engine.connect() as connection:
+        existing_columns = {
+            column["name"] for column in sa_inspect(connection).get_columns(table.name)
+        }
+        required_columns = {"nomenclature_code", "folder", "last_run_id"}
+        missing_required = required_columns - existing_columns
+        if missing_required:
+            raise ValueError(
+                "assortment_lifecycle_classification_missing_columns:"
+                + ",".join(sorted(missing_required))
+            )
+        readable_columns = [column for column in table.c if column.name in existing_columns]
         run_id = connection.execute(
             select(func.max(table.c.last_run_id)).where(table.c.folder.ilike(f"%{folder}%"))
         ).scalar()
@@ -273,7 +292,7 @@ def load_backtest_items(app_engine: Any, *, folder: str) -> tuple[list[dict[str,
             return [], 0
         rows = (
             connection.execute(
-                select(table)
+                select(*readable_columns)
                 .where(
                     table.c.folder.ilike(f"%{folder}%"),
                     table.c.last_run_id == run_id,
@@ -1032,6 +1051,312 @@ def warmup_lifecycle_statuses(
     return previous
 
 
+def build_historical_lifecycle_trajectory(
+    *,
+    items: Sequence[Mapping[str, Any]],
+    sales_by_code: Mapping[str, Mapping[date, Decimal]],
+    availability_by_code: Mapping[str, set[date]],
+    purchase_history: Mapping[str, Sequence[PurchaseLine]],
+    receipt_history: Mapping[str, Sequence[ReceiptLine]],
+    history_start: date,
+    date_from: date,
+    date_to: date,
+) -> list[dict[str, Any]]:
+    """Build one look-ahead-free daily legacy trajectory for all scenarios."""
+
+    item_by_code = {
+        _clean(item.get("nomenclature_code")): item
+        for item in items
+        if _clean(item.get("nomenclature_code"))
+    }
+    previous_statuses = warmup_lifecycle_statuses(
+        items=items,
+        sales_by_code=sales_by_code,
+        availability_by_code=availability_by_code,
+        purchase_history=purchase_history,
+        receipt_history=receipt_history,
+        date_from=history_start,
+        date_to=date_from - timedelta(days=1),
+    )
+    rows: list[dict[str, Any]] = []
+    for business_date in _daterange(date_from, date_to):
+        for code in sorted(item_by_code):
+            item = item_by_code[code]
+            if not item_active_as_of(item, as_of=business_date):
+                continue
+            previous_status = previous_statuses.get(code)
+            lifecycle, evidence = historical_lifecycle_decision(
+                item=item,
+                sales=sales_by_code.get(code, {}),
+                availability_dates=availability_by_code.get(code, set()),
+                purchases=purchase_history.get(code, ()),
+                receipts=receipt_history.get(code, ()),
+                as_of=business_date,
+                previous_status=previous_status,
+            )
+            previous_statuses[code] = lifecycle.status.value
+            rows.append(
+                {
+                    "business_date": business_date.isoformat(),
+                    "nomenclature_code": code,
+                    "name": _clean(item.get("name")),
+                    "previous_status": previous_status or "",
+                    "status": lifecycle.status.value,
+                    "status_label": lifecycle.status_label,
+                    "reason_codes": list(lifecycle.reason_codes),
+                    "reason_text": lifecycle.reason_text,
+                    "auto_order_allowed": lifecycle.auto_order_allowed,
+                    "manual_review_required": lifecycle.manual_review_required,
+                    "blockers": list(lifecycle.blockers),
+                    "recommended_status": (
+                        lifecycle.recommended_status.value
+                        if lifecycle.recommended_status is not None
+                        else None
+                    ),
+                    "sales_30": str(evidence["sales_30"]),
+                    "sales_90": str(evidence["sales_90"]),
+                    "sales_180": str(evidence["sales_180"]),
+                    "available_days_30": evidence["available_30"],
+                    "available_days_90": evidence["available_90"],
+                    "available_days_180": evidence["available_180"],
+                    "first_sale_at": evidence["first_sale_at"],
+                    "last_sale_at": evidence["last_sale_at"],
+                    "first_supplier_order_at": evidence["first_supplier_order_at"],
+                    "first_cargo_at": evidence["first_cargo_at"],
+                    "historical_manual_status_replayed": evidence[
+                        "historical_manual_status_replayed"
+                    ],
+                }
+            )
+    return rows
+
+
+def historical_replay_facts(
+    *,
+    items: Sequence[Mapping[str, Any]],
+    sales_by_code: Mapping[str, Mapping[date, Decimal]],
+    availability_by_code: Mapping[str, set[date]],
+    purchase_history: Mapping[str, Sequence[PurchaseLine]],
+    receipt_history: Mapping[str, Sequence[ReceiptLine]],
+    item_default_date: date,
+) -> list[dict[str, Any]]:
+    facts: list[dict[str, Any]] = []
+    for item in items:
+        code = _clean(item.get("nomenclature_code"))
+        if code:
+            facts.append(
+                {
+                    "business_date": _item_created_at(item) or item_default_date,
+                    "nomenclature_code": code,
+                    "fact_type": "item",
+                    "payload": _source_record(item),
+                }
+            )
+    for code, daily in sales_by_code.items():
+        for business_date, quantity in daily.items():
+            facts.append(
+                {
+                    "business_date": business_date,
+                    "nomenclature_code": code,
+                    "fact_type": "sale",
+                    "payload": {"quantity": quantity},
+                }
+            )
+    for code, dates in availability_by_code.items():
+        for business_date in dates:
+            facts.append(
+                {
+                    "business_date": business_date,
+                    "nomenclature_code": code,
+                    "fact_type": "available",
+                    "payload": {"available": True},
+                }
+            )
+    for code, purchases in purchase_history.items():
+        for purchase in purchases:
+            facts.append(
+                {
+                    "business_date": purchase.created_at,
+                    "nomenclature_code": code,
+                    "fact_type": "supplier_order",
+                    "payload": purchase.__dict__,
+                }
+            )
+    for code, receipts in receipt_history.items():
+        for receipt in receipts:
+            facts.append(
+                {
+                    "business_date": receipt.received_at,
+                    "nomenclature_code": code,
+                    "fact_type": "receipt",
+                    "payload": receipt.__dict__,
+                }
+            )
+    return facts
+
+
+def load_or_build_historical_lifecycle_trajectory(
+    *,
+    store: AssortmentLifecycleReplayStore,
+    items: Sequence[Mapping[str, Any]],
+    sales_by_code: Mapping[str, Mapping[date, Decimal]],
+    availability_by_code: Mapping[str, set[date]],
+    purchase_history: Mapping[str, Sequence[PurchaseLine]],
+    receipt_history: Mapping[str, Sequence[ReceiptLine]],
+    history_start: date,
+    date_from: date,
+    date_to: date,
+    scope: str,
+    source_manifest: Mapping[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    facts = historical_replay_facts(
+        items=items,
+        sales_by_code=sales_by_code,
+        availability_by_code=availability_by_code,
+        purchase_history=purchase_history,
+        receipt_history=receipt_history,
+        item_default_date=history_start,
+    )
+    dataset = store.put_dataset(
+        scope=scope,
+        observation_from=min([history_start, *(_date(fact["business_date"]) for fact in facts)]),
+        observation_to=max([date_to, *(_date(fact["business_date"]) for fact in facts)]),
+        facts=facts,
+        source_manifest=source_manifest,
+    )
+    lifecycle_module_path = Path(inspect.getsourcefile(decide_assortment_status) or "")
+    policy_hash = stable_hash(
+        {
+            "model_version": LEGACY_REPLAY_MODEL_VERSION,
+            "lifecycle_module_source": lifecycle_module_path.read_text(encoding="utf-8"),
+            "implementation": inspect.getsource(historical_lifecycle_decision),
+            "warmup_implementation": inspect.getsource(warmup_lifecycle_statuses),
+        }
+    )
+    cached = store.find_trajectory(
+        dataset_hash=dataset.key,
+        model_version=LEGACY_REPLAY_MODEL_VERSION,
+        policy_hash=policy_hash,
+        period_from=date_from,
+        period_to=date_to,
+    )
+    if cached is not None:
+        rows = store.load_trajectory_rows(cached.trajectory_hash)
+        return rows, {
+            "dataset_hash": dataset.key,
+            "dataset_reused": dataset.reused,
+            "trajectory_hash": cached.trajectory_hash,
+            "trajectory_reused": True,
+            "policy_hash": policy_hash,
+            "row_count": len(rows),
+        }
+    rows = build_historical_lifecycle_trajectory(
+        items=items,
+        sales_by_code=sales_by_code,
+        availability_by_code=availability_by_code,
+        purchase_history=purchase_history,
+        receipt_history=receipt_history,
+        history_start=history_start,
+        date_from=date_from,
+        date_to=date_to,
+    )
+    trajectory = store.put_trajectory(
+        dataset_hash=dataset.key,
+        model_version=LEGACY_REPLAY_MODEL_VERSION,
+        policy_hash=policy_hash,
+        period_from=date_from,
+        period_to=date_to,
+        rows=rows,
+        metadata={
+            "source": "reconstructed_legacy",
+            "look_ahead_free": True,
+            "production_action": "none_read_only",
+        },
+    )
+    rows = store.load_trajectory_rows(trajectory.key)
+    return rows, {
+        "dataset_hash": dataset.key,
+        "dataset_reused": dataset.reused,
+        "trajectory_hash": trajectory.key,
+        "trajectory_reused": trajectory.reused,
+        "policy_hash": policy_hash,
+        "row_count": len(rows),
+    }
+
+
+def _lifecycle_from_replay_row(
+    row: Mapping[str, Any],
+) -> tuple[AssortmentLifecycleDecision, dict[str, Any]]:
+    recommended = _clean(row.get("recommended_status"))
+    lifecycle = AssortmentLifecycleDecision(
+        nomenclature_code=_clean(row.get("nomenclature_code")),
+        status=AssortmentStatus(_clean(row.get("status"))),
+        status_label=_clean(row.get("status_label")),
+        reason_codes=tuple(_text_values(row.get("reason_codes"))),
+        reason_text=_clean(row.get("reason_text")),
+        recommended_status=AssortmentStatus(recommended) if recommended else None,
+        manual_review_required=bool(row.get("manual_review_required")),
+        auto_order_allowed=bool(row.get("auto_order_allowed")),
+        blockers=tuple(_text_values(row.get("blockers"))),
+    )
+    evidence = {
+        "sales_30": _decimal(row.get("sales_30")),
+        "sales_90": _decimal(row.get("sales_90")),
+        "sales_180": _decimal(row.get("sales_180")),
+        "available_30": _int_or_none(row.get("available_days_30")),
+        "available_90": _int_or_none(row.get("available_days_90")),
+        "available_180": _int_or_none(row.get("available_days_180")),
+        "first_sale_at": _date(row.get("first_sale_at")),
+        "last_sale_at": _date(row.get("last_sale_at")),
+        "first_supplier_order_at": _date(row.get("first_supplier_order_at")),
+        "first_cargo_at": _date(row.get("first_cargo_at")),
+        "historical_manual_status_replayed": bool(row.get("historical_manual_status_replayed")),
+    }
+    return lifecycle, evidence
+
+
+def _lifecycle_csv_row(
+    *,
+    business_date: date,
+    code: str,
+    name: str,
+    previous_status: str | None,
+    lifecycle: AssortmentLifecycleDecision,
+    evidence: Mapping[str, Any],
+) -> dict[str, Any]:
+    return {
+        "business_date": business_date.isoformat(),
+        "nomenclature_code": code,
+        "name": name,
+        "previous_status": previous_status or "",
+        "status": lifecycle.status.value,
+        "status_label": lifecycle.status_label,
+        "reason_codes": "|".join(lifecycle.reason_codes),
+        "auto_order_allowed": int(lifecycle.auto_order_allowed),
+        "manual_review_required": int(lifecycle.manual_review_required),
+        "sales_30": str(evidence["sales_30"]),
+        "sales_90": str(evidence["sales_90"]),
+        "sales_180": str(evidence["sales_180"]),
+        "available_days_30": evidence["available_30"],
+        "available_days_90": evidence["available_90"],
+        "available_days_180": evidence["available_180"],
+    }
+
+
+def _text_values(value: Any) -> tuple[str, ...]:
+    if isinstance(value, str):
+        return tuple(item for item in value.split("|") if item)
+    if isinstance(value, Sequence):
+        return tuple(_clean(item) for item in value if _clean(item))
+    return ()
+
+
+def _int_or_none(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    return int(Decimal(str(value)))
+
+
 def forecast_rate(
     sales: Mapping[date, Decimal],
     availability_dates: set[date],
@@ -1266,6 +1591,7 @@ def run_simulation(
     stage_scenario: StageModelScenario | None = None,
     launch_observations: Sequence[LaunchObservation] = (),
     launch_profile_min_samples: int = DEFAULT_LAUNCH_PROFILE_MIN_SAMPLES,
+    historical_lifecycle_trajectory: Sequence[Mapping[str, Any]] | None = None,
 ) -> SimulationResult:
     codes = [_clean(item.get("nomenclature_code")) for item in items]
     item_by_code = {_clean(item.get("nomenclature_code")): item for item in items}
@@ -1309,7 +1635,11 @@ def run_simulation(
     lifecycle_by_code: dict[str, AssortmentLifecycleDecision] = {}
     lifecycle_evidence_by_code: dict[str, dict[str, Any]] = {}
     lifecycle_rows: list[dict[str, Any]] = []
-    if use_historical_lifecycle:
+    trajectory_by_key = {
+        (_date(row.get("business_date")), _clean(row.get("nomenclature_code"))): row
+        for row in (historical_lifecycle_trajectory or ())
+    }
+    if use_historical_lifecycle and not trajectory_by_key:
         effective_history_start = history_start or min(
             (
                 business_date
@@ -1362,37 +1692,35 @@ def run_simulation(
                 item = item_by_code[code]
                 if not item_active_as_of(item, as_of=business_date):
                     continue
-                previous_status = previous_statuses.get(code)
-                lifecycle, lifecycle_evidence = historical_lifecycle_decision(
-                    item=item,
-                    sales=sales_by_code.get(code, {}),
-                    availability_dates=availability_by_code.get(code, set()),
-                    purchases=purchase_history.get(code, ()),
-                    receipts=receipts_by_code.get(code, ()),
-                    as_of=business_date,
-                    previous_status=previous_status,
-                )
+                cached_row = trajectory_by_key.get((business_date, code))
+                if cached_row is not None:
+                    lifecycle, lifecycle_evidence = _lifecycle_from_replay_row(cached_row)
+                    previous_status = _clean(cached_row.get("previous_status")) or None
+                else:
+                    if trajectory_by_key:
+                        raise ValueError(f"replay_trajectory_row_missing:{business_date}:{code}")
+                    previous_status = previous_statuses.get(code)
+                    lifecycle, lifecycle_evidence = historical_lifecycle_decision(
+                        item=item,
+                        sales=sales_by_code.get(code, {}),
+                        availability_dates=availability_by_code.get(code, set()),
+                        purchases=purchase_history.get(code, ()),
+                        receipts=receipts_by_code.get(code, ()),
+                        as_of=business_date,
+                        previous_status=previous_status,
+                    )
                 previous_statuses[code] = lifecycle.status.value
                 lifecycle_by_code[code] = lifecycle
                 lifecycle_evidence_by_code[code] = lifecycle_evidence
                 lifecycle_rows.append(
-                    {
-                        "business_date": business_date.isoformat(),
-                        "nomenclature_code": code,
-                        "name": _clean(item.get("name")),
-                        "previous_status": previous_status or "",
-                        "status": lifecycle.status.value,
-                        "status_label": lifecycle.status_label,
-                        "reason_codes": "|".join(lifecycle.reason_codes),
-                        "auto_order_allowed": int(lifecycle.auto_order_allowed),
-                        "manual_review_required": int(lifecycle.manual_review_required),
-                        "sales_30": str(lifecycle_evidence["sales_30"]),
-                        "sales_90": str(lifecycle_evidence["sales_90"]),
-                        "sales_180": str(lifecycle_evidence["sales_180"]),
-                        "available_days_30": lifecycle_evidence["available_30"],
-                        "available_days_90": lifecycle_evidence["available_90"],
-                        "available_days_180": lifecycle_evidence["available_180"],
-                    }
+                    _lifecycle_csv_row(
+                        business_date=business_date,
+                        code=code,
+                        name=_clean(item.get("name")),
+                        previous_status=previous_status,
+                        lifecycle=lifecycle,
+                        evidence=lifecycle_evidence,
+                    )
                 )
 
         if business_date not in decisions:
@@ -1733,6 +2061,69 @@ def _write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
         writer.writerows(rows)
 
 
+def write_replay_only_artifacts(
+    *,
+    output_dir: Path,
+    lifecycle_rows: Sequence[Mapping[str, Any]],
+    replay_store: Mapping[str, Any],
+    replay_store_path: Path,
+    date_from: date,
+    date_to: date,
+    history_start: date,
+    preflight_dir: Path,
+    preflight_manifest: Mapping[str, Any],
+    classification_run_id: Any,
+    scope: str,
+    sku_count: int,
+    daily_sales_sku_count: int,
+    supplier_order_row_count: int,
+    receipt_row_count: int,
+    stock_counts: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Write the reusable replay without running any order simulation."""
+
+    _write_csv(output_dir / "lifecycle-history.csv", lifecycle_rows)
+    payload = {
+        "schema": "display_assortment_lifecycle_historical_replay.v1",
+        "status": "complete",
+        "mode": "replay_only",
+        "production_action": "none_read_only",
+        "date_from": date_from.isoformat(),
+        "date_to": date_to.isoformat(),
+        "history_start": history_start.isoformat(),
+        "preflight": {
+            "directory": str(preflight_dir),
+            "schema": preflight_manifest.get("schema"),
+            "status": preflight_manifest.get("preflight_status"),
+            "files": preflight_manifest.get("files"),
+        },
+        "historical_replay_store": {
+            **replay_store,
+            "path": str(replay_store_path),
+            "model_version": LEGACY_REPLAY_MODEL_VERSION,
+            "production_action": "none_read_only",
+        },
+        "cohort": {
+            "classification_run_id": classification_run_id,
+            "scope": scope,
+            "sku_count": sku_count,
+        },
+        "source_counts": {
+            "daily_sales_sku_count": daily_sales_sku_count,
+            "supplier_order_rows": supplier_order_row_count,
+            "receipt_rows": receipt_row_count,
+            **stock_counts,
+        },
+        "outputs": {"lifecycle_history_csv": "lifecycle-history.csv"},
+    }
+    output_dir.mkdir(parents=True, exist_ok=True)
+    (output_dir / "summary.json").write_text(
+        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return payload
+
+
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Six-month closed-loop display auto-order backtest"
@@ -1777,6 +2168,20 @@ def _parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_LAUNCH_PROFILE_MIN_SAMPLES,
     )
+    parser.add_argument(
+        "--replay-store-path",
+        type=Path,
+        default=DEFAULT_REPLAY_STORE_PATH,
+        help="Append-only SQLite store for reusable historical lifecycle trajectories",
+    )
+    parser.add_argument(
+        "--replay-only",
+        action="store_true",
+        help=(
+            "Build or reuse the historical lifecycle trajectory, write its local "
+            "artifacts, and stop before order simulation"
+        ),
+    )
     args = parser.parse_args()
     if args.date_from > args.date_to:
         raise SystemExit("date-from must not exceed date-to")
@@ -1812,7 +2217,6 @@ def main() -> int:
     )
     if not onec_url:
         raise SystemExit("ONEC_DATABASE_URL is not configured")
-    auto_policy = load_auto_order_policy(args.auto_order_policy_json)
     warehouse_policy: WarehousePolicy = load_warehouse_policy(args.warehouse_policy_json)
 
     app_engine = build_engine(app_url, pool_pre_ping=True)
@@ -1876,11 +2280,15 @@ def main() -> int:
             date_from=args.history_start,
             date_to=args.date_to,
         )
-        starting_pipeline = fetch_historical_open_supplier_pipeline(
-            onec_engine,
-            codes=codes,
-            as_of=args.date_from - timedelta(days=1),
-            fallback_lead_time_days=DEFAULT_LEAD_TIME_DAYS,
+        starting_pipeline = (
+            {}
+            if args.replay_only
+            else fetch_historical_open_supplier_pipeline(
+                onec_engine,
+                codes=codes,
+                as_of=args.date_from - timedelta(days=1),
+                fallback_lead_time_days=DEFAULT_LEAD_TIME_DAYS,
+            )
         )
         supplier_mapping = _load_document_line_mapping(
             DEFAULT_SUPPLIER_ORDER_MAPPING_JSON,
@@ -1906,6 +2314,47 @@ def main() -> int:
         source_rows["supplier_order_rows"],
         source_rows["receipt_rows"],
     )
+    lifecycle_rows, replay_store = load_or_build_historical_lifecycle_trajectory(
+        store=AssortmentLifecycleReplayStore(args.replay_store_path),
+        items=items,
+        sales_by_code=sales,
+        availability_by_code=availability,
+        purchase_history=purchases,
+        receipt_history=receipts,
+        history_start=args.history_start,
+        date_from=args.date_from,
+        date_to=args.date_to,
+        scope=args.folder,
+        source_manifest={
+            "classification_run_id": run_id,
+            "preflight_schema": preflight_manifest.get("schema"),
+            "preflight_files": preflight_manifest.get("files"),
+            "production_action": "none_read_only",
+        },
+    )
+    if args.replay_only:
+        payload = write_replay_only_artifacts(
+            output_dir=args.output_dir,
+            lifecycle_rows=lifecycle_rows,
+            replay_store=replay_store,
+            replay_store_path=args.replay_store_path,
+            date_from=args.date_from,
+            date_to=args.date_to,
+            history_start=args.history_start,
+            preflight_dir=args.preflight_dir,
+            preflight_manifest=preflight_manifest,
+            classification_run_id=run_id,
+            scope=args.folder,
+            sku_count=len(codes),
+            daily_sales_sku_count=len(sales),
+            supplier_order_row_count=len(source_rows["supplier_order_rows"]),
+            receipt_row_count=len(source_rows["receipt_rows"]),
+            stock_counts=stock_counts,
+        )
+        print(json.dumps(payload, ensure_ascii=False))
+        return 0
+
+    auto_policy = load_auto_order_policy(args.auto_order_policy_json)
     launch_observations = build_launch_observations(
         items=items,
         sales_by_code=sales,
@@ -1916,7 +2365,6 @@ def main() -> int:
     all_detail: list[dict[str, Any]] = []
     all_monthly: list[dict[str, Any]] = []
     summaries: list[dict[str, Any]] = []
-    lifecycle_rows: list[dict[str, Any]] = []
     base_stage_scenario = (
         "typical" if "typical" in args.stage_model_scenarios else args.stage_model_scenarios[0]
     )
@@ -1942,14 +2390,13 @@ def main() -> int:
                 stage_scenario=active_stage_scenario,
                 launch_observations=launch_observations,
                 launch_profile_min_samples=args.launch_profile_min_samples,
+                historical_lifecycle_trajectory=lifecycle_rows,
             )
             summary_row = result.summary.as_dict()
             summary_row["stage_model_scenario"] = stage_scenario_name
             summaries.append(summary_row)
             all_detail.extend(result.decision_rows)
             all_monthly.extend(result.monthly_rows)
-            if lead_time == DEFAULT_LEAD_TIME_DAYS and stage_scenario_name == base_stage_scenario:
-                lifecycle_rows = result.lifecycle_rows
 
     actual = actual_purchase_summary(
         purchases,
@@ -2011,6 +2458,12 @@ def main() -> int:
             "launch_profile_min_samples": args.launch_profile_min_samples,
             "launch_observation_count": len(launch_observations),
             "phone_sales_used": False,
+        },
+        "historical_replay_store": {
+            **replay_store,
+            "path": str(args.replay_store_path),
+            "model_version": LEGACY_REPLAY_MODEL_VERSION,
+            "production_action": "none_read_only",
         },
         "cohort": {
             "classification_run_id": run_id,

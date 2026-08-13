@@ -99,6 +99,7 @@ def test_trajectory_reuses_exact_key_and_refuses_changed_content(tmp_path: Path)
     assert first.key == second.key
     assert second.reused is True
     assert store.load_trajectory_rows(first.key) == _trajectory()
+    assert list(store.iter_trajectory_rows(first.key)) == _trajectory()
     with pytest.raises(ValueError, match="replay_trajectory_key_conflict"):
         store.put_trajectory(rows=_trajectory("working"), **common)
 

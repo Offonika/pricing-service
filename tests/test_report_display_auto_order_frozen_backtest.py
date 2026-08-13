@@ -2240,6 +2240,67 @@ def test_decision_service_buffer_raises_reorder_point_without_look_ahead() -> No
     assert protected.diagnostics.decision_service_buffer_requested_qty == Decimal("3")
 
 
+def test_representation_minimum_is_a_maximum_floor_not_an_addition() -> None:
+    start = date(2026, 2, 1)
+    scenario = FrozenScenario(
+        scenario_id="representation-floor",
+        stage_profile="typical",
+        kmp4_weight=Decimal("0"),
+        cost=CarryingCostScenario(
+            name="base",
+            capital_annual_rate=Decimal("0.3"),
+            storage_annual_rate=Decimal("0.1"),
+            obsolescence_annual_rate=Decimal("0.25"),
+        ),
+    )
+    common = {
+        "scenario": scenario,
+        "fact_rows_by_date": {
+            start: [
+                {
+                    "nomenclature_code": "SKU-1",
+                    "status": "sale",
+                    "physical_stock_qty": "0",
+                    "observed_sales_qty": "0",
+                    "placed_incoming_qty": "0",
+                }
+            ]
+        },
+        "decision_rows_by_date": {
+            start: [
+                {
+                    "nomenclature_code": "SKU-1",
+                    "decision_date": start.isoformat(),
+                    "scheduled_review": "1",
+                    "status": "sale",
+                    "forecast_rate_sales": "1",
+                    "lead_time_p50_days": "5",
+                    "lead_time_p75_days": "5",
+                    "lead_time_confidence": "high",
+                    "inventory_cost_per_unit_rub": "100",
+                    "gross_margin_per_unit_rub": "10",
+                }
+            ]
+        },
+        "initial_pipeline_rows": [],
+        "sales_by_code": {"SKU-1": {}},
+        "policy": AutoOrderPolicy(order_cadence_days=7),
+        "config": load_scenario_config(
+            Path("config/assortment/display-auto-order-backtest-scenarios.json")
+        ),
+        "date_from": start,
+        "date_to": start,
+        "keep_detail": True,
+    }
+
+    baseline = simulate_scenario(**common)
+    floored = simulate_scenario(representation_minimums={(start, "SKU-1"): Decimal("13")}, **common)
+
+    assert baseline.model["SKU-1"].order_qty == Decimal("12")
+    assert floored.model["SKU-1"].order_qty == Decimal("13")
+    assert floored.decision_rows[0]["representation_minimum_qty"] == "13"
+
+
 def test_decision_service_buffer_survives_event_review_until_next_scheduled_review() -> None:
     start = date(2026, 2, 1)
     second = start + timedelta(days=1)

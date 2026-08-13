@@ -12,6 +12,7 @@ related_code:
   - app/services/assortment_lifecycle_classification_store.py
   - app/services/assortment_lifecycle_v2_policy.py
   - app/services/assortment_lifecycle_v2_backtest.py
+  - app/services/assortment_lifecycle_v2_replay.py
   - app/services/assortment_lifecycle_replay_store.py
   - tasks/build_assortment_lifecycle_facts.py
   - tasks/build_assortment_lifecycle_updates.py
@@ -19,6 +20,8 @@ related_code:
   - tasks/diff_assortment_lifecycle_classification.py
   - tasks/evaluate_assortment_lifecycle_v2_backtest.py
   - tasks/manage_assortment_lifecycle_replay_store.py
+  - tasks/report_assortment_lifecycle_v2_historical_backtest.py
+  - tasks/finalize_assortment_lifecycle_v2_replay_audit.py
   - tasks/build_display_auto_order_dry_run.py
   - tasks/analyze_display_auto_order_quick_backtest.py
   - tasks/analyze_display_auto_order_base_pipeline_backtest.py
@@ -335,6 +338,32 @@ dataset и legacy-траекторию, записывает только `lifec
 проверяемый экспорт — в
 `reports/assortment_lifecycle/backtest-2026-02-01_2026-07-31/historical-replay-store-fill/`.
 Этот запуск не менял рабочие стадии, не создавал заказы и не писал в 1С.
+
+Ежедневный v2 replay фактически выполнен 2026-08-13 на отдельном dataset с
+обезличенной детализацией продаж. В append-only store сохранены:
+
+- dataset `ae867c1323b29cf50d9b0e21cc0e399c82a2897ca968f4458de64d54f38b7df1`:
+  `1 473 647` фактов; raw-ссылки документов, клиентов и точек в нём заменены
+  16-символьными SHA-256 идентификаторами;
+- v2-траектория
+  `2c6e28ab7906097658176d78ecc509c55abe4814d1b067775810af074b534e82`:
+  `432 224` дневные строки по периоду `2026-02-01—2026-07-31`;
+- policy hash
+  `cd7a02ab2da0318fe1e97ebc01f04ea6fe96698a12f96a85ab78d2c0b8932b79`;
+- сопоставимая legacy-траектория
+  `8759f62279284d62e36bb47df39634227a48a4e959c56acb3434d1532d3827d6`.
+
+Потоковый аудит `было → стало` сохранён в
+`reports/assortment_lifecycle/backtest-2026-02-01_2026-07-31/assortment-lifecycle-v2-historical-backtest/`.
+На `2026-07-31` в выборке `2 611` SKU: новая стадия отличается у `1 657`, из
+`Растим` выходят `1 428`; состояния спроса распределены так: `Растёт — 61`,
+`Стабилен — 1 178`, `Снижается — 62`, `Всплеск — 394`, `Начальный — 449`,
+`Нет продаж — 467`. Это результат shadow replay, а не production-миграция.
+
+Экономический train по февралю—июню ещё не завершён; июльский holdout не
+использован. До прохождения всех пяти acceptance-критериев действуют
+`production_authorized=false`, `production_action=none_read_only`: рабочие
+стадии, заказы и 1С не меняются.
 
 ## Факты возраста товарной истории
 
@@ -2338,6 +2367,14 @@ detail повторно строится только для выбранног�
 
 # Changelog
 
+- 2026-08-13 — выполнен ежедневный v2 historical replay дисплеев: immutable
+  dataset `ae867c1323b29cf50d9b0e21cc0e399c82a2897ca968f4458de64d54f38b7df1`
+  содержит `1 473 647` фактов, траектория
+  `2c6e28ab7906097658176d78ecc509c55abe4814d1b067775810af074b534e82` —
+  `432 224` строки. Потоковый аудит на 31 июля показал `1 657` изменений по
+  `2 611` SKU и `1 428` выходов из `Растим`. Статус —
+  `economic_train_pending`, июльский holdout не использован; production,
+  заказы и 1С не менялись.
 - 2026-08-13 — immutable replay-store фактически наполнен историей дисплеев за
   `2026-02-01—2026-07-31`: `1 057 588` фактов и `394 448` дневных стадий по
   `2 663` SKU. Добавлен безопасный режим `--replay-only`; повторный запуск

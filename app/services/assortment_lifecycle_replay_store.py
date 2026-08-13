@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Iterator, Mapping
 
 REPLAY_STORE_SCHEMA_VERSION = 1
 FACTS_SCHEMA = "assortment_lifecycle_replay_facts.v1"
@@ -410,6 +410,46 @@ class AssortmentLifecycleReplayStore:
         if len(payloads) != int(expected[1]) or stable_hash(payloads) != expected[0]:
             raise ValueError(f"replay_trajectory_checksum_mismatch:{trajectory_hash}")
         return payloads
+
+    def iter_trajectory_rows(self, trajectory_hash: str) -> Iterator[dict[str, Any]]:
+        """Yield a verified trajectory without loading the whole run into RAM."""
+
+        if not self.path.exists():
+            raise ValueError(f"replay_store_not_found:{self.path}")
+        self.initialize()
+        with self._connect() as connection:
+            expected = connection.execute(
+                "SELECT content_sha256, row_count FROM replay_trajectory "
+                "WHERE trajectory_hash = ?",
+                (trajectory_hash,),
+            ).fetchone()
+            if expected is None:
+                raise ValueError(f"replay_trajectory_not_found:{trajectory_hash}")
+            cursor = connection.execute(
+                """
+                SELECT payload_json, payload_sha256
+                FROM replay_trajectory_row
+                WHERE trajectory_hash = ?
+                ORDER BY business_date, nomenclature_code
+                """,
+                (trajectory_hash,),
+            )
+            digest = hashlib.sha256()
+            digest.update(b"[")
+            row_count = 0
+            for payload_json, payload_sha256 in cursor:
+                payload = json.loads(payload_json)
+                canonical = _canonical_json(payload)
+                if hashlib.sha256(canonical.encode("utf-8")).hexdigest() != payload_sha256:
+                    raise ValueError(f"replay_trajectory_row_checksum_mismatch:{trajectory_hash}")
+                if row_count:
+                    digest.update(b",")
+                digest.update(canonical.encode("utf-8"))
+                row_count += 1
+                yield payload
+            digest.update(b"]")
+        if row_count != int(expected[1]) or digest.hexdigest() != expected[0]:
+            raise ValueError(f"replay_trajectory_checksum_mismatch:{trajectory_hash}")
 
     def load_dataset_facts(self, dataset_hash: str) -> list[dict[str, Any]]:
         if not self.path.exists():

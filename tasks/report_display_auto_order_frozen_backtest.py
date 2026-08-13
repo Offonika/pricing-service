@@ -1641,6 +1641,8 @@ def simulate_scenario(
     hybrid_gap_acceleration_require_forecast_growth: bool = False,
     acceleration_require_stock_above_min: bool = False,
     acceleration_allowed_statuses: Sequence[str] = (AssortmentStatus.SALE.value,),
+    acceleration_eligible_sku_dates: set[tuple[date, str]] | None = None,
+    representation_minimums: Mapping[tuple[date, str], Decimal] | None = None,
     acceleration_lead_quantile: str = "p75",
     keep_decision_detail: bool = True,
     keep_loss_detail: bool = True,
@@ -2157,6 +2159,11 @@ def simulate_scenario(
                     candidate_row.get("status")
                 )
                 if candidate_status not in normalized_acceleration_statuses:
+                    continue
+                if (
+                    acceleration_eligible_sku_dates is not None
+                    and (cursor, candidate_code) not in acceleration_eligible_sku_dates
+                ):
                     continue
                 signal = calculate_demand_acceleration(
                     sales_by_code.get(candidate_code, {}),
@@ -2833,6 +2840,18 @@ def simulate_scenario(
             elif status != AssortmentStatus.SALE.value:
                 grow_target_states.pop(code, None)
 
+            representation_minimum_qty = (
+                max(
+                    ZERO,
+                    _decimal((representation_minimums or {}).get((cursor, code))),
+                )
+                if status == AssortmentStatus.SALE.value
+                else ZERO
+            )
+            if representation_minimum_qty > ZERO:
+                min_qty = max(min_qty, representation_minimum_qty)
+                max_qty = max(max_qty, representation_minimum_qty)
+
             min_qty += decision_service_buffer
             max_qty += decision_service_buffer
 
@@ -3009,6 +3028,7 @@ def simulate_scenario(
                 "max_stock_qty": str(max_qty),
                 "safety_stock_qty": str(safety_units),
                 "decision_service_buffer_qty": str(decision_service_buffer),
+                "representation_minimum_qty": str(representation_minimum_qty),
                 "target_stock_qty": str(target_qty),
                 "model_stock_qty": str(stock[code]),
                 "reserve_qty": str(reserve),
@@ -3137,6 +3157,7 @@ def simulate_scenario(
                         "economic_safety_cap_qty": str(economic_safety_cap),
                         "economic_safety_stock_qty": str(safety_units),
                         "decision_service_buffer_qty": str(decision_service_buffer),
+                        "representation_minimum_qty": str(representation_minimum_qty),
                         "service_floor_percentile": str(scenario.grow_service_floor_percentile),
                         "service_floor_requested_qty": str(service_floor_requested),
                         "service_floor_sku_capped_qty": str(service_floor_sku_capped),

@@ -233,12 +233,15 @@ documents:
       - tasks/refresh_assortment_lifecycle_classification.py
       - tasks/diff_assortment_lifecycle_classification.py
       - tasks/evaluate_assortment_lifecycle_v2_backtest.py
+      - tasks/run_assortment_lifecycle_memory_safe_replay.py
+      - scripts/run_assortment_lifecycle_memory_safe_replay.sh
       - tasks/build_display_auto_order_dry_run.py
     related_tests:
       - tests/test_assortment_lifecycle.py
       - tests/test_assortment_lifecycle_facts.py
       - tests/test_assortment_lifecycle_v2_policy.py
       - tests/test_assortment_lifecycle_v2_backtest.py
+      - tests/test_run_assortment_lifecycle_memory_safe_replay.py
       - tests/test_build_assortment_lifecycle_facts_task.py
       - tests/test_build_assortment_lifecycle_updates_task.py
       - tests/test_refresh_assortment_lifecycle_classification_task.py

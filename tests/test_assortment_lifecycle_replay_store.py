@@ -173,3 +173,76 @@ def test_rows_outside_declared_period_are_rejected(tmp_path: Path) -> None:
             observation_to=date(2026, 7, 31),
             facts=_facts(),
         )
+
+
+def test_trajectory_build_checkpoints_and_publishes_atomically(tmp_path: Path) -> None:
+    store = AssortmentLifecycleReplayStore(tmp_path / "replay.sqlite3")
+    dataset = _dataset(store)
+    build = store.begin_trajectory_build(
+        dataset_hash=dataset.key,
+        model_version="v2-memory-safe",
+        policy_hash="policy-v1",
+        period_from=date(2026, 2, 1),
+        period_to=date(2026, 2, 2),
+        metadata={"memory_safe": True},
+    )
+
+    checkpoint = store.append_trajectory_partition(
+        trajectory_hash=build.trajectory_hash,
+        checkpoint_sku="SKU-1",
+        completed_sku_count=1,
+        rows=[
+            {
+                "business_date": "2026-02-01",
+                "nomenclature_code": "SKU-1",
+                "status": "working",
+            }
+        ],
+    )
+
+    assert checkpoint.last_completed_sku == "SKU-1"
+    assert checkpoint.completed_sku_count == 1
+    assert checkpoint.row_count == 1
+    assert (
+        store.find_trajectory(
+            dataset_hash=dataset.key,
+            model_version="v2-memory-safe",
+            policy_hash="policy-v1",
+            period_from=date(2026, 2, 1),
+            period_to=date(2026, 2, 2),
+        )
+        is None
+    )
+
+    result = store.finalize_trajectory_build(build.trajectory_hash, expected_sku_count=1)
+
+    assert result.reused is False
+    assert store.get_trajectory_build(build.trajectory_hash) is None
+    assert store.load_trajectory_rows(result.key)[0]["status"] == "working"
+
+
+def test_trajectory_build_rejects_incomplete_finalize_and_resumes(tmp_path: Path) -> None:
+    store = AssortmentLifecycleReplayStore(tmp_path / "replay.sqlite3")
+    dataset = _dataset(store)
+    common = {
+        "dataset_hash": dataset.key,
+        "model_version": "v2-memory-safe",
+        "policy_hash": "policy-v1",
+        "period_from": date(2026, 2, 1),
+        "period_to": date(2026, 2, 2),
+        "metadata": {"memory_safe": True},
+    }
+    first = store.begin_trajectory_build(**common)
+    store.append_trajectory_partition(
+        trajectory_hash=first.trajectory_hash,
+        checkpoint_sku="SKU-1",
+        completed_sku_count=1,
+        rows=[],
+    )
+
+    resumed = store.begin_trajectory_build(**common)
+
+    assert resumed.last_completed_sku == "SKU-1"
+    assert resumed.completed_sku_count == 1
+    with pytest.raises(ValueError, match="replay_trajectory_build_incomplete"):
+        store.finalize_trajectory_build(first.trajectory_hash, expected_sku_count=2)

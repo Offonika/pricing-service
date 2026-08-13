@@ -159,6 +159,38 @@ def test_cargo_without_receipt_remains_ordered() -> None:
     assert {row["status"] for row in rows} == {AssortmentStatus.NEWBORN.value}
 
 
+def test_supplier_order_keeps_v2_pre_receipt_interval_in_trajectory() -> None:
+    rows = build_assortment_lifecycle_v2_trajectory(
+        items=[
+            _item(
+                created_at="2026-01-17",
+                card_created_at="2026-01-17",
+                first_supplier_order_at="2025-12-02",
+                first_receipt_at="2026-01-17",
+            )
+        ],
+        sales_observations_by_code={},
+        availability_by_code={},
+        supplier_orders_by_code={
+            "SKU-1": [
+                HistoricalSupplierOrder(
+                    created_at=date(2025, 12, 2),
+                    cargo_handoff_at=date(2026, 1, 9),
+                )
+            ]
+        },
+        receipts_by_code={"SKU-1": [HistoricalReceipt(received_at=date(2026, 1, 17))]},
+        history_start=date(2026, 1, 1),
+        date_from=date(2026, 1, 1),
+        date_to=date(2026, 1, 18),
+    )
+
+    assert rows[0]["business_date"] == "2026-01-01"
+    assert rows[0]["status"] == AssortmentStatus.NEWBORN.value
+    assert rows[8]["first_cargo_at"] == date(2026, 1, 9)
+    assert rows[-2]["status"] == AssortmentStatus.NEW_ITEM.value
+
+
 def test_replay_uses_physical_inflow_before_supplier_receipt() -> None:
     rows = build_assortment_lifecycle_v2_trajectory(
         items=[

@@ -690,11 +690,22 @@ def _source_record(item: Mapping[str, Any]) -> Mapping[str, Any]:
 
 def _item_created_at(item: Mapping[str, Any]) -> date | None:
     source = _source_record(item)
-    return _date(
-        source.get("created_at")
-        or source.get("card_created_at")
-        or source.get("onec_novelty_date")
-        or item.get("created_at")
+    # A dated supplier order proves that the SKU already existed in the
+    # assortment contour.  Some 1C snapshots expose _Fld9840 as the first
+    # receipt/novelty date, so using it alone removes the entire pre-receipt
+    # interval from historical replay.
+    return min(
+        filter(
+            None,
+            (
+                _date(source.get("first_supplier_order_at")),
+                _date(source.get("created_at")),
+                _date(source.get("card_created_at")),
+                _date(source.get("onec_novelty_date")),
+                _date(item.get("created_at")),
+            ),
+        ),
+        default=None,
     )
 
 

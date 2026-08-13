@@ -21,6 +21,8 @@ related_code:
   - tasks/evaluate_assortment_lifecycle_v2_backtest.py
   - tasks/manage_assortment_lifecycle_replay_store.py
   - tasks/report_assortment_lifecycle_v2_historical_backtest.py
+  - tasks/run_assortment_lifecycle_memory_safe_replay.py
+  - scripts/run_assortment_lifecycle_memory_safe_replay.sh
   - tasks/finalize_assortment_lifecycle_v2_replay_audit.py
   - tasks/build_display_auto_order_dry_run.py
   - tasks/analyze_display_auto_order_quick_backtest.py
@@ -43,6 +45,7 @@ related_tests:
   - tests/test_assortment_lifecycle_v2_backtest.py
   - tests/test_assortment_lifecycle_replay_store.py
   - tests/test_manage_assortment_lifecycle_replay_store_task.py
+  - tests/test_run_assortment_lifecycle_memory_safe_replay.py
   - tests/test_build_assortment_lifecycle_facts_task.py
   - tests/test_build_assortment_lifecycle_updates_task.py
   - tests/test_refresh_assortment_lifecycle_classification_task.py
@@ -1175,6 +1178,37 @@ SKU; статус предыдущего дня используется как 
 
 Классификация выполняется ежедневно, а закупочные решения принимаются только
 по утверждённому графику. Backtest не пишет в БД и внешние системы.
+
+## Обязательный memory-safe режим
+
+Полный historical replay, backtest и другой тяжёлый исторический пересчёт
+запрещено запускать монолитно с загрузкой всего набора данных и результатов в
+оперативную память.
+
+Обязательные условия запуска:
+
+- потоковое или порционное чтение данных по SKU, периоду либо partition;
+- заданный memory budget и предварительная проверка свободных RAM, swap и диска;
+- прекращение расчёта до срабатывания OOM с результатом `blocked`, а не
+  `success`;
+- сохранение подтверждённого checkpoint после каждой завершённой части;
+- идемпотентное продолжение с последнего checkpoint после сбоя;
+- запуск как устойчивой фоновой job с журналом и `run_id`, независимо от SSH-
+  или Codex-сессии;
+- атомарная публикация результата: незавершённый run не считается готовым;
+- итоговая проверка полноты и checksum;
+- запрет production-действий и внешних записей во время replay/backtest.
+
+Конкретный лимит памяти определяется перед запуском по ресурсам сервера и объёму
+расчёта. До реализации этих требований полный пересчёт запускать нельзя.
+
+Штатный запуск для lifecycle replay выполняется через
+`scripts/run_assortment_lifecycle_memory_safe_replay.sh`. Обёртка создаёт
+отдельную transient systemd job с `MemoryHigh`, `MemoryMax`, ограничением swap и
+локальным журналом. Задача читает frozen dataset порциями по SKU, после каждой
+порции сохраняет checkpoint и при повторном запуске продолжает со следующего
+SKU. Незавершённая траектория остаётся только в mutable build-слое; immutable
+траектория появляется атомарно после проверки числа SKU, строк и checksum.
 
 Стадийные режимы количества:
 
@@ -2671,6 +2705,15 @@ detail повторно строится только для выбранног�
 
 # Changelog
 
+- 2026-08-13 — для всех тяжёлых historical replay/backtest закреплён
+  обязательный memory-safe режим: порционная обработка, memory budget,
+  ресурсный preflight, checkpoints, безопасное продолжение, атомарный результат
+  и запрет запуска только внутри временной SSH/Codex-сессии.
+- 2026-08-13 — реализован штатный memory-safe lifecycle replay: frozen dataset
+  читается SKU-порциями, checkpoint фиксируется после каждой порции, повторный
+  запуск продолжает незавершённый run, а готовая immutable-траектория публикуется
+  атомарно после checksum/completeness validation. Добавлена отдельная systemd
+  job-обёртка с лимитами RAM/swap и журналом; production и 1С не затрагиваются.
 - 2026-08-13 — разведены ошибочная формулировка, legacy-контроль, целевая v2 и
   фактически включённое поведение: `12/180 → Рабочий` помечено ошибкой,
   legacy `12/180 → ПРОДАЖА` — неактивным контролем, а v2 — теневой логикой без

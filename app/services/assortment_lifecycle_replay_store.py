@@ -36,6 +36,20 @@ class StoredTrajectory:
     metadata: dict[str, Any]
 
 
+@dataclass(frozen=True)
+class TrajectoryBuildCheckpoint:
+    trajectory_hash: str
+    dataset_hash: str
+    model_version: str
+    policy_hash: str
+    period_from: date
+    period_to: date
+    last_completed_sku: str | None
+    completed_sku_count: int
+    row_count: int
+    metadata: dict[str, Any]
+
+
 class AssortmentLifecycleReplayStore:
     """Append-only local store for historical facts and model trajectories.
 
@@ -114,6 +128,36 @@ class AssortmentLifecycleReplayStore:
                 );
                 CREATE INDEX IF NOT EXISTS ix_replay_trajectory_row_sku_date
                     ON replay_trajectory_row(trajectory_hash, nomenclature_code, business_date);
+
+                CREATE TABLE IF NOT EXISTS replay_trajectory_build (
+                    trajectory_hash TEXT PRIMARY KEY,
+                    dataset_hash TEXT NOT NULL,
+                    model_version TEXT NOT NULL,
+                    policy_hash TEXT NOT NULL,
+                    period_from TEXT NOT NULL,
+                    period_to TEXT NOT NULL,
+                    last_completed_sku TEXT,
+                    completed_sku_count INTEGER NOT NULL DEFAULT 0,
+                    row_count INTEGER NOT NULL DEFAULT 0,
+                    metadata_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (dataset_hash) REFERENCES replay_dataset(dataset_hash)
+                );
+                CREATE TABLE IF NOT EXISTS replay_trajectory_build_row (
+                    trajectory_hash TEXT NOT NULL,
+                    business_date TEXT NOT NULL,
+                    nomenclature_code TEXT NOT NULL,
+                    payload_json TEXT NOT NULL,
+                    payload_sha256 TEXT NOT NULL,
+                    PRIMARY KEY (trajectory_hash, business_date, nomenclature_code),
+                    FOREIGN KEY (trajectory_hash)
+                        REFERENCES replay_trajectory_build(trajectory_hash) ON DELETE CASCADE
+                );
+                CREATE INDEX IF NOT EXISTS ix_replay_trajectory_build_row_sku_date
+                    ON replay_trajectory_build_row(
+                        trajectory_hash, nomenclature_code, business_date
+                    );
                 """)
             current = connection.execute(
                 "SELECT schema_version FROM replay_store_meta LIMIT 1"
@@ -381,6 +425,306 @@ class AssortmentLifecycleReplayStore:
             metadata=json.loads(row[8]),
         )
 
+    def begin_trajectory_build(
+        self,
+        *,
+        dataset_hash: str,
+        model_version: str,
+        policy_hash: str,
+        period_from: date,
+        period_to: date,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> TrajectoryBuildCheckpoint:
+        """Create or resume a mutable checkpoint for one immutable trajectory."""
+
+        if period_from > period_to:
+            raise ValueError("replay_trajectory_period_invalid")
+        model = _required_text(model_version, "replay_model_version_required")
+        policy = _required_text(policy_hash, "replay_policy_hash_required")
+        trajectory_hash = _trajectory_hash(
+            dataset_hash=dataset_hash,
+            model_version=model,
+            policy_hash=policy,
+            period_from=period_from,
+            period_to=period_to,
+        )
+        metadata_json = _canonical_json(dict(metadata or {}))
+        self.initialize()
+        with self._connect() as connection:
+            dataset = connection.execute(
+                "SELECT 1 FROM replay_dataset WHERE dataset_hash = ?", (dataset_hash,)
+            ).fetchone()
+            if dataset is None:
+                raise ValueError(f"replay_dataset_not_found:{dataset_hash}")
+            ready = connection.execute(
+                "SELECT 1 FROM replay_trajectory WHERE trajectory_hash = ?",
+                (trajectory_hash,),
+            ).fetchone()
+            if ready is not None:
+                raise ValueError(f"replay_trajectory_already_ready:{trajectory_hash}")
+            existing = connection.execute(
+                """
+                SELECT trajectory_hash, dataset_hash, model_version, policy_hash,
+                       period_from, period_to, last_completed_sku,
+                       completed_sku_count, row_count, metadata_json
+                FROM replay_trajectory_build
+                WHERE trajectory_hash = ?
+                """,
+                (trajectory_hash,),
+            ).fetchone()
+            if existing is None:
+                now = _utc_now()
+                connection.execute(
+                    """
+                    INSERT INTO replay_trajectory_build(
+                        trajectory_hash, dataset_hash, model_version, policy_hash,
+                        period_from, period_to, metadata_json, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        trajectory_hash,
+                        dataset_hash,
+                        model,
+                        policy,
+                        period_from.isoformat(),
+                        period_to.isoformat(),
+                        metadata_json,
+                        now,
+                        now,
+                    ),
+                )
+                existing = connection.execute(
+                    """
+                    SELECT trajectory_hash, dataset_hash, model_version, policy_hash,
+                           period_from, period_to, last_completed_sku,
+                           completed_sku_count, row_count, metadata_json
+                    FROM replay_trajectory_build
+                    WHERE trajectory_hash = ?
+                    """,
+                    (trajectory_hash,),
+                ).fetchone()
+            elif existing[9] != metadata_json:
+                raise ValueError(f"replay_trajectory_build_metadata_conflict:{trajectory_hash}")
+        if existing is None:  # pragma: no cover - protected by the insert/readback above
+            raise ValueError(f"replay_trajectory_build_not_found:{trajectory_hash}")
+        return _build_checkpoint(existing)
+
+    def get_trajectory_build(self, trajectory_hash: str) -> TrajectoryBuildCheckpoint | None:
+        if not self.path.exists():
+            return None
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute(
+                """
+                SELECT trajectory_hash, dataset_hash, model_version, policy_hash,
+                       period_from, period_to, last_completed_sku,
+                       completed_sku_count, row_count, metadata_json
+                FROM replay_trajectory_build
+                WHERE trajectory_hash = ?
+                """,
+                (trajectory_hash,),
+            ).fetchone()
+        return _build_checkpoint(row) if row is not None else None
+
+    def append_trajectory_partition(
+        self,
+        *,
+        trajectory_hash: str,
+        checkpoint_sku: str,
+        completed_sku_count: int,
+        rows: Iterable[Mapping[str, Any]],
+    ) -> TrajectoryBuildCheckpoint:
+        """Atomically append one SKU partition and advance its checkpoint."""
+
+        checkpoint = _required_text(checkpoint_sku, "replay_checkpoint_sku_required")
+        normalized = sorted(
+            (_normalize_trajectory_row(row) for row in rows),
+            key=lambda row: (row["business_date"], row["nomenclature_code"]),
+        )
+        keys = [(row["business_date"], row["nomenclature_code"]) for row in normalized]
+        if len(keys) != len(set(keys)):
+            raise ValueError("duplicate_replay_trajectory_sku_date")
+        self.initialize()
+        with self._connect() as connection:
+            build = connection.execute(
+                """
+                SELECT period_from, period_to, last_completed_sku, completed_sku_count
+                FROM replay_trajectory_build WHERE trajectory_hash = ?
+                """,
+                (trajectory_hash,),
+            ).fetchone()
+            if build is None:
+                raise ValueError(f"replay_trajectory_build_not_found:{trajectory_hash}")
+            period_from = date.fromisoformat(build[0])
+            period_to = date.fromisoformat(build[1])
+            previous_sku = str(build[2] or "")
+            previous_count = int(build[3])
+            if previous_sku and checkpoint <= previous_sku:
+                raise ValueError(f"replay_checkpoint_not_forward:{previous_sku}:{checkpoint}")
+            if completed_sku_count <= previous_count:
+                raise ValueError(
+                    f"replay_checkpoint_count_not_forward:{previous_count}:{completed_sku_count}"
+                )
+            if any(
+                not period_from <= date.fromisoformat(row["business_date"]) <= period_to
+                for row in normalized
+            ):
+                raise ValueError("replay_trajectory_row_outside_period")
+            if any(
+                (previous_sku and row["nomenclature_code"] <= previous_sku)
+                or row["nomenclature_code"] > checkpoint
+                for row in normalized
+            ):
+                raise ValueError("replay_trajectory_partition_outside_checkpoint")
+            connection.executemany(
+                """
+                INSERT INTO replay_trajectory_build_row(
+                    trajectory_hash, business_date, nomenclature_code,
+                    payload_json, payload_sha256
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    (
+                        trajectory_hash,
+                        row["business_date"],
+                        row["nomenclature_code"],
+                        _canonical_json(row),
+                        stable_hash(row),
+                    )
+                    for row in normalized
+                ),
+            )
+            connection.execute(
+                """
+                UPDATE replay_trajectory_build
+                SET last_completed_sku = ?, completed_sku_count = ?,
+                    row_count = row_count + ?, updated_at = ?
+                WHERE trajectory_hash = ?
+                """,
+                (
+                    checkpoint,
+                    completed_sku_count,
+                    len(normalized),
+                    _utc_now(),
+                    trajectory_hash,
+                ),
+            )
+        result = self.get_trajectory_build(trajectory_hash)
+        if result is None:  # pragma: no cover - protected by the transaction above
+            raise ValueError(f"replay_trajectory_build_not_found:{trajectory_hash}")
+        return result
+
+    def finalize_trajectory_build(
+        self,
+        trajectory_hash: str,
+        *,
+        expected_sku_count: int,
+    ) -> ReplayStoreWriteResult:
+        """Atomically publish a complete checkpoint as an immutable trajectory."""
+
+        self.initialize()
+        with self._connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            build = connection.execute(
+                """
+                SELECT dataset_hash, model_version, policy_hash, period_from, period_to,
+                       completed_sku_count, row_count, metadata_json
+                FROM replay_trajectory_build WHERE trajectory_hash = ?
+                """,
+                (trajectory_hash,),
+            ).fetchone()
+            if build is None:
+                ready = connection.execute(
+                    "SELECT content_sha256, row_count FROM replay_trajectory "
+                    "WHERE trajectory_hash = ?",
+                    (trajectory_hash,),
+                ).fetchone()
+                if ready is None:
+                    raise ValueError(f"replay_trajectory_build_not_found:{trajectory_hash}")
+                return ReplayStoreWriteResult(
+                    key=trajectory_hash,
+                    content_sha256=ready[0],
+                    row_count=int(ready[1]),
+                    reused=True,
+                )
+            if int(build[5]) != expected_sku_count:
+                raise ValueError(
+                    "replay_trajectory_build_incomplete:" f"{build[5]}:{expected_sku_count}"
+                )
+            digest = hashlib.sha256()
+            digest.update(b"[")
+            actual_count = 0
+            cursor = connection.execute(
+                """
+                SELECT payload_json, payload_sha256
+                FROM replay_trajectory_build_row
+                WHERE trajectory_hash = ?
+                ORDER BY business_date, nomenclature_code
+                """,
+                (trajectory_hash,),
+            )
+            for payload_json, payload_sha256 in cursor:
+                if hashlib.sha256(payload_json.encode("utf-8")).hexdigest() != payload_sha256:
+                    raise ValueError(
+                        f"replay_trajectory_build_row_checksum_mismatch:{trajectory_hash}"
+                    )
+                if actual_count:
+                    digest.update(b",")
+                digest.update(payload_json.encode("utf-8"))
+                actual_count += 1
+            digest.update(b"]")
+            if actual_count != int(build[6]):
+                raise ValueError(f"replay_trajectory_build_row_count_mismatch:{trajectory_hash}")
+            content_sha256 = digest.hexdigest()
+            connection.execute(
+                """
+                INSERT INTO replay_trajectory(
+                    trajectory_hash, schema_name, dataset_hash, model_version, policy_hash,
+                    period_from, period_to, content_sha256, row_count, metadata_json, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    trajectory_hash,
+                    TRAJECTORY_SCHEMA,
+                    build[0],
+                    build[1],
+                    build[2],
+                    build[3],
+                    build[4],
+                    content_sha256,
+                    actual_count,
+                    build[7],
+                    _utc_now(),
+                ),
+            )
+            connection.execute(
+                """
+                INSERT INTO replay_trajectory_row(
+                    trajectory_hash, business_date, nomenclature_code,
+                    payload_json, payload_sha256
+                )
+                SELECT trajectory_hash, business_date, nomenclature_code,
+                       payload_json, payload_sha256
+                FROM replay_trajectory_build_row
+                WHERE trajectory_hash = ?
+                """,
+                (trajectory_hash,),
+            )
+            connection.execute(
+                "DELETE FROM replay_trajectory_build_row WHERE trajectory_hash = ?",
+                (trajectory_hash,),
+            )
+            connection.execute(
+                "DELETE FROM replay_trajectory_build WHERE trajectory_hash = ?",
+                (trajectory_hash,),
+            )
+        return ReplayStoreWriteResult(
+            key=trajectory_hash,
+            content_sha256=content_sha256,
+            row_count=actual_count,
+            reused=False,
+        )
+
     def load_trajectory_rows(self, trajectory_hash: str) -> list[dict[str, Any]]:
         if not self.path.exists():
             raise ValueError(f"replay_store_not_found:{self.path}")
@@ -488,6 +832,82 @@ class AssortmentLifecycleReplayStore:
             raise ValueError(f"replay_dataset_checksum_mismatch:{dataset_hash}")
         return facts
 
+    def dataset_fact_count(self, dataset_hash: str) -> int:
+        if not self.path.exists():
+            raise ValueError(f"replay_store_not_found:{self.path}")
+        self.initialize()
+        with self._connect() as connection:
+            row = connection.execute(
+                "SELECT fact_count FROM replay_dataset WHERE dataset_hash = ?",
+                (dataset_hash,),
+            ).fetchone()
+        if row is None:
+            raise ValueError(f"replay_dataset_not_found:{dataset_hash}")
+        return int(row[0])
+
+    def dataset_codes(self, dataset_hash: str) -> list[str]:
+        if not self.path.exists():
+            raise ValueError(f"replay_store_not_found:{self.path}")
+        self.initialize()
+        with self._connect() as connection:
+            dataset = connection.execute(
+                "SELECT 1 FROM replay_dataset WHERE dataset_hash = ?", (dataset_hash,)
+            ).fetchone()
+            if dataset is None:
+                raise ValueError(f"replay_dataset_not_found:{dataset_hash}")
+            return [
+                str(row[0])
+                for row in connection.execute(
+                    """
+                    SELECT DISTINCT nomenclature_code
+                    FROM replay_dataset_fact
+                    WHERE dataset_hash = ?
+                    ORDER BY nomenclature_code
+                    """,
+                    (dataset_hash,),
+                )
+            ]
+
+    def load_dataset_facts_for_codes(
+        self, dataset_hash: str, codes: Iterable[str]
+    ) -> list[dict[str, Any]]:
+        """Load and verify only one bounded SKU partition from a frozen dataset."""
+
+        normalized_codes = sorted(
+            {_required_text(code, "replay_fact_sku_required") for code in codes}
+        )
+        if not normalized_codes:
+            return []
+        if len(normalized_codes) > 500:
+            raise ValueError("replay_dataset_code_partition_too_large")
+        self.initialize()
+        placeholders = ",".join("?" for _ in normalized_codes)
+        with self._connect() as connection:
+            rows = connection.execute(
+                f"""
+                SELECT business_date, nomenclature_code, fact_type,
+                       payload_json, payload_sha256
+                FROM replay_dataset_fact
+                WHERE dataset_hash = ? AND nomenclature_code IN ({placeholders})
+                ORDER BY nomenclature_code, ordinal
+                """,
+                (dataset_hash, *normalized_codes),
+            )
+            result: list[dict[str, Any]] = []
+            for business_date, code, fact_type, payload_json, payload_sha256 in rows:
+                payload = json.loads(payload_json)
+                if stable_hash(payload) != payload_sha256:
+                    raise ValueError(f"replay_dataset_fact_checksum_mismatch:{dataset_hash}")
+                result.append(
+                    {
+                        "business_date": business_date,
+                        "nomenclature_code": code,
+                        "fact_type": fact_type,
+                        "payload": payload,
+                    }
+                )
+        return result
+
     def manifest(self) -> dict[str, Any]:
         if not self.path.exists():
             return {
@@ -496,6 +916,7 @@ class AssortmentLifecycleReplayStore:
                 "exists": False,
                 "datasets": [],
                 "trajectories": [],
+                "trajectory_builds": [],
             }
         self.initialize()
         with self._connect() as connection:
@@ -509,6 +930,12 @@ class AssortmentLifecycleReplayStore:
                            period_from, period_to, content_sha256, row_count, created_at
                     FROM replay_trajectory ORDER BY created_at, trajectory_hash
                     """).fetchall()]
+            builds = [dict(row) for row in connection.execute("""
+                    SELECT trajectory_hash, dataset_hash, model_version, policy_hash,
+                           period_from, period_to, last_completed_sku,
+                           completed_sku_count, row_count, created_at, updated_at
+                    FROM replay_trajectory_build ORDER BY created_at, trajectory_hash
+                    """).fetchall()]
         return {
             "schema": "assortment_lifecycle_replay_store_manifest.v1",
             "path": str(self.path),
@@ -516,6 +943,7 @@ class AssortmentLifecycleReplayStore:
             "schema_version": REPLAY_STORE_SCHEMA_VERSION,
             "datasets": datasets,
             "trajectories": trajectories,
+            "trajectory_builds": builds,
         }
 
     def _connect(self) -> sqlite3.Connection:
@@ -548,6 +976,41 @@ class AssortmentLifecycleReplayStore:
 
 def stable_hash(value: Any) -> str:
     return hashlib.sha256(_canonical_json(value).encode("utf-8")).hexdigest()
+
+
+def _trajectory_hash(
+    *,
+    dataset_hash: str,
+    model_version: str,
+    policy_hash: str,
+    period_from: date,
+    period_to: date,
+) -> str:
+    return stable_hash(
+        {
+            "schema": TRAJECTORY_SCHEMA,
+            "dataset_hash": dataset_hash,
+            "model_version": model_version,
+            "policy_hash": policy_hash,
+            "period_from": period_from,
+            "period_to": period_to,
+        }
+    )
+
+
+def _build_checkpoint(row: sqlite3.Row) -> TrajectoryBuildCheckpoint:
+    return TrajectoryBuildCheckpoint(
+        trajectory_hash=row[0],
+        dataset_hash=row[1],
+        model_version=row[2],
+        policy_hash=row[3],
+        period_from=date.fromisoformat(row[4]),
+        period_to=date.fromisoformat(row[5]),
+        last_completed_sku=str(row[6]) if row[6] is not None else None,
+        completed_sku_count=int(row[7]),
+        row_count=int(row[8]),
+        metadata=json.loads(row[9]),
+    )
 
 
 def _normalize_fact(row: Mapping[str, Any]) -> dict[str, Any]:

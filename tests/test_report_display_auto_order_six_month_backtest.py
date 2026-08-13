@@ -729,3 +729,18 @@ def test_item_is_not_in_historical_cohort_before_creation() -> None:
 
     assert not item_active_as_of(item, as_of=date(2024, 12, 31))
     assert item_active_as_of(item, as_of=date(2025, 1, 1))
+
+
+def test_supplier_order_keeps_pre_receipt_launch_interval_in_cohort() -> None:
+    item = {
+        **_historical_item(),
+        "source_record": {
+            "created_at": "2026-01-17",
+            "card_created_at": "2026-01-17",
+            "first_supplier_order_at": "2025-12-02",
+            "first_receipt_at": "2026-01-17",
+        },
+    }
+
+    assert not item_active_as_of(item, as_of=date(2025, 12, 1))
+    assert item_active_as_of(item, as_of=date(2025, 12, 2))

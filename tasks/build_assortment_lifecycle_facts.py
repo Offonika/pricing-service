@@ -66,7 +66,8 @@ def main() -> int:
     history_start = default_history_start(args.today, history_months=args.history_months)
     # Заполняется только при чтении из 1С; для готового --input-json даты первой
     # продажи берутся из самих записей, если они там уже есть.
-    first_sale_dates: dict[str, tuple[date, date]] = {}
+    first_sale_dates: dict[str, tuple[date, date, Decimal]] = {}
+    sales_history_complete = False
     first_supplier_order_dates: dict[str, date] = {}
     receipt_bounds: dict[str, tuple[date, date]] = {}
     stock_inflow_bounds: dict[str, tuple[date, date]] = {}
@@ -135,6 +136,7 @@ def main() -> int:
                     engine,
                     nomenclature_codes=codes,
                 )
+                sales_history_complete = True
                 first_supplier_order_dates = fetch_first_supplier_order_dates(
                     engine,
                     nomenclature_refs_by_code={
@@ -231,6 +233,7 @@ def main() -> int:
         manager_signals=manager_signals,
         history_start=history_start,
         first_sale_dates=first_sale_dates,
+        sales_history_complete=sales_history_complete,
         as_of=args.today or date.today(),
         sales_window_totals=sales_window_totals,
         sales_distribution=sales_distribution,

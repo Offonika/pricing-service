@@ -57,10 +57,13 @@ DEMAND_TREND_MIN_CHANGE_MULTIPLIER = Decimal("1.2")
 # «Пенсия» в автозаказе (PENSION_CANDIDATE_MIN_DAYS_IN_SALE): 15 дней наличия
 # из 90 — решение пользователя, отдельного числа для статусов не заводим.
 DECLINE_MIN_DAYS_IN_SALE = Decimal("15")
-# «Родился мёртвым»: сколько дней карточка может молчать без единого движения,
-# прежде чем попасть к человеку на разбор. 12 месяцев — решение пользователя
-# 2026-08-02 на распределении реальных данных (см. _is_dead_born_candidate).
+# Legacy v1: забытая карточка без любого движения попадала на ручной разбор
+# через 12 месяцев. В v2 отдельно проверяем провал уже состоявшегося запуска:
+# 180 дней после физического прихода, не более одной продажи за всю историю,
+# доказанное наличие и отсутствие внешней потребности.
 DEAD_BORN_SILENCE_DAYS = 365
+FAILED_LAUNCH_REVIEW_DAYS = 180
+FAILED_LAUNCH_MAX_LIFETIME_SALES_QTY = Decimal("1")
 # «Пенсия»: сколько дней товар может не продаваться, прежде чем попасть к
 # менеджеру на вывод из активного оборота. 18 месяцев — решение пользователя
 # 2026-08-02, тот же срок, что и у правила 2c из инвентаризации legacy-правил.
@@ -241,6 +244,10 @@ class AssortmentLifecycleInput:
     sales_qty_short: Decimal | int | str | None = None
     sales_qty_medium: Decimal | int | str | None = None
     sales_qty_long: Decimal | int | str | None = None
+    # Продажи за всю историю. Нужны только для разбора провалившегося запуска:
+    # окно 180 дней не позволяет отличить одну пробную продажу нового товара от
+    # старого товара, который раньше продавался нормально, а затем угас.
+    lifetime_sales_qty: Decimal | int | str | None = None
     # Дни, когда товар реально лежал на полке, за те же три окна (среднее по
     # физическим точкам продаж). Нужны, чтобы отличить угасание спроса от
     # дефицита: пустая полка занижает продажи, но это не спад.
@@ -260,6 +267,10 @@ class AssortmentLifecycleInput:
     sales_point_count_short: int | None = None
     sales_max_day_share_short: Decimal | int | str | None = None
     has_need_signal: bool = False
+    # Внутреннее перемещение между складами — операционный запрос, но не
+    # доказательство покупательского спроса. None сохраняет совместимость со
+    # старыми фактами, где был только общий has_need_signal.
+    has_external_need_signal: bool | None = None
     working_confirmed_by_folder_responsible: bool = False
     analog_winner_confirmed_by_folder_responsible: bool = False
     manual_status: AssortmentStatus | str | None = None
@@ -473,10 +484,13 @@ def decide_assortment_status(
                 ),
             )
             return _with_demand(
-                _with_target_fact_warnings(
-                    decision,
-                    missing_order=missing_order_warning,
-                    supplier_receipt_incomplete=supplier_receipt_warning,
+                _with_failed_launch_candidate(
+                    _with_target_fact_warnings(
+                        decision,
+                        missing_order=missing_order_warning,
+                        supplier_receipt_incomplete=supplier_receipt_warning,
+                    ),
+                    item,
                 ),
                 demand,
             )
@@ -639,7 +653,7 @@ def decide_assortment_status(
         missing_order=missing_order_warning,
         supplier_receipt_incomplete=supplier_receipt_warning,
     )
-    return _with_demand(decision, demand)
+    return _with_demand(_with_failed_launch_candidate(decision, item), demand)
 
 
 def decide_target_assortment_status(
@@ -677,6 +691,42 @@ def _with_target_fact_warnings(
         manual_review_required=True,
         # Стадия рассчитывается по сильному факту, но поставочно-зависимые
         # действия остаются закрыты до подтверждения происхождения товара.
+        auto_order_allowed=False,
+    )
+
+
+def _with_failed_launch_candidate(
+    decision: AssortmentLifecycleDecision,
+    item: AssortmentLifecycleInput,
+) -> AssortmentLifecycleDecision:
+    """Tag a launch that received a fair test but never developed demand.
+
+    The formula does not choose between «Не закупаем», «Допродаём» and
+    «Выводим».  It only stops automatic replenishment and sends the item to a
+    person.  This keeps the historical «Родился мёртвым» meaning without
+    turning a weak numerical signal into a destructive lifecycle transition.
+    """
+
+    if not _is_failed_launch_candidate(item):
+        return decision
+    first_stock_inflow_at = item.first_stock_inflow_at or (
+        min(item.receipt_dates) if item.receipt_dates else item.first_receipt_at
+    )
+    launch_age_days = (item.as_of - first_stock_inflow_at).days
+    lifetime_sales_qty = _to_optional_decimal(item.lifetime_sales_qty) or Decimal("0")
+    return replace(
+        decision,
+        reason_codes=(*decision.reason_codes, "dead_born_candidate"),
+        reason_text=(
+            f"{decision.reason_text} После физического прихода прошло "
+            f"{launch_age_days} дней, за всю историю продано "
+            f"{_format_qty(lifetime_sales_qty)} шт., товар был доступен покупателям, "
+            "а внешняя потребность не подтверждена. Это кандидат «Родился мёртвым»: "
+            "автозаказ остановлен, окончательное решение принимает человек."
+        ),
+        recommended_status=AssortmentStatus.DO_NOT_ORDER,
+        requires_human_approval=True,
+        manual_review_required=True,
         auto_order_allowed=False,
     )
 
@@ -1243,6 +1293,41 @@ def _is_dead_born_candidate(item: AssortmentLifecycleInput) -> bool:
     if moved:
         return False
     return (item.as_of - item.created_at).days >= DEAD_BORN_SILENCE_DAYS
+
+
+def _is_failed_launch_candidate(item: AssortmentLifecycleInput) -> bool:
+    """Whether a physically launched item failed to develop real demand."""
+
+    if item.as_of is None:
+        return False
+    first_stock_inflow_at = item.first_stock_inflow_at or (
+        min(item.receipt_dates) if item.receipt_dates else item.first_receipt_at
+    )
+    if first_stock_inflow_at is None:
+        return False
+    if (item.as_of - first_stock_inflow_at).days < FAILED_LAUNCH_REVIEW_DAYS:
+        return False
+    lifetime_sales_qty = _to_optional_decimal(item.lifetime_sales_qty)
+    if lifetime_sales_qty is None:
+        return False
+    if lifetime_sales_qty > FAILED_LAUNCH_MAX_LIFETIME_SALES_QTY:
+        return False
+    has_external_need = (
+        item.has_external_need_signal
+        if item.has_external_need_signal is not None
+        else item.has_need_signal
+    )
+    if has_external_need:
+        return False
+    days_on_shelf = _to_optional_decimal(item.days_in_sale_long)
+    if days_on_shelf is None or days_on_shelf <= 0:
+        return False
+    # При одной продаже защищаем товар, который почти сразу закончился: это
+    # может быть дефицит, а не провал. Для нулевой продажи сам факт положительного
+    # наличия уже доказывает, что товар хотя бы был предложен покупателям.
+    if lifetime_sales_qty > 0 and days_on_shelf < DECLINE_MIN_DAYS_IN_SALE:
+        return False
+    return True
 
 
 def classify_expensive_profile(item: ExpensiveProfileInput) -> ExpensiveProfileDecision:

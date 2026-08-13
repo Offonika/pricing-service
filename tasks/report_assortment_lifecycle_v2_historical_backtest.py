@@ -464,6 +464,11 @@ def main() -> int:
             if code in sale_bounds:
                 source_record["first_sale_at"] = sale_bounds[code][0].isoformat()
                 source_record["last_sale_at"] = sale_bounds[code][1].isoformat()
+                source_record["lifetime_sales_qty"] = str(sale_bounds[code][2])
+            else:
+                # The full-history query completed successfully; a missing row
+                # therefore means a proven zero, not missing data.
+                source_record["lifetime_sales_qty"] = "0"
             item["source_record"] = source_record
         purchases, receipts = normalize_purchase_history(
             source_rows["supplier_order_rows"], source_rows["receipt_rows"]

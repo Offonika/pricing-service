@@ -584,6 +584,93 @@ def test_current_model_does_not_treat_twelve_sales_as_growth() -> None:
     assert decision.reason_codes == ("confirmed_demand_stable",)
 
 
+def test_v2_marks_received_item_without_sales_as_failed_launch_candidate() -> None:
+    decision = decide_assortment_status(
+        AssortmentLifecycleInput(
+            nomenclature_code="FAILED-LAUNCH-0",
+            first_supplier_order_at=date(2025, 10, 1),
+            first_receipt_at=date(2025, 10, 10),
+            first_stock_inflow_at=date(2025, 10, 10),
+            as_of=date(2026, 8, 13),
+            sales_qty_short=Decimal("0"),
+            sales_qty_medium=Decimal("0"),
+            sales_qty_long=Decimal("0"),
+            lifetime_sales_qty=Decimal("0"),
+            days_in_sale_long=Decimal("8"),
+            has_external_need_signal=False,
+        )
+    )
+
+    assert decision.status == AssortmentStatus.NEW_ITEM
+    assert "dead_born_candidate" in decision.reason_codes
+    assert decision.recommended_status == AssortmentStatus.DO_NOT_ORDER
+    assert decision.requires_human_approval
+    assert decision.manual_review_required
+    assert not decision.auto_order_allowed
+
+
+def test_v2_marks_one_sale_failed_launch_but_does_not_auto_assign_exit_stage() -> None:
+    decision = decide_assortment_status(
+        AssortmentLifecycleInput(
+            nomenclature_code="FAILED-LAUNCH-1",
+            first_supplier_order_at=date(2025, 10, 1),
+            first_receipt_at=date(2025, 10, 10),
+            first_stock_inflow_at=date(2025, 10, 10),
+            first_sale_at=date(2026, 1, 20),
+            last_sale_at=date(2026, 1, 20),
+            as_of=date(2026, 8, 13),
+            sales_qty_short=Decimal("0"),
+            sales_qty_medium=Decimal("0"),
+            sales_qty_long=Decimal("1"),
+            lifetime_sales_qty=Decimal("1"),
+            days_in_sale_long=Decimal("92"),
+            has_need_signal=True,
+            has_external_need_signal=False,
+        )
+    )
+
+    assert decision.status == AssortmentStatus.SALES_START
+    assert "dead_born_candidate" in decision.reason_codes
+    assert decision.recommended_status == AssortmentStatus.DO_NOT_ORDER
+    assert decision.status not in {AssortmentStatus.PENSION, AssortmentStatus.NONLIQUID}
+    assert not decision.auto_order_allowed
+
+
+def test_v2_failed_launch_protects_shortage_and_external_need() -> None:
+    common = {
+        "first_supplier_order_at": date(2025, 10, 1),
+        "first_receipt_at": date(2025, 10, 10),
+        "first_stock_inflow_at": date(2025, 10, 10),
+        "first_sale_at": date(2026, 1, 20),
+        "last_sale_at": date(2026, 1, 20),
+        "as_of": date(2026, 8, 13),
+        "sales_qty_short": Decimal("0"),
+        "sales_qty_medium": Decimal("0"),
+        "sales_qty_long": Decimal("1"),
+        "lifetime_sales_qty": Decimal("1"),
+    }
+
+    shortage = decide_assortment_status(
+        AssortmentLifecycleInput(
+            nomenclature_code="FAILED-LAUNCH-SHORTAGE",
+            days_in_sale_long=Decimal("8"),
+            has_external_need_signal=False,
+            **common,
+        )
+    )
+    external_need = decide_assortment_status(
+        AssortmentLifecycleInput(
+            nomenclature_code="FAILED-LAUNCH-NEED",
+            days_in_sale_long=Decimal("92"),
+            has_external_need_signal=True,
+            **common,
+        )
+    )
+
+    assert "dead_born_candidate" not in shortage.reason_codes
+    assert "dead_born_candidate" not in external_need.reason_codes
+
+
 def test_five_receipts_no_longer_grant_working_when_demand_is_known() -> None:
     # Прежнее правило (5 поступлений за 180 дней) снято: поставки больше не
     # решают, растёт товар или угасает.

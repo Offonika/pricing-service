@@ -308,6 +308,9 @@ def _lifecycle_input_from_record(record: dict[str, Any]) -> AssortmentLifecycleI
             record, "sales_qty_medium", "SalesQtyMedium", default=None
         ),
         sales_qty_long=_optional_field(record, "sales_qty_long", "SalesQtyLong", default=None),
+        lifetime_sales_qty=_optional_field(
+            record, "lifetime_sales_qty", "LifetimeSalesQty", default=None
+        ),
         days_in_sale_short=_optional_field(
             record, "days_in_sale_short", "DaysInSaleShort", default=None
         ),
@@ -341,6 +344,9 @@ def _lifecycle_input_from_record(record: dict[str, Any]) -> AssortmentLifecycleI
             record, "sales_max_day_share_short", "SalesMaxDayShareShort", default=None
         ),
         has_need_signal=_bool_field(record, "has_need_signal", "HasNeedSignal", default=False),
+        has_external_need_signal=_optional_bool_field(
+            record, "has_external_need_signal", "HasExternalNeedSignal"
+        ),
         working_confirmed_by_folder_responsible=_bool_field(
             record,
             "working_confirmed_by_folder_responsible",
@@ -854,6 +860,13 @@ def _bool_field(item: dict[str, Any], *names: str, default: bool) -> bool:
     if text in {"0", "false", "no", "n", "нет", "ложь"}:
         return False
     raise SystemExit(f"Boolean field must be true/false, got: {value}")
+
+
+def _optional_bool_field(item: dict[str, Any], *names: str) -> bool | None:
+    value = _optional_field(item, *names, default=None)
+    if value is None or value == "":
+        return None
+    return _bool_field({names[0]: value}, names[0], default=False)
 
 
 def _json_value(value: Any) -> Any:

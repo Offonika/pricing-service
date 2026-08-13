@@ -335,7 +335,8 @@ def _load_or_build_fact_records(
         # Витрина наличия закрыта по вчерашний день, поэтому спрос и дни на
         # полке меряем на ту же дату — иначе последнее окно у них разъедется.
         demand_date_to = (args.today or date.today()) - timedelta(days=1)
-        first_sale_dates: dict[str, tuple[date, date]] = {}
+        first_sale_dates: dict[str, tuple[date, date, Decimal]] = {}
+        sales_history_complete = False
         first_supplier_order_dates: dict[str, date] = {}
         receipt_bounds: dict[str, tuple[date, date]] = {}
         stock_inflow_bounds: dict[str, tuple[date, date]] = {}
@@ -406,6 +407,7 @@ def _load_or_build_fact_records(
                     onec_engine,
                     nomenclature_codes=codes,
                 )
+                sales_history_complete = True
                 first_supplier_order_dates = fetch_first_supplier_order_dates(
                     onec_engine,
                     nomenclature_refs_by_code={
@@ -503,6 +505,7 @@ def _load_or_build_fact_records(
             manager_signals=manager_signals,
             history_start=history_start,
             first_sale_dates=first_sale_dates,
+            sales_history_complete=sales_history_complete,
             as_of=args.today or date.today(),
             sales_window_totals=sales_window_totals,
             sales_distribution=sales_distribution,

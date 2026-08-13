@@ -162,6 +162,7 @@ def test_build_facts_from_rows_builds_cargo_receipts_and_overlays() -> None:
         "2026-05-10",
     ]
     assert first["has_need_signal"] is True
+    assert first["has_external_need_signal"] is True
     assert first["manager_need_signals"][0]["manager_id"] == "manager-1"
     assert first["expensive_item_value"] == "300"
     assert first["expensive_group_values"] == ["300", "100"]
@@ -189,6 +190,56 @@ def test_build_facts_from_rows_builds_cargo_receipts_and_overlays() -> None:
         "transit",
         "rare",
     ]
+
+
+def test_internal_warehouse_signal_is_not_external_customer_need() -> None:
+    facts, _ = build_assortment_lifecycle_fact_records(
+        nomenclature_rows=[
+            {
+                "nomenclature_ref": "0xA",
+                "nomenclature_code": "РБ0001",
+                "name": "Дисплей тестовый A",
+            }
+        ],
+        supplier_order_rows=[],
+        receipt_rows=[],
+        warehouse_policy=_warehouse_policy(),
+        manager_signals={
+            "РБ0001": [
+                {
+                    "manager_id": "warehouse_internal",
+                    "signal_type": "internal_warehouse_need",
+                    "quantity": 1,
+                    "source": "warehouse_transfer",
+                    "signal_date": "2026-01-03",
+                }
+            ]
+        },
+    )
+
+    assert facts[0]["has_need_signal"] is True
+    assert facts[0]["has_external_need_signal"] is False
+
+
+def test_complete_sale_history_turns_missing_sale_row_into_proven_zero() -> None:
+    facts, _ = build_assortment_lifecycle_fact_records(
+        nomenclature_rows=[
+            {
+                "nomenclature_ref": "0xA",
+                "nomenclature_code": "РБ0001",
+                "name": "Дисплей без продаж",
+            }
+        ],
+        supplier_order_rows=[],
+        receipt_rows=[],
+        warehouse_policy=_warehouse_policy(),
+        first_sale_dates={},
+        sales_history_complete=True,
+    )
+
+    assert facts[0]["first_sale_at"] is None
+    assert facts[0]["last_sale_at"] is None
+    assert facts[0]["lifetime_sales_qty"] == "0"
 
 
 def test_build_facts_marks_history_truncated_when_first_event_hits_boundary() -> None:

@@ -23292,6 +23292,18 @@ components:
             format: date
           - type: 'null'
           title: Last Receipt At
+        first_stock_inflow_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: First Stock Inflow At
+        last_stock_inflow_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Last Stock Inflow At
         history_age_days:
           anyOf:
           - type: integer

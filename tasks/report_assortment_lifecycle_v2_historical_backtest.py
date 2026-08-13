@@ -32,6 +32,7 @@ from app.services.assortment_lifecycle_facts import (
     fetch_first_supplier_order_dates,
     fetch_historical_sales_observations,
     fetch_receipt_date_bounds,
+    fetch_stock_inflow_date_bounds,
 )
 from app.services.assortment_lifecycle_replay_store import (
     DEFAULT_REPLAY_STORE_PATH,
@@ -421,11 +422,16 @@ def main() -> int:
                 onec_engine,
                 nomenclature_refs_by_code=refs_by_code,
                 supplier_mapping=supplier_mapping,
+                receipt_mapping=receipt_mapping,
             )
             receipt_bounds = fetch_receipt_date_bounds(
                 onec_engine,
                 nomenclature_codes=codes,
                 receipt_mapping=receipt_mapping,
+            )
+            stock_inflow_bounds = fetch_stock_inflow_date_bounds(
+                onec_engine,
+                nomenclature_codes=codes,
             )
             sale_bounds = fetch_first_sale_dates(
                 onec_engine,
@@ -450,6 +456,9 @@ def main() -> int:
             if code in receipt_bounds:
                 source_record["first_receipt_at"] = receipt_bounds[code][0].isoformat()
                 source_record["last_receipt_at"] = receipt_bounds[code][1].isoformat()
+            if code in stock_inflow_bounds:
+                source_record["first_stock_inflow_at"] = stock_inflow_bounds[code][0].isoformat()
+                source_record["last_stock_inflow_at"] = stock_inflow_bounds[code][1].isoformat()
             if code in sale_bounds:
                 source_record["first_sale_at"] = sale_bounds[code][0].isoformat()
                 source_record["last_sale_at"] = sale_bounds[code][1].isoformat()

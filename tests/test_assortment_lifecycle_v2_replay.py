@@ -86,7 +86,7 @@ def test_single_document_customer_point_concentration_stays_spike() -> None:
     rows = _trajectory(sales=sales, date_to=date(2026, 2, 18))
 
     assert {row["demand_state"] for row in rows} == {DemandState.SPIKE.value}
-    assert {row["status"] for row in rows} == {AssortmentStatus.SALES_START.value}
+    assert {row["status"] for row in rows} == {AssortmentStatus.WORKING.value}
 
 
 def test_replay_does_not_look_at_future_sale() -> None:
@@ -157,3 +157,26 @@ def test_cargo_without_receipt_remains_ordered() -> None:
     )
 
     assert {row["status"] for row in rows} == {AssortmentStatus.NEWBORN.value}
+
+
+def test_replay_uses_physical_inflow_before_supplier_receipt() -> None:
+    rows = build_assortment_lifecycle_v2_trajectory(
+        items=[
+            _item(
+                first_stock_inflow_at="2025-12-01",
+                first_receipt_at="2026-02-05",
+                first_sale_at="2025-12-10",
+            )
+        ],
+        sales_observations_by_code={"SKU-1": []},
+        availability_by_code={"SKU-1": []},
+        supplier_orders_by_code={"SKU-1": []},
+        receipts_by_code={"SKU-1": []},
+        history_start=date(2026, 2, 1),
+        date_from=date(2026, 2, 1),
+        date_to=date(2026, 2, 2),
+    )
+
+    assert {row["status"] for row in rows} == {AssortmentStatus.SALES_START.value}
+    assert {row["first_stock_inflow_at"] for row in rows} == {date(2025, 12, 1)}
+    assert all(not row["blockers"] for row in rows)

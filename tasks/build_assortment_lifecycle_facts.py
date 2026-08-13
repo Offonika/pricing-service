@@ -33,6 +33,7 @@ from app.services.assortment_lifecycle_facts import (
     fetch_receipt_date_bounds,
     fetch_sales_distribution,
     fetch_sales_window_totals,
+    fetch_stock_inflow_date_bounds,
     normalize_manager_signals,
     normalize_manual_overrides,
     validate_warehouse_policy,
@@ -68,6 +69,7 @@ def main() -> int:
     first_sale_dates: dict[str, tuple[date, date]] = {}
     first_supplier_order_dates: dict[str, date] = {}
     receipt_bounds: dict[str, tuple[date, date]] = {}
+    stock_inflow_bounds: dict[str, tuple[date, date]] = {}
     sales_window_totals: dict[str, dict[int, Decimal]] = {}
     sales_distribution: dict[str, dict[str, Any]] = {}
     days_in_sale_totals: dict[str, dict[int, Decimal]] = {}
@@ -142,6 +144,7 @@ def main() -> int:
                         for row in nomenclature_rows
                     },
                     supplier_mapping=supplier_mapping,
+                    receipt_mapping=receipt_mapping,
                 )
                 # Продажи за 30/90/180 дней — вход переходов «Пошли продажи ->
                 # Растим -> Поддерживаем» по динамике спроса.
@@ -154,6 +157,10 @@ def main() -> int:
                     engine,
                     nomenclature_codes=codes,
                     receipt_mapping=receipt_mapping,
+                )
+                stock_inflow_bounds = fetch_stock_inflow_date_bounds(
+                    engine,
+                    nomenclature_codes=codes,
                 )
                 sales_distribution = fetch_sales_distribution(
                     engine,
@@ -218,6 +225,7 @@ def main() -> int:
         first_supplier_order_dates=first_supplier_order_dates,
         receipt_rows=receipt_rows,
         receipt_bounds=receipt_bounds,
+        stock_inflow_bounds=stock_inflow_bounds,
         warehouse_policy=warehouse_policy,
         manual_overrides=manual_overrides,
         manager_signals=manager_signals,

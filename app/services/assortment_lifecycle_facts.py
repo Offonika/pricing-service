@@ -79,6 +79,7 @@ class DocumentLineMapping:
     marked_column: str = "_Marked"
     line_price_column: str = ""
     cargo_handoff_column: str = ""
+    line_supplier_order_column: str = ""
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any]) -> DocumentLineMapping:
@@ -93,6 +94,7 @@ class DocumentLineMapping:
             marked_column=str(payload.get("marked_column") or "_Marked"),
             line_price_column=str(payload.get("line_price_column") or ""),
             cargo_handoff_column=str(payload.get("cargo_handoff_column") or ""),
+            line_supplier_order_column=str(payload.get("line_supplier_order_column") or ""),
         )
 
 
@@ -185,6 +187,7 @@ def build_assortment_lifecycle_fact_records(
     first_supplier_order_dates: Mapping[str, date] | None = None,
     receipt_rows: Sequence[Mapping[str, Any]],
     receipt_bounds: Mapping[str, tuple[date, date]] | None = None,
+    stock_inflow_bounds: Mapping[str, tuple[date, date]] | None = None,
     warehouse_policy: Sequence[Mapping[str, Any]],
     manual_overrides: Mapping[str, Mapping[str, Any]] | None = None,
     manager_signals: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
@@ -254,6 +257,7 @@ def build_assortment_lifecycle_fact_records(
     }
     group_values = [value for value in item_values.values() if value is not None]
     receipt_bounds = receipt_bounds or {}
+    stock_inflow_bounds = stock_inflow_bounds or {}
     sales_distribution = sales_distribution or {}
     previous_demand_states = previous_demand_states or {}
     previous_classifications = previous_classifications or {}
@@ -282,6 +286,10 @@ def build_assortment_lifecycle_fact_records(
                 _min_date(receipt_dates.get(key, ())),
                 _max_date(receipt_dates.get(key, ())),
             ),
+        )
+        first_stock_inflow_at, last_stock_inflow_at = stock_inflow_bounds.get(
+            code,
+            (first_receipt_at, last_receipt_at),
         )
         event_dates = [*supplier_dates.get(key, ()), *receipt_dates.get(key, ())]
         if history_start is not None and _event_touches_history_start(
@@ -317,6 +325,8 @@ def build_assortment_lifecycle_fact_records(
             ],
             "first_receipt_at": _json_date(first_receipt_at),
             "last_receipt_at": _json_date(last_receipt_at),
+            "first_stock_inflow_at": _json_date(first_stock_inflow_at),
+            "last_stock_inflow_at": _json_date(last_stock_inflow_at),
             "history_age_days": (
                 (as_of - first_receipt_at).days
                 if as_of is not None and first_receipt_at is not None
@@ -543,6 +553,8 @@ def validate_document_line_mapping(engine: Engine, mapping: DocumentLineMapping)
     line_required = {mapping.line_document_column, mapping.line_nomenclature_column}
     if mapping.line_price_column:
         line_required.add(mapping.line_price_column)
+    if mapping.line_supplier_order_column:
+        line_required.add(mapping.line_supplier_order_column)
     for column in sorted(line_required - table_columns[mapping.line_table]):
         issues.append(f"column_missing:{mapping.line_table}.{column}")
     return tuple(issues)
@@ -634,11 +646,52 @@ def fetch_receipt_date_bounds(
     return result
 
 
+def fetch_stock_inflow_date_bounds(
+    engine: Engine,
+    *,
+    nomenclature_codes: Sequence[str],
+) -> dict[str, tuple[date, date]]:
+    """Return full-history positive physical stock-inflow bounds per SKU.
+
+    The stock register includes supplier receipts, inventory adjustments and
+    other posted physical inflows. These dates prove that stock existed, but
+    deliberately do not prove supplier origin or lead time.
+    """
+
+    codes = sorted({code for code in (_clean(value) for value in nomenclature_codes) if code})
+    if not codes:
+        return {}
+    query = text("""
+        SELECT NULLIF(LTRIM(RTRIM(product._Code)), N'') AS nomenclature_code,
+               MIN(CAST(movement._Period AS date)) AS first_stock_inflow_at,
+               MAX(CAST(movement._Period AS date)) AS last_stock_inflow_at
+        FROM dbo._AccumRg7735 AS movement WITH (NOLOCK)
+        JOIN dbo._Reference62 AS product WITH (NOLOCK)
+          ON product._IDRRef = movement._Fld7738RRef
+        WHERE movement._Active = 0x01
+          AND movement._RecordKind = 0
+          AND movement._Fld7743 > 0
+          AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
+        GROUP BY NULLIF(LTRIM(RTRIM(product._Code)), N'')
+        """).bindparams(bindparam("codes", expanding=True))
+    result: dict[str, tuple[date, date]] = {}
+    with engine.connect() as conn:
+        for chunk in _chunks(codes, MAX_SQLSERVER_EXPANDING_REFS):
+            for row in conn.execute(query, {"codes": chunk}).mappings():
+                code = _clean(row.get("nomenclature_code"))
+                first = _date(row.get("first_stock_inflow_at"))
+                last = _date(row.get("last_stock_inflow_at"))
+                if code and first is not None and last is not None:
+                    result[code] = (first, last)
+    return result
+
+
 def fetch_first_supplier_order_dates(
     engine: Engine,
     *,
     nomenclature_refs_by_code: Mapping[str, str],
     supplier_mapping: DocumentLineMapping,
+    receipt_mapping: DocumentLineMapping | None = None,
 ) -> dict[str, date]:
     """Return the first posted supplier-order date across the full 1C history.
 
@@ -687,6 +740,40 @@ def fetch_first_supplier_order_dates(
                 first = _date(row.get("first_supplier_order_at"))
                 if code and first is not None:
                     result[code] = first
+    if receipt_mapping is None or not receipt_mapping.line_supplier_order_column:
+        return result
+    receipt_issues = validate_document_line_mapping(engine, receipt_mapping)
+    if receipt_issues:
+        raise ValueError(f"{RECEIPT_MAPPING_UNRESOLVED}: {', '.join(receipt_issues)}")
+    linked_query = text(f"""
+        SELECT CONVERT(varchar(34), receipt_line.{_ident(receipt_mapping.line_nomenclature_column)}, 1)
+                   AS nomenclature_ref,
+               MIN(supplier_doc.{_ident(supplier_mapping.document_date_column)})
+                   AS first_supplier_order_at
+        FROM dbo.{_ident(receipt_mapping.line_table)} AS receipt_line WITH (NOLOCK)
+        JOIN dbo.{_ident(receipt_mapping.document_table)} AS receipt_doc WITH (NOLOCK)
+          ON receipt_doc.{_ident(receipt_mapping.document_id_column)} =
+             receipt_line.{_ident(receipt_mapping.line_document_column)}
+        JOIN dbo.{_ident(supplier_mapping.document_table)} AS supplier_doc WITH (NOLOCK)
+          ON supplier_doc.{_ident(supplier_mapping.document_id_column)} =
+             receipt_line.{_ident(receipt_mapping.line_supplier_order_column)}
+        WHERE receipt_doc.{_ident(receipt_mapping.marked_column)} = 0x00
+          AND receipt_doc.{_ident(receipt_mapping.posted_column)} = 0x01
+          AND supplier_doc.{_ident(supplier_mapping.marked_column)} = 0x00
+          AND supplier_doc.{_ident(supplier_mapping.posted_column)} = 0x01
+          AND receipt_line.{_ident(receipt_mapping.line_nomenclature_column)} IN :refs
+        GROUP BY receipt_line.{_ident(receipt_mapping.line_nomenclature_column)}
+        """).bindparams(bindparam("refs", expanding=True, type_=LargeBinary(16)))
+    with engine.connect() as conn:
+        for chunk in _chunks(sorted(binary_ref_by_text), MAX_SQLSERVER_EXPANDING_REFS):
+            for row in conn.execute(
+                linked_query,
+                {"refs": [binary_ref_by_text[ref] for ref in chunk]},
+            ).mappings():
+                code = code_by_ref.get(_clean(row.get("nomenclature_ref")).upper(), "")
+                first = _date(row.get("first_supplier_order_at"))
+                if code and first is not None:
+                    result[code] = min(result.get(code, first), first)
     return result
 
 

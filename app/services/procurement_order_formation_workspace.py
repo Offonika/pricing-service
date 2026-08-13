@@ -1586,6 +1586,8 @@ def _lifecycle_explanation_fields(row: Mapping[str, Any]) -> dict[str, Any]:
         "demand_reason_text": str(row.get("demand_reason_text") or ""),
         "first_receipt_at": row.get("first_receipt_at"),
         "last_receipt_at": row.get("last_receipt_at"),
+        "first_stock_inflow_at": row.get("first_stock_inflow_at"),
+        "last_stock_inflow_at": row.get("last_stock_inflow_at"),
         "history_age_days": row.get("history_age_days"),
         "first_sale_at": row.get("first_sale_at"),
         "last_sale_at": row.get("last_sale_at"),

@@ -42,6 +42,8 @@ DIFF_COLUMNS = (
     "available_days_180",
     "first_receipt_at",
     "last_receipt_at",
+    "first_stock_inflow_at",
+    "last_stock_inflow_at",
     "history_age_days",
     "manual_review_required",
     "blockers",
@@ -53,6 +55,8 @@ DATE_EVIDENCE_FIELDS = (
     "first_cargo_at",
     "first_receipt_at",
     "last_receipt_at",
+    "first_stock_inflow_at",
+    "last_stock_inflow_at",
     "first_sale_at",
     "last_sale_at",
     "demand_state_since",
@@ -328,6 +332,7 @@ class _HistoricalTrajectoryAudit:
         order_at = evidence["first_supplier_order_at"]
         cargo_at = evidence["first_cargo_at"]
         receipt_at = evidence["first_receipt_at"]
+        stock_inflow_at = evidence.get("first_stock_inflow_at") or receipt_at
         last_receipt_at = evidence["last_receipt_at"]
         sale_at = evidence["first_sale_at"]
         chronology_issue = False
@@ -337,20 +342,39 @@ class _HistoricalTrajectoryAudit:
                 self.data_issue_skus[f"future_{field}"].add(code)
         if cargo_at is not None and cargo_at < date(2000, 1, 1):
             self.data_issue_skus["cargo_before_2000"].add(code)
-        for issue, failed in (
-            ("receipt_before_first_order", bool(order_at and receipt_at and receipt_at < order_at)),
-            ("sale_before_first_receipt", bool(receipt_at and sale_at and sale_at < receipt_at)),
-            ("receipt_without_order", bool(receipt_at and not order_at)),
-            ("sale_without_order", bool(sale_at and not order_at)),
-            ("sale_without_receipt", bool(sale_at and not receipt_at)),
+        for issue, failed, hard in (
+            (
+                "receipt_before_first_order",
+                bool(order_at and receipt_at and receipt_at < order_at),
+                False,
+            ),
+            (
+                "sale_before_first_receipt",
+                bool(receipt_at and sale_at and sale_at < receipt_at),
+                False,
+            ),
+            ("receipt_without_order", bool(receipt_at and not order_at), False),
+            ("sale_without_order", bool(sale_at and not order_at), False),
+            ("sale_without_receipt", bool(sale_at and not receipt_at), False),
+            (
+                "sale_without_physical_stock_inflow",
+                bool(sale_at and not stock_inflow_at),
+                True,
+            ),
+            (
+                "sale_before_physical_stock_inflow",
+                bool(sale_at and stock_inflow_at and sale_at < stock_inflow_at),
+                True,
+            ),
             (
                 "last_receipt_before_first_receipt",
                 bool(receipt_at and last_receipt_at and last_receipt_at < receipt_at),
+                True,
             ),
         ):
             if failed:
-                chronology_issue = True
                 self.data_issue_skus[issue].add(code)
+                chronology_issue = chronology_issue or hard
         if chronology_issue:
             self.chronology_issue_skus.add(code)
             if not blockers:
@@ -358,19 +382,23 @@ class _HistoricalTrajectoryAudit:
 
         manual = bool(row.get("historical_manual_status_replayed"))
         if not manual:
-            if status == AssortmentStatus.FRUIT.value and (receipt_at or sale_at):
+            if status == AssortmentStatus.FRUIT.value and (stock_inflow_at or sale_at):
                 self.stage_fact_conflict_skus.add(code)
             elif status == AssortmentStatus.NEWBORN.value and (
-                not order_at or receipt_at or sale_at
+                not order_at or stock_inflow_at or sale_at
             ):
                 self.stage_fact_conflict_skus.add(code)
-            elif status == AssortmentStatus.NEW_ITEM.value and (not receipt_at or sale_at):
+            elif status == AssortmentStatus.NEW_ITEM.value and (not stock_inflow_at or sale_at):
                 self.stage_fact_conflict_skus.add(code)
-            elif status in {
-                AssortmentStatus.SALES_START.value,
-                AssortmentStatus.SALE.value,
-                AssortmentStatus.WORKING.value,
-            } and (not receipt_at or not sale_at):
+            elif (
+                status
+                in {
+                    AssortmentStatus.SALES_START.value,
+                    AssortmentStatus.SALE.value,
+                    AssortmentStatus.WORKING.value,
+                }
+                and not sale_at
+            ):
                 self.stage_fact_conflict_skus.add(code)
 
         if receipt_at is not None and row.get("history_age_days") is not None:
@@ -496,6 +524,8 @@ def _diff_row(legacy: Mapping[str, Any], target: Mapping[str, Any]) -> dict[str,
         "available_days_180": target.get("available_days_180"),
         "first_receipt_at": target.get("first_receipt_at"),
         "last_receipt_at": target.get("last_receipt_at"),
+        "first_stock_inflow_at": target.get("first_stock_inflow_at"),
+        "last_stock_inflow_at": target.get("last_stock_inflow_at"),
         "history_age_days": target.get("history_age_days"),
         "manual_review_required": int(bool(target.get("manual_review_required"))),
         "blockers": ",".join(_text_values(target.get("blockers"))),

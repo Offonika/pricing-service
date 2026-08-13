@@ -423,6 +423,8 @@ class ProcurementLifecycleTransitionRead(BaseModel):
     demand_reason_text: str = ""
     first_receipt_at: date | None = None
     last_receipt_at: date | None = None
+    first_stock_inflow_at: date | None = None
+    last_stock_inflow_at: date | None = None
     history_age_days: int | None = None
     first_sale_at: date | None = None
     last_sale_at: date | None = None

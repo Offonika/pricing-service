@@ -38,6 +38,7 @@ from app.services.assortment_lifecycle_facts import (
     fetch_receipt_date_bounds,
     fetch_sales_distribution,
     fetch_sales_window_totals,
+    fetch_stock_inflow_date_bounds,
     normalize_manager_signals,
     normalize_manual_overrides,
     validate_warehouse_policy,
@@ -337,6 +338,7 @@ def _load_or_build_fact_records(
         first_sale_dates: dict[str, tuple[date, date]] = {}
         first_supplier_order_dates: dict[str, date] = {}
         receipt_bounds: dict[str, tuple[date, date]] = {}
+        stock_inflow_bounds: dict[str, tuple[date, date]] = {}
         sales_window_totals: dict[str, dict[int, Decimal]] = {}
         sales_distribution: dict[str, dict[str, Any]] = {}
         inventory_costs: dict[str, Decimal] = {}
@@ -413,6 +415,7 @@ def _load_or_build_fact_records(
                         for row in nomenclature_rows
                     },
                     supplier_mapping=supplier_mapping,
+                    receipt_mapping=receipt_mapping,
                 )
                 # Продажи по окнам 30/90/180 — вход переходов по динамике спроса.
                 sales_window_totals = fetch_sales_window_totals(
@@ -424,6 +427,10 @@ def _load_or_build_fact_records(
                     onec_engine,
                     nomenclature_codes=codes,
                     receipt_mapping=receipt_mapping,
+                )
+                stock_inflow_bounds = fetch_stock_inflow_date_bounds(
+                    onec_engine,
+                    nomenclature_codes=codes,
                 )
                 sales_distribution = fetch_sales_distribution(
                     onec_engine,
@@ -490,6 +497,7 @@ def _load_or_build_fact_records(
             first_supplier_order_dates=first_supplier_order_dates,
             receipt_rows=receipt_rows,
             receipt_bounds=receipt_bounds,
+            stock_inflow_bounds=stock_inflow_bounds,
             warehouse_policy=warehouse_policy,
             manual_overrides=manual_overrides,
             manager_signals=manager_signals,

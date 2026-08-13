@@ -138,6 +138,8 @@ def test_build_facts_from_rows_builds_cargo_receipts_and_overlays() -> None:
             ]
         },
         history_start=date(2025, 12, 1),
+        stock_inflow_bounds={"РБ0001": (date(2025, 12, 25), date(2026, 5, 10))},
+        as_of=date(2026, 5, 20),
     )
 
     first = facts[0]
@@ -148,6 +150,9 @@ def test_build_facts_from_rows_builds_cargo_receipts_and_overlays() -> None:
     assert first["additional_name_1c"] == "Display test A (ORIG)"
     assert first["vendor_sku_1c"] == "OEM-DSP-TEST-BLK-OR"
     assert first["first_supplier_order_at"] == "2026-01-01"
+    assert first["first_stock_inflow_at"] == "2025-12-25"
+    assert first["last_stock_inflow_at"] == "2026-05-10"
+    assert first["history_age_days"] == (date(2026, 5, 20) - date(2026, 1, 10)).days
     assert first["supplier_order_cargo_handoff_dates"] == ["2026-01-05", "2026-02-05"]
     assert first["receipt_dates"] == [
         "2026-01-10",

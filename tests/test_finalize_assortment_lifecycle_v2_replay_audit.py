@@ -157,6 +157,7 @@ def test_historical_validation_flags_active_regression_and_bad_chronology(
     assert summary["status"] == "needs_revision"
     assert summary["transition_count"] == 1
     assert summary["active_to_sales_start"] == {"transition_count": 1, "sku_count": 1}
-    assert summary["data_quality"]["chronology_issue_sku_count"] == 1
-    assert summary["data_quality"]["chronology_without_blocker_sku_count"] == 1
+    assert summary["data_quality"]["chronology_issue_sku_count"] == 0
+    assert summary["data_quality"]["chronology_without_blocker_sku_count"] == 0
+    assert summary["data_quality"]["by_issue_sku_count"]["receipt_before_first_order"] == 1
     assert summary["month_end_snapshots"][-1]["date"] == "2026-02-02"

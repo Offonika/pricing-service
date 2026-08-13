@@ -366,6 +366,8 @@ export interface ProcurementLifecycleTransition {
   demand_reason_text: string;
   first_receipt_at?: string | null;
   last_receipt_at?: string | null;
+  first_stock_inflow_at?: string | null;
+  last_stock_inflow_at?: string | null;
   history_age_days?: number | null;
   first_sale_at?: string | null;
   last_sale_at?: string | null;

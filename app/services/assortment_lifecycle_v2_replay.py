@@ -15,7 +15,7 @@ from app.services.assortment_lifecycle_v2_policy import (
     DemandStatePolicy,
 )
 
-V2_REPLAY_MODEL_VERSION = "assortment-lifecycle-v2-daily.v1"
+V2_REPLAY_MODEL_VERSION = "assortment-lifecycle-v2-daily.v2"
 ZERO = Decimal("0")
 
 
@@ -226,6 +226,13 @@ def historical_v2_lifecycle_decision(
     source_last_receipt = _date(source.get("last_receipt_at"))
     if source_last_receipt is not None and source_last_receipt <= as_of:
         receipt_dates.append(source_last_receipt)
+    source_first_stock_inflow = _date(source.get("first_stock_inflow_at"))
+    source_last_stock_inflow = _date(source.get("last_stock_inflow_at"))
+    stock_inflow_dates = list(receipt_dates)
+    if source_first_stock_inflow is not None and source_first_stock_inflow <= as_of:
+        stock_inflow_dates.append(source_first_stock_inflow)
+    if source_last_stock_inflow is not None and source_last_stock_inflow <= as_of:
+        stock_inflow_dates.append(source_last_stock_inflow)
 
     first_sale_at = sales.first_sale_at(as_of=as_of)
     last_sale_at = sales.last_sale_at(as_of=as_of)
@@ -279,6 +286,8 @@ def historical_v2_lifecycle_decision(
             receipt_dates=tuple(sorted(set(receipt_dates))),
             first_receipt_at=min(receipt_dates) if receipt_dates else None,
             last_receipt_at=max(receipt_dates) if receipt_dates else None,
+            first_stock_inflow_at=min(stock_inflow_dates) if stock_inflow_dates else None,
+            last_stock_inflow_at=max(stock_inflow_dates) if stock_inflow_dates else None,
             first_sale_at=first_sale_at,
             last_sale_at=last_sale_at,
             as_of=as_of,
@@ -318,6 +327,8 @@ def historical_v2_lifecycle_decision(
         "first_cargo_at": min(cargo_dates) if cargo_dates else None,
         "first_receipt_at": min(receipt_dates) if receipt_dates else None,
         "last_receipt_at": max(receipt_dates) if receipt_dates else None,
+        "first_stock_inflow_at": min(stock_inflow_dates) if stock_inflow_dates else None,
+        "last_stock_inflow_at": max(stock_inflow_dates) if stock_inflow_dates else None,
         "history_age_days": ((as_of - min(receipt_dates)).days if receipt_dates else None),
         "historical_manual_status_replayed": bool(manual_status),
     }

@@ -747,9 +747,90 @@ def test_target_missing_first_order_fact_preserves_launched_stage_and_blocks_tra
     )
 
     assert decision.status == AssortmentStatus.NEWBORN
-    assert decision.blockers == ("first_supplier_order_fact_missing",)
+    assert decision.blockers == ("active_stage_evidence_missing",)
     assert decision.manual_review_required
     assert not decision.auto_order_allowed
+
+
+def test_target_physical_inflow_without_order_is_arrived_with_warning() -> None:
+    decision = decide_target_assortment_status(
+        AssortmentLifecycleInput(
+            nomenclature_code="TARGET-DIRECT-INFLOW",
+            first_stock_inflow_at=date(2026, 8, 1),
+            as_of=date(2026, 8, 12),
+            sales_qty_short=0,
+            sales_qty_medium=0,
+            sales_qty_long=0,
+        )
+    )
+
+    assert decision.status == AssortmentStatus.NEW_ITEM
+    assert "first_supplier_order_fact_missing" in decision.reason_codes
+    assert "supplier_receipt_origin_incomplete" in decision.reason_codes
+    assert decision.blockers == ()
+    assert decision.manual_review_required
+    assert not decision.auto_order_allowed
+
+
+def test_target_sale_and_physical_inflow_override_missing_order() -> None:
+    decision = decide_target_assortment_status(
+        AssortmentLifecycleInput(
+            nomenclature_code="TARGET-DIRECT-SALE",
+            first_stock_inflow_at=date(2026, 1, 1),
+            first_sale_at=date(2026, 1, 5),
+            as_of=date(2026, 8, 12),
+            sales_qty_short=4,
+            sales_qty_medium=12,
+            sales_qty_long=20,
+        )
+    )
+
+    assert decision.status == AssortmentStatus.WORKING
+    assert "first_supplier_order_fact_missing" in decision.reason_codes
+    assert decision.blockers == ()
+    assert decision.manual_review_required
+    assert not decision.auto_order_allowed
+
+
+def test_target_sale_without_physical_inflow_is_fail_closed() -> None:
+    decision = decide_target_assortment_status(
+        AssortmentLifecycleInput(
+            nomenclature_code="TARGET-IMPOSSIBLE-SALE",
+            first_sale_at=date(2026, 1, 5),
+            as_of=date(2026, 8, 12),
+            sales_qty_short=1,
+            sales_qty_medium=1,
+            sales_qty_long=1,
+        )
+    )
+
+    assert decision.status == AssortmentStatus.SALES_START
+    assert decision.blockers == ("sale_without_physical_stock_inflow",)
+    assert decision.manual_review_required
+    assert not decision.auto_order_allowed
+
+
+def test_target_active_stage_never_returns_to_sales_start_on_unconfirmed_demand() -> None:
+    for demand_values in (
+        (0, 0, 0),
+        (1, 2, 3),
+    ):
+        decision = decide_target_assortment_status(
+            AssortmentLifecycleInput(
+                nomenclature_code="TARGET-ACTIVE",
+                first_supplier_order_at=date(2025, 1, 1),
+                first_stock_inflow_at=date(2025, 1, 2),
+                first_receipt_at=date(2025, 1, 2),
+                first_sale_at=date(2025, 1, 3),
+                previous_status=AssortmentStatus.WORKING,
+                as_of=date(2026, 8, 12),
+                sales_qty_short=demand_values[0],
+                sales_qty_medium=demand_values[1],
+                sales_qty_long=demand_values[2],
+            )
+        )
+
+        assert decision.status == AssortmentStatus.WORKING
 
 
 def test_target_demand_distinguishes_null_from_confirmed_zero() -> None:

@@ -286,6 +286,12 @@ def _lifecycle_input_from_record(record: dict[str, Any]) -> AssortmentLifecycleI
         ),
         first_receipt_at=_optional_date_field(record, "first_receipt_at", "FirstReceiptAt"),
         last_receipt_at=_optional_date_field(record, "last_receipt_at", "LastReceiptAt"),
+        first_stock_inflow_at=_optional_date_field(
+            record, "first_stock_inflow_at", "FirstStockInflowAt"
+        ),
+        last_stock_inflow_at=_optional_date_field(
+            record, "last_stock_inflow_at", "LastStockInflowAt"
+        ),
         first_sale_at=_optional_date_field(record, "first_sale_at", "FirstSaleAt"),
         last_sale_at=_optional_date_field(record, "last_sale_at", "LastSaleAt"),
         # Дата расчёта приходит из факта (сборщик проставляет as_of при выгрузке).

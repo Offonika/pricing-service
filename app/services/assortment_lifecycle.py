@@ -218,6 +218,11 @@ class AssortmentLifecycleInput:
     receipt_dates: tuple[date, ...] = ()
     first_receipt_at: date | None = None
     last_receipt_at: date | None = None
+    # Первый/последний подтверждённый положительный приход в складском
+    # регистре. В отличие от ``first_receipt_at`` это может быть не поставка,
+    # а инвентаризационное оприходование или другое физическое движение.
+    first_stock_inflow_at: date | None = None
+    last_stock_inflow_at: date | None = None
     # Дата первой реализации покупателю. Определяет вход в СП / Старт продаж:
     # решение 2026-08-02 — статус называется "стартанули продажи" и должен
     # означать факт продажи, а не второй заказ поставщику. Пусто = продаж не
@@ -442,9 +447,50 @@ def decide_target_assortment_status(
     first_receipt_at = item.first_receipt_at or (
         min(item.receipt_dates) if item.receipt_dates else None
     )
-    manual_review_required = False
-    blockers: tuple[str, ...] = ()
-    if item.first_supplier_order_at is None:
+    first_stock_inflow_at = item.first_stock_inflow_at or first_receipt_at
+    missing_order_warning = item.first_supplier_order_at is None and bool(
+        first_stock_inflow_at or item.first_sale_at
+    )
+    supplier_receipt_warning = bool(
+        first_stock_inflow_at
+        and (first_receipt_at is None or first_stock_inflow_at < first_receipt_at)
+    )
+
+    # Стадия определяется от самого сильного подтверждённого факта. Продажа не
+    # может вернуть карточку в «Рассматриваем/Заказали», а физический приход —
+    # в «Рассматриваем», даже если предшествующий документ не найден.
+    if item.first_sale_at is None:
+        if first_stock_inflow_at is not None:
+            decision = _decision(
+                item,
+                AssortmentStatus.NEW_ITEM,
+                "first_stock_inflow_registered",
+                reason_text=(
+                    f"Первый физический складской приход подтверждён "
+                    f"{first_stock_inflow_at:%d.%m.%Y}; продаж ещё не было."
+                ),
+            )
+            return _with_demand(
+                _with_target_fact_warnings(
+                    decision,
+                    missing_order=missing_order_warning,
+                    supplier_receipt_incomplete=supplier_receipt_warning,
+                ),
+                demand,
+            )
+        if item.first_supplier_order_at is not None:
+            return _with_demand(
+                _decision(
+                    item,
+                    AssortmentStatus.NEWBORN,
+                    "first_supplier_order_created",
+                    reason_text=(
+                        "Первый заказ поставщику создан, физического складского прихода ещё нет."
+                    ),
+                    manual_review_required=item.has_need_signal or legacy_newborn_need,
+                ),
+                demand,
+            )
         if previous_status in {
             AssortmentStatus.NEWBORN,
             AssortmentStatus.NEW_ITEM,
@@ -458,13 +504,12 @@ def decide_target_assortment_status(
                     previous_status,
                     "first_supplier_order_fact_missing",
                     reason_text=(
-                        "Текущая стадия подтверждает, что товар уже запускался, но "
-                        "проведённый заказ поставщику в полной истории 1С не найден; "
-                        "автоматический переход заблокирован до сверки фактов."
+                        "Предыдущую стадию сохраняем, но подтверждающий заказ, "
+                        "физический приход или продажа в доступных фактах не найдены."
                     ),
                     manual_review_required=True,
                     auto_order_allowed=False,
-                    blockers=("first_supplier_order_fact_missing",),
+                    blockers=("active_stage_evidence_missing",),
                 ),
                 demand,
             )
@@ -473,36 +518,41 @@ def decide_target_assortment_status(
                 item,
                 AssortmentStatus.FRUIT,
                 "product_created",
-                reason_text="Карточка создана, первого заказа поставщику ещё нет.",
+                reason_text="Карточка создана, заказа, физического прихода и продаж ещё нет.",
             ),
             demand,
         )
-    if first_receipt_at is None:
+
+    chronology_blocker = ""
+    if first_stock_inflow_at is None:
+        chronology_blocker = "sale_without_physical_stock_inflow"
+    elif item.first_sale_at < first_stock_inflow_at:
+        chronology_blocker = "sale_before_physical_stock_inflow"
+    if chronology_blocker:
+        preserved = (
+            previous_status
+            if previous_status
+            in {AssortmentStatus.SALES_START, AssortmentStatus.SALE, AssortmentStatus.WORKING}
+            else AssortmentStatus.SALES_START
+        )
         return _with_demand(
             _decision(
                 item,
-                AssortmentStatus.NEWBORN,
-                "first_supplier_order_created",
+                preserved,
+                chronology_blocker,
                 reason_text=(
-                    "Первый заказ поставщику создан, фактического поступления на склад ещё нет."
+                    "Продажа зарегистрирована, но предшествующий физический складской "
+                    "приход не подтверждён; автоматический переход заблокирован до сверки."
                 ),
-                manual_review_required=item.has_need_signal or legacy_newborn_need,
+                manual_review_required=True,
+                auto_order_allowed=False,
+                blockers=(chronology_blocker,),
             ),
             demand,
         )
-    if item.first_sale_at is None:
-        return _with_demand(
-            _decision(
-                item,
-                AssortmentStatus.NEW_ITEM,
-                "first_receipt_registered",
-                reason_text=(
-                    f"Первое фактическое поступление зарегистрировано {first_receipt_at:%d.%m.%Y}; "
-                    "продаж ещё не было."
-                ),
-            ),
-            demand,
-        )
+
+    manual_review_required = False
+    blockers: tuple[str, ...] = ()
 
     if demand.state is DemandState.NO_DATA:
         preserved = (
@@ -552,20 +602,18 @@ def decide_target_assortment_status(
         reason_code = "demand_limited_by_shortage"
         reason_text = "Спрос искажён дефицитом; активную стадию автоматически не понижаем."
         manual_review_required = True
-    elif demand.state is DemandState.NO_SALES and previous_status in {
-        AssortmentStatus.SALE,
-        AssortmentStatus.WORKING,
-    }:
+    elif demand.state in {DemandState.NO_SALES, DemandState.INITIAL, DemandState.SPIKE} and (
+        previous_status in {AssortmentStatus.SALE, AssortmentStatus.WORKING}
+    ):
         status = previous_status
-        reason_code = "no_recent_sales_keep_active_stage"
-        reason_text = "В окнах нет продаж; активную стадию сохраняем до отдельного решения."
-    else:
-        status = (
-            previous_status
-            if demand.state is DemandState.SPIKE
-            and previous_status in {AssortmentStatus.SALE, AssortmentStatus.WORKING}
-            else AssortmentStatus.SALES_START
+        reason_code = "unconfirmed_demand_keep_active_stage"
+        reason_text = (
+            "Товар уже достиг активной стадии; неподтверждённый спрос не возвращает "
+            "его в стадию первых продаж."
         )
+        manual_review_required = demand.state is DemandState.SPIKE
+    else:
+        status = AssortmentStatus.SALES_START
         reason_code = (
             "demand_spike_unconfirmed" if demand.state is DemandState.SPIKE else "initial_demand"
         )
@@ -576,16 +624,49 @@ def decide_target_assortment_status(
         )
         manual_review_required = demand.state is DemandState.SPIKE
 
-    decision = _decision(
-        item,
-        status,
-        reason_code,
-        reason_text=reason_text,
-        auto_order_allowed=status in {AssortmentStatus.SALE, AssortmentStatus.WORKING},
-        manual_review_required=manual_review_required,
-        blockers=blockers,
+    decision = _with_target_fact_warnings(
+        _decision(
+            item,
+            status,
+            reason_code,
+            reason_text=reason_text,
+            auto_order_allowed=status in {AssortmentStatus.SALE, AssortmentStatus.WORKING},
+            manual_review_required=manual_review_required,
+            blockers=blockers,
+        ),
+        missing_order=missing_order_warning,
+        supplier_receipt_incomplete=supplier_receipt_warning,
     )
     return _with_demand(decision, demand)
+
+
+def _with_target_fact_warnings(
+    decision: AssortmentLifecycleDecision,
+    *,
+    missing_order: bool,
+    supplier_receipt_incomplete: bool,
+) -> AssortmentLifecycleDecision:
+    warning_codes: list[str] = []
+    warning_texts: list[str] = []
+    if missing_order:
+        warning_codes.append("first_supplier_order_fact_missing")
+        warning_texts.append("первый заказ поставщику в доступных фактах не найден")
+    if supplier_receipt_incomplete:
+        warning_codes.append("supplier_receipt_origin_incomplete")
+        warning_texts.append(
+            "физический приход подтверждён раньше первого обычного поступления поставщика"
+        )
+    if not warning_codes:
+        return decision
+    return replace(
+        decision,
+        reason_codes=(*decision.reason_codes, *warning_codes),
+        reason_text=f"{decision.reason_text} Предупреждение: {'; '.join(warning_texts)}.",
+        manual_review_required=True,
+        # Стадия рассчитывается по сильному факту, но поставочно-зависимые
+        # действия остаются закрыты до подтверждения происхождения товара.
+        auto_order_allowed=False,
+    )
 
 
 def decide_demand_state(

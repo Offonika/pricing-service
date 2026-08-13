@@ -1,5 +1,6 @@
 from datetime import date
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -9,8 +10,12 @@ from app.services.assortment_lifecycle_replay_store import (
 )
 from app.services.assortment_lifecycle_v2_policy import DemandStatePolicy
 from app.services.assortment_lifecycle_v2_replay import build_assortment_lifecycle_v2_trajectory
+from tasks import run_assortment_lifecycle_memory_safe_replay as replay_task
 from tasks.report_assortment_lifecycle_v2_historical_backtest import replay_inputs_from_facts
-from tasks.run_assortment_lifecycle_memory_safe_replay import build_memory_safe_trajectory
+from tasks.run_assortment_lifecycle_memory_safe_replay import (
+    build_memory_safe_trajectory,
+    resource_preflight,
+)
 
 
 def _facts() -> list[dict[str, object]]:
@@ -142,3 +147,32 @@ def test_memory_safe_replay_resumes_after_partition_failure(tmp_path: Path) -> N
     assert metadata["resumed"] is True
     assert ready.row_count == 6
     assert store.manifest()["trajectory_builds"] == []
+
+
+def test_resource_preflight_checks_store_and_output_filesystems(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store_dir = tmp_path / "store"
+    output_parent = tmp_path / "output"
+    store_dir.mkdir()
+    output_parent.mkdir()
+
+    def disk_usage(path: Path):
+        free_gb = 20 if Path(path) == store_dir.resolve() else 4
+        return SimpleNamespace(free=free_gb * 1024**3)
+
+    monkeypatch.setattr(replay_task.shutil, "disk_usage", disk_usage)
+    monkeypatch.setattr(
+        replay_task,
+        "_meminfo_kb",
+        lambda: {"MemAvailable": 8192 * 1024, "SwapFree": 1024 * 1024},
+    )
+
+    with pytest.raises(ValueError, match="output_free_disk_below_minimum:4:5"):
+        resource_preflight(
+            store_path=store_dir / "replay.sqlite3",
+            output_dir=output_parent / "report",
+            memory_budget_mb=3072,
+            min_free_disk_gb=5,
+            min_swap_free_mb=256,
+        )

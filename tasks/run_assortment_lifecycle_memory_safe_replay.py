@@ -70,6 +70,7 @@ ProgressCallback = Callable[[Mapping[str, Any]], None]
 def resource_preflight(
     *,
     store_path: Path,
+    output_dir: Path,
     memory_budget_mb: int,
     min_free_disk_gb: int,
     min_swap_free_mb: int,
@@ -79,21 +80,28 @@ def resource_preflight(
     memory = _meminfo_kb()
     available_mb = int(memory.get("MemAvailable", 0) // 1024)
     swap_free_mb = int(memory.get("SwapFree", 0) // 1024)
-    free_disk_bytes = shutil.disk_usage(store_path.parent.resolve()).free
-    free_disk_gb = free_disk_bytes // (1024**3)
+    store_free_disk_gb = _free_disk_gb(store_path.parent)
+    output_free_disk_gb = _free_disk_gb(output_dir.parent)
+    free_disk_gb = min(store_free_disk_gb, output_free_disk_gb)
     blockers: list[str] = []
     if available_mb < memory_budget_mb:
         blockers.append(f"available_memory_below_budget:{available_mb}:{memory_budget_mb}")
     if swap_free_mb < min_swap_free_mb:
         blockers.append(f"swap_free_below_minimum:{swap_free_mb}:{min_swap_free_mb}")
-    if free_disk_gb < min_free_disk_gb:
-        blockers.append(f"free_disk_below_minimum:{free_disk_gb}:{min_free_disk_gb}")
+    if store_free_disk_gb < min_free_disk_gb:
+        blockers.append("store_free_disk_below_minimum:" f"{store_free_disk_gb}:{min_free_disk_gb}")
+    if output_free_disk_gb < min_free_disk_gb:
+        blockers.append(
+            "output_free_disk_below_minimum:" f"{output_free_disk_gb}:{min_free_disk_gb}"
+        )
     payload = {
         "status": "blocked" if blockers else "passed",
         "memory_budget_mb": memory_budget_mb,
         "available_memory_mb": available_mb,
         "swap_free_mb": swap_free_mb,
         "min_swap_free_mb": min_swap_free_mb,
+        "store_free_disk_gb": store_free_disk_gb,
+        "output_free_disk_gb": output_free_disk_gb,
         "free_disk_gb": free_disk_gb,
         "min_free_disk_gb": min_free_disk_gb,
         "blockers": blockers,
@@ -121,6 +129,7 @@ def legacy_replay_policy_hash() -> str:
             "warmup": inspect.getsource(warmup_lifecycle_statuses),
             "build_trajectory": inspect.getsource(build_historical_lifecycle_trajectory),
             "item_active_as_of": inspect.getsource(item_active_as_of),
+            "replay_inputs": inspect.getsource(replay_inputs_from_facts),
             "memory_safe_partitioning": "ordered_sku_checkpoint.v1",
         }
     )
@@ -333,6 +342,7 @@ def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     preflight = resource_preflight(
         store_path=args.replay_store_path,
+        output_dir=args.output_dir,
         memory_budget_mb=args.memory_budget_mb,
         min_free_disk_gb=args.min_free_disk_gb,
         min_swap_free_mb=args.min_swap_free_mb,
@@ -344,11 +354,18 @@ def main(argv: list[str] | None = None) -> int:
 
     def progress(payload: Mapping[str, Any]) -> None:
         rss_mb = _rss_mb()
-        free_disk_gb = shutil.disk_usage(args.replay_store_path.parent.resolve()).free // (1024**3)
+        store_free_disk_gb = _free_disk_gb(args.replay_store_path.parent)
+        output_free_disk_gb = _free_disk_gb(args.output_dir.parent)
         if rss_mb >= int(args.memory_budget_mb * Decimal("0.9")):
             raise RuntimeError(f"replay_memory_guard_blocked:{rss_mb}:{args.memory_budget_mb}")
-        if free_disk_gb < args.min_free_disk_gb:
-            raise RuntimeError(f"replay_disk_guard_blocked:{free_disk_gb}:{args.min_free_disk_gb}")
+        if store_free_disk_gb < args.min_free_disk_gb:
+            raise RuntimeError(
+                "replay_store_disk_guard_blocked:" f"{store_free_disk_gb}:{args.min_free_disk_gb}"
+            )
+        if output_free_disk_gb < args.min_free_disk_gb:
+            raise RuntimeError(
+                "replay_output_disk_guard_blocked:" f"{output_free_disk_gb}:{args.min_free_disk_gb}"
+            )
         print(json.dumps(dict(payload), ensure_ascii=False, sort_keys=True), flush=True)
 
     legacy, legacy_meta = build_memory_safe_trajectory(
@@ -413,6 +430,15 @@ def _meminfo_kb() -> dict[str, int]:
             value = raw.strip().split()[0]
             result[key] = int(value)
     return result
+
+
+def _free_disk_gb(path: Path) -> int:
+    candidate = path.resolve()
+    while not candidate.exists():
+        if candidate == candidate.parent:
+            raise ValueError(f"replay_disk_path_not_found:{path}")
+        candidate = candidate.parent
+    return shutil.disk_usage(candidate).free // (1024**3)
 
 
 def _rss_mb() -> int:

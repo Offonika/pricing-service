@@ -409,7 +409,11 @@ def _item_active_as_of(item: Mapping[str, Any], *, as_of: date) -> bool:
 
 def _dated_values(value: Any, as_of: date) -> list[date]:
     values = value if isinstance(value, (list, tuple, set)) else (value,)
-    return [parsed for raw in values if (parsed := _date(raw)) is not None and parsed <= as_of]
+    return [
+        parsed
+        for raw in values
+        if (parsed := _date(raw)) is not None and date(2000, 1, 1) <= parsed <= as_of
+    ]
 
 
 def _clean(value: Any) -> str:

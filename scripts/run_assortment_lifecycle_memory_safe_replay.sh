@@ -12,7 +12,6 @@ if [[ "${1:-}" != "--foreground" ]]; then
     }
     run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
     unit_name="pricing-assortment-replay-$run_id"
-    shift
     exec systemd-run \
         --unit="$unit_name" \
         --collect \

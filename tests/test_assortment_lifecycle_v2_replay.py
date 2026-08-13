@@ -159,6 +159,21 @@ def test_cargo_without_receipt_remains_ordered() -> None:
     assert {row["status"] for row in rows} == {AssortmentStatus.NEWBORN.value}
 
 
+def test_source_record_technical_cargo_date_is_ignored() -> None:
+    rows = build_assortment_lifecycle_v2_trajectory(
+        items=[_item(supplier_order_cargo_handoff_dates=["1753-01-01"])],
+        sales_observations_by_code={},
+        availability_by_code={},
+        supplier_orders_by_code={"SKU-1": [HistoricalSupplierOrder(created_at=date(2026, 2, 1))]},
+        receipts_by_code={},
+        history_start=date(2026, 2, 1),
+        date_from=date(2026, 2, 1),
+        date_to=date(2026, 2, 2),
+    )
+
+    assert {row["first_cargo_at"] for row in rows} == {None}
+
+
 def test_supplier_order_keeps_v2_pre_receipt_interval_in_trajectory() -> None:
     rows = build_assortment_lifecycle_v2_trajectory(
         items=[

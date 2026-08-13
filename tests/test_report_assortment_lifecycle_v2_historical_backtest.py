@@ -71,6 +71,23 @@ def test_v2_dataset_adds_detail_without_double_counting_daily_sale() -> None:
     assert {row.document_id for row in sales["SKU-1"]} == {"doc-a", "doc-b"}
 
 
+def test_replay_inputs_ignore_technical_empty_cargo_date() -> None:
+    facts = [
+        *_legacy_facts(),
+        {
+            "business_date": "2026-01-10",
+            "nomenclature_code": "SKU-1",
+            "fact_type": "supplier_order",
+            "payload": {"cargo_handoff_at": "1753-01-01"},
+        },
+    ]
+
+    _items, _sales, _availability, orders, _receipts = replay_inputs_from_facts(facts)
+
+    technical_order = next(row for row in orders["SKU-1"] if row.created_at == date(2026, 1, 10))
+    assert technical_order.cargo_handoff_at is None
+
+
 def test_v2_trajectory_is_reused_for_exact_dataset_policy_and_period(tmp_path: Path) -> None:
     store = AssortmentLifecycleReplayStore(tmp_path / "replay.sqlite3")
     facts = build_v2_replay_facts(legacy_facts=_legacy_facts(), sale_observations=_observations())

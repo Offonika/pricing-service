@@ -132,10 +132,13 @@ def replay_inputs_from_facts(facts: Sequence[Mapping[str, Any]]):
         elif fact_type == "available" and payload.get("available") is True:
             availability[code].add(business_date)
         elif fact_type == "supplier_order":
+            cargo_handoff_at = _date(payload.get("cargo_handoff_at"))
+            if cargo_handoff_at is not None and cargo_handoff_at < date(2000, 1, 1):
+                cargo_handoff_at = None
             orders[code].append(
                 HistoricalSupplierOrder(
                     created_at=business_date,
-                    cargo_handoff_at=_date(payload.get("cargo_handoff_at")),
+                    cargo_handoff_at=cargo_handoff_at,
                 )
             )
         elif fact_type == "receipt":
@@ -183,6 +186,7 @@ def v2_replay_policy_hash(policy: DemandStatePolicy) -> str:
             "decide_assortment_status": inspect.getsource(decide_assortment_status),
             "decide_target_assortment_status": inspect.getsource(decide_target_assortment_status),
             "build_trajectory": inspect.getsource(build_assortment_lifecycle_v2_trajectory),
+            "replay_inputs": inspect.getsource(replay_inputs_from_facts),
         }
     )
 

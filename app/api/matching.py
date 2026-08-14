@@ -324,19 +324,17 @@ def _candidate_from_item(
         reason = "Отклонено для этого товара"
     elif match:
         match_status = _match_status_value(match.status)
-        if (
-            match.product_id == product_id
-            and match_status == CompetitorItemMatchStatus.ACCEPTED.value
-        ):
-            status = "current"
-        elif match.product_id == product_id:
-            status = match_status or "suggested"
+        if match.product_id == product_id:
+            status = (
+                "current"
+                if match_status == CompetitorItemMatchStatus.ACCEPTED.value
+                else match_status or "suggested"
+            )
+            score = _float(match.final_score or match.score_llm or match.score_embed_best)
         elif match_status == CompetitorItemMatchStatus.ACCEPTED.value:
             status = "locked"
             reason = f"Уже принят к товару #{match.product_id}"
-        else:
-            status = match_status or "suggested"
-        score = _float(match.final_score or match.score_llm or match.score_embed_best)
+            score = _float(match.final_score or match.score_llm or match.score_embed_best)
     compatibility_hint = _candidate_compatibility_hint(product, item)
     needs_compat_review = compatibility_hint.status == "required"
 

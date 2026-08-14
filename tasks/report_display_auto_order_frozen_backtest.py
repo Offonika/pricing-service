@@ -207,6 +207,7 @@ class Metric:
     priced_inventory_qty_days: Decimal = ZERO
     inventory_value_days_rub: Decimal = ZERO
     ending_inventory_qty: Decimal = ZERO
+    ending_target_stock_qty: Decimal = ZERO
     order_qty: Decimal = ZERO
     order_value_rub: Decimal = ZERO
     order_lines: int = 0
@@ -984,6 +985,7 @@ def _aggregate_metric(metrics: Mapping[str, Metric]) -> Metric:
         out.priced_inventory_qty_days += row.priced_inventory_qty_days
         out.inventory_value_days_rub += row.inventory_value_days_rub
         out.ending_inventory_qty += row.ending_inventory_qty
+        out.ending_target_stock_qty += row.ending_target_stock_qty
         out.order_qty += row.order_qty
         out.order_value_rub += row.order_value_rub
         out.order_lines += row.order_lines
@@ -1003,6 +1005,13 @@ def _summary(
     period_days: int,
 ) -> dict[str, Any]:
     total = _aggregate_metric(metrics)
+    ending_excess_stock_qty = sum(
+        (
+            max(ZERO, row.ending_inventory_qty - row.ending_target_stock_qty)
+            for row in metrics.values()
+        ),
+        ZERO,
+    )
     potential = total.potential_demand_qty
     average_inventory = total.inventory_value_days_rub / Decimal(period_days)
     carrying_cost = (
@@ -1105,6 +1114,8 @@ def _summary(
         "economic_contribution_rub": str(total.gross_profit_rub - carrying_cost),
         "gmroi_annualized": str(gmroi),
         "ending_inventory_qty": str(total.ending_inventory_qty),
+        "ending_target_stock_qty": str(total.ending_target_stock_qty),
+        "ending_excess_stock_qty": str(ending_excess_stock_qty),
         "order_qty": str(total.order_qty),
         "order_value_rub": str(total.order_value_rub),
         "order_lines": total.order_lines,
@@ -1642,6 +1653,7 @@ def simulate_scenario(
     acceleration_require_stock_above_min: bool = False,
     acceleration_allowed_statuses: Sequence[str] = (AssortmentStatus.SALE.value,),
     acceleration_eligible_sku_dates: set[tuple[date, str]] | None = None,
+    preclassified_acceleration_rate_by_sku_date: Mapping[tuple[date, str], Decimal] | None = None,
     representation_minimums: Mapping[tuple[date, str], Decimal] | None = None,
     acceleration_lead_quantile: str = "p75",
     keep_decision_detail: bool = True,
@@ -2173,6 +2185,24 @@ def simulate_scenario(
                     min_recent_sales=scenario.grow_acceleration_min_recent_sales,
                     rate_multiplier=scenario.grow_acceleration_rate_multiplier,
                 )
+                preclassified_rate = max(
+                    ZERO,
+                    _decimal(
+                        (preclassified_acceleration_rate_by_sku_date or {}).get(
+                            (cursor, candidate_code)
+                        )
+                    ),
+                )
+                if preclassified_rate > ZERO:
+                    signal = DemandAccelerationSignal(
+                        recent_qty=preclassified_rate
+                        * Decimal(max(1, scenario.grow_acceleration_recent_days)),
+                        baseline_qty=ZERO,
+                        recent_rate=preclassified_rate,
+                        baseline_rate=ZERO,
+                        rate_ratio=Decimal("999"),
+                        triggered=True,
+                    )
                 context: dict[str, Any] = {
                     "signal": signal,
                     "uncapped_requested_qty": ZERO,
@@ -3059,6 +3089,7 @@ def simulate_scenario(
                     else ""
                 ),
             }
+            model[code].ending_target_stock_qty = target_qty
             manual_review_action = ""
             if recommended > ZERO and manual:
                 if code in manual_review_seen:

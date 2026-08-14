@@ -23,6 +23,8 @@ related_code:
   - tasks/report_assortment_lifecycle_v2_historical_backtest.py
   - tasks/run_assortment_lifecycle_memory_safe_replay.py
   - scripts/run_assortment_lifecycle_memory_safe_replay.sh
+  - tasks/run_assortment_lifecycle_v2_economic_backtest.py
+  - scripts/run_assortment_lifecycle_v2_economic_backtest.sh
   - tasks/finalize_assortment_lifecycle_v2_replay_audit.py
   - tasks/build_display_auto_order_dry_run.py
   - tasks/analyze_display_auto_order_quick_backtest.py
@@ -46,6 +48,7 @@ related_tests:
   - tests/test_assortment_lifecycle_replay_store.py
   - tests/test_manage_assortment_lifecycle_replay_store_task.py
   - tests/test_run_assortment_lifecycle_memory_safe_replay.py
+  - tests/test_run_assortment_lifecycle_v2_economic_backtest.py
   - tests/test_build_assortment_lifecycle_facts_task.py
   - tests/test_build_assortment_lifecycle_updates_task.py
   - tests/test_refresh_assortment_lifecycle_classification_task.py
@@ -68,7 +71,7 @@ depends_on:
   - docs/specs/onec-stock-effective-availability.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-13"
+updated_at: "2026-08-14"
 ---
 
 # Назначение
@@ -513,10 +516,34 @@ dataset и legacy-траекторию, записывает только `lifec
 dataset и обеих траекторий; финальный отчёт восстановлен из immutable store без
 повторного чтения 1С.
 
-Экономический train по февралю—июню ещё не завершён; июльский holdout не
-использован. До прохождения всех пяти acceptance-критериев действуют
+Экономический train завершён `2026-08-14 16:36 МСК` по полной утверждённой
+сетке из `1 944` кандидатов за период `2026-02-01—2026-06-30`. Ни один кандидат
+не прошёл одновременно все пять acceptance-критериев:
+
+- экономический эффект и GMROI ухудшились у `1 944 / 1 944` кандидатов;
+- конечный излишек увеличился у `1 899 / 1 944`;
+- `1 152` кандидата сохранили обслуженные продажи и валовую прибыль, но
+  одновременно ухудшили экономический эффект, GMROI и конечный излишек;
+- лучший по экономическому эффекту кандидат всё равно дал `−15 414,04 ₽`,
+  потерял `172,5` обслуженной продажи и прошёл только один критерий;
+- лучший кандидат среди сохранивших продажи и валовую прибыль дал
+  `−665 341,36 ₽` экономического эффекта, `−0,0510` GMROI и `+529` единиц
+  конечного излишка ради `+17,5` обслуженной продажи.
+
+Поэтому решение train равно `complete_no_training_candidate_passed`. Июльский
+holdout не использован, `v2-live` не включён; действуют
 `production_authorized=false`, `production_action=none_read_only`: рабочие
-стадии, заказы и 1С не меняются.
+стадии, заказы и 1С не менялись. Текущая сетка не является production-кандидатом.
+Следующая исследовательская итерация должна искать промежуточный экономический
+лимит дополнительного количества на train-периоде; ослабление пяти гейтов и
+использование июля для подбора параметров не разрешены.
+
+Проверяемые артефакты результата:
+
+- `reports/assortment_lifecycle/backtest-2026-01-01_2026-07-31/assortment-lifecycle-v2-economic-backtest/economic-report.html`;
+- `reports/assortment_lifecycle/backtest-2026-01-01_2026-07-31/assortment-lifecycle-v2-economic-backtest/economic-analysis.ipynb`;
+- `reports/assortment_lifecycle/backtest-2026-01-01_2026-07-31/assortment-lifecycle-v2-economic-backtest/economic-analysis-validation.json`;
+- `reports/assortment_lifecycle/backtest-2026-01-01_2026-07-31/assortment-lifecycle-v2-economic-backtest/selection.json`.
 
 ## Факты возраста товарной истории
 
@@ -2706,6 +2733,13 @@ detail повторно строится только для выбранног�
 
 # Changelog
 
+- 2026-08-14 — завершён строгий экономический train целевой v2 за
+  `2026-02-01—2026-06-30`: проверены все `1 944` кандидата, ни один не прошёл
+  пять acceptance-гейтов. Все кандидаты ухудшили экономический эффект и GMROI,
+  `1 899` увеличили конечный излишек; июльский holdout не использован.
+  Сформированы выполненный notebook, сверка checksum/полноты и проверенный
+  HTML-отчёт. Решение `v2-live` осталось выключенным; production, заказы и 1С
+  не менялись.
 - 2026-08-13 — полный memory-safe historical replay за
   `2026-01-01—2026-07-31` завершён и проверен: dataset `582e10da…` содержит
   `1 473 647` фактов по `2 663` SKU, legacy и v2 содержат по `512 482` дневные

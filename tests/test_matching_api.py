@@ -2152,6 +2152,82 @@ def test_revoke_rejected_candidate_returns_it_to_search(
     assert history_items[0]["previous_status"] == "rejected"
 
 
+def test_foreign_auto_rejection_stays_available_for_current_product(
+    matching_client: TestClient, db_session: Session
+) -> None:
+    seeded = _seed(db_session)
+    product = seeded["p1"]
+    item = seeded["item1"]
+    foreign_product = Product(
+        article="P-FOREIGN",
+        name="Дисплей для другого товара",
+        brand="Apple",
+        category="Дисплеи",
+        subject="Дисплеи для телефонов",
+    )
+    db_session.add(foreign_product)
+    db_session.flush()
+
+    match = (
+        db_session.query(CompetitorItemMatch)
+        .filter(CompetitorItemMatch.competitor_item_id == item.id)
+        .one()
+    )
+    match.product_id = foreign_product.id
+    match.status = CompetitorItemMatchStatus.REJECTED
+    match.method = CompetitorItemMatchMethod.EMBEDDING_AUTO
+    match.final_score = 0.99
+    db_session.commit()
+
+    response = matching_client.get(
+        f"/api/matching/products/{product.id}/candidate-search",
+        params={"q": item.external_id, "include_rejected": True},
+        auth=_auth(),
+    )
+
+    assert response.status_code == 200
+    candidate = next(
+        row for row in response.json()["items"] if row["competitor_item_id"] == item.id
+    )
+    assert candidate["status"] == "available"
+    assert candidate["confidence"] is None
+
+    revoke = matching_client.post(
+        f"/api/matching/products/{product.id}/revoke",
+        json={"competitor_item_id": item.id, "reason_code": "auto_false_positive"},
+        auth=_auth(),
+    )
+    assert revoke.status_code == 404
+    db_session.refresh(match)
+    assert match.product_id == foreign_product.id
+    assert match.status == CompetitorItemMatchStatus.REJECTED
+
+
+def test_revoke_current_auto_rejection_removes_match(
+    matching_client: TestClient, db_session: Session
+) -> None:
+    seeded = _seed(db_session)
+    product = seeded["p1"]
+    item = seeded["item1"]
+    match = (
+        db_session.query(CompetitorItemMatch)
+        .filter(CompetitorItemMatch.competitor_item_id == item.id)
+        .one()
+    )
+    match.status = CompetitorItemMatchStatus.REJECTED
+    match.method = CompetitorItemMatchMethod.EMBEDDING_AUTO
+    db_session.commit()
+
+    revoked = matching_client.post(
+        f"/api/matching/products/{product.id}/revoke",
+        json={"competitor_item_id": item.id, "reason_code": "auto_false_positive"},
+        auth=_auth(),
+    )
+
+    assert revoked.status_code == 200
+    assert db_session.get(CompetitorItemMatch, match.id) is None
+
+
 def test_revoke_rejected_candidate_restores_previous_suggestion_status(
     matching_client: TestClient, db_session: Session
 ) -> None:

@@ -239,6 +239,7 @@ class SimulationResult:
     model_by_stage: dict[str, Metric]
     decision_rows: list[dict[str, Any]]
     daily_rows: list[dict[str, Any]]
+    daily_stage_rows: list[dict[str, Any]]
     loss_rows: list[dict[str, Any]]
     diagnostics: ScenarioDiagnostics
 
@@ -1642,6 +1643,8 @@ def simulate_scenario(
     date_to: date,
     keep_detail: bool,
     demand_sample_cache: dict[tuple[str, date, int], list[Decimal]] | None = None,
+    fallback_demand_samples: Mapping[tuple[str, date, int], Sequence[Decimal]] | None = None,
+    working_safety_trigger_fraction: Decimal = ZERO,
     decision_service_buffers: Mapping[tuple[date, str], Decimal] | None = None,
     hybrid_gap_arrival_quantile: str = "off",
     hybrid_gap_min_coverable_days: int = 0,
@@ -1676,6 +1679,9 @@ def simulate_scenario(
     normalized_hybrid_min_days = int(hybrid_gap_min_coverable_days)
     if normalized_hybrid_min_days < 0:
         raise ValueError("hybrid gap minimum coverable days cannot be negative")
+    normalized_working_safety_trigger_fraction = _decimal(working_safety_trigger_fraction)
+    if not ZERO <= normalized_working_safety_trigger_fraction <= ONE:
+        raise ValueError("working safety trigger fraction must be between zero and one")
     normalized_hybrid_acceleration_recent_days = int(hybrid_gap_acceleration_recent_days)
     normalized_hybrid_acceleration_baseline_days = int(hybrid_gap_acceleration_baseline_days)
     normalized_hybrid_acceleration_min_recent_sales = max(
@@ -1786,6 +1792,7 @@ def simulate_scenario(
     last_evaluation_by_code: dict[str, dict[str, Any]] = {}
     decision_detail: list[dict[str, Any]] = []
     daily_detail: list[dict[str, Any]] = []
+    daily_stage_detail: list[dict[str, Any]] = []
     loss_detail: list[dict[str, Any]] = []
     grow_target_states: dict[str, GrowProtectionState] = {}
     active_decision_service_buffer: dict[str, Decimal] = defaultdict(Decimal)
@@ -1858,9 +1865,19 @@ def simulate_scenario(
             "model_ending_inventory_qty": ZERO,
             "model_inventory_value_rub": ZERO,
         }
+        daily_by_stage: dict[str, dict[str, Any]] = {}
         for fact in facts_today.values():
             code = _clean(fact.get("nomenclature_code"))
             status = _clean(fact.get("status")) or "unknown"
+            stage_daily = daily_by_stage.setdefault(
+                status,
+                {
+                    "scenario_id": scenario.scenario_id,
+                    "business_date": cursor.isoformat(),
+                    "status": status,
+                    **{key: ZERO for key in daily if key not in {"scenario_id", "business_date"}},
+                },
+            )
             observed = max(ZERO, _decimal(fact.get("observed_sales_qty")))
             hidden_by_source = {
                 "kmp4": max(ZERO, _decimal(fact.get("kmp4_expired_qty"))) * scenario.kmp4_weight,
@@ -2067,27 +2084,32 @@ def simulate_scenario(
                 served_by_source=model_hidden_served_by_source,
             )
 
-            daily["actual_potential_demand_qty"] += observed + hidden
-            daily["actual_observed_demand_qty"] += observed
-            daily["actual_hidden_demand_qty"] += hidden
-            daily["actual_hidden_kmp4_qty"] += hidden_by_source["kmp4"]
-            daily["actual_hidden_site_order_qty"] += hidden_by_source["site_order"]
-            daily["actual_hidden_site_cart_qty"] += hidden_by_source["site_cart"]
-            daily["actual_hidden_reserve_backlog_qty"] += hidden_by_source["reserve_backlog"]
-            daily["actual_served_qty"] += observed + actual_hidden_served
-            daily["actual_served_observed_qty"] += observed
-            daily["actual_served_hidden_qty"] += actual_hidden_served
-            daily["model_served_qty"] += served_observed + served_hidden
-            daily["model_served_observed_qty"] += served_observed
-            daily["model_served_hidden_qty"] += served_hidden
-            daily["model_lost_qty"] += observed - served_observed + hidden - served_hidden
-            daily["model_lost_observed_qty"] += observed - served_observed
-            daily["model_lost_hidden_qty"] += hidden - served_hidden
-            daily["model_ending_inventory_qty"] += stock[code]
-            daily["model_inventory_value_rub"] += stock[code] * cost
-            daily["actual_inventory_value_rub"] += actual_stock * cost
-            daily["actual_gross_profit_rub"] += (observed + actual_hidden_served) * margin
-            daily["model_gross_profit_rub"] += (served_observed + served_hidden) * margin
+            daily_updates = {
+                "actual_potential_demand_qty": observed + hidden,
+                "actual_observed_demand_qty": observed,
+                "actual_hidden_demand_qty": hidden,
+                "actual_hidden_kmp4_qty": hidden_by_source["kmp4"],
+                "actual_hidden_site_order_qty": hidden_by_source["site_order"],
+                "actual_hidden_site_cart_qty": hidden_by_source["site_cart"],
+                "actual_hidden_reserve_backlog_qty": hidden_by_source["reserve_backlog"],
+                "actual_served_qty": observed + actual_hidden_served,
+                "actual_served_observed_qty": observed,
+                "actual_served_hidden_qty": actual_hidden_served,
+                "model_served_qty": served_observed + served_hidden,
+                "model_served_observed_qty": served_observed,
+                "model_served_hidden_qty": served_hidden,
+                "model_lost_qty": observed - served_observed + hidden - served_hidden,
+                "model_lost_observed_qty": observed - served_observed,
+                "model_lost_hidden_qty": hidden - served_hidden,
+                "model_ending_inventory_qty": stock[code],
+                "model_inventory_value_rub": stock[code] * cost,
+                "actual_inventory_value_rub": actual_stock * cost,
+                "actual_gross_profit_rub": (observed + actual_hidden_served) * margin,
+                "model_gross_profit_rub": (served_observed + served_hidden) * margin,
+            }
+            for target in (daily, stage_daily):
+                for key, value in daily_updates.items():
+                    target[key] += value
 
         decision_candidates = decisions_today if scenario.legacy else latest_decision_rows
         service_floor_allocations: dict[str, Decimal] = {}
@@ -2528,6 +2550,9 @@ def simulate_scenario(
             safety_units = ZERO
             economic_safety_cap = ZERO
             percentile_safety_target = ZERO
+            safety_sample_count = 0
+            safety_sample_source = "not_applicable"
+            working_safety_trigger_buffer = ZERO
             service_floor_requested = ZERO
             service_floor_sku_capped = ZERO
             service_floor_allocated = ZERO
@@ -2651,16 +2676,26 @@ def simulate_scenario(
                     AssortmentStatus.WORKING.value,
                 }:
                     cache_key = (code, cursor, lead_days + policy.order_cadence_days)
-                    samples = demand_samples.get(cache_key)
-                    if samples is None:
-                        samples = historical_forecast_error_samples(
+                    own_samples = demand_samples.get(cache_key)
+                    if own_samples is None:
+                        own_samples = historical_forecast_error_samples(
                             decision_history_by_code.get(code, ()),
                             sales_by_code.get(code, {}),
                             as_of=cursor,
                             order_cadence_days=policy.order_cadence_days,
                             lookback_days=config.safety_lookback_days,
                         )
-                        demand_samples[cache_key] = samples
+                        demand_samples[cache_key] = own_samples
+                    samples = own_samples
+                    safety_sample_source = (
+                        "own" if len(own_samples) >= config.safety_min_samples else "insufficient"
+                    )
+                    if len(own_samples) < config.safety_min_samples:
+                        fallback_samples = list((fallback_demand_samples or {}).get(cache_key, ()))
+                        if len(fallback_samples) >= config.safety_min_samples:
+                            samples = fallback_samples
+                            safety_sample_source = "comparable_group"
+                    safety_sample_count = len(samples)
                     safety = calculate_economic_safety_stock(
                         base_max_qty=ZERO,
                         demand_samples=samples,
@@ -2724,16 +2759,30 @@ def simulate_scenario(
                             cursor,
                             lead_days + policy.order_cadence_days,
                         )
-                        p75_samples = demand_samples.get(p75_cache_key)
-                        if p75_samples is None:
-                            p75_samples = historical_forecast_error_samples(
+                        own_p75_samples = demand_samples.get(p75_cache_key)
+                        if own_p75_samples is None:
+                            own_p75_samples = historical_forecast_error_samples(
                                 decision_history_by_code.get(code, ()),
                                 sales_by_code.get(code, {}),
                                 as_of=cursor,
                                 order_cadence_days=policy.order_cadence_days,
                                 lookback_days=config.safety_lookback_days,
                             )
-                            demand_samples[p75_cache_key] = p75_samples
+                            demand_samples[p75_cache_key] = own_p75_samples
+                        p75_samples = own_p75_samples
+                        safety_sample_source = (
+                            "own"
+                            if len(own_p75_samples) >= config.safety_min_samples
+                            else "insufficient"
+                        )
+                        if len(own_p75_samples) < config.safety_min_samples:
+                            fallback_p75_samples = list(
+                                (fallback_demand_samples or {}).get(p75_cache_key, ())
+                            )
+                            if len(fallback_p75_samples) >= config.safety_min_samples:
+                                p75_samples = fallback_p75_samples
+                                safety_sample_source = "comparable_group"
+                        safety_sample_count = len(p75_samples)
                         economic_safety_cap = calculate_economic_safety_stock(
                             base_max_qty=ZERO,
                             demand_samples=p75_samples,
@@ -2882,6 +2931,11 @@ def simulate_scenario(
                 min_qty = max(min_qty, representation_minimum_qty)
                 max_qty = max(max_qty, representation_minimum_qty)
 
+            if status == AssortmentStatus.WORKING.value and safety_units > ZERO:
+                working_safety_trigger_buffer = _ceil(
+                    safety_units * normalized_working_safety_trigger_fraction
+                )
+                min_qty += working_safety_trigger_buffer
             min_qty += decision_service_buffer
             max_qty += decision_service_buffer
 
@@ -3187,6 +3241,12 @@ def simulate_scenario(
                         "forecast_error_percentile_qty": str(percentile_safety_target),
                         "economic_safety_cap_qty": str(economic_safety_cap),
                         "economic_safety_stock_qty": str(safety_units),
+                        "safety_sample_count": safety_sample_count,
+                        "safety_sample_source": safety_sample_source,
+                        "working_safety_trigger_fraction": str(
+                            normalized_working_safety_trigger_fraction
+                        ),
+                        "working_safety_trigger_buffer_qty": str(working_safety_trigger_buffer),
                         "decision_service_buffer_qty": str(decision_service_buffer),
                         "representation_minimum_qty": str(representation_minimum_qty),
                         "service_floor_percentile": str(scenario.grow_service_floor_percentile),
@@ -3415,6 +3475,13 @@ def simulate_scenario(
                     for key, value in daily.items()
                 }
             )
+            daily_stage_detail.extend(
+                {
+                    key: str(value) if isinstance(value, Decimal) else value
+                    for key, value in row.items()
+                }
+                for row in daily_by_stage.values()
+            )
         cursor += timedelta(days=1)
 
     diagnostics.acceleration_open_protection_ending_qty = sum(
@@ -3429,6 +3496,7 @@ def simulate_scenario(
         model_by_stage=dict(model_by_stage),
         decision_rows=decision_detail,
         daily_rows=daily_detail,
+        daily_stage_rows=daily_stage_detail,
         loss_rows=loss_detail,
         diagnostics=diagnostics,
     )

@@ -2159,6 +2159,85 @@ def test_working_safety_trigger_buffer_can_start_order_before_base_minimum() -> 
     assert protected.decision_rows[0]["working_safety_trigger_buffer_qty"] == "2"
 
 
+def test_working_targeted_safety_requires_repeat_demand_and_caps_shortage() -> None:
+    start = date(2026, 2, 1)
+    scenario = FrozenScenario(
+        scenario_id="working-targeted-safety",
+        stage_profile="typical",
+        kmp4_weight=Decimal("0"),
+        cost=CarryingCostScenario(
+            name="base",
+            capital_annual_rate=Decimal("0.3"),
+            storage_annual_rate=Decimal("0.1"),
+            obsolescence_annual_rate=Decimal("0.25"),
+        ),
+    )
+    common = {
+        "scenario": scenario,
+        "fact_rows_by_date": {
+            start: [
+                {
+                    "nomenclature_code": "SKU-1",
+                    "status": "working",
+                    "physical_stock_qty": "0",
+                    "observed_sales_qty": "0",
+                }
+            ]
+        },
+        "decision_rows_by_date": {
+            start: [
+                {
+                    "nomenclature_code": "SKU-1",
+                    "scheduled_review": "1",
+                    "status": "working",
+                    "forecast_rate_sales": "1",
+                    "lead_time_p50_days": "1",
+                    "lead_time_p75_days": "1",
+                    "lead_time_confidence": "high",
+                    "inventory_cost_per_unit_rub": "1",
+                    "gross_margin_per_unit_rub": "100",
+                }
+            ]
+        },
+        "initial_pipeline_rows": [],
+        "policy": AutoOrderPolicy(order_cadence_days=1),
+        "config": load_scenario_config(
+            Path("config/assortment/display-auto-order-backtest-scenarios.json")
+        ),
+        "date_from": start,
+        "date_to": start,
+        "keep_detail": True,
+        "demand_sample_cache": {("SKU-1", start, 2): [Decimal("4")] * 8},
+        "working_safety_trigger_fraction": Decimal("1"),
+        "working_safety_unit_cap": 1,
+        "working_safety_hurdle_multiplier": Decimal("1.5"),
+        "working_safety_require_shortage": True,
+        "working_safety_min_sales_days": 2,
+        "working_safety_sales_lookback_days": 90,
+        "working_safety_single_open_lot": True,
+    }
+
+    blocked = simulate_scenario(
+        **common,
+        sales_by_code={"SKU-1": {start - timedelta(days=1): Decimal("1")}},
+    )
+    eligible = simulate_scenario(
+        **common,
+        sales_by_code={
+            "SKU-1": {
+                start - timedelta(days=2): Decimal("1"),
+                start - timedelta(days=1): Decimal("1"),
+            }
+        },
+    )
+
+    assert blocked.model["SKU-1"].order_qty == Decimal("2")
+    assert blocked.decision_rows[0]["working_safety_blocker"] == ("repeat_demand_not_proven")
+    assert eligible.model["SKU-1"].order_qty == Decimal("3")
+    assert eligible.decision_rows[0]["economic_safety_stock_qty"] == "1"
+    assert eligible.decision_rows[0]["working_safety_projected_shortage_qty"] == "2"
+
+
 def test_grow_service_floor_is_not_cut_by_sku_economic_filter() -> None:
     start = date(2026, 2, 1)
     scenario = FrozenScenario(

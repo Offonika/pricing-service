@@ -415,6 +415,30 @@ def test_economic_safety_stock_stops_at_first_unprofitable_unit() -> None:
     assert result.marginal_saved_margin_rub <= result.marginal_carrying_cost_rub
 
 
+def test_economic_safety_stock_applies_hurdle_to_each_incremental_unit() -> None:
+    scenario = CarryingCostScenario(
+        name="base",
+        capital_annual_rate=Decimal("0.30"),
+        storage_annual_rate=Decimal("0.10"),
+        obsolescence_annual_rate=Decimal("0.25"),
+    )
+
+    result = calculate_economic_safety_stock(
+        base_max_qty=Decimal("2"),
+        demand_samples=[Decimal(value) for value in (2, 3, 3, 4, 4, 4, 5, 5)],
+        gross_margin_per_unit_rub=Decimal("100"),
+        inventory_cost_per_unit_rub=Decimal("1000"),
+        holding_days=30,
+        cost_scenario=scenario,
+        max_units=10,
+        min_samples=8,
+        hurdle_multiplier=Decimal("1.5"),
+    )
+
+    assert result.units == Decimal("1")
+    assert result.marginal_carrying_cost_rub > Decimal("80")
+
+
 def test_preflight_manifest_checks_status_and_hashes(tmp_path: Path) -> None:
     row = {"decision_date": "2026-02-01", "nomenclature_code": "SKU-1"}
     tables = PreflightTables(

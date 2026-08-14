@@ -6,6 +6,7 @@ from tasks.report_display_auto_order_working_safety_backtest import (
     _merge_decision_rows,
     _normalize_evaluation_economics,
     _sales_overlap_mismatches,
+    _variants_for_experiment,
 )
 
 
@@ -99,3 +100,20 @@ def test_economic_comparison_uses_one_common_evaluation_rate() -> None:
 
     assert metrics["carrying_cost_rub"] == "65.00"
     assert metrics["economic_effect_rub"] == "935.00"
+
+
+def test_targeted_variant_grid_is_bounded() -> None:
+    variants = _variants_for_experiment("targeted")
+    challengers = [row for row in variants if str(row["variant_id"]).startswith("targeted_")]
+
+    assert len(variants) == 11
+    assert len(challengers) == 9
+    assert {row["unit_cap"] for row in challengers} == {1, 2, 3}
+    assert {row["hurdle_multiplier"] for row in challengers} == {
+        Decimal("1.25"),
+        Decimal("1.5"),
+        Decimal("2.0"),
+    }
+    assert all(row["require_shortage"] for row in challengers)
+    assert all(row["single_open_lot"] for row in challengers)
+    assert all(row["min_sales_days"] == 2 for row in challengers)

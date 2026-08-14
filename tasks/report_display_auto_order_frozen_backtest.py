@@ -1645,6 +1645,12 @@ def simulate_scenario(
     demand_sample_cache: dict[tuple[str, date, int], list[Decimal]] | None = None,
     fallback_demand_samples: Mapping[tuple[str, date, int], Sequence[Decimal]] | None = None,
     working_safety_trigger_fraction: Decimal = ZERO,
+    working_safety_unit_cap: int | None = None,
+    working_safety_hurdle_multiplier: Decimal = ONE,
+    working_safety_require_shortage: bool = False,
+    working_safety_min_sales_days: int = 0,
+    working_safety_sales_lookback_days: int = 90,
+    working_safety_single_open_lot: bool = False,
     decision_service_buffers: Mapping[tuple[date, str], Decimal] | None = None,
     hybrid_gap_arrival_quantile: str = "off",
     hybrid_gap_min_coverable_days: int = 0,
@@ -1682,6 +1688,20 @@ def simulate_scenario(
     normalized_working_safety_trigger_fraction = _decimal(working_safety_trigger_fraction)
     if not ZERO <= normalized_working_safety_trigger_fraction <= ONE:
         raise ValueError("working safety trigger fraction must be between zero and one")
+    normalized_working_safety_unit_cap = (
+        None if working_safety_unit_cap is None else int(working_safety_unit_cap)
+    )
+    if normalized_working_safety_unit_cap is not None and normalized_working_safety_unit_cap < 0:
+        raise ValueError("working safety unit cap must be non-negative")
+    normalized_working_safety_hurdle = _decimal(working_safety_hurdle_multiplier)
+    if normalized_working_safety_hurdle < ONE:
+        raise ValueError("working safety hurdle multiplier must be at least one")
+    normalized_working_safety_min_sales_days = int(working_safety_min_sales_days)
+    if normalized_working_safety_min_sales_days < 0:
+        raise ValueError("working safety minimum sales days must be non-negative")
+    normalized_working_safety_sales_lookback_days = int(working_safety_sales_lookback_days)
+    if normalized_working_safety_sales_lookback_days <= 0:
+        raise ValueError("working safety sales lookback days must be positive")
     normalized_hybrid_acceleration_recent_days = int(hybrid_gap_acceleration_recent_days)
     normalized_hybrid_acceleration_baseline_days = int(hybrid_gap_acceleration_baseline_days)
     normalized_hybrid_acceleration_min_recent_sales = max(
@@ -2553,6 +2573,11 @@ def simulate_scenario(
             safety_sample_count = 0
             safety_sample_source = "not_applicable"
             working_safety_trigger_buffer = ZERO
+            working_safety_pre_filter_qty = ZERO
+            working_safety_recent_sales_days = 0
+            working_safety_projected_shortage_qty = ZERO
+            working_safety_open_pipeline_blocked = False
+            working_safety_blocker = ""
             service_floor_requested = ZERO
             service_floor_sku_capped = ZERO
             service_floor_allocated = ZERO
@@ -2705,6 +2730,11 @@ def simulate_scenario(
                         cost_scenario=scenario.cost,
                         max_units=config.safety_max_units,
                         min_samples=config.safety_min_samples,
+                        hurdle_multiplier=(
+                            normalized_working_safety_hurdle
+                            if status == AssortmentStatus.WORKING.value
+                            else ONE
+                        ),
                     )
                     economic_safety_cap = safety.units
                     percentile_safety_target = empirical_underforecast_percentile(
@@ -2792,6 +2822,11 @@ def simulate_scenario(
                             cost_scenario=scenario.cost,
                             max_units=config.safety_max_units,
                             min_samples=config.safety_min_samples,
+                            hurdle_multiplier=(
+                                normalized_working_safety_hurdle
+                                if status == AssortmentStatus.WORKING.value
+                                else ONE
+                            ),
                         ).units
                         percentile_safety_target = empirical_underforecast_percentile(
                             p75_samples,
@@ -2832,6 +2867,39 @@ def simulate_scenario(
                             safety_units = min(economic_safety_cap, percentile_safety_target)
                         else:
                             safety_units = economic_safety_cap
+                if status == AssortmentStatus.WORKING.value:
+                    working_safety_pre_filter_qty = safety_units
+                    recent_sales_from = cursor - timedelta(
+                        days=normalized_working_safety_sales_lookback_days
+                    )
+                    working_safety_recent_sales_days = sum(
+                        1
+                        for business_date, quantity in sales_by_code.get(code, {}).items()
+                        if recent_sales_from <= business_date < cursor and quantity > ZERO
+                    )
+                    if working_safety_pre_filter_qty <= ZERO:
+                        working_safety_blocker = "economic_or_history_not_proven"
+                    elif (
+                        normalized_working_safety_min_sales_days > 0
+                        and working_safety_recent_sales_days
+                        < normalized_working_safety_min_sales_days
+                    ):
+                        safety_units = ZERO
+                        working_safety_blocker = "repeat_demand_not_proven"
+                    elif working_safety_single_open_lot and pipeline_qty[code] > ZERO:
+                        safety_units = ZERO
+                        working_safety_open_pipeline_blocked = True
+                        working_safety_blocker = "open_pipeline_exists"
+                    if normalized_working_safety_unit_cap is not None:
+                        safety_units = min(
+                            safety_units,
+                            Decimal(normalized_working_safety_unit_cap),
+                        )
+                        if (
+                            working_safety_pre_filter_qty > ZERO
+                            and normalized_working_safety_unit_cap == 0
+                        ):
+                            working_safety_blocker = "unit_cap_zero"
                 if (
                     status in normalized_acceleration_statuses
                     and scenario.grow_acceleration_recent_days > 0
@@ -2931,6 +2999,40 @@ def simulate_scenario(
                 min_qty = max(min_qty, representation_minimum_qty)
                 max_qty = max(max_qty, representation_minimum_qty)
 
+            reserve = max(
+                ZERO,
+                _decimal(
+                    fact.get(
+                        "effective_reserve_qty",
+                        row.get("effective_reserve_qty", row.get("reserve_qty")),
+                    )
+                ),
+            )
+            if status == AssortmentStatus.WORKING.value:
+                if scenario.base_pipeline_lot_risk_boundary:
+                    working_effective_pipeline_qty = risk_adjusted_base_pipeline_qty
+                else:
+                    working_effective_pipeline_qty = pipeline_qty[code] * min(
+                        acceleration_pipeline_share,
+                        base_pipeline_share,
+                    )
+                working_inventory_position = stock[code] - reserve + working_effective_pipeline_qty
+                working_safety_projected_shortage_qty = _ceil(
+                    max(ZERO, max_qty - working_inventory_position)
+                )
+                if (
+                    working_safety_require_shortage
+                    and safety_units > ZERO
+                    and working_safety_projected_shortage_qty <= ZERO
+                ):
+                    safety_units = ZERO
+                    working_safety_blocker = "projected_shortage_not_proven"
+                elif working_safety_require_shortage and safety_units > ZERO:
+                    safety_units = min(
+                        safety_units,
+                        working_safety_projected_shortage_qty,
+                    )
+
             if status == AssortmentStatus.WORKING.value and safety_units > ZERO:
                 working_safety_trigger_buffer = _ceil(
                     safety_units * normalized_working_safety_trigger_fraction
@@ -2942,15 +3044,6 @@ def simulate_scenario(
             ordinary_min_qty = min_qty
             ordinary_max_qty = max_qty
             target_qty = max_qty + safety_units
-            reserve = max(
-                ZERO,
-                _decimal(
-                    fact.get(
-                        "effective_reserve_qty",
-                        row.get("effective_reserve_qty", row.get("reserve_qty")),
-                    )
-                ),
-            )
             if (
                 scenario.grow_acceleration_single_open_lot
                 and acceleration_base_min_qty is not None
@@ -3247,6 +3340,27 @@ def simulate_scenario(
                             normalized_working_safety_trigger_fraction
                         ),
                         "working_safety_trigger_buffer_qty": str(working_safety_trigger_buffer),
+                        "working_safety_unit_cap": (
+                            ""
+                            if normalized_working_safety_unit_cap is None
+                            else normalized_working_safety_unit_cap
+                        ),
+                        "working_safety_hurdle_multiplier": str(normalized_working_safety_hurdle),
+                        "working_safety_require_shortage": int(working_safety_require_shortage),
+                        "working_safety_min_sales_days": (normalized_working_safety_min_sales_days),
+                        "working_safety_sales_lookback_days": (
+                            normalized_working_safety_sales_lookback_days
+                        ),
+                        "working_safety_recent_sales_days": (working_safety_recent_sales_days),
+                        "working_safety_single_open_lot": int(working_safety_single_open_lot),
+                        "working_safety_open_pipeline_blocked": int(
+                            working_safety_open_pipeline_blocked
+                        ),
+                        "working_safety_pre_filter_qty": str(working_safety_pre_filter_qty),
+                        "working_safety_projected_shortage_qty": str(
+                            working_safety_projected_shortage_qty
+                        ),
+                        "working_safety_blocker": working_safety_blocker,
                         "decision_service_buffer_qty": str(decision_service_buffer),
                         "representation_minimum_qty": str(representation_minimum_qty),
                         "service_floor_percentile": str(scenario.grow_service_floor_percentile),

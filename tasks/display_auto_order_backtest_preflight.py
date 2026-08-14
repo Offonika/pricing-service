@@ -2003,12 +2003,15 @@ def calculate_economic_safety_stock(
     cost_scenario: CarryingCostScenario,
     max_units: int,
     min_samples: int,
+    hurdle_multiplier: Decimal = Decimal("1"),
 ) -> EconomicSafetyStock:
+    normalized_hurdle = _decimal(hurdle_multiplier)
     if (
         len(demand_samples) < min_samples
         or gross_margin_per_unit_rub <= ZERO
         or inventory_cost_per_unit_rub <= ZERO
         or holding_days <= 0
+        or normalized_hurdle <= ZERO
     ):
         return EconomicSafetyStock(ZERO, ZERO, ZERO, ZERO, ZERO)
     unit_cost = (
@@ -2016,6 +2019,7 @@ def calculate_economic_safety_stock(
         * cost_scenario.total_annual_rate
         * Decimal(holding_days)
         / Decimal("365")
+        * normalized_hurdle
     )
     units = 0
     saved_total = ZERO

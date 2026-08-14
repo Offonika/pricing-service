@@ -40,6 +40,7 @@ from tasks.report_display_auto_order_frozen_backtest import (
     _load_scenarios,
     simulate_scenario,
 )
+from tasks.run_assortment_lifecycle_memory_safe_replay import resource_preflight
 from tasks.run_assortment_lifecycle_v2_economic_backtest import (
     GROUP_LEVELS,
     RepresentationMinimumLookup,
@@ -518,6 +519,13 @@ def _simulate_variant(
     spike_keys: set[tuple[date, str]],
     spike_rates: Mapping[tuple[date, str], Decimal],
     representation_minimums: Mapping[tuple[date, str], Decimal],
+    working_safety_unit_cap: int | None = None,
+    working_safety_hurdle_multiplier: Decimal = ONE,
+    working_safety_require_shortage: bool = False,
+    working_safety_min_sales_days: int = 0,
+    working_safety_sales_lookback_days: int = 90,
+    working_safety_single_open_lot: bool = False,
+    keep_decision_detail: bool = True,
 ) -> SimulationResult:
     scenario = replace(base_scenario, scenario_id=variant_id, cost=cost)
     active_codes = {code for _business_date, code in inputs.fact_by_key}
@@ -536,16 +544,80 @@ def _simulate_variant(
         date_from=date_from,
         date_to=date_to,
         keep_detail=True,
-        keep_decision_detail=True,
+        keep_decision_detail=keep_decision_detail,
         keep_loss_detail=False,
         demand_sample_cache=demand_sample_cache,
         fallback_demand_samples=fallback_demand_samples,
         working_safety_trigger_fraction=trigger_fraction,
+        working_safety_unit_cap=working_safety_unit_cap,
+        working_safety_hurdle_multiplier=working_safety_hurdle_multiplier,
+        working_safety_require_shortage=working_safety_require_shortage,
+        working_safety_min_sales_days=working_safety_min_sales_days,
+        working_safety_sales_lookback_days=working_safety_sales_lookback_days,
+        working_safety_single_open_lot=working_safety_single_open_lot,
         acceleration_allowed_statuses=("sale", "working"),
         acceleration_eligible_sku_dates=spike_keys,
         preclassified_acceleration_rate_by_sku_date=spike_rates,
         representation_minimums=representation_minimums,
     )
+
+
+def _variants_for_experiment(experiment: str) -> list[dict[str, Any]]:
+    baseline = [
+        {
+            "variant_id": "current_january_warmup_base_t0",
+            "history": "current",
+            "fallback": False,
+            "cost": "base",
+            "trigger": ZERO,
+        },
+        {
+            "variant_id": "extended_history_only_base_t0",
+            "history": "extended",
+            "fallback": False,
+            "cost": "base",
+            "trigger": ZERO,
+        },
+    ]
+    if experiment == "broad":
+        variants = list(baseline)
+        for cost_name in ("low", "base", "high"):
+            for trigger in (ZERO, Decimal("0.5"), ONE):
+                token = str(trigger).replace(".", "p")
+                variants.append(
+                    {
+                        "variant_id": f"extended_group_{cost_name}_t{token}",
+                        "history": "extended",
+                        "fallback": True,
+                        "cost": cost_name,
+                        "trigger": trigger,
+                    }
+                )
+        return variants
+    if experiment != "targeted":
+        raise ValueError(f"unsupported experiment: {experiment}")
+
+    variants = list(baseline)
+    for unit_cap in (1, 2, 3):
+        for hurdle in (Decimal("1.25"), Decimal("1.5"), Decimal("2.0")):
+            hurdle_token = str(hurdle).replace(".", "p")
+            variants.append(
+                {
+                    "variant_id": f"targeted_cap{unit_cap}_h{hurdle_token}",
+                    "history": "extended",
+                    "fallback": True,
+                    "cost": "base",
+                    "trigger": ONE,
+                    "unit_cap": unit_cap,
+                    "hurdle_multiplier": hurdle,
+                    "require_shortage": True,
+                    "min_sales_days": 2,
+                    "sales_lookback_days": 90,
+                    "single_open_lot": True,
+                    "operating_mode": "pooled_central_reserve",
+                }
+            )
+    return variants
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -570,6 +642,14 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=Path("config/assortment/display-auto-order-backtest-scenarios.json"),
     )
     parser.add_argument("--control-scenario-id", default=DEFAULT_CONTROL_SCENARIO_ID)
+    parser.add_argument(
+        "--experiment",
+        choices=("broad", "targeted"),
+        default="broad",
+    )
+    parser.add_argument("--memory-budget-mb", type=int, default=5120)
+    parser.add_argument("--min-free-disk-gb", type=int, default=5)
+    parser.add_argument("--min-swap-free-mb", type=int, default=256)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     return parser.parse_args(argv)
 
@@ -577,6 +657,13 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     args.output_dir.mkdir(parents=True, exist_ok=True)
+    preflight = resource_preflight(
+        store_path=args.replay_store_path,
+        output_dir=args.output_dir,
+        memory_budget_mb=args.memory_budget_mb,
+        min_free_disk_gb=args.min_free_disk_gb,
+        min_swap_free_mb=args.min_swap_free_mb,
+    )
     validate_preflight_directory(args.preflight_dir)
     validate_preflight_directory(args.warmup_preflight_dir)
     policy_v2 = load_assortment_lifecycle_v2_policy(args.policy_json)
@@ -681,34 +768,7 @@ def main(argv: list[str] | None = None) -> int:
         enable_group_fallback=False,
     )
 
-    variants: list[dict[str, Any]] = [
-        {
-            "variant_id": "current_january_warmup_base_t0",
-            "history": "current",
-            "fallback": False,
-            "cost": "base",
-            "trigger": ZERO,
-        },
-        {
-            "variant_id": "extended_history_only_base_t0",
-            "history": "extended",
-            "fallback": False,
-            "cost": "base",
-            "trigger": ZERO,
-        },
-    ]
-    for cost_name in ("low", "base", "high"):
-        for trigger in (ZERO, Decimal("0.5"), ONE):
-            token = str(trigger).replace(".", "p")
-            variants.append(
-                {
-                    "variant_id": f"extended_group_{cost_name}_t{token}",
-                    "history": "extended",
-                    "fallback": True,
-                    "cost": cost_name,
-                    "trigger": trigger,
-                }
-            )
+    variants = _variants_for_experiment(args.experiment)
 
     checkpoint_path = args.output_dir / "scenario-checkpoint.jsonl"
     completed = _read_checkpoint(checkpoint_path)
@@ -746,6 +806,13 @@ def main(argv: list[str] | None = None) -> int:
             spike_keys=spike_keys,
             spike_rates=spike_rates,
             representation_minimums=representation,
+            working_safety_unit_cap=variant.get("unit_cap"),
+            working_safety_hurdle_multiplier=_decimal(variant.get("hurdle_multiplier", ONE)),
+            working_safety_require_shortage=bool(variant.get("require_shortage", False)),
+            working_safety_min_sales_days=int(variant.get("min_sales_days", 0)),
+            working_safety_sales_lookback_days=int(variant.get("sales_lookback_days", 90)),
+            working_safety_single_open_lot=bool(variant.get("single_open_lot", False)),
+            keep_decision_detail=False if args.experiment == "targeted" else True,
         )
         row = {
             **variant,
@@ -796,6 +863,13 @@ def main(argv: list[str] | None = None) -> int:
             "trigger": row["trigger"],
             "safety_decision_annual_rate": row["safety_decision_annual_rate"],
             "evaluation_annual_rate": row["evaluation_annual_rate"],
+            "unit_cap": row.get("unit_cap", ""),
+            "hurdle_multiplier": row.get("hurdle_multiplier", ""),
+            "require_shortage": row.get("require_shortage", ""),
+            "min_sales_days": row.get("min_sales_days", ""),
+            "sales_lookback_days": row.get("sales_lookback_days", ""),
+            "single_open_lot": row.get("single_open_lot", ""),
+            "operating_mode": row.get("operating_mode", ""),
         }
         for scope in ("all", "working"):
             for name, value in row[scope].items():
@@ -836,7 +910,12 @@ def main(argv: list[str] | None = None) -> int:
         "0.01"
     )
     payload = {
-        "schema": "display_working_safety_warmup_trigger_backtest.v1",
+        "schema": (
+            "display_working_targeted_safety_backtest.v1"
+            if args.experiment == "targeted"
+            else "display_working_safety_warmup_trigger_backtest.v1"
+        ),
+        "experiment": args.experiment,
         "status": "PASS" if reconciliation_passed else "BLOCKED_BASELINE_MISMATCH",
         "production_authorized": False,
         "production_action": "none_read_only",
@@ -850,9 +929,24 @@ def main(argv: list[str] | None = None) -> int:
         "lifecycle_hash": lifecycle_hash,
         "fallback_diagnostics": fallback_diagnostics,
         "current_history_diagnostics": current_history_diagnostics,
+        "resource_preflight": preflight,
         "baseline_reconciliation": baseline_reconciliation,
         "scenario_count": len(summary_rows),
         "scenarios": summary_rows,
+        "operational_alternatives": {
+            "network_redistribution": (
+                "already represented as perfect pooled network stock; location-level "
+                "incremental effect is not identifiable from this frozen aggregate"
+            ),
+            "central_reserve": (
+                "targeted safety units are modeled as pooled central reserve, not as "
+                "mandatory store-by-store placement"
+            ),
+            "more_frequent_replenishment": (
+                "not mixed into the targeted quantity grid because the frozen decision "
+                "calendar is weekly; requires a separate look-ahead-free decision-calendar run"
+            ),
+        },
         "lineage": {
             "preflight_manifest_sha256": _sha256(args.preflight_dir / "run-manifest.json"),
             "warmup_preflight_manifest_sha256": _sha256(
@@ -867,7 +961,11 @@ def main(argv: list[str] | None = None) -> int:
     _write_json(
         args.output_dir / "analysis-manifest.json",
         {
-            "schema": "display_working_safety_warmup_trigger_manifest.v1",
+            "schema": (
+                "display_working_targeted_safety_manifest.v1"
+                if args.experiment == "targeted"
+                else "display_working_safety_warmup_trigger_manifest.v1"
+            ),
             "complete": True,
             "status": payload["status"],
             "production_authorized": False,

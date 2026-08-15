@@ -39,6 +39,61 @@ class _FakeHTTPResponse:
         return json.dumps(self.payload, ensure_ascii=False).encode("utf-8")
 
 
+def _http_error(code: int) -> urllib.error.HTTPError:
+    return urllib.error.HTTPError(
+        "https://bitrix.example/rest/1/token/crm.item.update.json",
+        code,
+        "temporary failure",
+        {},
+        io.BytesIO(b'{"error":"temporary"}'),
+    )
+
+
+def test_bitrix_update_retries_transient_http_errors(monkeypatch) -> None:
+    calls = 0
+    sleeps: list[int] = []
+
+    def fake_urlopen(request, timeout=60):
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise _http_error(500)
+        return _FakeHTTPResponse({"result": {"item": {"id": 42}}})
+
+    monkeypatch.setattr(expertise_bitrix.urllib.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(expertise_bitrix.time_module, "sleep", sleeps.append)
+
+    client = expertise_bitrix.BitrixRestClient("https://bitrix.example/rest/1/token")
+    client.update_smart_process_item(
+        entity_type_id=187,
+        item_id="42",
+        fields={"title": "Debt card"},
+    )
+
+    assert calls == 3
+    assert sleeps == [1, 2]
+
+
+def test_bitrix_add_does_not_retry_http_500(monkeypatch) -> None:
+    calls = 0
+
+    def fake_urlopen(request, timeout=60):
+        nonlocal calls
+        calls += 1
+        raise _http_error(500)
+
+    monkeypatch.setattr(expertise_bitrix.urllib.request, "urlopen", fake_urlopen)
+
+    client = expertise_bitrix.BitrixRestClient("https://bitrix.example/rest/1/token")
+    with pytest.raises(RuntimeError, match="HTTP 500"):
+        client.add_smart_process_item(
+            entity_type_id=187,
+            fields={"title": "Debt card"},
+        )
+
+    assert calls == 1
+
+
 def _configure_bitrix_env(
     monkeypatch: pytest.MonkeyPatch, *, include_store_map: bool = True
 ) -> None:

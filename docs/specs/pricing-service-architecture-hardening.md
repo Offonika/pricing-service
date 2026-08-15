@@ -35,7 +35,7 @@ depends_on:
   - docs/specs/README.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-21"
+updated_at: "2026-08-15"
 ---
 
 # Назначение
@@ -91,6 +91,11 @@ Spec фиксирует вывод устаревшего источника и�
 - Станет: builder подтверждает ancestry от source commit активного релиза, switch
   требует точного expected-active и совпадения `required_base_commit`, запрещает
   legacy hash и удаление production API operations.
+- Решение от 2026-08-15: до продолжения DB/CLI/cron hardening привести
+  каноническую Git-историю в соответствие с активным production source.
+  Объединение выполнять только в отдельном clean worktree, сохраняя грязный
+  mutable `main` без изменений; публикация ветки и PR сама по себе не является
+  production cutover.
 - Не меняется: внешние HTTP-маршруты, business rules, роли и production delivery.
 
 # Acceptance Criteria
@@ -265,9 +270,13 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 
 # Rollout
 
-1. Создать отдельный clean worktree, внести и закоммитить изменения. Нельзя
+1. Приоритет №1 перед дальнейшим DB/CLI/cron hardening — объединить canonical
+   `main` с проверенной цепочкой активного production source в отдельной
+   интеграционной ветке и провести её через PR. До merge и отдельного cutover
+   production не меняется, грязный mutable checkout остаётся без изменений.
+2. Создать отдельный clean worktree, внести и закоммитить изменения. Нельзя
    использовать грязный параллельный checkout как source или mutable-root.
-2. Выполнить штатную полную сборку и cutover только через workspace control-plane:
+3. Выполнить штатную полную сборку и cutover только через workspace control-plane:
 
    ```bash
    sudo /usr/local/sbin/mm-pricing-service-release deploy \
@@ -278,7 +287,7 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
    Контроллер сам читает production-базу из фактически активного manifest и
    передаёт builder обязательные `PRICING_SERVICE_RELEASE_REQUIRED_BASE_REF` и
    `PRICING_SERVICE_MUTABLE_ROOT`.
-3. Для уже собранного immutable-кандидата сначала выполнить provenance preflight:
+4. Для уже собранного immutable-кандидата сначала выполнить provenance preflight:
 
    ```bash
    sudo /usr/local/sbin/mm-pricing-service-release check \
@@ -290,23 +299,24 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
    В production нельзя напрямую вызывать low-level builder/switch из checkout,
    worktree или release. Controller закрепляет canonical paths, повторно сверяет
    active и передаёт switch обязательный `PRICING_SERVICE_EXPECTED_ACTIVE_RELEASE`.
-4. Controller до смены active-ссылки выполняет миграции кандидата через
+5. Controller до смены active-ссылки выполняет миграции кандидата через
    `alembic upgrade head`, затем требует точного совпадения database/code head.
    Любая ошибка миграции или отдельного validator останавливает cutover.
-5. Проверить health/OpenAPI/UI/API без Bitrix/Telegram side effects; marker
+6. Проверить health/OpenAPI/UI/API без Bitrix/Telegram side effects; marker
    `.release-verified` создаётся switch-скриптом только после успешного smoke.
-6. Наблюдать один ночной catalog sync и один management daily cycle. Известный
+7. Наблюдать один ночной catalog sync и один management daily cycle. Известный
    dashboard status `owner cash transfer control has a high unresolved issue`
    сравнивать с дорелизным baseline и не считать новой технической регрессией.
-7. При ошибке guarded rollback возвращает symlink на предыдущий verified release;
+8. При ошибке guarded rollback возвращает symlink на предыдущий verified release;
    additive migrations
    допускают запуск старого кода.
-8. Retention не выполнять до следующего критического планового цикла; после него
+9. Retention не выполнять до следующего критического планового цикла; после него
    оставить active + 3 verified releases и удалять остальные только через safe
    retention report.
 
 # Changelog
 
+- 2026-08-15 — Git/production reconciliation выбран архитектурным приоритетом №1.
 - 2026-07-22 — switch стал выполнять Alembic migration до cutover, повторно
   проверять database/code head и fail-closed обрабатывать каждый release-validator.
 - 2026-07-22 — после консолидации `main` две независимые additive Alembic-ветки

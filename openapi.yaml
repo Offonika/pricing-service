@@ -7966,6 +7966,157 @@ paths:
                 $ref: '#/components/schemas/OrchestrationHealthResponse'
       security:
       - HTTPBearer: []
+  /api/internal/sms-journal/attempts:
+    post:
+      tags:
+      - sms-journal
+      summary: Create Attempt
+      operationId: create_attempt_api_internal_sms_journal_attempts_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 255
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SmsAttemptCreateRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmsAttemptResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/sms-journal/attempts/{event_id}/send-result:
+    post:
+      tags:
+      - sms-journal
+      summary: Record Send Result
+      operationId: record_send_result_api_internal_sms_journal_attempts__event_id__send_result_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Event Id
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 255
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SmsSendResultRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmsAttemptResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/sms-journal/attempts/{event_id}/delivery:
+    post:
+      tags:
+      - sms-journal
+      summary: Update Delivery
+      operationId: update_delivery_api_internal_sms_journal_attempts__event_id__delivery_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Event Id
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 255
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SmsDeliveryUpdateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmsAttemptResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/sms-journal/attempts/{event_id}:
+    get:
+      tags:
+      - sms-journal
+      summary: Get Attempt
+      operationId: get_attempt_api_internal_sms_journal_attempts__event_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Event Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmsAttemptResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/procurement-labels/session:
     post:
       summary: Create Bitrix Procurement Labels Session
@@ -26350,6 +26501,335 @@ components:
       - due_hours
       - reason
       title: SiteDefectWorkingTaskRecommendation
+    SmsAttemptCreateRequest:
+      properties:
+        event_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Event Id
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+        source_system:
+          type: string
+          maxLength: 64
+          minLength: 1
+          pattern: ^[a-z0-9][a-z0-9._-]*$
+          title: Source System
+        source_entity_type:
+          type: string
+          maxLength: 64
+          minLength: 1
+          pattern: ^[a-z0-9][a-z0-9._-]*$
+          title: Source Entity Type
+        source_entity_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Source Entity Id
+        event_type:
+          type: string
+          maxLength: 128
+          minLength: 1
+          pattern: ^[a-z0-9][a-z0-9._-]*$
+          title: Event Type
+        actor_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Actor Id
+        recipient_phone:
+          type: string
+          maxLength: 32
+          minLength: 7
+          title: Recipient Phone
+        message_text:
+          type: string
+          maxLength: 4000
+          minLength: 1
+          title: Message Text
+        secret_kind:
+          type: string
+          enum:
+          - none
+          - otp
+          - password
+          title: Secret Kind
+          default: none
+        redaction_values:
+          items:
+            type: string
+          type: array
+          maxItems: 10
+          title: Redaction Values
+        provider:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Provider
+          default: megafon
+        sender_name:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Sender Name
+        attempt_number:
+          type: integer
+          maximum: 100.0
+          minimum: 1.0
+          title: Attempt Number
+          default: 1
+      type: object
+      required:
+      - source_system
+      - source_entity_type
+      - source_entity_id
+      - event_type
+      - recipient_phone
+      - message_text
+      title: SmsAttemptCreateRequest
+    SmsAttemptResponse:
+      properties:
+        event_id:
+          type: string
+          format: uuid
+          title: Event Id
+        source_system:
+          type: string
+          title: Source System
+        source_entity_type:
+          type: string
+          title: Source Entity Type
+        source_entity_id:
+          type: string
+          title: Source Entity Id
+        event_type:
+          type: string
+          title: Event Type
+        recipient_phone_masked:
+          type: string
+          title: Recipient Phone Masked
+        message_fingerprint:
+          type: string
+          title: Message Fingerprint
+        contains_redacted_secret:
+          type: boolean
+          title: Contains Redacted Secret
+        character_count:
+          type: integer
+          title: Character Count
+        encoding:
+          type: string
+          enum:
+          - GSM-7
+          - UCS-2
+          title: Encoding
+        estimated_segments:
+          type: integer
+          title: Estimated Segments
+        provider:
+          type: string
+          title: Provider
+        sender_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sender Name
+        provider_message_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Message Id
+        send_status:
+          type: string
+          title: Send Status
+        delivery_status:
+          type: string
+          title: Delivery Status
+        provider_error_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Error Code
+        attempt_number:
+          type: integer
+          title: Attempt Number
+        sent_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Sent At
+        delivered_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Delivered At
+        billed_segments:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Billed Segments
+        unit_price:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Unit Price
+        total_cost:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Total Cost
+        reconciliation_period:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reconciliation Period
+        retention_expires_at:
+          type: string
+          format: date-time
+          title: Retention Expires At
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        idempotency_replayed:
+          type: boolean
+          title: Idempotency Replayed
+          default: false
+      type: object
+      required:
+      - event_id
+      - source_system
+      - source_entity_type
+      - source_entity_id
+      - event_type
+      - recipient_phone_masked
+      - message_fingerprint
+      - contains_redacted_secret
+      - character_count
+      - encoding
+      - estimated_segments
+      - provider
+      - send_status
+      - delivery_status
+      - attempt_number
+      - retention_expires_at
+      - created_at
+      - updated_at
+      title: SmsAttemptResponse
+    SmsDeliveryUpdateRequest:
+      properties:
+        delivery_status:
+          type: string
+          enum:
+          - delivered
+          - undelivered
+          - expired
+          - unknown
+          title: Delivery Status
+        delivered_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Delivered At
+        provider_error_code:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Provider Error Code
+        provider_error_detail:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Provider Error Detail
+      type: object
+      required:
+      - delivery_status
+      title: SmsDeliveryUpdateRequest
+    SmsSendResultRequest:
+      properties:
+        send_status:
+          type: string
+          enum:
+          - accepted
+          - failed
+          - unknown
+          title: Send Status
+        provider_message_id:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Provider Message Id
+        provider_error_code:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Provider Error Code
+        provider_error_detail:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Provider Error Detail
+        sent_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Sent At
+        billed_segments:
+          anyOf:
+          - type: integer
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Billed Segments
+        unit_price:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Unit Price
+        total_cost:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Total Cost
+        reconciliation_period:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Reconciliation Period
+      type: object
+      required:
+      - send_status
+      title: SmsSendResultRequest
     StaffingDailyItem:
       properties:
         snapshot_date:

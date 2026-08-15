@@ -233,22 +233,37 @@ def test_line_blockers_require_exact_guid_and_catalog_product(db_session) -> Non
     assert "catalog_xml_id_mismatch" in line_blockers(line)
 
 
-def test_line_change_increments_version_and_revokes_approval(db_session) -> None:
+def test_line_change_marks_manual_override(db_session) -> None:
     order = _order(db_session)
-    approved = approve_order(db_session, order.id, _session())
-    assert approved.approved_version == 1
-
     updated = update_order_line(
         db_session,
         order.id,
-        approved.lines[0].id,
+        order.lines[0].id,
         {"final_quantity": Decimal("7")},
     )
 
     assert updated.version == 2
     assert updated.status == "draft"
-    assert updated.approved_version is None
     assert updated.lines[0].amount == Decimal("805.00")
+    assert updated.lines[0].payload["manual_overrides"] == {"final_quantity": True}
+
+
+def test_approved_order_is_frozen_for_manual_changes(db_session) -> None:
+    order = _order(db_session)
+    approved = approve_order(db_session, order.id, _session())
+
+    with pytest.raises(ValueError, match="approved order is read-only"):
+        update_order_line(
+            db_session,
+            order.id,
+            approved.lines[0].id,
+            {"final_quantity": Decimal("7")},
+        )
+
+    db_session.refresh(order)
+    assert order.status == "approved"
+    assert order.approved_version == 1
+    assert order.lines[0].final_quantity == Decimal("5")
 
 
 def test_line_change_rejects_stale_expected_version(db_session) -> None:

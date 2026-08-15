@@ -134,6 +134,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         SiteOrderExecutionEvent,
     )
     from app.models.smartphone_release import ReleaseStatus, SmartphoneRelease, SourceType
+    from app.models.sms_journal import SmsJournalApiRequest, SmsJournalAttempt
     from app.models.staff_member import StaffMember
     from app.models.staffing_snapshot import StaffingSnapshot
     from app.models.store_shift_fact import StoreShiftFact
@@ -218,6 +219,8 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "OneCSalesDailyKpi",
         "OrchestrationApiRequest",
         "OrchestrationJobRun",
+        "SmsJournalApiRequest",
+        "SmsJournalAttempt",
         "OrchestrationDeliveryIntent",
         "OrchestrationDeliveryAttempt",
         "MatchingPropertyProfile",

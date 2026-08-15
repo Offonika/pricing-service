@@ -103,6 +103,31 @@ export interface ProcurementB2BCustomerDemand {
   reason_ru?: string;
 }
 
+export interface ProcurementRecommendationDifference {
+  manual: string;
+  recommended: string;
+}
+
+export interface ProcurementLineSyncPayload {
+  b2b_customer_demand?: ProcurementB2BCustomerDemand;
+  manual_overrides?: {
+    final_quantity?: boolean;
+    purchase_price?: boolean;
+  };
+  automatic_recommendation?: {
+    final_quantity?: string;
+    purchase_price?: string;
+    calculation_id?: string;
+  };
+  recommendation_discrepancy?: {
+    final_quantity?: ProcurementRecommendationDifference;
+    purchase_price?: ProcurementRecommendationDifference;
+  };
+  need_status?: "disappeared" | string;
+  disappeared_in_calculation_id?: string;
+  [key: string]: unknown;
+}
+
 export interface ProcurementOrderFormationLine {
   id: number;
   line_number: number;
@@ -128,10 +153,7 @@ export interface ProcurementOrderFormationLine {
   quality?: string | null;
   procurement_profile?: string | null;
   manual_minimum?: string | null;
-  payload?: {
-    b2b_customer_demand?: ProcurementB2BCustomerDemand;
-    [key: string]: unknown;
-  };
+  payload?: ProcurementLineSyncPayload;
   removed: boolean;
   effective_assortment_status?: string | null;
   effective_assortment_status_label?: string | null;

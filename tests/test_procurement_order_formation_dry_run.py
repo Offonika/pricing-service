@@ -2,11 +2,12 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
+from pathlib import Path
 
 from app.models.procurement_order_formation import ProcurementOrderFormation
 from app.services.bitrix_order_formation import BitrixCatalogProduct
 from app.services.master_mobile_catalog import ProductMediaResolution
-from app.services.procurement_order_formation import serialize_line
+from app.services.procurement_order_formation import serialize_line, update_order_line
 from app.services.procurement_order_formation_workspace import list_orders
 from tasks.build_procurement_order_formation_dry_run import (
     build_grouped_orders,
@@ -91,6 +92,8 @@ def test_grouped_dry_run_uses_supplier_contract_warehouse_and_exact_catalog_guid
     assert {order["supplier"]["code"] for order in orders} == {"S1", "S2"}
     assert all(order["contract"]["code"] == "C1" for order in orders)
     assert all(order["warehouse"]["code"] == "MAIN" for order in orders)
+    assert all(order["responsible_name"] == "" for order in orders)
+    assert all(order["responsible_bitrix_user_id"] == "" for order in orders)
     assert len(seen_guids) == 2
     assert all(line["blockers"] == [] for order in orders for line in order["lines"])
     summary = build_summary(source_rows=sources, selected_rows=sources, orders=orders)
@@ -170,7 +173,13 @@ def test_grouped_dry_run_carries_b2b_advisory_without_changing_order_quantity(
     persisted_line = persisted_order.lines[0]
     assert persisted_line.recommended_quantity == Decimal("5")
     assert persisted_line.final_quantity == Decimal("5")
-    assert serialize_line(persisted_line)["payload"] == line["payload"]
+    persisted_payload = serialize_line(persisted_line)["payload"]
+    assert persisted_payload["b2b_customer_demand"] == line["payload"]["b2b_customer_demand"]
+    assert persisted_payload["automatic_recommendation"] == {
+        "final_quantity": "5",
+        "purchase_price": "100",
+        "calculation_id": "calc",
+    }
 
 
 def test_missing_catalog_product_is_a_hard_blocker() -> None:
@@ -300,7 +309,7 @@ def test_persist_repeated_open_batch_updates_without_duplicates(db_session) -> N
     assert list_orders(db_session)["total"] == 1
 
 
-def test_persist_new_batch_supersedes_previous_open_batch(db_session) -> None:
+def test_persist_new_batch_creates_revision_without_mutating_approved_order(db_session) -> None:
     old_ids = persist_grouped_orders(
         db_session,
         _grouped_orders_for_persist(batch_id="2026-07-30", calculation_id="886"),
@@ -318,11 +327,133 @@ def test_persist_new_batch_supersedes_previous_open_batch(db_session) -> None:
 
     old_order = db_session.get(ProcurementOrderFormation, old_ids[0])
     assert old_order is not None
-    assert old_order.status == "superseded"
-    assert old_order.approved_version is None
-    assert list_orders(db_session)["total"] == 1
-    assert list_orders(db_session, status="superseded")["total"] == 1
+    assert old_order.status == "approved"
+    assert old_order.approved_version == old_order.version
     assert new_ids != old_ids
+    revision = db_session.get(ProcurementOrderFormation, new_ids[0])
+    assert revision is not None
+    assert revision.status == "draft"
+    assert revision.payload["revision_of_order_id"] == old_order.id
+    assert revision.payload["revision_of_stable_key"] == old_order.stable_key
+
+
+def test_persist_new_batch_merges_open_order_and_preserves_manual_values(db_session) -> None:
+    first_ids = persist_grouped_orders(
+        db_session,
+        _grouped_orders_for_persist(batch_id="2026-07-30", calculation_id="886"),
+    )
+    order = db_session.get(ProcurementOrderFormation, first_ids[0])
+    assert order is not None
+    line_id = order.lines[0].id
+    update_order_line(
+        db_session,
+        order.id,
+        line_id,
+        {"final_quantity": Decimal("7"), "purchase_price": Decimal("90")},
+    )
+
+    next_payload = _grouped_orders_for_persist(batch_id="2026-07-31", calculation_id="887")
+    next_payload[0]["lines"][0].update(
+        recommended_quantity="9",
+        final_quantity="9",
+        purchase_price="110",
+        amount="990",
+    )
+    next_ids = persist_grouped_orders(db_session, next_payload, supersede_open_batches=True)
+
+    assert next_ids == first_ids
+    refreshed = db_session.get(ProcurementOrderFormation, first_ids[0])
+    assert refreshed is not None
+    assert refreshed.batch_id == "2026-07-31"
+    assert refreshed.calculation_id == "887"
+    assert refreshed.lines[0].id == line_id
+    assert refreshed.lines[0].recommended_quantity == Decimal("9")
+    assert refreshed.lines[0].final_quantity == Decimal("7")
+    assert refreshed.lines[0].purchase_price == Decimal("90")
+    assert refreshed.lines[0].amount == Decimal("630")
+    assert refreshed.lines[0].payload["recommendation_discrepancy"] == {
+        "final_quantity": {"manual": "7.000", "recommended": "9"},
+        "purchase_price": {"manual": "90.0000", "recommended": "110"},
+    }
+
+
+def test_persist_keeps_disappeared_need_visible(db_session) -> None:
+    first_ids = persist_grouped_orders(
+        db_session,
+        _grouped_orders_for_persist(batch_id="2026-07-30", calculation_id="886"),
+    )
+    next_payload = _grouped_orders_for_persist(batch_id="2026-07-31", calculation_id="887")
+    next_payload[0]["lines"] = []
+
+    next_ids = persist_grouped_orders(db_session, next_payload, supersede_open_batches=True)
+
+    assert next_ids == first_ids
+    refreshed = db_session.get(ProcurementOrderFormation, first_ids[0])
+    assert refreshed is not None
+    assert len(refreshed.lines) == 1
+    assert refreshed.lines[0].removed is True
+    assert refreshed.lines[0].payload["need_status"] == "disappeared"
+    assert refreshed.lines[0].payload["disappeared_in_calculation_id"] == "887"
+
+
+def test_persist_reorders_remaining_lines_without_hiding_disappeared_need(db_session) -> None:
+    nomenclature = {
+        "A": {"nomenclature_ref": "0x00010025901E48EF11E1967C11111111"},
+        "B": {"nomenclature_ref": "0x00020025901E48EF11E1967C22222222"},
+    }
+
+    def grouped(rows: list[dict[str, str]], *, batch: str, calculation: str):
+        return build_grouped_orders(
+            rows,
+            [_lead("A", "S1", "0xs1"), _lead("B", "S1", "0xs1")],
+            nomenclature_by_code=nomenclature,
+            catalog_resolver=lambda guid: BitrixCatalogProduct(
+                product_id="10",
+                name="Каталожный товар",
+                xml_id=guid,
+                assortment_status="Продажа",
+            ),
+            skip_catalog=False,
+            contracts={"default": {"code": "C1", "name": "Договор"}},
+            warehouse={"code": "MAIN", "name": "Склад"},
+            currency="RUB",
+            procurement_contour="ordinary",
+            route="ordinary",
+            batch_id=batch,
+            order_date=date.fromisoformat(batch),
+            calculation_id=calculation,
+        )
+
+    first_ids = persist_grouped_orders(
+        db_session,
+        grouped(
+            [_source("A", "5", "A"), _source("B", "2", "B")],
+            batch="2026-07-30",
+            calculation="886",
+        ),
+    )
+    next_ids = persist_grouped_orders(
+        db_session,
+        grouped([_source("B", "3", "B")], batch="2026-07-31", calculation="887"),
+        supersede_open_batches=True,
+    )
+
+    assert next_ids == first_ids
+    refreshed = db_session.get(ProcurementOrderFormation, first_ids[0])
+    assert refreshed is not None
+    by_code = {line.nomenclature_code: line for line in refreshed.lines}
+    assert by_code["B"].line_number == 1
+    assert by_code["B"].removed is False
+    assert by_code["A"].removed is True
+    assert by_code["A"].line_number > by_code["B"].line_number
+
+
+def test_standard_cron_keeps_blocked_projects_and_uses_shared_queue() -> None:
+    script = Path("infra/cron/display_auto_order_sync.sh").read_text(encoding="utf-8")
+
+    assert "--fail-on-blockers" not in script
+    assert "DISPLAY_AUTO_ORDER_ASSIGNED_BY_ID:-130757" not in script
+    assert "DISPLAY_AUTO_ORDER_ASSIGNED_BY_ID:-}" in script
 
 
 def test_persist_never_mutates_transmitted_order(db_session) -> None:

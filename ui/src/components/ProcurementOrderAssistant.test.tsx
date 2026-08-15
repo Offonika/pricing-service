@@ -141,6 +141,27 @@ describe("ProcurementOrderAssistant", () => {
     );
   });
 
+  it("не скрывает исчезнувшую потребность и показывает новую рекомендацию", async () => {
+    const data = assistantData();
+    data.orders[0].lines[0].removed = true;
+    data.orders[0].lines[0].final_quantity = "7";
+    data.orders[0].lines[0].payload = {
+      need_status: "disappeared",
+      recommendation_discrepancy: {
+        final_quantity: { manual: "7", recommended: "9" },
+        purchase_price: { manual: "48.2", recommended: "50" },
+      },
+    };
+    vi.mocked(fetchProcurementOrderAssistant).mockResolvedValue(data);
+
+    render(<ProcurementOrderAssistantView />);
+
+    expect(await screen.findAllByText("Потребность исчезла")).not.toHaveLength(0);
+    expect(screen.getByText("Новый расчёт: 9 шт.")).toBeInTheDocument();
+    expect(screen.getByText(/Новая цена:/)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Выбрать Дисплей iPhone 15 Pro OLED/)).toBeDisabled();
+  });
+
   it("собирает только готовую полностью выбранную группу и не отправляет её в 1С", async () => {
     const data = assistantData();
     vi.mocked(fetchProcurementOrderAssistant).mockResolvedValue(data);

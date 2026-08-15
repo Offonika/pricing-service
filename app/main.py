@@ -4,8 +4,10 @@ from pathlib import Path
 from typing import Callable
 
 from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.exception_handlers import request_validation_exception_handler
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from app.api.agents import router as agents_router
@@ -55,6 +57,7 @@ from app.api.recommendations import router as recommendations_router
 from app.api.reports import router as reports_router
 from app.api.site_defect_archive import page_router as site_defect_archive_page_router
 from app.api.site_defect_archive import router as site_defect_archive_router
+from app.api.sms_journal import router as sms_journal_router
 from app.api.staffing import router as staffing_router
 from app.api.telegram import router as telegram_router
 from app.core.config import get_settings
@@ -69,6 +72,14 @@ app = FastAPI(
     version="0.1.0",
     debug=settings.debug,
 )
+
+
+@app.exception_handler(RequestValidationError)
+async def safe_sms_validation_error(request: Request, exc: RequestValidationError) -> Response:
+    if request.url.path.startswith("/api/internal/sms-journal"):
+        return JSONResponse(status_code=422, content={"detail": "invalid SMS journal request"})
+    return await request_validation_exception_handler(request, exc)
+
 
 _UI_STATIC_ROOTS = (Path(__file__).resolve().parents[1] / "ui" / "dist",)
 
@@ -169,6 +180,7 @@ app.include_router(logistics_web_router, prefix="/api/logistics/web")
 app.include_router(order_fulfillment_router, prefix="/api/order-fulfillment")
 app.include_router(order_payment_control_router, prefix="/api/order-payment-control")
 app.include_router(orchestration_router)
+app.include_router(sms_journal_router)
 app.include_router(procurement_labels_router, prefix="/api")
 app.include_router(procurement_assortment_router, prefix="/api")
 app.include_router(procurement_order_formation_router, prefix="/api")

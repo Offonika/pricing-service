@@ -71,6 +71,7 @@ DEFAULT_SOURCE_SUMMARY = (
 )
 DEFAULT_OUTPUT_DIR = DEFAULT_ROOT / "working-safety-warmup-trigger-backtest-2026-08-14"
 DEFAULT_CONTROL_SCENARIO_ID = "grow_cap20_p90_hold4_typical_kmp0_5_sitebalanced_base"
+COMMON_REFERENCE_TARGETS_FILENAME = "common-reference-targets.json"
 
 
 @dataclass(frozen=True)
@@ -93,6 +94,41 @@ def _write_json(path: Path, payload: Mapping[str, Any]) -> None:
     path.write_text(
         json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2, default=str) + "\n",
         encoding="utf-8",
+    )
+
+
+def _load_common_reference_targets(
+    path: Path,
+    *,
+    baseline_variant_id: str,
+) -> dict[str, Decimal]:
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if payload.get("schema") != "display_working_common_reference_targets.v1":
+        raise ValueError("unsupported common reference target schema")
+    if payload.get("baseline_variant_id") != baseline_variant_id:
+        raise ValueError("common reference baseline variant mismatch")
+    targets = payload.get("ending_target_stock_qty_by_code")
+    if not isinstance(targets, dict) or not targets:
+        raise ValueError("common reference targets are empty")
+    return {str(code): _decimal(value) for code, value in targets.items()}
+
+
+def _write_common_reference_targets(
+    path: Path,
+    *,
+    baseline_variant_id: str,
+    target_by_code: Mapping[str, Decimal],
+) -> None:
+    _write_json(
+        path,
+        {
+            "schema": "display_working_common_reference_targets.v1",
+            "definition": "frozen baseline ending target stock quantity by SKU",
+            "baseline_variant_id": baseline_variant_id,
+            "ending_target_stock_qty_by_code": {
+                code: str(target_by_code[code]) for code in sorted(target_by_code)
+            },
+        },
     )
 
 
@@ -405,6 +441,7 @@ def _period_metrics(
     period_to: date,
     stage: str | None = None,
     final_status_by_code: Mapping[str, str] | None = None,
+    common_reference_target_by_code: Mapping[str, Decimal] | None = None,
 ) -> dict[str, str]:
     source_rows = result.daily_stage_rows if stage else result.daily_rows
     rows = [
@@ -430,14 +467,17 @@ def _period_metrics(
     ending_inventory = sum(
         (_decimal(row.get("model_ending_inventory_qty")) for row in end_rows), ZERO
     )
-    ending_excess = ZERO
-    for code, metric in result.model.items():
-        if stage is not None and (final_status_by_code or {}).get(code) != stage:
-            continue
-        ending_excess += max(
-            ZERO,
-            metric.ending_inventory_qty - metric.ending_target_stock_qty,
-        )
+    ending_excess = _ending_excess_stock_qty(
+        result,
+        stage=stage,
+        final_status_by_code=final_status_by_code,
+    )
+    common_reference_ending_excess = _ending_excess_stock_qty(
+        result,
+        stage=stage,
+        final_status_by_code=final_status_by_code,
+        target_by_code=common_reference_target_by_code,
+    )
     decisions = [
         row
         for row in result.decision_rows
@@ -461,6 +501,7 @@ def _period_metrics(
         "gmroi": str(gmroi),
         "ending_inventory_qty": str(ending_inventory),
         "ending_excess_stock_qty": str(ending_excess),
+        "ending_excess_stock_qty_common_reference": str(common_reference_ending_excess),
         "decision_count": str(len(decisions)),
         "positive_safety_decision_count": str(
             sum(_decimal(row.get("economic_safety_stock_qty")) > ZERO for row in decisions)
@@ -479,6 +520,27 @@ def _period_metrics(
     }
 
 
+def _ending_excess_stock_qty(
+    result: SimulationResult,
+    *,
+    stage: str | None = None,
+    final_status_by_code: Mapping[str, str] | None = None,
+    target_by_code: Mapping[str, Decimal] | None = None,
+) -> Decimal:
+    total = ZERO
+    for code, metric in result.model.items():
+        if stage is not None and (final_status_by_code or {}).get(code) != stage:
+            continue
+        if target_by_code is None:
+            target = metric.ending_target_stock_qty
+        else:
+            if code not in target_by_code:
+                raise ValueError(f"common reference target is missing SKU {code}")
+            target = target_by_code[code]
+        total += max(ZERO, metric.ending_inventory_qty - target)
+    return total
+
+
 def _metric_deltas(candidate: Mapping[str, str], baseline: Mapping[str, str]) -> dict[str, str]:
     names = (
         "served_sales_qty",
@@ -489,6 +551,7 @@ def _metric_deltas(candidate: Mapping[str, str], baseline: Mapping[str, str]) ->
         "gmroi",
         "ending_inventory_qty",
         "ending_excess_stock_qty",
+        "ending_excess_stock_qty_common_reference",
         "recommended_order_qty",
     )
     return {
@@ -507,6 +570,22 @@ def _normalize_evaluation_economics(
     carrying_cost = average_inventory * annual_rate * Decimal(period_days) / YEAR_DAYS
     metrics["carrying_cost_rub"] = str(carrying_cost)
     metrics["economic_effect_rub"] = str(gross_profit - carrying_cost)
+
+
+def _passes_current_guardrails(
+    candidate: Mapping[str, Any],
+    baseline: Mapping[str, Any],
+) -> bool:
+    return all(
+        (
+            _decimal(candidate["served_sales_qty"]) >= _decimal(baseline["served_sales_qty"]),
+            _decimal(candidate["gross_profit_rub"]) >= _decimal(baseline["gross_profit_rub"]),
+            _decimal(candidate["economic_effect_rub"]) >= _decimal(baseline["economic_effect_rub"]),
+            _decimal(candidate["gmroi"]) >= _decimal(baseline["gmroi"]),
+            _decimal(candidate["ending_excess_stock_qty_common_reference"])
+            <= _decimal(baseline["ending_excess_stock_qty_common_reference"]),
+        )
+    )
 
 
 def _isolated_sample_cache(
@@ -623,8 +702,8 @@ def _variants_for_experiment(experiment: str) -> list[dict[str, Any]]:
         raise ValueError(f"unsupported experiment: {experiment}")
 
     variants = list(baseline)
-    for unit_cap in (1, 2, 3):
-        for hurdle in (Decimal("1.25"), Decimal("1.5"), Decimal("2.0")):
+    for unit_cap in (1, 2):
+        for hurdle in (Decimal("2.0"), Decimal("2.5"), Decimal("3.0")):
             hurdle_token = str(hurdle).replace(".", "p")
             variants.append(
                 {
@@ -857,6 +936,7 @@ def _metric_reconciliation(
         "gmroi",
         "ending_inventory_qty",
         "ending_excess_stock_qty",
+        "ending_excess_stock_qty_common_reference",
         "recommended_order_qty",
         "order_line_count",
         "ordered_safety_stock_qty",
@@ -1031,6 +1111,16 @@ def main(argv: list[str] | None = None) -> int:
 
     checkpoint_path = args.output_dir / "scenario-checkpoint.jsonl"
     completed = _read_checkpoint(checkpoint_path)
+    baseline_variant_id = str(variants[0]["variant_id"])
+    common_reference_path = args.output_dir / COMMON_REFERENCE_TARGETS_FILENAME
+    common_reference_target_by_code: dict[str, Decimal] | None = None
+    if args.experiment == "targeted" and common_reference_path.exists():
+        common_reference_target_by_code = _load_common_reference_targets(
+            common_reference_path,
+            baseline_variant_id=baseline_variant_id,
+        )
+    if args.experiment == "targeted" and completed and common_reference_target_by_code is None:
+        raise SystemExit("scenario checkpoint exists without frozen common reference targets")
     final_status_by_code = {
         code: _clean(row.get("status"))
         for (business_date, code), row in inputs.fact_by_key.items()
@@ -1078,6 +1168,21 @@ def main(argv: list[str] | None = None) -> int:
             working_safety_single_open_lot=bool(variant.get("single_open_lot", False)),
             keep_decision_detail=False if args.experiment == "targeted" else True,
         )
+        if args.experiment == "targeted" and variant_id == baseline_variant_id:
+            generated_reference = {
+                code: metric.ending_target_stock_qty for code, metric in result.model.items()
+            }
+            if common_reference_target_by_code is None:
+                common_reference_target_by_code = generated_reference
+                _write_common_reference_targets(
+                    common_reference_path,
+                    baseline_variant_id=baseline_variant_id,
+                    target_by_code=common_reference_target_by_code,
+                )
+            elif common_reference_target_by_code != generated_reference:
+                raise SystemExit("recalculated baseline targets differ from frozen reference")
+        if args.experiment == "targeted" and common_reference_target_by_code is None:
+            raise SystemExit("frozen common reference targets were not initialized")
         row = {
             **variant,
             "annual_carrying_rate": str(result.scenario.cost.total_annual_rate),
@@ -1086,6 +1191,7 @@ def main(argv: list[str] | None = None) -> int:
                 period_from=period_from,
                 period_to=period_to,
                 final_status_by_code=final_status_by_code,
+                common_reference_target_by_code=common_reference_target_by_code,
             ),
             "working": _period_metrics(
                 result,
@@ -1093,6 +1199,7 @@ def main(argv: list[str] | None = None) -> int:
                 period_to=period_to,
                 stage="working",
                 final_status_by_code=final_status_by_code,
+                common_reference_target_by_code=common_reference_target_by_code,
             ),
         }
         _append_checkpoint(checkpoint_path, row)
@@ -1145,19 +1252,7 @@ def main(argv: list[str] | None = None) -> int:
                 flat[f"{scope}_{name}_vs_current"] = value
             for name, value in _metric_deltas(row[scope], history_only[scope]).items():
                 flat[f"{scope}_{name}_vs_history_only"] = value
-        flat["passes_current_guardrails"] = all(
-            (
-                _decimal(row["all"]["served_sales_qty"])
-                >= _decimal(baseline["all"]["served_sales_qty"]),
-                _decimal(row["all"]["gross_profit_rub"])
-                >= _decimal(baseline["all"]["gross_profit_rub"]),
-                _decimal(row["all"]["economic_effect_rub"])
-                >= _decimal(baseline["all"]["economic_effect_rub"]),
-                _decimal(row["all"]["gmroi"]) >= _decimal(baseline["all"]["gmroi"]),
-                _decimal(row["all"]["ending_excess_stock_qty"])
-                <= _decimal(baseline["all"]["ending_excess_stock_qty"]),
-            )
-        )
+        flat["passes_current_guardrails"] = _passes_current_guardrails(row["all"], baseline["all"])
         summary_rows.append(flat)
 
     selected_candidate_audit: dict[str, Any] | None = None
@@ -1227,6 +1322,7 @@ def main(argv: list[str] | None = None) -> int:
                 period_to=period_to,
                 stage=stage,
                 final_status_by_code=final_status_by_code,
+                common_reference_target_by_code=common_reference_target_by_code,
             )
             selected_recalculated = _period_metrics(
                 selected_result,
@@ -1234,6 +1330,7 @@ def main(argv: list[str] | None = None) -> int:
                 period_to=period_to,
                 stage=stage,
                 final_status_by_code=final_status_by_code,
+                common_reference_target_by_code=common_reference_target_by_code,
             )
             for metrics in (baseline_recalculated, selected_recalculated):
                 _normalize_evaluation_economics(
@@ -1304,7 +1401,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     payload = {
         "schema": (
-            "display_working_targeted_safety_backtest.v2"
+            "display_working_targeted_safety_backtest.v3"
             if args.experiment == "targeted"
             else "display_working_safety_warmup_trigger_backtest.v1"
         ),
@@ -1327,6 +1424,15 @@ def main(argv: list[str] | None = None) -> int:
         "scenario_count": len(summary_rows),
         "scenarios": summary_rows,
         "selected_candidate_audit": selected_candidate_audit,
+        "ending_excess_acceptance": {
+            "basis": "frozen_baseline_target_by_sku",
+            "metric": "ending_excess_stock_qty_common_reference",
+            "candidate_specific_metric": "ending_excess_stock_qty",
+            "candidate_specific_usage": "diagnostics_only",
+            "targets_file": (
+                COMMON_REFERENCE_TARGETS_FILENAME if args.experiment == "targeted" else None
+            ),
+        },
         "targeted_scope_isolation": (
             "extended own-history and comparable-group fallback are applied only to "
             "working; sale keeps the current-history baseline"
@@ -1363,6 +1469,8 @@ def main(argv: list[str] | None = None) -> int:
         "scenario-summary.csv": _sha256(args.output_dir / "scenario-summary.csv"),
         "scenario-checkpoint.jsonl": _sha256(checkpoint_path),
     }
+    if args.experiment == "targeted":
+        manifest_files[COMMON_REFERENCE_TARGETS_FILENAME] = _sha256(common_reference_path)
     if selected_candidate_audit is not None:
         for name in (
             selected_candidate_audit["sku_audit_file"],
@@ -1373,7 +1481,7 @@ def main(argv: list[str] | None = None) -> int:
         args.output_dir / "analysis-manifest.json",
         {
             "schema": (
-                "display_working_targeted_safety_manifest.v2"
+                "display_working_targeted_safety_manifest.v3"
                 if args.experiment == "targeted"
                 else "display_working_safety_warmup_trigger_manifest.v1"
             ),

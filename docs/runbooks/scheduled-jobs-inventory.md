@@ -5,7 +5,7 @@ domain: operations
 status: active
 owner: pricing-platform
 source_of_truth: true
-updated_at: "2026-08-13"
+updated_at: "2026-08-15"
 ---
 
 # Инвентарь заданий по расписанию
@@ -29,7 +29,7 @@ updated_at: "2026-08-13"
 
 | Задание | Расписание (МСК) | Источник |
 |---|---|---|
-| `pricing-assortment-lifecycle-classification` | ежечасно в :00 | рабочая папка, cutover заблокирован 2026-08-13 |
+| `pricing-assortment-lifecycle-classification` | ежечасно в :00 | active release, восстановлен 2026-08-15 на совместимом v1 |
 | `pricing-sku-result-sync-ut103` | ежечасно в :45 | релиз, canary с 2026-08-13 |
 | `onec_assembly_crm_reconciler` | каждые 30 минут | рабочая папка |
 | `order_fulfillment_sync` | каждые 30 минут, ежечасно в :05, ежедневно 11:00 | рабочая папка |
@@ -140,11 +140,29 @@ Rollback не потребовался.
   откатывается целиком: последний успешный run остаётся `1158` от 2026-08-12
   19:00, частичных записей от неудачных запусков нет.
 
-Canary и применение миграции запрещены этим runbook. Возобновлять контур можно
-только отдельным неизменяемым release, содержащим совместимые schema+code, после
-backup, проверки миграции на копии production-схемы, zero-regression и готового
-rollback. Переход к jobs с внешними side effects без отдельной оценки также не
-разрешён.
+Применение v2-миграции запрещено этим runbook. Выпускать v2 можно только отдельным
+неизменяемым release, содержащим совместимые schema+code, после backup, проверки
+миграции на копии production-схемы, zero-regression и готового rollback. Переход к
+jobs с внешними side effects без отдельной оценки также не разрешён.
+
+2026-08-15 пользователь подтвердил начало исправления. Mutable cron временно
+отключили, не прерывая запуск 07:00, и сохранили его копию в
+`/opt/MM/backups/pricing-service-assortment-disable-20260815/`. Проверка показала,
+что active release и production DB имеют одну schema revision `c3e5a7b9d1f2`.
+
+Восстановление выполнено без v2-миграции:
+
+- active release dry-run обработал 2 734 товара, ничего не записал и завершился
+  со status `0`;
+- перед live-run создан backup таблиц run/current размером около 23 МБ;
+- live-run с ключом `assortment-recovery-20260815-0720` создал run `1210`, записал
+  2 734 результата и сохранил общий объём 47 613 current-строк;
+- dry-run и live дали одинаковую сводку статусов; live завершился status `0`;
+- cron направлен на `/opt/MM/pricing-service-task43-current` с явным `REPO_DIR`.
+
+Rollback восстановления — вернуть файл
+`pricing-assortment-lifecycle-classification.disabled`; rollback к исходному
+mutable-пути допускается только после устранения несовместимости v2.
 
 ## Отменённая canary-подготовка: staffing sync
 

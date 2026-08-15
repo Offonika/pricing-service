@@ -1,16 +1,22 @@
 from datetime import date, timedelta
 from decimal import Decimal
+from pathlib import Path
 from types import SimpleNamespace
 
 from tasks.report_display_auto_order_working_safety_backtest import (
     ComparableGroupFallback,
+    _ending_excess_stock_qty,
     _isolated_sample_cache,
+    _load_common_reference_targets,
     _merge_decision_rows,
     _metric_reconciliation,
     _normalize_evaluation_economics,
+    _passes_current_guardrails,
     _sales_overlap_mismatches,
     _selected_candidate_audit,
+    _sha256,
     _variants_for_experiment,
+    _write_common_reference_targets,
 )
 
 
@@ -121,13 +127,13 @@ def test_targeted_variant_grid_is_bounded() -> None:
     variants = _variants_for_experiment("targeted")
     challengers = [row for row in variants if str(row["variant_id"]).startswith("targeted_")]
 
-    assert len(variants) == 11
-    assert len(challengers) == 9
-    assert {row["unit_cap"] for row in challengers} == {1, 2, 3}
+    assert len(variants) == 8
+    assert len(challengers) == 6
+    assert {row["unit_cap"] for row in challengers} == {1, 2}
     assert {row["hurdle_multiplier"] for row in challengers} == {
-        Decimal("1.25"),
-        Decimal("1.5"),
         Decimal("2.0"),
+        Decimal("2.5"),
+        Decimal("3.0"),
     }
     assert all(row["require_shortage"] for row in challengers)
     assert all(row["single_open_lot"] for row in challengers)
@@ -136,6 +142,76 @@ def test_targeted_variant_grid_is_bounded() -> None:
     assert all(not row["fallback"] for row in challengers)
     assert all(row["working_history"] == "extended" for row in challengers)
     assert all(row["working_fallback"] for row in challengers)
+
+
+def test_common_reference_target_is_frozen_and_candidate_target_is_diagnostic() -> None:
+    baseline = SimpleNamespace(
+        model={
+            "SKU-1": SimpleNamespace(
+                ending_inventory_qty=Decimal("3"),
+                ending_target_stock_qty=Decimal("2"),
+            )
+        }
+    )
+    candidate = SimpleNamespace(
+        model={
+            "SKU-1": SimpleNamespace(
+                ending_inventory_qty=Decimal("3"),
+                ending_target_stock_qty=Decimal("0"),
+            )
+        }
+    )
+    frozen_target = {
+        code: metric.ending_target_stock_qty for code, metric in baseline.model.items()
+    }
+
+    assert _ending_excess_stock_qty(baseline) == Decimal("1")
+    assert _ending_excess_stock_qty(candidate) == Decimal("3")
+    assert _ending_excess_stock_qty(candidate, target_by_code=frozen_target) == Decimal("1")
+
+    baseline_metrics = {
+        "served_sales_qty": "10",
+        "gross_profit_rub": "100",
+        "economic_effect_rub": "90",
+        "gmroi": "2",
+        "ending_excess_stock_qty": "1",
+        "ending_excess_stock_qty_common_reference": "1",
+    }
+    candidate_metrics = {
+        **baseline_metrics,
+        "ending_excess_stock_qty": "3",
+    }
+    assert _passes_current_guardrails(candidate_metrics, baseline_metrics) is True
+
+    candidate_metrics["ending_excess_stock_qty"] = "0"
+    candidate_metrics["ending_excess_stock_qty_common_reference"] = "2"
+    assert _passes_current_guardrails(candidate_metrics, baseline_metrics) is False
+
+
+def test_common_reference_target_artifact_is_idempotent(tmp_path: Path) -> None:
+    path = tmp_path / "common-reference-targets.json"
+    targets = {"SKU-2": Decimal("2.5"), "SKU-1": Decimal("1")}
+
+    _write_common_reference_targets(
+        path,
+        baseline_variant_id="baseline",
+        target_by_code=targets,
+    )
+    first_checksum = _sha256(path)
+    _write_common_reference_targets(
+        path,
+        baseline_variant_id="baseline",
+        target_by_code=targets,
+    )
+
+    assert _sha256(path) == first_checksum
+    assert (
+        _load_common_reference_targets(
+            path,
+            baseline_variant_id="baseline",
+        )
+        == targets
+    )
 
 
 def test_selected_candidate_audit_attributes_incremental_ending_excess() -> None:
@@ -205,6 +281,7 @@ def test_metric_reconciliation_rejects_nonzero_delta() -> None:
         "gmroi": "2",
         "ending_inventory_qty": "3",
         "ending_excess_stock_qty": "1",
+        "ending_excess_stock_qty_common_reference": "1",
         "recommended_order_qty": "2",
         "order_line_count": "1",
         "ordered_safety_stock_qty": "1",

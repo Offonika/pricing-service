@@ -21,7 +21,7 @@ depends_on:
   - docs/specs/pricing-service-architecture-hardening.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-13"
+updated_at: "2026-08-15"
 ---
 
 # Назначение
@@ -168,6 +168,16 @@ JSON/CSV/XLSX артефактов сохраняются.
 отсутствие регрессий: одинаковые входы должны давать эквивалентные counters,
 артефакты, изменения состояния и внешние side effects до и после переключения.
 
+ОТМЕНЕНО (2026-08-15): требование не возвращать никакую версию job до выпуска v2
+schema+code оказалось избыточным после проверки active release. Его заменяет
+восстановление проверенного v1-кода, совместимого с текущей production-схемой;
+обязательный совместный schema+code release сохраняется только для будущего v2.
+
+РЕШЕНИЕ (2026-08-15): после временного отключения падающего mutable cron контур
+восстановлен на schema-compatible active release `task-2985-matching-rejection-fix-
+20260814-25d0f9d`. Перед включением выполнены dry-run, backup двух production-таблиц
+и live readback; v2 и его миграции остаются отдельным rollout.
+
 1. Выпускать небольшими slices по одному job-контру.
 2. Перед переключением сравнить counters/artifacts с текущим production.
 3. Сначала выполнить scheduled job в штатном режиме без новых external side effects.
@@ -175,6 +185,13 @@ JSON/CSV/XLSX артефактов сохраняются.
 
 # Changelog
 
+- 2026-08-15 — `assortment_lifecycle_classification` восстановлен на active release:
+  dry-run и live обработали по 2 734 товара, live создал run `1210`, сохранил
+  47 613 current-строк без дублей и завершился со status `0`; v2 отделён от
+  восстановительного rollout.
+- 2026-08-15 — пользователь подтвердил начало исправления; падающий hourly cron
+  `assortment_lifecycle_classification` временно отключён с адресным backup, а
+  возврат разрешён только после совместимого schema+code release.
 - 2026-08-13 — третий canary `sku_result_sync_ut103` подтверждён четырьмя штатными
   запусками; четвёртый кандидат `assortment_lifecycle_classification` остановлен до
   отдельного выпуска schema+code: действующий mutable-код несовместим с production DB.

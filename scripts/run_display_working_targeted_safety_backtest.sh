@@ -30,7 +30,7 @@ shift
 run_id="${WORKING_TARGETED_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
 log_dir="$repo_root/.local/logs/working-targeted-safety"
 log_path="$log_dir/$run_id.log"
-output_dir="reports/assortment_lifecycle/backtest-2026-01-01_2026-07-31/working-targeted-safety-backtest-2026-08-15"
+output_dir="${WORKING_TARGETED_OUTPUT_DIR:-reports/assortment_lifecycle/backtest-2026-01-01_2026-07-31/working-targeted-safety-backtest-2026-08-15-v3}"
 mkdir -p "$log_dir"
 umask 077
 exec >>"$log_path" 2>&1

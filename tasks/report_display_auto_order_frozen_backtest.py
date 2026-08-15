@@ -1644,6 +1644,10 @@ def simulate_scenario(
     keep_detail: bool,
     demand_sample_cache: dict[tuple[str, date, int], list[Decimal]] | None = None,
     fallback_demand_samples: Mapping[tuple[str, date, int], Sequence[Decimal]] | None = None,
+    working_demand_sample_cache: dict[tuple[str, date, int], list[Decimal]] | None = None,
+    working_fallback_demand_samples: (
+        Mapping[tuple[str, date, int], Sequence[Decimal]] | None
+    ) = None,
     working_safety_trigger_fraction: Decimal = ZERO,
     working_safety_unit_cap: int | None = None,
     working_safety_hurdle_multiplier: Decimal = ONE,
@@ -2700,8 +2704,20 @@ def simulate_scenario(
                     AssortmentStatus.SALE.value,
                     AssortmentStatus.WORKING.value,
                 }:
+                    status_demand_samples = (
+                        working_demand_sample_cache
+                        if status == AssortmentStatus.WORKING.value
+                        and working_demand_sample_cache is not None
+                        else demand_samples
+                    )
+                    status_fallback_demand_samples = (
+                        working_fallback_demand_samples
+                        if status == AssortmentStatus.WORKING.value
+                        and working_fallback_demand_samples is not None
+                        else fallback_demand_samples
+                    )
                     cache_key = (code, cursor, lead_days + policy.order_cadence_days)
-                    own_samples = demand_samples.get(cache_key)
+                    own_samples = status_demand_samples.get(cache_key)
                     if own_samples is None:
                         own_samples = historical_forecast_error_samples(
                             decision_history_by_code.get(code, ()),
@@ -2710,13 +2726,15 @@ def simulate_scenario(
                             order_cadence_days=policy.order_cadence_days,
                             lookback_days=config.safety_lookback_days,
                         )
-                        demand_samples[cache_key] = own_samples
+                        status_demand_samples[cache_key] = own_samples
                     samples = own_samples
                     safety_sample_source = (
                         "own" if len(own_samples) >= config.safety_min_samples else "insufficient"
                     )
                     if len(own_samples) < config.safety_min_samples:
-                        fallback_samples = list((fallback_demand_samples or {}).get(cache_key, ()))
+                        fallback_samples = list(
+                            (status_fallback_demand_samples or {}).get(cache_key, ())
+                        )
                         if len(fallback_samples) >= config.safety_min_samples:
                             samples = fallback_samples
                             safety_sample_source = "comparable_group"
@@ -2789,7 +2807,7 @@ def simulate_scenario(
                             cursor,
                             lead_days + policy.order_cadence_days,
                         )
-                        own_p75_samples = demand_samples.get(p75_cache_key)
+                        own_p75_samples = status_demand_samples.get(p75_cache_key)
                         if own_p75_samples is None:
                             own_p75_samples = historical_forecast_error_samples(
                                 decision_history_by_code.get(code, ()),
@@ -2798,7 +2816,7 @@ def simulate_scenario(
                                 order_cadence_days=policy.order_cadence_days,
                                 lookback_days=config.safety_lookback_days,
                             )
-                            demand_samples[p75_cache_key] = own_p75_samples
+                            status_demand_samples[p75_cache_key] = own_p75_samples
                         p75_samples = own_p75_samples
                         safety_sample_source = (
                             "own"
@@ -2807,7 +2825,7 @@ def simulate_scenario(
                         )
                         if len(own_p75_samples) < config.safety_min_samples:
                             fallback_p75_samples = list(
-                                (fallback_demand_samples or {}).get(p75_cache_key, ())
+                                (status_fallback_demand_samples or {}).get(p75_cache_key, ())
                             )
                             if len(fallback_p75_samples) >= config.safety_min_samples:
                                 p75_samples = fallback_p75_samples

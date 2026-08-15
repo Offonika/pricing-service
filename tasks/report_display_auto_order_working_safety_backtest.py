@@ -14,7 +14,7 @@ import hashlib
 import json
 import os
 from bisect import bisect_right
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, replace
 from datetime import date, timedelta
 from decimal import Decimal
@@ -444,6 +444,11 @@ def _period_metrics(
         if period_from <= date.fromisoformat(str(row["decision_date"])) <= period_to
         and (stage is None or _clean(row.get("status")) == stage)
     ]
+    scoped_model = [
+        metric
+        for code, metric in result.model.items()
+        if stage is None or (final_status_by_code or {}).get(code) == stage
+    ]
     return {
         "observed_sales_qty": str(observed),
         "served_sales_qty": str(served),
@@ -466,8 +471,10 @@ def _period_metrics(
         "comparable_group_sample_decision_count": str(
             sum(row.get("safety_sample_source") == "comparable_group" for row in decisions)
         ),
-        "recommended_order_qty": str(
-            sum((_decimal(row.get("recommended_order_qty")) for row in decisions), ZERO)
+        "recommended_order_qty": str(sum((metric.order_qty for metric in scoped_model), ZERO)),
+        "order_line_count": str(sum(metric.order_lines for metric in scoped_model)),
+        "ordered_safety_stock_qty": str(
+            sum((metric.safety_stock_units_ordered for metric in scoped_model), ZERO)
         ),
     }
 
@@ -502,6 +509,12 @@ def _normalize_evaluation_economics(
     metrics["economic_effect_rub"] = str(gross_profit - carrying_cost)
 
 
+def _isolated_sample_cache(
+    cache: Mapping[tuple[str, date, int], Sequence[Decimal]],
+) -> dict[tuple[str, date, int], list[Decimal]]:
+    return {key: list(values) for key, values in cache.items()}
+
+
 def _simulate_variant(
     *,
     variant_id: str,
@@ -519,6 +532,10 @@ def _simulate_variant(
     spike_keys: set[tuple[date, str]],
     spike_rates: Mapping[tuple[date, str], Decimal],
     representation_minimums: Mapping[tuple[date, str], Decimal],
+    working_demand_sample_cache: dict[tuple[str, date, int], list[Decimal]] | None = None,
+    working_fallback_demand_samples: (
+        Mapping[tuple[str, date, int], Sequence[Decimal]] | None
+    ) = None,
     working_safety_unit_cap: int | None = None,
     working_safety_hurdle_multiplier: Decimal = ONE,
     working_safety_require_shortage: bool = False,
@@ -529,6 +546,12 @@ def _simulate_variant(
 ) -> SimulationResult:
     scenario = replace(base_scenario, scenario_id=variant_id, cost=cost)
     active_codes = {code for _business_date, code in inputs.fact_by_key}
+    isolated_demand_sample_cache = _isolated_sample_cache(demand_sample_cache)
+    isolated_working_demand_sample_cache = (
+        _isolated_sample_cache(working_demand_sample_cache)
+        if working_demand_sample_cache is not None
+        else None
+    )
     return simulate_scenario(
         scenario=scenario,
         fact_rows_by_date=inputs.fact_rows_by_date,
@@ -546,8 +569,10 @@ def _simulate_variant(
         keep_detail=True,
         keep_decision_detail=keep_decision_detail,
         keep_loss_detail=False,
-        demand_sample_cache=demand_sample_cache,
+        demand_sample_cache=isolated_demand_sample_cache,
         fallback_demand_samples=fallback_demand_samples,
+        working_demand_sample_cache=isolated_working_demand_sample_cache,
+        working_fallback_demand_samples=working_fallback_demand_samples,
         working_safety_trigger_fraction=trigger_fraction,
         working_safety_unit_cap=working_safety_unit_cap,
         working_safety_hurdle_multiplier=working_safety_hurdle_multiplier,
@@ -604,8 +629,10 @@ def _variants_for_experiment(experiment: str) -> list[dict[str, Any]]:
             variants.append(
                 {
                     "variant_id": f"targeted_cap{unit_cap}_h{hurdle_token}",
-                    "history": "extended",
-                    "fallback": True,
+                    "history": "current",
+                    "fallback": False,
+                    "working_history": "extended",
+                    "working_fallback": True,
                     "cost": "base",
                     "trigger": ONE,
                     "unit_cap": unit_cap,
@@ -618,6 +645,229 @@ def _variants_for_experiment(experiment: str) -> list[dict[str, Any]]:
                 }
             )
     return variants
+
+
+def _selected_candidate_audit(
+    result: SimulationResult,
+    *,
+    baseline_result: SimulationResult,
+    period_from: date,
+    period_to: date,
+    final_status_by_code: Mapping[str, str],
+    name_by_code: Mapping[str, str] | None = None,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    decisions = [
+        row
+        for row in result.decision_rows
+        if period_from <= date.fromisoformat(str(row["decision_date"])) <= period_to
+        and _clean(row.get("status")) == "working"
+    ]
+    by_code: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {
+            "decision_count": 0,
+            "positive_safety_decision_count": 0,
+            "recommended_order_qty": ZERO,
+            "max_safety_qty": ZERO,
+            "comparable_group_decision_count": 0,
+            "last_safety_sample_source": "",
+            "last_projected_shortage_qty": ZERO,
+            "last_blocker": "",
+        }
+    )
+    blockers: Counter[str] = Counter()
+    for row in decisions:
+        code = _clean(row.get("nomenclature_code"))
+        if not code:
+            continue
+        summary = by_code[code]
+        safety_qty = _decimal(row.get("economic_safety_stock_qty"))
+        summary["decision_count"] += 1
+        summary["positive_safety_decision_count"] += int(safety_qty > ZERO)
+        summary["recommended_order_qty"] += _decimal(row.get("recommended_order_qty"))
+        summary["max_safety_qty"] = max(summary["max_safety_qty"], safety_qty)
+        summary["comparable_group_decision_count"] += int(
+            row.get("safety_sample_source") == "comparable_group"
+        )
+        summary["last_safety_sample_source"] = _clean(row.get("safety_sample_source"))
+        summary["last_projected_shortage_qty"] = _decimal(
+            row.get("working_safety_projected_shortage_qty")
+        )
+        summary["last_blocker"] = _clean(row.get("working_safety_blocker"))
+        if summary["last_blocker"]:
+            blockers[summary["last_blocker"]] += 1
+
+    sku_rows: list[dict[str, Any]] = []
+    ending_excess_delta_total = ZERO
+    positive_ending_excess_delta_total = ZERO
+    positive_ending_excess_delta_sku_count = 0
+    common_reference_baseline_excess = ZERO
+    common_reference_selected_excess = ZERO
+    positive_excess_driver_counts: Counter[str] = Counter()
+    positive_excess_driver_qty: dict[str, Decimal] = defaultdict(Decimal)
+    for code, metric in result.model.items():
+        if final_status_by_code.get(code) != "working":
+            continue
+        baseline_metric = baseline_result.model.get(code)
+        if baseline_metric is None:
+            raise ValueError(f"baseline result is missing SKU {code}")
+        audit = by_code.get(code, {})
+        baseline_ending_excess = max(
+            ZERO,
+            baseline_metric.ending_inventory_qty - baseline_metric.ending_target_stock_qty,
+        )
+        selected_ending_excess = max(
+            ZERO,
+            metric.ending_inventory_qty - metric.ending_target_stock_qty,
+        )
+        common_reference_baseline_excess += baseline_ending_excess
+        common_reference_selected_excess += max(
+            ZERO,
+            metric.ending_inventory_qty - baseline_metric.ending_target_stock_qty,
+        )
+        ending_excess_delta = selected_ending_excess - baseline_ending_excess
+        ending_excess_delta_total += ending_excess_delta
+        if ending_excess_delta > ZERO:
+            positive_ending_excess_delta_total += ending_excess_delta
+            positive_ending_excess_delta_sku_count += 1
+            inventory_delta = metric.ending_inventory_qty - baseline_metric.ending_inventory_qty
+            target_delta = metric.ending_target_stock_qty - baseline_metric.ending_target_stock_qty
+            if inventory_delta > ZERO and target_delta < ZERO:
+                driver = "inventory_up_and_target_down"
+            elif inventory_delta > ZERO:
+                driver = "inventory_up"
+            elif target_delta < ZERO:
+                driver = "target_down_without_inventory_growth"
+            else:
+                driver = "other"
+            positive_excess_driver_counts[driver] += 1
+            positive_excess_driver_qty[driver] += ending_excess_delta
+        if (
+            metric.safety_stock_units_ordered <= ZERO
+            and ending_excess_delta == ZERO
+            and metric.served_observed_qty == baseline_metric.served_observed_qty
+            and metric.order_qty == baseline_metric.order_qty
+        ):
+            continue
+        sku_rows.append(
+            {
+                "nomenclature_code": code,
+                "name": (name_by_code or {}).get(code, ""),
+                "final_status": "working",
+                "simulation_served_sales_qty_baseline": str(baseline_metric.served_observed_qty),
+                "simulation_served_sales_qty_selected": str(metric.served_observed_qty),
+                "simulation_served_sales_qty_delta": str(
+                    metric.served_observed_qty - baseline_metric.served_observed_qty
+                ),
+                "simulation_lost_sales_qty_baseline": str(baseline_metric.lost_observed_qty),
+                "simulation_lost_sales_qty_selected": str(metric.lost_observed_qty),
+                "simulation_lost_sales_qty_delta": str(
+                    metric.lost_observed_qty - baseline_metric.lost_observed_qty
+                ),
+                "simulation_gross_profit_rub_delta": str(
+                    metric.gross_profit_rub - baseline_metric.gross_profit_rub
+                ),
+                "order_qty_baseline": str(baseline_metric.order_qty),
+                "order_qty_selected": str(metric.order_qty),
+                "order_qty_delta": str(metric.order_qty - baseline_metric.order_qty),
+                "order_value_rub_delta": str(
+                    metric.order_value_rub - baseline_metric.order_value_rub
+                ),
+                "ordered_safety_stock_qty": str(metric.safety_stock_units_ordered),
+                "ending_inventory_qty_baseline": str(baseline_metric.ending_inventory_qty),
+                "ending_inventory_qty_selected": str(metric.ending_inventory_qty),
+                "ending_inventory_qty_delta": str(
+                    metric.ending_inventory_qty - baseline_metric.ending_inventory_qty
+                ),
+                "ending_target_stock_qty_baseline": str(baseline_metric.ending_target_stock_qty),
+                "ending_target_stock_qty_selected": str(metric.ending_target_stock_qty),
+                "ending_excess_stock_qty_baseline": str(baseline_ending_excess),
+                "ending_excess_stock_qty_selected": str(selected_ending_excess),
+                "ending_excess_stock_qty_delta": str(ending_excess_delta),
+                "decision_count": audit.get("decision_count", 0),
+                "positive_safety_decision_count": audit.get("positive_safety_decision_count", 0),
+                "recommended_order_qty_from_decisions": str(
+                    audit.get("recommended_order_qty", ZERO)
+                ),
+                "max_safety_qty": str(audit.get("max_safety_qty", ZERO)),
+                "comparable_group_decision_count": audit.get("comparable_group_decision_count", 0),
+                "last_safety_sample_source": audit.get("last_safety_sample_source", ""),
+                "last_projected_shortage_qty": str(audit.get("last_projected_shortage_qty", ZERO)),
+                "last_blocker": audit.get("last_blocker", ""),
+            }
+        )
+    sku_rows.sort(
+        key=lambda row: (
+            _decimal(row["ending_excess_stock_qty_delta"]),
+            _decimal(row["ordered_safety_stock_qty"]),
+            _decimal(row["simulation_served_sales_qty_delta"]),
+        ),
+        reverse=True,
+    )
+    diagnostics = {
+        "decision_count": len(decisions),
+        "positive_safety_decision_count": sum(
+            _decimal(row.get("economic_safety_stock_qty")) > ZERO for row in decisions
+        ),
+        "positive_order_decision_count": sum(
+            _decimal(row.get("recommended_order_qty")) > ZERO for row in decisions
+        ),
+        "comparable_group_decision_count": sum(
+            row.get("safety_sample_source") == "comparable_group" for row in decisions
+        ),
+        "blocker_counts": dict(sorted(blockers.items())),
+        "audited_sku_count": len(sku_rows),
+        "ending_excess_stock_qty_delta": str(ending_excess_delta_total),
+        "positive_ending_excess_stock_qty_delta": str(positive_ending_excess_delta_total),
+        "positive_ending_excess_delta_sku_count": (positive_ending_excess_delta_sku_count),
+        "positive_excess_driver_breakdown": {
+            name: {
+                "sku_count": positive_excess_driver_counts[name],
+                "ending_excess_delta_qty": str(quantity),
+            }
+            for name, quantity in sorted(positive_excess_driver_qty.items())
+        },
+        "common_reference_target": {
+            "definition": "both variants evaluated against baseline ending target per SKU",
+            "baseline_ending_excess_stock_qty": str(common_reference_baseline_excess),
+            "selected_ending_excess_stock_qty": str(common_reference_selected_excess),
+            "ending_excess_stock_qty_delta": str(
+                common_reference_selected_excess - common_reference_baseline_excess
+            ),
+        },
+        "metric_scope_note": (
+            "ending fields are as of training_to; simulation sales, profit and order "
+            "fields cover the full simulation warm-up plus training interval"
+        ),
+    }
+    return sku_rows, diagnostics
+
+
+def _metric_reconciliation(
+    recalculated: Mapping[str, Any],
+    expected: Mapping[str, Any],
+) -> dict[str, Any]:
+    metric_names = (
+        "observed_sales_qty",
+        "served_sales_qty",
+        "lost_sales_qty",
+        "gross_profit_rub",
+        "average_inventory_value_rub",
+        "carrying_cost_rub",
+        "economic_effect_rub",
+        "gmroi",
+        "ending_inventory_qty",
+        "ending_excess_stock_qty",
+        "recommended_order_qty",
+        "order_line_count",
+        "ordered_safety_stock_qty",
+    )
+    deltas = {
+        name: str(_decimal(recalculated[name]) - _decimal(expected[name])) for name in metric_names
+    }
+    return {
+        "passed": all(abs(_decimal(value)) <= Decimal("0.000001") for value in deltas.values()),
+        "deltas": deltas,
+    }
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -664,6 +914,15 @@ def main(argv: list[str] | None = None) -> int:
         min_free_disk_gb=args.min_free_disk_gb,
         min_swap_free_mb=args.min_swap_free_mb,
     )
+    artifact_resource_preflight = preflight
+    previous_summary_path = args.output_dir / "analysis-summary.json"
+    if previous_summary_path.exists():
+        previous_summary = json.loads(previous_summary_path.read_text(encoding="utf-8"))
+        if (
+            previous_summary.get("experiment") == args.experiment
+            and previous_summary.get("lineage", {}).get("dataset_hash") == args.dataset_hash
+        ):
+            artifact_resource_preflight = previous_summary.get("resource_preflight", preflight)
     validate_preflight_directory(args.preflight_dir)
     validate_preflight_directory(args.warmup_preflight_dir)
     policy_v2 = load_assortment_lifecycle_v2_policy(args.policy_json)
@@ -790,6 +1049,7 @@ def main(argv: list[str] | None = None) -> int:
             flush=True,
         )
         extended = variant["history"] == "extended"
+        working_extended = variant.get("working_history") == "extended"
         result = _simulate_variant(
             variant_id=variant_id,
             base_scenario=selected_scenario,
@@ -803,6 +1063,10 @@ def main(argv: list[str] | None = None) -> int:
             fallback_demand_samples=(fallback_schedule if variant["fallback"] else None),
             trigger_fraction=_decimal(variant["trigger"]),
             demand_sample_cache=extended_cache if extended else current_cache,
+            working_demand_sample_cache=(extended_cache if working_extended else None),
+            working_fallback_demand_samples=(
+                fallback_schedule if variant.get("working_fallback") else None
+            ),
             spike_keys=spike_keys,
             spike_rates=spike_rates,
             representation_minimums=representation,
@@ -859,6 +1123,8 @@ def main(argv: list[str] | None = None) -> int:
             "variant_id": row["variant_id"],
             "history": row["history"],
             "fallback": row["fallback"],
+            "working_history": row.get("working_history", ""),
+            "working_fallback": row.get("working_fallback", ""),
             "cost": row["cost"],
             "trigger": row["trigger"],
             "safety_decision_annual_rate": row["safety_decision_annual_rate"],
@@ -872,7 +1138,8 @@ def main(argv: list[str] | None = None) -> int:
             "operating_mode": row.get("operating_mode", ""),
         }
         for scope in ("all", "working"):
-            for name, value in row[scope].items():
+            for name in sorted(row[scope]):
+                value = row[scope][name]
                 flat[f"{scope}_{name}"] = value
             for name, value in _metric_deltas(row[scope], baseline[scope]).items():
                 flat[f"{scope}_{name}_vs_current"] = value
@@ -893,6 +1160,132 @@ def main(argv: list[str] | None = None) -> int:
         )
         summary_rows.append(flat)
 
+    selected_candidate_audit: dict[str, Any] | None = None
+    if args.experiment == "targeted":
+        candidate_rows = [
+            row for row in summary_rows if str(row["variant_id"]).startswith("targeted_")
+        ]
+        selected_summary = max(
+            candidate_rows,
+            key=lambda row: _decimal(row["all_economic_effect_rub_delta_vs_current"]),
+        )
+        selected_variant = next(
+            row for row in variants if row["variant_id"] == selected_summary["variant_id"]
+        )
+        selected_metrics = next(
+            row for row in ordered if row["variant_id"] == selected_summary["variant_id"]
+        )
+        baseline_result = _simulate_variant(
+            variant_id=f"{baseline['variant_id']}_audit",
+            base_scenario=selected_scenario,
+            cost=costs[str(baseline["cost"])],
+            decision_rows_by_date=current_decisions,
+            inputs=inputs,
+            policy=policy,
+            config=config,
+            date_from=simulation_from,
+            date_to=period_to,
+            fallback_demand_samples=None,
+            trigger_fraction=_decimal(baseline["trigger"]),
+            demand_sample_cache=current_cache,
+            spike_keys=spike_keys,
+            spike_rates=spike_rates,
+            representation_minimums=representation,
+            keep_decision_detail=False,
+        )
+        selected_result = _simulate_variant(
+            variant_id=f"{selected_variant['variant_id']}_audit",
+            base_scenario=selected_scenario,
+            cost=costs[str(selected_variant["cost"])],
+            decision_rows_by_date=current_decisions,
+            inputs=inputs,
+            policy=policy,
+            config=config,
+            date_from=simulation_from,
+            date_to=period_to,
+            fallback_demand_samples=None,
+            trigger_fraction=_decimal(selected_variant["trigger"]),
+            demand_sample_cache=current_cache,
+            working_demand_sample_cache=extended_cache,
+            working_fallback_demand_samples=fallback_schedule,
+            spike_keys=spike_keys,
+            spike_rates=spike_rates,
+            representation_minimums=representation,
+            working_safety_unit_cap=int(selected_variant["unit_cap"]),
+            working_safety_hurdle_multiplier=_decimal(selected_variant["hurdle_multiplier"]),
+            working_safety_require_shortage=True,
+            working_safety_min_sales_days=int(selected_variant["min_sales_days"]),
+            working_safety_sales_lookback_days=int(selected_variant["sales_lookback_days"]),
+            working_safety_single_open_lot=True,
+            keep_decision_detail=True,
+        )
+        audit_reconciliation: dict[str, Any] = {}
+        for scope, stage in (("all", None), ("working", "working")):
+            baseline_recalculated = _period_metrics(
+                baseline_result,
+                period_from=period_from,
+                period_to=period_to,
+                stage=stage,
+                final_status_by_code=final_status_by_code,
+            )
+            selected_recalculated = _period_metrics(
+                selected_result,
+                period_from=period_from,
+                period_to=period_to,
+                stage=stage,
+                final_status_by_code=final_status_by_code,
+            )
+            for metrics in (baseline_recalculated, selected_recalculated):
+                _normalize_evaluation_economics(
+                    metrics,
+                    annual_rate=evaluation_annual_rate,
+                    period_days=evaluation_days,
+                )
+            audit_reconciliation[f"baseline_{scope}"] = _metric_reconciliation(
+                baseline_recalculated,
+                baseline[scope],
+            )
+            audit_reconciliation[f"selected_{scope}"] = _metric_reconciliation(
+                selected_recalculated,
+                selected_metrics[scope],
+            )
+        audit_reconciliation["passed"] = all(
+            row["passed"] for name, row in audit_reconciliation.items() if name != "passed"
+        )
+        if not audit_reconciliation["passed"]:
+            raise SystemExit("selected candidate audit does not reproduce scenario metrics")
+
+        name_by_code: dict[str, str] = {}
+        for business_date in sorted(current_decisions):
+            for row in current_decisions[business_date]:
+                code = _clean(row.get("nomenclature_code"))
+                name = _clean(row.get("name"))
+                if code and name:
+                    name_by_code[code] = name
+        sku_rows, audit_diagnostics = _selected_candidate_audit(
+            selected_result,
+            baseline_result=baseline_result,
+            period_from=period_from,
+            period_to=period_to,
+            final_status_by_code=final_status_by_code,
+            name_by_code=name_by_code,
+        )
+        audit_diagnostics["scenario_reconciliation"] = audit_reconciliation
+        audit_csv_name = "selected-candidate-sku-audit.csv"
+        audit_json_name = "selected-candidate-diagnostics.json"
+        _write_csv(args.output_dir / audit_csv_name, sku_rows)
+        _write_json(args.output_dir / audit_json_name, audit_diagnostics)
+        selected_candidate_audit = {
+            "variant_id": selected_variant["variant_id"],
+            "selection_rule": "maximum_training_economic_effect_for_diagnostics_only",
+            "passes_current_guardrails": selected_summary["passes_current_guardrails"],
+            "sku_audit_file": audit_csv_name,
+            "diagnostics_file": audit_json_name,
+            "diagnostics": audit_diagnostics,
+        }
+        del baseline_result, selected_result
+        gc.collect()
+
     expected = source_summary["totals"]["v2"]
     baseline_reconciliation = {
         "served_sales_delta_qty": str(
@@ -911,7 +1304,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     payload = {
         "schema": (
-            "display_working_targeted_safety_backtest.v1"
+            "display_working_targeted_safety_backtest.v2"
             if args.experiment == "targeted"
             else "display_working_safety_warmup_trigger_backtest.v1"
         ),
@@ -929,10 +1322,17 @@ def main(argv: list[str] | None = None) -> int:
         "lifecycle_hash": lifecycle_hash,
         "fallback_diagnostics": fallback_diagnostics,
         "current_history_diagnostics": current_history_diagnostics,
-        "resource_preflight": preflight,
+        "resource_preflight": artifact_resource_preflight,
         "baseline_reconciliation": baseline_reconciliation,
         "scenario_count": len(summary_rows),
         "scenarios": summary_rows,
+        "selected_candidate_audit": selected_candidate_audit,
+        "targeted_scope_isolation": (
+            "extended own-history and comparable-group fallback are applied only to "
+            "working; sale keeps the current-history baseline"
+            if args.experiment == "targeted"
+            else "not_applicable"
+        ),
         "operational_alternatives": {
             "network_redistribution": (
                 "already represented as perfect pooled network stock; location-level "
@@ -958,11 +1358,22 @@ def main(argv: list[str] | None = None) -> int:
     }
     _write_json(args.output_dir / "analysis-summary.json", payload)
     _write_csv(args.output_dir / "scenario-summary.csv", summary_rows)
+    manifest_files = {
+        "analysis-summary.json": _sha256(args.output_dir / "analysis-summary.json"),
+        "scenario-summary.csv": _sha256(args.output_dir / "scenario-summary.csv"),
+        "scenario-checkpoint.jsonl": _sha256(checkpoint_path),
+    }
+    if selected_candidate_audit is not None:
+        for name in (
+            selected_candidate_audit["sku_audit_file"],
+            selected_candidate_audit["diagnostics_file"],
+        ):
+            manifest_files[name] = _sha256(args.output_dir / name)
     _write_json(
         args.output_dir / "analysis-manifest.json",
         {
             "schema": (
-                "display_working_targeted_safety_manifest.v1"
+                "display_working_targeted_safety_manifest.v2"
                 if args.experiment == "targeted"
                 else "display_working_safety_warmup_trigger_manifest.v1"
             ),
@@ -970,11 +1381,7 @@ def main(argv: list[str] | None = None) -> int:
             "status": payload["status"],
             "production_authorized": False,
             "production_action": "none_read_only",
-            "files": {
-                "analysis-summary.json": _sha256(args.output_dir / "analysis-summary.json"),
-                "scenario-summary.csv": _sha256(args.output_dir / "scenario-summary.csv"),
-                "scenario-checkpoint.jsonl": _sha256(checkpoint_path),
-            },
+            "files": manifest_files,
         },
     )
     print(json.dumps(payload, ensure_ascii=False, default=str), flush=True)

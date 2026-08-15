@@ -78,6 +78,7 @@ class DocumentLineMapping:
     posted_column: str = "_Posted"
     marked_column: str = "_Marked"
     line_price_column: str = ""
+    line_quantity_column: str = ""
     cargo_handoff_column: str = ""
     line_supplier_order_column: str = ""
 
@@ -93,6 +94,7 @@ class DocumentLineMapping:
             posted_column=str(payload.get("posted_column") or "_Posted"),
             marked_column=str(payload.get("marked_column") or "_Marked"),
             line_price_column=str(payload.get("line_price_column") or ""),
+            line_quantity_column=str(payload.get("line_quantity_column") or ""),
             cargo_handoff_column=str(payload.get("cargo_handoff_column") or ""),
             line_supplier_order_column=str(payload.get("line_supplier_order_column") or ""),
         )
@@ -562,6 +564,8 @@ def validate_document_line_mapping(engine: Engine, mapping: DocumentLineMapping)
     line_required = {mapping.line_document_column, mapping.line_nomenclature_column}
     if mapping.line_price_column:
         line_required.add(mapping.line_price_column)
+    if mapping.line_quantity_column:
+        line_required.add(mapping.line_quantity_column)
     if mapping.line_supplier_order_column:
         line_required.add(mapping.line_supplier_order_column)
     for column in sorted(line_required - table_columns[mapping.line_table]):

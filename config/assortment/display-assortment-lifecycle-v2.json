@@ -2,9 +2,9 @@
   "schema": "display_assortment_lifecycle_v2_policy.v1",
   "live_enabled": false,
   "shadow_policy": {
-    "policy_id": "display-shadow-x1.5-d14-i2-g8",
+    "policy_id": "display-shadow-x1.2-d14-i2-g8",
     "demand": {
-      "growth_multiplier": 1.5,
+      "growth_multiplier": 1.2,
       "confirmation_days": 14,
       "max_single_day_share": 0.7,
       "min_independent_sales": 2,

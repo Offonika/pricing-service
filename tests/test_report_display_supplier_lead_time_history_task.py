@@ -4,6 +4,9 @@ from datetime import date
 from pathlib import Path
 
 from tasks.report_display_supplier_lead_time_history import (
+    DEFAULT_RECEIPT_MAPPING_JSON,
+    RECEIPT_MAPPING_UNRESOLVED,
+    _load_document_line_mapping,
     aggregate_lead_time_rows,
     build_lead_time_detail_rows,
     build_seasonality_summary,
@@ -23,6 +26,16 @@ def test_display_supplier_lead_time_cron_uses_active_release() -> None:
     assert f"REPO_DIR={active_release}" in cron
     assert f"{active_release}/infra/cron/display_supplier_lead_time_refresh.sh" in cron
     assert "/opt/MM/pricing-service/infra/cron/display_supplier_lead_time_refresh.sh" not in cron
+
+
+def test_display_receipt_mapping_uses_actual_line_quantity() -> None:
+    mapping = _load_document_line_mapping(
+        DEFAULT_RECEIPT_MAPPING_JSON,
+        error_code=RECEIPT_MAPPING_UNRESOLVED,
+    )
+
+    assert mapping.line_quantity_column == "_Fld4514"
+    assert mapping.line_supplier_order_column == "_Fld4525RRef"
 
 
 def test_display_supplier_lead_time_matches_nearest_receipt_after_cargo() -> None:

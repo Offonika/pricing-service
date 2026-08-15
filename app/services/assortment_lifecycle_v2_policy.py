@@ -14,7 +14,7 @@ DEFAULT_ASSORTMENT_LIFECYCLE_V2_POLICY_PATH = Path(
 
 @dataclass(frozen=True)
 class DemandStatePolicy:
-    growth_multiplier: Decimal = Decimal("1.5")
+    growth_multiplier: Decimal = Decimal("1.2")
     confirmation_days: int = 14
     max_single_day_share: Decimal = Decimal("0.70")
     min_independent_sales: int = 2

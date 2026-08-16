@@ -43,6 +43,12 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         DeviceBrandAlias,
     )
     from app.models.device_model import Keyword, KeywordDemand, PhoneModel, PhoneModelAlias
+    from app.models.display_family_registry import (
+        DisplayFamily,
+        DisplayFamilyDecisionEvent,
+        DisplayFamilyMember,
+        DisplayFamilyRegistryVersion,
+    )
     from app.models.executive_dashboard import (
         ExecutiveActionItem,
         ExecutiveDashboardSnapshot,
@@ -188,6 +194,10 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "DeviceBrand",
         "DeviceBrandAlias",
         "CompatibilityMappingDecision",
+        "DisplayFamilyRegistryVersion",
+        "DisplayFamily",
+        "DisplayFamilyMember",
+        "DisplayFamilyDecisionEvent",
         "Keyword",
         "KeywordDemand",
         "ExpertiseCase",

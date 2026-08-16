@@ -1850,6 +1850,167 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/matching/compatibility/display-families/summary:
+    get:
+      summary: Get Display Family Registry Summary
+      operationId: get_display_family_registry_summary_api_matching_compatibility_display_families_summary_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DisplayFamilyRegistrySummarySchema'
+      security:
+      - HTTPBasic: []
+      - HTTPBearer: []
+  /api/matching/compatibility/display-families/versions:
+    get:
+      summary: Get Display Family Registry Versions
+      operationId: get_display_family_registry_versions_api_matching_compatibility_display_families_versions_get
+      security:
+      - HTTPBasic: []
+      - HTTPBearer: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DisplayFamilyRegistryVersionSchema'
+                title: Response Get Display Family Registry Versions Api Matching Compatibility Display Families Versions
+                  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/matching/compatibility/display-families:
+    get:
+      summary: Get Display Families
+      operationId: get_display_families_api_matching_compatibility_display_families_get
+      security:
+      - HTTPBasic: []
+      - HTTPBearer: []
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Page Size
+      - name: search
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Search
+      - name: singleton
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Singleton
+      - name: has_warnings
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Has Warnings
+      - name: needs_review
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Needs Review
+      - name: matching_review
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Matching Review
+      - name: quality_unknown
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Quality Unknown
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedDisplayFamiliesSchema'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/matching/compatibility/display-families/{family_id}:
+    get:
+      summary: Get Display Family
+      operationId: get_display_family_api_matching_compatibility_display_families__family_id__get
+      security:
+      - HTTPBasic: []
+      - HTTPBearer: []
+      parameters:
+      - name: family_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Family Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DisplayFamilyDetailSchema'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/matching/products:
     get:
       summary: List Products
@@ -14922,6 +15083,384 @@ components:
       - model_name
       - id
       title: DeviceModelResponse
+    DisplayFamilyDecisionEventSchema:
+      properties:
+        id:
+          type: integer
+          title: Id
+        action:
+          type: string
+          title: Action
+        actor:
+          type: string
+          title: Actor
+        reason:
+          type: string
+          title: Reason
+        effective_at:
+          type: string
+          format: date
+          title: Effective At
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        product_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Product Id
+        evidence_snapshot:
+          additionalProperties: true
+          type: object
+          title: Evidence Snapshot
+      type: object
+      required:
+      - id
+      - action
+      - actor
+      - reason
+      - effective_at
+      - created_at
+      title: DisplayFamilyDecisionEventSchema
+    DisplayFamilyDetailSchema:
+      properties:
+        id:
+          type: integer
+          title: Id
+        family_key:
+          type: string
+          title: Family Key
+        member_count:
+          type: integer
+          title: Member Count
+        is_singleton:
+          type: boolean
+          title: Is Singleton
+        total_current_stock_qty:
+          type: integer
+          title: Total Current Stock Qty
+        review_member_count:
+          type: integer
+          title: Review Member Count
+        matching_review_member_count:
+          type: integer
+          title: Matching Review Member Count
+        quality_unknown_member_count:
+          type: integer
+          title: Quality Unknown Member Count
+        construction_unknown_member_count:
+          type: integer
+          title: Construction Unknown Member Count
+        phone_model_ids:
+          items:
+            type: integer
+          type: array
+          title: Phone Model Ids
+        phone_models:
+          items:
+            type: string
+          type: array
+          title: Phone Models
+        segment_ids:
+          items:
+            type: string
+          type: array
+          title: Segment Ids
+        warning_codes:
+          items:
+            type: string
+          type: array
+          title: Warning Codes
+        note_codes:
+          items:
+            type: string
+          type: array
+          title: Note Codes
+        registry_version:
+          $ref: '#/components/schemas/DisplayFamilyRegistryVersionSchema'
+        physical_model_signatures:
+          items:
+            items:
+              type: string
+            type: array
+          type: array
+          title: Physical Model Signatures
+        evidence_snapshot:
+          additionalProperties: true
+          type: object
+          title: Evidence Snapshot
+        members:
+          items:
+            $ref: '#/components/schemas/DisplayFamilyMemberSchema'
+          type: array
+          title: Members
+        events:
+          items:
+            $ref: '#/components/schemas/DisplayFamilyDecisionEventSchema'
+          type: array
+          title: Events
+      type: object
+      required:
+      - id
+      - family_key
+      - member_count
+      - is_singleton
+      - total_current_stock_qty
+      - review_member_count
+      - matching_review_member_count
+      - quality_unknown_member_count
+      - construction_unknown_member_count
+      - registry_version
+      title: DisplayFamilyDetailSchema
+    DisplayFamilyMemberSchema:
+      properties:
+        id:
+          type: integer
+          title: Id
+        product_id:
+          type: integer
+          title: Product Id
+        segment_id:
+          type: string
+          title: Segment Id
+        proposal_status:
+          type: string
+          title: Proposal Status
+        quality_segment:
+          type: string
+          title: Quality Segment
+        construction_segment:
+          type: string
+          title: Construction Segment
+        requires_manual_review:
+          type: boolean
+          title: Requires Manual Review
+        current_stock_qty:
+          type: integer
+          title: Current Stock Qty
+        warning_codes:
+          items:
+            type: string
+          type: array
+          title: Warning Codes
+        note_codes:
+          items:
+            type: string
+          type: array
+          title: Note Codes
+        scope_reasons:
+          items:
+            type: string
+          type: array
+          title: Scope Reasons
+        product:
+          additionalProperties: true
+          type: object
+          title: Product
+        matching_evidence:
+          additionalProperties: true
+          type: object
+          title: Matching Evidence
+        identity_evidence:
+          additionalProperties: true
+          type: object
+          title: Identity Evidence
+      type: object
+      required:
+      - id
+      - product_id
+      - segment_id
+      - proposal_status
+      - quality_segment
+      - construction_segment
+      - requires_manual_review
+      - current_stock_qty
+      title: DisplayFamilyMemberSchema
+    DisplayFamilyRegistrySummarySchema:
+      properties:
+        active_version:
+          anyOf:
+          - $ref: '#/components/schemas/DisplayFamilyRegistryVersionSchema'
+          - type: 'null'
+        version_count:
+          type: integer
+          title: Version Count
+        family_count:
+          type: integer
+          title: Family Count
+        member_count:
+          type: integer
+          title: Member Count
+        singleton_family_count:
+          type: integer
+          title: Singleton Family Count
+        multi_sku_family_count:
+          type: integer
+          title: Multi Sku Family Count
+        review_member_count:
+          type: integer
+          title: Review Member Count
+        matching_review_member_count:
+          type: integer
+          title: Matching Review Member Count
+        quality_unknown_member_count:
+          type: integer
+          title: Quality Unknown Member Count
+        warning_counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Warning Counts
+        status_counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Status Counts
+      type: object
+      required:
+      - version_count
+      - family_count
+      - member_count
+      - singleton_family_count
+      - multi_sku_family_count
+      - review_member_count
+      - matching_review_member_count
+      - quality_unknown_member_count
+      title: DisplayFamilyRegistrySummarySchema
+    DisplayFamilyRegistryVersionSchema:
+      properties:
+        id:
+          type: integer
+          title: Id
+        version_number:
+          type: integer
+          title: Version Number
+        status:
+          type: string
+          enum:
+          - active
+          - superseded
+          - rolled_back
+          title: Status
+        effective_from:
+          type: string
+          format: date
+          title: Effective From
+        source_schema:
+          type: string
+          title: Source Schema
+        inventory_checksum:
+          type: string
+          title: Inventory Checksum
+        membership_checksum:
+          type: string
+          title: Membership Checksum
+        family_count:
+          type: integer
+          title: Family Count
+        member_count:
+          type: integer
+          title: Member Count
+        created_by:
+          type: string
+          title: Created By
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        superseded_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Superseded At
+        rolled_back_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Rolled Back At
+      type: object
+      required:
+      - id
+      - version_number
+      - status
+      - effective_from
+      - source_schema
+      - inventory_checksum
+      - membership_checksum
+      - family_count
+      - member_count
+      - created_by
+      - created_at
+      title: DisplayFamilyRegistryVersionSchema
+    DisplayFamilyRowSchema:
+      properties:
+        id:
+          type: integer
+          title: Id
+        family_key:
+          type: string
+          title: Family Key
+        member_count:
+          type: integer
+          title: Member Count
+        is_singleton:
+          type: boolean
+          title: Is Singleton
+        total_current_stock_qty:
+          type: integer
+          title: Total Current Stock Qty
+        review_member_count:
+          type: integer
+          title: Review Member Count
+        matching_review_member_count:
+          type: integer
+          title: Matching Review Member Count
+        quality_unknown_member_count:
+          type: integer
+          title: Quality Unknown Member Count
+        construction_unknown_member_count:
+          type: integer
+          title: Construction Unknown Member Count
+        phone_model_ids:
+          items:
+            type: integer
+          type: array
+          title: Phone Model Ids
+        phone_models:
+          items:
+            type: string
+          type: array
+          title: Phone Models
+        segment_ids:
+          items:
+            type: string
+          type: array
+          title: Segment Ids
+        warning_codes:
+          items:
+            type: string
+          type: array
+          title: Warning Codes
+        note_codes:
+          items:
+            type: string
+          type: array
+          title: Note Codes
+      type: object
+      required:
+      - id
+      - family_key
+      - member_count
+      - is_singleton
+      - total_current_stock_qty
+      - review_member_count
+      - matching_review_member_count
+      - quality_unknown_member_count
+      - construction_unknown_member_count
+      title: DisplayFamilyRowSchema
     ExecutiveCashflowDailyRow:
       properties:
         business_date:
@@ -21115,6 +21654,29 @@ components:
       - items
       - total
       title: PaginatedCandidates
+    PaginatedDisplayFamiliesSchema:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/DisplayFamilyRowSchema'
+          type: array
+          title: Items
+        page:
+          type: integer
+          title: Page
+        page_size:
+          type: integer
+          title: Page Size
+        total:
+          type: integer
+          title: Total
+      type: object
+      required:
+      - items
+      - page
+      - page_size
+      - total
+      title: PaginatedDisplayFamiliesSchema
     PaginatedProducts:
       properties:
         items:

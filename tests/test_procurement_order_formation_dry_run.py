@@ -4,6 +4,8 @@ from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
+import pytest
+
 from app.models.procurement_order_formation import ProcurementOrderFormation
 from app.services.bitrix_order_formation import BitrixCatalogProduct
 from app.services.master_mobile_catalog import ProductMediaResolution
@@ -12,6 +14,7 @@ from app.services.procurement_order_formation_workspace import list_orders
 from tasks.build_procurement_order_formation_dry_run import (
     build_grouped_orders,
     build_summary,
+    parse_args,
     persist_grouped_orders,
     select_order_rows,
 )
@@ -52,6 +55,117 @@ def _lead(code: str, supplier_code: str, supplier_ref: str) -> dict[str, str]:
 def test_select_order_rows_keeps_only_positive_order_decisions() -> None:
     rows = [_source("A", "5", "A"), _source("B", "0", "B")]
     assert [row["nomenclature_code"] for row in select_order_rows(rows)] == ["A"]
+
+
+def test_shadow_mode_rejects_every_persistence_flag() -> None:
+    with pytest.raises(SystemExit):
+        parse_args(["--shadow", "--persist-db"])
+    with pytest.raises(SystemExit):
+        parse_args(["--shadow", "--supersede-open-batches"])
+
+
+def test_family_recommendation_selects_both_donor_and_recipient() -> None:
+    donor = _source("A", "5", "A")
+    donor.update(
+        display_family_recommendation_status="allocated_shadow",
+        display_family_baseline_order_qty="5",
+        display_family_allocated_order_qty="0",
+    )
+    recipient = _source("B", "0", "B")
+    recipient.update(
+        display_family_recommendation_status="allocated_shadow",
+        display_family_baseline_order_qty="0",
+        display_family_allocated_order_qty="5",
+    )
+
+    selected = select_order_rows([donor, recipient])
+
+    assert [row["nomenclature_code"] for row in selected] == ["A", "B"]
+
+
+def test_grouped_dry_run_uses_family_quantity_and_carries_audit_payload() -> None:
+    source = _source("A", "5", "A")
+    source.update(
+        {
+            "display_family_recommendation_status": "allocated_shadow",
+            "display_family_registry_version": "2",
+            "display_family_registry_checksum": "a" * 64,
+            "display_family_record_id": "10",
+            "display_family_id": "family-1",
+            "display_family_label": "Apple iPhone Test",
+            "display_family_registry_member_count": "2",
+            "display_family_calculation_member_count": "2",
+            "display_family_segment_id": "premium|soft_oled",
+            "display_family_quality_segment": "premium",
+            "display_family_construction_segment": "soft_oled",
+            "display_family_baseline_order_qty": "5",
+            "display_family_allocated_order_qty": "4",
+            "display_family_pool_order_qty": "5",
+            "display_family_segment_pool_order_qty": "5",
+            "display_family_baseline_share_pct": "100",
+            "display_family_target_share_pct": "80",
+            "display_family_allocation_source": "completed_sales_rate_30_90",
+            "display_family_confidence": "medium",
+            "display_family_registry_warning_codes": "",
+            "display_family_conflict_codes": "",
+            "display_family_reason_ru": "Пул распределён внутри сегмента.",
+        }
+    )
+    orders = build_grouped_orders(
+        [source],
+        [_lead("A", "S1", "0xs1")],
+        nomenclature_by_code={"A": {"nomenclature_ref": "0x00010025901E48EF11E1967C11111111"}},
+        catalog_resolver=lambda guid: BitrixCatalogProduct(
+            product_id="10",
+            name="Каталожный товар",
+            xml_id=guid,
+            assortment_status="Продажа",
+        ),
+        skip_catalog=False,
+        contracts={"default": {"code": "C1", "name": "Основной договор"}},
+        warehouse={"code": "MAIN", "name": "Центральный склад"},
+        currency="RUB",
+        procurement_contour="ordinary",
+        route="ordinary",
+        batch_id="2026-08-16",
+        order_date=date(2026, 8, 16),
+        calculation_id="family-shadow-1",
+    )
+
+    line = orders[0]["lines"][0]
+    assert line["recommended_quantity"] == "4"
+    assert line["source_kind"] == "family_shadow"
+    assert line["blockers"] == []
+    assert "display_family_manual_approval_required" in line["risk_codes"]
+    assert line["payload"]["display_family_recommendation"]["family_id"] == "family-1"
+    assert line["payload"]["display_family_recommendation"]["manual_approval_required"] is True
+
+
+def test_cron_shadow_ignores_truthy_persistence_env(tmp_path: Path) -> None:
+    import json
+    import os
+    import subprocess
+
+    repo_dir = tmp_path / "repo"
+    log_dir = tmp_path / "logs"
+    result = subprocess.run(
+        ["bash", "infra/cron/display_auto_order_sync.sh", "--shadow", "--print-run-mode"],
+        check=True,
+        capture_output=True,
+        text=True,
+        env={
+            **os.environ,
+            "REPO_DIR": str(repo_dir),
+            "LOG_DIR": str(log_dir),
+            "DISPLAY_AUTO_ORDER_FORMATION_PERSIST_DB": "true",
+        },
+    )
+
+    payload = json.loads(result.stdout)
+    assert payload["run_mode"] == "shadow"
+    assert payload["configured_persist_db"] == "true"
+    assert payload["effective_persist_db"] == "false"
+    assert payload["formation_args"] == "--shadow"
 
 
 def test_grouped_dry_run_uses_supplier_contract_warehouse_and_exact_catalog_guid() -> None:

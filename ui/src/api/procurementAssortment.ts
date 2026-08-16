@@ -128,6 +128,34 @@ export interface ProcurementLineSyncPayload {
   [key: string]: unknown;
 }
 
+export interface DisplayFamilyOrderRecommendation {
+  schema: string;
+  mode: string;
+  status: string;
+  registry_version_number?: number | null;
+  registry_inventory_checksum: string;
+  family_record_id?: number | null;
+  family_id: string;
+  family_label: string;
+  registry_member_count?: number | null;
+  calculation_member_count?: number | null;
+  segment_id: string;
+  quality_segment: string;
+  construction_segment: string;
+  baseline_order_qty: string;
+  allocated_order_qty: string;
+  family_pool_order_qty: string;
+  segment_pool_order_qty: string;
+  baseline_share_pct: string;
+  target_share_pct: string;
+  allocation_source: string;
+  confidence: string;
+  manual_approval_required: boolean;
+  registry_warning_codes: string[];
+  conflict_codes: string[];
+  reason_ru: string;
+}
+
 export interface ProcurementOrderFormationLine {
   id: number;
   line_number: number;
@@ -154,6 +182,7 @@ export interface ProcurementOrderFormationLine {
   procurement_profile?: string | null;
   manual_minimum?: string | null;
   payload?: ProcurementLineSyncPayload;
+  display_family_recommendation?: DisplayFamilyOrderRecommendation | null;
   removed: boolean;
   effective_assortment_status?: string | null;
   effective_assortment_status_label?: string | null;

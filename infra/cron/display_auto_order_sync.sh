@@ -3,6 +3,37 @@ set -euo pipefail
 
 export TZ="${TZ:-Europe/Moscow}"
 
+RUN_MODE="shadow"
+PRINT_RUN_MODE="false"
+MODE_ARGUMENT_COUNT=0
+for argument in "$@"; do
+  case "${argument}" in
+    --shadow)
+      RUN_MODE="shadow"
+      MODE_ARGUMENT_COUNT=$((MODE_ARGUMENT_COUNT + 1))
+      ;;
+    --persist-internal-drafts)
+      RUN_MODE="persist_internal_drafts"
+      MODE_ARGUMENT_COUNT=$((MODE_ARGUMENT_COUNT + 1))
+      ;;
+    --print-run-mode)
+      PRINT_RUN_MODE="true"
+      ;;
+    --help|-h)
+      echo "Usage: $0 [--shadow|--persist-internal-drafts] [--print-run-mode]"
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: ${argument}" >&2
+      exit 2
+      ;;
+  esac
+done
+if [[ "${MODE_ARGUMENT_COUNT}" -gt 1 ]]; then
+  echo "Choose exactly one run mode: --shadow or --persist-internal-drafts" >&2
+  exit 2
+fi
+
 REPO_DIR="${REPO_DIR:-/opt/MM/pricing-service}"
 ENV_FILE="${REPO_DIR}/.env"
 ENV_LOADER="${REPO_DIR}/infra/cron/load_env.sh"
@@ -48,7 +79,8 @@ OUTPUT_CSV="${DISPLAY_AUTO_ORDER_OUTPUT_CSV:-${REPORT_DIR}/display-auto-order-dr
 OUTPUT_JSON="${DISPLAY_AUTO_ORDER_OUTPUT_JSON:-${REPORT_DIR}/display-auto-order-dry-run-summary.json}"
 ORDER_FORMATION_OUTPUT_JSON="${DISPLAY_AUTO_ORDER_FORMATION_OUTPUT_JSON:-${REPORT_DIR}/procurement-order-formation-dry-run.json}"
 ORDER_FORMATION_OUTPUT_CSV="${DISPLAY_AUTO_ORDER_FORMATION_OUTPUT_CSV:-${REPORT_DIR}/procurement-order-formation-lines-dry-run.csv}"
-ORDER_FORMATION_PERSIST_DB="${DISPLAY_AUTO_ORDER_FORMATION_PERSIST_DB:-false}"
+CONFIGURED_ORDER_FORMATION_PERSIST_DB="${DISPLAY_AUTO_ORDER_FORMATION_PERSIST_DB:-false}"
+ORDER_FORMATION_PERSIST_DB="false"
 USE_ADAPTIVE_LEAD_TIME="${DISPLAY_AUTO_ORDER_USE_ADAPTIVE_LEAD_TIME:-true}"
 ADAPTIVE_REQUIRED="${DISPLAY_AUTO_ORDER_ADAPTIVE_REQUIRED:-true}"
 LEAD_TIME_CSV="${DISPLAY_AUTO_ORDER_LEAD_TIME_CSV:-${REPORT_DIR}/display-supplier-lead-time-history.csv}"
@@ -68,6 +100,25 @@ is_truthy() {
   esac
 }
 
+FORMATION_MODE_ARGS=(--shadow)
+if [[ "${RUN_MODE}" == "persist_internal_drafts" ]]; then
+  if ! is_truthy "${CONFIGURED_ORDER_FORMATION_PERSIST_DB}"; then
+    echo "persist_internal_drafts requires DISPLAY_AUTO_ORDER_FORMATION_PERSIST_DB=true" >&2
+    exit 2
+  fi
+  ORDER_FORMATION_PERSIST_DB="true"
+  FORMATION_MODE_ARGS=(--persist-db --supersede-open-batches)
+fi
+
+if is_truthy "${PRINT_RUN_MODE}"; then
+  printf '{"run_mode":"%s","configured_persist_db":"%s","effective_persist_db":"%s","formation_args":"%s"}\n' \
+    "${RUN_MODE}" \
+    "${CONFIGURED_ORDER_FORMATION_PERSIST_DB}" \
+    "${ORDER_FORMATION_PERSIST_DB}" \
+    "${FORMATION_MODE_ARGS[*]}"
+  exit 0
+fi
+
 exec 9>"${LOCK_FILE}"
 if ! flock -n 9; then
   echo "[$(date -Iseconds)] display auto-order sync skipped: another run is still active" >> "${LOG_FILE}"
@@ -81,7 +132,7 @@ cleanup() {
 trap cleanup EXIT
 
 timestamp="$(date -Iseconds)"
-echo "[$timestamp] starting display auto-order sync folder=${FOLDER} as_of=${AS_OF} policy=${AUTO_ORDER_POLICY_JSON} target=${TARGET_DAYS:-policy} cadence=${ORDER_CADENCE_DAYS:-policy} prepare=${SUPPLIER_PREPARE_DAYS:-policy} logistics=${LOGISTICS_DAYS:-policy} max_qty=${MAX_ORDER_QTY:-policy} assigned=${ASSIGNED_BY_ID:-shared_queue} legacy_apply=${APPLY} formation_persist_db=${ORDER_FORMATION_PERSIST_DB} adaptive=${USE_ADAPTIVE_LEAD_TIME}" >> "${LOG_FILE}"
+echo "[$timestamp] starting display auto-order sync mode=${RUN_MODE} folder=${FOLDER} as_of=${AS_OF} policy=${AUTO_ORDER_POLICY_JSON} target=${TARGET_DAYS:-policy} cadence=${ORDER_CADENCE_DAYS:-policy} prepare=${SUPPLIER_PREPARE_DAYS:-policy} logistics=${LOGISTICS_DAYS:-policy} max_qty=${MAX_ORDER_QTY:-policy} assigned=${ASSIGNED_BY_ID:-shared_queue} legacy_apply=${APPLY} formation_persist_db=${ORDER_FORMATION_PERSIST_DB} adaptive=${USE_ADAPTIVE_LEAD_TIME}" >> "${LOG_FILE}"
 echo "[$timestamp] python interpreter: ${PYTHON_BIN}" >> "${LOG_FILE}"
 
 mkdir -p "${REPORT_DIR}"
@@ -94,6 +145,7 @@ build_cmd=(
   --as-of "${AS_OF}"
   --output-csv "${OUTPUT_CSV}"
   --output-json "${OUTPUT_JSON}"
+  --use-active-display-family-registry
   --json
 )
 if [[ -n "${TARGET_DAYS}" ]]; then
@@ -188,11 +240,9 @@ formation_cmd=(
   --output-csv "${ORDER_FORMATION_OUTPUT_CSV}"
   --json
 )
+formation_cmd+=("${FORMATION_MODE_ARGS[@]}")
 if [[ -n "${ASSIGNED_BY_ID}" ]]; then
   formation_cmd+=(--responsible-bitrix-user-id "${ASSIGNED_BY_ID}")
-fi
-if is_truthy "${ORDER_FORMATION_PERSIST_DB}"; then
-  formation_cmd+=(--persist-db --supersede-open-batches)
 fi
 
 set +e

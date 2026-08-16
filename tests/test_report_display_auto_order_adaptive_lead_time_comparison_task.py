@@ -3,10 +3,12 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
+from app.services.display_family_registry import ActiveDisplayFamilyMemberContext
 from tasks.report_display_auto_order_adaptive_lead_time_comparison import (
     build_comparison_rows,
     build_summary,
     build_sync_ready_rows,
+    refresh_sync_ready_family_recommendations,
 )
 
 
@@ -177,6 +179,52 @@ def test_build_sync_ready_rows_applies_adaptive_quantities_for_bitrix_sync() -> 
     assert rows[0]["reason_ru"] == "адаптивный расчет уменьшил заказ"
     assert "adaptive_lead_time_sync_ready" in rows[0]["warnings"]
     assert "local:adaptive_lead_time" in rows[0]["data_sources"]
+
+
+def test_sync_ready_family_overlay_is_rebuilt_after_adaptive_quantity() -> None:
+    row = _dry_row(current_recommended_order_qty="4")
+    row.update(
+        {
+            "latest_purchase_price": "100",
+            "sales_qty_window_short": "5",
+            "sales_qty_window_medium": "5",
+            "sales_qty_window": "5",
+            "free_stock_qty": "0",
+            "incoming_qty": "0",
+            "display_family_baseline_order_qty": "10",
+            "display_family_allocated_order_qty": "10",
+            "display_family_recommendation_status": "allocated_shadow",
+        }
+    )
+    context = ActiveDisplayFamilyMemberContext(
+        registry_version_id=2,
+        registry_version_number=2,
+        registry_inventory_checksum="a" * 64,
+        family_record_id=10,
+        family_key="family-1",
+        family_label="Apple iPhone Test",
+        family_member_count=1,
+        family_review_member_count=0,
+        family_matching_review_member_count=0,
+        family_warning_codes=(),
+        product_id=1,
+        segment_id="premium|soft_oled",
+        quality_segment="premium",
+        construction_segment="soft_oled",
+        requires_manual_review=False,
+        member_warning_codes=(),
+        matching_evidence={},
+    )
+
+    summary = refresh_sync_ready_family_recommendations(
+        [row],
+        membership_by_code={"RB1": context},
+    )
+
+    assert row["display_family_baseline_order_qty"] == "4"
+    assert row["display_family_allocated_order_qty"] == "4"
+    assert summary["baseline_order_qty"] == "4"
+    assert summary["allocated_order_qty"] == "4"
 
 
 def _dry_row(

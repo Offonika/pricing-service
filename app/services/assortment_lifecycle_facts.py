@@ -18,6 +18,7 @@ from app.services.assortment_lifecycle import (
     DEMAND_WINDOW_MEDIUM_DAYS,
     DEMAND_WINDOW_SHORT_DAYS,
 )
+from app.services.display_scope_policy import filter_display_scope_records
 
 # Окна наблюдения спроса берём из самой формулы, чтобы сборщик фактов и
 # формула не разъехались числами.
@@ -189,10 +190,11 @@ def build_assortment_lifecycle_fact_records(
     days_in_sale_totals: Mapping[str, Mapping[int, Decimal]] | None = None,
     previous_statuses: Mapping[str, str] | None = None,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    scope_result = filter_display_scope_records(nomenclature_rows)
     items_by_key: dict[str, Mapping[str, Any]] = {}
     code_by_key: dict[str, str] = {}
     key_by_code: dict[str, str] = {}
-    for row in nomenclature_rows:
+    for row in scope_result.included:
         code = _clean(row.get("nomenclature_code") or row.get("code") or row.get("_Code"))
         if not code:
             continue
@@ -328,6 +330,7 @@ def build_assortment_lifecycle_fact_records(
         "receipt_rows": len(receipt_rows),
         "history_start": _json_date(history_start),
         "warnings": dict(warnings_count),
+        "scope_policy": scope_result.audit,
     }
     return facts, summary
 

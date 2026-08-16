@@ -28,6 +28,7 @@ from app.services.assortment_lifecycle import (
     systemic_sales_point_codes,
     validate_manager_need_signal,
 )
+from app.services.display_scope_policy import filter_display_scope_records
 from app.services.exporters.ut103_exchange import load_ut103_env_file, resolve_ut103_exchange_root
 from app.services.exporters.ut103_nomenclature_properties import (
     DEFAULT_SOURCE,
@@ -117,7 +118,7 @@ def build_updates_from_records(
 ) -> tuple[list[NomenclaturePropertyUpdateRow], list[dict[str, Any]]]:
     rows: list[NomenclaturePropertyUpdateRow] = []
     summaries: list[dict[str, Any]] = []
-    for record in records:
+    for record in filter_display_scope_records(records).included:
         if folder_filter and not _matches_folder(record, folder_filter):
             continue
         lifecycle_input = _lifecycle_input_from_record(record)

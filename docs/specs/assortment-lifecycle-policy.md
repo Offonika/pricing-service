@@ -10,11 +10,15 @@ related_code:
   - app/services/assortment_lifecycle.py
   - app/services/assortment_lifecycle_facts.py
   - app/services/assortment_lifecycle_classification_store.py
+  - app/services/display_scope_policy.py
+  - app/services/display_family_registry.py
   - tasks/build_assortment_lifecycle_facts.py
   - tasks/build_assortment_lifecycle_updates.py
   - tasks/refresh_assortment_lifecycle_classification.py
   - tasks/diff_assortment_lifecycle_classification.py
   - tasks/build_display_auto_order_dry_run.py
+  - tasks/build_display_family_scope_bundle.py
+  - tasks/bootstrap_display_family_registry.py
 related_tests:
   - tests/test_assortment_lifecycle.py
   - tests/test_assortment_lifecycle_facts.py
@@ -22,12 +26,15 @@ related_tests:
   - tests/test_build_assortment_lifecycle_updates_task.py
   - tests/test_refresh_assortment_lifecycle_classification_task.py
   - tests/test_diff_assortment_lifecycle_classification.py
+  - tests/test_display_scope_policy.py
+  - tests/test_display_family_registry.py
+  - tests/test_build_display_family_scope_bundle_task.py
 contracts: []
 depends_on:
   - docs/specs/onec-stock-effective-availability.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-09"
+updated_at: "2026-08-16"
 ---
 
 # Назначение
@@ -65,6 +72,35 @@ updated_at: "2026-08-09"
 - калибровка B2B-знаменателя, маржи и адаптивного порога брака;
 - изменение production, ночной пересчёт или запись во внешние системы без
   отдельного разрешения.
+
+## Обязательное исключение дисплеев с маркером «биток»
+
+Карточка папки `Дисплеи` находится вне расчётного и управленческого контура,
+если нормализованное наименование содержит отдельное слово `биток` без учёта
+регистра. Нормализация включает `casefold`, замену `ё` на `е` и схлопывание
+пробелов; совпадение проверяется по границам слова.
+
+Исключение выполняется единым фильтром **до** построения фактов и любой
+расчётной когорты. Такая карточка не участвует в статусах, скорости, наличии,
+потребности, количестве заказа, семейной группировке, аналогах, рекомендациях,
+shadow/replay/backtest, KPI и аналитике. Карточка остаётся в исходном каталоге
+и учётной истории 1С; допускается только отдельный технический аудит с полями
+`nomenclature_code`, `name`, `reason_code` и `scope_policy_version`.
+Канонический код причины — `excluded_display_name_bitok`.
+
+Для полного принятого реестра от 2026-08-16 контроль составляет `2 689` SKU:
+`11` карточек исключаются, `2 678` остаются. Уже сохранённые исторические
+артефакты не переписываются, но новые расчёты обязаны применять действующую
+scope-политику. Исполняемый фильтр находится в
+`app/services/display_scope_policy.py` и имеет версию
+`display_scope_policy.v1`.
+
+Состояние правила — `production authorized / rollout pending`. Пользователь
+2026-08-16 разрешил новый immutable release, новую активную версию семейного
+реестра на `2 678` SKU и штатный cutover с readback. Разрешение не включает
+пересчёт архивных отчётов, изменение cron, создание заказов, автозаказ или
+запись в 1С. Правило считается включённым только после успешного cutover и
+production readback.
 
 # Change Summary / Spec Delta
 
@@ -475,11 +511,19 @@ OAuth-приложение «Формирование заказа»
 7. При расхождении с согласованным diff вернуть предыдущий снимок и отключить
    новую версию политики.
 
-Этот документ не включает production rollout и не разрешает экспорт статусов в
-1С.
+Этот документ не разрешает экспорт статусов в 1С и любые production-действия,
+кроме отдельно зафиксированного выше rollout правила
+`excluded_display_name_bitok`.
 
 # Changelog
 
+- 2026-08-16 — реализован и принят общий фильтр
+  `excluded_display_name_bitok` версии `display_scope_policy.v1`; контрольный
+  dry-run подтвердил `11` исключений из `2 689` и `2 678` оставшихся SKU без
+  утечек и дублей. Пользователь разрешил новый immutable release, новую
+  активную версию семейного реестра и штатный cutover с readback; архивные
+  отчёты, cron, заказы, автозаказ и 1С не входят в разрешение. До фактического
+  переключения состояние — `production authorized / rollout pending`.
 - 2026-08-09 — реализован fail-safe при неизвестных днях наличия: угасание
   больше не понижает статус, когда присутствие на полке не доказано данными
   (причина `availability_data_missing`). Расчёт количества приведён к той же

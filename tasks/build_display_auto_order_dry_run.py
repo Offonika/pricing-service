@@ -19,6 +19,11 @@ from app.infrastructure.db.engines import build_engine
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
 )
+from app.services.display_scope_policy import (
+    empty_display_scope_audit,
+    filter_display_scope_records,
+    merge_display_scope_audits,
+)
 from app.services.onec_stock_availability import merged_interval_days
 from app.services.procurement_b2b_customer_demand import (
     B2BSkuDemandProfile,
@@ -445,7 +450,7 @@ def main() -> int:
     )
     app_engine = build_engine(database_url, pool_pre_ping=True)
     try:
-        items, run_id = load_auto_order_items(
+        items, run_id, scope_policy_audit = load_auto_order_items_with_scope_audit(
             app_engine,
             folder=args.folder,
             include_sale_review_candidates=(
@@ -495,6 +500,12 @@ def main() -> int:
                         ),
                     )
                 )
+            expanded_scope_result = filter_display_scope_records(items)
+            items = list(expanded_scope_result.included)
+            scope_policy_audit = merge_display_scope_audits(
+                scope_policy_audit,
+                expanded_scope_result.audit,
+            )
             codes = tuple(str(item["nomenclature_code"]) for item in items)
             facts["stock"] = fetch_stock_totals(onec_engine, codes=codes, policy=policy)
             facts["reserve"] = fetch_reserved_totals(onec_engine, codes=codes, policy=policy)
@@ -575,7 +586,12 @@ def main() -> int:
         as_of=args.as_of,
     )
     write_csv(args.output_csv, rows)
-    summary = build_summary(rows, run_id=run_id, source_errors=source_errors)
+    summary = build_summary(
+        rows,
+        run_id=run_id,
+        source_errors=source_errors,
+        scope_policy_audit=scope_policy_audit,
+    )
     if args.output_json:
         args.output_json.parent.mkdir(parents=True, exist_ok=True)
         args.output_json.write_text(
@@ -590,12 +606,12 @@ def main() -> int:
     return 0
 
 
-def load_auto_order_items(
+def load_auto_order_items_with_scope_audit(
     engine,
     *,
     folder: str,
     include_sale_review_candidates: bool = False,
-) -> tuple[list[dict[str, Any]], int | None]:
+) -> tuple[list[dict[str, Any]], int | None, dict[str, Any]]:
     table = ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE
     with engine.connect() as conn:
         run_id = conn.execute(
@@ -626,7 +642,22 @@ def load_auto_order_items(
             .mappings()
             .all()
         )
-    return [dict(row) for row in rows], run_id
+    scope_result = filter_display_scope_records([dict(row) for row in rows])
+    return list(scope_result.included), run_id, scope_result.audit
+
+
+def load_auto_order_items(
+    engine,
+    *,
+    folder: str,
+    include_sale_review_candidates: bool = False,
+) -> tuple[list[dict[str, Any]], int | None]:
+    items, run_id, _scope_audit = load_auto_order_items_with_scope_audit(
+        engine,
+        folder=folder,
+        include_sale_review_candidates=include_sale_review_candidates,
+    )
+    return items, run_id
 
 
 def load_warehouse_policy(path: Path) -> WarehousePolicy:
@@ -1343,6 +1374,7 @@ def build_dry_run_rows(
     as_of: date | None = None,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
+    scoped_items = filter_display_scope_records(items).included
     supported_analog_policy = supported_analog_policy or SupportedAnalogPolicy()
     if supplier_assembly_days:
         supplier_prepare_days = supplier_assembly_days
@@ -1358,7 +1390,7 @@ def build_dry_run_rows(
         + distribution_to_shelf_days
     )
     effective_target_days = planning_horizon_days + safety_stock_days
-    for item in items:
+    for item in scoped_items:
         code = _clean(item.get("nomenclature_code"))
         stock = facts.get("stock", {}).get(code, {})
         reserve = facts.get("reserve", {}).get(code, {})
@@ -2773,6 +2805,7 @@ def build_summary(
     *,
     run_id: int | None,
     source_errors: Mapping[str, str],
+    scope_policy_audit: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     decisions = Counter(_clean(row.get("dry_run_decision")) for row in rows)
     warnings = Counter(
@@ -2881,6 +2914,9 @@ def build_summary(
         ),
         "total_b2b_order_delta_qty": _out_decimal(total_b2b_order_delta),
         "source_errors": dict(source_errors),
+        "scope_policy": dict(
+            scope_policy_audit or empty_display_scope_audit(source_item_count=len(rows))
+        ),
     }
 
 

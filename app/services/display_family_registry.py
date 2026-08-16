@@ -20,16 +20,23 @@ from app.models.display_family_registry import (
     DisplayFamilyRegistryVersion,
 )
 from app.models.product import Product
+from app.services.display_scope_policy import (
+    DISPLAY_SCOPE_POLICY_VERSION,
+    EXCLUDED_DISPLAY_NAME_BITOK,
+    display_scope_exclusion_reason,
+)
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 APPROVED_BUNDLE_PATH = (
-    REPOSITORY_ROOT / "reports/assortment_lifecycle/display-family-registry-preflight-v2-2026-08-16"
+    REPOSITORY_ROOT
+    / "reports/assortment_lifecycle/display-family-registry-scope-policy-v1-2026-08-16"
 )
-APPROVED_INVENTORY_CHECKSUM = "0331da1b96d9582f32ee1f8c72e9d6566ac66b5fb74f8e3685fe7a70ade7319e"
+APPROVED_INVENTORY_CHECKSUM = "8d62c30659f79682a745d64080cc86a20025b3c39e0e16aef2e0fadba718027b"
 APPROVED_ARTIFACT_SHA256 = {
-    "inventory.json": "d13a7883d68c4c49e948b4f7aecaf4fe989cb8cdacf2c13eedce906efee9ef5f",
-    "inventory.csv": "0f066acd87e891dc6520a04696ffc06f4fd2ca39f9a3f0d0ebca1ebc60d7349f",
-    "report.html": "acabc393d7a39a217f87b4a979fca2affc498876f5fae504061ee6c1991d96e3",
+    "inventory.json": "5328749ef6f73435a952c9896d6d56cd57562740252b00a548b4029fe982be38",
+    "inventory.csv": "309b777553072753752fc9622b9ec98d5fa111cb5ee79360503df49376a24ffe",
+    "report.html": "5ae337d90c95c29c54c4be42ade5f871832052803efec1283ea1e78869ea1f33",
+    "exclusions.json": "0d54b98c55377df081311140e33a4cfeb9b0b6712c32002d602d7524995bf4f3",
 }
 REQUIRED_SOURCE_GATES = {
     "accepted_matching_readable",
@@ -56,6 +63,8 @@ class ApprovedBundleContract:
     artifact_sha256: Mapping[str, str]
     expected_member_count: int
     expected_family_count: int
+    required_scope_policy_version: str | None = None
+    expected_excluded_count: int | None = None
 
 
 APPROVED_BUNDLE_CONTRACT = ApprovedBundleContract(
@@ -65,8 +74,10 @@ APPROVED_BUNDLE_CONTRACT = ApprovedBundleContract(
     inventory_schema="display_family_inventory.v2",
     inventory_checksum=APPROVED_INVENTORY_CHECKSUM,
     artifact_sha256=APPROVED_ARTIFACT_SHA256,
-    expected_member_count=2689,
-    expected_family_count=1391,
+    expected_member_count=2678,
+    expected_family_count=1380,
+    required_scope_policy_version=DISPLAY_SCOPE_POLICY_VERSION,
+    expected_excluded_count=11,
 )
 
 
@@ -89,6 +100,7 @@ class DisplayFamilyBootstrapPlan:
     idempotent: bool
     version_number: int | None
     active_version_number: int | None
+    replaces_version_number: int | None
     existing_checksum_version_number: int | None
     expected_family_count: int
     expected_member_count: int
@@ -108,6 +120,7 @@ class DisplayFamilyBootstrapPlan:
             "idempotent": self.idempotent,
             "version_number": self.version_number,
             "active_version_number": self.active_version_number,
+            "replaces_version_number": self.replaces_version_number,
             "existing_checksum_version_number": self.existing_checksum_version_number,
             "expected_family_count": self.expected_family_count,
             "expected_member_count": self.expected_member_count,
@@ -208,6 +221,58 @@ def load_approved_display_family_bundle(
     )
     errors = [message for valid, message in checks if not valid]
 
+    scope_exclusions: list[dict[str, Any]] = []
+    if contract.required_scope_policy_version is not None:
+        policy_version = contract.required_scope_policy_version
+        expected_excluded = int(contract.expected_excluded_count or 0)
+        if manifest.get("scope_policy_version") != policy_version:
+            errors.append("manifest scope policy version mismatch")
+        if manifest.get("scope_excluded_count") != expected_excluded:
+            errors.append("manifest scope excluded count mismatch")
+        if manifest.get("scope_excluded_reason_counts") != {
+            EXCLUDED_DISPLAY_NAME_BITOK: expected_excluded
+        }:
+            errors.append("manifest scope excluded reason counts mismatch")
+        scope_audit = inventory.get("scope_audit")
+        if not isinstance(scope_audit, dict):
+            errors.append("inventory scope audit is missing")
+        else:
+            if scope_audit.get("scope_policy_version") != policy_version:
+                errors.append("inventory scope policy version mismatch")
+            if scope_audit.get("source_item_count") != (
+                contract.expected_member_count + expected_excluded
+            ):
+                errors.append("inventory scope source count mismatch")
+            if scope_audit.get("included_item_count") != contract.expected_member_count:
+                errors.append("inventory scope included count mismatch")
+            if scope_audit.get("excluded_item_count") != expected_excluded:
+                errors.append("inventory scope excluded count mismatch")
+            if scope_audit.get("excluded_reason_counts") != {
+                EXCLUDED_DISPLAY_NAME_BITOK: expected_excluded
+            }:
+                errors.append("inventory scope excluded reason counts mismatch")
+            raw_scope_exclusions = scope_audit.get("exclusions")
+            if isinstance(raw_scope_exclusions, list) and all(
+                isinstance(row, dict) for row in raw_scope_exclusions
+            ):
+                scope_exclusions = [dict(row) for row in raw_scope_exclusions]
+            else:
+                errors.append("inventory scope exclusions are invalid")
+        scope_transition = inventory.get("scope_transition")
+        if not isinstance(scope_transition, dict):
+            errors.append("inventory scope transition is missing")
+        else:
+            if scope_transition.get("scope_policy_version") != policy_version:
+                errors.append("inventory scope transition policy mismatch")
+            if scope_transition.get("source_member_count") != (
+                contract.expected_member_count + expected_excluded
+            ):
+                errors.append("inventory scope transition source count mismatch")
+            if scope_transition.get("excluded_member_count") != expected_excluded:
+                errors.append("inventory scope transition excluded count mismatch")
+            if scope_transition.get("target_member_count") != contract.expected_member_count:
+                errors.append("inventory scope transition target count mismatch")
+
     source_gates = manifest.get("source_gates")
     if not isinstance(source_gates, dict):
         errors.append("manifest source_gates are missing")
@@ -229,12 +294,24 @@ def load_approved_display_family_bundle(
         if actual_hash != expected_hash:
             errors.append(f"file SHA-256 mismatch for {filename}")
 
+    if contract.required_scope_policy_version is not None:
+        exclusions_payload = _load_json(resolved_path / "exclusions.json")
+        if exclusions_payload.get("schema") != "display_scope_exclusions.v1":
+            errors.append("exclusions artifact schema mismatch")
+        if exclusions_payload.get("scope_policy_version") != (
+            contract.required_scope_policy_version
+        ):
+            errors.append("exclusions artifact policy version mismatch")
+        if exclusions_payload.get("items") != scope_exclusions:
+            errors.append("exclusions artifact does not match inventory scope audit")
+
     raw_items = inventory.get("items")
     if not isinstance(raw_items, list):
         errors.append("inventory items must be a list")
         raw_items = []
     items: list[dict[str, Any]] = []
     product_ids: list[int] = []
+    leaked_scope_product_ids: list[int] = []
     family_items: defaultdict[str, list[dict[str, Any]]] = defaultdict(list)
     for offset, raw_item in enumerate(raw_items):
         if not isinstance(raw_item, dict):
@@ -255,6 +332,11 @@ def load_approved_display_family_bundle(
             errors.append(f"inventory item {offset} has invalid segment_id")
         item = dict(raw_item)
         item["product_id"] = product_id
+        if (
+            contract.required_scope_policy_version is not None
+            and display_scope_exclusion_reason(item.get("name")) is not None
+        ):
+            leaked_scope_product_ids.append(product_id)
         product_ids.append(product_id)
         items.append(item)
         family_items[family_key].append(item)
@@ -266,6 +348,11 @@ def load_approved_display_family_bundle(
         errors.append(
             "duplicate product membership: "
             + ", ".join(str(value) for value in duplicate_product_ids[:20])
+        )
+    if leaked_scope_product_ids:
+        errors.append(
+            "scope-excluded products leaked into membership: "
+            + ", ".join(str(value) for value in leaked_scope_product_ids[:20])
         )
     if len(items) != contract.expected_member_count:
         errors.append(f"member count mismatch: {len(items)} != {contract.expected_member_count}")
@@ -358,6 +445,7 @@ def build_display_family_bootstrap_plan(
     action = "create_initial_active_version"
     idempotent = False
     version_number: int | None = next_version_number
+    replaces_version_number: int | None = None
     if missing_product_ids:
         blockers.append("bundle_contains_missing_products")
     if not registry_schema_ready:
@@ -371,8 +459,13 @@ def build_display_family_bootstrap_plan(
             blockers.append("approved_checksum_exists_but_is_not_active")
             action = "blocked"
     elif active_version is not None:
-        blockers.append("different_active_registry_version_exists")
-        action = "blocked"
+        action = "create_successor_active_version"
+        replaces_version_number = active_version.version_number
+        if bundle.effective_from < active_version.effective_from:
+            blockers.append("successor_effective_date_precedes_active_version")
+        active_readback = readback_display_family_registry_version(session, active_version)
+        if not active_readback["ok"]:
+            blockers.append("active_registry_readback_failed")
 
     return DisplayFamilyBootstrapPlan(
         ready=not blockers,
@@ -381,6 +474,7 @@ def build_display_family_bootstrap_plan(
         idempotent=idempotent,
         version_number=version_number,
         active_version_number=active_version.version_number if active_version else None,
+        replaces_version_number=replaces_version_number,
         existing_checksum_version_number=(
             checksum_version.version_number if checksum_version else None
         ),
@@ -604,6 +698,30 @@ def apply_display_family_bootstrap(
                 "readback": readback,
             }
 
+        replaced_version: DisplayFamilyRegistryVersion | None = None
+        if plan.replaces_version_number is not None:
+            replaced_version = session.scalar(
+                select(DisplayFamilyRegistryVersion)
+                .where(DisplayFamilyRegistryVersion.status == "active")
+                .with_for_update()
+            )
+            if (
+                replaced_version is None
+                or replaced_version.version_number != plan.replaces_version_number
+            ):
+                raise DisplayFamilyRegistryError(
+                    "active registry version changed during successor activation"
+                )
+            replaced_readback = readback_display_family_registry_version(session, replaced_version)
+            if not replaced_readback["ok"]:
+                raise DisplayFamilyRegistryError(
+                    "active registry readback failed before successor activation: "
+                    + ", ".join(replaced_readback["errors"])
+                )
+            replaced_version.status = "superseded"
+            replaced_version.superseded_at = datetime.now(UTC)
+            session.flush()
+
         manifest_hashes = bundle.manifest["artifact_sha256"]
         inventory = bundle.inventory
         source_evidence = {
@@ -669,7 +787,9 @@ def apply_display_family_bootstrap(
         session.add(
             DisplayFamilyDecisionEvent(
                 registry_version_id=version.id,
-                action="bootstrap_activate",
+                action=(
+                    "successor_activate" if replaced_version is not None else "bootstrap_activate"
+                ),
                 actor=actor,
                 reason=reason,
                 effective_at=bundle.effective_from,
@@ -682,6 +802,12 @@ def apply_display_family_bootstrap(
                     "family_count": len(bundle.family_items),
                     "member_count": len(bundle.items),
                     "source_gates": dict(bundle.manifest["source_gates"]),
+                    "replaces_version_id": (
+                        replaced_version.id if replaced_version is not None else None
+                    ),
+                    "replaces_version_number": (
+                        replaced_version.version_number if replaced_version is not None else None
+                    ),
                 },
             )
         )
@@ -693,6 +819,9 @@ def apply_display_family_bootstrap(
             raise DisplayFamilyRegistryError(
                 "bootstrap readback failed: " + ", ".join(readback["errors"])
             )
+        active_after = active_display_family_registry_version(session)
+        if active_after is None or active_after.id != version.id:
+            raise DisplayFamilyRegistryError("successor activation did not select the new version")
     return {"applied": True, "idempotent": False, "plan": plan.as_dict(), "readback": readback}
 
 

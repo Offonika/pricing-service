@@ -147,6 +147,31 @@ def test_build_facts_from_rows_builds_cargo_receipts_and_overlays() -> None:
     ]
 
 
+def test_build_facts_excludes_bitok_before_events_and_summary() -> None:
+    facts, summary = build_assortment_lifecycle_fact_records(
+        nomenclature_rows=[
+            {
+                "nomenclature_ref": "0xA",
+                "nomenclature_code": "KEEP",
+                "name": "Дисплей обычный",
+                "folder_path": "ОБЩИЙ КАТАЛОГ / дисплеи",
+            },
+            {
+                "nomenclature_ref": "0xB",
+                "nomenclature_code": "DROP",
+                "name": "Дисплей (БИТОК)",
+                "folder_path": "ОБЩИЙ КАТАЛОГ / дисплеи",
+            },
+        ],
+        supplier_order_rows=[{"nomenclature_ref": "0xB", "order_date": "2026-08-01"}],
+        receipt_rows=[{"nomenclature_ref": "0xB", "receipt_date": "2026-08-10"}],
+        warehouse_policy=_warehouse_policy(),
+    )
+
+    assert [fact["nomenclature_code"] for fact in facts] == ["KEEP"]
+    assert summary["scope_policy"]["excluded_reason_counts"] == {"excluded_display_name_bitok": 1}
+
+
 def test_build_facts_marks_history_truncated_when_first_event_hits_boundary() -> None:
     facts, summary = build_assortment_lifecycle_fact_records(
         nomenclature_rows=[

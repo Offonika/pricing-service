@@ -108,6 +108,51 @@ def test_sales_totals_query_includes_90_and_30_day_trend_windows() -> None:
     assert "window_short_from" in sales_sql
 
 
+def test_display_auto_order_excludes_bitok_before_quantity_calculation() -> None:
+    rows = build_dry_run_rows(
+        [
+            {
+                "nomenclature_code": "KEEP",
+                "name": "Дисплей обычный",
+                "status_label": "Рабочий",
+            },
+            {
+                "nomenclature_code": "DROP",
+                "name": "Дисплей (БИТОК)",
+                "status_label": "Рабочий",
+            },
+        ],
+        facts={
+            "stock": {},
+            "reserve": {},
+            "incoming": {},
+            "sales": {},
+            "returns": {},
+        },
+        source_errors={},
+        target_days=14,
+        sales_window_days=180,
+    )
+
+    assert [row["nomenclature_code"] for row in rows] == ["KEEP"]
+
+
+def test_display_auto_order_summary_carries_scope_policy_audit() -> None:
+    audit = {
+        "scope_policy_version": "display_scope_policy.v1",
+        "source_item_count": 2,
+        "included_item_count": 1,
+        "excluded_item_count": 1,
+        "excluded_row_count": 1,
+        "excluded_reason_counts": {"excluded_display_name_bitok": 1},
+        "exclusions": [],
+    }
+
+    summary = build_summary([], run_id=1, source_errors={}, scope_policy_audit=audit)
+
+    assert summary["scope_policy"] == audit
+
+
 def test_display_auto_order_b2b_customer_demand_is_advisory_only() -> None:
     rows = build_dry_run_rows(
         [

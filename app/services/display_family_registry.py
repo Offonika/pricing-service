@@ -25,7 +25,6 @@ from app.services.display_scope_policy import (
     EXCLUDED_DISPLAY_NAME_BITOK,
     display_scope_exclusion_reason,
 )
-from app.services.query_batching import normalized_text_batches
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 APPROVED_BUNDLE_PATH = (
@@ -52,29 +51,6 @@ INITIAL_BOOTSTRAP_REASON = "Первичная активация принято
 
 class DisplayFamilyRegistryError(ValueError):
     """Fail-closed validation or state transition error."""
-
-
-@dataclass(frozen=True)
-class ActiveDisplayFamilyMemberContext:
-    """Read-only active-registry projection used by downstream calculations."""
-
-    registry_version_id: int
-    registry_version_number: int
-    registry_inventory_checksum: str
-    family_record_id: int
-    family_key: str
-    family_label: str
-    family_member_count: int
-    family_review_member_count: int
-    family_matching_review_member_count: int
-    family_warning_codes: tuple[str, ...]
-    product_id: int
-    segment_id: str
-    quality_segment: str
-    construction_segment: str
-    requires_manual_review: bool
-    member_warning_codes: tuple[str, ...]
-    matching_evidence: Mapping[str, Any]
 
 
 @dataclass(frozen=True)
@@ -422,95 +398,6 @@ def active_display_family_registry_version(
     return session.scalar(
         select(DisplayFamilyRegistryVersion).where(DisplayFamilyRegistryVersion.status == "active")
     )
-
-
-def load_active_display_family_member_contexts(
-    session: Session,
-    *,
-    nomenclature_codes: Sequence[str],
-) -> dict[str, ActiveDisplayFamilyMemberContext]:
-    """Load the verified active family membership keyed by the 1C item code.
-
-    Family identity is read only from the active registry.  Product names are
-    never parsed here, so downstream calculations cannot silently create a
-    parallel family classifier.
-    """
-
-    version = active_display_family_registry_version(session)
-    if version is None:
-        raise DisplayFamilyRegistryError("active display-family registry version is missing")
-    readback = readback_display_family_registry_version(session, version)
-    if not readback["ok"]:
-        raise DisplayFamilyRegistryError(
-            "active display-family registry readback failed: "
-            + ", ".join(str(value) for value in readback["errors"])
-        )
-
-    result: dict[str, ActiveDisplayFamilyMemberContext] = {}
-    for code_batch in normalized_text_batches(nomenclature_codes):
-        rows = session.execute(
-            select(
-                Product.code_1c,
-                DisplayFamilyMember.product_id,
-                DisplayFamilyMember.segment_id,
-                DisplayFamilyMember.quality_segment,
-                DisplayFamilyMember.construction_segment,
-                DisplayFamilyMember.requires_manual_review,
-                DisplayFamilyMember.warning_codes_json.label("member_warning_codes"),
-                DisplayFamilyMember.matching_evidence_json,
-                DisplayFamily.id,
-                DisplayFamily.family_key,
-                DisplayFamily.member_count,
-                DisplayFamily.review_member_count,
-                DisplayFamily.matching_review_member_count,
-                DisplayFamily.warning_codes_json.label("family_warning_codes"),
-                DisplayFamily.phone_models_json,
-            )
-            .join(Product, Product.id == DisplayFamilyMember.product_id)
-            .join(DisplayFamily, DisplayFamily.id == DisplayFamilyMember.family_id)
-            .where(
-                DisplayFamilyMember.registry_version_id == version.id,
-                Product.code_1c.in_(code_batch),
-            )
-            .order_by(Product.code_1c, DisplayFamilyMember.product_id)
-        ).all()
-        for row in rows:
-            code = str(row.code_1c or "").strip()
-            if not code:
-                continue
-            family_labels = sorted(
-                {
-                    label
-                    for model in row.phone_models_json or []
-                    if isinstance(model, Mapping) and (label := _phone_model_label(model))
-                }
-            )
-            context = ActiveDisplayFamilyMemberContext(
-                registry_version_id=version.id,
-                registry_version_number=version.version_number,
-                registry_inventory_checksum=version.inventory_checksum,
-                family_record_id=int(row.id),
-                family_key=str(row.family_key),
-                family_label=", ".join(family_labels) or str(row.family_key),
-                family_member_count=int(row.member_count),
-                family_review_member_count=int(row.review_member_count),
-                family_matching_review_member_count=int(row.matching_review_member_count),
-                family_warning_codes=tuple(_string_list(row.family_warning_codes)),
-                product_id=int(row.product_id),
-                segment_id=str(row.segment_id),
-                quality_segment=str(row.quality_segment),
-                construction_segment=str(row.construction_segment),
-                requires_manual_review=bool(row.requires_manual_review),
-                member_warning_codes=tuple(_string_list(row.member_warning_codes)),
-                matching_evidence=dict(row.matching_evidence_json or {}),
-            )
-            existing = result.get(code)
-            if existing is not None and existing != context:
-                raise DisplayFamilyRegistryError(
-                    f"duplicate active family membership for nomenclature code {code}"
-                )
-            result[code] = context
-    return result
 
 
 def build_display_family_bootstrap_plan(

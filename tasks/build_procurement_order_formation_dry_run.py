@@ -25,10 +25,6 @@ from app.services.bitrix_order_formation import (
     load_order_formation_mapping,
     resolve_catalog_products_by_xml_ids,
 )
-from app.services.display_family_order_recommendation import (
-    FAMILY_ORDER_RECOMMENDATION_MODE,
-    FAMILY_ORDER_RECOMMENDATION_SCHEMA,
-)
 from app.services.master_mobile_catalog import (
     PHOTO_SOURCE,
     MasterMobileCatalogResolver,
@@ -38,7 +34,6 @@ from app.services.procurement_order_formation import (
     ensure_order_editable,
     invalidate_order_approval,
 )
-from app.services.query_batching import load_text_mapping_in_batches, normalized_text_batches
 from tasks.report_display_auto_order_adaptive_lead_time_comparison import (
     build_lead_time_indexes,
     choose_lead_time_candidate,
@@ -53,7 +48,7 @@ DEFAULT_OUTPUT_JSON = DEFAULT_REPORT_DIR / "procurement-order-formation-dry-run.
 DEFAULT_OUTPUT_CSV = DEFAULT_REPORT_DIR / "procurement-order-formation-lines-dry-run.csv"
 
 
-def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
+def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Build grouped supplier-order cards without writing Bitrix or 1C."
     )
@@ -93,23 +88,13 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
         help="Persist pricing-service drafts only; still never writes Bitrix or 1C.",
     )
     parser.add_argument(
-        "--shadow",
-        action="store_true",
-        help="Fail-closed read-only mode; incompatible with pricing-service DB persistence.",
-    )
-    parser.add_argument(
         "--supersede-open-batches",
         action="store_true",
         help="Hide older open display-auto-order batches after a successful DB persist.",
     )
     parser.add_argument("--json", action="store_true")
     parser.add_argument("--fail-on-blockers", action="store_true")
-    args = parser.parse_args(argv)
-    if args.shadow and args.persist_db:
-        parser.error("--shadow cannot be combined with --persist-db")
-    if args.shadow and args.supersede_open_batches:
-        parser.error("--shadow cannot be combined with --supersede-open-batches")
-    return args
+    return parser.parse_args()
 
 
 def main() -> int:
@@ -222,7 +207,6 @@ def main() -> int:
         "summary": summary,
         "orders": orders,
         "safety": {
-            "run_mode": "shadow" if args.shadow else "configured",
             "bitrix_write": False,
             "onec_write": False,
             "onec_document_posting": False,
@@ -263,21 +247,12 @@ def main() -> int:
 
 
 def select_order_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    selected: list[dict[str, Any]] = []
-    for row in rows:
-        decision = _clean(row.get("dry_run_decision"))
-        baseline = _decimal(row.get("recommended_order_qty")) or Decimal("0")
-        family_status = _clean(row.get("display_family_recommendation_status"))
-        family_quantity = _family_recommended_quantity(row)
-        if family_status:
-            if decision == "manual_review":
-                continue
-            if baseline > 0 or family_quantity > 0:
-                selected.append(dict(row))
-            continue
-        if decision == "order" and baseline > 0:
-            selected.append(dict(row))
-    return selected
+    return [
+        dict(row)
+        for row in rows
+        if _clean(row.get("dry_run_decision")) == "order"
+        and (_decimal(row.get("recommended_order_qty")) or Decimal("0")) > 0
+    ]
 
 
 def build_grouped_orders(
@@ -373,12 +348,6 @@ def build_grouped_orders(
         }
         product = catalog_resolver(xml_id) if xml_id else None
         blockers = _split_codes(row.get("blockers"))
-        family_recommendation = _display_family_recommendation_payload(row)
-        family_status = _clean(row.get("display_family_recommendation_status"))
-        if family_status.startswith("blocked_"):
-            blockers.append(family_status.removeprefix("blocked_"))
-        elif family_status.startswith("review_"):
-            blockers.append("display_family_recommendation_review_required")
         if not code:
             blockers.append("nomenclature_code_missing")
         if not ref_hex or not xml_id:
@@ -395,7 +364,7 @@ def build_grouped_orders(
             blockers.append("catalog_product_missing")
         elif _normalize_guid(product.xml_id) != _normalize_guid(xml_id):
             blockers.append("catalog_xml_id_mismatch")
-        quantity = _family_recommended_quantity(row)
+        quantity = _decimal(row.get("recommended_order_qty")) or Decimal("0")
         price = _decimal(row.get("latest_purchase_price")) or Decimal("0")
         b2b_customer_demand = _b2b_customer_demand_payload(row)
         public_article = _clean(nomenclature.get("article")) or code
@@ -406,8 +375,6 @@ def build_grouped_orders(
             lead_candidate=lead_candidate or {},
             lead_source_level=_source_level,
         )
-        if family_recommendation:
-            line_payload["display_family_recommendation"] = family_recommendation
         if b2b_customer_demand:
             line_payload["b2b_customer_demand"] = b2b_customer_demand
         if price <= 0:
@@ -426,29 +393,11 @@ def build_grouped_orders(
                 "purchase_price": str(price),
                 "amount": str((quantity * price).quantize(Decimal("0.01"))),
                 "currency": currency,
-                "source_kind": "family_shadow" if family_recommendation else "automatic",
+                "source_kind": "automatic",
                 "explicit_demand": False,
-                "risk_level": _risk_level(
-                    row, blockers, family_recommendation=family_recommendation
-                ),
-                "risk_codes": list(
-                    dict.fromkeys(
-                        [
-                            *_split_codes(row.get("warnings")),
-                            *_split_codes(row.get("display_family_conflict_codes")),
-                            *(
-                                ["display_family_manual_approval_required"]
-                                if family_recommendation
-                                else []
-                            ),
-                        ]
-                    )
-                ),
-                "recommendation_reason": (
-                    _clean(row.get("display_family_reason_ru"))
-                    if family_recommendation
-                    else _clean(row.get("reason_ru"))
-                ),
+                "risk_level": _risk_level(row, blockers),
+                "risk_codes": _split_codes(row.get("warnings")),
+                "recommendation_reason": _clean(row.get("reason_ru")),
                 "blockers": list(dict.fromkeys(blockers)),
                 "assortment_status": product.assortment_status if product else "",
                 "lifecycle_status": _clean(row.get("status_label")),
@@ -560,26 +509,6 @@ def fetch_latest_order_dimensions(
     }
     if not database_url or not clean_codes or not clean_suppliers:
         return result
-    code_batches = normalized_text_batches(clean_codes)
-    if len(code_batches) > 1:
-        latest_by_supplier: dict[str, dict[str, Any]] = {}
-        for batch in code_batches:
-            loaded = fetch_latest_order_dimensions(
-                database_url,
-                codes=batch,
-                supplier_refs=clean_suppliers,
-            )
-            result["exact"].update(loaded["exact"])
-            for (supplier_ref, _wildcard), row in loaded["supplier"].items():
-                current = latest_by_supplier.get(supplier_ref)
-                if current is None or str(row.get("order_date") or "") > str(
-                    current.get("order_date") or ""
-                ):
-                    latest_by_supplier[supplier_ref] = row
-        result["supplier"] = {
-            (supplier_ref, "*"): row for supplier_ref, row in latest_by_supplier.items()
-        }
-        return result
     query = text("""
         WITH dimensions AS (
             SELECT
@@ -660,11 +589,6 @@ def fetch_nomenclature_by_codes(
         raise RuntimeError("ONEC_DATABASE_URL is not configured")
     if not clean_codes:
         return {}
-    if len(normalized_text_batches(clean_codes)) > 1:
-        return load_text_mapping_in_batches(
-            clean_codes,
-            lambda batch: fetch_nomenclature_by_codes(database_url, batch),
-        )
     query = text("""
         SELECT
             CONVERT(varchar(34), item._IDRRef, 1) AS nomenclature_ref,
@@ -1176,47 +1100,6 @@ def _split_codes(value: Any) -> list[str]:
     return [item.strip() for item in _clean(value).replace(",", ";").split(";") if item.strip()]
 
 
-def _family_recommended_quantity(row: Mapping[str, Any]) -> Decimal:
-    if _clean(row.get("display_family_recommendation_status")):
-        allocated = _decimal(row.get("display_family_allocated_order_qty"))
-        if allocated is not None:
-            return max(Decimal("0"), allocated)
-    return max(Decimal("0"), _decimal(row.get("recommended_order_qty")) or Decimal("0"))
-
-
-def _display_family_recommendation_payload(row: Mapping[str, Any]) -> dict[str, Any]:
-    status = _clean(row.get("display_family_recommendation_status"))
-    if not status:
-        return {}
-    return {
-        "schema": FAMILY_ORDER_RECOMMENDATION_SCHEMA,
-        "mode": FAMILY_ORDER_RECOMMENDATION_MODE,
-        "status": status,
-        "registry_version_number": _integer(row.get("display_family_registry_version")),
-        "registry_inventory_checksum": _clean(row.get("display_family_registry_checksum")),
-        "family_record_id": _integer(row.get("display_family_record_id")),
-        "family_id": _clean(row.get("display_family_id")),
-        "family_label": _clean(row.get("display_family_label")),
-        "registry_member_count": _integer(row.get("display_family_registry_member_count")),
-        "calculation_member_count": _integer(row.get("display_family_calculation_member_count")),
-        "segment_id": _clean(row.get("display_family_segment_id")),
-        "quality_segment": _clean(row.get("display_family_quality_segment")),
-        "construction_segment": _clean(row.get("display_family_construction_segment")),
-        "baseline_order_qty": _clean(row.get("display_family_baseline_order_qty")) or "0",
-        "allocated_order_qty": _clean(row.get("display_family_allocated_order_qty")) or "0",
-        "family_pool_order_qty": _clean(row.get("display_family_pool_order_qty")) or "0",
-        "segment_pool_order_qty": _clean(row.get("display_family_segment_pool_order_qty")) or "0",
-        "baseline_share_pct": _clean(row.get("display_family_baseline_share_pct")) or "0",
-        "target_share_pct": _clean(row.get("display_family_target_share_pct")) or "0",
-        "allocation_source": _clean(row.get("display_family_allocation_source")),
-        "confidence": _clean(row.get("display_family_confidence")) or "none",
-        "manual_approval_required": True,
-        "registry_warning_codes": _split_codes(row.get("display_family_registry_warning_codes")),
-        "conflict_codes": _split_codes(row.get("display_family_conflict_codes")),
-        "reason_ru": _clean(row.get("display_family_reason_ru")),
-    }
-
-
 def procurement_assistant_line_payload(
     row: Mapping[str, Any],
     *,
@@ -1326,16 +1209,11 @@ def _integer(value: Any) -> int | None:
     return int(decimal_value) if decimal_value is not None else None
 
 
-def _risk_level(
-    row: Mapping[str, Any],
-    blockers: Sequence[str],
-    *,
-    family_recommendation: Mapping[str, Any] | None = None,
-) -> str:
+def _risk_level(row: Mapping[str, Any], blockers: Sequence[str]) -> str:
     if blockers:
         return "blocked"
     warnings = _split_codes(row.get("warnings"))
-    return "medium" if warnings or family_recommendation else "low"
+    return "medium" if warnings else "low"
 
 
 if __name__ == "__main__":

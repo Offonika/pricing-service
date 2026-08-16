@@ -90,33 +90,6 @@ function assistantData(photoOriginal: string | null = "https://cdn.example.test/
         risk_codes: [],
         blockers: [],
         payload: {},
-        display_family_recommendation: {
-          schema: "display_family_order_recommendation.v1",
-          mode: "active_registry_order_pool_shadow_v1",
-          status: "allocated_shadow",
-          registry_version_number: 2,
-          registry_inventory_checksum: "a".repeat(64),
-          family_record_id: 10,
-          family_id: "family-iphone-15-pro",
-          family_label: "Apple iPhone 15 Pro",
-          registry_member_count: 3,
-          calculation_member_count: 2,
-          segment_id: "premium|soft_oled",
-          quality_segment: "premium",
-          construction_segment: "soft_oled",
-          baseline_order_qty: "14",
-          allocated_order_qty: "12",
-          family_pool_order_qty: "20",
-          segment_pool_order_qty: "20",
-          baseline_share_pct: "70",
-          target_share_pct: "60",
-          allocation_source: "completed_sales_rate_30_90",
-          confidence: "medium",
-          manual_approval_required: true,
-          registry_warning_codes: [],
-          conflict_codes: ["accepted_matching_review"],
-          reason_ru: "Пул распределён внутри подтверждённого сегмента.",
-        },
         removed: false,
         photo_thumbnail_url: photoOriginal ? "https://cdn.example.test/thumb/display.jpg" : null,
         photo_original_url: photoOriginal,
@@ -166,8 +139,6 @@ describe("ProcurementOrderAssistant", () => {
       "href",
       "https://master-mobile.ru/catalog/displei/40699/"
     );
-    expect(screen.getByText("Семья · только вручную")).toBeInTheDocument();
-    expect(screen.getByText(/SKU: 14 → 12 шт/)).toBeInTheDocument();
   });
 
   it("не скрывает исчезнувшую потребность и показывает новую рекомендацию", async () => {

@@ -25,7 +25,6 @@ from app.services.display_family_registry import (
     display_family_registry_summary,
     get_active_display_family_detail,
     list_active_display_families,
-    load_active_display_family_member_contexts,
     load_approved_display_family_bundle,
     readback_display_family_registry_version,
     rollback_display_family_registry,
@@ -152,11 +151,7 @@ def _bundle(
 
 def _products(session: Session, count: int = 3) -> list[Product]:
     products = [
-        Product(
-            article=f"DISPLAY-{index}",
-            code_1c=f"CODE-{index}",
-            name=f"Дисплей тестовый {index}",
-        )
+        Product(article=f"DISPLAY-{index}", name=f"Дисплей тестовый {index}")
         for index in range(1, count + 1)
     ]
     session.add_all(products)
@@ -224,15 +219,6 @@ def test_bootstrap_is_atomic_idempotent_and_queryable(tmp_path: Path, db_session
     assert detail is not None
     assert len(detail["members"]) == 2
     assert detail["events"][0]["reason"] == "accepted test evidence"
-
-    contexts = load_active_display_family_member_contexts(
-        db_session,
-        nomenclature_codes=["CODE-1", "CODE-2", "MISSING"],
-    )
-    assert set(contexts) == {"CODE-1", "CODE-2"}
-    assert contexts["CODE-1"].family_key == "display-family-test-shared"
-    assert contexts["CODE-1"].family_member_count == 2
-    assert contexts["CODE-2"].matching_evidence["requires_review"] is True
 
     db_session.commit()
     idempotent = apply_display_family_bootstrap(db_session, bundle, actor="second-run")

@@ -109,19 +109,7 @@ describe("DisplayFamilyRegistryPanel", () => {
             name: "Дисплей для Apple iPhone 17 Pro Max",
             last_sale_at: "2026-08-15",
           },
-          matching_evidence: {
-            accepted_count: 1,
-            requires_review: true,
-            warnings: ["accepted_matching_review"],
-            matches: [{
-              competitor: "moba",
-              competitor_item_id: 42,
-              competitor_name: "Дисплей конкурента iPhone 17 Pro Max",
-              method: "manual",
-              model_relation: "same_model_ids",
-              property_disagreements: [{ field: "quality", our_value: "unknown", competitor_value: "original" }],
-            }],
-          },
+          matching_evidence: { accepted_count: 1, requires_review: true },
           identity_evidence: {},
         },
       ],
@@ -153,9 +141,6 @@ describe("DisplayFamilyRegistryPanel", () => {
     expect(await screen.findByText("Дисплей для Apple iPhone 17 Pro Max")).toBeInTheDocument();
     await waitFor(() => expect(matching.fetchDisplayFamily).toHaveBeenCalledWith(10));
     expect(screen.getByText("IP17PM-TEST · CODE-IP17PM")).toBeInTheDocument();
-    expect(screen.getAllByText(/конфликты с конкурентами/i).length).toBeGreaterThan(0);
-    expect(screen.getByText("Сопоставления конкурентов (1)")).toBeInTheDocument();
-    expect(screen.getByText(/Дисплей конкурента iPhone 17 Pro Max/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Применить" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /создать заказ/i })).not.toBeInTheDocument();
   });

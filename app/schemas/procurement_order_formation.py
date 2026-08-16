@@ -57,36 +57,6 @@ class ProcurementClassificationProposalRead(BaseModel):
     reflected_at: datetime | None = None
 
 
-class DisplayFamilyOrderRecommendationRead(BaseModel):
-    model_config = ConfigDict(populate_by_name=True)
-
-    schema_name: str = Field(alias="schema")
-    mode: str
-    status: str
-    registry_version_number: int | None = None
-    registry_inventory_checksum: str = ""
-    family_record_id: int | None = None
-    family_id: str = ""
-    family_label: str = ""
-    registry_member_count: int | None = None
-    calculation_member_count: int | None = None
-    segment_id: str = ""
-    quality_segment: str = ""
-    construction_segment: str = ""
-    baseline_order_qty: Decimal
-    allocated_order_qty: Decimal
-    family_pool_order_qty: Decimal
-    segment_pool_order_qty: Decimal
-    baseline_share_pct: Decimal
-    target_share_pct: Decimal
-    allocation_source: str = ""
-    confidence: str
-    manual_approval_required: bool
-    registry_warning_codes: list[str] = Field(default_factory=list)
-    conflict_codes: list[str] = Field(default_factory=list)
-    reason_ru: str = ""
-
-
 class ProcurementOrderFormationLineRead(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
@@ -115,7 +85,6 @@ class ProcurementOrderFormationLineRead(BaseModel):
     procurement_profile: str | None = None
     manual_minimum: Decimal | None = None
     payload: dict[str, Any] = Field(default_factory=dict)
-    display_family_recommendation: DisplayFamilyOrderRecommendationRead | None = None
     removed: bool
     effective_assortment_status: str | None = None
     effective_assortment_status_label: str | None = None

@@ -378,22 +378,7 @@ export interface DisplayFamilyMember {
     manual_accepted_count?: number;
     requires_review?: boolean;
     warnings?: string[];
-    property_disagreement_counts?: Record<string, number>;
-    relation_counts?: Record<string, number>;
-    matches?: Array<{
-      competitor?: string;
-      competitor_item_id?: number;
-      competitor_name?: string;
-      competitor_segment_id?: string;
-      method?: string;
-      model_relation?: string;
-      property_disagreements?: Array<{
-        field?: string;
-        our_value?: unknown;
-        competitor_value?: unknown;
-      }>;
-      [key: string]: unknown;
-    }>;
+    matches?: Array<Record<string, unknown>>;
     [key: string]: unknown;
   };
   identity_evidence: Record<string, unknown>;

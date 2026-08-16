@@ -108,24 +108,6 @@ def test_sales_totals_query_includes_90_and_30_day_trend_windows() -> None:
     assert "window_short_from" in sales_sql
 
 
-def test_stock_totals_batches_more_than_sql_server_rpc_limit(tmp_path) -> None:
-    policy_path = tmp_path / "warehouse-policy.json"
-    policy_path.write_text(
-        '{"usable_stock_quality_names":["Новый"],"warehouses":'
-        '[{"warehouse_code":"SALE","sells_systematically":true}]}',
-        encoding="utf-8",
-    )
-    engine = _CaptureEngine()
-
-    fetch_stock_totals(
-        engine,
-        codes=[f"CODE-{index:04d}" for index in range(2336)],
-        policy=load_warehouse_policy(policy_path),
-    )
-
-    assert len(engine.statements) == 3
-
-
 def test_display_auto_order_excludes_bitok_before_quantity_calculation() -> None:
     rows = build_dry_run_rows(
         [

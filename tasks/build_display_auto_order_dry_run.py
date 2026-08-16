@@ -13,19 +13,12 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from sqlalchemy import bindparam, func, select, text
-from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.infrastructure.db.engines import build_engine
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
 )
-from app.services.display_family_order_recommendation import (
-    FAMILY_RECOMMENDATION_COLUMNS,
-    apply_display_family_order_recommendations,
-    display_family_order_recommendation_summary,
-)
-from app.services.display_family_registry import load_active_display_family_member_contexts
 from app.services.display_scope_policy import (
     empty_display_scope_audit,
     filter_display_scope_records,
@@ -35,10 +28,6 @@ from app.services.onec_stock_availability import merged_interval_days
 from app.services.procurement_b2b_customer_demand import (
     B2BSkuDemandProfile,
     load_b2b_customer_demand_profiles,
-)
-from app.services.query_batching import (
-    load_text_mapping_in_batches,
-    normalized_text_batches,
 )
 
 DEFAULT_OUTPUT_CSV = (
@@ -68,7 +57,6 @@ CSV_COLUMNS = [
     "quality_raw",
     "quality_normalized",
     "price_segment",
-    *FAMILY_RECOMMENDATION_COLUMNS,
     "latest_purchase_price",
     "latest_purchase_price_at",
     "analog_group_id",
@@ -597,26 +585,6 @@ def main() -> int:
         b2b_customer_demand_error=b2b_customer_demand_error,
         as_of=args.as_of,
     )
-    if args.use_active_display_family_registry:
-        family_registry_error = ""
-        membership_by_code = {}
-        family_engine = build_engine(database_url, pool_pre_ping=True)
-        try:
-            with Session(family_engine) as family_session:
-                membership_by_code = load_active_display_family_member_contexts(
-                    family_session,
-                    nomenclature_codes=[str(row.get("nomenclature_code") or "") for row in rows],
-                )
-        except Exception as exc:  # noqa: BLE001 - shadow output must explain registry gaps.
-            family_registry_error = f"{type(exc).__name__}: {exc}"
-            source_errors["display_family_registry"] = family_registry_error
-        finally:
-            family_engine.dispose()
-        apply_display_family_order_recommendations(
-            rows,
-            membership_by_code=membership_by_code,
-            registry_error=family_registry_error,
-        )
     write_csv(args.output_csv, rows)
     summary = build_summary(
         rows,
@@ -808,15 +776,8 @@ SELLABLE_WAREHOUSE_ROLE_NAMES = ("Точка продаж", "Транзит", "�
 def fetch_stock_totals(
     engine, *, codes: Sequence[str], policy: WarehousePolicy
 ) -> dict[str, dict[str, Any]]:
-    code_batches = normalized_text_batches(codes)
-    if not code_batches:
+    if not codes:
         return {}
-    if len(code_batches) > 1:
-        return load_text_mapping_in_batches(
-            codes,
-            lambda batch: fetch_stock_totals(engine, codes=batch, policy=policy),
-        )
-    codes = code_batches[0]
     sql = _expanding_text(
         f"""
         SELECT
@@ -864,15 +825,8 @@ def fetch_stock_totals(
 def fetch_reserved_totals(
     engine, *, codes: Sequence[str], policy: WarehousePolicy
 ) -> dict[str, dict[str, Any]]:
-    code_batches = normalized_text_batches(codes)
-    if not code_batches:
+    if not codes:
         return {}
-    if len(code_batches) > 1:
-        return load_text_mapping_in_batches(
-            codes,
-            lambda batch: fetch_reserved_totals(engine, codes=batch, policy=policy),
-        )
-    codes = code_batches[0]
     sql = _expanding_text(
         """
         SELECT
@@ -901,15 +855,8 @@ def fetch_incoming_totals(
     codes: Sequence[str],
     as_of: date,
 ) -> dict[str, dict[str, Any]]:
-    code_batches = normalized_text_batches(codes)
-    if not code_batches:
+    if not codes:
         return {}
-    if len(code_batches) > 1:
-        return load_text_mapping_in_batches(
-            codes,
-            lambda batch: fetch_incoming_totals(engine, codes=batch, as_of=as_of),
-        )
-    codes = code_batches[0]
     empty_date = datetime.combine(ONEC_EMPTY_DATE, time.min)
     arriving_10_days_at = datetime.combine(as_of + timedelta(days=10), time.max)
     arriving_20_days_at = datetime.combine(as_of + timedelta(days=20), time.max)
@@ -1008,24 +955,8 @@ def fetch_sales_totals(
     trend_window_short_days: int = TREND_WINDOW_SHORT_DAYS,
     marketplace_activity_ref: str = MARKETPLACE_ACTIVITY_REF,
 ) -> dict[str, dict[str, Any]]:
-    code_batches = normalized_text_batches(codes)
-    if not code_batches:
+    if not codes:
         return {}
-    if len(code_batches) > 1:
-        return load_text_mapping_in_batches(
-            codes,
-            lambda batch: fetch_sales_totals(
-                engine,
-                codes=batch,
-                sellable_codes=sellable_codes,
-                date_from=date_from,
-                date_to=date_to,
-                trend_window_medium_days=trend_window_medium_days,
-                trend_window_short_days=trend_window_short_days,
-                marketplace_activity_ref=marketplace_activity_ref,
-            ),
-        )
-    codes = code_batches[0]
     window_medium_from = datetime.combine(date_to, time.min) - timedelta(
         days=trend_window_medium_days
     )
@@ -1215,21 +1146,8 @@ def fetch_days_in_sale_totals(
     # 2026-07-20) этой правкой не выполняется и остаётся отдельной задачей:
     # он требует продаж в разрезе точек, распределения товара в пути и
     # правила "сначала перемещение, затем закупка".
-    code_batches = normalized_text_batches(codes)
-    if not code_batches or not physical_sales_point_codes:
+    if not codes or not physical_sales_point_codes:
         return {}
-    if len(code_batches) > 1:
-        return load_text_mapping_in_batches(
-            codes,
-            lambda batch: fetch_days_in_sale_totals(
-                engine,
-                codes=batch,
-                physical_sales_point_codes=physical_sales_point_codes,
-                date_to=date_to,
-                windows_days=windows_days,
-            ),
-        )
-    codes = code_batches[0]
     windows = sorted({int(window) for window in windows_days if int(window) > 0})
     if not windows:
         return {}
@@ -1279,23 +1197,8 @@ def fetch_return_totals(
     batch_error_window_days: int = BATCH_ERROR_WINDOW_DAYS,
     defect_rate_window_days: int = DEFECT_RATE_WINDOW_DAYS,
 ) -> dict[str, dict[str, Any]]:
-    code_batches = normalized_text_batches(codes)
-    if not code_batches:
+    if not codes:
         return {}
-    if len(code_batches) > 1:
-        return load_text_mapping_in_batches(
-            codes,
-            lambda batch: fetch_return_totals(
-                engine,
-                codes=batch,
-                sellable_codes=sellable_codes,
-                date_from=date_from,
-                date_to=date_to,
-                batch_error_window_days=batch_error_window_days,
-                defect_rate_window_days=defect_rate_window_days,
-            ),
-        )
-    codes = code_batches[0]
     batch_error_window_from = datetime.combine(date_to, time.min) - timedelta(
         days=batch_error_window_days
     )
@@ -1348,15 +1251,8 @@ def fetch_return_totals(
 
 
 def fetch_latest_purchase_prices(engine, *, codes: Sequence[str]) -> dict[str, dict[str, Any]]:
-    code_batches = normalized_text_batches(codes)
-    if not code_batches:
+    if not codes:
         return {}
-    if len(code_batches) > 1:
-        return load_text_mapping_in_batches(
-            codes,
-            lambda batch: fetch_latest_purchase_prices(engine, codes=batch),
-        )
-    codes = code_batches[0]
     sql = _expanding_text(
         """
         WITH latest_price AS (
@@ -3021,7 +2917,6 @@ def build_summary(
         "scope_policy": dict(
             scope_policy_audit or empty_display_scope_audit(source_item_count=len(rows))
         ),
-        "display_family_order_recommendation": display_family_order_recommendation_summary(rows),
     }
 
 
@@ -3772,14 +3667,6 @@ def _parse_args() -> argparse.Namespace:
         help=(
             "For review reports, enrich analog groups with matching display catalog items "
             "from 1C Reference62. Catalog-only rows are review-only."
-        ),
-    )
-    parser.add_argument(
-        "--use-active-display-family-registry",
-        action="store_true",
-        help=(
-            "Attach a read-only family order-pool recommendation using only the "
-            "verified active registry. Base SKU quantities remain in separate columns."
         ),
     )
     parser.add_argument(

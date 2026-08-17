@@ -22,12 +22,16 @@ from sqlalchemy import (
     and_,
     bindparam,
     delete,
+    func,
     insert,
+    inspect,
     select,
     text,
     update,
 )
 from sqlalchemy.engine import Connection, Engine
+
+from app.services.onec_inventory_cost import CURRENT_TOTALS_PERIOD
 
 DEFAULT_HISTORY_DAYS = 180
 DEFAULT_RETENTION_DAYS = 210
@@ -199,6 +203,28 @@ MOVEMENT_SQL = text("""
         CAST(r._Period AS date)
     """)
 
+CURRENT_STOCK_BY_CODE_SQL = text("""
+    SELECT
+        COALESCE(NULLIF(LTRIM(RTRIM(product._Code)), N''), N'') AS product_code,
+        COUNT_BIG(*) AS source_row_count,
+        SUM(
+            CASE
+                WHEN t._Fld7743 > 0 THEN CAST(1 AS bigint)
+                ELSE CAST(0 AS bigint)
+            END
+        ) AS positive_row_count,
+        CAST(
+            SUM(CASE WHEN t._Fld7743 > 0 THEN t._Fld7743 ELSE 0 END)
+            AS decimal(28, 3)
+        ) AS positive_quantity,
+        CAST(SUM(t._Fld7743) AS decimal(28, 3)) AS net_quantity
+    FROM dbo._AccumRgT7745 AS t WITH (NOLOCK)
+    LEFT JOIN dbo._Reference62 AS product WITH (NOLOCK)
+        ON product._IDRRef = t._Fld7738RRef
+    WHERE t._Period = :current_totals_period
+    GROUP BY product._Code
+    """)
+
 
 @dataclass(frozen=True)
 class AvailabilityBuildResult:
@@ -218,6 +244,92 @@ class AvailabilitySyncResult:
     day_delta_rows: int
     interval_rows: int
     removed_rows: int
+
+
+@dataclass(frozen=True)
+class CurrentStockSnapshot:
+    captured_at: datetime
+    source_period: datetime
+    source_row_count: int
+    product_code_count: int
+    positive_row_count: int
+    positive_product_code_count: int
+    total_positive_quantity: Decimal
+    total_net_quantity: Decimal
+    quantities_by_code: Mapping[str, Decimal]
+    net_quantities_by_code: Mapping[str, Decimal]
+    source_status: str
+    source_key: str = "onec_current_stock_by_code"
+    source_title: str = "1С УТ 10.3: текущие итоги товаров на складах по коду"
+
+
+def build_current_stock_snapshot(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    captured_at: datetime,
+) -> CurrentStockSnapshot:
+    """Normalize a read-only current-totals query into auditable SKU balances."""
+
+    quantities_by_code: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    net_quantities_by_code: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    source_row_count = 0
+    positive_row_count = 0
+    total_positive_quantity = ZERO
+    total_net_quantity = ZERO
+
+    for row in rows:
+        code = str(row.get("product_code") or "").strip()
+        source_row_count += int(row.get("source_row_count") or 0)
+        positive_row_count += int(row.get("positive_row_count") or 0)
+        positive_quantity = Decimal(str(row.get("positive_quantity") or 0)).quantize(
+            Decimal("0.001")
+        )
+        net_quantity = Decimal(str(row.get("net_quantity") or 0)).quantize(Decimal("0.001"))
+        total_positive_quantity += positive_quantity
+        total_net_quantity += net_quantity
+        if code:
+            quantities_by_code[code] += positive_quantity
+            net_quantities_by_code[code] += net_quantity
+
+    normalized_quantities = dict(sorted(quantities_by_code.items()))
+    normalized_net_quantities = dict(sorted(net_quantities_by_code.items()))
+    product_code_count = len(normalized_quantities)
+    source_status = "ready" if source_row_count > 0 and product_code_count > 0 else "empty"
+    return CurrentStockSnapshot(
+        captured_at=captured_at,
+        source_period=CURRENT_TOTALS_PERIOD,
+        source_row_count=source_row_count,
+        product_code_count=product_code_count,
+        positive_row_count=positive_row_count,
+        positive_product_code_count=sum(
+            quantity > 0 for quantity in normalized_quantities.values()
+        ),
+        total_positive_quantity=total_positive_quantity.quantize(Decimal("0.001")),
+        total_net_quantity=total_net_quantity.quantize(Decimal("0.001")),
+        quantities_by_code=normalized_quantities,
+        net_quantities_by_code=normalized_net_quantities,
+        source_status=source_status,
+    )
+
+
+def fetch_current_stock_snapshot(
+    onec_engine: Engine,
+    *,
+    captured_at: datetime | None = None,
+) -> CurrentStockSnapshot:
+    """Read the verified current totals register without writing to 1C."""
+
+    effective_captured_at = captured_at or datetime.now(UTC)
+    with onec_engine.connect() as connection:
+        rows = (
+            connection.execute(
+                CURRENT_STOCK_BY_CODE_SQL,
+                {"current_totals_period": CURRENT_TOTALS_PERIOD},
+            )
+            .mappings()
+            .all()
+        )
+    return build_current_stock_snapshot(rows, captured_at=effective_captured_at)
 
 
 def month_start(value: date) -> date:
@@ -626,6 +738,46 @@ def fetch_days_in_sale_by_code(
                     point_days = Decimal(str(row.get("available_point_days") or 0))
                     result[code][window_days] = point_days / store_count
     return result
+
+
+def fetch_availability_observation_facts(
+    engine: Engine,
+    *,
+    codes: Sequence[str],
+    warehouse_codes: Sequence[str],
+) -> tuple[date | None, date | None, dict[str, date]]:
+    """Return coverage bounds and first observed positive stock by SKU."""
+
+    if not inspect(engine).has_table(COVERAGE_TABLE.name) or not inspect(engine).has_table(
+        INTERVAL_TABLE.name
+    ):
+        return None, None, {}
+    observation_from: date | None = None
+    observation_to: date | None = None
+    first_stock: dict[str, date] = {}
+    with engine.connect() as connection:
+        coverage = connection.execute(
+            select(
+                func.min(COVERAGE_TABLE.c.covered_from), func.max(COVERAGE_TABLE.c.covered_to)
+            ).where(COVERAGE_TABLE.c.status == "ready")
+        ).one()
+        observation_from = _date(coverage[0])
+        observation_to = _date(coverage[1])
+        statement = select(
+            INTERVAL_TABLE.c.product_code,
+            func.min(INTERVAL_TABLE.c.available_from).label("first_observed_stock_at"),
+        ).where(INTERVAL_TABLE.c.product_code.in_(sorted(set(codes))))
+        if warehouse_codes:
+            statement = statement.where(
+                INTERVAL_TABLE.c.warehouse_code.in_(sorted(set(warehouse_codes)))
+            )
+        statement = statement.group_by(INTERVAL_TABLE.c.product_code)
+        for row in connection.execute(statement).mappings():
+            code = _clean(row.get("product_code"))
+            first = _date(row.get("first_observed_stock_at"))
+            if code and first is not None:
+                first_stock[code] = first
+    return observation_from, observation_to, first_stock
 
 
 def attach_effective_availability_shadow_to_facts(

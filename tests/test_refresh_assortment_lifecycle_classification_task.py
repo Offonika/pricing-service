@@ -5,12 +5,14 @@ import subprocess
 import sys
 from pathlib import Path
 
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, select, text
 
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
+    ASSORTMENT_LIFECYCLE_HISTORY_TABLE,
     ASSORTMENT_LIFECYCLE_METADATA,
     ASSORTMENT_LIFECYCLE_RUN_TABLE,
+    fetch_previous_demand_states,
 )
 from tasks.refresh_assortment_lifecycle_classification import (
     _default_history_months,
@@ -36,6 +38,22 @@ def test_refresh_assortment_lifecycle_classification_task_uses_safe_default_limi
 
     monkeypatch.setenv("ASSORTMENT_LIFECYCLE_LIMIT", "1200")
     assert _default_limit() == 1200
+
+
+def test_previous_demand_state_is_empty_before_v2_migration(tmp_path: Path) -> None:
+    engine = create_engine(f"sqlite:///{tmp_path / 'legacy-classification.db'}")
+    with engine.begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE assortment_lifecycle_classification ("
+                "nomenclature_code VARCHAR(64) NOT NULL, "
+                "status VARCHAR(64) NOT NULL, "
+                "classified_at DATETIME NOT NULL)"
+            )
+        )
+
+    assert fetch_previous_demand_states(engine) == {}
+    engine.dispose()
 
 
 def test_refresh_assortment_lifecycle_classification_task_upserts_current_rows(
@@ -144,10 +162,18 @@ def test_refresh_assortment_lifecycle_classification_task_upserts_current_rows(
             .all()
         )
         runs = conn.execute(select(ASSORTMENT_LIFECYCLE_RUN_TABLE)).mappings().all()
+        history = conn.execute(select(ASSORTMENT_LIFECYCLE_HISTORY_TABLE)).mappings().all()
     engine.dispose()
 
     assert len(rows) == 2
     assert len(runs) == 2
+    assert len(history) == 4
+    assert {(row["run_id"], row["nomenclature_code"]) for row in history} == {
+        (runs[0]["id"], "РБ0001"),
+        (runs[0]["id"], "РБ0002"),
+        (runs[1]["id"], "РБ0001"),
+        (runs[1]["id"], "РБ0002"),
+    }
     assert rows[0]["status"] == "working"
     assert rows[0]["recommended_status"] is None
     assert rows[0]["manual_review_required"] is False
@@ -212,6 +238,106 @@ def test_refresh_assortment_lifecycle_classification_task_dry_run_skips_db_write
     engine.dispose()
 
     assert count == 0
+
+
+def test_v2_live_is_fail_closed_until_versioned_policy_is_approved(tmp_path: Path) -> None:
+    facts_path = tmp_path / "facts.json"
+    facts_path.write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "nomenclature_code": "LIVE-BLOCKED",
+                        "name": "Дисплей",
+                        "folder_path": "Дисплеи",
+                        "warehouses": [],
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tasks.refresh_assortment_lifecycle_classification",
+            "--facts-json",
+            str(facts_path),
+            "--database-url",
+            f"sqlite:///{tmp_path / 'live.db'}",
+            "--model-version",
+            "v2-live",
+            "--dry-run",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        cwd=PROJECT_ROOT,
+        text=True,
+    )
+    assert result.returncode != 0
+    assert "assortment_lifecycle_v2_live_not_approved" in result.stderr
+
+
+def test_classification_run_key_is_idempotent_and_conflicts_fail_closed(tmp_path: Path) -> None:
+    facts_path = tmp_path / "facts.json"
+    database_url = f"sqlite:///{tmp_path / 'idempotent.db'}"
+    facts = {
+        "items": [
+            {
+                "nomenclature_code": "IDEMPOTENT-1",
+                "name": "Дисплей",
+                "folder_path": "Дисплеи",
+                "warehouses": [],
+            }
+        ]
+    }
+    facts_path.write_text(json.dumps(facts, ensure_ascii=False), encoding="utf-8")
+    engine = create_engine(database_url)
+    ASSORTMENT_LIFECYCLE_METADATA.create_all(engine)
+    engine.dispose()
+
+    first = _run_refresh(
+        facts_path=facts_path,
+        database_url=database_url,
+        run_key="same-run-key",
+        classified_at="2026-08-12T10:00:00",
+    )
+    repeated = _run_refresh(
+        facts_path=facts_path,
+        database_url=database_url,
+        run_key="same-run-key",
+        classified_at="2026-08-12T10:00:00",
+    )
+    assert repeated["run_id"] == first["run_id"]
+    assert repeated["written_items"] == 0
+
+    facts["items"][0]["name"] = "Изменённый дисплей"
+    facts_path.write_text(json.dumps(facts, ensure_ascii=False), encoding="utf-8")
+    conflict = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tasks.refresh_assortment_lifecycle_classification",
+            "--facts-json",
+            str(facts_path),
+            "--database-url",
+            database_url,
+            "--run-key",
+            "same-run-key",
+            "--classified-at",
+            "2026-08-12T10:00:00",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        cwd=PROJECT_ROOT,
+        text=True,
+    )
+    assert conflict.returncode != 0
+    assert "assortment_lifecycle_run_key_conflict:same-run-key" in conflict.stderr
 
 
 def test_refresh_assortment_lifecycle_classification_applies_fact_status_decisions(

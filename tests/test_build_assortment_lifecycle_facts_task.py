@@ -80,7 +80,7 @@ def test_facts_task_excludes_bitok_before_output(tmp_path: Path) -> None:
                     {"warehouse_code": "central", "is_central": True},
                     {"warehouse_code": "defect", "is_defect_warehouse": True},
                     {"warehouse_code": "transit", "is_transit": True},
-                ]
+                ],
             },
             ensure_ascii=False,
         ),
@@ -197,7 +197,7 @@ def test_build_assortment_lifecycle_facts_task_feeds_updates_task(tmp_path: Path
                     {"warehouse_code": "defect", "is_defect_warehouse": True},
                     {"warehouse_code": "transit", "is_transit": True},
                     {"warehouse_code": "rare", "is_non_systematic_sale": True},
-                ]
+                ],
             },
             ensure_ascii=False,
         ),

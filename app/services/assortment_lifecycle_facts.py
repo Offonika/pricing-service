@@ -467,9 +467,7 @@ def build_assortment_lifecycle_fact_records(
                     len(cost_values_by_group.get(comparable_group, [])) if comparable_group else 0
                 ),
                 "minimum_representation_qty": (
-                    minimum_representation_qty
-                    if cost_quartile in {"Q1", "Q2"}
-                    else None
+                    minimum_representation_qty if cost_quartile in {"Q1", "Q2"} else None
                 ),
                 "minimum_representation_policy_version": (
                     minimum_representation_policy.version

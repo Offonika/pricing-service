@@ -68,9 +68,7 @@ def main() -> int:
     settings = get_settings()
     warehouse_policy_payload = _load_json_object(args.warehouse_policy_json)
     warehouse_policy = validate_warehouse_policy(warehouse_policy_payload)
-    minimum_representation_policy = validate_minimum_representation_policy(
-        warehouse_policy_payload
-    )
+    minimum_representation_policy = validate_minimum_representation_policy(warehouse_policy_payload)
     manual_overrides = normalize_manual_overrides(_load_optional_json(args.manual_overrides_json))
     manager_signals = normalize_manager_signals(_load_optional_json(args.manager_signals_json))
     history_start = default_history_start(args.today, history_months=args.history_months)

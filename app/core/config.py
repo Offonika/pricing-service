@@ -418,8 +418,12 @@ class Settings(BaseSettings):
     yandex_demand_staleness_days: int = 7
     feature_yandex_demand_enabled: bool = False
     yandex_wordstat_enabled: bool = False
-    yandex_wordstat_base_url: str = "https://api.wordstat.yandex.net"
+    yandex_wordstat_api_key: str | None = None
+    yandex_wordstat_folder_id: str | None = None
+    yandex_wordstat_base_url: str = "https://searchapi.api.cloud.yandex.net"
     yandex_wordstat_devices: str = "all"
+    yandex_wordstat_timeout: float = 10.0
+    yandex_wordstat_rps_limit: float | None = None
 
     phone_model_autocreate_from_competitor_enabled: bool = True
     phone_model_autocreate_min_confidence: float = 0.85

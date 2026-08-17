@@ -250,6 +250,11 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 
 # Review Notes / Risks
 
+- После сведения production-цепочки с `main` накопленный dirty checkout
+  `/opt/MM/pricing-service` разбирается через защитный snapshot и переносится в
+  clean worktree тематическими коммитами. Массовый автокоммит как итоговая
+  история запрещён; уже вошедшие в `origin/main` изменения повторно не
+  переносятся.
 - Dashboard/UI-контур консолидирован вместе с архитектурными изменениями; canonical
   `main` зафиксирован merge commit `3915d47`, live release собран из полного clean
   source tree без overlay-цепочки.
@@ -345,6 +350,8 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 
 # Changelog
 
+- 2026-08-17 — подтверждён разбор dirty checkout через защитный snapshot и
+  тематические clean-коммиты без повторного переноса уже слитых изменений.
 - 2026-08-17 — для production-only display-family цепочки утверждены отдельный
   архитектурный и регрессионный аудит и самостоятельный PR; механическое
   слияние запрещено.

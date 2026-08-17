@@ -41,6 +41,7 @@ from app.services.assortment_lifecycle_facts import (
     fetch_stock_inflow_date_bounds,
     normalize_manager_signals,
     normalize_manual_overrides,
+    validate_minimum_representation_policy,
     validate_warehouse_policy,
 )
 from app.services.assortment_lifecycle_v2_policy import (
@@ -326,7 +327,11 @@ def _load_or_build_fact_records(
     else:
         if args.warehouse_policy_json is None:
             raise ValueError("warehouse_policy_required: set --warehouse-policy-json")
-        warehouse_policy = validate_warehouse_policy(_load_json_object(args.warehouse_policy_json))
+        warehouse_policy_payload = _load_json_object(args.warehouse_policy_json)
+        warehouse_policy = validate_warehouse_policy(warehouse_policy_payload)
+        minimum_representation_policy = validate_minimum_representation_policy(
+            warehouse_policy_payload
+        )
         manual_overrides = normalize_manual_overrides(
             _load_optional_json(args.manual_overrides_json)
         )
@@ -518,6 +523,7 @@ def _load_or_build_fact_records(
             first_observed_stock_dates=first_observed_stock_dates,
             inventory_costs=inventory_costs,
             comparable_group_min_size=comparable_group_min_size,
+            minimum_representation_policy=minimum_representation_policy,
         )
     fact_status_decisions = _load_fact_status_decisions(args.fact_status_decisions_json)
     facts = _attach_fact_status_decisions(facts, fact_status_decisions)

@@ -36,6 +36,7 @@ from app.services.assortment_lifecycle_facts import (
     fetch_stock_inflow_date_bounds,
     normalize_manager_signals,
     normalize_manual_overrides,
+    validate_minimum_representation_policy,
     validate_warehouse_policy,
 )
 from app.services.assortment_lifecycle_v2_policy import (
@@ -65,7 +66,9 @@ def main() -> int:
     load_ut103_env_file()
     args = _parse_args()
     settings = get_settings()
-    warehouse_policy = validate_warehouse_policy(_load_json_object(args.warehouse_policy_json))
+    warehouse_policy_payload = _load_json_object(args.warehouse_policy_json)
+    warehouse_policy = validate_warehouse_policy(warehouse_policy_payload)
+    minimum_representation_policy = validate_minimum_representation_policy(warehouse_policy_payload)
     manual_overrides = normalize_manual_overrides(_load_optional_json(args.manual_overrides_json))
     manager_signals = normalize_manager_signals(_load_optional_json(args.manager_signals_json))
     history_start = default_history_start(args.today, history_months=args.history_months)
@@ -258,6 +261,7 @@ def main() -> int:
         first_observed_stock_dates=first_observed_stock_dates,
         inventory_costs=inventory_costs,
         comparable_group_min_size=v2_policy.comparable_group_min_size,
+        minimum_representation_policy=minimum_representation_policy,
     )
     summary["scope_policy"] = merge_display_scope_audits(
         source_scope_audit,

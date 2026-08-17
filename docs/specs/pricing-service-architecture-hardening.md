@@ -250,6 +250,10 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 
 # Review Notes / Risks
 
+- Reconciliation-ветка хранится в remote как страховочная копия разобранного
+  dirty checkout. Её нельзя сливать единым PR: каждый функциональный контур
+  переносится от актуального `origin/main` в отдельную ветку, проходит адресные
+  проверки и публикуется самостоятельным PR.
 - После сведения production-цепочки с `main` накопленный dirty checkout
   `/opt/MM/pricing-service` разбирается через защитный snapshot и переносится в
   clean worktree тематическими коммитами. Массовый автокоммит как итоговая
@@ -350,6 +354,8 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 
 # Changelog
 
+- 2026-08-17 — reconciliation-ветка утверждена как remote backup; единый merge
+  запрещён, изменения выводятся в `main` отдельными проверяемыми PR по контурам.
 - 2026-08-17 — подтверждён разбор dirty checkout через защитный snapshot и
   тематические clean-коммиты без повторного переноса уже слитых изменений.
 - 2026-08-17 — для production-only display-family цепочки утверждены отдельный

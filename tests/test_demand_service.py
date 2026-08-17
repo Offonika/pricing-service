@@ -45,3 +45,4 @@ def test_demand_service_saves_stats(tmp_path):
         assert demand.impressions == 123
         assert demand.clicks == 10
         assert demand.date == date(2024, 1, 1)
+        assert demand.source == "yandex_direct"

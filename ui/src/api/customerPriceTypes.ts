@@ -55,6 +55,127 @@ export interface CptCaseListResponse extends CptEnvelope {
   payload: CptCaseItem[];
 }
 
+export type CptProfileSearchState = "no_change" | "change_proposed" | "data_issue";
+
+export interface CptProfileSearchItem {
+  counterparty_ref: string;
+  counterparty_code: string | null;
+  counterparty_name: string | null;
+  current_price_type: string | null;
+  recommended_price_type: string | null;
+  result_state: CptProfileSearchState;
+  result_label: string;
+  can_review: boolean;
+  quality_sample_id: number | null;
+  quality_sample_status: "pending" | "reviewed" | null;
+}
+
+export interface CptProfileSearchResponse extends CptEnvelope {
+  total: number;
+  limit: number;
+  offset: number;
+  payload: CptProfileSearchItem[];
+}
+
+export interface CptDataIssueItem {
+  counterparty_ref: string;
+  counterparty_code: string | null;
+  counterparty_name: string | null;
+  current_price_type: string | null;
+  issue_source: "calculation" | "expert";
+  issue_text: string;
+  reported_by: string | null;
+  reported_at: string | null;
+  comment: string | null;
+  case_id: number | null;
+}
+
+export interface CptDataIssueListResponse extends CptEnvelope {
+  total: number;
+  limit: number;
+  offset: number;
+  payload: CptDataIssueItem[];
+}
+
+export type CptReviewKind = "price_type" | "client_action";
+export type CptReviewResult = "confirm" | "correct" | "no_action" | "data_issue";
+export type CptExternalState =
+  | "not_created"
+  | "held"
+  | "pending"
+  | "preflight"
+  | "ready_to_apply"
+  | "applying"
+  | "applied"
+  | "cancelled"
+  | "technical_review";
+
+export interface CptReviewDimension {
+  kind: CptReviewKind;
+  system_value: string | null;
+  system_label: string;
+  can_review: boolean;
+  unavailable_reason: string | null;
+  allowed_results: CptReviewResult[];
+  allowed_corrected_values: string[];
+  review_id: number | null;
+  result: CptReviewResult | null;
+  final_value: string | null;
+  comment: string | null;
+  reviewed_by: string | null;
+  reviewed_at: string | null;
+  version: number;
+  decision_mode: "test" | "live" | null;
+  external_state: CptExternalState;
+  external_message: string | null;
+}
+
+export interface CptReviewCard {
+  snapshot_id: number;
+  case_id: number | null;
+  counterparty_ref: string;
+  counterparty_code: string | null;
+  counterparty_name: string | null;
+  owner_name: string | null;
+  department_name: string | null;
+  snapshot_month: string;
+  current_price_type: string | null;
+  recommended_price_type: string | null;
+  recommendation_text: string;
+  data_state: "ready" | "technical_review" | "insufficient_history" | "new_client";
+  data_state_label: string;
+  snapshot_hash: string;
+  contracts: CptContractCandidate[];
+  price_type: CptReviewDimension;
+  client_action: CptReviewDimension;
+}
+
+export interface CptReviewCardListResponse extends CptEnvelope {
+  total: number;
+  limit: number;
+  offset: number;
+  payload: CptReviewCard[];
+}
+
+export interface CptReviewSaveResponse extends CptEnvelope {
+  card: CptReviewCard;
+  saved_kind: CptReviewKind;
+}
+
+export interface CptReviewKindMetrics {
+  reviewed_count: number;
+  confirmed_count: number;
+  corrected_count: number;
+  no_action_count: number;
+  data_issue_count: number;
+  correction_rate: number;
+}
+
+export interface CptReviewMetricsResponse extends CptEnvelope {
+  price_type: CptReviewKindMetrics;
+  client_action: CptReviewKindMetrics;
+}
+
 export interface CptContractCandidate {
   contract_ref?: string | null;
   contract_name?: string | null;
@@ -188,6 +309,7 @@ export interface CptQualitySample {
   stop_factors: string[];
   system_group: CptQualityGroup;
   correct_group: CptQualityGroup | null;
+  review_result: "correct" | "incorrect" | "data_issue" | null;
   status: "pending" | "reviewed";
   selected_by: string;
   selected_at: string;
@@ -310,10 +432,69 @@ export async function fetchCptCaseDetail(caseId: number): Promise<CptCaseDetailR
   return data;
 }
 
-export async function prepareCptQualitySamples(perGroup: number) {
-  const { data } = await api.post("/customer-price-types/quality/samples/prepare", {
-    per_group: perGroup,
+export async function searchCptProfiles(search: string): Promise<CptProfileSearchResponse> {
+  const { data } = await api.get<CptProfileSearchResponse>("/customer-price-types/profiles", {
+    params: { search, limit: 50 },
   });
+  return data;
+}
+
+export async function fetchCptDataIssues(search?: string | null): Promise<CptDataIssueListResponse> {
+  const { data } = await api.get<CptDataIssueListResponse>("/customer-price-types/data-issues", {
+    params: { ...(search ? { search } : {}), limit: 500 },
+  });
+  return data;
+}
+
+export async function fetchCptReviewCards(options: {
+  reviewKind?: CptReviewKind | null;
+  pendingOnly?: boolean;
+  search?: string | null;
+  limit?: number;
+  offset?: number;
+} = {}): Promise<CptReviewCardListResponse> {
+  const { data } = await api.get<CptReviewCardListResponse>(
+    "/customer-price-types/reviews/cards",
+    {
+      params: {
+        ...(options.reviewKind ? { review_kind: options.reviewKind } : {}),
+        ...(options.pendingOnly != null ? { pending_only: options.pendingOnly } : {}),
+        ...(options.search ? { search: options.search } : {}),
+        limit: options.limit ?? 100,
+        offset: options.offset ?? 0,
+      },
+    },
+  );
+  return data;
+}
+
+export async function fetchCptReviewMetrics(): Promise<CptReviewMetricsResponse> {
+  const { data } = await api.get<CptReviewMetricsResponse>(
+    "/customer-price-types/reviews/metrics",
+  );
+  return data;
+}
+
+export async function saveCptReview(options: {
+  snapshotId: number;
+  reviewKind: CptReviewKind;
+  result: CptReviewResult;
+  correctedValue?: string | null;
+  comment?: string | null;
+  expectedVersion: number;
+  snapshotHash: string;
+}): Promise<CptReviewSaveResponse> {
+  const suffix = options.reviewKind === "price_type" ? "price-type" : "client-action";
+  const { data } = await api.put<CptReviewSaveResponse>(
+    `/customer-price-types/reviews/cards/${options.snapshotId}/${suffix}`,
+    {
+      result: options.result,
+      corrected_value: options.correctedValue ?? null,
+      comment: options.comment?.trim() || null,
+      expected_version: options.expectedVersion,
+      snapshot_hash: options.snapshotHash,
+    },
+  );
   return data;
 }
 
@@ -344,23 +525,6 @@ export async function fetchCptQualitySampleDetail(
 ): Promise<CptQualitySampleDetailResponse> {
   const { data } = await api.get<CptQualitySampleDetailResponse>(
     `/customer-price-types/quality/samples/${sampleId}`,
-  );
-  return data;
-}
-
-export async function reviewCptQualitySample(options: {
-  sampleId: number;
-  correctGroup: CptQualityGroup;
-  comment?: string | null;
-  expectedVersion: number;
-}): Promise<CptQualitySample> {
-  const { data } = await api.put<CptQualitySample>(
-    `/customer-price-types/quality/samples/${options.sampleId}`,
-    {
-      correct_group: options.correctGroup,
-      comment: options.comment || null,
-      expected_version: options.expectedVersion,
-    },
   );
   return data;
 }

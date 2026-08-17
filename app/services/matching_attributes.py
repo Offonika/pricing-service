@@ -98,6 +98,12 @@ def _normalize_display_quality_value(value: object | None) -> str | None:
     return normalize_display_quality(raw)
 
 
+def normalize_display_quality_value(value: object | None) -> str | None:
+    """Public canonical adapter used by matching and display-family identity."""
+
+    return _normalize_display_quality_value(value)
+
+
 def _normalize_display_type_value(value: object | None) -> str | None:
     if value is None:
         return None
@@ -105,6 +111,12 @@ def _normalize_display_type_value(value: object | None) -> str | None:
     if not raw or raw == ScreenMatrixType.UNKNOWN.value:
         return None
     return normalize_display_type(raw)
+
+
+def normalize_display_type_value(value: object | None) -> str | None:
+    """Public canonical adapter used by matching and display-family identity."""
+
+    return _normalize_display_type_value(value)
 
 
 def _normalize_display_construction_value(value: object | None) -> str | None:
@@ -124,6 +136,12 @@ def _normalize_display_construction_value(value: object | None) -> str | None:
     if raw in {ScreenConstruction.HARD_OLED.value, ScreenConstruction.SOFT_OLED.value}:
         return raw
     return normalize_display_construction(raw)
+
+
+def normalize_display_construction_value(value: object | None) -> str | None:
+    """Public canonical adapter used by matching and display-family identity."""
+
+    return _normalize_display_construction_value(value)
 
 
 def _normalize_backlight(value: object | None) -> str | None:

@@ -44,6 +44,26 @@
     }
   ],
   "commands": {
+    "observe_margin_flow_pipeline.py": {
+      "owner": "procurement",
+      "kind": "permanent_cli",
+      "dry_run": "not_applicable",
+      "idempotency": "one_immutable_hash_chained_observation_per_moscow_day",
+      "side_effect_level": "artifact_write",
+      "db_access": "onec_read_only",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "run_customer_price_type_external_actions.py": {
+      "owner": "pricing-platform",
+      "kind": "permanent_cli",
+      "dry_run": "not_supported",
+      "idempotency": "verified_by_transactional_outbox_and_external_readback",
+      "side_effect_level": "mixed",
+      "db_access": "mixed",
+      "spec": "docs/specs/customer-price-type-management-v1.md",
+      "remove_after": null
+    },
     "competitor_matching_watchdog.py": {
       "owner": "matching",
       "kind": "permanent_cli",
@@ -84,6 +104,206 @@
       "spec": "docs/specs/competitor-matching-ui-v1.md",
       "remove_after": null
     },
+    "report_display_family_registry_preflight.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_input_checksum",
+      "side_effect_level": "artifact_write",
+      "db_access": "mixed",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "report_display_scope_exclusion_dry_run.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_source_checksum",
+      "side_effect_level": "artifact_write",
+      "db_access": "none",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "build_assortment_signal_ingestion_dry_run.py": {
+      "owner": "procurement",
+      "kind": "permanent_cli",
+      "dry_run": "supported",
+      "idempotency": "artifact_replace_by_input_and_registry_checksums",
+      "side_effect_level": "artifact_write",
+      "db_access": "application_read_only",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "build_assortment_signal_source_bundle.py": {
+      "owner": "procurement",
+      "kind": "permanent_cli",
+      "dry_run": "supported",
+      "idempotency": "artifact_replace_by_source_window_and_registry_snapshot",
+      "side_effect_level": "artifact_write",
+      "db_access": "mixed",
+      "spec": "docs/specs/assortment-status-contour-plan.md",
+      "remove_after": null
+    },
+    "bootstrap_display_family_registry.py": {
+      "owner": "procurement",
+      "kind": "permanent_cli",
+      "dry_run": "supported",
+      "idempotency": "verified_by_inventory_checksum_and_atomic_readback",
+      "side_effect_level": "db_write",
+      "db_access": "application_write",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "evaluate_assortment_lifecycle_v2_backtest.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "none",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "manage_assortment_lifecycle_replay_store.py": {
+      "owner": "procurement",
+      "kind": "permanent_cli",
+      "dry_run": "not_applicable",
+      "idempotency": "append_only_by_content_hash",
+      "side_effect_level": "artifact_write",
+      "db_access": "none",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "run_assortment_lifecycle_memory_safe_replay.py": {
+      "owner": "procurement",
+      "kind": "permanent_cli",
+      "dry_run": "not_applicable",
+      "idempotency": "checkpoint_resume_and_immutable_publish_by_content_hash",
+      "side_effect_level": "artifact_write",
+      "db_access": "none",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "report_display_auto_order_six_month_backtest.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "append_only_replay_by_content_hash_and_replaceable_report_artifacts",
+      "side_effect_level": "artifact_write",
+      "db_access": "mixed",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "build_display_auto_order_frozen_report.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "none",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "analyze_display_auto_order_quick_backtest.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "none",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "analyze_display_auto_order_control_gap.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "none",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "analyze_display_auto_order_forecast_controls.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "none",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "analyze_display_auto_order_shortage_risk.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "none",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "analyze_display_auto_order_shortage_risk_drivers.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "none",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "analyze_display_auto_order_pipeline_lot_reliability.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "none",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "report_display_auto_order_risk_buffer_backtest.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "none",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "analyze_display_auto_order_base_pipeline_backtest.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "none",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "build_display_auto_order_base_pipeline_report.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "none",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "export_display_auto_order_site_events.py": {
+      "owner": "procurement",
+      "kind": "export",
+      "dry_run": "not_applicable",
+      "idempotency": "frozen_artifact_by_checksum",
+      "side_effect_level": "artifact_write",
+      "db_access": "bitrix_read_only",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
     "report_competitor_items_needs_compat_review.py": {
       "owner": "matching",
       "kind": "report",
@@ -102,6 +322,46 @@
       "side_effect_level": "artifact_write",
       "db_access": "application_read_only",
       "spec": "docs/specs/pricing-service-db-cli-cron-hardening.md",
+      "remove_after": null
+    },
+    "report_display_auto_order_backtest_preflight.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "mixed",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "report_display_auto_order_frozen_backtest.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "none",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "report_display_auto_order_dynamic_minmax_backtest.py": {
+      "owner": "procurement",
+      "kind": "report",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "none",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
+    "export_display_auto_order_shadow_workbook.py": {
+      "owner": "procurement",
+      "kind": "export",
+      "dry_run": "not_applicable",
+      "idempotency": "artifact_replace_by_requested_path",
+      "side_effect_level": "artifact_write",
+      "db_access": "none",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
       "remove_after": null
     },
     "backfill_competitor_items.py": {

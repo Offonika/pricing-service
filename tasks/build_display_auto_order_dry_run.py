@@ -12,12 +12,18 @@ from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy import bindparam, func, select, text
+from sqlalchemy import bindparam, func, inspect, select, text
 
 from app.core.config import get_settings
 from app.infrastructure.db.engines import build_engine
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
+)
+from app.services.assortment_lifecycle_v2_policy import load_assortment_lifecycle_v2_policy
+from app.services.display_scope_policy import (
+    empty_display_scope_audit,
+    filter_display_scope_records,
+    merge_display_scope_audits,
 )
 from app.services.onec_stock_availability import merged_interval_days
 from app.services.procurement_b2b_customer_demand import (
@@ -49,9 +55,15 @@ CSV_COLUMNS = [
     "nomenclature_code",
     "name",
     "status_label",
+    "demand_state",
+    "demand_state_label",
     "quality_raw",
     "quality_normalized",
     "price_segment",
+    "inventory_cost_per_unit",
+    "cost_quartile",
+    "minimum_representation_qty",
+    "representation_floor_applied",
     "latest_purchase_price",
     "latest_purchase_price_at",
     "analog_group_id",
@@ -78,6 +90,7 @@ CSV_COLUMNS = [
     "central_stock_qty",
     "total_stock_qty",
     "incoming_qty",
+    "reliable_incoming_qty",
     "incoming_order_count",
     "sales_qty_window",
     "sales_qty_window_medium",
@@ -443,18 +456,30 @@ def main() -> int:
         or settings.onec_database_url
         or ""
     )
-    app_engine = build_engine(database_url, pool_pre_ping=True)
-    try:
-        items, run_id = load_auto_order_items(
-            app_engine,
+    if args.lifecycle_facts_json:
+        items, scope_audit = load_auto_order_items_from_facts_with_scope_audit(
+            args.lifecycle_facts_json,
             folder=args.folder,
+            lifecycle_model_version=args.lifecycle_model_version,
             include_sale_review_candidates=(
                 args.include_sale_review_candidates
                 or auto_order_policy.include_sale_review_candidates
             ),
         )
-    finally:
-        app_engine.dispose()
+        run_id = None
+    else:
+        app_engine = build_engine(database_url, pool_pre_ping=True)
+        try:
+            items, run_id, scope_audit = load_auto_order_items_with_scope_audit(
+                app_engine,
+                folder=args.folder,
+                include_sale_review_candidates=(
+                    args.include_sale_review_candidates
+                    or auto_order_policy.include_sale_review_candidates
+                ),
+            )
+        finally:
+            app_engine.dispose()
 
     policy = load_warehouse_policy(args.warehouse_policy_json)
     source_errors: dict[str, str] = {}
@@ -495,6 +520,12 @@ def main() -> int:
                         ),
                     )
                 )
+            analog_scope_result = filter_display_scope_records(items)
+            items = list(analog_scope_result.included)
+            scope_audit = merge_display_scope_audits(
+                scope_audit,
+                analog_scope_result.audit,
+            )
             codes = tuple(str(item["nomenclature_code"]) for item in items)
             facts["stock"] = fetch_stock_totals(onec_engine, codes=codes, policy=policy)
             facts["reserve"] = fetch_reserved_totals(onec_engine, codes=codes, policy=policy)
@@ -573,9 +604,15 @@ def main() -> int:
         b2b_customer_demand_profiles=b2b_customer_demand_profiles,
         b2b_customer_demand_error=b2b_customer_demand_error,
         as_of=args.as_of,
+        lifecycle_model_version=args.lifecycle_model_version,
     )
     write_csv(args.output_csv, rows)
-    summary = build_summary(rows, run_id=run_id, source_errors=source_errors)
+    summary = build_summary(
+        rows,
+        run_id=run_id,
+        source_errors=source_errors,
+        scope_policy_audit=scope_audit,
+    )
     if args.output_json:
         args.output_json.parent.mkdir(parents=True, exist_ok=True)
         args.output_json.write_text(
@@ -590,14 +627,17 @@ def main() -> int:
     return 0
 
 
-def load_auto_order_items(
+def load_auto_order_items_with_scope_audit(
     engine,
     *,
     folder: str,
     include_sale_review_candidates: bool = False,
-) -> tuple[list[dict[str, Any]], int | None]:
+) -> tuple[list[dict[str, Any]], int | None, dict[str, Any]]:
     table = ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE
     with engine.connect() as conn:
+        available_columns = {
+            str(column["name"]) for column in inspect(engine).get_columns(table.name)
+        }
         run_id = conn.execute(
             select(func.max(table.c.last_run_id)).where(table.c.folder.ilike(f"%{folder}%"))
         ).scalar()
@@ -621,12 +661,127 @@ def load_auto_order_items(
                     table.c.status == "working",
                 ]
             )
+        selectable_columns = [column for column in table.c if column.name in available_columns]
         rows = (
-            conn.execute(select(table).where(*conditions).order_by(table.c.nomenclature_code.asc()))
+            conn.execute(
+                select(*selectable_columns)
+                .where(*conditions)
+                .order_by(table.c.nomenclature_code.asc())
+            )
             .mappings()
             .all()
         )
-    return [dict(row) for row in rows], run_id
+    scope_result = filter_display_scope_records([dict(row) for row in rows])
+    return list(scope_result.included), run_id, scope_result.audit
+
+
+def load_auto_order_items(
+    engine,
+    *,
+    folder: str,
+    include_sale_review_candidates: bool = False,
+) -> tuple[list[dict[str, Any]], int | None]:
+    items, run_id, _scope_audit = load_auto_order_items_with_scope_audit(
+        engine,
+        folder=folder,
+        include_sale_review_candidates=include_sale_review_candidates,
+    )
+    return items, run_id
+
+
+def load_auto_order_items_from_facts_with_scope_audit(
+    path: Path,
+    *,
+    folder: str,
+    lifecycle_model_version: str,
+    include_sale_review_candidates: bool = False,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Build the dry-run cohort from one immutable lifecycle fact snapshot."""
+
+    from app.services.assortment_lifecycle import (
+        ASSORTMENT_STATUS_LABELS,
+        decide_legacy_assortment_status,
+        decide_target_assortment_status,
+    )
+    from tasks.build_assortment_lifecycle_updates import (
+        _fact_status_decision_from_record,
+        _lifecycle_input_from_record,
+        _load_records,
+        _matches_folder,
+    )
+
+    policy = load_assortment_lifecycle_v2_policy()
+    items: list[dict[str, Any]] = []
+    scope_result = filter_display_scope_records(_load_records(path))
+    for raw in scope_result.included:
+        if folder and not _matches_folder(raw, folder):
+            continue
+        if raw.get("future_ka_mapping_status") != "ready":
+            continue
+        if raw.get("demand_method_code") != "available_days_average":
+            continue
+        lifecycle_input = _lifecycle_input_from_record(raw)
+        legacy = _fact_status_decision_from_record(
+            raw,
+            decide_legacy_assortment_status(lifecycle_input),
+        )
+        target = decide_target_assortment_status(
+            lifecycle_input,
+            demand_policy=policy.demand,
+        )
+        decision = target if lifecycle_model_version in {"v2-shadow", "v2-live"} else legacy
+        effective_status = decision.status
+        effective_status_label = decision.status_label
+        effective_manual_review_required = decision.manual_review_required
+        effective_auto_order_allowed = decision.auto_order_allowed
+        if lifecycle_model_version == "v1" and raw.get("previous_status"):
+            try:
+                persisted_status = type(decision.status)(raw["previous_status"])
+                effective_status = persisted_status
+                effective_status_label = ASSORTMENT_STATUS_LABELS[persisted_status]
+                effective_manual_review_required = False
+                effective_auto_order_allowed = persisted_status in {
+                    type(decision.status).SALE,
+                    type(decision.status).WORKING,
+                }
+            except ValueError:
+                pass
+        if include_sale_review_candidates:
+            if effective_status.value not in {"working", "sale"} or (
+                effective_manual_review_required
+            ):
+                continue
+        elif not effective_auto_order_allowed or effective_status.value != "working":
+            continue
+        items.append(
+            {
+                **raw,
+                "status": effective_status.value,
+                "status_label": effective_status_label,
+                "demand_state": decision.demand_state.value if decision.demand_state else "",
+                "demand_state_label": decision.demand_state_label,
+                "auto_order_allowed": effective_auto_order_allowed,
+                "manual_review_required": effective_manual_review_required,
+                "blockers": list(decision.blockers),
+            }
+        )
+    return items, scope_result.audit
+
+
+def load_auto_order_items_from_facts(
+    path: Path,
+    *,
+    folder: str,
+    lifecycle_model_version: str,
+    include_sale_review_candidates: bool = False,
+) -> list[dict[str, Any]]:
+    items, _scope_audit = load_auto_order_items_from_facts_with_scope_audit(
+        path,
+        folder=folder,
+        lifecycle_model_version=lifecycle_model_version,
+        include_sale_review_candidates=include_sale_review_candidates,
+    )
+    return items
 
 
 def load_warehouse_policy(path: Path) -> WarehousePolicy:
@@ -1341,8 +1496,12 @@ def build_dry_run_rows(
     b2b_customer_demand_profiles: Mapping[str, B2BSkuDemandProfile] | None = None,
     b2b_customer_demand_error: str = "",
     as_of: date | None = None,
+    lifecycle_model_version: str = "v2-shadow",
 ) -> list[dict[str, Any]]:
+    if lifecycle_model_version not in {"v1", "v2-shadow", "v2-live"}:
+        raise ValueError(f"unsupported assortment lifecycle model: {lifecycle_model_version}")
     rows: list[dict[str, Any]] = []
+    scoped_items = filter_display_scope_records(items).included
     supported_analog_policy = supported_analog_policy or SupportedAnalogPolicy()
     if supplier_assembly_days:
         supplier_prepare_days = supplier_assembly_days
@@ -1358,7 +1517,7 @@ def build_dry_run_rows(
         + distribution_to_shelf_days
     )
     effective_target_days = planning_horizon_days + safety_stock_days
-    for item in items:
+    for item in scoped_items:
         code = _clean(item.get("nomenclature_code"))
         stock = facts.get("stock", {}).get(code, {})
         reserve = facts.get("reserve", {}).get(code, {})
@@ -1377,6 +1536,7 @@ def build_dry_run_rows(
         pipeline_later_qty = _decimal(incoming.get("pipeline_later_qty"))
         pipeline_no_date_qty = _decimal(incoming.get("pipeline_no_date_qty"))
         pipeline_cargo_handoff_qty = _decimal(incoming.get("pipeline_cargo_handoff_qty"))
+        reliable_incoming_qty = pipeline_cargo_handoff_qty
         pipeline_supplier_processing_qty = _decimal(
             incoming.get("pipeline_supplier_processing_qty")
         )
@@ -1677,10 +1837,16 @@ def build_dry_run_rows(
                 "name": _clean(item.get("name")),
                 "status_label": _clean(item.get("status_label")),
                 "_assortment_status": _clean(item.get("status")),
+                "demand_state": _clean(item.get("demand_state")),
+                "demand_state_label": _clean(item.get("demand_state_label")),
                 "_auto_order_allowed": bool(item.get("auto_order_allowed", True)),
                 "quality_raw": _clean(item.get("quality_raw")),
                 "quality_normalized": _clean(item.get("quality_normalized")),
                 "price_segment": _clean(item.get("price_segment")),
+                "inventory_cost_per_unit": _clean(item.get("inventory_cost_per_unit")),
+                "cost_quartile": _clean(item.get("cost_quartile")),
+                "minimum_representation_qty": _clean(item.get("minimum_representation_qty")),
+                "representation_floor_applied": "",
                 "latest_purchase_price": _out_decimal(latest_purchase_price, places=2),
                 "latest_purchase_price_at": _date_text(purchase.get("latest_purchase_price_at")),
                 "analog_group_id": "",
@@ -1707,6 +1873,7 @@ def build_dry_run_rows(
                 "central_stock_qty": _out_decimal(central_stock_qty),
                 "total_stock_qty": _out_decimal(total_stock_qty),
                 "incoming_qty": _out_decimal(incoming_qty),
+                "reliable_incoming_qty": _out_decimal(reliable_incoming_qty),
                 "incoming_order_count": int(incoming.get("incoming_order_count") or 0),
                 "sales_qty_window": _out_decimal(sales_qty),
                 "sales_qty_window_medium": _out_decimal(sales_qty_medium),
@@ -1847,6 +2014,13 @@ def build_dry_run_rows(
         max_order_qty=max_order_qty,
         order_rounding_rules=order_rounding_rules,
     )
+    if lifecycle_model_version in {"v2-shadow", "v2-live"}:
+        apply_target_representation_floor(
+            rows,
+            min_order_qty=min_order_qty,
+            max_order_qty=max_order_qty,
+            order_rounding_rules=order_rounding_rules,
+        )
     # Финальный барьер, не обойти ни одним из шагов выше (apply_analog_group_
     # decisions/_mark_analog_winner уже проверяли blockers по отдельности, но
     # на реальном прогоне 2026-07-31 нашлось ЕЩЁ ДВЕ утечки в других шагах
@@ -1914,6 +2088,54 @@ def build_dry_run_rows(
             f"{row.get('reason_ru', '')}"
         ).strip()
     return rows
+
+
+def apply_target_representation_floor(
+    rows: list[dict[str, Any]],
+    *,
+    min_order_qty: int,
+    max_order_qty: int | None,
+    order_rounding_rules: Sequence[OrderRoundingRule],
+) -> None:
+    """Apply the v2 Q1/Q2 representation minimum as a target floor once."""
+
+    for row in rows:
+        if _clean(row.get("_assortment_status")) != "sale":
+            continue
+        if _clean(row.get("demand_state")) == "spike":
+            continue
+        if _clean(row.get("cost_quartile")) not in {"Q1", "Q2"}:
+            continue
+        minimum_qty = _decimal(row.get("minimum_representation_qty"))
+        if minimum_qty <= 0 or _clean(row.get("blockers")):
+            continue
+        demand_target_qty = _decimal(row.get("target_stock_qty"))
+        target_stock_qty = max(demand_target_qty, minimum_qty)
+        if target_stock_qty == demand_target_qty:
+            continue
+        free_stock_qty = _decimal(row.get("free_stock_qty"))
+        reliable_incoming_qty = _decimal(row.get("reliable_incoming_qty"))
+        raw = _ceil_decimal(
+            max(Decimal("0"), target_stock_qty - free_stock_qty - reliable_incoming_qty)
+        )
+        qty = rounded_order_qty(
+            raw,
+            min_order_qty=min_order_qty,
+            max_order_qty=max_order_qty,
+            order_rounding_rules=order_rounding_rules,
+        )
+        row["target_stock_qty"] = _out_decimal(target_stock_qty)
+        row["recommended_order_qty_raw"] = _out_decimal(raw)
+        row["recommended_order_qty"] = _out_decimal(qty)
+        row["representation_floor_applied"] = "yes"
+        row["dry_run_decision"] = "order" if qty > 0 else "do_not_order"
+        _append_warning(row, "minimum_representation_floor_applied")
+        row["reason_ru"] = (
+            f"Минимальная представленность {minimum_qty} шт задаёт нижнюю границу цели; "
+            f"расчётный спрос {demand_target_qty} шт не прибавляется к ней повторно. "
+            f"Свободно {free_stock_qty} шт, надёжно в пути {reliable_incoming_qty} шт, "
+            f"рекомендуем {qty} шт."
+        )
 
 
 def apply_price_batch_policy(
@@ -2143,11 +2365,8 @@ def _price_batch_rule_for_row(
     applies_to_analog_roles: Sequence[str],
 ) -> PriceBatchRule | None:
     configured_statuses = {status.casefold() for status in applies_to_statuses}
-    row_statuses = {
-        _clean(row.get("_assortment_status")).casefold(),
-        _clean(row.get("status_label")).casefold(),
-    }
-    if configured_statuses and not configured_statuses.intersection(row_statuses):
+    row_status = _clean(row.get("_assortment_status")).casefold()
+    if configured_statuses and row_status not in configured_statuses:
         return None
     configured_roles = {role.casefold() for role in applies_to_analog_roles}
     if configured_roles and _clean(row.get("analog_role")).casefold() not in configured_roles:
@@ -2773,6 +2992,7 @@ def build_summary(
     *,
     run_id: int | None,
     source_errors: Mapping[str, str],
+    scope_policy_audit: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     decisions = Counter(_clean(row.get("dry_run_decision")) for row in rows)
     warnings = Counter(
@@ -2881,6 +3101,9 @@ def build_summary(
         ),
         "total_b2b_order_delta_qty": _out_decimal(total_b2b_order_delta),
         "source_errors": dict(source_errors),
+        "scope_policy": dict(
+            scope_policy_audit or empty_display_scope_audit(source_item_count=len(rows))
+        ),
     }
 
 
@@ -3617,6 +3840,20 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--database-url", default="")
     parser.add_argument("--onec-database-url", default="")
     parser.add_argument("--folder", default="дисплеи")
+    parser.add_argument(
+        "--lifecycle-facts-json",
+        type=Path,
+        help="Immutable lifecycle fact snapshot for DB-free legacy/v2 quantity comparison.",
+    )
+    parser.add_argument(
+        "--lifecycle-model-version",
+        choices=("v1", "v2-shadow", "v2-live"),
+        default="v2-shadow",
+        help=(
+            "v2-shadow applies the candidate representation floor only to the read-only "
+            "report; v1 preserves the legacy quantity calculation."
+        ),
+    )
     parser.add_argument(
         "--include-sale-review-candidates",
         action="store_true",

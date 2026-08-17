@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections import defaultdict
@@ -9,7 +10,7 @@ from decimal import Decimal, InvalidOperation
 from math import ceil
 from typing import Any, Iterable, Mapping, Sequence
 
-from sqlalchemy import bindparam, inspect, text
+from sqlalchemy import LargeBinary, bindparam, inspect, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import NoSuchTableError
 
@@ -18,6 +19,8 @@ from app.services.assortment_lifecycle import (
     DEMAND_WINDOW_MEDIUM_DAYS,
     DEMAND_WINDOW_SHORT_DAYS,
 )
+from app.services.display_scope_policy import filter_display_scope_records
+from app.services.onec_inventory_cost import CURRENT_TOTALS_PERIOD, UNBILLED_PARTY_STATUS_HEX
 
 # Окна наблюдения спроса берём из самой формулы, чтобы сборщик фактов и
 # формула не разъехались числами.
@@ -29,6 +32,7 @@ DEMAND_WINDOWS_DAYS = (
 
 ONEC_EMPTY_DATE = date(1753, 1, 1)
 DEFAULT_HISTORY_MONTHS = 24
+DEMAND_DISTRIBUTION_WINDOW_DAYS = 30
 RECEIPT_MAPPING_UNRESOLVED = "receipt_mapping_unresolved"
 SUPPLIER_ORDER_MAPPING_UNRESOLVED = "supplier_order_mapping_unresolved"
 MAX_SQLSERVER_EXPANDING_REFS = 1800
@@ -53,6 +57,7 @@ DISPLAY_DESCRIPTION_MARKERS = (
 )
 GENERIC_DISPLAY_FOLDER_BRANDS = {"планшетов", "телефонов", "смартфонов"}
 DISPLAY_SCOPE_MARKERS = ("диспле", "матриц")
+DISPLAY_ACCESSORY_MARKERS = ("шлейф", "коннектор", "проклейк", "скотч")
 ONEC_NOMENCLATURE_PROPERTY_ALIASES = {
     "Качество": "quality_raw",
     "Класс дисплея": "display_quality_raw",
@@ -73,8 +78,11 @@ class DocumentLineMapping:
     document_date_column: str = "_Date_Time"
     posted_column: str = "_Posted"
     marked_column: str = "_Marked"
+    line_number_column: str = ""
     line_price_column: str = ""
+    line_quantity_column: str = ""
     cargo_handoff_column: str = ""
+    line_supplier_order_column: str = ""
 
     @classmethod
     def from_mapping(cls, payload: Mapping[str, Any]) -> DocumentLineMapping:
@@ -87,8 +95,11 @@ class DocumentLineMapping:
             document_date_column=str(payload.get("document_date_column") or "_Date_Time"),
             posted_column=str(payload.get("posted_column") or "_Posted"),
             marked_column=str(payload.get("marked_column") or "_Marked"),
+            line_number_column=str(payload.get("line_number_column") or ""),
             line_price_column=str(payload.get("line_price_column") or ""),
+            line_quantity_column=str(payload.get("line_quantity_column") or ""),
             cargo_handoff_column=str(payload.get("cargo_handoff_column") or ""),
+            line_supplier_order_column=str(payload.get("line_supplier_order_column") or ""),
         )
 
 
@@ -178,21 +189,34 @@ def build_assortment_lifecycle_fact_records(
     *,
     nomenclature_rows: Sequence[Mapping[str, Any]],
     supplier_order_rows: Sequence[Mapping[str, Any]],
+    first_supplier_order_dates: Mapping[str, date] | None = None,
     receipt_rows: Sequence[Mapping[str, Any]],
+    receipt_bounds: Mapping[str, tuple[date, date]] | None = None,
+    stock_inflow_bounds: Mapping[str, tuple[date, date]] | None = None,
     warehouse_policy: Sequence[Mapping[str, Any]],
     manual_overrides: Mapping[str, Mapping[str, Any]] | None = None,
     manager_signals: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
     history_start: date | None = None,
-    first_sale_dates: Mapping[str, tuple[date, date]] | None = None,
+    first_sale_dates: Mapping[str, tuple[date, date] | tuple[date, date, Decimal]] | None = None,
+    sales_history_complete: bool = False,
     as_of: date | None = None,
     sales_window_totals: Mapping[str, Mapping[int, Decimal]] | None = None,
+    sales_distribution: Mapping[str, Mapping[str, Any]] | None = None,
     days_in_sale_totals: Mapping[str, Mapping[int, Decimal]] | None = None,
     previous_statuses: Mapping[str, str] | None = None,
+    previous_classifications: Mapping[str, Mapping[str, Any]] | None = None,
+    previous_demand_states: Mapping[str, Mapping[str, Any]] | None = None,
+    observation_from: date | None = None,
+    observation_to: date | None = None,
+    first_observed_stock_dates: Mapping[str, date] | None = None,
+    inventory_costs: Mapping[str, Decimal] | None = None,
+    comparable_group_min_size: int = 8,
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    scope_result = filter_display_scope_records(nomenclature_rows)
     items_by_key: dict[str, Mapping[str, Any]] = {}
     code_by_key: dict[str, str] = {}
     key_by_code: dict[str, str] = {}
-    for row in nomenclature_rows:
+    for row in scope_result.included:
         code = _clean(row.get("nomenclature_code") or row.get("code") or row.get("_Code"))
         if not code:
             continue
@@ -239,13 +263,41 @@ def build_assortment_lifecycle_fact_records(
         key: _item_value(items_by_key[key], line_prices.get(key, ())) for key in items_by_key
     }
     group_values = [value for value in item_values.values() if value is not None]
+    receipt_bounds = receipt_bounds or {}
+    stock_inflow_bounds = stock_inflow_bounds or {}
+    sales_distribution = sales_distribution or {}
+    previous_demand_states = previous_demand_states or {}
+    previous_classifications = previous_classifications or {}
+    first_observed_stock_dates = first_observed_stock_dates or {}
+    inventory_costs = inventory_costs or {}
+    cost_group_keys = {key: _comparable_cost_group_keys(items_by_key[key]) for key in items_by_key}
+    cost_values_by_group: dict[str, list[Decimal]] = defaultdict(list)
+    for key, code in code_by_key.items():
+        item_cost = _decimal(inventory_costs.get(code))
+        if item_cost is None or item_cost <= 0:
+            continue
+        for group_key in cost_group_keys[key]:
+            cost_values_by_group[group_key].append(item_cost)
 
     facts: list[dict[str, Any]] = []
     warnings_count: defaultdict[str, int] = defaultdict(int)
     for key, item in sorted(items_by_key.items(), key=lambda pair: code_by_key[pair[0]]):
         code = code_by_key[key]
         warnings: list[str] = []
-        first_supplier_order_at = _min_date(supplier_dates.get(key, ()))
+        first_supplier_order_at = (first_supplier_order_dates or {}).get(code) or _min_date(
+            supplier_dates.get(key, ())
+        )
+        first_receipt_at, last_receipt_at = receipt_bounds.get(
+            code,
+            (
+                _min_date(receipt_dates.get(key, ())),
+                _max_date(receipt_dates.get(key, ())),
+            ),
+        )
+        first_stock_inflow_at, last_stock_inflow_at = stock_inflow_bounds.get(
+            code,
+            (first_receipt_at, last_receipt_at),
+        )
         event_dates = [*supplier_dates.get(key, ()), *receipt_dates.get(key, ())]
         if history_start is not None and _event_touches_history_start(
             event_dates,
@@ -262,6 +314,8 @@ def build_assortment_lifecycle_fact_records(
         override_fields = _manual_override_fields(override) if override else {}
         feature_item = {**dict(item), **override_fields} if override_fields else item
 
+        sale_history = (first_sale_dates or {}).get(code) or (None, None)
+        signals = tuple(manager_signals.get(code, ()))
         fact: dict[str, Any] = {
             "nomenclature_code": code,
             "name": _clean(item.get("name") or item.get("nomenclature_name")),
@@ -278,11 +332,28 @@ def build_assortment_lifecycle_fact_records(
             "receipt_dates": [
                 _json_date(value) for value in sorted(set(receipt_dates.get(key, ())))
             ],
+            "first_receipt_at": _json_date(first_receipt_at),
+            "last_receipt_at": _json_date(last_receipt_at),
+            "first_stock_inflow_at": _json_date(first_stock_inflow_at),
+            "last_stock_inflow_at": _json_date(last_stock_inflow_at),
+            "history_age_days": (
+                (as_of - first_receipt_at).days
+                if as_of is not None and first_receipt_at is not None
+                else None
+            ),
+            "first_observed_stock_at": _json_date(first_observed_stock_dates.get(code)),
+            "observation_from": _json_date(observation_from),
+            "observation_to": _json_date(observation_to),
             # Дата первой реализации покупателю — вход в СП / Старт продаж
             # (решение 2026-08-02). None означает "продаж не было".
-            "first_sale_at": _json_date(((first_sale_dates or {}).get(code) or (None, None))[0]),
+            "first_sale_at": _json_date(sale_history[0]),
             # Последняя продажа — вход в «Пенсию» (решение 2026-08-02).
-            "last_sale_at": _json_date(((first_sale_dates or {}).get(code) or (None, None))[1]),
+            "last_sale_at": _json_date(sale_history[1]),
+            "lifetime_sales_qty": (
+                _json_decimal(sale_history[2])
+                if len(sale_history) >= 3
+                else "0" if sales_history_complete else None
+            ),
             # Дата, на которую собран факт: нужна правилу «Родился мёртвым»,
             # чтобы измерить, сколько карточка молчит. Берём конец окна
             # наблюдения, а не системные часы — иначе повторный расчёт того же
@@ -292,15 +363,69 @@ def build_assortment_lifecycle_fact_records(
             # переходов «Пошли продажи -> Растим -> Поддерживаем» по динамике
             # спроса. None означает «замера не было», 0 — «продаж не было».
             **_demand_window_fields(code, sales_window_totals, days_in_sale_totals),
+            **dict(sales_distribution.get(code) or {}),
             # Прошлый статус нужен гистерезису: плоская карточка остаётся там,
             # где стояла, и не дёргается между «Растим» и «Поддерживаем».
-            "previous_status": (previous_statuses or {}).get(code) or None,
-            "has_need_signal": bool(manager_signals.get(code)),
+            "previous_status": (
+                (previous_statuses or {}).get(code)
+                or (previous_classifications.get(code) or {}).get("status")
+                or None
+            ),
+            "previous_auto_order_allowed": (
+                (previous_classifications.get(code) or {}).get("auto_order_allowed")
+            ),
+            "previous_classification_available": code in previous_classifications,
+            "previous_manual_review_required": (
+                (previous_classifications.get(code) or {}).get("manual_review_required")
+            ),
+            "previous_blockers": list(
+                (previous_classifications.get(code) or {}).get("blockers") or []
+            ),
+            "previous_reason_codes": list(
+                (previous_classifications.get(code) or {}).get("reason_codes") or []
+            ),
+            "previous_demand_state": str(
+                (previous_demand_states.get(code) or {}).get("demand_state") or ""
+            )
+            or None,
+            "demand_state_since": _json_date(
+                _date((previous_demand_states.get(code) or {}).get("demand_state_since"))
+            ),
+            "previous_demand_state_at": _json_date(
+                _date((previous_demand_states.get(code) or {}).get("classified_at"))
+            ),
+            "has_need_signal": bool(signals),
+            "has_external_need_signal": any(_is_external_need_signal(signal) for signal in signals),
             "warehouses": [dict(row) for row in warehouse_policy],
-            "manager_need_signals": [dict(row) for row in manager_signals.get(code, ())],
+            "manager_need_signals": [dict(row) for row in signals],
             "warnings": warnings,
         }
         item_value = item_values.get(key)
+        inventory_cost = _decimal(inventory_costs.get(code))
+        comparable_group = ""
+        cost_quartile = ""
+        if inventory_cost is not None and inventory_cost > 0:
+            for candidate_group in cost_group_keys[key]:
+                candidate_values = cost_values_by_group.get(candidate_group, [])
+                if len(candidate_values) >= max(1, comparable_group_min_size):
+                    comparable_group = candidate_group
+                    cost_quartile = _cost_quartile(inventory_cost, candidate_values)
+                    break
+        fact.update(
+            {
+                "inventory_cost_per_unit": _json_decimal(inventory_cost),
+                "cost_quartile": cost_quartile,
+                "comparable_group_key": comparable_group,
+                "cost_group_sample_size": (
+                    len(cost_values_by_group.get(comparable_group, [])) if comparable_group else 0
+                ),
+                "minimum_representation_qty": (
+                    _active_physical_sales_point_count(warehouse_policy) + 2
+                    if cost_quartile in {"Q1", "Q2"}
+                    else None
+                ),
+            }
+        )
         fact.update(
             build_procurement_feature_snapshot_fields(
                 feature_item,
@@ -328,6 +453,7 @@ def build_assortment_lifecycle_fact_records(
         "receipt_rows": len(receipt_rows),
         "history_start": _json_date(history_start),
         "warnings": dict(warnings_count),
+        "scope_policy": scope_result.audit,
     }
     return facts, summary
 
@@ -441,8 +567,14 @@ def validate_document_line_mapping(engine: Engine, mapping: DocumentLineMapping)
     for column in sorted(document_required - table_columns[mapping.document_table]):
         issues.append(f"column_missing:{mapping.document_table}.{column}")
     line_required = {mapping.line_document_column, mapping.line_nomenclature_column}
+    if mapping.line_number_column:
+        line_required.add(mapping.line_number_column)
     if mapping.line_price_column:
         line_required.add(mapping.line_price_column)
+    if mapping.line_quantity_column:
+        line_required.add(mapping.line_quantity_column)
+    if mapping.line_supplier_order_column:
+        line_required.add(mapping.line_supplier_order_column)
     for column in sorted(line_required - table_columns[mapping.line_table]):
         issues.append(f"column_missing:{mapping.line_table}.{column}")
     return tuple(issues)
@@ -452,7 +584,7 @@ def fetch_first_sale_dates(
     engine: Engine,
     *,
     nomenclature_codes: Sequence[str],
-) -> dict[str, tuple[date, date]]:
+) -> dict[str, tuple[date, date, Decimal]]:
     """Дата первой реализации покупателю по каждому коду номенклатуры.
 
     Окно истории намеренно НЕ применяется: факт «продажи начались» не должен
@@ -465,7 +597,8 @@ def fetch_first_sale_dates(
     query = text("""
         SELECT NULLIF(LTRIM(RTRIM(product._Code)), N'') AS nomenclature_code,
                MIN(sale._Date_Time) AS first_sale_at,
-               MAX(sale._Date_Time) AS last_sale_at
+               MAX(sale._Date_Time) AS last_sale_at,
+               SUM(CAST(sale_line._Fld4971 AS decimal(19, 4))) AS lifetime_sales_qty
         FROM dbo._Document203 AS sale WITH (NOLOCK)
         JOIN dbo._Document203_VT4966 AS sale_line WITH (NOLOCK)
             ON sale_line._Document203_IDRRef = sale._IDRRef
@@ -476,15 +609,284 @@ def fetch_first_sale_dates(
           AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
         GROUP BY NULLIF(LTRIM(RTRIM(product._Code)), N'')
         """).bindparams(bindparam("codes", expanding=True))
-    result: dict[str, tuple[date, date]] = {}
+    result: dict[str, tuple[date, date, Decimal]] = {}
     with engine.connect() as conn:
         for chunk in _chunks(list(codes), MAX_SQLSERVER_EXPANDING_REFS):
             for row in conn.execute(query, {"codes": chunk}).mappings():
                 code = _clean(row.get("nomenclature_code"))
                 first = _date(row.get("first_sale_at"))
                 last = _date(row.get("last_sale_at"))
+                lifetime_sales_qty = _decimal(row.get("lifetime_sales_qty"))
+                if code and first is not None and last is not None:
+                    result[code] = (first, last, lifetime_sales_qty or Decimal("0"))
+    return result
+
+
+def _is_external_need_signal(signal: Mapping[str, Any]) -> bool:
+    """Internal warehouse movement is not evidence of customer demand."""
+
+    signal_type = _clean(signal.get("signal_type") or signal.get("SignalType")).casefold()
+    manager_id = _clean(signal.get("manager_id") or signal.get("ManagerId")).casefold()
+    return signal_type != "internal_warehouse_need" and manager_id != "warehouse_internal"
+
+
+def fetch_receipt_date_bounds(
+    engine: Engine,
+    *,
+    nomenclature_codes: Sequence[str],
+    receipt_mapping: DocumentLineMapping,
+) -> dict[str, tuple[date, date]]:
+    """Return full-history MIN/MAX posted receipt dates per SKU.
+
+    This aggregate is intentionally independent from ``history_start``.  The
+    bounded detail query is still used for routes and recent receipt counts,
+    while these dates represent the actual product history known to 1C.
+    """
+
+    issues = validate_document_line_mapping(engine, receipt_mapping)
+    if issues:
+        raise ValueError(f"{RECEIPT_MAPPING_UNRESOLVED}: {', '.join(issues)}")
+    codes = sorted({code for code in (_clean(value) for value in nomenclature_codes) if code})
+    if not codes:
+        return {}
+    query = text(f"""
+        SELECT NULLIF(LTRIM(RTRIM(product._Code)), N'') AS nomenclature_code,
+               MIN(doc.{_ident(receipt_mapping.document_date_column)}) AS first_receipt_at,
+               MAX(doc.{_ident(receipt_mapping.document_date_column)}) AS last_receipt_at
+        FROM dbo.{_ident(receipt_mapping.line_table)} AS line WITH (NOLOCK)
+        JOIN dbo.{_ident(receipt_mapping.document_table)} AS doc WITH (NOLOCK)
+          ON doc.{_ident(receipt_mapping.document_id_column)} =
+             line.{_ident(receipt_mapping.line_document_column)}
+        JOIN dbo._Reference62 AS product WITH (NOLOCK)
+          ON product._IDRRef = line.{_ident(receipt_mapping.line_nomenclature_column)}
+        WHERE doc.{_ident(receipt_mapping.marked_column)} = 0x00
+          AND doc.{_ident(receipt_mapping.posted_column)} = 0x01
+          AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
+        GROUP BY NULLIF(LTRIM(RTRIM(product._Code)), N'')
+        """).bindparams(bindparam("codes", expanding=True))
+    result: dict[str, tuple[date, date]] = {}
+    with engine.connect() as conn:
+        for chunk in _chunks(codes, MAX_SQLSERVER_EXPANDING_REFS):
+            for row in conn.execute(query, {"codes": chunk}).mappings():
+                code = _clean(row.get("nomenclature_code"))
+                first = _date(row.get("first_receipt_at"))
+                last = _date(row.get("last_receipt_at"))
                 if code and first is not None and last is not None:
                     result[code] = (first, last)
+    return result
+
+
+def fetch_stock_inflow_date_bounds(
+    engine: Engine,
+    *,
+    nomenclature_codes: Sequence[str],
+) -> dict[str, tuple[date, date]]:
+    """Return full-history positive physical stock-inflow bounds per SKU.
+
+    The stock register includes supplier receipts, inventory adjustments and
+    other posted physical inflows. These dates prove that stock existed, but
+    deliberately do not prove supplier origin or lead time.
+    """
+
+    codes = sorted({code for code in (_clean(value) for value in nomenclature_codes) if code})
+    if not codes:
+        return {}
+    query = text("""
+        SELECT NULLIF(LTRIM(RTRIM(product._Code)), N'') AS nomenclature_code,
+               MIN(CAST(movement._Period AS date)) AS first_stock_inflow_at,
+               MAX(CAST(movement._Period AS date)) AS last_stock_inflow_at
+        FROM dbo._AccumRg7735 AS movement WITH (NOLOCK)
+        JOIN dbo._Reference62 AS product WITH (NOLOCK)
+          ON product._IDRRef = movement._Fld7738RRef
+        WHERE movement._Active = 0x01
+          AND movement._RecordKind = 0
+          AND movement._Fld7743 > 0
+          AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
+        GROUP BY NULLIF(LTRIM(RTRIM(product._Code)), N'')
+        """).bindparams(bindparam("codes", expanding=True))
+    result: dict[str, tuple[date, date]] = {}
+    with engine.connect() as conn:
+        for chunk in _chunks(codes, MAX_SQLSERVER_EXPANDING_REFS):
+            for row in conn.execute(query, {"codes": chunk}).mappings():
+                code = _clean(row.get("nomenclature_code"))
+                first = _date(row.get("first_stock_inflow_at"))
+                last = _date(row.get("last_stock_inflow_at"))
+                if code and first is not None and last is not None:
+                    result[code] = (first, last)
+    return result
+
+
+def fetch_first_supplier_order_dates(
+    engine: Engine,
+    *,
+    nomenclature_refs_by_code: Mapping[str, str],
+    supplier_mapping: DocumentLineMapping,
+    receipt_mapping: DocumentLineMapping | None = None,
+) -> dict[str, date]:
+    """Return the first posted supplier-order date across the full 1C history.
+
+    Supplier-order detail remains bounded by ``history_start`` because it is
+    needed for recent cargo/route analysis.  The lifecycle boundary itself is
+    a durable fact, so it must come from a separate aggregate without that
+    rolling-window predicate.
+    """
+
+    issues = validate_document_line_mapping(engine, supplier_mapping)
+    if issues:
+        raise ValueError(f"{SUPPLIER_ORDER_MAPPING_UNRESOLVED}: {', '.join(issues)}")
+    code_by_ref: dict[str, str] = {}
+    binary_ref_by_text: dict[str, bytes] = {}
+    for raw_code, raw_ref in nomenclature_refs_by_code.items():
+        code = _clean(raw_code)
+        ref = _clean(raw_ref).upper()
+        binary_ref = _onec_binary_ref(ref)
+        if code and ref and binary_ref is not None:
+            code_by_ref[ref] = code
+            binary_ref_by_text[ref] = binary_ref
+    if not binary_ref_by_text:
+        return {}
+    query = text(f"""
+        SELECT CONVERT(varchar(34), line.{_ident(supplier_mapping.line_nomenclature_column)}, 1)
+                   AS nomenclature_ref,
+               MIN(doc.{_ident(supplier_mapping.document_date_column)})
+                   AS first_supplier_order_at
+        FROM dbo.{_ident(supplier_mapping.line_table)} AS line WITH (NOLOCK)
+        JOIN dbo.{_ident(supplier_mapping.document_table)} AS doc WITH (NOLOCK)
+          ON doc.{_ident(supplier_mapping.document_id_column)} =
+             line.{_ident(supplier_mapping.line_document_column)}
+        WHERE doc.{_ident(supplier_mapping.marked_column)} = 0x00
+          AND doc.{_ident(supplier_mapping.posted_column)} = 0x01
+          AND line.{_ident(supplier_mapping.line_nomenclature_column)} IN :refs
+        GROUP BY line.{_ident(supplier_mapping.line_nomenclature_column)}
+        """).bindparams(bindparam("refs", expanding=True, type_=LargeBinary(16)))
+    result: dict[str, date] = {}
+    with engine.connect() as conn:
+        for chunk in _chunks(sorted(binary_ref_by_text), MAX_SQLSERVER_EXPANDING_REFS):
+            for row in conn.execute(
+                query,
+                {"refs": [binary_ref_by_text[ref] for ref in chunk]},
+            ).mappings():
+                code = code_by_ref.get(_clean(row.get("nomenclature_ref")).upper(), "")
+                first = _date(row.get("first_supplier_order_at"))
+                if code and first is not None:
+                    result[code] = first
+    if receipt_mapping is None or not receipt_mapping.line_supplier_order_column:
+        return result
+    receipt_issues = validate_document_line_mapping(engine, receipt_mapping)
+    if receipt_issues:
+        raise ValueError(f"{RECEIPT_MAPPING_UNRESOLVED}: {', '.join(receipt_issues)}")
+    linked_query = text(f"""
+        SELECT CONVERT(varchar(34), receipt_line.{_ident(receipt_mapping.line_nomenclature_column)}, 1)
+                   AS nomenclature_ref,
+               MIN(supplier_doc.{_ident(supplier_mapping.document_date_column)})
+                   AS first_supplier_order_at
+        FROM dbo.{_ident(receipt_mapping.line_table)} AS receipt_line WITH (NOLOCK)
+        JOIN dbo.{_ident(receipt_mapping.document_table)} AS receipt_doc WITH (NOLOCK)
+          ON receipt_doc.{_ident(receipt_mapping.document_id_column)} =
+             receipt_line.{_ident(receipt_mapping.line_document_column)}
+        JOIN dbo.{_ident(supplier_mapping.document_table)} AS supplier_doc WITH (NOLOCK)
+          ON supplier_doc.{_ident(supplier_mapping.document_id_column)} =
+             receipt_line.{_ident(receipt_mapping.line_supplier_order_column)}
+        WHERE receipt_doc.{_ident(receipt_mapping.marked_column)} = 0x00
+          AND receipt_doc.{_ident(receipt_mapping.posted_column)} = 0x01
+          AND supplier_doc.{_ident(supplier_mapping.marked_column)} = 0x00
+          AND supplier_doc.{_ident(supplier_mapping.posted_column)} = 0x01
+          AND receipt_line.{_ident(receipt_mapping.line_nomenclature_column)} IN :refs
+        GROUP BY receipt_line.{_ident(receipt_mapping.line_nomenclature_column)}
+        """).bindparams(bindparam("refs", expanding=True, type_=LargeBinary(16)))
+    with engine.connect() as conn:
+        for chunk in _chunks(sorted(binary_ref_by_text), MAX_SQLSERVER_EXPANDING_REFS):
+            for row in conn.execute(
+                linked_query,
+                {"refs": [binary_ref_by_text[ref] for ref in chunk]},
+            ).mappings():
+                code = code_by_ref.get(_clean(row.get("nomenclature_ref")).upper(), "")
+                first = _date(row.get("first_supplier_order_at"))
+                if code and first is not None:
+                    result[code] = min(result.get(code, first), first)
+    return result
+
+
+def fetch_onec_item_inventory_costs(
+    engine: Engine,
+    *,
+    nomenclature_codes: Sequence[str],
+    as_of: date | None = None,
+) -> dict[str, Decimal]:
+    """Per-SKU party cost at ``as_of`` without looking into future movements."""
+
+    codes = sorted({code for code in (_clean(value) for value in nomenclature_codes) if code})
+    if not codes:
+        return {}
+    effective_as_of = as_of or date.today()
+    if effective_as_of > date.today():
+        raise ValueError("inventory_cost_as_of_cannot_be_future")
+    if effective_as_of == date.today():
+        source_sql = f"""
+        SELECT t._Fld7454RRef AS item_ref,
+               CAST(t._Fld7462 AS decimal(28, 3)) AS quantity,
+               CAST(t._Fld7463 AS decimal(28, 2)) AS amount,
+               CASE WHEN t._Fld7459RRef = 0x{UNBILLED_PARTY_STATUS_HEX} THEN 1 ELSE 0 END
+                    AS is_unbilled
+        FROM dbo._AccumRgT7473 AS t WITH (NOLOCK)
+        WHERE t._Period = :current_totals_period
+        """
+        params: dict[str, Any] = {"current_totals_period": CURRENT_TOTALS_PERIOD}
+    else:
+        month_start = effective_as_of.replace(day=1)
+        source_sql = f"""
+        SELECT t._Fld7454RRef AS item_ref,
+               CAST(t._Fld7462 AS decimal(28, 3)) AS quantity,
+               CAST(t._Fld7463 AS decimal(28, 2)) AS amount,
+               CASE WHEN t._Fld7459RRef = 0x{UNBILLED_PARTY_STATUS_HEX} THEN 1 ELSE 0 END
+                    AS is_unbilled
+        FROM dbo._AccumRgT7473 AS t WITH (NOLOCK)
+        WHERE t._Period = :month_start
+        UNION ALL
+        SELECT r._Fld7454RRef AS item_ref,
+               CAST(CASE WHEN r._RecordKind = 0 THEN r._Fld7462 ELSE -r._Fld7462 END
+                    AS decimal(28, 3)) AS quantity,
+               CAST(CASE WHEN r._RecordKind = 0 THEN r._Fld7463 ELSE -r._Fld7463 END
+                    AS decimal(28, 2)) AS amount,
+               CASE WHEN r._Fld7459RRef = 0x{UNBILLED_PARTY_STATUS_HEX} THEN 1 ELSE 0 END
+                    AS is_unbilled
+        FROM dbo._AccumRg7453 AS r WITH (NOLOCK)
+        WHERE r._Active = 0x01
+          AND r._Period >= :month_start
+          AND r._Period < :date_to
+        """
+        params = {
+            "month_start": datetime.combine(month_start, datetime.min.time()),
+            "date_to": datetime.combine(effective_as_of + timedelta(days=1), datetime.min.time()),
+        }
+    query = text(f"""
+        WITH party_source AS (
+            {source_sql}
+        )
+        SELECT NULLIF(LTRIM(RTRIM(product._Code)), N'') AS nomenclature_code,
+               SUM(party.quantity) AS party_quantity,
+               SUM(party.amount) AS party_amount
+        FROM party_source AS party
+        JOIN dbo._Reference62 AS product WITH (NOLOCK)
+          ON product._IDRRef = party.item_ref
+        WHERE party.is_unbilled = 0
+          AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
+        GROUP BY NULLIF(LTRIM(RTRIM(product._Code)), N'')
+        HAVING SUM(party.quantity) > 0
+           AND SUM(party.amount) >= 0
+        """).bindparams(bindparam("codes", expanding=True))
+    result: dict[str, Decimal] = {}
+    with engine.connect() as conn:
+        for chunk in _chunks(codes, MAX_SQLSERVER_EXPANDING_REFS):
+            for row in conn.execute(
+                query,
+                {"codes": chunk, **params},
+            ).mappings():
+                code = _clean(row.get("nomenclature_code"))
+                qty = _decimal(row.get("party_quantity"))
+                amount = _decimal(row.get("party_amount"))
+                if code and qty is not None and qty > 0 and amount is not None and amount >= 0:
+                    result[code] = amount / qty
     return result
 
 
@@ -571,6 +973,212 @@ def fetch_sales_window_totals(
                     qty = _decimal(row.get(f"window_{window_days}"))
                     result[code][window_days] = qty if qty is not None else Decimal("0")
     return result
+
+
+def fetch_sales_distribution(
+    engine: Engine,
+    *,
+    nomenclature_codes: Sequence[str],
+    date_to: date,
+    window_days: int = DEMAND_DISTRIBUTION_WINDOW_DAYS,
+) -> dict[str, dict[str, Any]]:
+    """Aggregate recent sales concentration without exposing customer data."""
+
+    codes = sorted({code for code in (_clean(value) for value in nomenclature_codes) if code})
+    if not codes or window_days < 1:
+        return {}
+    date_from = datetime.combine(date_to - timedelta(days=window_days - 1), datetime.min.time())
+    date_to_exclusive = datetime.combine(date_to + timedelta(days=1), datetime.min.time())
+    query = text("""
+        SELECT
+            NULLIF(LTRIM(RTRIM(product._Code)), N'') AS nomenclature_code,
+            CAST(doc._Date_Time AS date) AS business_date,
+            CONVERT(varchar(34), doc._IDRRef, 1) AS document_ref,
+            CONVERT(varchar(34), doc._Fld4942RRef, 1) AS customer_ref,
+            CONVERT(varchar(34),
+                CASE
+                  WHEN line._Fld4983RRef <> 0x00000000000000000000000000000000
+                  THEN line._Fld4983RRef ELSE doc._Fld4940RRef
+                END, 1) AS sales_point_ref,
+            SUM(CAST(line._Fld4971 AS decimal(18, 3))) AS quantity
+        FROM dbo._Document203 AS doc WITH (NOLOCK)
+        JOIN dbo._Document203_VT4966 AS line WITH (NOLOCK)
+          ON line._Document203_IDRRef = doc._IDRRef
+        JOIN dbo._Reference62 AS product WITH (NOLOCK)
+          ON product._IDRRef = line._Fld4974RRef
+        WHERE doc._Marked = 0x00 AND doc._Posted = 0x01
+          AND line._Fld4971 > 0
+          AND doc._Date_Time >= :date_from AND doc._Date_Time < :date_to
+          AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
+        GROUP BY NULLIF(LTRIM(RTRIM(product._Code)), N''), CAST(doc._Date_Time AS date),
+                 doc._IDRRef, doc._Fld4942RRef,
+                 CASE WHEN line._Fld4983RRef <> 0x00000000000000000000000000000000
+                      THEN line._Fld4983RRef ELSE doc._Fld4940RRef END
+        """).bindparams(bindparam("codes", expanding=True))
+    raw_rows: list[dict[str, Any]] = []
+    with engine.connect() as conn:
+        for chunk in _chunks(codes, MAX_SQLSERVER_EXPANDING_REFS):
+            raw_rows.extend(
+                dict(row)
+                for row in conn.execute(
+                    query,
+                    {"codes": chunk, "date_from": date_from, "date_to": date_to_exclusive},
+                ).mappings()
+            )
+    return _sales_distribution_from_rows(raw_rows)
+
+
+def fetch_historical_sales_observations(
+    engine: Engine,
+    *,
+    nomenclature_codes: Sequence[str],
+    date_from: date,
+    date_to: date,
+    warehouse_codes: Sequence[str] = (),
+) -> list[dict[str, Any]]:
+    """Return dated, anonymized sale observations for walk-forward replay.
+
+    Raw 1C refs never leave this function.  The result intentionally keeps one
+    row per day/document/customer/point so demand concentration can be proved
+    without retaining personal or source-system identifiers.
+    """
+
+    codes = sorted({code for code in (_clean(value) for value in nomenclature_codes) if code})
+    warehouses = sorted({code for code in (_clean(value) for value in warehouse_codes) if code})
+    if not codes or date_from > date_to:
+        return []
+    warehouse_join = ""
+    warehouse_filter = ""
+    if warehouses:
+        warehouse_join = """
+        JOIN dbo._Reference80 AS warehouse WITH (NOLOCK)
+          ON warehouse._IDRRef = CASE
+            WHEN line._Fld4983RRef <> 0x00000000000000000000000000000000
+            THEN line._Fld4983RRef ELSE doc._Fld4940RRef END
+        """
+        warehouse_filter = "AND NULLIF(LTRIM(RTRIM(warehouse._Code)), N'') IN :warehouses"
+    query = text(f"""
+        SELECT
+            NULLIF(LTRIM(RTRIM(product._Code)), N'') AS nomenclature_code,
+            CAST(doc._Date_Time AS date) AS business_date,
+            CONVERT(varchar(34), doc._IDRRef, 1) AS document_ref,
+            CONVERT(varchar(34), doc._Fld4942RRef, 1) AS customer_ref,
+            CONVERT(varchar(34),
+                CASE
+                  WHEN line._Fld4983RRef <> 0x00000000000000000000000000000000
+                  THEN line._Fld4983RRef ELSE doc._Fld4940RRef
+                END, 1) AS sales_point_ref,
+            SUM(CAST(line._Fld4971 AS decimal(18, 3))) AS quantity
+        FROM dbo._Document203 AS doc WITH (NOLOCK)
+        JOIN dbo._Document203_VT4966 AS line WITH (NOLOCK)
+          ON line._Document203_IDRRef = doc._IDRRef
+        JOIN dbo._Reference62 AS product WITH (NOLOCK)
+          ON product._IDRRef = line._Fld4974RRef
+        {warehouse_join}
+        WHERE doc._Marked = 0x00 AND doc._Posted = 0x01
+          AND line._Fld4971 > 0
+          AND doc._Date_Time >= :date_from AND doc._Date_Time < :date_to
+          AND NULLIF(LTRIM(RTRIM(product._Code)), N'') IN :codes
+          {warehouse_filter}
+        GROUP BY NULLIF(LTRIM(RTRIM(product._Code)), N''), CAST(doc._Date_Time AS date),
+                 doc._IDRRef, doc._Fld4942RRef,
+                 CASE WHEN line._Fld4983RRef <> 0x00000000000000000000000000000000
+                      THEN line._Fld4983RRef ELSE doc._Fld4940RRef END
+        """).bindparams(bindparam("codes", expanding=True))
+    if warehouses:
+        query = query.bindparams(bindparam("warehouses", expanding=True))
+    params: dict[str, Any] = {
+        "date_from": datetime.combine(date_from, datetime.min.time()),
+        "date_to": datetime.combine(date_to + timedelta(days=1), datetime.min.time()),
+    }
+    rows: list[dict[str, Any]] = []
+    with engine.connect() as conn:
+        for chunk in _chunks(codes, MAX_SQLSERVER_EXPANDING_REFS):
+            chunk_params = {**params, "codes": chunk}
+            if warehouses:
+                chunk_params["warehouses"] = warehouses
+            for row in conn.execute(query, chunk_params).mappings():
+                code = _clean(row.get("nomenclature_code"))
+                business_date = _date(row.get("business_date"))
+                quantity = _decimal(row.get("quantity"))
+                if not code or business_date is None or quantity is None or quantity <= 0:
+                    continue
+                rows.append(
+                    {
+                        "business_date": business_date.isoformat(),
+                        "nomenclature_code": code,
+                        "document_id": _anonymous_id(row.get("document_ref")),
+                        "customer_id": _anonymous_id(row.get("customer_ref")),
+                        "sales_point_id": _anonymous_id(row.get("sales_point_ref")),
+                        "quantity": _json_decimal(quantity),
+                    }
+                )
+    rows.sort(
+        key=lambda row: (
+            row["business_date"],
+            row["nomenclature_code"],
+            row["document_id"],
+            row["customer_id"],
+            row["sales_point_id"],
+        )
+    )
+    return rows
+
+
+def _sales_distribution_from_rows(
+    rows: Sequence[Mapping[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    by_code: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        code = _clean(row.get("nomenclature_code"))
+        business_date = _date(row.get("business_date"))
+        quantity = _decimal(row.get("quantity"))
+        if not code or business_date is None or quantity is None or quantity <= 0:
+            continue
+        by_code[code].append(
+            {
+                "business_date": business_date.isoformat(),
+                "document_id": _anonymous_id(row.get("document_ref")),
+                "customer_id": _anonymous_id(row.get("customer_ref")),
+                "sales_point_id": _anonymous_id(row.get("sales_point_ref")),
+                "quantity": _json_decimal(quantity),
+            }
+        )
+    result: dict[str, dict[str, Any]] = {}
+    for code, observations in by_code.items():
+        totals_by_day: dict[str, Decimal] = defaultdict(Decimal)
+        for item in observations:
+            totals_by_day[item["business_date"]] += Decimal(str(item["quantity"]))
+        total = sum(totals_by_day.values(), Decimal("0"))
+        peak = max(totals_by_day.values(), default=Decimal("0"))
+        result[code] = {
+            "sales_active_days_short": len(totals_by_day),
+            "sales_document_count_short": len(
+                {item["document_id"] for item in observations if item["document_id"]}
+            ),
+            "sales_customer_count_short": len(
+                {item["customer_id"] for item in observations if item["customer_id"]}
+            ),
+            "sales_point_count_short": len(
+                {item["sales_point_id"] for item in observations if item["sales_point_id"]}
+            ),
+            "sales_max_day_share_short": _json_decimal(peak / total if total > 0 else Decimal("0")),
+            "sales_observations_short": sorted(
+                observations,
+                key=lambda item: (
+                    item["business_date"],
+                    item["document_id"],
+                    item["customer_id"],
+                    item["sales_point_id"],
+                ),
+            ),
+        }
+    return result
+
+
+def _anonymous_id(value: Any) -> str:
+    text_value = _clean(value)
+    return hashlib.sha256(text_value.encode("utf-8")).hexdigest()[:16] if text_value else ""
 
 
 def fetch_onec_lifecycle_source_rows(
@@ -790,6 +1398,8 @@ def _fetch_nomenclature_rows(engine: Engine, *, folder: str, limit: int) -> list
         for key, value in property_values.items():
             if value and not _clean(row.get(key)):
                 row[key] = value
+    if _is_display_scope_text(folder):
+        rows = [row for row in rows if is_display_assortment_record(row)]
     return rows
 
 
@@ -1239,6 +1849,24 @@ def _is_display_scope_text(value: str) -> bool:
     return any(marker in normalized for marker in DISPLAY_SCOPE_MARKERS)
 
 
+def is_display_assortment_record(item: Mapping[str, Any]) -> bool:
+    """Return whether a selected 1C row is a display, not an accessory mentioning one."""
+
+    folder_path = _clean(item.get("folder_path") or item.get("folder"))
+    if _is_display_scope_text(folder_path):
+        return True
+    subject = _first_text(item, "subject_1c", "subject", "Предмет").casefold()
+    if subject in {"дисплей", "матрица"}:
+        return True
+
+    category = _first_text(item, "category_1c", "category", "Категория").casefold()
+    name = _clean(item.get("name") or item.get("description")).casefold()
+    accessory_context = " ".join((folder_path.casefold(), subject, category, name))
+    if any(marker in accessory_context for marker in DISPLAY_ACCESSORY_MARKERS):
+        return False
+    return _is_display_scope_text(category) or "диспле" in name
+
+
 def _folder_like_patterns(folder: str) -> tuple[str, ...]:
     folder_value = _clean(folder)
     if not folder_value:
@@ -1276,6 +1904,78 @@ def _price_segment(item_value: Decimal | None, group_values: Sequence[Decimal]) 
     if item_value <= values[upper_idx]:
         return "mid_high"
     return "premium"
+
+
+def _cost_quartile(item_cost: Decimal, group_values: Sequence[Decimal]) -> str:
+    values = sorted(value for value in group_values if value > 0)
+    if not values:
+        return ""
+    total = len(values)
+    boundaries = [
+        values[max(0, ceil(total * Decimal(part)) - 1)] for part in ("0.25", "0.50", "0.75")
+    ]
+    if item_cost <= boundaries[0]:
+        return "Q1"
+    if item_cost <= boundaries[1]:
+        return "Q2"
+    if item_cost <= boundaries[2]:
+        return "Q3"
+    return "Q4"
+
+
+def _comparable_cost_group_keys(item: Mapping[str, Any]) -> tuple[str, ...]:
+    """Most specific to safest fallback grouping for display cost quartiles."""
+
+    folder = _clean(item.get("folder_path") or item.get("folder"))
+    quality = _normalize_quality(_first_text(item, "quality_raw", "quality"))
+    brand = _first_text(item, "brand_compatibility", "compatible_brand")
+    structure = _display_structure_key(item)
+    return tuple(
+        dict.fromkeys(
+            (
+                _unit_key(("display", brand, quality, structure)),
+                _unit_key(("display", quality, structure)),
+                _unit_key(("display", quality)),
+                _unit_key(("display",)) if _is_display_scope_text(folder) else _unit_key((folder,)),
+            )
+        )
+    )
+
+
+def _display_structure_key(item: Mapping[str, Any]) -> str:
+    characteristics = item.get("characteristic_values")
+    if isinstance(characteristics, Mapping):
+        relevant = {
+            str(key): value
+            for key, value in characteristics.items()
+            if any(marker in str(key).casefold() for marker in ("frame", "touch", "construction"))
+        }
+        if relevant:
+            return json.dumps(relevant, ensure_ascii=False, sort_keys=True)
+    name = _clean(item.get("name") or item.get("nomenclature_name")).casefold()
+    if "рамк" in name:
+        return "with_frame"
+    if "тачскрин" in name or "в сборе" in name:
+        return "display_assembly"
+    return "display_only"
+
+
+def _active_physical_sales_point_count(
+    warehouses: Sequence[Mapping[str, Any]],
+) -> int:
+    return len(
+        {
+            _clean(row.get("warehouse_code") or row.get("code"))
+            for row in warehouses
+            if _clean(row.get("warehouse_code") or row.get("code"))
+            and (not _clean(row.get("role")) or _clean(row.get("role")) == "physical_sales_point")
+            and _bool(row.get("sells_systematically"), default=True)
+            and not _bool(row.get("is_central"), default=False)
+            and not _bool(row.get("is_defect_warehouse"), default=False)
+            and not _bool(row.get("is_transit"), default=False)
+            and not _bool(row.get("is_non_systematic_sale"), default=False)
+        }
+    )
 
 
 def _normalize_quality(value: str) -> str:
@@ -1377,6 +2077,10 @@ def _min_date(values: Sequence[date]) -> date | None:
     return min(values) if values else None
 
 
+def _max_date(values: Sequence[date]) -> date | None:
+    return max(values) if values else None
+
+
 def _date(value: Any) -> date | None:
     if value is None or value == "":
         return None
@@ -1421,6 +2125,16 @@ def _bool(value: Any, *, default: bool) -> bool:
 
 def _clean(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _onec_binary_ref(value: str) -> bytes | None:
+    normalized = _clean(value).removeprefix("0x").removeprefix("0X")
+    if len(normalized) != 32:
+        return None
+    try:
+        return bytes.fromhex(normalized)
+    except ValueError:
+        return None
 
 
 def _required_text(payload: Mapping[str, Any], key: str) -> str:

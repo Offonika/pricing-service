@@ -176,13 +176,15 @@ class CustomerPriceTypeCase(Base):
             "profile_id", "snapshot_month", name="uq_customer_price_type_case_profile_month"
         ),
         CheckConstraint(
-            "stage IN ('NEW','MANAGER_WORK','ISOLATE','DATA_CHECK','SPECIAL_REVIEW',"
-            "'DOWNGRADE_APPROVAL','READY_FOR_1C','CLOSED_KEEP','CLOSED_CHANGED','ONEC_ERROR')",
+            "stage IN ('NEW_SNAPSHOT','PRECLOSE_SIGNAL','RETENTION_WORK','ISOLATE_1M',"
+            "'RECOVERY_CONTROL','QUALITY_CHECK','CREDIT_ECONOMICS_CHECK','DATA_CHECK',"
+            "'UPGRADE_APPROVAL','DOWNGRADE_APPROVAL','READY_FOR_1C','CLOSED_KEEP',"
+            "'CLOSED_CHANGED')",
             name="ck_customer_price_type_case_stage",
         ),
         CheckConstraint(
             "case_type IN ('manager_work','isolate','recovery','data_check',"
-            "'special_review','downgrade_approval')",
+            "'special_review','upgrade_approval','downgrade_approval')",
             name="ck_customer_price_type_case_type",
         ),
         CheckConstraint(
@@ -217,7 +219,7 @@ class CustomerPriceTypeCase(Base):
     case_type: Mapped[str] = mapped_column(String(64), nullable=False)
     review_type: Mapped[str | None] = mapped_column(String(64), nullable=True)
     reasons: Mapped[list[str]] = mapped_column(JSON, nullable=False, default=list)
-    stage: Mapped[str] = mapped_column(String(32), nullable=False, default="NEW")
+    stage: Mapped[str] = mapped_column(String(32), nullable=False, default="NEW_SNAPSHOT")
     owner_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
     owner_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     due_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
@@ -400,6 +402,187 @@ class CustomerPriceTypeQualitySample(Base):
     reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     comment: Mapped[str | None] = mapped_column(Text, nullable=True)
     version: Mapped[int] = mapped_column(nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CustomerPriceTypeReview(Base):
+    """Independent business decision for a snapshot dimension.
+
+    The legacy ``customer_price_type_quality_sample`` table remains historical.
+    Rows in this table are immutable decisions apart from operational metadata and
+    optimistic versioning; they are never backfilled from legacy assessments.
+    """
+
+    __tablename__ = "customer_price_type_review"
+    __table_args__ = (
+        UniqueConstraint(
+            "snapshot_id",
+            "review_kind",
+            name="uq_customer_price_type_review_snapshot_kind",
+        ),
+        CheckConstraint(
+            "review_kind IN ('price_type','client_action')",
+            name="ck_customer_price_type_review_kind",
+        ),
+        CheckConstraint(
+            "result IN ('confirm','correct','no_action','data_issue')",
+            name="ck_customer_price_type_review_result",
+        ),
+        CheckConstraint(
+            "decision_mode IN ('test','live')",
+            name="ck_customer_price_type_review_decision_mode",
+        ),
+        CheckConstraint("version > 0", name="ck_customer_price_type_review_version"),
+        Index(
+            "ix_customer_price_type_review_kind_at",
+            "review_kind",
+            "reviewed_at",
+        ),
+        Index(
+            "ix_customer_price_type_review_profile",
+            "profile_id",
+            "review_kind",
+        ),
+    )
+
+    snapshot_id: Mapped[int] = mapped_column(
+        ForeignKey("customer_price_type_snapshot.id", ondelete="CASCADE"), nullable=False
+    )
+    profile_id: Mapped[int] = mapped_column(
+        ForeignKey("customer_price_type_profile.id", ondelete="CASCADE"), nullable=False
+    )
+    case_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customer_price_type_case.id", ondelete="SET NULL"), nullable=True
+    )
+    review_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    system_value: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    final_value: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    result: Mapped[str] = mapped_column(String(32), nullable=False)
+    comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    decision_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="test")
+    reviewed_by: Mapped[str] = mapped_column(String(255), nullable=False)
+    reviewed_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CustomerPriceTypeExternalAction(Base):
+    """Durable transactional outbox entry created with a review decision."""
+
+    __tablename__ = "customer_price_type_external_action"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_customer_price_type_external_action_key"),
+        UniqueConstraint(
+            "review_id", "action_kind", name="uq_customer_price_type_external_action_review_kind"
+        ),
+        CheckConstraint(
+            "action_kind IN ('onec_change','bitrix_case')",
+            name="ck_customer_price_type_external_action_kind",
+        ),
+        CheckConstraint(
+            "status IN ('held','pending','preflight','ready_to_apply','applying','applied',"
+            "'cancelled','technical_review')",
+            name="ck_customer_price_type_external_action_status",
+        ),
+        CheckConstraint("version > 0", name="ck_customer_price_type_external_action_version"),
+        Index(
+            "ix_customer_price_type_external_action_work",
+            "action_kind",
+            "status",
+            "created_at",
+        ),
+        Index(
+            "ix_customer_price_type_external_action_case",
+            "case_id",
+            "status",
+        ),
+    )
+
+    review_id: Mapped[int] = mapped_column(
+        ForeignKey("customer_price_type_review.id", ondelete="CASCADE"), nullable=False
+    )
+    snapshot_id: Mapped[int] = mapped_column(
+        ForeignKey("customer_price_type_snapshot.id", ondelete="RESTRICT"), nullable=False
+    )
+    case_id: Mapped[int | None] = mapped_column(
+        ForeignKey("customer_price_type_case.id", ondelete="SET NULL"), nullable=True
+    )
+    action_kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="held")
+    execution_allowed_at_decision: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    snapshot_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False, default=dict)
+    attempt_count: Mapped[int] = mapped_column(nullable=False, default=0)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancelled_by: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    cancel_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    technical_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    external_ref: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    version: Mapped[int] = mapped_column(nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=func.now(), onupdate=func.now()
+    )
+
+
+class CustomerPriceTypeOneCContractAction(Base):
+    """Exact-contract line of a durable 1C change action."""
+
+    __tablename__ = "customer_price_type_onec_contract_action"
+    __table_args__ = (
+        UniqueConstraint(
+            "external_action_id",
+            "contract_ref",
+            name="uq_customer_price_type_onec_action_contract",
+        ),
+        UniqueConstraint(
+            "idempotency_key",
+            name="uq_customer_price_type_onec_contract_action_key",
+        ),
+        CheckConstraint(
+            "status IN ('held','pending','ready','applying','applied','cancelled',"
+            "'technical_review')",
+            name="ck_customer_price_type_onec_contract_action_status",
+        ),
+        Index(
+            "ix_customer_price_type_onec_contract_action_work",
+            "status",
+            "external_action_id",
+        ),
+    )
+
+    external_action_id: Mapped[int] = mapped_column(
+        ForeignKey("customer_price_type_external_action.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(255), nullable=False)
+    contract_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    contract_name: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    expected_price_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    target_price_type: Mapped[str] = mapped_column(String(255), nullable=False)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="held")
+    actual_price_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    result_message: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=func.now()
     )

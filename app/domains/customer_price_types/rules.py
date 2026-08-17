@@ -315,6 +315,30 @@ class CustomerPriceTypeRulesEngine:
             return False
         return abs(left - right) / denominator * Decimal("100") > self.ruleset.mismatch_max_pct
 
+    @staticmethod
+    def _completed_previous_action(
+        facts: CustomerPriceTypeFacts,
+        *,
+        current_price_type: str | None,
+    ) -> bool:
+        evidence = facts.previous_action_completion
+        if not isinstance(evidence, dict):
+            return False
+        try:
+            completed_month = date.fromisoformat(str(evidence["snapshot_month"]))
+        except (KeyError, TypeError, ValueError):
+            return False
+        return bool(
+            evidence.get("status") == "completed"
+            and evidence.get("source") == "bitrix_readback"
+            and evidence.get("action") in {"retention", "isolate", "recovery"}
+            and evidence.get("current_price_type") == current_price_type
+            and completed_month < facts.snapshot_month
+            and str(evidence.get("bitrix_item_id") or "").strip()
+            and str(evidence.get("bitrix_stage_id") or "").strip()
+            and str(evidence.get("snapshot_hash") or "").strip()
+        )
+
     def _decision(
         self,
         facts: CustomerPriceTypeFacts,
@@ -565,29 +589,6 @@ class CustomerPriceTypeRulesEngine:
 
         values, total = self._window_values(facts)
         zero_months = self._consecutive_zero_months(facts)
-        if current_level == "retail":
-            upgrade_candidate = total >= self.ruleset.levels[0].retention_norm_3m
-            return self._decision(
-                facts,
-                source_status="ready",
-                current_level=current_level,
-                current_price_type=current_price_type,
-                price_type_variant=variant,
-                recommendation=(
-                    "informational_upgrade_candidate" if upgrade_candidate else "keep_current"
-                ),
-                recommended_price_type=current_price_type,
-                reason=(
-                    "Кандидат на B2B-квалификацию; повышения в v1 заморожены."
-                    if upgrade_candidate
-                    else "Розничный тип цены сохраняется."
-                ),
-                action_required=False,
-                case_type=None,
-                review_type=None,
-                stop_factors=(("upgrade_freeze",) if upgrade_candidate else ()),
-            )
-
         if facts.return_review_type == "quality":
             return self._decision(
                 facts,
@@ -611,6 +612,21 @@ class CustomerPriceTypeRulesEngine:
                 current_price_type,
                 variant,
             )
+        if variant is not None:
+            return self._decision(
+                facts,
+                source_status="ready",
+                current_level=current_level,
+                current_price_type=current_price_type,
+                price_type_variant=variant,
+                recommendation="keep_current",
+                recommended_price_type=current_price_type,
+                reason="Специальный вариант типа цены не изменяется автоматически.",
+                action_required=False,
+                case_type=None,
+                review_type=None,
+                stop_factors=("special_price_type_variant",),
+            )
         if current_level == "key_account":
             return self._decision(
                 facts,
@@ -627,29 +643,61 @@ class CustomerPriceTypeRulesEngine:
                 stop_factors=("key_account_no_numeric_threshold",),
             )
 
-        level = self.ruleset.levels_by_key[current_level]
-        level_index = next(
-            index for index, item in enumerate(self.ruleset.levels) if item.key == current_level
-        )
-        if level_index + 1 < len(self.ruleset.levels):
-            next_level = self.ruleset.levels[level_index + 1]
-            if total >= next_level.retention_norm_3m:
+        if current_level == "retail":
+            next_level = self.ruleset.levels[0]
+            if not self.ruleset.upgrades_frozen and total >= next_level.retention_norm_3m:
                 return self._decision(
                     facts,
                     source_status="ready",
                     current_level=current_level,
                     current_price_type=current_price_type,
                     price_type_variant=variant,
-                    recommendation="informational_upgrade_candidate",
-                    recommended_price_type=current_price_type,
+                    recommendation="upgrade_proposed",
+                    recommended_price_type=next_level.price_type_prefix,
+                    reason=(
+                        f"Оборот соответствует соседнему уровню "
+                        f"{next_level.price_type_prefix}; требуется решение руководителя."
+                    ),
+                    action_required=True,
+                    case_type="upgrade_approval",
+                    review_type=None,
+                )
+            return self._decision(
+                facts,
+                source_status="ready",
+                current_level=current_level,
+                current_price_type=current_price_type,
+                price_type_variant=variant,
+                recommendation="keep_current",
+                recommended_price_type=current_price_type,
+                reason="Розничный тип цены сохраняется.",
+                action_required=False,
+                case_type=None,
+                review_type=None,
+            )
+
+        level = self.ruleset.levels_by_key[current_level]
+        level_index = next(
+            index for index, item in enumerate(self.ruleset.levels) if item.key == current_level
+        )
+        if level_index + 1 < len(self.ruleset.levels):
+            next_level = self.ruleset.levels[level_index + 1]
+            if not self.ruleset.upgrades_frozen and total >= next_level.retention_norm_3m:
+                return self._decision(
+                    facts,
+                    source_status="ready",
+                    current_level=current_level,
+                    current_price_type=current_price_type,
+                    price_type_variant=variant,
+                    recommendation="upgrade_proposed",
+                    recommended_price_type=next_level.price_type_prefix,
                     reason=(
                         f"Оборот соответствует уровню {next_level.price_type_prefix}; "
-                        "повышения в v1 заморожены."
+                        "требуется решение руководителя."
                     ),
-                    action_required=False,
-                    case_type=None,
+                    action_required=True,
+                    case_type="upgrade_approval",
                     review_type=None,
-                    stop_factors=("upgrade_freeze",),
                 )
         if total >= level.retention_norm_3m:
             return self._decision(
@@ -664,6 +712,35 @@ class CustomerPriceTypeRulesEngine:
                 action_required=False,
                 case_type=None,
                 review_type=None,
+            )
+        if self._completed_previous_action(
+            facts,
+            current_price_type=current_price_type,
+        ):
+            if facts.economics_status not in {"ok", "ready"}:
+                return self._data_check(
+                    facts,
+                    "economics_missing",
+                    current_level,
+                    current_price_type,
+                    variant,
+                    stop_factors=("economics_required",),
+                )
+            return self._decision(
+                facts,
+                source_status="ready",
+                current_level=current_level,
+                current_price_type=current_price_type,
+                price_type_variant=variant,
+                recommendation="downgrade_proposed",
+                recommended_price_type=level.downgrade_to,
+                reason=(
+                    "Подтверждённое действие с клиентом завершено; свежий расчёт "
+                    "подтверждает соседнее понижение."
+                ),
+                action_required=True,
+                case_type="downgrade_approval",
+                review_type="economics",
             )
         if facts.key_account_flag:
             return self._decision(
@@ -750,7 +827,7 @@ class CustomerPriceTypeRulesEngine:
             current_price_type=current_price_type,
             price_type_variant=variant,
             recommendation="data_check",
-            recommended_price_type=current_price_type,
+            recommended_price_type=None,
             reason=f"Требуется сверка данных: {reason_code}.",
             action_required=True,
             case_type="data_check",

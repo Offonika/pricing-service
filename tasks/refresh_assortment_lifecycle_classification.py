@@ -15,6 +15,8 @@ from app.core.config import get_settings
 from app.infrastructure.db.engines import build_engine
 from app.services.assortment_lifecycle_classification_store import (
     build_classification_rows,
+    fetch_previous_classification_states,
+    fetch_previous_demand_states,
     fetch_previous_statuses,
     persist_classification_rows,
     result_to_mapping,
@@ -30,11 +32,20 @@ from app.services.assortment_lifecycle_facts import (
     default_history_start,
     enrich_nomenclature_rows_with_product_snapshot,
     fetch_first_sale_dates,
+    fetch_first_supplier_order_dates,
+    fetch_onec_item_inventory_costs,
     fetch_onec_lifecycle_source_rows,
+    fetch_receipt_date_bounds,
+    fetch_sales_distribution,
     fetch_sales_window_totals,
+    fetch_stock_inflow_date_bounds,
     normalize_manager_signals,
     normalize_manual_overrides,
     validate_warehouse_policy,
+)
+from app.services.assortment_lifecycle_v2_policy import (
+    DEFAULT_ASSORTMENT_LIFECYCLE_V2_POLICY_PATH,
+    load_assortment_lifecycle_v2_policy,
 )
 from app.services.exporters.ut103_exchange import load_ut103_env_file
 from app.services.onec_stock_availability import (
@@ -42,6 +53,7 @@ from app.services.onec_stock_availability import (
 )
 from app.services.onec_stock_availability import (
     attach_effective_availability_shadow_to_facts,
+    fetch_availability_observation_facts,
     fetch_days_in_sale_by_code,
 )
 from app.services.onec_stock_availability import (
@@ -49,6 +61,10 @@ from app.services.onec_stock_availability import (
 )
 from app.services.procurement_order_formation_workspace import (
     sync_lifecycle_transition_proposals,
+)
+from tasks.build_assortment_lifecycle_facts import (
+    _build_lifecycle_onec_engine,
+    _codes_with_positive_short_sales,
 )
 from tasks.build_assortment_lifecycle_updates import build_updates_from_records
 
@@ -70,17 +86,23 @@ def main() -> int:
     database_url = args.database_url or os.environ.get("DATABASE_URL") or settings.database_url
 
     try:
+        v2_policy = load_assortment_lifecycle_v2_policy(args.v2_policy_json)
         records = _load_or_build_fact_records(
             args,
             database_url=database_url,
             settings_onec_database_url=settings.onec_database_url or "",
+            comparable_group_min_size=v2_policy.comparable_group_min_size,
         )
+        if args.model_version == "v2-live" and not v2_policy.live_enabled:
+            raise ValueError("assortment_lifecycle_v2_live_not_approved")
         _, summaries = build_updates_from_records(
             records,
             folder_filter=args.folder,
             changed_at=classified_at.date(),
             source=args.source,
             suspicious_quantity_threshold=args.suspicious_quantity_threshold,
+            model_version=args.model_version,
+            v2_policy=v2_policy,
         )
         rows = build_classification_rows(
             records=records,
@@ -110,6 +132,8 @@ def main() -> int:
             if (
                 result.run_id is not None
                 and not args.dry_run
+                and args.model_version == "v2-live"
+                and args.auto_apply_transitions
                 and inspect(engine).has_table("procurement_lifecycle_transition_proposal")
             ):
                 with Session(engine) as db:
@@ -212,6 +236,23 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument("--source", default=DEFAULT_SOURCE)
+    parser.add_argument(
+        "--model-version",
+        choices=("v1", "v2-shadow", "v2-live"),
+        default=os.getenv("ASSORTMENT_LIFECYCLE_MODEL_VERSION", "v2-shadow"),
+    )
+    parser.add_argument(
+        "--v2-policy-json",
+        type=Path,
+        default=DEFAULT_ASSORTMENT_LIFECYCLE_V2_POLICY_PATH,
+    )
+    parser.add_argument(
+        "--auto-apply-transitions",
+        action="store_true",
+        default=os.getenv("ASSORTMENT_LIFECYCLE_AUTO_APPLY_TRANSITIONS", "").casefold()
+        in {"1", "true", "yes"},
+        help="Internal only; valid after an approved v2-live rollout",
+    )
     parser.add_argument("--run-key", help="Optional idempotency key for the refresh run")
     parser.add_argument("--message-id", help="Stable message id for the UT103 export package")
     parser.add_argument("--classified-at", type=_parse_datetime, default=None)
@@ -248,6 +289,8 @@ def _parse_args() -> argparse.Namespace:
         raise SystemExit("--history-months must be positive")
     if args.limit <= 0:
         raise SystemExit("--limit must be positive")
+    if args.auto_apply_transitions and args.model_version != "v2-live":
+        raise SystemExit("--auto-apply-transitions requires --model-version v2-live")
     return args
 
 
@@ -276,6 +319,7 @@ def _load_or_build_fact_records(
     *,
     database_url: str,
     settings_onec_database_url: str = "",
+    comparable_group_min_size: int = 8,
 ) -> list[dict[str, Any]]:
     if args.facts_json:
         facts = _load_fact_records(args.facts_json)
@@ -291,8 +335,19 @@ def _load_or_build_fact_records(
         # Витрина наличия закрыта по вчерашний день, поэтому спрос и дни на
         # полке меряем на ту же дату — иначе последнее окно у них разъедется.
         demand_date_to = (args.today or date.today()) - timedelta(days=1)
-        first_sale_dates: dict[str, tuple[date, date]] = {}
+        first_sale_dates: dict[str, tuple[date, date, Decimal]] = {}
+        sales_history_complete = False
+        first_supplier_order_dates: dict[str, date] = {}
+        receipt_bounds: dict[str, tuple[date, date]] = {}
+        stock_inflow_bounds: dict[str, tuple[date, date]] = {}
         sales_window_totals: dict[str, dict[int, Decimal]] = {}
+        sales_distribution: dict[str, dict[str, Any]] = {}
+        inventory_costs: dict[str, Decimal] = {}
+        observation_from: date | None = None
+        observation_to: date | None = None
+        first_observed_stock_dates: dict[str, date] = {}
+        previous_demand_states: dict[str, dict[str, Any]] = {}
+        previous_classifications: dict[str, dict[str, Any]] = {}
 
         if args.source_rows_json:
             raw_payload = _load_json_object(args.source_rows_json)
@@ -321,7 +376,12 @@ def _load_or_build_fact_records(
             receipt_mapping = DocumentLineMapping.from_mapping(
                 _load_json_object(args.receipt_mapping_json)
             )
-            onec_engine = build_engine(onec_database_url, pool_pre_ping=True)
+            settings = get_settings()
+            onec_engine = _build_lifecycle_onec_engine(
+                onec_database_url,
+                query_timeout_seconds=settings.onec_query_timeout_seconds,
+                login_timeout_seconds=settings.onec_login_timeout_seconds,
+            )
             try:
                 (
                     nomenclature_rows,
@@ -347,11 +407,44 @@ def _load_or_build_fact_records(
                     onec_engine,
                     nomenclature_codes=codes,
                 )
+                sales_history_complete = True
+                first_supplier_order_dates = fetch_first_supplier_order_dates(
+                    onec_engine,
+                    nomenclature_refs_by_code={
+                        str(row.get("nomenclature_code") or row.get("code") or ""): str(
+                            row.get("nomenclature_ref") or row.get("ref") or ""
+                        )
+                        for row in nomenclature_rows
+                    },
+                    supplier_mapping=supplier_mapping,
+                    receipt_mapping=receipt_mapping,
+                )
                 # Продажи по окнам 30/90/180 — вход переходов по динамике спроса.
                 sales_window_totals = fetch_sales_window_totals(
                     onec_engine,
                     nomenclature_codes=codes,
                     date_to=demand_date_to,
+                )
+                receipt_bounds = fetch_receipt_date_bounds(
+                    onec_engine,
+                    nomenclature_codes=codes,
+                    receipt_mapping=receipt_mapping,
+                )
+                stock_inflow_bounds = fetch_stock_inflow_date_bounds(
+                    onec_engine,
+                    nomenclature_codes=codes,
+                )
+                sales_distribution = fetch_sales_distribution(
+                    onec_engine,
+                    nomenclature_codes=_codes_with_positive_short_sales(
+                        sales_window_totals,
+                    ),
+                    date_to=demand_date_to,
+                )
+                inventory_costs = fetch_onec_item_inventory_costs(
+                    onec_engine,
+                    nomenclature_codes=codes,
+                    as_of=demand_date_to,
                 )
             finally:
                 onec_engine.dispose()
@@ -377,22 +470,54 @@ def _load_or_build_fact_records(
                 windows_days=DEMAND_WINDOWS_DAYS,
             )
             previous_statuses = fetch_previous_statuses(product_engine)
+            previous_classifications = fetch_previous_classification_states(
+                product_engine,
+                nomenclature_codes=[
+                    str(row.get("nomenclature_code") or row.get("code") or "")
+                    for row in nomenclature_rows
+                ],
+            )
+            previous_demand_states = fetch_previous_demand_states(product_engine)
+            (
+                observation_from,
+                observation_to,
+                first_observed_stock_dates,
+            ) = fetch_availability_observation_facts(
+                product_engine,
+                codes=[
+                    str(row.get("nomenclature_code") or row.get("code") or "")
+                    for row in nomenclature_rows
+                ],
+                warehouse_codes=_physical_sales_point_codes(warehouse_policy),
+            )
         finally:
             product_engine.dispose()
 
         facts, _ = build_assortment_lifecycle_fact_records(
             nomenclature_rows=nomenclature_rows,
             supplier_order_rows=supplier_order_rows,
+            first_supplier_order_dates=first_supplier_order_dates,
             receipt_rows=receipt_rows,
+            receipt_bounds=receipt_bounds,
+            stock_inflow_bounds=stock_inflow_bounds,
             warehouse_policy=warehouse_policy,
             manual_overrides=manual_overrides,
             manager_signals=manager_signals,
             history_start=history_start,
             first_sale_dates=first_sale_dates,
+            sales_history_complete=sales_history_complete,
             as_of=args.today or date.today(),
             sales_window_totals=sales_window_totals,
+            sales_distribution=sales_distribution,
             days_in_sale_totals=days_in_sale_totals,
             previous_statuses=previous_statuses,
+            previous_classifications=previous_classifications,
+            previous_demand_states=previous_demand_states,
+            observation_from=observation_from,
+            observation_to=observation_to,
+            first_observed_stock_dates=first_observed_stock_dates,
+            inventory_costs=inventory_costs,
+            comparable_group_min_size=comparable_group_min_size,
         )
     fact_status_decisions = _load_fact_status_decisions(args.fact_status_decisions_json)
     facts = _attach_fact_status_decisions(facts, fact_status_decisions)

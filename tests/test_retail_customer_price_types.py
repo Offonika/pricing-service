@@ -18,6 +18,7 @@ from app.services.retail_customer_price_types import (
     ACTION_DATA_CHECK,
     ACTION_KEEP,
     ACTION_MANAGER_RETENTION,
+    ACTION_REVIEW_CURRENT_TYPE,
     BUYERS_CONTRACT_KIND_NAME,
     REGULAR_RECEIVABLES_LAYER,
     build_retail_customer_price_type_recommendations,
@@ -189,8 +190,10 @@ def test_build_retail_customer_price_type_recommendations() -> None:
             )
 
         by_ref = {item["counterparty_ref"]: item for item in report["payload"]}
-        assert "cp-bronze-to-silver" not in by_ref
-        assert "cp-silver-to-gold" not in by_ref
+        assert by_ref["cp-bronze-to-silver"]["action"] == ACTION_REVIEW_CURRENT_TYPE
+        assert by_ref["cp-bronze-to-silver"]["recommended_price_type"] == "3.Серебряный"
+        assert by_ref["cp-silver-to-gold"]["action"] == ACTION_REVIEW_CURRENT_TYPE
+        assert by_ref["cp-silver-to-gold"]["recommended_price_type"] == "4.Золотой"
         assert by_ref["cp-gold-to-silver"]["action"] == ACTION_MANAGER_RETENTION
         assert by_ref["cp-gold-to-silver"]["purchase_amount"] == Decimal("550000.00")
         assert by_ref["cp-gold-to-bronze"]["action"] == ACTION_DATA_CHECK
@@ -306,7 +309,13 @@ def test_management_endpoint_returns_price_type_recommendations(monkeypatch) -> 
         assert {item["action"] for item in payload["payload"]} == {
             ACTION_DATA_CHECK,
             ACTION_MANAGER_RETENTION,
+            ACTION_REVIEW_CURRENT_TYPE,
         }
+        assert all(
+            item["recommended_price_type"] is None
+            for item in payload["payload"]
+            if item["action"] == ACTION_DATA_CHECK
+        )
     finally:
         app.dependency_overrides = {}
         get_settings.cache_clear()

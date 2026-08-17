@@ -1850,6 +1850,167 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/matching/compatibility/display-families/summary:
+    get:
+      summary: Get Display Family Registry Summary
+      operationId: get_display_family_registry_summary_api_matching_compatibility_display_families_summary_get
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DisplayFamilyRegistrySummarySchema'
+      security:
+      - HTTPBasic: []
+      - HTTPBearer: []
+  /api/matching/compatibility/display-families/versions:
+    get:
+      summary: Get Display Family Registry Versions
+      operationId: get_display_family_registry_versions_api_matching_compatibility_display_families_versions_get
+      security:
+      - HTTPBasic: []
+      - HTTPBearer: []
+      parameters:
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 20
+          title: Limit
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/DisplayFamilyRegistryVersionSchema'
+                title: Response Get Display Family Registry Versions Api Matching Compatibility Display Families Versions
+                  Get
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/matching/compatibility/display-families:
+    get:
+      summary: Get Display Families
+      operationId: get_display_families_api_matching_compatibility_display_families_get
+      security:
+      - HTTPBasic: []
+      - HTTPBearer: []
+      parameters:
+      - name: page
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 1
+          default: 1
+          title: Page
+      - name: page_size
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 200
+          minimum: 1
+          default: 50
+          title: Page Size
+      - name: search
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Search
+      - name: singleton
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Singleton
+      - name: has_warnings
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Has Warnings
+      - name: needs_review
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Needs Review
+      - name: matching_review
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Matching Review
+      - name: quality_unknown
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: boolean
+          - type: 'null'
+          title: Quality Unknown
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedDisplayFamiliesSchema'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/matching/compatibility/display-families/{family_id}:
+    get:
+      summary: Get Display Family
+      operationId: get_display_family_api_matching_compatibility_display_families__family_id__get
+      security:
+      - HTTPBasic: []
+      - HTTPBearer: []
+      parameters:
+      - name: family_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Family Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/DisplayFamilyDetailSchema'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/matching/products:
     get:
       summary: List Products
@@ -4654,6 +4815,33 @@ paths:
                 $ref: '#/components/schemas/CounterpartyDuplicateHealthResponse'
       security:
       - HTTPBearer: []
+  /api/customer-price-types/advisories/preview:
+    post:
+      tags:
+      - customer-price-types
+      summary: Preview Customer Price Type Advisories
+      operationId: preview_customer_price_type_advisories_api_customer_price_types_advisories_preview_post
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerPriceTypeAdvisoryPreviewRequest'
+        required: true
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeAdvisoryPreviewResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+      security:
+      - HTTPBearer: []
   /api/customer-price-types/session:
     post:
       tags:
@@ -4673,6 +4861,208 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CustomerPriceTypeSessionResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/reviews/cards:
+    get:
+      tags:
+      - customer-price-types
+      summary: List Customer Price Type Review Cards
+      operationId: list_customer_price_type_review_cards_api_customer_price_types_reviews_cards_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: snapshot_month
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Snapshot Month
+      - name: review_kind
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - enum:
+            - price_type
+            - client_action
+            type: string
+          - type: 'null'
+          title: Review Kind
+      - name: pending_only
+        in: query
+        required: false
+        schema:
+          type: boolean
+          default: false
+          title: Pending Only
+      - name: search
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Search
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeReviewCardListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/reviews/cards/{snapshot_id}:
+    get:
+      tags:
+      - customer-price-types
+      summary: Get Customer Price Type Review Card
+      operationId: get_customer_price_type_review_card_api_customer_price_types_reviews_cards__snapshot_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: snapshot_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Snapshot Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeReviewCardResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/reviews/cards/{snapshot_id}/price-type:
+    put:
+      tags:
+      - customer-price-types
+      summary: Review Customer Price Type Dimension
+      operationId: review_customer_price_type_dimension_api_customer_price_types_reviews_cards__snapshot_id__price_type_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: snapshot_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Snapshot Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerPriceTypeReviewCommand'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeReviewSaveResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/reviews/cards/{snapshot_id}/client-action:
+    put:
+      tags:
+      - customer-price-types
+      summary: Review Customer Client Action Dimension
+      operationId: review_customer_client_action_dimension_api_customer_price_types_reviews_cards__snapshot_id__client_action_put
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: snapshot_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Snapshot Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerPriceTypeReviewCommand'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeReviewSaveResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/reviews/metrics:
+    get:
+      tags:
+      - customer-price-types
+      summary: Get Customer Price Type Review Metrics
+      operationId: get_customer_price_type_review_metrics_api_customer_price_types_reviews_metrics_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: snapshot_month
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Snapshot Month
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeReviewMetricsResponse'
         '422':
           description: Validation Error
           content:
@@ -4938,6 +5328,40 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/cases/{case_id}/cancel-change:
+    post:
+      tags:
+      - customer-price-types
+      summary: Cancel Customer Price Type Change
+      operationId: cancel_customer_price_type_change_api_customer_price_types_cases__case_id__cancel_change_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: case_id
+        in: path
+        required: true
+        schema:
+          type: integer
+          title: Case Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CustomerPriceTypeCancelChangeRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeCancelChangeResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/customer-price-types/cases/{case_id}:
     get:
       tags:
@@ -4994,6 +5418,119 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/profiles:
+    get:
+      tags:
+      - customer-price-types
+      summary: Search Customer Price Type Profiles
+      operationId: search_customer_price_type_profiles_api_customer_price_types_profiles_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: search
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 2
+          maxLength: 255
+          title: Search
+      - name: snapshot_month
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Snapshot Month
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 100
+          minimum: 1
+          default: 50
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeProfileSearchResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/customer-price-types/data-issues:
+    get:
+      tags:
+      - customer-price-types
+      summary: List Customer Price Type Data Issues
+      operationId: list_customer_price_type_data_issues_api_customer_price_types_data_issues_get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: snapshot_month
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Snapshot Month
+      - name: search
+        in: query
+        required: false
+        schema:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Search
+      - name: limit
+        in: query
+        required: false
+        schema:
+          type: integer
+          maximum: 500
+          minimum: 1
+          default: 100
+          title: Limit
+      - name: offset
+        in: query
+        required: false
+        schema:
+          type: integer
+          minimum: 0
+          default: 0
+          title: Offset
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CustomerPriceTypeDataIssueListResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/customer-price-types/runs/{run_id}:
     get:
       tags:
@@ -5041,12 +5578,15 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CustomerPriceTypeQualityPrepareResponse'
+        '410':
+          description: Историческая выборка заморожена
         '422':
           description: Validation Error
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/HTTPValidationError'
+      deprecated: true
       security:
       - HTTPBearer: []
   /api/customer-price-types/quality/samples:
@@ -5157,6 +5697,7 @@ paths:
       - customer-price-types
       summary: Review Customer Price Type Quality Sample
       operationId: review_customer_price_type_quality_sample_api_customer_price_types_quality_samples__sample_id__put
+      deprecated: true
       security:
       - HTTPBearer: []
       parameters:
@@ -5179,6 +5720,8 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/CustomerPriceTypeQualitySampleResponse'
+        '410':
+          description: Историческая разметка заморожена
         '422':
           description: Validation Error
           content:
@@ -7853,6 +8396,157 @@ paths:
                 $ref: '#/components/schemas/OrchestrationHealthResponse'
       security:
       - HTTPBearer: []
+  /api/internal/sms-journal/attempts:
+    post:
+      tags:
+      - sms-journal
+      summary: Create Attempt
+      operationId: create_attempt_api_internal_sms_journal_attempts_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 255
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SmsAttemptCreateRequest'
+      responses:
+        '201':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmsAttemptResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/sms-journal/attempts/{event_id}/send-result:
+    post:
+      tags:
+      - sms-journal
+      summary: Record Send Result
+      operationId: record_send_result_api_internal_sms_journal_attempts__event_id__send_result_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Event Id
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 255
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SmsSendResultRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmsAttemptResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/sms-journal/attempts/{event_id}/delivery:
+    post:
+      tags:
+      - sms-journal
+      summary: Update Delivery
+      operationId: update_delivery_api_internal_sms_journal_attempts__event_id__delivery_post
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Event Id
+      - name: Idempotency-Key
+        in: header
+        required: true
+        schema:
+          type: string
+          minLength: 8
+          maxLength: 255
+          title: Idempotency-Key
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SmsDeliveryUpdateRequest'
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmsAttemptResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
+  /api/internal/sms-journal/attempts/{event_id}:
+    get:
+      tags:
+      - sms-journal
+      summary: Get Attempt
+      operationId: get_attempt_api_internal_sms_journal_attempts__event_id__get
+      security:
+      - HTTPBearer: []
+      parameters:
+      - name: event_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+          title: Event Id
+      responses:
+        '200':
+          description: Successful Response
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SmsAttemptResponse'
+        '422':
+          description: Validation Error
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/HTTPValidationError'
   /api/procurement-labels/session:
     post:
       summary: Create Bitrix Procurement Labels Session
@@ -12558,6 +13252,115 @@ components:
           default: manual
       type: object
       title: CurrentMatch
+    CustomerPriceTypeAdvisoryPreviewRequest:
+      properties:
+        return_character:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Return Character
+        period_mismatch:
+          anyOf:
+          - type: string
+            maxLength: 500
+          - type: 'null'
+          title: Period Mismatch
+        behavior_group:
+          anyOf:
+          - type: string
+            maxLength: 100
+          - type: 'null'
+          title: Behavior Group
+        notification_event:
+          anyOf:
+          - type: string
+            enum:
+            - presignal
+            - price_type_changed
+            - recovery
+          - type: 'null'
+          title: Notification Event
+        current_level:
+          anyOf:
+          - type: string
+            maxLength: 100
+          - type: 'null'
+          title: Current Level
+      type: object
+      title: CustomerPriceTypeAdvisoryPreviewRequest
+    CustomerPriceTypeAdvisoryPreviewResponse:
+      properties:
+        mode:
+          type: string
+          const: shadow
+          title: Mode
+          default: shadow
+        onec_write_allowed:
+          type: boolean
+          title: Onec Write Allowed
+          default: false
+        order_lamp:
+          $ref: '#/components/schemas/CustomerPriceTypeOrderLampResponse'
+        notification:
+          anyOf:
+          - $ref: '#/components/schemas/CustomerPriceTypeNotificationDraftResponse'
+          - type: 'null'
+      type: object
+      required:
+      - order_lamp
+      title: CustomerPriceTypeAdvisoryPreviewResponse
+    CustomerPriceTypeCancelChangeRequest:
+      properties:
+        comment:
+          type: string
+          maxLength: 2000
+          minLength: 1
+          title: Comment
+        expected_version:
+          type: integer
+          minimum: 1.0
+          title: Expected Version
+      type: object
+      required:
+      - comment
+      - expected_version
+      title: CustomerPriceTypeCancelChangeRequest
+    CustomerPriceTypeCancelChangeResponse:
+      properties:
+        case_id:
+          type: integer
+          title: Case Id
+        action_id:
+          type: integer
+          title: Action Id
+        status:
+          type: string
+          const: cancelled
+          title: Status
+        cancelled_by:
+          type: string
+          title: Cancelled By
+        cancelled_at:
+          type: string
+          format: date-time
+          title: Cancelled At
+        comment:
+          type: string
+          title: Comment
+        version:
+          type: integer
+          title: Version
+      type: object
+      required:
+      - case_id
+      - action_id
+      - status
+      - cancelled_by
+      - cancelled_at
+      - comment
+      - version
+      title: CustomerPriceTypeCancelChangeResponse
     CustomerPriceTypeCaseDetailResponse:
       properties:
         run_id:
@@ -12887,6 +13690,173 @@ components:
           title: Ignored Reason
       type: object
       title: CustomerPriceTypeContractCandidate
+    CustomerPriceTypeDataIssueItem:
+      properties:
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        counterparty_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Code
+        counterparty_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Name
+        current_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Price Type
+        issue_source:
+          type: string
+          enum:
+          - calculation
+          - expert
+          title: Issue Source
+        issue_text:
+          type: string
+          title: Issue Text
+        reported_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reported By
+        reported_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Reported At
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+        case_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Case Id
+      type: object
+      required:
+      - counterparty_ref
+      - issue_source
+      - issue_text
+      title: CustomerPriceTypeDataIssueItem
+    CustomerPriceTypeDataIssueListResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        total:
+          type: integer
+          title: Total
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+        payload:
+          items:
+            $ref: '#/components/schemas/CustomerPriceTypeDataIssueItem'
+          type: array
+          title: Payload
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - total
+      - limit
+      - offset
+      title: CustomerPriceTypeDataIssueListResponse
+    CustomerPriceTypeNotificationDraftResponse:
+      properties:
+        event:
+          type: string
+          enum:
+          - presignal
+          - price_type_changed
+          - recovery
+          title: Event
+        text:
+          type: string
+          title: Text
+        channel_candidates:
+          items:
+            type: string
+          type: array
+          title: Channel Candidates
+        approval_status:
+          type: string
+          const: requires_approval
+          title: Approval Status
+        send_allowed:
+          type: boolean
+          title: Send Allowed
+      type: object
+      required:
+      - event
+      - text
+      - approval_status
+      - send_allowed
+      title: CustomerPriceTypeNotificationDraftResponse
+    CustomerPriceTypeOrderLampResponse:
+      properties:
+        key:
+          type: string
+          title: Key
+        severity:
+          type: string
+          enum:
+          - none
+          - info
+          - warning
+          - critical
+          - review
+          title: Severity
+        title:
+          type: string
+          title: Title
+        manager_action:
+          type: string
+          title: Manager Action
+        visible:
+          type: boolean
+          title: Visible
+        blocks_fulfillment:
+          type: boolean
+          title: Blocks Fulfillment
+      type: object
+      required:
+      - key
+      - severity
+      - title
+      - manager_action
+      - visible
+      - blocks_fulfillment
+      title: CustomerPriceTypeOrderLampResponse
     CustomerPriceTypePortfolioItem:
       properties:
         counterparty_ref:
@@ -13173,6 +14143,109 @@ components:
       - is_service_card
       - is_hygiene
       title: CustomerPriceTypeProfileResponse
+    CustomerPriceTypeProfileSearchItem:
+      properties:
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        counterparty_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Code
+        counterparty_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Name
+        current_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Price Type
+        recommended_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Price Type
+        result_state:
+          type: string
+          enum:
+          - no_change
+          - change_proposed
+          - data_issue
+          title: Result State
+        result_label:
+          type: string
+          title: Result Label
+        can_review:
+          type: boolean
+          title: Can Review
+          default: false
+        quality_sample_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Quality Sample Id
+        quality_sample_status:
+          anyOf:
+          - type: string
+            enum:
+            - pending
+            - reviewed
+          - type: 'null'
+          title: Quality Sample Status
+      type: object
+      required:
+      - counterparty_ref
+      - result_state
+      - result_label
+      title: CustomerPriceTypeProfileSearchItem
+    CustomerPriceTypeProfileSearchResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        total:
+          type: integer
+          title: Total
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+        payload:
+          items:
+            $ref: '#/components/schemas/CustomerPriceTypeProfileSearchItem'
+          type: array
+          title: Payload
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - total
+      - limit
+      - offset
+      title: CustomerPriceTypeProfileSearchResponse
     CustomerPriceTypeQualityGroupMetrics:
       properties:
         population_count:
@@ -13393,16 +14466,25 @@ components:
       title: CustomerPriceTypeQualityProfileResponse
     CustomerPriceTypeQualityReviewRequest:
       properties:
-        correct_group:
+        review_result:
           type: string
           enum:
-          - manager_work
-          - isolate
-          - recovery
-          - data_check
-          - special_review
-          - downgrade_approval
-          - no_action
+          - correct
+          - incorrect
+          - data_issue
+          title: Review Result
+        correct_group:
+          anyOf:
+          - type: string
+            enum:
+            - manager_work
+            - isolate
+            - recovery
+            - data_check
+            - special_review
+            - downgrade_approval
+            - no_action
+          - type: 'null'
           title: Correct Group
         comment:
           anyOf:
@@ -13416,7 +14498,7 @@ components:
           title: Expected Version
       type: object
       required:
-      - correct_group
+      - review_result
       - expected_version
       title: CustomerPriceTypeQualityReviewRequest
     CustomerPriceTypeQualitySampleDetailResponse:
@@ -13570,6 +14652,15 @@ components:
             - no_action
           - type: 'null'
           title: Correct Group
+        review_result:
+          anyOf:
+          - type: string
+            enum:
+            - correct
+            - incorrect
+            - data_issue
+          - type: 'null'
+          title: Review Result
         status:
           type: string
           enum:
@@ -13616,6 +14707,417 @@ components:
       - selected_at
       - version
       title: CustomerPriceTypeQualitySampleResponse
+    CustomerPriceTypeReviewCard:
+      properties:
+        snapshot_id:
+          type: integer
+          title: Snapshot Id
+        case_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Case Id
+        counterparty_ref:
+          type: string
+          title: Counterparty Ref
+        counterparty_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Code
+        counterparty_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Counterparty Name
+        owner_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Owner Name
+        department_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Department Name
+        snapshot_month:
+          type: string
+          format: date
+          title: Snapshot Month
+        current_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Current Price Type
+        recommended_price_type:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Recommended Price Type
+        recommendation_text:
+          type: string
+          title: Recommendation Text
+        data_state:
+          type: string
+          enum:
+          - ready
+          - technical_review
+          - insufficient_history
+          - new_client
+          title: Data State
+        data_state_label:
+          type: string
+          title: Data State Label
+        snapshot_hash:
+          type: string
+          title: Snapshot Hash
+        contracts:
+          items:
+            $ref: '#/components/schemas/CustomerPriceTypeContractCandidate'
+          type: array
+          title: Contracts
+        price_type:
+          $ref: '#/components/schemas/CustomerPriceTypeReviewDimension'
+        client_action:
+          $ref: '#/components/schemas/CustomerPriceTypeReviewDimension'
+      type: object
+      required:
+      - snapshot_id
+      - counterparty_ref
+      - snapshot_month
+      - recommendation_text
+      - data_state
+      - data_state_label
+      - snapshot_hash
+      - price_type
+      - client_action
+      title: CustomerPriceTypeReviewCard
+    CustomerPriceTypeReviewCardListResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        total:
+          type: integer
+          title: Total
+        limit:
+          type: integer
+          title: Limit
+        offset:
+          type: integer
+          title: Offset
+        payload:
+          items:
+            $ref: '#/components/schemas/CustomerPriceTypeReviewCard'
+          type: array
+          title: Payload
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - total
+      - limit
+      - offset
+      title: CustomerPriceTypeReviewCardListResponse
+    CustomerPriceTypeReviewCardResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        card:
+          $ref: '#/components/schemas/CustomerPriceTypeReviewCard'
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - card
+      title: CustomerPriceTypeReviewCardResponse
+    CustomerPriceTypeReviewCommand:
+      properties:
+        result:
+          type: string
+          enum:
+          - confirm
+          - correct
+          - no_action
+          - data_issue
+          title: Result
+        corrected_value:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Corrected Value
+        comment:
+          anyOf:
+          - type: string
+            maxLength: 2000
+          - type: 'null'
+          title: Comment
+        expected_version:
+          type: integer
+          minimum: 0.0
+          title: Expected Version
+        snapshot_hash:
+          type: string
+          maxLength: 64
+          minLength: 64
+          pattern: ^[0-9a-f]{64}$
+          title: Snapshot Hash
+      type: object
+      required:
+      - result
+      - expected_version
+      - snapshot_hash
+      title: CustomerPriceTypeReviewCommand
+    CustomerPriceTypeReviewDimension:
+      properties:
+        kind:
+          type: string
+          enum:
+          - price_type
+          - client_action
+          title: Kind
+        system_value:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: System Value
+        system_label:
+          type: string
+          title: System Label
+        can_review:
+          type: boolean
+          title: Can Review
+        unavailable_reason:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Unavailable Reason
+        allowed_results:
+          items:
+            type: string
+            enum:
+            - confirm
+            - correct
+            - no_action
+            - data_issue
+          type: array
+          title: Allowed Results
+        allowed_corrected_values:
+          items:
+            type: string
+          type: array
+          title: Allowed Corrected Values
+        review_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Review Id
+        result:
+          anyOf:
+          - type: string
+            enum:
+            - confirm
+            - correct
+            - no_action
+            - data_issue
+          - type: 'null'
+          title: Result
+        final_value:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Final Value
+        comment:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Comment
+        reviewed_by:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reviewed By
+        reviewed_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Reviewed At
+        version:
+          type: integer
+          title: Version
+          default: 0
+        decision_mode:
+          anyOf:
+          - type: string
+            enum:
+            - test
+            - live
+          - type: 'null'
+          title: Decision Mode
+        external_state:
+          type: string
+          enum:
+          - not_created
+          - held
+          - pending
+          - preflight
+          - ready_to_apply
+          - applying
+          - applied
+          - cancelled
+          - technical_review
+          title: External State
+          default: not_created
+        external_message:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: External Message
+      type: object
+      required:
+      - kind
+      - system_label
+      - can_review
+      title: CustomerPriceTypeReviewDimension
+    CustomerPriceTypeReviewKindMetrics:
+      properties:
+        reviewed_count:
+          type: integer
+          title: Reviewed Count
+          default: 0
+        confirmed_count:
+          type: integer
+          title: Confirmed Count
+          default: 0
+        corrected_count:
+          type: integer
+          title: Corrected Count
+          default: 0
+        no_action_count:
+          type: integer
+          title: No Action Count
+          default: 0
+        data_issue_count:
+          type: integer
+          title: Data Issue Count
+          default: 0
+        correction_rate:
+          type: number
+          title: Correction Rate
+          default: 0.0
+      type: object
+      title: CustomerPriceTypeReviewKindMetrics
+    CustomerPriceTypeReviewMetricsResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        price_type:
+          $ref: '#/components/schemas/CustomerPriceTypeReviewKindMetrics'
+        client_action:
+          $ref: '#/components/schemas/CustomerPriceTypeReviewKindMetrics'
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - price_type
+      - client_action
+      title: CustomerPriceTypeReviewMetricsResponse
+    CustomerPriceTypeReviewSaveResponse:
+      properties:
+        run_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Run Id
+        snapshot_month:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Snapshot Month
+        ruleset_version:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Ruleset Version
+        source_status:
+          type: string
+          title: Source Status
+        card:
+          $ref: '#/components/schemas/CustomerPriceTypeReviewCard'
+        saved_kind:
+          type: string
+          enum:
+          - price_type
+          - client_action
+          title: Saved Kind
+      type: object
+      required:
+      - run_id
+      - snapshot_month
+      - ruleset_version
+      - source_status
+      - card
+      - saved_kind
+      title: CustomerPriceTypeReviewSaveResponse
     CustomerPriceTypeRunResponse:
       properties:
         run_id:
@@ -14436,6 +15938,384 @@ components:
       - model_name
       - id
       title: DeviceModelResponse
+    DisplayFamilyDecisionEventSchema:
+      properties:
+        id:
+          type: integer
+          title: Id
+        action:
+          type: string
+          title: Action
+        actor:
+          type: string
+          title: Actor
+        reason:
+          type: string
+          title: Reason
+        effective_at:
+          type: string
+          format: date
+          title: Effective At
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        product_id:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Product Id
+        evidence_snapshot:
+          additionalProperties: true
+          type: object
+          title: Evidence Snapshot
+      type: object
+      required:
+      - id
+      - action
+      - actor
+      - reason
+      - effective_at
+      - created_at
+      title: DisplayFamilyDecisionEventSchema
+    DisplayFamilyDetailSchema:
+      properties:
+        id:
+          type: integer
+          title: Id
+        family_key:
+          type: string
+          title: Family Key
+        member_count:
+          type: integer
+          title: Member Count
+        is_singleton:
+          type: boolean
+          title: Is Singleton
+        total_current_stock_qty:
+          type: integer
+          title: Total Current Stock Qty
+        review_member_count:
+          type: integer
+          title: Review Member Count
+        matching_review_member_count:
+          type: integer
+          title: Matching Review Member Count
+        quality_unknown_member_count:
+          type: integer
+          title: Quality Unknown Member Count
+        construction_unknown_member_count:
+          type: integer
+          title: Construction Unknown Member Count
+        phone_model_ids:
+          items:
+            type: integer
+          type: array
+          title: Phone Model Ids
+        phone_models:
+          items:
+            type: string
+          type: array
+          title: Phone Models
+        segment_ids:
+          items:
+            type: string
+          type: array
+          title: Segment Ids
+        warning_codes:
+          items:
+            type: string
+          type: array
+          title: Warning Codes
+        note_codes:
+          items:
+            type: string
+          type: array
+          title: Note Codes
+        registry_version:
+          $ref: '#/components/schemas/DisplayFamilyRegistryVersionSchema'
+        physical_model_signatures:
+          items:
+            items:
+              type: string
+            type: array
+          type: array
+          title: Physical Model Signatures
+        evidence_snapshot:
+          additionalProperties: true
+          type: object
+          title: Evidence Snapshot
+        members:
+          items:
+            $ref: '#/components/schemas/DisplayFamilyMemberSchema'
+          type: array
+          title: Members
+        events:
+          items:
+            $ref: '#/components/schemas/DisplayFamilyDecisionEventSchema'
+          type: array
+          title: Events
+      type: object
+      required:
+      - id
+      - family_key
+      - member_count
+      - is_singleton
+      - total_current_stock_qty
+      - review_member_count
+      - matching_review_member_count
+      - quality_unknown_member_count
+      - construction_unknown_member_count
+      - registry_version
+      title: DisplayFamilyDetailSchema
+    DisplayFamilyMemberSchema:
+      properties:
+        id:
+          type: integer
+          title: Id
+        product_id:
+          type: integer
+          title: Product Id
+        segment_id:
+          type: string
+          title: Segment Id
+        proposal_status:
+          type: string
+          title: Proposal Status
+        quality_segment:
+          type: string
+          title: Quality Segment
+        construction_segment:
+          type: string
+          title: Construction Segment
+        requires_manual_review:
+          type: boolean
+          title: Requires Manual Review
+        current_stock_qty:
+          type: integer
+          title: Current Stock Qty
+        warning_codes:
+          items:
+            type: string
+          type: array
+          title: Warning Codes
+        note_codes:
+          items:
+            type: string
+          type: array
+          title: Note Codes
+        scope_reasons:
+          items:
+            type: string
+          type: array
+          title: Scope Reasons
+        product:
+          additionalProperties: true
+          type: object
+          title: Product
+        matching_evidence:
+          additionalProperties: true
+          type: object
+          title: Matching Evidence
+        identity_evidence:
+          additionalProperties: true
+          type: object
+          title: Identity Evidence
+      type: object
+      required:
+      - id
+      - product_id
+      - segment_id
+      - proposal_status
+      - quality_segment
+      - construction_segment
+      - requires_manual_review
+      - current_stock_qty
+      title: DisplayFamilyMemberSchema
+    DisplayFamilyRegistrySummarySchema:
+      properties:
+        active_version:
+          anyOf:
+          - $ref: '#/components/schemas/DisplayFamilyRegistryVersionSchema'
+          - type: 'null'
+        version_count:
+          type: integer
+          title: Version Count
+        family_count:
+          type: integer
+          title: Family Count
+        member_count:
+          type: integer
+          title: Member Count
+        singleton_family_count:
+          type: integer
+          title: Singleton Family Count
+        multi_sku_family_count:
+          type: integer
+          title: Multi Sku Family Count
+        review_member_count:
+          type: integer
+          title: Review Member Count
+        matching_review_member_count:
+          type: integer
+          title: Matching Review Member Count
+        quality_unknown_member_count:
+          type: integer
+          title: Quality Unknown Member Count
+        warning_counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Warning Counts
+        status_counts:
+          additionalProperties:
+            type: integer
+          type: object
+          title: Status Counts
+      type: object
+      required:
+      - version_count
+      - family_count
+      - member_count
+      - singleton_family_count
+      - multi_sku_family_count
+      - review_member_count
+      - matching_review_member_count
+      - quality_unknown_member_count
+      title: DisplayFamilyRegistrySummarySchema
+    DisplayFamilyRegistryVersionSchema:
+      properties:
+        id:
+          type: integer
+          title: Id
+        version_number:
+          type: integer
+          title: Version Number
+        status:
+          type: string
+          enum:
+          - active
+          - superseded
+          - rolled_back
+          title: Status
+        effective_from:
+          type: string
+          format: date
+          title: Effective From
+        source_schema:
+          type: string
+          title: Source Schema
+        inventory_checksum:
+          type: string
+          title: Inventory Checksum
+        membership_checksum:
+          type: string
+          title: Membership Checksum
+        family_count:
+          type: integer
+          title: Family Count
+        member_count:
+          type: integer
+          title: Member Count
+        created_by:
+          type: string
+          title: Created By
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        superseded_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Superseded At
+        rolled_back_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Rolled Back At
+      type: object
+      required:
+      - id
+      - version_number
+      - status
+      - effective_from
+      - source_schema
+      - inventory_checksum
+      - membership_checksum
+      - family_count
+      - member_count
+      - created_by
+      - created_at
+      title: DisplayFamilyRegistryVersionSchema
+    DisplayFamilyRowSchema:
+      properties:
+        id:
+          type: integer
+          title: Id
+        family_key:
+          type: string
+          title: Family Key
+        member_count:
+          type: integer
+          title: Member Count
+        is_singleton:
+          type: boolean
+          title: Is Singleton
+        total_current_stock_qty:
+          type: integer
+          title: Total Current Stock Qty
+        review_member_count:
+          type: integer
+          title: Review Member Count
+        matching_review_member_count:
+          type: integer
+          title: Matching Review Member Count
+        quality_unknown_member_count:
+          type: integer
+          title: Quality Unknown Member Count
+        construction_unknown_member_count:
+          type: integer
+          title: Construction Unknown Member Count
+        phone_model_ids:
+          items:
+            type: integer
+          type: array
+          title: Phone Model Ids
+        phone_models:
+          items:
+            type: string
+          type: array
+          title: Phone Models
+        segment_ids:
+          items:
+            type: string
+          type: array
+          title: Segment Ids
+        warning_codes:
+          items:
+            type: string
+          type: array
+          title: Warning Codes
+        note_codes:
+          items:
+            type: string
+          type: array
+          title: Note Codes
+      type: object
+      required:
+      - id
+      - family_key
+      - member_count
+      - is_singleton
+      - total_current_stock_qty
+      - review_member_count
+      - matching_review_member_count
+      - quality_unknown_member_count
+      - construction_unknown_member_count
+      title: DisplayFamilyRowSchema
     ExecutiveCashflowDailyRow:
       properties:
         business_date:
@@ -20629,6 +22509,29 @@ components:
       - items
       - total
       title: PaginatedCandidates
+    PaginatedDisplayFamiliesSchema:
+      properties:
+        items:
+          items:
+            $ref: '#/components/schemas/DisplayFamilyRowSchema'
+          type: array
+          title: Items
+        page:
+          type: integer
+          title: Page
+        page_size:
+          type: integer
+          title: Page Size
+        total:
+          type: integer
+          title: Total
+      type: object
+      required:
+      - items
+      - page
+      - page_size
+      - total
+      title: PaginatedDisplayFamiliesSchema
     PaginatedProducts:
       properties:
         items:
@@ -21926,6 +23829,111 @@ components:
             format: date-time
           - type: 'null'
           title: Created At
+        demand_state:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Demand State
+        demand_state_label:
+          type: string
+          title: Demand State Label
+          default: ''
+        demand_reason_text:
+          type: string
+          title: Demand Reason Text
+          default: ''
+        first_receipt_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: First Receipt At
+        last_receipt_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Last Receipt At
+        first_stock_inflow_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: First Stock Inflow At
+        last_stock_inflow_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Last Stock Inflow At
+        history_age_days:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: History Age Days
+        first_sale_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: First Sale At
+        last_sale_at:
+          anyOf:
+          - type: string
+            format: date
+          - type: 'null'
+          title: Last Sale At
+        sales_qty_short:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Sales Qty Short
+        sales_qty_medium:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Sales Qty Medium
+        sales_qty_long:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Sales Qty Long
+        days_in_sale_short:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Days In Sale Short
+        days_in_sale_medium:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Days In Sale Medium
+        days_in_sale_long:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Days In Sale Long
+        inventory_cost_per_unit:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Inventory Cost Per Unit
+        cost_quartile:
+          type: string
+          title: Cost Quartile
+          default: ''
+        minimum_representation_qty:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Minimum Representation Qty
       type: object
       required:
       - nomenclature_code
@@ -24821,7 +26829,9 @@ components:
           type: string
           title: Current Level Label
         recommended_price_type:
-          type: string
+          anyOf:
+          - type: string
+          - type: 'null'
           title: Recommended Price Type
         recommended_level:
           type: string
@@ -24902,7 +26912,6 @@ components:
       - counterparty_ref
       - current_level
       - current_level_label
-      - recommended_price_type
       - recommended_level
       - recommended_level_label
       - action
@@ -26014,6 +28023,335 @@ components:
       - due_hours
       - reason
       title: SiteDefectWorkingTaskRecommendation
+    SmsAttemptCreateRequest:
+      properties:
+        event_id:
+          anyOf:
+          - type: string
+            format: uuid
+          - type: 'null'
+          title: Event Id
+        created_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Created At
+        source_system:
+          type: string
+          maxLength: 64
+          minLength: 1
+          pattern: ^[a-z0-9][a-z0-9._-]*$
+          title: Source System
+        source_entity_type:
+          type: string
+          maxLength: 64
+          minLength: 1
+          pattern: ^[a-z0-9][a-z0-9._-]*$
+          title: Source Entity Type
+        source_entity_id:
+          type: string
+          maxLength: 255
+          minLength: 1
+          title: Source Entity Id
+        event_type:
+          type: string
+          maxLength: 128
+          minLength: 1
+          pattern: ^[a-z0-9][a-z0-9._-]*$
+          title: Event Type
+        actor_id:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Actor Id
+        recipient_phone:
+          type: string
+          maxLength: 32
+          minLength: 7
+          title: Recipient Phone
+        message_text:
+          type: string
+          maxLength: 4000
+          minLength: 1
+          title: Message Text
+        secret_kind:
+          type: string
+          enum:
+          - none
+          - otp
+          - password
+          title: Secret Kind
+          default: none
+        redaction_values:
+          items:
+            type: string
+          type: array
+          maxItems: 10
+          title: Redaction Values
+        provider:
+          type: string
+          maxLength: 64
+          minLength: 1
+          title: Provider
+          default: megafon
+        sender_name:
+          anyOf:
+          - type: string
+            maxLength: 64
+          - type: 'null'
+          title: Sender Name
+        attempt_number:
+          type: integer
+          maximum: 100.0
+          minimum: 1.0
+          title: Attempt Number
+          default: 1
+      type: object
+      required:
+      - source_system
+      - source_entity_type
+      - source_entity_id
+      - event_type
+      - recipient_phone
+      - message_text
+      title: SmsAttemptCreateRequest
+    SmsAttemptResponse:
+      properties:
+        event_id:
+          type: string
+          format: uuid
+          title: Event Id
+        source_system:
+          type: string
+          title: Source System
+        source_entity_type:
+          type: string
+          title: Source Entity Type
+        source_entity_id:
+          type: string
+          title: Source Entity Id
+        event_type:
+          type: string
+          title: Event Type
+        recipient_phone_masked:
+          type: string
+          title: Recipient Phone Masked
+        message_fingerprint:
+          type: string
+          title: Message Fingerprint
+        contains_redacted_secret:
+          type: boolean
+          title: Contains Redacted Secret
+        character_count:
+          type: integer
+          title: Character Count
+        encoding:
+          type: string
+          enum:
+          - GSM-7
+          - UCS-2
+          title: Encoding
+        estimated_segments:
+          type: integer
+          title: Estimated Segments
+        provider:
+          type: string
+          title: Provider
+        sender_name:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Sender Name
+        provider_message_id:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Message Id
+        send_status:
+          type: string
+          title: Send Status
+        delivery_status:
+          type: string
+          title: Delivery Status
+        provider_error_code:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Provider Error Code
+        attempt_number:
+          type: integer
+          title: Attempt Number
+        sent_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Sent At
+        delivered_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Delivered At
+        billed_segments:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Billed Segments
+        unit_price:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Unit Price
+        total_cost:
+          anyOf:
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Total Cost
+        reconciliation_period:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Reconciliation Period
+        retention_expires_at:
+          type: string
+          format: date-time
+          title: Retention Expires At
+        created_at:
+          type: string
+          format: date-time
+          title: Created At
+        updated_at:
+          type: string
+          format: date-time
+          title: Updated At
+        idempotency_replayed:
+          type: boolean
+          title: Idempotency Replayed
+          default: false
+      type: object
+      required:
+      - event_id
+      - source_system
+      - source_entity_type
+      - source_entity_id
+      - event_type
+      - recipient_phone_masked
+      - message_fingerprint
+      - contains_redacted_secret
+      - character_count
+      - encoding
+      - estimated_segments
+      - provider
+      - send_status
+      - delivery_status
+      - attempt_number
+      - retention_expires_at
+      - created_at
+      - updated_at
+      title: SmsAttemptResponse
+    SmsDeliveryUpdateRequest:
+      properties:
+        delivery_status:
+          type: string
+          enum:
+          - delivered
+          - undelivered
+          - expired
+          - unknown
+          title: Delivery Status
+        delivered_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Delivered At
+        provider_error_code:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Provider Error Code
+        provider_error_detail:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Provider Error Detail
+      type: object
+      required:
+      - delivery_status
+      title: SmsDeliveryUpdateRequest
+    SmsSendResultRequest:
+      properties:
+        send_status:
+          type: string
+          enum:
+          - accepted
+          - failed
+          - unknown
+          title: Send Status
+        provider_message_id:
+          anyOf:
+          - type: string
+            maxLength: 255
+          - type: 'null'
+          title: Provider Message Id
+        provider_error_code:
+          anyOf:
+          - type: string
+            maxLength: 128
+          - type: 'null'
+          title: Provider Error Code
+        provider_error_detail:
+          anyOf:
+          - type: string
+            maxLength: 1000
+          - type: 'null'
+          title: Provider Error Detail
+        sent_at:
+          anyOf:
+          - type: string
+            format: date-time
+          - type: 'null'
+          title: Sent At
+        billed_segments:
+          anyOf:
+          - type: integer
+            maximum: 100.0
+            minimum: 0.0
+          - type: 'null'
+          title: Billed Segments
+        unit_price:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Unit Price
+        total_cost:
+          anyOf:
+          - type: number
+            minimum: 0.0
+          - type: string
+            pattern: ^(?!^[-+.]*$)[+-]?0*\d*\.?\d*$
+          - type: 'null'
+          title: Total Cost
+        reconciliation_period:
+          anyOf:
+          - type: string
+            pattern: ^\d{4}-\d{2}$
+          - type: 'null'
+          title: Reconciliation Period
+      type: object
+      required:
+      - send_status
+      title: SmsSendResultRequest
     StaffingDailyItem:
       properties:
         snapshot_date:

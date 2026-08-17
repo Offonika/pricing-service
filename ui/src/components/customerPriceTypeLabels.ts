@@ -17,7 +17,7 @@ const STATUS_LABELS: Record<string, string> = {
   failed: "Ошибка",
   missing: "Нет данных",
   ready: "Готово",
-  conflict: "Конфликт данных",
+  conflict: "Данные требуют проверки",
   excluded: "Исключён",
   not_requested: "Не запрашивалось",
   pending: "Ожидает согласования",
@@ -44,7 +44,7 @@ const RECOMMENDATION_LABELS: Record<string, string> = {
 const FACTOR_LABELS: Record<string, string> = {
   service_card: "Служебная карточка",
   manual_override: "Ручное решение",
-  source_conflict: "Конфликт источников",
+  source_conflict: "Данные источников расходятся",
   insufficient_history: "Недостаточно истории",
   new_client: "Новый клиент",
   upgrade_freeze: "Повышения временно приостановлены",
@@ -62,7 +62,7 @@ const FACTOR_LABELS: Record<string, string> = {
   unknown_price_type: "Тип цены не распознан",
   duplicate_counterparty: "Обнаружен дубль клиента",
   partial_source: "Источник загружен частично",
-  source_mismatch: "Источники расходятся",
+  source_mismatch: "Данные источников расходятся",
   return_period_mismatch: "Не совпадает период возвратов",
   economics_missing: "Нет экономических данных",
 };
@@ -111,7 +111,7 @@ export function factorLabel(value: string): string {
     const state = statusLabel(sourceMatch[2]);
     return `Источник «${source}»: ${state.toLocaleLowerCase("ru-RU")}`;
   }
-  return "Неизвестный ограничивающий фактор";
+  return "Техническая причина не расшифрована";
 }
 
 export function eventLabel(value: string): string {
@@ -121,6 +121,7 @@ export function eventLabel(value: string): string {
 export function reasonLabel(value: string): string {
   const match = /^Требуется сверка данных: ([a-z0-9_]+)\.$/.exec(value);
   if (match) return `Требуется сверка данных: ${factorLabel(match[1]).toLocaleLowerCase("ru-RU")}.`;
+  if (/^[a-z0-9_]+$/.test(value)) return factorLabel(value);
   return value
     .replaceAll("Key Account", "ключевой клиент")
     .replaceAll("B2B-квалификацию", "корпоративную квалификацию")

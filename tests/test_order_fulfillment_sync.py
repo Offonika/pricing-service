@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+
+import pytest
 
 from app.core.config import Settings
 from app.services import site_order_fulfillment as service
@@ -529,6 +532,65 @@ def test_apply_outbox_by_target_handles_mixed_targets() -> None:
     assert sorted(client.updates) == [(1, "PREPARATION"), (2, "EXECUTING")]
 
 
+def test_apply_outbox_by_target_applies_only_allowed_targets() -> None:
+    rows = [
+        service.OrderFulfillmentStageOutboxRow(
+            idempotency_key="key-pickup",
+            site_order_number="218001",
+            bitrix_deal_id=1,
+            current_stage="EXECUTING",
+            target_stage="PICKUP_WAITING",
+            operation="update_stage",
+            state="ready",
+            chat_event=service.EVENT_PICKUP_UNCLAIMED,
+            event_confidence="medium",
+            evidence_redacted="не забрали",
+            payload_json="{}",
+            block_reason=None,
+        ),
+        service.OrderFulfillmentStageOutboxRow(
+            idempotency_key="key-won",
+            site_order_number="218002",
+            bitrix_deal_id=2,
+            current_stage="PICKUP_WAITING",
+            target_stage="WON",
+            operation="update_stage",
+            state="ready",
+            chat_event=service.EVENT_PICKUP_RECEIVED,
+            event_confidence="strong",
+            evidence_redacted="выдали",
+            payload_json="{}",
+            block_reason=None,
+        ),
+    ]
+    client = FakeBitrixClient(
+        {
+            1: _deal(
+                deal_id=1,
+                stage_id="EXECUTING",
+                order_number="218001",
+                delivery="Самовывоз",
+            ),
+            2: _deal(
+                deal_id=2,
+                stage_id="PICKUP_WAITING",
+                order_number="218002",
+                delivery="Самовывоз",
+            ),
+        }
+    )
+
+    results = sync.apply_outbox_by_target(
+        rows,
+        client=client,
+        apply=True,
+        allowed_target_stages={"PICKUP_WAITING"},
+    )
+
+    assert [result.result for result in results] == ["applied", "dry_run_ready"]
+    assert client.updates == [(1, "PICKUP_WAITING")]
+
+
 def test_build_operational_monitoring_rows_flags_stage_errors_and_rtu_gap() -> None:
     decisions = [
         sync.decide_new_deal_stage(
@@ -916,15 +978,26 @@ def test_operational_alert_sends_to_site_group_dialog(tmp_path: Path) -> None:
     assert "Auto-apply" not in message
 
 
-def test_daily_digest_deduplicates_repeated_cron_summaries(tmp_path: Path) -> None:
+def test_daily_digest_deduplicates_repeated_cron_summaries(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     client = FakeNotifyClient()
+    apply_path = tmp_path / "apply.csv"
+    apply_path.write_text(
+        "site_order_number,bitrix_deal_id,target_stage,result,applied,reason\n"
+        "235002,28002,EXECUTING,applied,1,\n",
+        encoding="utf-8",
+    )
     quick_item = {
         "mode": "quick",
+        "dry_run": False,
+        "apply_result": str(apply_path),
         "deal_keys": ["deal:1"],
         "ready_keys": ["ready-1"],
         "manual_review_keys": ["manual-1"],
         "manual_review_reason_counts": {"carrier": 1},
         "technical_review_keys": [],
+        "operational_alert_keys": ["overdue_prepayment|235001|28001"],
     }
     for stamp in ("20260522-080000", "20260522-081500"):
         path = tmp_path / f"order-fulfillment-sync-summary-{stamp}.json"
@@ -944,6 +1017,7 @@ def test_daily_digest_deduplicates_repeated_cron_summaries(tmp_path: Path) -> No
     daily_path.write_text(json.dumps(daily_summary, ensure_ascii=False), encoding="utf-8")
 
     settings = _notify_settings(tmp_path, business_user_ids="10", tech_user_ids="20")
+    monkeypatch.setenv("ONEC_ASSEMBLY_CRM_STATE_PATH", str(tmp_path / "missing.sqlite3"))
     sync.deliver_order_fulfillment_notifications(
         client=client,
         summary=daily_summary,
@@ -961,7 +1035,210 @@ def test_daily_digest_deduplicates_repeated_cron_summaries(tmp_path: Path) -> No
 
     assert len(client.calls) == 1
     message = client.calls[0]["payload"]["MESSAGE"]
-    assert "Проверено уникальных сделок: 1" in message
-    assert "Готово к dry-run/apply: 1" in message
-    assert "Ручной разбор: 1" in message
-    assert "Неизвестные доставки: 2" in message
+    assert "MASTER-MOBILE.RU: контроль интернет-заказов" in message
+    assert "подтверждена сборка: 0 заказов" in message
+    assert "подтверждена выдача: 0 заказов" in message
+    assert "выполнено переходов CRM: 1 переход" in message
+    assert "Требуется вмешательство: 1 заказ." in message
+    assert "заказ 235001 / сделка 28001: проверить просроченную оплату" in message
+    assert "dry-run" not in message
+    assert "Ручной разбор" not in message
+    assert "Технические ошибки" not in message
+    assert "Неизвестные доставки" not in message
+    assert "/opt/MM" not in message
+
+
+def test_daily_digest_sends_to_site_dialog_without_business_users(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    client = FakeNotifyClient()
+    daily_summary = _summary(
+        mode="daily",
+        stamp="20260810-110000",
+        item={
+            "mode": "daily",
+            "unknown_delivery_rows": 0,
+        },
+    )
+    daily_path = tmp_path / "order-fulfillment-sync-summary-20260810-110000.json"
+    daily_path.write_text(json.dumps(daily_summary, ensure_ascii=False), encoding="utf-8")
+    settings = _notify_settings(
+        tmp_path,
+        business_user_ids="",
+        tech_user_ids="",
+        site_dialog_id="chat733",
+    )
+    monkeypatch.setenv("ONEC_ASSEMBLY_CRM_STATE_PATH", str(tmp_path / "missing.sqlite3"))
+
+    first = sync.deliver_order_fulfillment_notifications(
+        client=client,
+        summary=daily_summary,
+        summary_path=daily_path,
+        output_dir=tmp_path,
+        settings=settings,
+    )
+    second = sync.deliver_order_fulfillment_notifications(
+        client=client,
+        summary=daily_summary,
+        summary_path=daily_path,
+        output_dir=tmp_path,
+        settings=settings,
+    )
+
+    assert first["sent"] == [{"kind": "daily_digest", "count": 1}]
+    assert second["sent"] == []
+    assert second["skipped"] == ["daily_digest_already_sent"]
+    assert len(client.calls) == 1
+    assert client.calls[0]["method"] == "im.message.add"
+    assert client.calls[0]["payload"]["DIALOG_ID"] == "chat733"
+    message = client.calls[0]["payload"]["MESSAGE"]
+    assert message == (
+        "MASTER-MOBILE.RU: контроль интернет-заказов\n"
+        "Автоматически обработано за период:\n"
+        "- подтверждена сборка: 0 заказов;\n"
+        "- подтверждена выдача: 0 заказов;\n"
+        "- выполнено переходов CRM: 0 переходов.\n"
+        "Ручных действий сегодня не требуется."
+    )
+
+
+def test_daily_digest_reports_onec_activity_and_current_technical_errors(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    state_db = tmp_path / "onec.sqlite3"
+    with sqlite3.connect(state_db) as connection:
+        connection.execute("""
+            CREATE TABLE processed_events (
+                event_key TEXT PRIMARY KEY,
+                processed_at TEXT NOT NULL,
+                site_order_number TEXT NOT NULL,
+                rtu_number TEXT NOT NULL,
+                crm_response TEXT
+            )
+            """)
+        connection.executemany(
+            "INSERT INTO processed_events VALUES (?, ?, ?, ?, ?)",
+            [
+                (
+                    "assembled:1",
+                    "2026-08-12 10:00:00",
+                    "238500",
+                    "РТУ1",
+                    json.dumps(
+                        {
+                            "action": "moved_to_pickup_waiting",
+                            "deal_id": 31664,
+                            "stage_from": "EXECUTING",
+                            "stage_to": "PICKUP_WAITING",
+                        }
+                    ),
+                ),
+                (
+                    "issued-scan:2",
+                    "2026-08-12 10:10:00",
+                    "238500",
+                    "РТУ1",
+                    json.dumps(
+                        {
+                            "action": "moved_to_won_issued",
+                            "deal_id": 31664,
+                            "stage_from": "PICKUP_WAITING",
+                            "stage_to": "WON",
+                        }
+                    ),
+                ),
+            ],
+        )
+    monkeypatch.setenv("ONEC_ASSEMBLY_CRM_STATE_PATH", str(state_db))
+    apply_path = tmp_path / "apply.csv"
+    apply_path.write_text(
+        "site_order_number,bitrix_deal_id,target_stage,result,applied,reason\n"
+        "226255,19368,EXECUTING,technical_review,0,Товар распределен по отгрузкам\n",
+        encoding="utf-8",
+    )
+    quick_summary = _summary(
+        mode="quick",
+        stamp="20260812-103000",
+        item={
+            "mode": "quick",
+            "dry_run": False,
+            "apply_result": str(apply_path),
+            "operational_alert_keys": [],
+        },
+    )
+    quick_path = tmp_path / "order-fulfillment-sync-summary-20260812-103000.json"
+    quick_path.write_text(json.dumps(quick_summary), encoding="utf-8")
+    daily_summary = _summary(
+        mode="daily",
+        stamp="20260812-110000",
+        item={"mode": "daily"},
+    )
+    daily_path = tmp_path / "order-fulfillment-sync-summary-20260812-110000.json"
+    daily_path.write_text(json.dumps(daily_summary), encoding="utf-8")
+
+    digest = sync.build_daily_digest(
+        tmp_path,
+        daily_summary,
+        daily_path,
+        {"last_daily_digest_stamp": "20260811-110000"},
+    )
+
+    message = digest["message"]
+    assert "подтверждена сборка: 1 заказ" in message
+    assert "подтверждена выдача: 1 заказ" in message
+    assert "выполнено переходов CRM: 2 перехода" in message
+    assert "Требуется вмешательство: 1 заказ" in message
+    assert "заказ 226255 / сделка 19368" in message
+    assert "конфликт количества товаров в заказе и отгрузках" in message
+    assert "technical_review" not in message
+
+
+def test_daily_digest_does_not_include_summaries_after_report_time(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("ONEC_ASSEMBLY_CRM_STATE_PATH", str(tmp_path / "missing.sqlite3"))
+    before_apply = tmp_path / "before.csv"
+    before_apply.write_text(
+        "site_order_number,bitrix_deal_id,target_stage,result,applied,reason\n"
+        "238500,31664,EXECUTING,applied,1,\n",
+        encoding="utf-8",
+    )
+    after_apply = tmp_path / "after.csv"
+    after_apply.write_text(
+        "site_order_number,bitrix_deal_id,target_stage,result,applied,reason\n"
+        "238501,31665,EXECUTING,applied,1,\n",
+        encoding="utf-8",
+    )
+    for stamp, apply_path in (
+        ("20260812-103000", before_apply),
+        ("20260812-113000", after_apply),
+    ):
+        payload = _summary(
+            mode="quick",
+            stamp=stamp,
+            item={
+                "mode": "quick",
+                "dry_run": False,
+                "apply_result": str(apply_path),
+                "operational_alert_keys": [],
+            },
+        )
+        (tmp_path / f"order-fulfillment-sync-summary-{stamp}.json").write_text(
+            json.dumps(payload), encoding="utf-8"
+        )
+    daily_summary = _summary(
+        mode="daily",
+        stamp="20260812-110000",
+        item={"mode": "daily"},
+    )
+    daily_path = tmp_path / "order-fulfillment-sync-summary-20260812-110000.json"
+    daily_path.write_text(json.dumps(daily_summary), encoding="utf-8")
+
+    digest = sync.build_daily_digest(
+        tmp_path,
+        daily_summary,
+        daily_path,
+        {"last_daily_digest_stamp": "20260811-110000"},
+    )
+
+    assert "выполнено переходов CRM: 1 переход" in digest["message"]

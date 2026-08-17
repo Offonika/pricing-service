@@ -3,6 +3,7 @@ import os
 from app.models.base import Base
 
 if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
+    from app.models.assortment_lifecycle_signal import AssortmentLifecycleSignal
     from app.models.card_balance_reconciliation import (
         CardBalanceCashbox,
         CardBalanceReconciliation,
@@ -30,8 +31,11 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.customer_price_type import (
         CustomerPriceTypeCase,
         CustomerPriceTypeCaseEvent,
+        CustomerPriceTypeExternalAction,
+        CustomerPriceTypeOneCContractAction,
         CustomerPriceTypeProfile,
         CustomerPriceTypeQualitySample,
+        CustomerPriceTypeReview,
         CustomerPriceTypeReviewBatch,
         CustomerPriceTypeReviewBatchItem,
         CustomerPriceTypeRun,
@@ -43,6 +47,12 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         DeviceBrandAlias,
     )
     from app.models.device_model import Keyword, KeywordDemand, PhoneModel, PhoneModelAlias
+    from app.models.display_family_registry import (
+        DisplayFamily,
+        DisplayFamilyDecisionEvent,
+        DisplayFamilyMember,
+        DisplayFamilyRegistryVersion,
+    )
     from app.models.executive_dashboard import (
         ExecutiveActionItem,
         ExecutiveDashboardSnapshot,
@@ -134,6 +144,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         SiteOrderExecutionEvent,
     )
     from app.models.smartphone_release import ReleaseStatus, SmartphoneRelease, SourceType
+    from app.models.sms_journal import SmsJournalApiRequest, SmsJournalAttempt
     from app.models.staff_member import StaffMember
     from app.models.staffing_snapshot import StaffingSnapshot
     from app.models.store_shift_fact import StoreShiftFact
@@ -148,6 +159,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
 
     __all__ = [
         "Base",
+        "AssortmentLifecycleSignal",
         "Product",
         "ProductStock",
         "ProcurementOrderFormation",
@@ -169,6 +181,9 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "CustomerPriceTypeSnapshot",
         "CustomerPriceTypeCase",
         "CustomerPriceTypeCaseEvent",
+        "CustomerPriceTypeReview",
+        "CustomerPriceTypeExternalAction",
+        "CustomerPriceTypeOneCContractAction",
         "CustomerPriceTypeQualitySample",
         "CustomerPriceTypeReviewBatch",
         "CustomerPriceTypeReviewBatchItem",
@@ -187,6 +202,10 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "DeviceBrand",
         "DeviceBrandAlias",
         "CompatibilityMappingDecision",
+        "DisplayFamilyRegistryVersion",
+        "DisplayFamily",
+        "DisplayFamilyMember",
+        "DisplayFamilyDecisionEvent",
         "Keyword",
         "KeywordDemand",
         "ExpertiseCase",
@@ -218,6 +237,8 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "OneCSalesDailyKpi",
         "OrchestrationApiRequest",
         "OrchestrationJobRun",
+        "SmsJournalApiRequest",
+        "SmsJournalAttempt",
         "OrchestrationDeliveryIntent",
         "OrchestrationDeliveryAttempt",
         "MatchingPropertyProfile",

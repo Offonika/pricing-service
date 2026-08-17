@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from decimal import Decimal
 
@@ -8,16 +9,19 @@ from app.services.procurement_b2b_customer_demand import (
     B2BSkuDemandProfile,
 )
 from tasks.build_display_auto_order_dry_run import (
+    DEFAULT_POLICY_JSON,
     DemandUpliftRule,
     OrderRoundingRule,
     PriceBatchRule,
     SpeedHorizonRule,
+    _price_batch_rule_for_row,
     build_dry_run_rows,
     build_summary,
     fetch_days_in_sale_totals,
     fetch_reserved_totals,
     fetch_sales_totals,
     fetch_stock_totals,
+    load_auto_order_items_from_facts,
     load_auto_order_policy,
     load_warehouse_policy,
     rounded_order_qty,
@@ -106,6 +110,196 @@ def test_sales_totals_query_includes_90_and_30_day_trend_windows() -> None:
     assert "sales_qty_window_short" in sales_sql
     assert "window_medium_from" in sales_sql
     assert "window_short_from" in sales_sql
+
+
+def test_v2_representation_floor_is_shadow_gated_and_uses_reliable_incoming_once() -> None:
+    item = {
+        "nomenclature_code": "RB-FLOOR",
+        "name": "Display floor",
+        "status": "sale",
+        "status_label": "Растим",
+        "demand_state": "growing",
+        "cost_quartile": "Q1",
+        "minimum_representation_qty": 13,
+        "quality_raw": "Original",
+    }
+    facts = {
+        "stock": {"RB-FLOOR": {"sellable_stock_qty": Decimal("4")}},
+        "reserve": {},
+        "incoming": {
+            "RB-FLOOR": {
+                "incoming_qty": Decimal("8"),
+                "pipeline_cargo_handoff_qty": Decimal("3"),
+            }
+        },
+        "sales": {"RB-FLOOR": {"sales_qty_window": Decimal("6")}},
+        "returns": {},
+    }
+    legacy = build_dry_run_rows(
+        [item],
+        facts=facts,
+        source_errors={},
+        target_days=30,
+        sales_window_days=180,
+        lifecycle_model_version="v1",
+    )[0]
+    shadow = build_dry_run_rows(
+        [item],
+        facts=facts,
+        source_errors={},
+        target_days=30,
+        sales_window_days=180,
+        lifecycle_model_version="v2-shadow",
+    )[0]
+
+    assert legacy["representation_floor_applied"] == ""
+    assert shadow["target_stock_qty"] == "13"
+    assert shadow["recommended_order_qty_raw"] == "6"
+    assert shadow["recommended_order_qty"] == "6"
+    assert shadow["reliable_incoming_qty"] == "3"
+    assert shadow["representation_floor_applied"] == "yes"
+
+
+def test_fact_snapshot_loader_uses_persisted_legacy_and_computed_v2_stages(tmp_path) -> None:
+    path = tmp_path / "facts.json"
+    path.write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "nomenclature_code": "RB-STAGE",
+                        "folder_path": "Дисплеи",
+                        "subject_1c": "Дисплей",
+                        "previous_status": "sale",
+                        "first_supplier_order_at": "2025-01-01",
+                        "first_receipt_at": "2025-01-10",
+                        "first_sale_at": "2025-01-15",
+                        "sales_qty_short": "5",
+                        "sales_qty_medium": "15",
+                        "sales_qty_long": "30",
+                        "future_ka_mapping_status": "ready",
+                        "demand_method_code": "available_days_average",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    legacy = load_auto_order_items_from_facts(
+        path,
+        folder="дисплеи",
+        lifecycle_model_version="v1",
+        include_sale_review_candidates=True,
+    )
+    target = load_auto_order_items_from_facts(
+        path,
+        folder="дисплеи",
+        lifecycle_model_version="v2-shadow",
+        include_sale_review_candidates=True,
+    )
+
+    assert legacy[0]["status"] == "sale"
+    assert target[0]["status"] == "working"
+
+
+def test_fact_snapshot_loader_and_dry_run_exclude_bitok(tmp_path) -> None:
+    path = tmp_path / "facts.json"
+    path.write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "nomenclature_code": "BITOK",
+                        "name": "Дисплей (биток)",
+                        "folder_path": "Дисплеи",
+                        "future_ka_mapping_status": "ready",
+                        "demand_method_code": "available_days_average",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_auto_order_items_from_facts(
+        path,
+        folder="дисплеи",
+        lifecycle_model_version="v2-shadow",
+        include_sale_review_candidates=True,
+    )
+    rows = build_dry_run_rows(
+        [
+            {"nomenclature_code": "BITOK", "name": "Дисплей (биток)"},
+            {"nomenclature_code": "OK", "name": "Дисплей обычный"},
+        ],
+        facts={
+            "stock": {},
+            "reserve": {},
+            "incoming": {},
+            "sales": {},
+            "returns": {},
+        },
+        source_errors={},
+        target_days=30,
+        sales_window_days=180,
+    )
+
+    assert loaded == []
+    assert [row["nomenclature_code"] for row in rows] == ["OK"]
+
+
+def test_dry_run_summary_carries_scope_policy_audit() -> None:
+    summary = build_summary(
+        [],
+        run_id=None,
+        source_errors={},
+        scope_policy_audit={
+            "scope_policy_version": "display_scope_policy.v1",
+            "source_item_count": 2,
+            "included_item_count": 1,
+            "excluded_item_count": 1,
+            "excluded_row_count": 1,
+            "excluded_reason_counts": {"excluded_display_name_bitok": 1},
+            "exclusions": [],
+        },
+    )
+
+    assert summary["scope_policy"]["excluded_item_count"] == 1
+
+
+def test_v2_representation_floor_skips_spike_q3_and_unknown_cost() -> None:
+    base = {
+        "name": "Display",
+        "status": "sale",
+        "status_label": "Растим",
+        "minimum_representation_qty": 13,
+        "quality_raw": "Original",
+    }
+    items = [
+        {**base, "nomenclature_code": "SPIKE", "demand_state": "spike", "cost_quartile": "Q1"},
+        {**base, "nomenclature_code": "Q3", "demand_state": "stable", "cost_quartile": "Q3"},
+        {**base, "nomenclature_code": "UNKNOWN", "demand_state": "stable", "cost_quartile": ""},
+    ]
+    rows = build_dry_run_rows(
+        items,
+        facts={
+            "stock": {},
+            "reserve": {},
+            "incoming": {},
+            "sales": {
+                code: {"sales_qty_window": Decimal("6")} for code in ("SPIKE", "Q3", "UNKNOWN")
+            },
+            "returns": {},
+        },
+        source_errors={},
+        target_days=30,
+        sales_window_days=180,
+        lifecycle_model_version="v2-shadow",
+    )
+    assert all(row["representation_floor_applied"] == "" for row in rows)
 
 
 def test_display_auto_order_b2b_customer_demand_is_advisory_only() -> None:
@@ -1078,7 +1272,7 @@ def test_price_batch_applies_independently_to_both_cards_sharing_analog_tokens()
                 "nomenclature_code": "РБ000041515",
                 "name": "Дисплей для Samsung T295 Galaxy Tab A 8.0 + тачскрин (черный)",
                 "status": "working",
-                "status_label": "Рабочий",
+                "status_label": "Поддерживаем (Рабочий)",
                 "auto_order_allowed": True,
                 "brand_compatibility": "Samsung",
                 "model_compatibility": "Samsung T295 Galaxy Tab A 8.0",
@@ -1089,7 +1283,7 @@ def test_price_batch_applies_independently_to_both_cards_sharing_analog_tokens()
                 "nomenclature_code": "РБ000041516",
                 "name": "Дисплей для Samsung T295 Galaxy Tab A 8.0 + тачскрин (белый)",
                 "status": "working",
-                "status_label": "Рабочий",
+                "status_label": "Поддерживаем (Рабочий)",
                 "auto_order_allowed": True,
                 "brand_compatibility": "Samsung",
                 "model_compatibility": "Samsung T295 Galaxy Tab A 8.0",
@@ -1133,7 +1327,7 @@ def test_price_batch_applies_independently_to_both_cards_sharing_analog_tokens()
                 max_automatic_excess_coverage_days=21,
             ),
         ),
-        price_batch_applies_to_statuses=("ПРОДАЖА", "Рабочий"),
+        price_batch_applies_to_statuses=("sale", "working"),
         price_batch_applies_to_analog_roles=("single_sku",),
     )
 
@@ -1148,8 +1342,51 @@ def test_price_batch_applies_independently_to_both_cards_sharing_analog_tokens()
     # осталась пустой/нулевой) с собственным, независимым количеством.
     assert black["dry_run_decision"] == "order"
     assert black["recommended_order_qty"] == "28"
+    assert black["price_batch_decision"] == "rounded_to_price_minimum"
     assert white["dry_run_decision"] == "order"
     assert white["recommended_order_qty"] == "2"
+
+
+def test_price_batch_rule_uses_stable_status_codes_not_display_labels() -> None:
+    economy_rule = PriceBatchRule(
+        speed_tier="normal",
+        price_segments=("economy", "mid_low"),
+        minimum_batch_qty=10,
+        max_automatic_excess_coverage_days=21,
+    )
+    premium_rule = PriceBatchRule(
+        speed_tier="normal",
+        price_segments=("mid_high", "premium"),
+    )
+    rules = (economy_rule, premium_rule)
+
+    sale_rule = _price_batch_rule_for_row(
+        {
+            "_assortment_status": "sale",
+            "status_label": "Растим (ПРОДАЖА)",
+            "analog_role": "single_sku",
+            "speed_tier": "normal",
+            "price_segment": "mid_low",
+        },
+        rules=rules,
+        applies_to_statuses=("sale", "working"),
+        applies_to_analog_roles=("single_sku",),
+    )
+    working_rule = _price_batch_rule_for_row(
+        {
+            "_assortment_status": "working",
+            "status_label": "Поддерживаем (Рабочий)",
+            "analog_role": "single_sku",
+            "speed_tier": "normal",
+            "price_segment": "premium",
+        },
+        rules=rules,
+        applies_to_statuses=("sale", "working"),
+        applies_to_analog_roles=("single_sku",),
+    )
+
+    assert sale_rule is economy_rule
+    assert working_rule is premium_rule
 
 
 def test_price_batch_excess_above_limit_goes_to_manual_review_with_exact_need() -> None:
@@ -1159,7 +1396,7 @@ def test_price_batch_excess_above_limit_goes_to_manual_review_with_exact_need() 
                 "nomenclature_code": "RB-PRICE-REVIEW",
                 "name": "Дисплей тестовый",
                 "status": "working",
-                "status_label": "Рабочий",
+                "status_label": "Поддерживаем (Рабочий)",
                 "auto_order_allowed": True,
                 "quality_raw": "Аналог",
                 "price_segment": "mid_low",
@@ -1191,7 +1428,7 @@ def test_price_batch_excess_above_limit_goes_to_manual_review_with_exact_need() 
                 max_automatic_excess_coverage_days=21,
             ),
         ),
-        price_batch_applies_to_statuses=("Рабочий",),
+        price_batch_applies_to_statuses=("working",),
         price_batch_applies_to_analog_roles=("single_sku",),
     )
 
@@ -2171,3 +2408,9 @@ def test_load_auto_order_policy_reads_nested_display_policy(tmp_path) -> None:
     assert len(policy.demand_uplift_rules) == 1
     assert policy.demand_uplift_rules[0].rule_id == "iphone11_uplift"
     assert policy.demand_uplift_rules[0].demand_multiplier == Decimal("1.25")
+
+
+def test_versioned_price_batch_policy_uses_stable_status_codes() -> None:
+    policy = load_auto_order_policy(DEFAULT_POLICY_JSON)
+
+    assert policy.price_batch_applies_to_statuses == ("sale", "working")

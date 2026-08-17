@@ -8,9 +8,15 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy.engine import Engine, make_url
+
 from app.core.config import get_settings
-from app.infrastructure.db.engines import build_engine
-from app.services.assortment_lifecycle_classification_store import fetch_previous_statuses
+from app.infrastructure.db.engines import build_engine, build_onec_engine
+from app.services.assortment_lifecycle_classification_store import (
+    fetch_previous_classification_states,
+    fetch_previous_demand_states,
+    fetch_previous_statuses,
+)
 from app.services.assortment_lifecycle_facts import (
     DEFAULT_HISTORY_MONTHS,
     DEMAND_WINDOWS_DAYS,
@@ -21,11 +27,25 @@ from app.services.assortment_lifecycle_facts import (
     default_history_start,
     enrich_nomenclature_rows_with_product_snapshot,
     fetch_first_sale_dates,
+    fetch_first_supplier_order_dates,
+    fetch_onec_item_inventory_costs,
     fetch_onec_lifecycle_source_rows,
+    fetch_receipt_date_bounds,
+    fetch_sales_distribution,
     fetch_sales_window_totals,
+    fetch_stock_inflow_date_bounds,
     normalize_manager_signals,
     normalize_manual_overrides,
     validate_warehouse_policy,
+)
+from app.services.assortment_lifecycle_v2_policy import (
+    DEFAULT_ASSORTMENT_LIFECYCLE_V2_POLICY_PATH,
+    load_assortment_lifecycle_v2_policy,
+)
+from app.services.display_scope_policy import (
+    empty_display_scope_audit,
+    filter_display_scope_records,
+    merge_display_scope_audits,
 )
 from app.services.exporters.ut103_exchange import load_ut103_env_file
 from app.services.onec_stock_availability import (
@@ -33,6 +53,7 @@ from app.services.onec_stock_availability import (
 )
 from app.services.onec_stock_availability import (
     attach_effective_availability_shadow_to_facts,
+    fetch_availability_observation_facts,
     fetch_days_in_sale_by_code,
     physical_sales_point_codes,
 )
@@ -50,13 +71,26 @@ def main() -> int:
     history_start = default_history_start(args.today, history_months=args.history_months)
     # Заполняется только при чтении из 1С; для готового --input-json даты первой
     # продажи берутся из самих записей, если они там уже есть.
-    first_sale_dates: dict[str, date] = {}
+    first_sale_dates: dict[str, tuple[date, date, Decimal]] = {}
+    sales_history_complete = False
+    first_supplier_order_dates: dict[str, date] = {}
+    receipt_bounds: dict[str, tuple[date, date]] = {}
+    stock_inflow_bounds: dict[str, tuple[date, date]] = {}
     sales_window_totals: dict[str, dict[int, Decimal]] = {}
+    sales_distribution: dict[str, dict[str, Any]] = {}
     days_in_sale_totals: dict[str, dict[int, Decimal]] = {}
     previous_statuses: dict[str, str] = {}
+    previous_classifications: dict[str, dict[str, Any]] = {}
+    previous_demand_states: dict[str, dict[str, Any]] = {}
+    inventory_costs: dict[str, Decimal] = {}
+    observation_from: date | None = None
+    observation_to: date | None = None
+    first_observed_stock_dates: dict[str, date] = {}
+    source_scope_audit = empty_display_scope_audit()
     # Витрина наличия закрыта по вчерашний день — спрос меряем на ту же дату,
     # иначе последнее окно у продаж и у дней на полке разъедется.
     demand_date_to = (args.today or date.today()) - timedelta(days=1)
+    v2_policy = load_assortment_lifecycle_v2_policy(args.v2_policy_json)
 
     try:
         if args.input_json:
@@ -64,6 +98,9 @@ def main() -> int:
             nomenclature_rows, supplier_order_rows, receipt_rows = _source_rows_from_payload(
                 raw_payload
             )
+            scope_result = filter_display_scope_records(nomenclature_rows)
+            nomenclature_rows = list(scope_result.included)
+            source_scope_audit = scope_result.audit
         else:
             onec_database_url = (
                 args.onec_database_url
@@ -81,7 +118,11 @@ def main() -> int:
                 args.receipt_mapping_json,
                 error_code=RECEIPT_MAPPING_UNRESOLVED,
             )
-            engine = build_engine(onec_database_url, pool_pre_ping=True)
+            engine = _build_lifecycle_onec_engine(
+                onec_database_url,
+                query_timeout_seconds=settings.onec_query_timeout_seconds,
+                login_timeout_seconds=settings.onec_login_timeout_seconds,
+            )
             try:
                 nomenclature_rows, supplier_order_rows, receipt_rows = (
                     fetch_onec_lifecycle_source_rows(
@@ -93,6 +134,9 @@ def main() -> int:
                         limit=args.limit,
                     )
                 )
+                scope_result = filter_display_scope_records(nomenclature_rows)
+                nomenclature_rows = list(scope_result.included)
+                source_scope_audit = scope_result.audit
                 # Первая продажа определяет вход в СП / Старт продаж
                 # (решение 2026-08-02). Собирается тем же соединением, что и
                 # остальные факты, отдельным агрегатным запросом без окна.
@@ -104,12 +148,45 @@ def main() -> int:
                     engine,
                     nomenclature_codes=codes,
                 )
+                sales_history_complete = True
+                first_supplier_order_dates = fetch_first_supplier_order_dates(
+                    engine,
+                    nomenclature_refs_by_code={
+                        str(row.get("nomenclature_code") or row.get("code") or ""): str(
+                            row.get("nomenclature_ref") or row.get("ref") or ""
+                        )
+                        for row in nomenclature_rows
+                    },
+                    supplier_mapping=supplier_mapping,
+                    receipt_mapping=receipt_mapping,
+                )
                 # Продажи за 30/90/180 дней — вход переходов «Пошли продажи ->
                 # Растим -> Поддерживаем» по динамике спроса.
                 sales_window_totals = fetch_sales_window_totals(
                     engine,
                     nomenclature_codes=codes,
                     date_to=demand_date_to,
+                )
+                receipt_bounds = fetch_receipt_date_bounds(
+                    engine,
+                    nomenclature_codes=codes,
+                    receipt_mapping=receipt_mapping,
+                )
+                stock_inflow_bounds = fetch_stock_inflow_date_bounds(
+                    engine,
+                    nomenclature_codes=codes,
+                )
+                sales_distribution = fetch_sales_distribution(
+                    engine,
+                    nomenclature_codes=_codes_with_positive_short_sales(
+                        sales_window_totals,
+                    ),
+                    date_to=demand_date_to,
+                )
+                inventory_costs = fetch_onec_item_inventory_costs(
+                    engine,
+                    nomenclature_codes=codes,
+                    as_of=demand_date_to,
                 )
             finally:
                 engine.dispose()
@@ -129,6 +206,20 @@ def main() -> int:
                     windows_days=DEMAND_WINDOWS_DAYS,
                 )
                 previous_statuses = fetch_previous_statuses(product_engine)
+                previous_classifications = fetch_previous_classification_states(
+                    product_engine,
+                    nomenclature_codes=codes,
+                )
+                previous_demand_states = fetch_previous_demand_states(product_engine)
+                (
+                    observation_from,
+                    observation_to,
+                    first_observed_stock_dates,
+                ) = fetch_availability_observation_facts(
+                    product_engine,
+                    codes=codes,
+                    warehouse_codes=physical_sales_point_codes(warehouse_policy),
+                )
             finally:
                 product_engine.dispose()
     except ValueError as exc:
@@ -145,16 +236,32 @@ def main() -> int:
     facts, summary = build_assortment_lifecycle_fact_records(
         nomenclature_rows=nomenclature_rows,
         supplier_order_rows=supplier_order_rows,
+        first_supplier_order_dates=first_supplier_order_dates,
         receipt_rows=receipt_rows,
+        receipt_bounds=receipt_bounds,
+        stock_inflow_bounds=stock_inflow_bounds,
         warehouse_policy=warehouse_policy,
         manual_overrides=manual_overrides,
         manager_signals=manager_signals,
         history_start=history_start,
         first_sale_dates=first_sale_dates,
+        sales_history_complete=sales_history_complete,
         as_of=args.today or date.today(),
         sales_window_totals=sales_window_totals,
+        sales_distribution=sales_distribution,
         days_in_sale_totals=days_in_sale_totals,
         previous_statuses=previous_statuses,
+        previous_classifications=previous_classifications,
+        previous_demand_states=previous_demand_states,
+        observation_from=observation_from,
+        observation_to=observation_to,
+        first_observed_stock_dates=first_observed_stock_dates,
+        inventory_costs=inventory_costs,
+        comparable_group_min_size=v2_policy.comparable_group_min_size,
+    )
+    summary["scope_policy"] = merge_display_scope_audits(
+        source_scope_audit,
+        summary["scope_policy"],
     )
     if not args.input_json:
         product_engine = build_engine(settings.database_url, pool_pre_ping=True)
@@ -174,6 +281,7 @@ def main() -> int:
             "history_months": args.history_months,
             "history_start": history_start.isoformat(),
             "source": "input_json" if args.input_json else "onec_read_only",
+            "scope_policy": summary["scope_policy"],
         },
         "items": facts,
     }
@@ -226,6 +334,11 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--receipt-mapping-json", type=Path)
     parser.add_argument("--manual-overrides-json", type=Path)
     parser.add_argument("--manager-signals-json", type=Path)
+    parser.add_argument(
+        "--v2-policy-json",
+        type=Path,
+        default=DEFAULT_ASSORTMENT_LIFECYCLE_V2_POLICY_PATH,
+    )
     parser.add_argument("--output-json", type=Path, default=DEFAULT_OUTPUT_PATH)
     parser.add_argument("--json", action="store_true", help="Print machine-readable summary")
     args = parser.parse_args()
@@ -269,6 +382,31 @@ def _source_rows_from_payload(
         _list_field(payload, "nomenclature_rows"),
         _list_field(payload, "supplier_order_rows"),
         _list_field(payload, "receipt_rows"),
+    )
+
+
+def _codes_with_positive_short_sales(
+    sales_window_totals: dict[str, dict[int, Decimal]],
+) -> list[str]:
+    return sorted(
+        code
+        for code, windows in sales_window_totals.items()
+        if (windows.get(30) or Decimal("0")) > 0
+    )
+
+
+def _build_lifecycle_onec_engine(
+    database_url: str,
+    *,
+    query_timeout_seconds: int | float,
+    login_timeout_seconds: int | float,
+) -> Engine:
+    if make_url(database_url).get_backend_name() == "sqlite":
+        return build_engine(database_url, pool_pre_ping=True)
+    return build_onec_engine(
+        database_url,
+        query_timeout_seconds=query_timeout_seconds,
+        login_timeout_seconds=login_timeout_seconds,
     )
 
 

@@ -84,6 +84,10 @@ class Settings(BaseSettings):
     counterparty_duplicate_fuzzy_threshold: float = 0.9
     management_internal_api_token: str | None = None
     orchestration_internal_api_token: str | None = None
+    sms_journal_internal_api_token: str | None = None
+    sms_journal_encryption_key: str | None = None
+    sms_journal_phone_hash_key: str | None = None
+    sms_journal_export_allowed_actors: str = ""
     logistics_internal_api_token: str | None = None
     expertise_internal_api_token: str | None = None
     expertise_onec_sql: str | None = None
@@ -358,6 +362,28 @@ class Settings(BaseSettings):
     customer_price_type_bitrix_session_secret: str | None = None
     customer_price_type_bitrix_session_ttl_seconds: int = 3600
     customer_price_type_bitrix_rest_timeout_seconds: float = 6.0
+    # Review decisions are persisted in test mode until this explicit gate is enabled.
+    # Each 1C direction has an additional allowlist gate and cannot be activated later
+    # for decisions that were made while writes were disabled.
+    customer_price_type_external_actions_enabled: bool = False
+    customer_price_type_bitrix_case_actions_enabled: bool = False
+    customer_price_type_onec_actions_enabled: bool = False
+    customer_price_type_onec_enabled_directions: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    customer_price_type_bitrix_webhook_url: str | None = None
+    customer_price_type_bitrix_entity_type_id: int | None = None
+    customer_price_type_bitrix_category_id: int | None = None
+    customer_price_type_bitrix_stage_map: dict[str, str] = Field(default_factory=dict)
+    customer_price_type_bitrix_completed_stage_ids: Annotated[list[str], NoDecode] = Field(
+        default_factory=list
+    )
+    customer_price_type_bitrix_field_map: dict[str, str] = Field(default_factory=dict)
+    customer_price_type_bitrix_quality_user_id: int | None = None
+    customer_price_type_bitrix_finance_user_id: int | None = None
+    customer_price_type_bitrix_internal_user_id: int | None = None
+    customer_price_type_external_action_batch_size: int = 50
+    customer_price_type_onec_result_timeout_seconds: int = 900
     management_receivables_max_lag_days: int = 1
     management_staffing_max_lag_days: int = 1
     management_task_payloads_max_lag_days: int = 1
@@ -414,8 +440,12 @@ class Settings(BaseSettings):
     yandex_demand_staleness_days: int = 7
     feature_yandex_demand_enabled: bool = False
     yandex_wordstat_enabled: bool = False
-    yandex_wordstat_base_url: str = "https://api.wordstat.yandex.net"
+    yandex_wordstat_api_key: str | None = None
+    yandex_wordstat_folder_id: str | None = None
+    yandex_wordstat_base_url: str = "https://searchapi.api.cloud.yandex.net"
     yandex_wordstat_devices: str = "all"
+    yandex_wordstat_timeout: float = 10.0
+    yandex_wordstat_rps_limit: float | None = None
 
     phone_model_autocreate_from_competitor_enabled: bool = True
     phone_model_autocreate_min_confidence: float = 0.85
@@ -525,6 +555,8 @@ class Settings(BaseSettings):
         "receivable_bitrix_field_map",
         "receivable_credit_decision_stage_map",
         "receivable_credit_decision_field_map",
+        "customer_price_type_bitrix_stage_map",
+        "customer_price_type_bitrix_field_map",
         "telephony_service_line_labels",
         mode="before",
     )
@@ -583,6 +615,8 @@ class Settings(BaseSettings):
         "customer_price_type_bitrix_allowed_domains",
         "customer_price_type_bitrix_allowed_member_ids",
         "customer_price_type_bitrix_full_access_user_ids",
+        "customer_price_type_onec_enabled_directions",
+        "customer_price_type_bitrix_completed_stage_ids",
         mode="before",
     )
     @classmethod

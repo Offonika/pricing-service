@@ -32,3 +32,9 @@ describe("русские подписи рабочего места типов �
     expect(snapshotMonthLabel("2026-06")).toBe("июнь 2026 г.");
   });
 });
+
+it("не показывает служебные коды причин пользователю", () => {
+  expect(factorLabel("source_conflict")).toBe("Данные источников расходятся");
+  expect(reasonLabel("source_mismatch")).toBe("Данные источников расходятся");
+  expect(reasonLabel("unmapped_internal_code")).toBe("Техническая причина не расшифрована");
+});

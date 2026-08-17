@@ -18,6 +18,22 @@ def test_blueprint_is_local_dry_run_for_customer_price_type_process() -> None:
     assert result["process"]["code"] == "customer_price_type"
     assert result["process"]["current_process_kept_as_history"] is None
     assert "Рабочий список" not in stage_names
+    assert len(result["stages"]) == 13
+    assert [item["code"] for item in result["stages"]] == [
+        "NEW_SNAPSHOT",
+        "PRECLOSE_SIGNAL",
+        "RETENTION_WORK",
+        "ISOLATE_1M",
+        "RECOVERY_CONTROL",
+        "QUALITY_CHECK",
+        "CREDIT_ECONOMICS_CHECK",
+        "DATA_CHECK",
+        "UPGRADE_APPROVAL",
+        "DOWNGRADE_APPROVAL",
+        "READY_FOR_1C",
+        "CLOSED_KEEP",
+        "CLOSED_CHANGED",
+    ]
 
     assert fields["current_price_type"]["type"] == "enumeration"
     assert fields["target_price_type_candidate"]["type"] == "enumeration"

@@ -69,6 +69,17 @@ def require_orchestration_internal_token(
     )
 
 
+def require_sms_journal_internal_token(
+    credentials: HTTPAuthorizationCredentials = Security(security),
+) -> str:
+    settings = get_settings()
+    return _require_bearer_token(
+        credentials,
+        settings.sms_journal_internal_api_token,
+        missing_detail="SMS journal internal token not configured",
+    )
+
+
 def require_weekly_kpi_ingest_token(
     credentials: HTTPAuthorizationCredentials = Security(security),
 ) -> str:

@@ -1,19 +1,26 @@
 import { useState, type CSSProperties } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import toast from "react-hot-toast";
 
 import {
   fetchCptCaseDetail,
   fetchCptCases,
+  fetchCptDataIssues,
   fetchCptPortfolio,
   fetchCptQualityMetrics,
   fetchCptQualitySampleDetail,
   fetchCptQualitySamples,
+  fetchCptReviewCards,
+  fetchCptReviewMetrics,
   fetchCptSummary,
   fetchCptWorklists,
-  prepareCptQualitySamples,
-  reviewCptQualitySample,
+  saveCptReview,
+  searchCptProfiles,
   type CptQualityGroup,
-  type CptQualitySample,
+  type CptReviewCard,
+  type CptReviewDimension,
+  type CptReviewKind,
+  type CptReviewResult,
   type CptPortfolioBucket,
   type CptWorklist,
 } from "../api/customerPriceTypes";
@@ -48,7 +55,7 @@ const WORKLIST_LABELS: Record<string, string> = {
   manager_work: "Удержание / дожим",
   isolate: "Изолятор",
   recovery: "Реанимация спящих",
-  data_check: "Требуют проверки",
+  data_check: "Проблемы данных",
   special_review: "Спецпроверка",
   downgrade_approval: "Согласование понижения",
 };
@@ -61,7 +68,7 @@ const WORKLIST_HINTS: Record<CptWorklist, string> = {
   recovery:
     "Покупок нет три месяца или дольше, но история работы с клиентом есть. Нужна попытка вернуть клиента.",
   data_check:
-    "Автоматическое решение невозможно: например, не указан тип цены, в договорах разные уровни или данные источников расходятся.",
+    "Внутренняя техническая очередь: не указан тип цены, в договорах разные уровни или данные источников расходятся. Тип цены не изменяется.",
   special_review:
     "Нужна отдельная проверка качества, кредита, экономики или истории клиента.",
   downgrade_approval:
@@ -144,7 +151,7 @@ export function CustomerPriceTypesWorkspace({
   const [portfolioBucket, setPortfolioBucket] =
     useState<Exclude<CptPortfolioBucket, "all">>("working_bronze");
   const [selectedCaseId, setSelectedCaseId] = useState<number | null>(null);
-  const [section, setSection] = useState<"portfolio" | "quality">("portfolio");
+  const [section, setSection] = useState<"portfolio" | "reviews" | "quality">("portfolio");
 
   const summaryQuery = useQuery({
     queryKey: ["cpt", "summary"],
@@ -179,8 +186,12 @@ export function CustomerPriceTypesWorkspace({
   const detail = caseDetailQuery.data;
   const canViewQuality =
     role === "internal" || role === "executive" || role === "network_head" || role === "quality";
+  const canViewTechnicalWorkspace = role === "internal" || role === "executive" || role === "quality";
+  const visibleWorklists = role === "network_head"
+    ? WORKLIST_ORDER.filter((item) => item !== "data_check")
+    : WORKLIST_ORDER;
 
-  if (section === "quality" && canViewQuality) {
+  if (section === "reviews" && canViewQuality) {
     return (
       <div style={shell}>
         <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16 }}>
@@ -188,7 +199,26 @@ export function CustomerPriceTypesWorkspace({
             <p style={{ margin: 0, color: "var(--color-primary, #2563eb)", fontWeight: 800, fontSize: 12, letterSpacing: "0.08em", textTransform: "uppercase" }}>
               Управление типами цен
             </p>
-            <h1 style={{ margin: "4px 0 0", fontSize: 24 }}>Экспертная оценка</h1>
+            <h1 style={{ margin: "4px 0 0", fontSize: 24 }}>Проверка решений</h1>
+          </div>
+          <button type="button" onClick={() => setSection("portfolio")} style={secondaryButton}>
+            Вернуться к портфелю
+          </button>
+        </header>
+        <ReviewWorkspace role={role} />
+      </div>
+    );
+  }
+
+  if (section === "quality" && canViewTechnicalWorkspace) {
+    return (
+      <div style={shell}>
+        <header style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 16 }}>
+          <div>
+            <p style={{ margin: 0, color: "var(--color-primary, #2563eb)", fontWeight: 800, fontSize: 12, letterSpacing: "0.08em", textTransform: "uppercase" }}>
+              Управление типами цен
+            </p>
+            <h1 style={{ margin: "4px 0 0", fontSize: 24 }}>Исторический контроль качества</h1>
           </div>
           <button type="button" onClick={() => setSection("portfolio")} style={secondaryButton}>
             Вернуться к портфелю
@@ -208,15 +238,22 @@ export function CustomerPriceTypesWorkspace({
           </p>
           <h1 style={{ margin: "4px 0 0", fontSize: 24 }}>Портфель клиентов</h1>
           <p style={{ margin: "6px 0 0", color: "var(--color-text-muted, #667085)" }}>
-            Расчёт за {snapshotMonthLabel(month)}. Только просмотр — тип цены меняет человек.
+            {month
+              ? `Расчёт за ${snapshotMonthLabel(month)}. Только просмотр — тип цены меняет человек.`
+              : "Актуальный расчёт не загружен. Тип цены в этом разделе не изменяется."}
           </p>
         </div>
         <div style={{ textAlign: "right", color: "var(--color-text-muted, #667085)", fontSize: 13 }}>
           {bitrixUserName && <div>{bitrixUserName}</div>}
           {role && <div>Роль: {roleLabel(role)}{canViewMoney ? " · суммы доступны" : ""}</div>}
           {canViewQuality && (
-            <button type="button" onClick={() => setSection("quality")} style={{ ...primaryActionButton, marginTop: 10 }}>
-              Экспертная оценка →
+            <button type="button" onClick={() => setSection("reviews")} style={{ ...primaryActionButton, marginTop: 10 }}>
+              Проверка решений →
+            </button>
+          )}
+          {canViewTechnicalWorkspace && (
+            <button type="button" onClick={() => setSection("quality")} style={{ ...secondaryButton, marginTop: 8, marginLeft: 8 }}>
+              Исторический контроль
             </button>
           )}
         </div>
@@ -234,7 +271,7 @@ export function CustomerPriceTypesWorkspace({
           )}
       </section>
 
-      <section style={{ ...card, display: "grid", gap: 12 }}>
+      {canViewTechnicalWorkspace && <section style={{ ...card, display: "grid", gap: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
           <div>
             <strong>Проверенный пакет 82</strong>
@@ -340,11 +377,11 @@ export function CustomerPriceTypesWorkspace({
             </div>
           </>
         )}
-      </section>
+      </section>}
 
       {/* Worklist queues */}
       <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(180px, 1fr))", gap: 12 }}>
-        {WORKLIST_ORDER.map((key) => {
+        {visibleWorklists.map((key) => {
           const count = worklists[key] ?? 0;
           const active = worklist === key;
           return (
@@ -603,14 +640,222 @@ function percent(value: number | null | undefined): string {
   return `${(value * 100).toLocaleString("ru-RU", { maximumFractionDigits: 1 })}%`;
 }
 
-function QualityModule({ role }: { role?: string }) {
+const CLIENT_ACTION_LABELS: Record<string, string> = {
+  presignal: "Предсигнал",
+  retention: "Удержание клиента",
+  isolate: "Изолятор на полный месяц",
+  recovery: "Реанимация клиента",
+  quality: "Проверка качества",
+  credit: "Проверка кредита",
+  economics: "Проверка экономики",
+};
+
+function reviewValueLabel(kind: CptReviewKind, value: string | null): string {
+  if (!value) return "Не требуется";
+  return kind === "client_action" ? CLIENT_ACTION_LABELS[value] ?? "Неизвестное действие" : value;
+}
+
+function ReviewWorkspace({ role }: { role?: string }) {
   const queryClient = useQueryClient();
-  const [perGroup, setPerGroup] = useState(30);
+  const [queue, setQueue] = useState<CptReviewKind>("price_type");
+  const [showReviewed, setShowReviewed] = useState(false);
+  const [search, setSearch] = useState("");
+  const [selectedSnapshotId, setSelectedSnapshotId] = useState<number | null>(null);
+  const canDecide = role === "network_head" || role === "internal" || role === "executive";
+
+  const cardsQuery = useQuery({
+    queryKey: ["cpt", "reviews", queue, showReviewed, search],
+    queryFn: () => fetchCptReviewCards({
+      reviewKind: queue,
+      pendingOnly: !showReviewed,
+      search: search.trim() || null,
+      limit: 200,
+    }),
+  });
+  const metricsQuery = useQuery({
+    queryKey: ["cpt", "reviews", "metrics"],
+    queryFn: fetchCptReviewMetrics,
+  });
+  const cards = cardsQuery.data?.payload ?? [];
+  const selected = cards.find((item) => item.snapshot_id === selectedSnapshotId) ?? cards[0] ?? null;
+
+  const refresh = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["cpt", "reviews"] }),
+      queryClient.invalidateQueries({ queryKey: ["cpt", "data-issues"] }),
+      queryClient.invalidateQueries({ queryKey: ["cpt", "profile-search"] }),
+    ]);
+  };
+
+  return (
+    <>
+      <section role="note" style={{ ...card, background: "var(--color-surface-muted, #f8fafc)" }}>
+        <strong>Здесь проверяются два разных результата</strong>
+        <p style={{ margin: "6px 0 0", fontSize: 13 }}>
+          «Тип цены» разрешает готовое изменение после завершения работы с клиентом. «Действие с клиентом» создаёт отдельную работу в Bitrix24. Совпадающие типы руководитель сети не подтверждает.
+        </p>
+      </section>
+
+      <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 12 }}>
+        <button type="button" onClick={() => { setQueue("price_type"); setSelectedSnapshotId(null); }} style={{ ...card, textAlign: "left", cursor: "pointer", borderColor: queue === "price_type" ? "var(--color-primary, #2563eb)" : "var(--color-border, #e2e2e2)" }}>
+          <div style={{ fontSize: 22, fontWeight: 800 }}>{metricsQuery.data?.price_type.reviewed_count ?? "…"}</div>
+          <div>Изменения типа</div>
+          <small>Только готовые изменения на одну ступень</small>
+        </button>
+        <button type="button" onClick={() => { setQueue("client_action"); setSelectedSnapshotId(null); }} style={{ ...card, textAlign: "left", cursor: "pointer", borderColor: queue === "client_action" ? "var(--color-primary, #2563eb)" : "var(--color-border, #e2e2e2)" }}>
+          <div style={{ fontSize: 22, fontWeight: 800 }}>{metricsQuery.data?.client_action.reviewed_count ?? "…"}</div>
+          <div>Действия с клиентами</div>
+          <small>Удержание, изолятор, реанимация и проверки</small>
+        </button>
+      </section>
+
+      <section style={{ ...card, display: "grid", gap: 10 }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+          <input
+            type="search"
+            aria-label="Поиск клиента в проверках"
+            placeholder="Название, код или идентификатор 1С…"
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            style={{ flex: "1 1 300px", minHeight: 40, padding: "0 12px", border: "1px solid var(--color-border, #d0d5dd)", borderRadius: 8, font: "inherit" }}
+          />
+          <label style={{ display: "flex", gap: 7, alignItems: "center", fontSize: 13 }}>
+            <input type="checkbox" checked={showReviewed} onChange={(event) => setShowReviewed(event.target.checked)} />
+            Показать проверенные
+          </label>
+        </div>
+        {cardsQuery.isLoading && <p>Загрузка карточек…</p>}
+        {cardsQuery.isError && <p style={{ color: "var(--color-danger, #d92d20)" }}>Не удалось загрузить карточки.</p>}
+        {!cardsQuery.isLoading && cards.length === 0 && <p>В этой очереди карточек нет.</p>}
+      </section>
+
+      {cards.length > 0 && (
+        <section style={{ display: "grid", gridTemplateColumns: "minmax(240px, 0.7fr) minmax(0, 1.7fr)", gap: 14, alignItems: "start" }}>
+          <div style={{ ...card, display: "grid", gap: 8 }}>
+            {cards.map((item) => (
+              <button key={item.snapshot_id} type="button" onClick={() => setSelectedSnapshotId(item.snapshot_id)} style={{ padding: 12, borderRadius: 8, border: item.snapshot_id === selected?.snapshot_id ? "2px solid var(--color-primary, #2563eb)" : "1px solid var(--color-border, #e2e2e2)", background: "var(--color-surface, #fff)", textAlign: "left", cursor: "pointer" }}>
+                <strong>{item.counterparty_code ?? "—"} · {item.counterparty_name ?? "—"}</strong>
+                <small style={{ display: "block", marginTop: 4 }}>{item[queue].system_label}</small>
+                <small style={{ display: "block", color: "var(--color-text-muted, #667085)" }}>{item[queue].review_id ? "Проверено" : item.data_state_label}</small>
+              </button>
+            ))}
+          </div>
+          {selected && <ReviewCardView cardData={selected} canDecide={canDecide} onSaved={refresh} />}
+        </section>
+      )}
+    </>
+  );
+}
+
+function ReviewCardView({ cardData, canDecide, onSaved }: { cardData: CptReviewCard; canDecide: boolean; onSaved: () => Promise<void> }) {
+  return (
+    <article style={{ ...card, display: "grid", gap: 14 }}>
+      <div>
+        <h2 style={{ margin: 0, fontSize: 20 }}>{cardData.counterparty_code ?? "—"} · {cardData.counterparty_name ?? "—"}</h2>
+        <p style={{ margin: "5px 0 0", color: "var(--color-text-muted, #667085)", fontSize: 13 }}>
+          {cardData.department_name ?? "Подразделение не указано"} · {cardData.owner_name ?? "Ответственный не указан"}
+        </p>
+      </div>
+      <div role="status" style={{ padding: 10, borderRadius: 8, background: cardData.data_state === "ready" ? "#ecfdf3" : "#fff8e1" }}>
+        {cardData.data_state_label}
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(190px, 1fr))", gap: 10 }}>
+        <Row k="Текущий тип" v={cardData.current_price_type ?? "Не определён"} />
+        <Row k="Рекомендуемый тип" v={cardData.recommended_price_type ?? "Рекомендация не сформирована"} />
+        <Row k="Расчётный месяц" v={snapshotMonthLabel(cardData.snapshot_month)} />
+      </div>
+      <p style={{ margin: 0 }}>{cardData.recommendation_text}</p>
+      <div>
+        <strong>Рабочие договоры</strong>
+        {cardData.contracts.filter((item) => item.is_working).map((item) => (
+          <div key={item.contract_ref ?? item.contract_name} style={{ marginTop: 5, fontSize: 13 }}>
+            {item.contract_name ?? "Без названия"} · {item.price_type_name ?? "тип не указан"}
+          </div>
+        ))}
+      </div>
+      <ReviewDimensionBlock cardData={cardData} dimension={cardData.price_type} title="Тип цены" canDecide={canDecide} onSaved={onSaved} />
+      <ReviewDimensionBlock cardData={cardData} dimension={cardData.client_action} title="Действие с клиентом" canDecide={canDecide} onSaved={onSaved} />
+    </article>
+  );
+}
+
+function ReviewDimensionBlock({ cardData, dimension, title, canDecide, onSaved }: { cardData: CptReviewCard; dimension: CptReviewDimension; title: string; canDecide: boolean; onSaved: () => Promise<void> }) {
+  const [choice, setChoice] = useState<CptReviewResult | null>(null);
+  const [correctedValue, setCorrectedValue] = useState("");
+  const [comment, setComment] = useState("");
+  const mutation = useMutation({
+    mutationFn: () => saveCptReview({
+      snapshotId: cardData.snapshot_id,
+      reviewKind: dimension.kind,
+      result: choice as CptReviewResult,
+      correctedValue: choice === "correct" ? correctedValue : null,
+      comment,
+      expectedVersion: dimension.version,
+      snapshotHash: cardData.snapshot_hash,
+    }),
+    onSuccess: async (saved) => {
+      await onSaved();
+      const stored = saved.card[dimension.kind];
+      toast.success(`Решение сохранено. ${stored.reviewed_by ?? "Пользователь"}, ${new Date(stored.reviewed_at ?? Date.now()).toLocaleString("ru-RU")}`);
+    },
+    onError: () => toast.error("Не удалось сохранить решение. Обновите карточку и повторите."),
+  });
+  const requiresComment = choice === "correct" || choice === "data_issue";
+  const valid = Boolean(choice && (!requiresComment || comment.trim()) && (choice !== "correct" || correctedValue));
+
+  return (
+    <section style={{ border: "1px solid var(--color-border, #d0d5dd)", borderRadius: 10, padding: 14, display: "grid", gap: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
+        <strong>{title}</strong>
+        <span>{dimension.review_id ? "Решение сохранено" : dimension.can_review ? "Ожидает решения" : "Только просмотр"}</span>
+      </div>
+      <div>{dimension.system_label}</div>
+      {dimension.review_id && (
+        <div role="status" style={{ padding: 10, borderRadius: 8, background: "#ecfdf3", fontSize: 13 }}>
+          Итог: {reviewValueLabel(dimension.kind, dimension.final_value)}. {dimension.reviewed_by ?? "Пользователь"}, {dimension.reviewed_at ? new Date(dimension.reviewed_at).toLocaleString("ru-RU") : "время не указано"}.
+          {dimension.comment ? ` Комментарий: ${dimension.comment}` : ""}
+          {dimension.external_message ? <div style={{ marginTop: 4 }}>{dimension.external_message}</div> : null}
+        </div>
+      )}
+      {!dimension.review_id && !dimension.can_review && <small>{dimension.unavailable_reason ?? "Решение не назначено."}</small>}
+      {dimension.can_review && canDecide && (
+        <>
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+            {dimension.allowed_results.map((result) => {
+              const labels: Record<CptReviewResult, string> = dimension.kind === "price_type"
+                ? { confirm: "Подтвердить и запустить изменение", correct: "Указать правильный тип", no_action: "Действие не требуется", data_issue: "Ошибка в данных" }
+                : { confirm: "Подтвердить действие", correct: "Выбрать правильное действие", no_action: "Действие не требуется", data_issue: "Ошибка в данных" };
+              return <button key={result} type="button" onClick={() => setChoice(result)} style={result === "confirm" ? primaryActionButton : secondaryButton}>{labels[result]}</button>;
+            })}
+          </div>
+          {choice === "correct" && (
+            <label style={{ display: "grid", gap: 4, fontSize: 13 }}>
+              Правильный результат
+              <select value={correctedValue} onChange={(event) => setCorrectedValue(event.target.value)} style={{ minHeight: 38, padding: "0 10px", borderRadius: 8, border: "1px solid var(--color-border, #d0d5dd)" }}>
+                <option value="">Выберите…</option>
+                {dimension.allowed_corrected_values.map((value) => <option key={value} value={value}>{reviewValueLabel(dimension.kind, value)}</option>)}
+              </select>
+            </label>
+          )}
+          {(choice === "correct" || choice === "data_issue") && (
+            <label style={{ display: "grid", gap: 4, fontSize: 13 }}>
+              Комментарий <span aria-hidden="true">*</span>
+              <textarea value={comment} onChange={(event) => setComment(event.target.value)} maxLength={2000} rows={3} style={{ padding: 10, borderRadius: 8, border: "1px solid var(--color-border, #d0d5dd)", font: "inherit" }} />
+            </label>
+          )}
+          {choice && <button type="button" disabled={!valid || mutation.isPending} onClick={() => mutation.mutate()} style={secondaryButton}>{mutation.isPending ? "Сохранение…" : "Сохранить решение"}</button>}
+        </>
+      )}
+    </section>
+  );
+}
+
+function QualityModule({ role }: { role?: string }) {
   const [statusFilter, setStatusFilter] = useState<"pending" | "reviewed" | null>("pending");
-  const [groups, setGroups] = useState<Record<number, CptQualityGroup>>({});
-  const [comments, setComments] = useState<Record<number, string>>({});
   const [expandedSampleId, setExpandedSampleId] = useState<number | null>(null);
-  const canPrepare = role === "internal" || role === "executive" || role === "network_head";
+  const [globalSearch, setGlobalSearch] = useState("");
+  const [dataIssueSearch, setDataIssueSearch] = useState("");
+  const canViewDataIssues = role === "internal" || role === "executive" || role === "quality";
 
   const metricsQuery = useQuery({
     queryKey: ["cpt", "quality", "metrics"],
@@ -620,30 +865,20 @@ function QualityModule({ role }: { role?: string }) {
     queryKey: ["cpt", "quality", "samples", statusFilter],
     queryFn: () => fetchCptQualitySamples({ status: statusFilter }),
   });
+  const profileSearchQuery = useQuery({
+    queryKey: ["cpt", "profile-search", globalSearch],
+    queryFn: () => searchCptProfiles(globalSearch.trim()),
+    enabled: globalSearch.trim().length >= 2,
+  });
+  const dataIssuesQuery = useQuery({
+    queryKey: ["cpt", "data-issues", dataIssueSearch],
+    queryFn: () => fetchCptDataIssues(dataIssueSearch.trim() || null),
+    enabled: canViewDataIssues,
+  });
   const sampleDetailQuery = useQuery({
     queryKey: ["cpt", "quality", "sample", expandedSampleId],
     queryFn: () => fetchCptQualitySampleDetail(expandedSampleId as number),
     enabled: expandedSampleId != null,
-  });
-  const refreshQuality = async () => {
-    await Promise.all([
-      queryClient.invalidateQueries({ queryKey: ["cpt", "quality", "metrics"] }),
-      queryClient.invalidateQueries({ queryKey: ["cpt", "quality", "samples"] }),
-    ]);
-  };
-  const prepareMutation = useMutation({
-    mutationFn: () => prepareCptQualitySamples(perGroup),
-    onSuccess: refreshQuality,
-  });
-  const reviewMutation = useMutation({
-    mutationFn: ({ sample, correctGroup, comment }: { sample: CptQualitySample; correctGroup: CptQualityGroup; comment: string }) =>
-      reviewCptQualitySample({
-        sampleId: sample.id,
-        correctGroup,
-        comment,
-        expectedVersion: sample.version,
-      }),
-    onSuccess: refreshQuality,
   });
 
   const metrics = metricsQuery.data;
@@ -651,6 +886,50 @@ function QualityModule({ role }: { role?: string }) {
 
   return (
     <>
+      <section style={{ ...card, display: "grid", gap: 10 }}>
+        <div>
+          <strong>Поиск по всему портфелю</strong>
+          <p style={{ margin: "4px 0 0", color: "var(--color-text-muted, #667085)", fontSize: 13 }}>
+            Найдите клиента по названию, коду или идентификатору 1С. Оценка доступна только для назначенной контрольной выборки.
+          </p>
+        </div>
+        <input
+          type="search"
+          aria-label="Поиск клиента по всему портфелю"
+          placeholder="Введите название или код 1С…"
+          value={globalSearch}
+          onChange={(event) => setGlobalSearch(event.target.value)}
+          style={{ minHeight: 40, padding: "0 12px", border: "1px solid var(--color-border, #d0d5dd)", borderRadius: 8, font: "inherit" }}
+        />
+        {globalSearch.trim().length === 1 && <small>Введите не менее двух символов.</small>}
+        {profileSearchQuery.isLoading && <p>Поиск…</p>}
+        {profileSearchQuery.isError && <p style={{ color: "var(--color-danger, #d92d20)" }}>Не удалось выполнить поиск.</p>}
+        {profileSearchQuery.data && (
+          <div style={{ display: "grid", gap: 8 }}>
+            {profileSearchQuery.data.payload.map((item) => (
+              <div key={item.counterparty_ref} style={{ ...card, padding: 12, display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+                <div>
+                  <strong>{item.counterparty_code ?? "—"} · {item.counterparty_name ?? "—"}</strong>
+                  <div style={{ marginTop: 3, fontSize: 13 }}>{item.result_label}</div>
+                  <small style={{ color: "var(--color-text-muted, #667085)" }}>
+                    Текущий тип: {item.current_price_type ?? "не определён"}
+                    {item.result_state === "change_proposed" ? ` · Предлагается: ${item.recommended_price_type ?? "—"}` : ""}
+                  </small>
+                </div>
+                {item.quality_sample_id ? (
+                  <button type="button" onClick={() => setExpandedSampleId(item.quality_sample_id)} style={secondaryButton}>Показать историческую запись</button>
+                ) : (
+                  <span style={{ fontSize: 12, color: "var(--color-text-muted, #667085)" }}>
+                    {item.quality_sample_status === "reviewed" ? "Уже проверено" : "Только просмотр"}
+                  </span>
+                )}
+              </div>
+            ))}
+            {profileSearchQuery.data.payload.length === 0 && <p>Клиенты не найдены.</p>}
+          </div>
+        )}
+      </section>
+
       <section style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 12 }}>
         <Tile label="Клиентов в срезе" value={metrics?.population_count} loading={metricsQuery.isLoading} />
         <Tile label="Подготовлено" value={metrics?.selected_count} loading={metricsQuery.isLoading} />
@@ -675,25 +954,6 @@ function QualityModule({ role }: { role?: string }) {
         </p>
       )}
 
-      {canPrepare && (
-        <section style={{ ...card, display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <div style={{ flex: "1 1 360px" }}>
-            <strong>Контрольная выборка</strong>
-            <p style={{ margin: "4px 0 0", color: "var(--color-text-muted, #667085)", fontSize: 13 }}>
-              Система добавит указанное число клиентов из каждой очереди и из группы без действий. Повторный запуск не создаёт дубли.
-            </p>
-          </div>
-          <label style={{ display: "grid", gap: 4, fontSize: 13 }}>
-            На каждую группу
-            <input type="number" min={1} max={200} value={perGroup} onChange={(event) => setPerGroup(Number(event.target.value))} style={{ width: 100, minHeight: 36, padding: "0 8px", border: "1px solid var(--color-border, #d0d5dd)", borderRadius: 8 }} />
-          </label>
-          <button type="button" disabled={prepareMutation.isPending || perGroup < 1 || perGroup > 200} onClick={() => prepareMutation.mutate()} style={secondaryButton}>
-            {prepareMutation.isPending ? "Подготовка…" : "Подготовить выборку"}
-          </button>
-          {prepareMutation.isError && <span style={{ color: "var(--color-danger, #d92d20)" }}>Не удалось подготовить выборку.</span>}
-        </section>
-      )}
-
       <section style={{ ...card, display: "grid", gap: 12 }}>
         <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap", alignItems: "center" }}>
           <strong>Оценки эксперта</strong>
@@ -703,6 +963,9 @@ function QualityModule({ role }: { role?: string }) {
             <option value="all">Все</option>
           </select>
         </div>
+        <p role="note" style={{ margin: 0, padding: 10, borderRadius: 8, background: "var(--color-surface-muted, #f8fafc)", fontSize: 13 }}>
+          Исторический контроль не утверждает изменение типа цены и не создаёт внешних действий. Новые решения руководителя находятся в разделе «Проверка решений».
+        </p>
         {samplesQuery.isLoading && <p>Загрузка выборки…</p>}
         {samplesQuery.isError && <p style={{ color: "var(--color-danger, #d92d20)" }}>Не удалось загрузить выборку.</p>}
         {!samplesQuery.isLoading && samples.length === 0 && (
@@ -711,8 +974,6 @@ function QualityModule({ role }: { role?: string }) {
           </p>
         )}
         {samples.map((sample) => {
-          const selectedGroup = groups[sample.id] ?? sample.correct_group ?? sample.system_group;
-          const comment = comments[sample.id] ?? sample.comment ?? "";
           return (
             <article key={sample.id} style={{ borderTop: "1px solid var(--color-border, #eaecf0)", paddingTop: 14, display: "grid", gap: 10 }}>
               <div style={{ display: "flex", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
@@ -727,9 +988,10 @@ function QualityModule({ role }: { role?: string }) {
                 </span>
               </div>
               <div style={{ fontSize: 13 }}>
-                <strong>{recommendationLabel(sample.system_recommendation)}</strong>
+                <strong>{sample.system_recommendation === "data_check" ? "Рекомендация не сформирована" : recommendationLabel(sample.system_recommendation)}</strong>
                 <div style={{ marginTop: 3 }}>
-                  Текущий тип: <strong>{sample.current_price_type ?? "—"}</strong> · Рекомендуемый: <strong>{sample.recommended_price_type ?? "—"}</strong>
+                  Текущий тип: <strong>{sample.current_price_type ?? "—"}</strong>
+                  {sample.system_recommendation !== "data_check" && <> · Рекомендуемый: <strong>{sample.recommended_price_type ?? "—"}</strong></>}
                 </div>
                 <div style={{ marginTop: 3, color: "var(--color-text-muted, #667085)" }}>{reasonLabel(sample.recommendation_reason)}</div>
                 {sample.stop_factors.length > 0 && <div style={{ marginTop: 3, color: "var(--color-text-muted, #667085)" }}>Ограничения: {sample.stop_factors.map(factorLabel).join("; ")}</div>}
@@ -777,26 +1039,43 @@ function QualityModule({ role }: { role?: string }) {
                   )}
                 </div>
               )}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10, alignItems: "end" }}>
-                <label style={{ display: "grid", gap: 4, fontSize: 13 }}>
-                  Правильная очередь
-                  <select value={selectedGroup} onChange={(event) => setGroups((current) => ({ ...current, [sample.id]: event.target.value as CptQualityGroup }))} style={{ minHeight: 38, padding: "0 10px", border: "1px solid var(--color-border, #d0d5dd)", borderRadius: 8, background: "var(--color-surface, #fff)" }}>
-                    {QUALITY_GROUPS.map((group) => <option key={group} value={group}>{QUALITY_GROUP_LABELS[group]}</option>)}
-                  </select>
-                </label>
-                <label style={{ display: "grid", gap: 4, fontSize: 13 }}>
-                  Комментарий
-                  <input value={comment} maxLength={2000} placeholder="Почему решение верно или требует исправления" onChange={(event) => setComments((current) => ({ ...current, [sample.id]: event.target.value }))} style={{ minHeight: 38, padding: "0 10px", border: "1px solid var(--color-border, #d0d5dd)", borderRadius: 8 }} />
-                </label>
-                <button type="button" disabled={reviewMutation.isPending} onClick={() => reviewMutation.mutate({ sample, correctGroup: selectedGroup, comment })} style={secondaryButton}>
-                  Сохранить оценку
-                </button>
-              </div>
+              {sample.status !== "reviewed" && (
+                <div role="note" style={{ padding: 10, borderRadius: 8, background: "var(--color-surface-muted, #f8fafc)", fontSize: 13 }}>
+                  Историческая строка заморожена и доступна только для просмотра. Новую проверку выполняйте в разделе «Проверка решений».
+                </div>
+              )}
+              {sample.status === "reviewed" && (
+                <div role="status" style={{ padding: 10, borderRadius: 8, background: "#ecfdf3", color: "#027a48", fontSize: 13 }}>
+                  Сохранено: {sample.review_result === "data_issue" ? "ошибка в данных" : sample.review_result === "incorrect" ? "результат исправлен" : "результат подтверждён"}. {sample.reviewed_by ?? "Пользователь"}, {sample.reviewed_at ? new Date(sample.reviewed_at).toLocaleString("ru-RU") : "время не указано"}.
+                </div>
+              )}
             </article>
           );
         })}
-        {reviewMutation.isError && <p style={{ color: "var(--color-danger, #d92d20)" }}>Не удалось сохранить оценку. Обновите выборку и повторите.</p>}
       </section>
+
+      {canViewDataIssues && (
+        <section style={{ ...card, display: "grid", gap: 10 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "center", flexWrap: "wrap" }}>
+            <div>
+              <strong>Проблемы данных</strong>
+              <p style={{ margin: "4px 0 0", color: "var(--color-text-muted, #667085)", fontSize: 13 }}>Внутренняя очередь. Тип цены по этим карточкам не изменяется.</p>
+            </div>
+            <input type="search" aria-label="Поиск в проблемах данных" placeholder="Код или название клиента…" value={dataIssueSearch} onChange={(event) => setDataIssueSearch(event.target.value)} style={{ minHeight: 38, padding: "0 10px", border: "1px solid var(--color-border, #d0d5dd)", borderRadius: 8 }} />
+          </div>
+          {dataIssuesQuery.isLoading && <p>Загрузка…</p>}
+          {dataIssuesQuery.isError && <p style={{ color: "var(--color-danger, #d92d20)" }}>Не удалось загрузить проблемы данных.</p>}
+          {dataIssuesQuery.data?.payload.map((item) => (
+            <div key={`${item.issue_source}-${item.counterparty_ref}`} style={{ borderTop: "1px solid var(--color-border, #eaecf0)", paddingTop: 10 }}>
+              <strong>{item.counterparty_code ?? "—"} · {item.counterparty_name ?? "—"}</strong>
+              <div style={{ marginTop: 3, fontSize: 13 }}>{item.issue_text}</div>
+              <small style={{ color: "var(--color-text-muted, #667085)" }}>Текущий тип: {item.current_price_type ?? "не определён"}. Рекомендация не сформирована.</small>
+              {item.comment && <div style={{ marginTop: 3, fontSize: 13 }}>Комментарий: {item.comment}</div>}
+            </div>
+          ))}
+          {dataIssuesQuery.data && dataIssuesQuery.data.payload.length === 0 && <p>Проблемы данных не найдены.</p>}
+        </section>
+      )}
 
       {metrics && metrics.reviewed_count > 0 && (
         <section style={{ ...card, display: "grid", gap: 10 }}>

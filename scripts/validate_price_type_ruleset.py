@@ -5,9 +5,8 @@
    канонических документах;
 2) устаревшие значения (superseded_values) не встречаются в них вне контекста
    истории решений (history_markers, строка или 5 строк выше);
-3) blueprint JSON согласован с ruleset: rulebook-уровни, стоп-фактор
-   upgrade_freeze, обязательные поля, отсутствие «голых» порогов бронзы в
-   переходах.
+3) blueprint JSON согласован с ruleset: rulebook-уровни, состояние заморозки
+   повышений, обязательные поля, отсутствие «голых» порогов бронзы в переходах.
 
 Запуск: ./.venv/bin/python scripts/validate_price_type_ruleset.py
 Выход 0 = противоречий нет; 1 = найдены (список печатается).
@@ -96,8 +95,13 @@ def check_blueprint(errors: list[str], *, blueprint_json: Path) -> None:
             errors.append(f"blueprint: норматив уровня {key} расходится с ruleset")
         if book.get("hold_last_month") != level["hold_last_month"]:
             errors.append(f"blueprint: порог удержания {key} расходится с ruleset")
-    if not any(s.get("key") == "upgrade_freeze" for s in bp.get("stop_factors", [])):
-        errors.append("blueprint: отсутствует стоп-фактор upgrade_freeze")
+    freeze_factors = [
+        item for item in bp.get("stop_factors", []) if item.get("key") == "upgrade_freeze"
+    ]
+    if RULESET["upgrades"]["frozen"] and not freeze_factors:
+        errors.append("blueprint: отсутствует действующий стоп-фактор upgrade_freeze")
+    if not RULESET["upgrades"]["frozen"] and freeze_factors:
+        errors.append("blueprint: отменённый стоп-фактор upgrade_freeze всё ещё активен")
     required = {f["logical_key"] for f in bp.get("fields", []) if f.get("required")}
     for key in ("counterparty_ref", "snapshot_date", "current_price_type"):
         if key not in required:

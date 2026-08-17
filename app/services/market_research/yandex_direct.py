@@ -26,6 +26,7 @@ class YandexKeywordStat:
     clicks: int | None = None
     ctr: float | None = None
     bid_metrics: str | None = None
+    source: str = "yandex_direct"
 
 
 class YandexDirectClient:
@@ -153,7 +154,7 @@ class DemandService:
         self, keywords: list[Keyword], region: str
     ) -> list[KeywordDemand]:
         """
-        Берёт список Keyword, запрашивает Яндекс.Директ и сохраняет KeywordDemand.
+        Берёт список Keyword, запрашивает выбранный provider и сохраняет KeywordDemand.
         Валидацию лимитов/регионов/ретраев обеспечивает клиент или вызывающий код.
         """
         saved: list[KeywordDemand] = []
@@ -178,6 +179,7 @@ class DemandService:
                         clicks=stat.clicks,
                         ctr=stat.ctr,
                         bid_metrics=stat.bid_metrics,
+                        source=stat.source,
                     )
                 )
             if not demand_records:

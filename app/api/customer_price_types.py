@@ -19,20 +19,32 @@ from app.api.procurement_labels import (
 )
 from app.core.config import get_settings
 from app.domains.customer_price_types import CustomerPriceTypeAccessScope
+from app.domains.customer_price_types.advisories import (
+    build_customer_notification_draft,
+    build_order_return_lamp,
+)
 from app.infrastructure.customer_price_types import (
     SqlAlchemyCustomerPriceTypeRepository,
     review_batch_item_matches,
     review_batch_snapshot_status,
 )
 from app.schemas.customer_price_types import (
+    CustomerPriceTypeAdvisoryPreviewRequest,
+    CustomerPriceTypeAdvisoryPreviewResponse,
+    CustomerPriceTypeCancelChangeRequest,
+    CustomerPriceTypeCancelChangeResponse,
     CustomerPriceTypeCaseDetailResponse,
     CustomerPriceTypeCaseEventResponse,
     CustomerPriceTypeCaseItem,
     CustomerPriceTypeCaseListResponse,
+    CustomerPriceTypeDataIssueItem,
+    CustomerPriceTypeDataIssueListResponse,
     CustomerPriceTypePortfolioBucket,
     CustomerPriceTypePortfolioItem,
     CustomerPriceTypePortfolioResponse,
     CustomerPriceTypeProfileResponse,
+    CustomerPriceTypeProfileSearchItem,
+    CustomerPriceTypeProfileSearchResponse,
     CustomerPriceTypeQualityGroup,
     CustomerPriceTypeQualityMetricsResponse,
     CustomerPriceTypeQualityPrepareRequest,
@@ -42,6 +54,12 @@ from app.schemas.customer_price_types import (
     CustomerPriceTypeQualitySampleDetailResponse,
     CustomerPriceTypeQualitySampleListResponse,
     CustomerPriceTypeQualitySampleResponse,
+    CustomerPriceTypeReviewCardListResponse,
+    CustomerPriceTypeReviewCardResponse,
+    CustomerPriceTypeReviewCommand,
+    CustomerPriceTypeReviewKind,
+    CustomerPriceTypeReviewMetricsResponse,
+    CustomerPriceTypeReviewSaveResponse,
     CustomerPriceTypeRunResponse,
     CustomerPriceTypeSessionRequest,
     CustomerPriceTypeSessionResponse,
@@ -60,8 +78,14 @@ from app.services.bitrix_customer_price_types_auth import (
     resolve_customer_price_type_manager_owner_ref,
     verify_customer_price_type_session,
 )
+from app.services.customer_price_type_reviews import (
+    CustomerPriceTypeReviewConflict,
+    CustomerPriceTypeReviewNotFound,
+    CustomerPriceTypeReviewService,
+)
 from app.services.customer_price_types import (
     CustomerPriceTypeQualityConflict,
+    CustomerPriceTypeQualityFrozen,
     CustomerPriceTypeQualityService,
     CustomerPriceTypeReadService,
     customer_price_type_case_guidance,
@@ -108,6 +132,48 @@ def require_customer_price_type_access(
 
 
 Access = Annotated[CustomerPriceTypeAccessScope, Depends(require_customer_price_type_access)]
+
+
+@router.post(
+    "/advisories/preview",
+    response_model=CustomerPriceTypeAdvisoryPreviewResponse,
+)
+def preview_customer_price_type_advisories(
+    payload: CustomerPriceTypeAdvisoryPreviewRequest,
+    _access: Access,
+) -> CustomerPriceTypeAdvisoryPreviewResponse:
+    lamp = build_order_return_lamp(
+        character=payload.return_character,
+        period_mismatch=payload.period_mismatch,
+        behavior_group=payload.behavior_group,
+    )
+    notification = None
+    if payload.notification_event is not None:
+        notification = build_customer_notification_draft(
+            payload.notification_event,
+            current_level=payload.current_level,
+        )
+    return CustomerPriceTypeAdvisoryPreviewResponse(
+        order_lamp={
+            "key": lamp.key,
+            "severity": lamp.severity,
+            "title": lamp.title,
+            "manager_action": lamp.manager_action,
+            "visible": lamp.visible,
+            "blocks_fulfillment": lamp.blocks_fulfillment,
+        },
+        notification=(
+            {
+                "event": notification.event,
+                "text": notification.text,
+                "channel_candidates": list(notification.channel_candidates),
+                "approval_status": notification.approval_status,
+                "send_allowed": notification.send_allowed,
+            }
+            if notification is not None
+            else None
+        ),
+    )
 
 
 @router.post("/session", response_model=CustomerPriceTypeSessionResponse)
@@ -203,7 +269,9 @@ def _snapshot_payload(row, access: CustomerPriceTypeAccessScope) -> dict:
         "conflicts": row.conflicts,
         "stop_factors": row.stop_factors,
         "system_recommendation": row.system_recommendation,
-        "recommended_price_type": row.recommended_price_type,
+        "recommended_price_type": (
+            None if row.case_type == "data_check" else row.recommended_price_type
+        ),
         "recommendation_reason": row.recommendation_reason,
         "action_required": row.action_required,
         "case_type": row.case_type,
@@ -260,7 +328,9 @@ def _case_payload(case, profile, snapshot) -> dict:
         "department_name": case.department_name,
         "due_at": case.due_at,
         "system_recommendation": case.system_recommendation,
-        "recommended_price_type": case.recommended_price_type,
+        "recommended_price_type": (
+            None if case.case_type == "data_check" else case.recommended_price_type
+        ),
         "human_final_decision": case.human_final_decision,
         "approval_status": case.approval_status,
         "action_required": bool(snapshot.action_required or external_control_active),
@@ -314,7 +384,11 @@ def _portfolio_payload(item, profile, snapshot, case, access) -> dict:
             else False
         ),
         "system_recommendation": snapshot.system_recommendation if snapshot else None,
-        "recommended_price_type": snapshot.recommended_price_type if snapshot else None,
+        "recommended_price_type": (
+            None
+            if snapshot is None or snapshot.case_type == "data_check"
+            else snapshot.recommended_price_type
+        ),
         "source_status": snapshot.source_status if snapshot else "missing",
         "stop_factors": list(snapshot.stop_factors) if snapshot else [],
         "review_status": review_batch_snapshot_status(snapshot),
@@ -326,6 +400,14 @@ def _portfolio_payload(item, profile, snapshot, case, access) -> dict:
 
 
 def _quality_sample_payload(sample, profile, snapshot) -> dict:
+    review_result = None
+    if sample.status == "reviewed":
+        if sample.correct_group == "data_check" and sample.system_group != "data_check":
+            review_result = "data_issue"
+        elif sample.correct_group == sample.system_group:
+            review_result = "correct"
+        else:
+            review_result = "incorrect"
     return {
         "id": sample.id,
         "run_id": sample.run_id,
@@ -334,12 +416,15 @@ def _quality_sample_payload(sample, profile, snapshot) -> dict:
         "counterparty_code": profile.counterparty_code,
         "counterparty_name": profile.counterparty_name,
         "current_price_type": snapshot.current_price_type,
-        "recommended_price_type": snapshot.recommended_price_type,
+        "recommended_price_type": (
+            None if snapshot.case_type == "data_check" else snapshot.recommended_price_type
+        ),
         "system_recommendation": snapshot.system_recommendation,
         "recommendation_reason": snapshot.recommendation_reason,
         "stop_factors": snapshot.stop_factors,
         "system_group": sample.system_group,
         "correct_group": sample.correct_group,
+        "review_result": review_result,
         "status": sample.status,
         "selected_by": sample.selected_by,
         "selected_at": sample.selected_at,
@@ -353,6 +438,237 @@ def _quality_sample_payload(sample, profile, snapshot) -> dict:
 def _ensure_quality_read_access(access: CustomerPriceTypeAccessScope) -> None:
     if access.role not in CustomerPriceTypeQualityService.READ_ROLES:
         raise HTTPException(status_code=403, detail="customer price-type quality access denied")
+
+
+def _profile_search_payload(profile, snapshot, sample, current_data_issue: bool) -> dict:
+    is_data_issue = snapshot.case_type == "data_check" or bool(
+        current_data_issue
+        or (
+            sample is not None
+            and sample.status == "reviewed"
+            and sample.system_group != "data_check"
+            and sample.correct_group == "data_check"
+        )
+    )
+    change_proposed = (
+        snapshot.recommended_price_type is not None
+        and snapshot.recommended_price_type != snapshot.current_price_type
+    )
+    if is_data_issue:
+        state = "data_issue"
+        label = "Данные проверяет техническая команда"
+    elif change_proposed:
+        state = "change_proposed"
+        label = "Система предлагает изменить тип"
+    else:
+        state = "no_change"
+        label = "Изменение не требуется"
+    return {
+        "counterparty_ref": profile.counterparty_ref,
+        "counterparty_code": profile.counterparty_code,
+        "counterparty_name": profile.counterparty_name,
+        "current_price_type": snapshot.current_price_type,
+        "recommended_price_type": None if is_data_issue else snapshot.recommended_price_type,
+        "result_state": state,
+        "result_label": label,
+        "can_review": False,
+        "quality_sample_id": sample.id if sample is not None else None,
+        "quality_sample_status": sample.status if sample is not None else None,
+    }
+
+
+_DATA_ISSUE_TEXTS = {
+    "active_contract_missing": "Не найден однозначный действующий договор.",
+    "price_type_missing": "В рабочем договоре не указан тип цены.",
+    "price_type_marked": "Тип цены рабочего договора помечен на удаление.",
+    "unknown_price_type": "Тип цены рабочего договора не распознан.",
+    "conflicting_price_levels": "В рабочих договорах указаны разные ценовые уровни.",
+    "conflicting_price_type_variants": "В рабочих договорах указаны разные варианты типа цены.",
+    "duplicate_counterparty": "Обнаружен дубль карточки клиента.",
+    "partial_source": "Один или несколько источников загружены не полностью.",
+    "source_mismatch": "Данные источников расходятся.",
+    "return_period_mismatch": "Периоды продаж и возвратов не совпадают.",
+    "economics_missing": "Не загружены данные для проверки экономики.",
+}
+
+
+def _data_issue_text(snapshot) -> str:
+    for reason in snapshot.reasons or ():
+        if reason in _DATA_ISSUE_TEXTS:
+            return _DATA_ISSUE_TEXTS[reason]
+    return "Техническая причина не расшифрована."
+
+
+def _review_envelope(db: Session, snapshot_id: int) -> dict[str, Any]:
+    repository = SqlAlchemyCustomerPriceTypeRepository(db)
+    row = repository.get_review_card(
+        snapshot_id=snapshot_id,
+        access=internal_customer_price_type_scope(),
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Карточка проверки не найдена.")
+    snapshot = row[1]
+    run = repository.get_run(snapshot.run_id)
+    return {
+        "run_id": snapshot.run_id,
+        "snapshot_month": snapshot.snapshot_month,
+        "ruleset_version": snapshot.ruleset_version,
+        "source_status": run.status if run is not None else snapshot.source_status,
+    }
+
+
+@router.get(
+    "/reviews/cards",
+    response_model=CustomerPriceTypeReviewCardListResponse,
+)
+def list_customer_price_type_review_cards(
+    access: Access,
+    snapshot_month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    review_kind: CustomerPriceTypeReviewKind | None = None,
+    pending_only: bool = False,
+    search: str | None = Query(default=None, max_length=255),
+    limit: int = Query(default=50, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> CustomerPriceTypeReviewCardListResponse:
+    try:
+        return CustomerPriceTypeReviewCardListResponse.model_validate(
+            CustomerPriceTypeReviewService(db).list_cards(
+                snapshot_month=_month(snapshot_month),
+                access=access,
+                search=search,
+                review_kind=review_kind,
+                pending_only=pending_only,
+                limit=limit,
+                offset=offset,
+            )
+        )
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Хранилище проверок типов цен временно недоступно."
+        ) from exc
+
+
+@router.get(
+    "/reviews/cards/{snapshot_id}",
+    response_model=CustomerPriceTypeReviewCardResponse,
+)
+def get_customer_price_type_review_card(
+    snapshot_id: int,
+    access: Access,
+    db: Session = Depends(get_db),
+) -> CustomerPriceTypeReviewCardResponse:
+    try:
+        card = CustomerPriceTypeReviewService(db).get_card(snapshot_id=snapshot_id, access=access)
+        return CustomerPriceTypeReviewCardResponse(**_review_envelope(db, snapshot_id), card=card)
+    except CustomerPriceTypeReviewNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Хранилище проверок типов цен временно недоступно."
+        ) from exc
+
+
+def _save_customer_price_type_review(
+    *,
+    snapshot_id: int,
+    review_kind: CustomerPriceTypeReviewKind,
+    payload: CustomerPriceTypeReviewCommand,
+    access: CustomerPriceTypeAccessScope,
+    db: Session,
+) -> CustomerPriceTypeReviewSaveResponse:
+    try:
+        result = CustomerPriceTypeReviewService(db).save(
+            snapshot_id=snapshot_id,
+            review_kind=review_kind,
+            result=payload.result,
+            corrected_value=payload.corrected_value,
+            comment=payload.comment,
+            expected_version=payload.expected_version,
+            snapshot_hash=payload.snapshot_hash,
+            access=access,
+        )
+        return CustomerPriceTypeReviewSaveResponse(
+            **_review_envelope(db, snapshot_id),
+            card=result.card,
+            saved_kind=result.saved_kind,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except CustomerPriceTypeReviewNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CustomerPriceTypeReviewConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except ValueError as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=503, detail="Не удалось сохранить решение. Повторите попытку."
+        ) from exc
+
+
+@router.put(
+    "/reviews/cards/{snapshot_id}/price-type",
+    response_model=CustomerPriceTypeReviewSaveResponse,
+)
+def review_customer_price_type_dimension(
+    snapshot_id: int,
+    payload: CustomerPriceTypeReviewCommand,
+    access: Access,
+    db: Session = Depends(get_db),
+) -> CustomerPriceTypeReviewSaveResponse:
+    return _save_customer_price_type_review(
+        snapshot_id=snapshot_id,
+        review_kind="price_type",
+        payload=payload,
+        access=access,
+        db=db,
+    )
+
+
+@router.put(
+    "/reviews/cards/{snapshot_id}/client-action",
+    response_model=CustomerPriceTypeReviewSaveResponse,
+)
+def review_customer_client_action_dimension(
+    snapshot_id: int,
+    payload: CustomerPriceTypeReviewCommand,
+    access: Access,
+    db: Session = Depends(get_db),
+) -> CustomerPriceTypeReviewSaveResponse:
+    return _save_customer_price_type_review(
+        snapshot_id=snapshot_id,
+        review_kind="client_action",
+        payload=payload,
+        access=access,
+        db=db,
+    )
+
+
+@router.get(
+    "/reviews/metrics",
+    response_model=CustomerPriceTypeReviewMetricsResponse,
+)
+def get_customer_price_type_review_metrics(
+    access: Access,
+    snapshot_month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    db: Session = Depends(get_db),
+) -> CustomerPriceTypeReviewMetricsResponse:
+    try:
+        return CustomerPriceTypeReviewMetricsResponse.model_validate(
+            CustomerPriceTypeReviewService(db).metrics(
+                snapshot_month=_month(snapshot_month), access=access
+            )
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503, detail="Показатели проверок временно недоступны."
+        ) from exc
 
 
 @router.get("/summary", response_model=CustomerPriceTypeSummaryResponse)
@@ -512,6 +828,46 @@ def list_customer_price_type_cases(
     )
 
 
+@router.post(
+    "/cases/{case_id}/cancel-change",
+    response_model=CustomerPriceTypeCancelChangeResponse,
+)
+def cancel_customer_price_type_change(
+    case_id: int,
+    payload: CustomerPriceTypeCancelChangeRequest,
+    access: Access,
+    db: Session = Depends(get_db),
+) -> CustomerPriceTypeCancelChangeResponse:
+    try:
+        action = CustomerPriceTypeReviewService(db).cancel_change(
+            case_id=case_id,
+            expected_version=payload.expected_version,
+            comment=payload.comment,
+            access=access,
+        )
+        return CustomerPriceTypeCancelChangeResponse(
+            case_id=case_id,
+            action_id=action.id,
+            status="cancelled",
+            cancelled_by=str(action.cancelled_by),
+            cancelled_at=action.cancelled_at,
+            comment=str(action.cancel_comment),
+            version=action.version,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except CustomerPriceTypeReviewNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except CustomerPriceTypeReviewConflict as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except SQLAlchemyError as exc:
+        db.rollback()
+        raise HTTPException(
+            status_code=503, detail="Не удалось отменить изменение. Повторите попытку."
+        ) from exc
+
+
 @router.get("/cases/{case_id}", response_model=CustomerPriceTypeCaseDetailResponse)
 def get_customer_price_type_case(
     case_id: int,
@@ -572,6 +928,12 @@ def get_customer_price_type_profile(
         latest = next((item for item in history if item.id == profile.latest_snapshot_id), None)
         if latest is None and history:
             latest = history[0]
+        if (
+            access.role == "network_head"
+            and latest is not None
+            and latest.case_type == "data_check"
+        ):
+            raise HTTPException(status_code=404, detail="customer price-type profile not found")
         open_case_row = (
             repository.get_case_scoped(profile.open_case_id, access)
             if profile.open_case_id
@@ -622,6 +984,108 @@ def get_customer_price_type_profile(
     )
 
 
+@router.get("/profiles", response_model=CustomerPriceTypeProfileSearchResponse)
+def search_customer_price_type_profiles(
+    access: Access,
+    search: str = Query(min_length=2, max_length=255),
+    snapshot_month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    limit: int = Query(default=50, ge=1, le=100),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> CustomerPriceTypeProfileSearchResponse:
+    repository = SqlAlchemyCustomerPriceTypeRepository(db)
+    try:
+        run = repository.latest_run(_month(snapshot_month))
+        if run is None:
+            rows, total = [], 0
+        else:
+            rows, total = repository.search_profiles(
+                run_id=run.id,
+                access=access,
+                search=search,
+                limit=limit,
+                offset=offset,
+            )
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503, detail="customer price-type storage unavailable"
+        ) from exc
+    return CustomerPriceTypeProfileSearchResponse(
+        run_id=run.id if run else None,
+        snapshot_month=run.snapshot_month if run else _month(snapshot_month),
+        ruleset_version=run.ruleset_version if run else None,
+        source_status=run.status if run else "missing",
+        total=total,
+        limit=limit,
+        offset=offset,
+        payload=[
+            CustomerPriceTypeProfileSearchItem.model_validate(_profile_search_payload(*row))
+            for row in rows
+        ],
+    )
+
+
+@router.get("/data-issues", response_model=CustomerPriceTypeDataIssueListResponse)
+def list_customer_price_type_data_issues(
+    access: Access,
+    snapshot_month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
+    search: str | None = Query(default=None, max_length=255),
+    limit: int = Query(default=100, ge=1, le=500),
+    offset: int = Query(default=0, ge=0),
+    db: Session = Depends(get_db),
+) -> CustomerPriceTypeDataIssueListResponse:
+    if access.role not in {"internal", "quality", "executive"}:
+        raise HTTPException(status_code=403, detail="customer price-type data issue access denied")
+    repository = SqlAlchemyCustomerPriceTypeRepository(db)
+    try:
+        run = repository.latest_run(_month(snapshot_month))
+        rows = repository.list_data_issues(run_id=run.id, search=search) if run is not None else []
+    except SQLAlchemyError as exc:
+        raise HTTPException(
+            status_code=503, detail="customer price-type storage unavailable"
+        ) from exc
+    total = len(rows)
+    page = rows[offset : offset + limit]
+    payload = []
+    for source, profile, snapshot, source_row in page:
+        if source == "calculation":
+            payload.append(
+                CustomerPriceTypeDataIssueItem(
+                    counterparty_ref=profile.counterparty_ref,
+                    counterparty_code=profile.counterparty_code,
+                    counterparty_name=profile.counterparty_name,
+                    current_price_type=snapshot.current_price_type,
+                    issue_source="calculation",
+                    issue_text=_data_issue_text(snapshot),
+                    case_id=source_row.id if source_row is not None else None,
+                )
+            )
+        else:
+            payload.append(
+                CustomerPriceTypeDataIssueItem(
+                    counterparty_ref=profile.counterparty_ref,
+                    counterparty_code=profile.counterparty_code,
+                    counterparty_name=profile.counterparty_name,
+                    current_price_type=snapshot.current_price_type,
+                    issue_source="expert",
+                    issue_text="Эксперт заметил ошибку в исходных данных.",
+                    reported_by=source_row.reviewed_by,
+                    reported_at=source_row.reviewed_at,
+                    comment=source_row.comment,
+                )
+            )
+    return CustomerPriceTypeDataIssueListResponse(
+        run_id=run.id if run else None,
+        snapshot_month=run.snapshot_month if run else _month(snapshot_month),
+        ruleset_version=run.ruleset_version if run else None,
+        source_status=run.status if run else "missing",
+        total=total,
+        limit=limit,
+        offset=offset,
+        payload=payload,
+    )
+
+
 @router.get("/runs/{run_id}", response_model=CustomerPriceTypeRunResponse)
 def get_customer_price_type_run(
     run_id: int,
@@ -650,6 +1114,8 @@ def get_customer_price_type_run(
 @router.post(
     "/quality/samples/prepare",
     response_model=CustomerPriceTypeQualityPrepareResponse,
+    deprecated=True,
+    responses={410: {"description": "Историческая выборка заморожена"}},
 )
 def prepare_customer_price_type_quality_samples(
     payload: CustomerPriceTypeQualityPrepareRequest,
@@ -663,6 +1129,8 @@ def prepare_customer_price_type_quality_samples(
             access=access,
         )
         return CustomerPriceTypeQualityPrepareResponse.model_validate(result)
+    except CustomerPriceTypeQualityFrozen as exc:
+        raise HTTPException(status_code=410, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
@@ -768,6 +1236,8 @@ def get_customer_price_type_quality_sample(
 @router.put(
     "/quality/samples/{sample_id}",
     response_model=CustomerPriceTypeQualitySampleResponse,
+    deprecated=True,
+    responses={410: {"description": "Историческая разметка заморожена"}},
 )
 def review_customer_price_type_quality_sample(
     sample_id: int,
@@ -778,6 +1248,7 @@ def review_customer_price_type_quality_sample(
     try:
         row = CustomerPriceTypeQualityService(db).review(
             sample_id=sample_id,
+            review_result=payload.review_result,
             correct_group=payload.correct_group,
             comment=payload.comment,
             expected_version=payload.expected_version,
@@ -786,8 +1257,12 @@ def review_customer_price_type_quality_sample(
         if row is None:
             raise LookupError("quality sample not found")
         return CustomerPriceTypeQualitySampleResponse.model_validate(_quality_sample_payload(*row))
+    except CustomerPriceTypeQualityFrozen as exc:
+        raise HTTPException(status_code=410, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     except CustomerPriceTypeQualityConflict as exc:

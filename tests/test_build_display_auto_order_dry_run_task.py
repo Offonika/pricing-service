@@ -8,10 +8,12 @@ from app.services.procurement_b2b_customer_demand import (
     B2BSkuDemandProfile,
 )
 from tasks.build_display_auto_order_dry_run import (
+    DEFAULT_POLICY_JSON,
     DemandUpliftRule,
     OrderRoundingRule,
     PriceBatchRule,
     SpeedHorizonRule,
+    _price_batch_rule_for_row,
     build_dry_run_rows,
     build_summary,
     fetch_days_in_sale_totals,
@@ -1141,7 +1143,7 @@ def test_price_batch_applies_independently_to_both_cards_sharing_analog_tokens()
                 "nomenclature_code": "РБ000041515",
                 "name": "Дисплей для Samsung T295 Galaxy Tab A 8.0 + тачскрин (черный)",
                 "status": "working",
-                "status_label": "Рабочий",
+                "status_label": "Поддерживаем (Рабочий)",
                 "auto_order_allowed": True,
                 "brand_compatibility": "Samsung",
                 "model_compatibility": "Samsung T295 Galaxy Tab A 8.0",
@@ -1152,7 +1154,7 @@ def test_price_batch_applies_independently_to_both_cards_sharing_analog_tokens()
                 "nomenclature_code": "РБ000041516",
                 "name": "Дисплей для Samsung T295 Galaxy Tab A 8.0 + тачскрин (белый)",
                 "status": "working",
-                "status_label": "Рабочий",
+                "status_label": "Поддерживаем (Рабочий)",
                 "auto_order_allowed": True,
                 "brand_compatibility": "Samsung",
                 "model_compatibility": "Samsung T295 Galaxy Tab A 8.0",
@@ -1196,7 +1198,7 @@ def test_price_batch_applies_independently_to_both_cards_sharing_analog_tokens()
                 max_automatic_excess_coverage_days=21,
             ),
         ),
-        price_batch_applies_to_statuses=("ПРОДАЖА", "Рабочий"),
+        price_batch_applies_to_statuses=("sale", "working"),
         price_batch_applies_to_analog_roles=("single_sku",),
     )
 
@@ -1211,8 +1213,51 @@ def test_price_batch_applies_independently_to_both_cards_sharing_analog_tokens()
     # осталась пустой/нулевой) с собственным, независимым количеством.
     assert black["dry_run_decision"] == "order"
     assert black["recommended_order_qty"] == "28"
+    assert black["price_batch_decision"] == "rounded_to_price_minimum"
     assert white["dry_run_decision"] == "order"
     assert white["recommended_order_qty"] == "2"
+
+
+def test_price_batch_rule_uses_stable_status_codes_not_display_labels() -> None:
+    economy_rule = PriceBatchRule(
+        speed_tier="normal",
+        price_segments=("economy", "mid_low"),
+        minimum_batch_qty=10,
+        max_automatic_excess_coverage_days=21,
+    )
+    premium_rule = PriceBatchRule(
+        speed_tier="normal",
+        price_segments=("mid_high", "premium"),
+    )
+    rules = (economy_rule, premium_rule)
+
+    sale_rule = _price_batch_rule_for_row(
+        {
+            "_assortment_status": "sale",
+            "status_label": "Растим (ПРОДАЖА)",
+            "analog_role": "single_sku",
+            "speed_tier": "normal",
+            "price_segment": "mid_low",
+        },
+        rules=rules,
+        applies_to_statuses=("sale", "working"),
+        applies_to_analog_roles=("single_sku",),
+    )
+    working_rule = _price_batch_rule_for_row(
+        {
+            "_assortment_status": "working",
+            "status_label": "Поддерживаем (Рабочий)",
+            "analog_role": "single_sku",
+            "speed_tier": "normal",
+            "price_segment": "premium",
+        },
+        rules=rules,
+        applies_to_statuses=("sale", "working"),
+        applies_to_analog_roles=("single_sku",),
+    )
+
+    assert sale_rule is economy_rule
+    assert working_rule is premium_rule
 
 
 def test_price_batch_excess_above_limit_goes_to_manual_review_with_exact_need() -> None:
@@ -1222,7 +1267,7 @@ def test_price_batch_excess_above_limit_goes_to_manual_review_with_exact_need() 
                 "nomenclature_code": "RB-PRICE-REVIEW",
                 "name": "Дисплей тестовый",
                 "status": "working",
-                "status_label": "Рабочий",
+                "status_label": "Поддерживаем (Рабочий)",
                 "auto_order_allowed": True,
                 "quality_raw": "Аналог",
                 "price_segment": "mid_low",
@@ -1254,7 +1299,7 @@ def test_price_batch_excess_above_limit_goes_to_manual_review_with_exact_need() 
                 max_automatic_excess_coverage_days=21,
             ),
         ),
-        price_batch_applies_to_statuses=("Рабочий",),
+        price_batch_applies_to_statuses=("working",),
         price_batch_applies_to_analog_roles=("single_sku",),
     )
 
@@ -2234,3 +2279,9 @@ def test_load_auto_order_policy_reads_nested_display_policy(tmp_path) -> None:
     assert len(policy.demand_uplift_rules) == 1
     assert policy.demand_uplift_rules[0].rule_id == "iphone11_uplift"
     assert policy.demand_uplift_rules[0].demand_multiplier == Decimal("1.25")
+
+
+def test_versioned_price_batch_policy_uses_stable_status_codes() -> None:
+    policy = load_auto_order_policy(DEFAULT_POLICY_JSON)
+
+    assert policy.price_batch_applies_to_statuses == ("sale", "working")

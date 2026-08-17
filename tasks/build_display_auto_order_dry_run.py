@@ -2279,11 +2279,8 @@ def _price_batch_rule_for_row(
     applies_to_analog_roles: Sequence[str],
 ) -> PriceBatchRule | None:
     configured_statuses = {status.casefold() for status in applies_to_statuses}
-    row_statuses = {
-        _clean(row.get("_assortment_status")).casefold(),
-        _clean(row.get("status_label")).casefold(),
-    }
-    if configured_statuses and not configured_statuses.intersection(row_statuses):
+    row_status = _clean(row.get("_assortment_status")).casefold()
+    if configured_statuses and row_status not in configured_statuses:
         return None
     configured_roles = {role.casefold() for role in applies_to_analog_roles}
     if configured_roles and _clean(row.get("analog_role")).casefold() not in configured_roles:

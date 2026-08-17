@@ -3,6 +3,7 @@ import os
 from app.models.base import Base
 
 if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
+    from app.models.assortment_lifecycle_signal import AssortmentLifecycleSignal
     from app.models.card_balance_reconciliation import (
         CardBalanceCashbox,
         CardBalanceReconciliation,
@@ -30,8 +31,11 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
     from app.models.customer_price_type import (
         CustomerPriceTypeCase,
         CustomerPriceTypeCaseEvent,
+        CustomerPriceTypeExternalAction,
+        CustomerPriceTypeOneCContractAction,
         CustomerPriceTypeProfile,
         CustomerPriceTypeQualitySample,
+        CustomerPriceTypeReview,
         CustomerPriceTypeReviewBatch,
         CustomerPriceTypeReviewBatchItem,
         CustomerPriceTypeRun,
@@ -155,6 +159,7 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
 
     __all__ = [
         "Base",
+        "AssortmentLifecycleSignal",
         "Product",
         "ProductStock",
         "ProcurementOrderFormation",
@@ -176,6 +181,9 @@ if not os.getenv("ALEMBIC_SKIP_MODEL_IMPORT"):
         "CustomerPriceTypeSnapshot",
         "CustomerPriceTypeCase",
         "CustomerPriceTypeCaseEvent",
+        "CustomerPriceTypeReview",
+        "CustomerPriceTypeExternalAction",
+        "CustomerPriceTypeOneCContractAction",
         "CustomerPriceTypeQualitySample",
         "CustomerPriceTypeReviewBatch",
         "CustomerPriceTypeReviewBatchItem",

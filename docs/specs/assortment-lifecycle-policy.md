@@ -21,9 +21,7 @@ related_code:
   - app/services/display_family_demand.py
   - app/services/display_identity.py
   - app/services/display_family_inventory.py
-  - app/services/display_scope_policy.py
   - app/models/display_family_registry.py
-  - app/services/display_family_registry.py
   - app/api/matching.py
   - app/schemas/matching.py
   - alembic/versions/0a8c2e4f6b7d_add_display_family_registry.py
@@ -70,7 +68,6 @@ related_code:
   - tasks/report_display_family_demand_backtest.py
   - tasks/report_display_family_registry_preflight.py
   - tasks/report_display_scope_exclusion_dry_run.py
-  - tasks/bootstrap_display_family_registry.py
   - tasks/report_display_family_order_pool_backtest.py
   - scripts/run_display_family_demand_backtest.sh
 related_tests:
@@ -110,10 +107,8 @@ related_tests:
   - tests/test_display_family_demand.py
   - tests/test_display_identity.py
   - tests/test_display_family_inventory.py
-  - tests/test_display_scope_policy.py
   - tests/test_report_display_family_registry_preflight.py
   - tests/test_report_display_scope_exclusion_dry_run.py
-  - tests/test_display_family_registry.py
   - tests/test_display_family_registry_migration.py
   - tests/test_display_family_registry_api.py
   - tests/test_bootstrap_display_family_registry_task.py

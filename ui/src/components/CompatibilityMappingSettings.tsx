@@ -22,13 +22,14 @@ import type {
   CompatibilityPreviewResponse,
   CompatibilityUnresolvedGroup,
 } from "../api/types";
+import { DisplayFamilyRegistryPanel } from "./DisplayFamilyRegistryPanel";
 
 interface CompatibilityMappingSettingsProps {
   open: boolean;
   onClose: () => void;
 }
 
-type CompatibilityTab = "queue" | "models" | "aliases" | "history";
+type CompatibilityTab = "queue" | "families" | "models" | "aliases" | "history";
 type EntityFilter = "" | "product" | "competitor_item";
 type BrandFilter = "all" | "none" | number;
 type BlockReason = "noise" | "not_phone" | "bad_1c_value" | "not_supported" | "other";
@@ -409,7 +410,7 @@ export function CompatibilityMappingSettings({ open, onClose }: CompatibilityMap
 
   return (
     <div className="settings-overlay" role="dialog" aria-modal="true">
-      <div className="settings-shell compatibility-shell">
+      <div className={`settings-shell compatibility-shell ${activeTab === "families" ? "compatibility-shell--families" : ""}`}>
         <header className="settings-shell__topbar">
           <div>
             <span>BITRIX MATCHING</span>
@@ -420,7 +421,7 @@ export function CompatibilityMappingSettings({ open, onClose }: CompatibilityMap
           </button>
         </header>
 
-        <aside className="settings-profiles compatibility-brands">
+        {activeTab !== "families" && <aside className="settings-profiles compatibility-brands">
           <div className="picker__section-title">Бренды</div>
           <input
             className="app__search"
@@ -471,12 +472,13 @@ export function CompatibilityMappingSettings({ open, onClose }: CompatibilityMap
               <small>{brand.models_count} моделей · {brand.unresolved_count} в очереди</small>
             </button>
           ))}
-        </aside>
+        </aside>}
 
-        <main className="settings-rules compatibility-main">
+        <main className={`settings-rules compatibility-main ${activeTab === "families" ? "compatibility-main--families" : ""}`}>
           <div className="settings-editor-tabs compatibility-tabs" role="tablist">
             {[
               ["queue", "Очередь"],
+              ["families", "Семьи дисплеев"],
               ["models", "Модели"],
               ["aliases", "Алиасы"],
               ["history", "История"],
@@ -491,6 +493,8 @@ export function CompatibilityMappingSettings({ open, onClose }: CompatibilityMap
               </button>
             ))}
           </div>
+
+          {activeTab === "families" && <DisplayFamilyRegistryPanel />}
 
           {activeTab === "queue" && (
             <>
@@ -685,7 +689,7 @@ export function CompatibilityMappingSettings({ open, onClose }: CompatibilityMap
           )}
         </main>
 
-        <aside className="settings-editor compatibility-editor">
+        {activeTab !== "families" && <aside className="settings-editor compatibility-editor">
           <div className="settings-panel__header">
             <div>
               <div className="picker__section-title">Редактор</div>
@@ -898,7 +902,7 @@ export function CompatibilityMappingSettings({ open, onClose }: CompatibilityMap
               </details>
             </>
           )}
-        </aside>
+        </aside>}
       </div>
     </div>
   );

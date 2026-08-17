@@ -84,6 +84,16 @@
       "spec": "docs/specs/competitor-matching-ui-v1.md",
       "remove_after": null
     },
+    "bootstrap_display_family_registry.py": {
+      "owner": "procurement",
+      "kind": "permanent_cli",
+      "dry_run": "supported",
+      "idempotency": "verified_by_inventory_checksum_and_atomic_readback",
+      "side_effect_level": "db_write",
+      "db_access": "application_write",
+      "spec": "docs/specs/assortment-lifecycle-policy.md",
+      "remove_after": null
+    },
     "report_competitor_items_needs_compat_review.py": {
       "owner": "matching",
       "kind": "report",

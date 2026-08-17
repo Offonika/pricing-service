@@ -35,7 +35,7 @@ depends_on:
   - docs/specs/README.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-08-15"
+updated_at: "2026-08-17"
 ---
 
 # Назначение
@@ -286,6 +286,11 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
    production не меняется, грязный mutable checkout остаётся без изменений.
    Фактически активный source commit должен быть предком merge-результата;
    совпадения patch-id после cherry-pick недостаточно.
+   Production-only display-family цепочка `30d7d1f`, `5f25201`, `a643f62`,
+   `49b66ac`, `cdb5da6` переносится в canonical `main` только самостоятельным
+   PR после отдельного архитектурного и регрессионного аудита. Механическое
+   слияние без проверки запрещено. Merge PR и production cutover требуют
+   отдельных решений пользователя.
 2. Создать отдельный clean worktree, внести и закоммитить изменения. Нельзя
    использовать грязный параллельный checkout как source или mutable-root.
 3. Для подготовки immutable-кандидата без cutover использовать только штатный
@@ -340,6 +345,9 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 
 # Changelog
 
+- 2026-08-17 — для production-only display-family цепочки утверждены отдельный
+  архитектурный и регрессионный аудит и самостоятельный PR; механическое
+  слияние запрещено.
 - 2026-08-15 — утверждён штатный build-only режим для подготовки immutable
   release candidate без production cutover; provenance требует ancestry от
   фактически активного source commit, а не только patch-equivalence.

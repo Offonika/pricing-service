@@ -20,7 +20,11 @@ import type {
   BulkRejectResponse,
   MatchingDecisionReasonCode,
   DecisionHistoryResponse,
+  DisplayFamilyDetail,
+  DisplayFamilyRegistrySummary,
+  DisplayFamilyRegistryVersion,
   PaginatedCandidates,
+  PaginatedDisplayFamilies,
   PaginatedProducts,
   ProductSort,
   PropertyComparisonResponse,
@@ -318,5 +322,44 @@ export async function blockCompatibilityMapping(payload: CompatibilityBlockPaylo
 
 export async function fetchCompatibilityHistory(params?: { limit?: number }) {
   const { data } = await api.get<CompatibilityHistoryItem[]>("/matching/compatibility/history", { params });
+  return data;
+}
+
+export async function fetchDisplayFamilyRegistrySummary() {
+  const { data } = await api.get<DisplayFamilyRegistrySummary>(
+    "/matching/compatibility/display-families/summary"
+  );
+  return data;
+}
+
+export async function fetchDisplayFamilyRegistryVersions(params?: { limit?: number }) {
+  const { data } = await api.get<DisplayFamilyRegistryVersion[]>(
+    "/matching/compatibility/display-families/versions",
+    { params }
+  );
+  return data;
+}
+
+export async function fetchDisplayFamilies(params?: {
+  page?: number;
+  page_size?: number;
+  search?: string;
+  singleton?: boolean;
+  has_warnings?: boolean;
+  needs_review?: boolean;
+  matching_review?: boolean;
+  quality_unknown?: boolean;
+}) {
+  const { data } = await api.get<PaginatedDisplayFamilies>(
+    "/matching/compatibility/display-families",
+    { params }
+  );
+  return data;
+}
+
+export async function fetchDisplayFamily(familyId: number) {
+  const { data } = await api.get<DisplayFamilyDetail>(
+    `/matching/compatibility/display-families/${familyId}`
+  );
   return data;
 }

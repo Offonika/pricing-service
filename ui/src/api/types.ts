@@ -294,6 +294,130 @@ export interface CompatibilitySummary {
   blocked_values: number;
 }
 
+export interface DisplayFamilyRegistryVersion {
+  id: number;
+  version_number: number;
+  status: "active" | "superseded" | "rolled_back";
+  effective_from: string;
+  source_schema: string;
+  inventory_checksum: string;
+  membership_checksum: string;
+  family_count: number;
+  member_count: number;
+  created_by: string;
+  created_at: string;
+  superseded_at?: string | null;
+  rolled_back_at?: string | null;
+}
+
+export interface DisplayFamilyRegistrySummary {
+  active_version?: DisplayFamilyRegistryVersion | null;
+  version_count: number;
+  family_count: number;
+  member_count: number;
+  singleton_family_count: number;
+  multi_sku_family_count: number;
+  review_member_count: number;
+  matching_review_member_count: number;
+  quality_unknown_member_count: number;
+  warning_counts: Record<string, number>;
+  status_counts: Record<string, number>;
+}
+
+export interface DisplayFamilyRow {
+  id: number;
+  family_key: string;
+  member_count: number;
+  is_singleton: boolean;
+  total_current_stock_qty: number;
+  review_member_count: number;
+  matching_review_member_count: number;
+  quality_unknown_member_count: number;
+  construction_unknown_member_count: number;
+  phone_model_ids: number[];
+  phone_models: string[];
+  segment_ids: string[];
+  warning_codes: string[];
+  note_codes: string[];
+}
+
+export interface PaginatedDisplayFamilies {
+  items: DisplayFamilyRow[];
+  page: number;
+  page_size: number;
+  total: number;
+}
+
+export interface DisplayFamilyMember {
+  id: number;
+  product_id: number;
+  segment_id: string;
+  proposal_status: string;
+  quality_segment: string;
+  construction_segment: string;
+  requires_manual_review: boolean;
+  current_stock_qty: number;
+  warning_codes: string[];
+  note_codes: string[];
+  scope_reasons: string[];
+  product: {
+    article?: string | null;
+    nomenclature_code?: string | null;
+    name?: string | null;
+    color?: string | null;
+    quality?: string | null;
+    construction?: string | null;
+    phone_models?: Array<Record<string, unknown>>;
+    available_at_status?: string | null;
+    last_sale_at?: string | null;
+    has_recent_or_open_order?: boolean | null;
+    [key: string]: unknown;
+  };
+  matching_evidence: {
+    accepted_count?: number;
+    manual_accepted_count?: number;
+    requires_review?: boolean;
+    warnings?: string[];
+    property_disagreement_counts?: Record<string, number>;
+    relation_counts?: Record<string, number>;
+    matches?: Array<{
+      competitor?: string;
+      competitor_item_id?: number;
+      competitor_name?: string;
+      competitor_segment_id?: string;
+      method?: string;
+      model_relation?: string;
+      property_disagreements?: Array<{
+        field?: string;
+        our_value?: unknown;
+        competitor_value?: unknown;
+      }>;
+      [key: string]: unknown;
+    }>;
+    [key: string]: unknown;
+  };
+  identity_evidence: Record<string, unknown>;
+}
+
+export interface DisplayFamilyDecisionEvent {
+  id: number;
+  action: string;
+  actor: string;
+  reason: string;
+  effective_at: string;
+  created_at: string;
+  product_id?: number | null;
+  evidence_snapshot: Record<string, unknown>;
+}
+
+export interface DisplayFamilyDetail extends DisplayFamilyRow {
+  registry_version: DisplayFamilyRegistryVersion;
+  physical_model_signatures: string[][];
+  evidence_snapshot: Record<string, unknown>;
+  members: DisplayFamilyMember[];
+  events: DisplayFamilyDecisionEvent[];
+}
+
 export interface CompatibilityBrand {
   id: number;
   code: string;

@@ -9,6 +9,20 @@ from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from sqlalchemy.orm import Session
+
+from app.core.config import get_settings
+from app.infrastructure.db.engines import build_engine
+from app.services.display_family_order_recommendation import (
+    FAMILY_RECOMMENDATION_COLUMNS,
+    apply_display_family_order_recommendations,
+    display_family_order_recommendation_summary,
+    reset_display_family_order_recommendations,
+)
+from app.services.display_family_registry import (
+    ActiveDisplayFamilyMemberContext,
+    load_active_display_family_member_contexts,
+)
 from tasks.report_display_supplier_lead_time_history import display_group_key
 
 DEFAULT_REPORT_ROOT = Path("reports/assortment_lifecycle")
@@ -99,6 +113,29 @@ def main() -> int:
     sync_ready_rows = (
         build_sync_ready_rows(dry_rows, comparison_rows) if args.sync_ready_csv else []
     )
+    sync_ready_family_summary: dict[str, Any] | None = None
+    if sync_ready_rows and args.use_active_display_family_registry:
+        registry_error = ""
+        membership_by_code = {}
+        settings = get_settings()
+        engine = build_engine(settings.database_url, pool_pre_ping=True)
+        try:
+            with Session(engine) as session:
+                membership_by_code = load_active_display_family_member_contexts(
+                    session,
+                    nomenclature_codes=[
+                        _clean(row.get("nomenclature_code")) for row in sync_ready_rows
+                    ],
+                )
+        except Exception as exc:  # noqa: BLE001 - final shadow must fail closed.
+            registry_error = f"{type(exc).__name__}: {exc}"
+        finally:
+            engine.dispose()
+        sync_ready_family_summary = refresh_sync_ready_family_recommendations(
+            sync_ready_rows,
+            membership_by_code=membership_by_code,
+            registry_error=registry_error,
+        )
     summary = build_summary(
         comparison_rows,
         dry_run_csv=args.dry_run_csv,
@@ -124,9 +161,13 @@ def main() -> int:
                 )
             ),
         }
+        if sync_ready_family_summary is not None:
+            summary["sync_ready_display_family_order_recommendation"] = sync_ready_family_summary
     write_csv(args.output_csv, comparison_rows, CSV_COLUMNS)
     if args.sync_ready_csv:
         sync_columns = list(dry_rows[0].keys()) if dry_rows else []
+        if args.use_active_display_family_registry:
+            sync_columns = list(dict.fromkeys([*sync_columns, *FAMILY_RECOMMENDATION_COLUMNS]))
         write_csv(args.sync_ready_csv, sync_ready_rows, sync_columns)
     if args.output_json:
         args.output_json.parent.mkdir(parents=True, exist_ok=True)
@@ -438,6 +479,23 @@ def build_sync_ready_rows(
         row["data_sources"] = "; ".join(sorted(data_sources))
         rows.append(row)
     return rows
+
+
+def refresh_sync_ready_family_recommendations(
+    rows: Sequence[dict[str, Any]],
+    *,
+    membership_by_code: Mapping[str, ActiveDisplayFamilyMemberContext],
+    registry_error: str = "",
+) -> dict[str, Any]:
+    """Rebuild the family overlay only after adaptive quantities are final."""
+
+    reset_display_family_order_recommendations(rows)
+    apply_display_family_order_recommendations(
+        rows,
+        membership_by_code=membership_by_code,
+        registry_error=registry_error,
+    )
+    return display_family_order_recommendation_summary(rows)
 
 
 def build_lead_time_indexes(
@@ -833,6 +891,14 @@ def _parse_args() -> argparse.Namespace:
         help=(
             "Optional dry-run-shaped CSV with adaptive quantities applied, suitable "
             "for sync_display_auto_order_candidates_to_bitrix.py."
+        ),
+    )
+    parser.add_argument(
+        "--use-active-display-family-registry",
+        action="store_true",
+        help=(
+            "Rebuild the family recommendation on final adaptive quantities using "
+            "only the verified active registry."
         ),
     )
     parser.add_argument("--json", action="store_true")

@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from tasks.report_display_scope_exclusion_dry_run import (
     DEFAULT_SOURCE,
     build_display_scope_exclusion_dry_run,
@@ -54,6 +56,8 @@ def test_scope_exclusion_dry_run_writes_separate_read_only_bundle(tmp_path: Path
 
 
 def test_accepted_inventory_control_is_exactly_11_excluded_and_2678_included() -> None:
+    if not DEFAULT_SOURCE.exists():
+        pytest.skip("accepted display-family inventory is an external runtime artifact")
     payload = json.loads(DEFAULT_SOURCE.read_text(encoding="utf-8-sig"))
 
     result = build_display_scope_exclusion_dry_run(

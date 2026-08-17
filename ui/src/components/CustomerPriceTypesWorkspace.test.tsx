@@ -16,11 +16,9 @@ vi.mock("../api/customerPriceTypes", async (importOriginal) => {
     fetchCptPortfolio: vi.fn(),
     fetchCptQualityMetrics: vi.fn(),
     fetchCptQualitySamples: vi.fn(),
-    fetchCptReviewCards: vi.fn(),
-    fetchCptReviewMetrics: vi.fn(),
     fetchCptSummary: vi.fn(),
     fetchCptWorklists: vi.fn(),
-    saveCptReview: vi.fn(),
+    reviewCptQualitySample: vi.fn(),
     searchCptProfiles: vi.fn(),
   };
 });
@@ -58,69 +56,6 @@ const sample: customerPriceTypes.CptQualitySample = {
   reviewed_at: null,
   comment: null,
   version: 1,
-};
-
-const reviewCard: customerPriceTypes.CptReviewCard = {
-  snapshot_id: 20,
-  case_id: 30,
-  counterparty_ref: "0x01",
-  counterparty_code: "РБ000001",
-  counterparty_name: "Клиент Тест",
-  owner_name: "Менеджер",
-  department_name: "Розничная сеть",
-  snapshot_month: "2026-06-01",
-  current_price_type: "2.Бронзовый",
-  recommended_price_type: "Розница",
-  recommendation_text: "После завершённого изолятора готово изменение типа.",
-  data_state: "ready",
-  data_state_label: "Данные готовы",
-  snapshot_hash: "a".repeat(64),
-  contracts: [
-    {
-      contract_ref: "0x10",
-      contract_name: "Основной рабочий договор",
-      price_type_name: "2.Бронзовый",
-      is_working: true,
-    },
-  ],
-  price_type: {
-    kind: "price_type",
-    system_value: "Розница",
-    system_label: "Изменить на Розница",
-    can_review: true,
-    unavailable_reason: null,
-    allowed_results: ["confirm", "correct", "data_issue"],
-    allowed_corrected_values: ["Розница", "2.Бронзовый", "3.Серебряный"],
-    review_id: null,
-    result: null,
-    final_value: null,
-    comment: null,
-    reviewed_by: null,
-    reviewed_at: null,
-    version: 0,
-    decision_mode: null,
-    external_state: "not_created",
-    external_message: null,
-  },
-  client_action: {
-    kind: "client_action",
-    system_value: "quality",
-    system_label: "Проверка качества",
-    can_review: true,
-    unavailable_reason: null,
-    allowed_results: ["confirm", "correct", "no_action", "data_issue"],
-    allowed_corrected_values: ["retention", "isolate", "recovery", "quality"],
-    review_id: null,
-    result: null,
-    final_value: null,
-    comment: null,
-    reviewed_by: null,
-    reviewed_at: null,
-    version: 0,
-    decision_mode: null,
-    external_state: "not_created",
-    external_message: null,
-  },
 };
 
 function renderWorkspace() {
@@ -196,18 +131,6 @@ describe("CustomerPriceTypesWorkspace", () => {
       offset: 0,
       payload: [sample],
     });
-    vi.mocked(customerPriceTypes.fetchCptReviewCards).mockResolvedValue({
-      ...envelope,
-      total: 1,
-      limit: 200,
-      offset: 0,
-      payload: [reviewCard],
-    });
-    vi.mocked(customerPriceTypes.fetchCptReviewMetrics).mockResolvedValue({
-      ...envelope,
-      price_type: { reviewed_count: 0, confirmed_count: 0, corrected_count: 0, no_action_count: 0, data_issue_count: 0, correction_rate: 0 },
-      client_action: { reviewed_count: 0, confirmed_count: 0, corrected_count: 0, no_action_count: 0, data_issue_count: 0, correction_rate: 0 },
-    });
     vi.mocked(customerPriceTypes.searchCptProfiles).mockResolvedValue({
       ...envelope,
       total: 1,
@@ -237,31 +160,34 @@ describe("CustomerPriceTypesWorkspace", () => {
     vi.clearAllMocks();
   });
 
-  it("показывает Арсену две независимые проверки", async () => {
+  it("показывает Арсену понятный поиск и действия оценки", async () => {
     renderWorkspace();
-    fireEvent.click(await screen.findByRole("button", { name: "Проверка решений →" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Экспертная оценка →" }));
 
-    expect((await screen.findAllByText("Изменить на Розница"))[0]).toBeVisible();
+    expect(await screen.findByText(/не утверждает изменение типа цены/i)).toBeVisible();
     expect(screen.queryByText("Проверенный пакет 82")).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Подтвердить и запустить изменение" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Подтвердить действие" })).toBeEnabled();
-    const dataIssueButtons = screen.getAllByRole("button", { name: "Ошибка в данных" });
-    fireEvent.click(dataIssueButtons[0]);
-    const submit = screen.getAllByRole("button", { name: "Сохранить решение" })[0];
+    const search = screen.getByRole("searchbox", { name: "Поиск клиента по всему портфелю" });
+    fireEvent.change(search, { target: { value: "РБ000002" } });
+    expect(await screen.findByText("Данные проверяет техническая команда")).toBeVisible();
+    expect(screen.getByText("Только просмотр")).toBeVisible();
+
+    expect(screen.getByRole("button", { name: "Результат верный" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Ошибка в данных" }));
+    const submit = screen.getByRole("button", { name: "Передать технической команде" });
     expect(submit).toBeDisabled();
-    fireEvent.change(screen.getByRole("textbox"), {
+    fireEvent.change(screen.getByPlaceholderText("Какие данные выглядят неверно"), {
       target: { value: "Не сходится сумма за июнь" },
     });
     expect(submit).toBeEnabled();
   });
 
-  it("показывает русскую ошибку поиска карточек", async () => {
-    vi.mocked(customerPriceTypes.fetchCptReviewCards).mockRejectedValue(new Error("failed"));
+  it("показывает русскую ошибку глобального поиска", async () => {
+    vi.mocked(customerPriceTypes.searchCptProfiles).mockRejectedValueOnce(new Error("failed"));
     renderWorkspace();
-    fireEvent.click(await screen.findByRole("button", { name: "Проверка решений →" }));
-    fireEvent.change(screen.getByRole("searchbox", { name: "Поиск клиента в проверках" }), {
+    fireEvent.click(await screen.findByRole("button", { name: "Экспертная оценка →" }));
+    fireEvent.change(screen.getByRole("searchbox", { name: "Поиск клиента по всему портфелю" }), {
       target: { value: "Ошибка" },
     });
-    await waitFor(() => expect(screen.getByText("Не удалось загрузить карточки.")).toBeVisible());
+    await waitFor(() => expect(screen.getByText("Не удалось выполнить поиск.")).toBeVisible());
   });
 });

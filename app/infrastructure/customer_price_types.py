@@ -8,8 +8,8 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import and_, case, exists, false, func, or_, select, update
-from sqlalchemy.orm import Session, aliased
+from sqlalchemy import case, exists, false, func, or_, select, update
+from sqlalchemy.orm import Session
 
 from app.domains.customer_price_types import (
     CustomerPriceTypeAccessScope,
@@ -20,11 +20,8 @@ from app.domains.customer_price_types import (
 from app.models.customer_price_type import (
     CustomerPriceTypeCase,
     CustomerPriceTypeCaseEvent,
-    CustomerPriceTypeExternalAction,
-    CustomerPriceTypeOneCContractAction,
     CustomerPriceTypeProfile,
     CustomerPriceTypeQualitySample,
-    CustomerPriceTypeReview,
     CustomerPriceTypeReviewBatch,
     CustomerPriceTypeReviewBatchItem,
     CustomerPriceTypeRun,
@@ -51,26 +48,6 @@ _REVIEW_REQUIRED_SOURCES = (
     "ledger_reconciliation",
     "master_data",
 )
-
-
-def _initial_case_stage(decision: CustomerPriceTypeDecision) -> str:
-    if decision.case_type == "upgrade_approval":
-        return "UPGRADE_APPROVAL"
-    if decision.case_type == "downgrade_approval":
-        return "DOWNGRADE_APPROVAL"
-    if decision.case_type == "manager_work":
-        return "RETENTION_WORK"
-    if decision.case_type == "isolate":
-        return "ISOLATE_1M"
-    if decision.case_type == "recovery":
-        return "RECOVERY_CONTROL"
-    if decision.case_type == "data_check":
-        return "DATA_CHECK"
-    if decision.review_type == "quality":
-        return "QUALITY_CHECK"
-    if decision.review_type in {"credit", "economics"}:
-        return "CREDIT_ECONOMICS_CHECK"
-    return "NEW_SNAPSHOT"
 
 
 class CustomerPriceTypePersistenceConflict(RuntimeError):
@@ -194,44 +171,6 @@ class SqlAlchemyCustomerPriceTypeRepository:
         row.status = "failed"
         row.error_summary = error[:4000]
         row.completed_at = _utcnow()
-
-    def previous_action_completions(
-        self,
-        *,
-        counterparty_refs: Sequence[str],
-        before_month: date,
-    ) -> dict[str, dict[str, Any]]:
-        """Return only persisted Bitrix-readback evidence from an earlier month."""
-
-        if not counterparty_refs:
-            return {}
-        rows = self.session.execute(
-            select(CustomerPriceTypeProfile.counterparty_ref, CustomerPriceTypeCase)
-            .join(
-                CustomerPriceTypeCase,
-                CustomerPriceTypeCase.profile_id == CustomerPriceTypeProfile.id,
-            )
-            .where(
-                CustomerPriceTypeProfile.counterparty_ref.in_(counterparty_refs),
-                CustomerPriceTypeCase.snapshot_month < before_month,
-            )
-            .order_by(
-                CustomerPriceTypeProfile.counterparty_ref,
-                CustomerPriceTypeCase.snapshot_month.desc(),
-                CustomerPriceTypeCase.id.desc(),
-            )
-        ).all()
-        result: dict[str, dict[str, Any]] = {}
-        for counterparty_ref, case_row in rows:
-            if counterparty_ref in result:
-                continue
-            evidence = dict(case_row.manager_action_completeness or {})
-            if (
-                evidence.get("status") == "completed"
-                and evidence.get("source") == "bitrix_readback"
-            ):
-                result[counterparty_ref] = evidence
-        return result
 
     def persist_results(
         self,
@@ -438,7 +377,7 @@ class SqlAlchemyCustomerPriceTypeRepository:
                     case_type=decision.case_type or "special_review",
                     review_type=decision.review_type,
                     reasons=list(decision.reasons),
-                    stage=_initial_case_stage(decision),
+                    stage="NEW",
                     owner_ref=fact.owner_ref,
                     owner_name=fact.owner_name,
                     department_ref=fact.department_ref,
@@ -461,7 +400,7 @@ class SqlAlchemyCustomerPriceTypeRepository:
                         event_type="case_created",
                         actor="system",
                         source="calculation",
-                        after_status=_initial_case_stage(decision),
+                        after_status="NEW",
                         comment=decision.recommendation_reason,
                         metadata_json={"snapshot_hash": decision.snapshot_hash, "run_id": run.id},
                         idempotency_key=f"case-created:{case.case_key}",
@@ -559,11 +498,11 @@ class SqlAlchemyCustomerPriceTypeRepository:
             if reclassified:
                 event_type = "case_reclassified"
                 comment = "Новый расчёт изменил операционную очередь кейса."
-                case.stage = _initial_case_stage(decision)
+                case.stage = "NEW"
             elif reopened:
                 event_type = "case_reopened"
                 comment = "Новый расчёт снова требует операционного действия."
-                case.stage = _initial_case_stage(decision)
+                case.stage = "NEW"
             self.session.add(
                 CustomerPriceTypeCaseEvent(
                     case_id=case.id,
@@ -685,12 +624,6 @@ class SqlAlchemyCustomerPriceTypeRepository:
                 CustomerPriceTypeProfile,
                 CustomerPriceTypeSnapshot,
                 CustomerPriceTypeQualitySample,
-                exists(
-                    select(CustomerPriceTypeReview.id).where(
-                        CustomerPriceTypeReview.snapshot_id == CustomerPriceTypeSnapshot.id,
-                        CustomerPriceTypeReview.result == "data_issue",
-                    )
-                ).label("current_data_issue"),
             )
             .join(
                 CustomerPriceTypeSnapshot,
@@ -723,7 +656,7 @@ class SqlAlchemyCustomerPriceTypeRepository:
             .offset(offset)
             .limit(limit)
         ).all()
-        return [(row[0], row[1], row[2], bool(row[3])) for row in rows], total
+        return [(row[0], row[1], row[2]) for row in rows], total
 
     def list_data_issues(
         self,
@@ -785,32 +718,9 @@ class SqlAlchemyCustomerPriceTypeRepository:
                 *profile_filter,
             )
         ).all()
-        current_reviews = self.session.execute(
-            select(
-                CustomerPriceTypeProfile,
-                CustomerPriceTypeSnapshot,
-                CustomerPriceTypeReview,
-            )
-            .join(
-                CustomerPriceTypeSnapshot,
-                CustomerPriceTypeSnapshot.profile_id == CustomerPriceTypeProfile.id,
-            )
-            .join(
-                CustomerPriceTypeReview,
-                CustomerPriceTypeReview.snapshot_id == CustomerPriceTypeSnapshot.id,
-            )
-            .where(
-                CustomerPriceTypeSnapshot.run_id == run_id,
-                CustomerPriceTypeReview.result == "data_issue",
-                CustomerPriceTypeProfile.is_service_card.is_(False),
-                *profile_filter,
-            )
-        ).all()
-        result = (
-            [("calculation", row[0], row[1], row[2]) for row in automatic]
-            + [("expert", row[0], row[1], row[2]) for row in expert]
-            + [("expert", row[0], row[1], row[2]) for row in current_reviews]
-        )
+        result = [("calculation", row[0], row[1], row[2]) for row in automatic] + [
+            ("expert", row[0], row[1], row[2]) for row in expert
+        ]
         return sorted(
             result,
             key=lambda row: (
@@ -1541,189 +1451,3 @@ class SqlAlchemyCustomerPriceTypeRepository:
                 CustomerPriceTypeQualitySample.system_group == "special_review"
             )
         return [(row[0], row[1]) for row in self.session.execute(statement).all()]
-
-    def list_review_cards(
-        self,
-        *,
-        run_id: int,
-        access: CustomerPriceTypeAccessScope,
-        search: str | None,
-    ) -> list[tuple[Any, ...]]:
-        price_review = aliased(CustomerPriceTypeReview)
-        action_review = aliased(CustomerPriceTypeReview)
-        filters: list[Any] = [
-            CustomerPriceTypeSnapshot.run_id == run_id,
-            CustomerPriceTypeProfile.is_service_card.is_(False),
-            *self._profile_scope_predicates(access),
-        ]
-        if search:
-            pattern = f"%{search.strip()}%"
-            filters.append(
-                or_(
-                    CustomerPriceTypeProfile.counterparty_ref.ilike(pattern),
-                    CustomerPriceTypeProfile.counterparty_code.ilike(pattern),
-                    CustomerPriceTypeProfile.counterparty_name.ilike(pattern),
-                )
-            )
-        statement = (
-            select(
-                CustomerPriceTypeProfile,
-                CustomerPriceTypeSnapshot,
-                CustomerPriceTypeCase,
-                price_review,
-                action_review,
-            )
-            .join(
-                CustomerPriceTypeSnapshot,
-                CustomerPriceTypeSnapshot.profile_id == CustomerPriceTypeProfile.id,
-            )
-            .outerjoin(
-                CustomerPriceTypeCase,
-                CustomerPriceTypeCase.current_snapshot_id == CustomerPriceTypeSnapshot.id,
-            )
-            .outerjoin(
-                price_review,
-                and_(
-                    price_review.snapshot_id == CustomerPriceTypeSnapshot.id,
-                    price_review.review_kind == "price_type",
-                ),
-            )
-            .outerjoin(
-                action_review,
-                and_(
-                    action_review.snapshot_id == CustomerPriceTypeSnapshot.id,
-                    action_review.review_kind == "client_action",
-                ),
-            )
-            .where(*filters)
-            .order_by(
-                CustomerPriceTypeProfile.counterparty_name.asc(),
-                CustomerPriceTypeProfile.id.asc(),
-            )
-        )
-        return [tuple(row) for row in self.session.execute(statement).all()]
-
-    def get_review_card(
-        self,
-        *,
-        snapshot_id: int,
-        access: CustomerPriceTypeAccessScope,
-    ) -> tuple[Any, ...] | None:
-        rows = self.list_review_cards(
-            run_id=(
-                self.session.scalar(
-                    select(CustomerPriceTypeSnapshot.run_id).where(
-                        CustomerPriceTypeSnapshot.id == snapshot_id
-                    )
-                )
-                or -1
-            ),
-            access=access,
-            search=None,
-        )
-        return next((row for row in rows if row[1].id == snapshot_id), None)
-
-    def get_review(self, *, snapshot_id: int, review_kind: str) -> CustomerPriceTypeReview | None:
-        return self.session.scalar(
-            select(CustomerPriceTypeReview).where(
-                CustomerPriceTypeReview.snapshot_id == snapshot_id,
-                CustomerPriceTypeReview.review_kind == review_kind,
-            )
-        )
-
-    def external_actions_for_review(self, review_id: int) -> list[CustomerPriceTypeExternalAction]:
-        return list(
-            self.session.scalars(
-                select(CustomerPriceTypeExternalAction)
-                .where(CustomerPriceTypeExternalAction.review_id == review_id)
-                .order_by(CustomerPriceTypeExternalAction.id.asc())
-            )
-        )
-
-    def onec_contract_actions(
-        self, external_action_id: int
-    ) -> list[CustomerPriceTypeOneCContractAction]:
-        return list(
-            self.session.scalars(
-                select(CustomerPriceTypeOneCContractAction)
-                .where(CustomerPriceTypeOneCContractAction.external_action_id == external_action_id)
-                .order_by(CustomerPriceTypeOneCContractAction.id.asc())
-            )
-        )
-
-    def cancellable_onec_action_for_case(
-        self, case_id: int
-    ) -> CustomerPriceTypeExternalAction | None:
-        return self.session.scalar(
-            select(CustomerPriceTypeExternalAction)
-            .where(
-                CustomerPriceTypeExternalAction.case_id == case_id,
-                CustomerPriceTypeExternalAction.action_kind == "onec_change",
-                CustomerPriceTypeExternalAction.status.in_(
-                    ("held", "pending", "preflight", "ready_to_apply", "applying")
-                ),
-            )
-            .order_by(CustomerPriceTypeExternalAction.id.desc())
-        )
-
-    def review_metrics(self, *, run_id: int, review_kind: str) -> dict[str, int | float]:
-        reviews = list(
-            self.session.scalars(
-                select(CustomerPriceTypeReview)
-                .join(
-                    CustomerPriceTypeSnapshot,
-                    CustomerPriceTypeSnapshot.id == CustomerPriceTypeReview.snapshot_id,
-                )
-                .where(
-                    CustomerPriceTypeSnapshot.run_id == run_id,
-                    CustomerPriceTypeReview.review_kind == review_kind,
-                )
-            )
-        )
-        total = len(reviews)
-        corrected = sum(item.result == "correct" for item in reviews)
-        data_issues = sum(item.result == "data_issue" for item in reviews)
-        return {
-            "reviewed_count": total,
-            "confirmed_count": sum(item.result == "confirm" for item in reviews),
-            "corrected_count": corrected,
-            "no_action_count": sum(item.result == "no_action" for item in reviews),
-            "data_issue_count": data_issues,
-            "correction_rate": round(corrected / total, 4) if total else 0.0,
-        }
-
-    def internal_no_change_audit_snapshot_ids(self, *, run_id: int, limit: int = 30) -> set[int]:
-        rows = self.session.scalars(
-            select(CustomerPriceTypeSnapshot.id)
-            .join(
-                CustomerPriceTypeProfile,
-                CustomerPriceTypeProfile.id == CustomerPriceTypeSnapshot.profile_id,
-            )
-            .where(
-                CustomerPriceTypeSnapshot.run_id == run_id,
-                CustomerPriceTypeSnapshot.source_status == "ready",
-                CustomerPriceTypeSnapshot.current_price_type.is_not(None),
-                CustomerPriceTypeSnapshot.recommended_price_type
-                == CustomerPriceTypeSnapshot.current_price_type,
-                CustomerPriceTypeSnapshot.system_recommendation.not_in(
-                    (
-                        "data_check",
-                        "insufficient_history",
-                        "new_client",
-                        "excluded_without_sales_history",
-                        "excluded_service_card",
-                    )
-                ),
-                or_(
-                    CustomerPriceTypeSnapshot.case_type.is_(None),
-                    CustomerPriceTypeSnapshot.case_type != "data_check",
-                ),
-                CustomerPriceTypeProfile.is_service_card.is_(False),
-            )
-            .order_by(
-                CustomerPriceTypeSnapshot.snapshot_hash.asc(),
-                CustomerPriceTypeSnapshot.id.asc(),
-            )
-            .limit(limit)
-        ).all()
-        return {int(item) for item in rows}

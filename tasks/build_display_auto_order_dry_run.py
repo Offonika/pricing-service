@@ -12,14 +12,20 @@ from decimal import ROUND_CEILING, Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy import bindparam, func, inspect, select, text
+from sqlalchemy import bindparam, func, select, text
+from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.infrastructure.db.engines import build_engine
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
 )
-from app.services.assortment_lifecycle_v2_policy import load_assortment_lifecycle_v2_policy
+from app.services.display_family_order_recommendation import (
+    FAMILY_RECOMMENDATION_COLUMNS,
+    apply_display_family_order_recommendations,
+    display_family_order_recommendation_summary,
+)
+from app.services.display_family_registry import load_active_display_family_member_contexts
 from app.services.display_scope_policy import (
     empty_display_scope_audit,
     filter_display_scope_records,
@@ -29,6 +35,10 @@ from app.services.onec_stock_availability import merged_interval_days
 from app.services.procurement_b2b_customer_demand import (
     B2BSkuDemandProfile,
     load_b2b_customer_demand_profiles,
+)
+from app.services.query_batching import (
+    load_text_mapping_in_batches,
+    normalized_text_batches,
 )
 
 DEFAULT_OUTPUT_CSV = (
@@ -55,15 +65,10 @@ CSV_COLUMNS = [
     "nomenclature_code",
     "name",
     "status_label",
-    "demand_state",
-    "demand_state_label",
     "quality_raw",
     "quality_normalized",
     "price_segment",
-    "inventory_cost_per_unit",
-    "cost_quartile",
-    "minimum_representation_qty",
-    "representation_floor_applied",
+    *FAMILY_RECOMMENDATION_COLUMNS,
     "latest_purchase_price",
     "latest_purchase_price_at",
     "analog_group_id",
@@ -90,7 +95,6 @@ CSV_COLUMNS = [
     "central_stock_qty",
     "total_stock_qty",
     "incoming_qty",
-    "reliable_incoming_qty",
     "incoming_order_count",
     "sales_qty_window",
     "sales_qty_window_medium",
@@ -456,30 +460,18 @@ def main() -> int:
         or settings.onec_database_url
         or ""
     )
-    if args.lifecycle_facts_json:
-        items, scope_audit = load_auto_order_items_from_facts_with_scope_audit(
-            args.lifecycle_facts_json,
+    app_engine = build_engine(database_url, pool_pre_ping=True)
+    try:
+        items, run_id, scope_policy_audit = load_auto_order_items_with_scope_audit(
+            app_engine,
             folder=args.folder,
-            lifecycle_model_version=args.lifecycle_model_version,
             include_sale_review_candidates=(
                 args.include_sale_review_candidates
                 or auto_order_policy.include_sale_review_candidates
             ),
         )
-        run_id = None
-    else:
-        app_engine = build_engine(database_url, pool_pre_ping=True)
-        try:
-            items, run_id, scope_audit = load_auto_order_items_with_scope_audit(
-                app_engine,
-                folder=args.folder,
-                include_sale_review_candidates=(
-                    args.include_sale_review_candidates
-                    or auto_order_policy.include_sale_review_candidates
-                ),
-            )
-        finally:
-            app_engine.dispose()
+    finally:
+        app_engine.dispose()
 
     policy = load_warehouse_policy(args.warehouse_policy_json)
     source_errors: dict[str, str] = {}
@@ -520,11 +512,11 @@ def main() -> int:
                         ),
                     )
                 )
-            analog_scope_result = filter_display_scope_records(items)
-            items = list(analog_scope_result.included)
-            scope_audit = merge_display_scope_audits(
-                scope_audit,
-                analog_scope_result.audit,
+            expanded_scope_result = filter_display_scope_records(items)
+            items = list(expanded_scope_result.included)
+            scope_policy_audit = merge_display_scope_audits(
+                scope_policy_audit,
+                expanded_scope_result.audit,
             )
             codes = tuple(str(item["nomenclature_code"]) for item in items)
             facts["stock"] = fetch_stock_totals(onec_engine, codes=codes, policy=policy)
@@ -604,14 +596,33 @@ def main() -> int:
         b2b_customer_demand_profiles=b2b_customer_demand_profiles,
         b2b_customer_demand_error=b2b_customer_demand_error,
         as_of=args.as_of,
-        lifecycle_model_version=args.lifecycle_model_version,
     )
+    if args.use_active_display_family_registry:
+        family_registry_error = ""
+        membership_by_code = {}
+        family_engine = build_engine(database_url, pool_pre_ping=True)
+        try:
+            with Session(family_engine) as family_session:
+                membership_by_code = load_active_display_family_member_contexts(
+                    family_session,
+                    nomenclature_codes=[str(row.get("nomenclature_code") or "") for row in rows],
+                )
+        except Exception as exc:  # noqa: BLE001 - shadow output must explain registry gaps.
+            family_registry_error = f"{type(exc).__name__}: {exc}"
+            source_errors["display_family_registry"] = family_registry_error
+        finally:
+            family_engine.dispose()
+        apply_display_family_order_recommendations(
+            rows,
+            membership_by_code=membership_by_code,
+            registry_error=family_registry_error,
+        )
     write_csv(args.output_csv, rows)
     summary = build_summary(
         rows,
         run_id=run_id,
         source_errors=source_errors,
-        scope_policy_audit=scope_audit,
+        scope_policy_audit=scope_policy_audit,
     )
     if args.output_json:
         args.output_json.parent.mkdir(parents=True, exist_ok=True)
@@ -635,9 +646,6 @@ def load_auto_order_items_with_scope_audit(
 ) -> tuple[list[dict[str, Any]], int | None, dict[str, Any]]:
     table = ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE
     with engine.connect() as conn:
-        available_columns = {
-            str(column["name"]) for column in inspect(engine).get_columns(table.name)
-        }
         run_id = conn.execute(
             select(func.max(table.c.last_run_id)).where(table.c.folder.ilike(f"%{folder}%"))
         ).scalar()
@@ -661,13 +669,8 @@ def load_auto_order_items_with_scope_audit(
                     table.c.status == "working",
                 ]
             )
-        selectable_columns = [column for column in table.c if column.name in available_columns]
         rows = (
-            conn.execute(
-                select(*selectable_columns)
-                .where(*conditions)
-                .order_by(table.c.nomenclature_code.asc())
-            )
+            conn.execute(select(table).where(*conditions).order_by(table.c.nomenclature_code.asc()))
             .mappings()
             .all()
         )
@@ -687,101 +690,6 @@ def load_auto_order_items(
         include_sale_review_candidates=include_sale_review_candidates,
     )
     return items, run_id
-
-
-def load_auto_order_items_from_facts_with_scope_audit(
-    path: Path,
-    *,
-    folder: str,
-    lifecycle_model_version: str,
-    include_sale_review_candidates: bool = False,
-) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-    """Build the dry-run cohort from one immutable lifecycle fact snapshot."""
-
-    from app.services.assortment_lifecycle import (
-        ASSORTMENT_STATUS_LABELS,
-        decide_legacy_assortment_status,
-        decide_target_assortment_status,
-    )
-    from tasks.build_assortment_lifecycle_updates import (
-        _fact_status_decision_from_record,
-        _lifecycle_input_from_record,
-        _load_records,
-        _matches_folder,
-    )
-
-    policy = load_assortment_lifecycle_v2_policy()
-    items: list[dict[str, Any]] = []
-    scope_result = filter_display_scope_records(_load_records(path))
-    for raw in scope_result.included:
-        if folder and not _matches_folder(raw, folder):
-            continue
-        if raw.get("future_ka_mapping_status") != "ready":
-            continue
-        if raw.get("demand_method_code") != "available_days_average":
-            continue
-        lifecycle_input = _lifecycle_input_from_record(raw)
-        legacy = _fact_status_decision_from_record(
-            raw,
-            decide_legacy_assortment_status(lifecycle_input),
-        )
-        target = decide_target_assortment_status(
-            lifecycle_input,
-            demand_policy=policy.demand,
-        )
-        decision = target if lifecycle_model_version in {"v2-shadow", "v2-live"} else legacy
-        effective_status = decision.status
-        effective_status_label = decision.status_label
-        effective_manual_review_required = decision.manual_review_required
-        effective_auto_order_allowed = decision.auto_order_allowed
-        if lifecycle_model_version == "v1" and raw.get("previous_status"):
-            try:
-                persisted_status = type(decision.status)(raw["previous_status"])
-                effective_status = persisted_status
-                effective_status_label = ASSORTMENT_STATUS_LABELS[persisted_status]
-                effective_manual_review_required = False
-                effective_auto_order_allowed = persisted_status in {
-                    type(decision.status).SALE,
-                    type(decision.status).WORKING,
-                }
-            except ValueError:
-                pass
-        if include_sale_review_candidates:
-            if effective_status.value not in {"working", "sale"} or (
-                effective_manual_review_required
-            ):
-                continue
-        elif not effective_auto_order_allowed or effective_status.value != "working":
-            continue
-        items.append(
-            {
-                **raw,
-                "status": effective_status.value,
-                "status_label": effective_status_label,
-                "demand_state": decision.demand_state.value if decision.demand_state else "",
-                "demand_state_label": decision.demand_state_label,
-                "auto_order_allowed": effective_auto_order_allowed,
-                "manual_review_required": effective_manual_review_required,
-                "blockers": list(decision.blockers),
-            }
-        )
-    return items, scope_result.audit
-
-
-def load_auto_order_items_from_facts(
-    path: Path,
-    *,
-    folder: str,
-    lifecycle_model_version: str,
-    include_sale_review_candidates: bool = False,
-) -> list[dict[str, Any]]:
-    items, _scope_audit = load_auto_order_items_from_facts_with_scope_audit(
-        path,
-        folder=folder,
-        lifecycle_model_version=lifecycle_model_version,
-        include_sale_review_candidates=include_sale_review_candidates,
-    )
-    return items
 
 
 def load_warehouse_policy(path: Path) -> WarehousePolicy:
@@ -900,8 +808,15 @@ SELLABLE_WAREHOUSE_ROLE_NAMES = ("Точка продаж", "Транзит", "�
 def fetch_stock_totals(
     engine, *, codes: Sequence[str], policy: WarehousePolicy
 ) -> dict[str, dict[str, Any]]:
-    if not codes:
+    code_batches = normalized_text_batches(codes)
+    if not code_batches:
         return {}
+    if len(code_batches) > 1:
+        return load_text_mapping_in_batches(
+            codes,
+            lambda batch: fetch_stock_totals(engine, codes=batch, policy=policy),
+        )
+    codes = code_batches[0]
     sql = _expanding_text(
         f"""
         SELECT
@@ -949,8 +864,15 @@ def fetch_stock_totals(
 def fetch_reserved_totals(
     engine, *, codes: Sequence[str], policy: WarehousePolicy
 ) -> dict[str, dict[str, Any]]:
-    if not codes:
+    code_batches = normalized_text_batches(codes)
+    if not code_batches:
         return {}
+    if len(code_batches) > 1:
+        return load_text_mapping_in_batches(
+            codes,
+            lambda batch: fetch_reserved_totals(engine, codes=batch, policy=policy),
+        )
+    codes = code_batches[0]
     sql = _expanding_text(
         """
         SELECT
@@ -979,8 +901,15 @@ def fetch_incoming_totals(
     codes: Sequence[str],
     as_of: date,
 ) -> dict[str, dict[str, Any]]:
-    if not codes:
+    code_batches = normalized_text_batches(codes)
+    if not code_batches:
         return {}
+    if len(code_batches) > 1:
+        return load_text_mapping_in_batches(
+            codes,
+            lambda batch: fetch_incoming_totals(engine, codes=batch, as_of=as_of),
+        )
+    codes = code_batches[0]
     empty_date = datetime.combine(ONEC_EMPTY_DATE, time.min)
     arriving_10_days_at = datetime.combine(as_of + timedelta(days=10), time.max)
     arriving_20_days_at = datetime.combine(as_of + timedelta(days=20), time.max)
@@ -1079,8 +1008,24 @@ def fetch_sales_totals(
     trend_window_short_days: int = TREND_WINDOW_SHORT_DAYS,
     marketplace_activity_ref: str = MARKETPLACE_ACTIVITY_REF,
 ) -> dict[str, dict[str, Any]]:
-    if not codes:
+    code_batches = normalized_text_batches(codes)
+    if not code_batches:
         return {}
+    if len(code_batches) > 1:
+        return load_text_mapping_in_batches(
+            codes,
+            lambda batch: fetch_sales_totals(
+                engine,
+                codes=batch,
+                sellable_codes=sellable_codes,
+                date_from=date_from,
+                date_to=date_to,
+                trend_window_medium_days=trend_window_medium_days,
+                trend_window_short_days=trend_window_short_days,
+                marketplace_activity_ref=marketplace_activity_ref,
+            ),
+        )
+    codes = code_batches[0]
     window_medium_from = datetime.combine(date_to, time.min) - timedelta(
         days=trend_window_medium_days
     )
@@ -1212,7 +1157,7 @@ PENSION_CANDIDATE_MIN_DAYS_IN_SALE = Decimal("15")
 # если за длинное окно товар был на полке меньше этого числа дней, база для
 # скорости ненадёжна - поправку наличия не применяем вообще (считаем по
 # календарю), а строку с положительным заказом отдаём в ручную проверку.
-# Исходная методика считает такой порог обязательным:
+# Для мягкой поправки наличия такой порог обязателен:
 # нормализация по нескольким дням наличия ведёт к заказу неликвида
 # ("шапки пролежали год, разошлись за два дня"). Обсуждение - чат
 # 2026-08-04; фиксация - assortment-status-legacy-rule-inventory.md, раздел 1.
@@ -1270,8 +1215,21 @@ def fetch_days_in_sale_totals(
     # 2026-07-20) этой правкой не выполняется и остаётся отдельной задачей:
     # он требует продаж в разрезе точек, распределения товара в пути и
     # правила "сначала перемещение, затем закупка".
-    if not codes or not physical_sales_point_codes:
+    code_batches = normalized_text_batches(codes)
+    if not code_batches or not physical_sales_point_codes:
         return {}
+    if len(code_batches) > 1:
+        return load_text_mapping_in_batches(
+            codes,
+            lambda batch: fetch_days_in_sale_totals(
+                engine,
+                codes=batch,
+                physical_sales_point_codes=physical_sales_point_codes,
+                date_to=date_to,
+                windows_days=windows_days,
+            ),
+        )
+    codes = code_batches[0]
     windows = sorted({int(window) for window in windows_days if int(window) > 0})
     if not windows:
         return {}
@@ -1321,8 +1279,23 @@ def fetch_return_totals(
     batch_error_window_days: int = BATCH_ERROR_WINDOW_DAYS,
     defect_rate_window_days: int = DEFECT_RATE_WINDOW_DAYS,
 ) -> dict[str, dict[str, Any]]:
-    if not codes:
+    code_batches = normalized_text_batches(codes)
+    if not code_batches:
         return {}
+    if len(code_batches) > 1:
+        return load_text_mapping_in_batches(
+            codes,
+            lambda batch: fetch_return_totals(
+                engine,
+                codes=batch,
+                sellable_codes=sellable_codes,
+                date_from=date_from,
+                date_to=date_to,
+                batch_error_window_days=batch_error_window_days,
+                defect_rate_window_days=defect_rate_window_days,
+            ),
+        )
+    codes = code_batches[0]
     batch_error_window_from = datetime.combine(date_to, time.min) - timedelta(
         days=batch_error_window_days
     )
@@ -1375,8 +1348,15 @@ def fetch_return_totals(
 
 
 def fetch_latest_purchase_prices(engine, *, codes: Sequence[str]) -> dict[str, dict[str, Any]]:
-    if not codes:
+    code_batches = normalized_text_batches(codes)
+    if not code_batches:
         return {}
+    if len(code_batches) > 1:
+        return load_text_mapping_in_batches(
+            codes,
+            lambda batch: fetch_latest_purchase_prices(engine, codes=batch),
+        )
+    codes = code_batches[0]
     sql = _expanding_text(
         """
         WITH latest_price AS (
@@ -1496,10 +1476,7 @@ def build_dry_run_rows(
     b2b_customer_demand_profiles: Mapping[str, B2BSkuDemandProfile] | None = None,
     b2b_customer_demand_error: str = "",
     as_of: date | None = None,
-    lifecycle_model_version: str = "v2-shadow",
 ) -> list[dict[str, Any]]:
-    if lifecycle_model_version not in {"v1", "v2-shadow", "v2-live"}:
-        raise ValueError(f"unsupported assortment lifecycle model: {lifecycle_model_version}")
     rows: list[dict[str, Any]] = []
     scoped_items = filter_display_scope_records(items).included
     supported_analog_policy = supported_analog_policy or SupportedAnalogPolicy()
@@ -1536,7 +1513,6 @@ def build_dry_run_rows(
         pipeline_later_qty = _decimal(incoming.get("pipeline_later_qty"))
         pipeline_no_date_qty = _decimal(incoming.get("pipeline_no_date_qty"))
         pipeline_cargo_handoff_qty = _decimal(incoming.get("pipeline_cargo_handoff_qty"))
-        reliable_incoming_qty = pipeline_cargo_handoff_qty
         pipeline_supplier_processing_qty = _decimal(
             incoming.get("pipeline_supplier_processing_qty")
         )
@@ -1837,16 +1813,10 @@ def build_dry_run_rows(
                 "name": _clean(item.get("name")),
                 "status_label": _clean(item.get("status_label")),
                 "_assortment_status": _clean(item.get("status")),
-                "demand_state": _clean(item.get("demand_state")),
-                "demand_state_label": _clean(item.get("demand_state_label")),
                 "_auto_order_allowed": bool(item.get("auto_order_allowed", True)),
                 "quality_raw": _clean(item.get("quality_raw")),
                 "quality_normalized": _clean(item.get("quality_normalized")),
                 "price_segment": _clean(item.get("price_segment")),
-                "inventory_cost_per_unit": _clean(item.get("inventory_cost_per_unit")),
-                "cost_quartile": _clean(item.get("cost_quartile")),
-                "minimum_representation_qty": _clean(item.get("minimum_representation_qty")),
-                "representation_floor_applied": "",
                 "latest_purchase_price": _out_decimal(latest_purchase_price, places=2),
                 "latest_purchase_price_at": _date_text(purchase.get("latest_purchase_price_at")),
                 "analog_group_id": "",
@@ -1873,7 +1843,6 @@ def build_dry_run_rows(
                 "central_stock_qty": _out_decimal(central_stock_qty),
                 "total_stock_qty": _out_decimal(total_stock_qty),
                 "incoming_qty": _out_decimal(incoming_qty),
-                "reliable_incoming_qty": _out_decimal(reliable_incoming_qty),
                 "incoming_order_count": int(incoming.get("incoming_order_count") or 0),
                 "sales_qty_window": _out_decimal(sales_qty),
                 "sales_qty_window_medium": _out_decimal(sales_qty_medium),
@@ -2014,13 +1983,6 @@ def build_dry_run_rows(
         max_order_qty=max_order_qty,
         order_rounding_rules=order_rounding_rules,
     )
-    if lifecycle_model_version in {"v2-shadow", "v2-live"}:
-        apply_target_representation_floor(
-            rows,
-            min_order_qty=min_order_qty,
-            max_order_qty=max_order_qty,
-            order_rounding_rules=order_rounding_rules,
-        )
     # Финальный барьер, не обойти ни одним из шагов выше (apply_analog_group_
     # decisions/_mark_analog_winner уже проверяли blockers по отдельности, но
     # на реальном прогоне 2026-07-31 нашлось ЕЩЁ ДВЕ утечки в других шагах
@@ -2088,54 +2050,6 @@ def build_dry_run_rows(
             f"{row.get('reason_ru', '')}"
         ).strip()
     return rows
-
-
-def apply_target_representation_floor(
-    rows: list[dict[str, Any]],
-    *,
-    min_order_qty: int,
-    max_order_qty: int | None,
-    order_rounding_rules: Sequence[OrderRoundingRule],
-) -> None:
-    """Apply the v2 Q1/Q2 representation minimum as a target floor once."""
-
-    for row in rows:
-        if _clean(row.get("_assortment_status")) != "sale":
-            continue
-        if _clean(row.get("demand_state")) == "spike":
-            continue
-        if _clean(row.get("cost_quartile")) not in {"Q1", "Q2"}:
-            continue
-        minimum_qty = _decimal(row.get("minimum_representation_qty"))
-        if minimum_qty <= 0 or _clean(row.get("blockers")):
-            continue
-        demand_target_qty = _decimal(row.get("target_stock_qty"))
-        target_stock_qty = max(demand_target_qty, minimum_qty)
-        if target_stock_qty == demand_target_qty:
-            continue
-        free_stock_qty = _decimal(row.get("free_stock_qty"))
-        reliable_incoming_qty = _decimal(row.get("reliable_incoming_qty"))
-        raw = _ceil_decimal(
-            max(Decimal("0"), target_stock_qty - free_stock_qty - reliable_incoming_qty)
-        )
-        qty = rounded_order_qty(
-            raw,
-            min_order_qty=min_order_qty,
-            max_order_qty=max_order_qty,
-            order_rounding_rules=order_rounding_rules,
-        )
-        row["target_stock_qty"] = _out_decimal(target_stock_qty)
-        row["recommended_order_qty_raw"] = _out_decimal(raw)
-        row["recommended_order_qty"] = _out_decimal(qty)
-        row["representation_floor_applied"] = "yes"
-        row["dry_run_decision"] = "order" if qty > 0 else "do_not_order"
-        _append_warning(row, "minimum_representation_floor_applied")
-        row["reason_ru"] = (
-            f"Минимальная представленность {minimum_qty} шт задаёт нижнюю границу цели; "
-            f"расчётный спрос {demand_target_qty} шт не прибавляется к ней повторно. "
-            f"Свободно {free_stock_qty} шт, надёжно в пути {reliable_incoming_qty} шт, "
-            f"рекомендуем {qty} шт."
-        )
 
 
 def apply_price_batch_policy(
@@ -3104,6 +3018,7 @@ def build_summary(
         "scope_policy": dict(
             scope_policy_audit or empty_display_scope_audit(source_item_count=len(rows))
         ),
+        "display_family_order_recommendation": display_family_order_recommendation_summary(rows),
     }
 
 
@@ -3841,20 +3756,6 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--onec-database-url", default="")
     parser.add_argument("--folder", default="дисплеи")
     parser.add_argument(
-        "--lifecycle-facts-json",
-        type=Path,
-        help="Immutable lifecycle fact snapshot for DB-free legacy/v2 quantity comparison.",
-    )
-    parser.add_argument(
-        "--lifecycle-model-version",
-        choices=("v1", "v2-shadow", "v2-live"),
-        default="v2-shadow",
-        help=(
-            "v2-shadow applies the candidate representation floor only to the read-only "
-            "report; v1 preserves the legacy quantity calculation."
-        ),
-    )
-    parser.add_argument(
         "--include-sale-review-candidates",
         action="store_true",
         help=(
@@ -3868,6 +3769,14 @@ def _parse_args() -> argparse.Namespace:
         help=(
             "For review reports, enrich analog groups with matching display catalog items "
             "from 1C Reference62. Catalog-only rows are review-only."
+        ),
+    )
+    parser.add_argument(
+        "--use-active-display-family-registry",
+        action="store_true",
+        help=(
+            "Attach a read-only family order-pool recommendation using only the "
+            "verified active registry. Base SKU quantities remain in separate columns."
         ),
     )
     parser.add_argument(

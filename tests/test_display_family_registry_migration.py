@@ -20,18 +20,6 @@ def _load_migration():
     return module
 
 
-def _load_merge_migration():
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "alembic/versions/1b9d3f5a7c8e_merge_display_family_registry.py"
-    )
-    spec = importlib.util.spec_from_file_location("display_family_registry_merge", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_display_family_registry_migration_upgrade_and_downgrade(tmp_path: Path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'display-family.db'}")
     migration = _load_migration()
@@ -72,7 +60,10 @@ def test_display_family_registry_migration_upgrade_and_downgrade(tmp_path: Path)
 
 def test_display_family_registry_migration_is_isolated_from_pending_schema_branch() -> None:
     migration = _load_migration()
-    merge = _load_merge_migration()
+    versions = Path(__file__).resolve().parents[1] / "alembic/versions"
 
     assert migration.down_revision == "c3e5a7b9d1f2"
-    assert set(merge.down_revision) == {"0a8c2e4f6b7d", "f6b8d0e2a4c5"}
+    assert not (versions / "d4f6a8c0e2b3_customer_price_type_reviews_v2.py").exists()
+    assert not (versions / "e5a7c9d1f3b4_add_assortment_lifecycle_v2_shadow.py").exists()
+    assert not (versions / "f6b8d0e2a4c5_add_assortment_stock_inflow_dates.py").exists()
+    assert not (versions / "1b9d3f5a7c8e_merge_display_family_registry.py").exists()

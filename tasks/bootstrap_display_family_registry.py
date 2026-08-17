@@ -28,7 +28,7 @@ from app.services.display_family_registry import (
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Validate and bootstrap the exact accepted display-family preflight v2 bundle. "
+            "Validate and activate the exact accepted display-family scope-policy bundle. "
             "The default mode is a read-only dry-run."
         )
     )
@@ -36,10 +36,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--apply",
         action="store_true",
-        help="Apply the validated bootstrap or rollback atomically to the application DB",
+        help="Apply the validated initial/successor activation or rollback atomically",
     )
     parser.add_argument("--actor", help="Required audit actor for --apply")
-    parser.add_argument("--reason", help="Required for rollback; optional bootstrap override")
+    parser.add_argument("--reason", help="Required for rollback; optional activation override")
     parser.add_argument(
         "--readback",
         action="store_true",

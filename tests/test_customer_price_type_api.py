@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
-from datetime import date, datetime
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
+from threading import Barrier
 
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
@@ -17,17 +19,19 @@ from app.domains.customer_price_types import (
     CustomerPriceTypeAccessScope,
     CustomerPriceTypeFacts,
 )
-from app.infrastructure.customer_price_types import SqlAlchemyCustomerPriceTypeRepository
 from app.main import app
 from app.models import Base
 from app.models.customer_price_type import (
     CustomerPriceTypeProfile,
-    CustomerPriceTypeQualitySample,
     CustomerPriceTypeReviewBatch,
     CustomerPriceTypeReviewBatchItem,
     CustomerPriceTypeSnapshot,
 )
-from app.services.customer_price_types import CustomerPriceTypeRunService
+from app.services.customer_price_types import (
+    CustomerPriceTypeQualityConflict,
+    CustomerPriceTypeQualityService,
+    CustomerPriceTypeRunService,
+)
 
 
 def _ref(value: int) -> str:
@@ -717,20 +721,6 @@ def test_storage_failures_and_openapi_read_only_contract(tmp_path: Path) -> None
             "get"
         ]
         assert legacy["deprecated"] is True
-        legacy_quality_prepare = schema["paths"][
-            "/api/customer-price-types/quality/samples/prepare"
-        ]["post"]
-        legacy_quality_review = schema["paths"][
-            "/api/customer-price-types/quality/samples/{sample_id}"
-        ]["put"]
-        assert legacy_quality_prepare["deprecated"] is True
-        assert legacy_quality_prepare["responses"]["410"]["description"] == (
-            "Историческая выборка заморожена"
-        )
-        assert legacy_quality_review["deprecated"] is True
-        assert legacy_quality_review["responses"]["410"]["description"] == (
-            "Историческая разметка заморожена"
-        )
         for path in (
             "/api/customer-price-types/summary",
             "/api/customer-price-types/worklists",
@@ -843,12 +833,12 @@ def test_quality_sample_review_metrics_idempotency_and_permissions(tmp_path: Pat
         _facts(302, owner="manager-2", department="department-1"),
         monthly_sales={
             **_facts(302, owner="manager-2", department="department-1").monthly_sales,
-            "2026-04": Decimal("100000"),
-            "2026-05": Decimal("100000"),
-            "2026-06": Decimal("100000"),
+            "2026-04": Decimal("1000000"),
+            "2026-05": Decimal("1000000"),
+            "2026-06": Decimal("1000000"),
         },
-        direct_onec_total_3m=Decimal("300000"),
-        ledger_total_3m=Decimal("300000"),
+        direct_onec_total_3m=Decimal("3000000"),
+        ledger_total_3m=Decimal("3000000"),
     )
     quality_case = replace(
         _facts(303, owner="manager-3", department="department-1"),
@@ -863,42 +853,40 @@ def test_quality_sample_review_metrics_idempotency_and_permissions(tmp_path: Pat
         source_statuses={"contracts": "ready"},
         run_key="quality-review-run",
     )
-    with factory() as session:
-        repository = SqlAlchemyCustomerPriceTypeRepository(session)
-        run = repository.latest_run()
-        created, total = repository.prepare_quality_samples(
-            run=run,
-            actor="historical-import",
-            per_group=2,
-        )
-        assert created == total == 3
-        session.commit()
-    internal = CustomerPriceTypeAccessScope(
-        actor="internal-expert", role="internal", can_view_money=True
+    network = CustomerPriceTypeAccessScope(
+        actor="network-expert", role="network_head", can_view_money=True
     )
     app.dependency_overrides = {
         get_db: _override_db(factory),
-        require_customer_price_type_access: lambda: internal,
+        require_customer_price_type_access: lambda: network,
     }
     try:
         client = TestClient(app)
-        frozen_prepare = client.post(
+        prepared = client.post(
             "/api/customer-price-types/quality/samples/prepare",
             json={"per_group": 2},
         )
-        assert frozen_prepare.status_code == 410
-        assert "заморожена" in frozen_prepare.json()["detail"]
+        assert prepared.status_code == 200, prepared.text
+        assert prepared.json()["created"] == 3
+        assert prepared.json()["total"] == 3
+        repeated = client.post(
+            "/api/customer-price-types/quality/samples/prepare",
+            json={"per_group": 2},
+        )
+        assert repeated.json()["created"] == 0
+        assert repeated.json()["total"] == 3
 
         samples = client.get("/api/customer-price-types/quality/samples").json()
         assert samples["total"] == 3
         isolate = next(item for item in samples["payload"] if item["system_group"] == "isolate")
+        no_action = next(item for item in samples["payload"] if item["system_group"] == "no_action")
         detail = client.get(f"/api/customer-price-types/quality/samples/{isolate['id']}")
         assert detail.status_code == 200, detail.text
         assert detail.json()["snapshot"]["money_visible"] is True
         assert detail.json()["snapshot"]["total_3m"] == "300.00"
         assert detail.json()["profile"]["owner_name"] == "manager-1"
 
-        frozen_review = client.put(
+        reviewed = client.put(
             f"/api/customer-price-types/quality/samples/{isolate['id']}",
             json={
                 "review_result": "incorrect",
@@ -907,7 +895,28 @@ def test_quality_sample_review_metrics_idempotency_and_permissions(tmp_path: Pat
                 "expected_version": isolate["version"],
             },
         )
-        assert frozen_review.status_code == 410
+        assert reviewed.status_code == 200, reviewed.text
+        assert reviewed.json()["status"] == "reviewed"
+        stale = client.put(
+            f"/api/customer-price-types/quality/samples/{isolate['id']}",
+            json={
+                "review_result": "correct",
+                "correct_group": "isolate",
+                "expected_version": isolate["version"],
+            },
+        )
+        assert stale.status_code == 409
+        assert (
+            client.put(
+                f"/api/customer-price-types/quality/samples/{no_action['id']}",
+                json={
+                    "review_result": "correct",
+                    "correct_group": "no_action",
+                    "expected_version": no_action["version"],
+                },
+            ).status_code
+            == 200
+        )
 
         metrics = client.get("/api/customer-price-types/quality/metrics")
         assert metrics.status_code == 200
@@ -916,10 +925,41 @@ def test_quality_sample_review_metrics_idempotency_and_permissions(tmp_path: Pat
         assert body["population_count"] == 3
         assert body["metrics_scope"] == "portfolio"
         assert body["metrics_ready"] is False
-        assert body["reviewed_count"] == 0
-        assert body["coverage"] == 0.0
-        assert body["override_rate"] == 0.0
-        assert body["critical_false_downgrade_count"] == 0
+        assert body["reviewed_count"] == 2
+        assert body["coverage"] == 0.6667
+        assert body["override_rate"] == 0.5
+        assert body["critical_false_downgrade_count"] == 1
+        assert body["groups"]["isolate"]["false_positive"] == 1
+        assert body["groups"]["no_action"]["recall"] == 0.5
+
+        barrier = Barrier(2)
+
+        def concurrent_review(actor: str) -> int:
+            access = CustomerPriceTypeAccessScope(
+                actor=actor, role="network_head", can_view_money=True
+            )
+            with factory() as session:
+                barrier.wait()
+                try:
+                    CustomerPriceTypeQualityService(session).review(
+                        sample_id=isolate["id"],
+                        review_result="incorrect",
+                        correct_group="no_action",
+                        comment=actor,
+                        expected_version=reviewed.json()["version"],
+                        access=access,
+                    )
+                except CustomerPriceTypeQualityConflict:
+                    return 409
+                return 200
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            concurrent_results = list(executor.map(concurrent_review, ("expert-a", "expert-b")))
+        assert sorted(concurrent_results) == [200, 409]
+        refreshed = client.get(f"/api/customer-price-types/quality/samples/{isolate['id']}").json()[
+            "sample"
+        ]
+        assert refreshed["version"] == reviewed.json()["version"] + 1
 
         quality = CustomerPriceTypeAccessScope(actor="quality-expert", role="quality")
         app.dependency_overrides[require_customer_price_type_access] = lambda: quality
@@ -947,7 +987,7 @@ def test_quality_sample_review_metrics_idempotency_and_permissions(tmp_path: Pat
             client.post(
                 "/api/customer-price-types/quality/samples/prepare", json={"per_group": 2}
             ).status_code
-            == 410
+            == 403
         )
     finally:
         app.dependency_overrides = {}
@@ -966,12 +1006,12 @@ def test_data_check_is_excluded_from_quality_sample_and_metrics(tmp_path: Path) 
         source_statuses={"contracts": "ready"},
         run_key="quality-null-target-run",
     )
-    internal = CustomerPriceTypeAccessScope(
-        actor="internal-expert", role="internal", can_view_money=True
+    network = CustomerPriceTypeAccessScope(
+        actor="network-expert", role="network_head", can_view_money=True
     )
     app.dependency_overrides = {
         get_db: _override_db(factory),
-        require_customer_price_type_access: lambda: internal,
+        require_customer_price_type_access: lambda: network,
     }
     try:
         client = TestClient(app)
@@ -979,7 +1019,7 @@ def test_data_check_is_excluded_from_quality_sample_and_metrics(tmp_path: Path) 
             client.post(
                 "/api/customer-price-types/quality/samples/prepare", json={"per_group": 1}
             ).status_code
-            == 410
+            == 200
         )
         samples = client.get("/api/customer-price-types/quality/samples").json()
         assert samples["total"] == 0
@@ -1007,24 +1047,26 @@ def test_profile_search_and_internal_data_issue_queue(tmp_path: Path) -> None:
         source_statuses={"contracts": "ready"},
         run_key="data-issue-workspace-run",
     )
-    internal = CustomerPriceTypeAccessScope(
-        actor="internal-expert", role="internal", can_view_money=True
+    network = CustomerPriceTypeAccessScope(
+        actor="network-expert", role="network_head", can_view_money=True
     )
     app.dependency_overrides = {
         get_db: _override_db(factory),
-        require_customer_price_type_access: lambda: internal,
+        require_customer_price_type_access: lambda: network,
     }
     try:
         client = TestClient(app)
-        network = CustomerPriceTypeAccessScope(
-            actor="network-expert", role="network_head", can_view_money=True
+        prepared = client.post(
+            "/api/customer-price-types/quality/samples/prepare", json={"per_group": 1}
         )
-        app.dependency_overrides[require_customer_price_type_access] = lambda: network
+        assert prepared.status_code == 200, prepared.text
+        assert prepared.json()["created"] == 1
+
         search = client.get("/api/customer-price-types/profiles", params={"search": "Клиент"})
         assert search.status_code == 200, search.text
         by_code = {item["counterparty_code"]: item for item in search.json()["payload"]}
         assert by_code["РБ000601"]["result_state"] == "change_proposed"
-        assert by_code["РБ000601"]["can_review"] is False
+        assert by_code["РБ000601"]["can_review"] is True
         assert by_code["РБ000602"]["result_state"] == "data_issue"
         assert by_code["РБ000602"]["result_label"] == "Данные проверяет техническая команда"
         assert by_code["РБ000602"]["recommended_price_type"] is None
@@ -1046,33 +1088,39 @@ def test_profile_search_and_internal_data_issue_queue(tmp_path: Path) -> None:
             == 0
         )
 
-        review_cards = client.get(
-            "/api/customer-price-types/reviews/cards",
-            params={"search": "РБ000601"},
-        ).json()["payload"]
-        clean_card = next(item for item in review_cards if item["counterparty_code"] == "РБ000601")
-        assert clean_card["client_action"]["can_review"] is True
+        sample = client.get("/api/customer-price-types/quality/samples").json()["payload"][0]
         missing_comment = client.put(
-            f"/api/customer-price-types/reviews/cards/{clean_card['snapshot_id']}/client-action",
+            f"/api/customer-price-types/quality/samples/{sample['id']}",
             json={
-                "result": "data_issue",
-                "expected_version": 0,
-                "snapshot_hash": clean_card["snapshot_hash"],
+                "review_result": "data_issue",
+                "expected_version": sample["version"],
             },
         )
         assert missing_comment.status_code == 422
-        reviewed = client.put(
-            f"/api/customer-price-types/reviews/cards/{clean_card['snapshot_id']}/client-action",
+        missing_incorrect_result = client.put(
+            f"/api/customer-price-types/quality/samples/{sample['id']}",
             json={
-                "result": "data_issue",
+                "review_result": "incorrect",
+                "comment": "Нужен другой результат",
+                "expected_version": sample["version"],
+            },
+        )
+        assert missing_incorrect_result.status_code == 422
+        reviewed = client.put(
+            f"/api/customer-price-types/quality/samples/{sample['id']}",
+            json={
+                "review_result": "data_issue",
                 "comment": "Сумма за июнь выглядит неверно",
-                "expected_version": 0,
-                "snapshot_hash": clean_card["snapshot_hash"],
+                "expected_version": sample["version"],
             },
         )
         assert reviewed.status_code == 200, reviewed.text
-        assert reviewed.json()["card"]["client_action"]["result"] == "data_issue"
+        assert reviewed.json()["review_result"] == "data_issue"
+        assert reviewed.json()["correct_group"] == "data_check"
 
+        internal = CustomerPriceTypeAccessScope(
+            actor="internal", role="internal", can_view_money=True
+        )
         app.dependency_overrides[require_customer_price_type_access] = lambda: internal
         issues = client.get("/api/customer-price-types/data-issues")
         assert issues.status_code == 200, issues.text
@@ -1100,12 +1148,12 @@ def test_quality_recall_is_weighted_by_population_group_size(tmp_path: Path) -> 
             facts,
             monthly_sales={
                 **facts.monthly_sales,
-                "2026-04": Decimal("100000"),
-                "2026-05": Decimal("100000"),
-                "2026-06": Decimal("100000"),
+                "2026-04": Decimal("1000000"),
+                "2026-05": Decimal("1000000"),
+                "2026-06": Decimal("1000000"),
             },
-            direct_onec_total_3m=Decimal("300000"),
-            ledger_total_3m=Decimal("300000"),
+            direct_onec_total_3m=Decimal("3000000"),
+            ledger_total_3m=Decimal("3000000"),
         )
 
     CustomerPriceTypeRunService(factory).execute(
@@ -1120,25 +1168,19 @@ def test_quality_recall_is_weighted_by_population_group_size(tmp_path: Path) -> 
         source_statuses={"contracts": "ready"},
         run_key="quality-weighted-run",
     )
-    internal = CustomerPriceTypeAccessScope(
-        actor="internal-expert", role="internal", can_view_money=True
+    network = CustomerPriceTypeAccessScope(
+        actor="network-expert", role="network_head", can_view_money=True
     )
-    with factory() as session:
-        repository = SqlAlchemyCustomerPriceTypeRepository(session)
-        run = repository.latest_run()
-        created, total = repository.prepare_quality_samples(
-            run=run,
-            actor="historical-import",
-            per_group=2,
-        )
-        assert created == total == 4
-        session.commit()
     app.dependency_overrides = {
         get_db: _override_db(factory),
-        require_customer_price_type_access: lambda: internal,
+        require_customer_price_type_access: lambda: network,
     }
     try:
         client = TestClient(app)
+        prepared = client.post(
+            "/api/customer-price-types/quality/samples/prepare", json={"per_group": 2}
+        )
+        assert prepared.status_code == 200, prepared.text
         samples = client.get("/api/customer-price-types/quality/samples").json()["payload"]
         isolate_samples = [item for item in samples if item["system_group"] == "isolate"]
         no_action_samples = [item for item in samples if item["system_group"] == "no_action"]
@@ -1149,20 +1191,23 @@ def test_quality_recall_is_weighted_by_population_group_size(tmp_path: Path) -> 
             (isolate_samples[1], "isolate"),
             *((item, "no_action") for item in no_action_samples),
         ]
-        with factory() as session:
-            for sample, correct_group in reviews:
-                row = session.get(CustomerPriceTypeQualitySample, sample["id"])
-                row.correct_group = correct_group
-                row.comment = (
-                    "Исправление исторической экспертной оценки"
-                    if correct_group != sample["system_group"]
-                    else None
-                )
-                row.reviewed_by = "historical-import"
-                row.reviewed_at = datetime(2026, 8, 12, 12, 0)
-                row.status = "reviewed"
-                row.version += 1
-            session.commit()
+        for sample, correct_group in reviews:
+            response = client.put(
+                f"/api/customer-price-types/quality/samples/{sample['id']}",
+                json={
+                    "review_result": (
+                        "correct" if correct_group == sample["system_group"] else "incorrect"
+                    ),
+                    "correct_group": correct_group,
+                    **(
+                        {"comment": "Исправление экспертной оценки"}
+                        if correct_group != sample["system_group"]
+                        else {}
+                    ),
+                    "expected_version": sample["version"],
+                },
+            )
+            assert response.status_code == 200, response.text
         metrics = client.get("/api/customer-price-types/quality/metrics").json()
         assert metrics["metrics_ready"] is True
         assert metrics["groups"]["no_action"]["false_negative"] == 1

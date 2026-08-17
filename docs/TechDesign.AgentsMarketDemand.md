@@ -1,11 +1,11 @@
 <!-- File: docs/TechDesign.AgentsMarketDemand.md -->
 
-# Tech Design — Агентный контур (новые модели + поисковый спрос Яндекса)
+# Tech Design — Агентный контур (новые модели + спрос через Яндекс.Директ)
 
 Документ детализирует техническую архитектуру подсистем:
 - Market Research / Device Models (новые смартфоны из пресс-релизов).
 - Keyword Generation (фразы под запчасти).
-- Yandex Demand (спрос через официальный Wordstat API в Yandex Search API).
+- Yandex Demand (спрос через Яндекс.Директ).
 - Agent Integration Layer (HTTP-инструменты для агентов).
 
 Опирается на `docs/architecture.md` (§2.5) и `docs/agents-market-research.md`.
@@ -29,9 +29,8 @@
    - Поддержка `bulk_create_from_agent`, если агент приносит готовые фразы.
 
 4) **Yandex Demand**  
-   - Сущность `KeywordDemand`, сервис `DemandService`, основной клиент `WordstatClient`; `YandexDirectClient` остаётся отдельным fallback-провайдером.
-   - Официальный Wordstat API в составе Yandex Search API, без скрейпинга интерфейса Вордстата.
-   - Авторизация отдельным API-ключом сервисного аккаунта Yandex Cloud с областью `yc.search-api.execute`; в запросе обязателен `folderId`.
+   - Сущность `KeywordDemand`, сервис `DemandService`, клиент `YandexDirectClient`.  
+   - Официальный API Яндекс.Директ, без скрейпинга Wordstat.  
    - История спроса хранится с привязкой к фразе/региону/дате.
 
 5) **Pricing Engine**  
@@ -56,7 +55,7 @@
 - **KeywordDemand**
   - `keyword_id` (FK), `date`, `region`
   - метрики: `impressions`, `clicks?`, `ctr?`, `bid_metrics?`
-  - `source="wordstat" | "yandex_direct"`, `received_at`
+  - `source="yandex_direct"`, `received_at`
 
 Связи: `PhoneModel 1—M Keyword 1—M KeywordDemand`.
 
@@ -135,7 +134,7 @@
    - либо принимает `POST /api/agents/keywords/bulk`, если фразы пришли снаружи.  
    Результат сохраняется в `Keyword`.
 4. **DemandService**:
-   - получает список `Keyword`, вызывает выбранный demand provider (`WordstatClient` либо fallback `YandexDirectClient`);
+   - получает список `Keyword`, вызывает `YandexDirectClient.get_stats(phrases, region)`;
    - сохраняет `KeywordDemand` (история спроса).
 5. **Pricing-engine** читает витрины `PhoneModel` / `Keyword` / `KeywordDemand` и использует их в стратегиях и приоритизации закупок.
 
@@ -143,9 +142,9 @@
 
 ## 5. Реализация (итеративно)
 
-- В коде добавлены модели/миграции, базовые сервисы upsert и генерации ключей, API `/api/agents/*`, клиенты Wordstat API и Яндекс.Директа и провайдер спроса для pricing.
+- В коде добавлены модели/миграции, базовые сервисы upsert и генерации ключей, API `/api/agents/*`, заглушка клиента Яндекс.Директ (без реального запроса) и провайдер спроса для pricing (логирует при включённом фича-флаге).
 - Следующие этапы:
-  1) Провести shadow-проверку `WordstatClient` на ограниченном наборе фраз и зафиксировать лимиты/стоимость запросов.
+  1) Подключить реальный `YandexDirectClient` (токен, ретраи, лимиты, маппинг ответов).  
   2) Добавить фоновые задачи/cron для генерации фраз и обновления спроса.  
   3) Расширить BI/отчёты витринами по новинкам и спросу и подключить сигнал спроса в стратегии.  
   4) Доработать поиск PhoneModel по brand/model_name (матчинг с нашим каталогом) для более точного использования спроса.
@@ -154,9 +153,7 @@
 
 ## 6. Конфигурация и фича-флаг
 - `FEATURE_YANDEX_DEMAND_ENABLED` — включает использование спроса в воркерах/pricing.
-- `YANDEX_WORDSTAT_ENABLED` — выбирает официальный Wordstat API вместо fallback-клиента Яндекс.Директа.
-- `YANDEX_WORDSTAT_API_KEY`, `YANDEX_WORDSTAT_FOLDER_ID`, `YANDEX_WORDSTAT_BASE_URL`, `YANDEX_WORDSTAT_DEVICES`, `YANDEX_WORDSTAT_TIMEOUT`, `YANDEX_WORDSTAT_RPS_LIMIT` — параметры Wordstat API. Секретный ключ хранится только в локальном окружении.
-- `YANDEX_DIRECT_API_TOKEN`, `YANDEX_DIRECT_API_BASE_URL`, `YANDEX_DIRECT_TIMEOUT`, `YANDEX_DIRECT_BATCH_SIZE`, `YANDEX_DEFAULT_REGION`, `YANDEX_DEMAND_DAYS_WINDOW` — параметры fallback-клиента и общей агрегации спроса.
+- `YANDEX_DIRECT_API_TOKEN`, `YANDEX_DIRECT_API_BASE_URL`, `YANDEX_DIRECT_TIMEOUT`, `YANDEX_DIRECT_BATCH_SIZE`, `YANDEX_DEFAULT_REGION`, `YANDEX_DEMAND_DAYS_WINDOW` — параметры клиента и агрегации спроса.
 
 ---
 
@@ -172,14 +169,10 @@
 
 ---
 
-## 8. Лимиты API и тестирование
+## 8. Лимиты Яндекс.Директ и тестирование
 - Клиент поддерживает batch size (`YANDEX_DIRECT_BATCH_SIZE`) и таймаут (`YANDEX_DIRECT_TIMEOUT`).
 - RPS лимиты: при заданном RPS в настройках вводится задержка между запросами; при ошибках — логирование и возврат пустых статов (без падения воркера).
-- Wordstat API вызывается отдельно для каждой фразы; в текущем контракте `totalCount` сохраняется как число запросов за последние 30 дней. Это внешний ограниченный сигнал, а не прямой прогноз продаж или количества закупки.
-- Для исторического shadow/backtest `WordstatClient.get_dynamics_response()` вызывает `POST /v2/wordstat/dynamics` с RFC3339-границами периода и возвращает сырой ответ API. Секреты запроса в ответ и кеш не попадают.
-- Историческая корзина фраз считается неаддитивной: `count` и `share` разных фраз нельзя складывать из-за неизвестных пересечений. Roll-forward использует только направление каждого нормализованного ряда и только месяцы, завершившиеся до даты решения с проверяемым лагом доступности.
-- Проверка iPhone 17 Pro Max от 2026-08-15 не подтвердила количественный множитель Wordstat: ни один из 73 вариантов не улучшил обслуженные продажи, поэтому для этого кейса допустим только direction-only флаг ручной проверки. Production-правило не утверждено и не включено.
-- Метрики fallback-клиента: показы, клики, ctr, bid_metrics (расширяемо). При отсутствии ответа — пропуск сохранения.
+- Метрики: показы, клики, ctr, bid_metrics (расширяемо). При отсутствии ответа — пропуск сохранения.
 - Мок-тесты: рекомендуется интеграционный тест с мок-клиентом, проверяющий батчинг и сохранение KeywordDemand (без реального токена).
 
 ---

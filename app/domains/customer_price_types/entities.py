@@ -102,9 +102,6 @@ class CustomerPriceTypeFacts:
     returns: dict[str, Any] = field(default_factory=dict)
     return_review_type: str | None = None
     master_data_flags: tuple[str, ...] = ()
-    # Trusted evidence is attached by the application service from a completed
-    # Bitrix24 case. Source adapters must not use this field as a shortcut.
-    previous_action_completion: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)

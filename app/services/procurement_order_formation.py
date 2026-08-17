@@ -164,6 +164,7 @@ def serialize_line(line: ProcurementOrderFormationLine) -> dict[str, Any]:
         "procurement_profile": line.procurement_profile,
         "manual_minimum": line.manual_minimum,
         "payload": payload,
+        "display_family_recommendation": _display_family_recommendation(payload),
         "removed": line.removed,
         "effective_assortment_status": effective_status,
         "effective_assortment_status_label": status_label(effective_status),
@@ -238,6 +239,11 @@ def serialize_line(line: ProcurementOrderFormationLine) -> dict[str, Any]:
             "recommended_supplier_prepare_days",
         ),
     }
+
+
+def _display_family_recommendation(payload: dict[str, Any]) -> dict[str, Any] | None:
+    value = payload.get("display_family_recommendation")
+    return dict(value) if isinstance(value, dict) else None
 
 
 def supplier_profile(order: ProcurementOrderFormation) -> dict[str, Any]:

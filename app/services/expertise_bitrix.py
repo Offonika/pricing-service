@@ -463,6 +463,7 @@ class BitrixRestClient:
         data: bytes | None,
         content_type: str,
         timeout: int = 60,
+        retry_http_statuses: frozenset[int] = frozenset(),
     ) -> dict[str, Any]:
         url = f"{self.webhook_url}/{method}.json"
         request = urllib.request.Request(
@@ -487,6 +488,9 @@ class BitrixRestClient:
                         )
                 except json.JSONDecodeError:
                     pass
+                if error.code in retry_http_statuses and attempt < 3:
+                    time_module.sleep(attempt)
+                    continue
                 raise RuntimeError(f"Bitrix24 {method}: HTTP {error.code} {detail}") from error
             except urllib.error.URLError as error:
                 if isinstance(error.reason, ConnectionRefusedError) and attempt < 3:
@@ -507,6 +511,7 @@ class BitrixRestClient:
         params: list[tuple[str, str]] | None = None,
         *,
         timeout: int = 60,
+        retry_http_statuses: frozenset[int] = frozenset(),
     ) -> dict[str, Any]:
         data = None
         if params:
@@ -516,6 +521,7 @@ class BitrixRestClient:
             data=data,
             content_type="application/x-www-form-urlencoded",
             timeout=timeout,
+            retry_http_statuses=retry_http_statuses,
         )
 
     def call_json(
@@ -575,7 +581,11 @@ class BitrixRestClient:
         params = [("entityTypeId", str(entity_type_id)), ("id", str(item_id))]
         for key, value in fields.items():
             params.append((f"fields[{_rest_field_name(key)}]", _format_field_value(value)))
-        self.call("crm.item.update", params)
+        self.call(
+            "crm.item.update",
+            params,
+            retry_http_statuses=frozenset({429, 500, 502, 503, 504}),
+        )
 
     def get_smart_process_item(
         self,

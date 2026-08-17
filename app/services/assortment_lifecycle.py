@@ -7,10 +7,6 @@ from enum import StrEnum
 from math import ceil
 from typing import Iterable
 
-from app.services.assortment_lifecycle_v2_policy import (
-    DEFAULT_DEMAND_STATE_POLICY,
-    DemandStatePolicy,
-)
 from app.services.exporters.ut103_nomenclature_properties import NomenclaturePropertyUpdateRow
 
 STATUS_PROPERTY_NAME = "Статус ассортимента"
@@ -30,7 +26,6 @@ MANUAL_MIN_STOCK_PROPERTY_NAME = "Ручной минимальный остат
 AVAILABILITY_RULE_REVIEW_AT_PROPERTY_NAME = "Дата пересмотра правила наличия"
 
 DEFAULT_STATUS_SOURCE = "assortment_lifecycle_v1"
-TARGET_STATUS_SOURCE = "assortment_lifecycle_v2_shadow"
 DEFAULT_EXCLUSIVE_REVIEW_PERIOD_DAYS = 30
 WORKING_RECEIPT_WINDOW_DAYS = 180
 WORKING_MIN_RECEIPTS = 5
@@ -41,10 +36,11 @@ WORKING_MIN_RECEIPTS = 5
 DEMAND_WINDOW_SHORT_DAYS = 30
 DEMAND_WINDOW_MEDIUM_DAYS = 90
 DEMAND_WINDOW_LONG_DAYS = 180
-# Legacy v1: 12 продаж за 180 дней напрямую давали «Растим». Правило сохранено
-# только для контрольного сравнения «было → стало». В действующей v2-политике
-# этот порог подтверждает объём спроса, но сам по себе не доказывает рост и не
-# назначает «Растим».
+# Вход в «Растим»: 12 продаж за 180 дней = две продажи в месяц. Решение
+# пользователя 2026-08-02 на реальном распределении дисплеев (порог отсекает
+# нижние 19%, 246 карточек из 1294). Условие «30 дней на полке» намеренно
+# отвергнуто: оно меряет работу закупщика, а не товар, и бьёт по дефицитным
+# ходовым позициям (РБ000051864 — 63 продажи за 23 дня на полке).
 SALE_MIN_SALES_QTY = Decimal("12")
 # Насколько окно должно отличаться от соседнего, чтобы это считалось трендом,
 # а не шумом. Тот же множитель, что в автозаказе
@@ -57,13 +53,10 @@ DEMAND_TREND_MIN_CHANGE_MULTIPLIER = Decimal("1.2")
 # «Пенсия» в автозаказе (PENSION_CANDIDATE_MIN_DAYS_IN_SALE): 15 дней наличия
 # из 90 — решение пользователя, отдельного числа для статусов не заводим.
 DECLINE_MIN_DAYS_IN_SALE = Decimal("15")
-# Legacy v1: забытая карточка без любого движения попадала на ручной разбор
-# через 12 месяцев. В v2 отдельно проверяем провал уже состоявшегося запуска:
-# 180 дней после физического прихода, не более одной продажи за всю историю,
-# доказанное наличие и отсутствие внешней потребности.
+# «Родился мёртвым»: сколько дней карточка может молчать без единого движения,
+# прежде чем попасть к человеку на разбор. 12 месяцев — решение пользователя
+# 2026-08-02 на распределении реальных данных (см. _is_dead_born_candidate).
 DEAD_BORN_SILENCE_DAYS = 365
-FAILED_LAUNCH_REVIEW_DAYS = 180
-FAILED_LAUNCH_MAX_LIFETIME_SALES_QTY = Decimal("1")
 # «Пенсия»: сколько дней товар может не продаваться, прежде чем попасть к
 # менеджеру на вывод из активного оборота. 18 месяцев — решение пользователя
 # 2026-08-02, тот же срок, что и у правила 2c из инвентаризации legacy-правил.
@@ -101,17 +94,6 @@ class AssortmentStatus(StrEnum):
     PENSION = "pension"
 
 
-class DemandState(StrEnum):
-    NO_DATA = "no_data"
-    NO_SALES = "no_sales"
-    INITIAL = "initial"
-    SPIKE = "spike"
-    GROWING = "growing"
-    STABLE = "stable"
-    DECLINING = "declining"
-    SHORTAGE_LIMITED = "shortage_limited"
-
-
 class ProcurementBehaviorProfile(StrEnum):
     FAST_EXPENSIVE = "fast_expensive"
     SLOW_EXPENSIVE = "slow_expensive"
@@ -146,17 +128,6 @@ ASSORTMENT_STATUS_LABELS = {
     AssortmentStatus.NONLIQUID: "Выводим",
     AssortmentStatus.DO_NOT_ORDER: "Не закупаем",
     AssortmentStatus.PENSION: "Допродаём",
-}
-
-DEMAND_STATE_LABELS = {
-    DemandState.NO_DATA: "Нет данных",
-    DemandState.NO_SALES: "Нет продаж",
-    DemandState.INITIAL: "Начальный",
-    DemandState.SPIKE: "Всплеск",
-    DemandState.GROWING: "Растёт",
-    DemandState.STABLE: "Стабилен",
-    DemandState.DECLINING: "Снижается",
-    DemandState.SHORTAGE_LIMITED: "Ограничен дефицитом",
 }
 
 # Значения свойства «Статус ассортимента» для обмена с 1С. Держим отдельно от
@@ -220,13 +191,6 @@ class AssortmentLifecycleInput:
     first_supplier_order_at: date | None = None
     supplier_order_cargo_handoff_dates: tuple[date, ...] = ()
     receipt_dates: tuple[date, ...] = ()
-    first_receipt_at: date | None = None
-    last_receipt_at: date | None = None
-    # Первый/последний подтверждённый положительный приход в складском
-    # регистре. В отличие от ``first_receipt_at`` это может быть не поставка,
-    # а инвентаризационное оприходование или другое физическое движение.
-    first_stock_inflow_at: date | None = None
-    last_stock_inflow_at: date | None = None
     # Дата первой реализации покупателю. Определяет вход в СП / Старт продаж:
     # решение 2026-08-02 — статус называется "стартанули продажи" и должен
     # означать факт продажи, а не второй заказ поставщику. Пусто = продаж не
@@ -246,10 +210,6 @@ class AssortmentLifecycleInput:
     sales_qty_short: Decimal | int | str | None = None
     sales_qty_medium: Decimal | int | str | None = None
     sales_qty_long: Decimal | int | str | None = None
-    # Продажи за всю историю. Нужны только для разбора провалившегося запуска:
-    # окно 180 дней не позволяет отличить одну пробную продажу нового товара от
-    # старого товара, который раньше продавался нормально, а затем угас.
-    lifetime_sales_qty: Decimal | int | str | None = None
     # Дни, когда товар реально лежал на полке, за те же три окна (среднее по
     # физическим точкам продаж). Нужны, чтобы отличить угасание спроса от
     # дефицита: пустая полка занижает продажи, но это не спад.
@@ -260,19 +220,7 @@ class AssortmentLifecycleInput:
     # рост достаточно двух окон, для вывода в угасание нужны три, а плоская
     # карточка остаётся там, где стояла, и не дёргается от прогона к прогону.
     previous_status: AssortmentStatus | str | None = None
-    previous_demand_state: DemandState | str | None = None
-    demand_state_since: date | None = None
-    previous_demand_state_at: date | None = None
-    sales_active_days_short: int | None = None
-    sales_document_count_short: int | None = None
-    sales_customer_count_short: int | None = None
-    sales_point_count_short: int | None = None
-    sales_max_day_share_short: Decimal | int | str | None = None
     has_need_signal: bool = False
-    # Внутреннее перемещение между складами — операционный запрос, но не
-    # доказательство покупательского спроса. None сохраняет совместимость со
-    # старыми фактами, где был только общий has_need_signal.
-    has_external_need_signal: bool | None = None
     working_confirmed_by_folder_responsible: bool = False
     analog_winner_confirmed_by_folder_responsible: bool = False
     manual_status: AssortmentStatus | str | None = None
@@ -299,11 +247,6 @@ class AssortmentLifecycleDecision:
     approved_by: str = ""
     exclusive_review_at: date | None = None
     exclusive_min_stock_qty: Decimal | None = None
-    demand_state: DemandState | None = None
-    demand_state_label: str = ""
-    demand_reason_codes: tuple[str, ...] = ()
-    demand_reason_text: str = ""
-    demand_state_since: date | None = None
 
     @property
     def recommended_status_label(self) -> str:
@@ -361,15 +304,6 @@ class ManagerNeedSignalDecision:
 
 
 @dataclass(frozen=True)
-class DemandStateDecision:
-    state: DemandState
-    state_label: str
-    reason_codes: tuple[str, ...]
-    reason_text: str
-    state_since: date | None = None
-
-
-@dataclass(frozen=True)
 class CommercialMarksInput:
     nomenclature_code: str
     commercial_marks: tuple[CommercialMark | str, ...] = ()
@@ -401,10 +335,8 @@ class CommercialMarksDecision:
     exclusive_min_stock_qty: Decimal | None = None
 
 
-def decide_legacy_assortment_status(
-    item: AssortmentLifecycleInput,
-) -> AssortmentLifecycleDecision:
-    """Return the frozen v1 control status for historical comparisons only."""
+def decide_assortment_status(item: AssortmentLifecycleInput) -> AssortmentLifecycleDecision:
+    """Return the v1 assortment lifecycle status from immutable product events."""
 
     _require_nomenclature_code(item.nomenclature_code)
     manual_status = _normalize_status(item.manual_status)
@@ -433,480 +365,6 @@ def decide_legacy_assortment_status(
             auto_order_allowed=False,
         )
     return decision
-
-
-def decide_assortment_status(
-    item: AssortmentLifecycleInput,
-    *,
-    demand_policy: DemandStatePolicy = DEFAULT_DEMAND_STATE_POLICY,
-) -> AssortmentLifecycleDecision:
-    """Return the assortment stage according to the accepted v2 policy.
-
-    The target model deliberately separates demand interpretation from the
-    assortment stage.  It also uses an actual receipt, never cargo, for the
-    ``new_item`` boundary.  Rollout code still decides whether this result may
-    replace the current persisted snapshot; calling this pure function does not
-    enable production transitions or any 1C writes.
-    """
-
-    _require_nomenclature_code(item.nomenclature_code)
-    manual_status = _normalize_status(item.manual_status)
-    legacy_newborn_need = manual_status is AssortmentStatus.NEWBORN_NEED
-    if legacy_newborn_need:
-        manual_status = None
-    demand = decide_demand_state(item, policy=demand_policy)
-    if manual_status is not None:
-        return _with_demand(_manual_status_decision(item, manual_status), demand)
-
-    previous_status = _previous_status(item.previous_status)
-    first_receipt_at = item.first_receipt_at or (
-        min(item.receipt_dates) if item.receipt_dates else None
-    )
-    first_stock_inflow_at = item.first_stock_inflow_at or first_receipt_at
-    missing_order_warning = item.first_supplier_order_at is None and bool(
-        first_stock_inflow_at or item.first_sale_at
-    )
-    supplier_receipt_warning = bool(
-        first_stock_inflow_at
-        and (first_receipt_at is None or first_stock_inflow_at < first_receipt_at)
-    )
-
-    # Стадия определяется от самого сильного подтверждённого факта. Продажа не
-    # может вернуть карточку в «Рассматриваем/Заказали», а физический приход —
-    # в «Рассматриваем», даже если предшествующий документ не найден.
-    if item.first_sale_at is None:
-        if first_stock_inflow_at is not None:
-            decision = _decision(
-                item,
-                AssortmentStatus.NEW_ITEM,
-                "first_stock_inflow_registered",
-                reason_text=(
-                    f"Первый физический складской приход подтверждён "
-                    f"{first_stock_inflow_at:%d.%m.%Y}; продаж ещё не было."
-                ),
-            )
-            return _with_demand(
-                _with_failed_launch_candidate(
-                    _with_target_fact_warnings(
-                        decision,
-                        missing_order=missing_order_warning,
-                        supplier_receipt_incomplete=supplier_receipt_warning,
-                    ),
-                    item,
-                ),
-                demand,
-            )
-        if item.first_supplier_order_at is not None:
-            return _with_demand(
-                _decision(
-                    item,
-                    AssortmentStatus.NEWBORN,
-                    "first_supplier_order_created",
-                    reason_text=(
-                        "Первый заказ поставщику создан, физического складского прихода ещё нет."
-                    ),
-                    manual_review_required=item.has_need_signal or legacy_newborn_need,
-                ),
-                demand,
-            )
-        if previous_status in {
-            AssortmentStatus.NEWBORN,
-            AssortmentStatus.NEW_ITEM,
-            AssortmentStatus.SALES_START,
-            AssortmentStatus.SALE,
-            AssortmentStatus.WORKING,
-        }:
-            return _with_demand(
-                _decision(
-                    item,
-                    previous_status,
-                    "first_supplier_order_fact_missing",
-                    reason_text=(
-                        "Предыдущую стадию сохраняем, но подтверждающий заказ, "
-                        "физический приход или продажа в доступных фактах не найдены."
-                    ),
-                    manual_review_required=True,
-                    auto_order_allowed=False,
-                    blockers=("active_stage_evidence_missing",),
-                ),
-                demand,
-            )
-        return _with_demand(
-            _decision(
-                item,
-                AssortmentStatus.FRUIT,
-                "product_created",
-                reason_text="Карточка создана, заказа, физического прихода и продаж ещё нет.",
-            ),
-            demand,
-        )
-
-    chronology_blocker = ""
-    if first_stock_inflow_at is None:
-        chronology_blocker = "sale_without_physical_stock_inflow"
-    elif item.first_sale_at < first_stock_inflow_at:
-        chronology_blocker = "sale_before_physical_stock_inflow"
-    if chronology_blocker:
-        preserved = (
-            previous_status
-            if previous_status
-            in {AssortmentStatus.SALES_START, AssortmentStatus.SALE, AssortmentStatus.WORKING}
-            else AssortmentStatus.SALES_START
-        )
-        return _with_demand(
-            _decision(
-                item,
-                preserved,
-                chronology_blocker,
-                reason_text=(
-                    "Продажа зарегистрирована, но предшествующий физический складской "
-                    "приход не подтверждён; автоматический переход заблокирован до сверки."
-                ),
-                manual_review_required=True,
-                auto_order_allowed=False,
-                blockers=(chronology_blocker,),
-            ),
-            demand,
-        )
-
-    manual_review_required = False
-    blockers: tuple[str, ...] = ()
-
-    if demand.state is DemandState.NO_DATA:
-        preserved = (
-            previous_status
-            if previous_status
-            in {AssortmentStatus.SALES_START, AssortmentStatus.SALE, AssortmentStatus.WORKING}
-            else AssortmentStatus.SALES_START
-        )
-        return _with_demand(
-            _decision(
-                item,
-                preserved,
-                "demand_data_missing",
-                reason_text=(
-                    "Продажа зарегистрирована, но обязательные данные спроса неполны; "
-                    "автоматический переход заблокирован."
-                ),
-                manual_review_required=True,
-                auto_order_allowed=preserved in {AssortmentStatus.SALE, AssortmentStatus.WORKING},
-                blockers=("demand_data_missing",),
-            ),
-            demand,
-        )
-
-    if demand.state is DemandState.GROWING:
-        status = AssortmentStatus.SALE
-        reason_code = "sustained_demand_growth"
-        reason_text = "Устойчивый распределённый рост подтверждён повторными расчётами."
-    elif demand.state in {DemandState.STABLE, DemandState.DECLINING}:
-        status = AssortmentStatus.WORKING
-        reason_code = (
-            "confirmed_demand_stable"
-            if demand.state is DemandState.STABLE
-            else "confirmed_demand_declining"
-        )
-        reason_text = (
-            "Спрос подтверждён, устойчивого роста сейчас нет."
-            if demand.state is DemandState.STABLE
-            else "Спрос подтверждён и снижается при доказанном наличии товара."
-        )
-    elif demand.state is DemandState.SHORTAGE_LIMITED:
-        status = (
-            previous_status
-            if previous_status in {AssortmentStatus.SALE, AssortmentStatus.WORKING}
-            else AssortmentStatus.SALES_START
-        )
-        reason_code = "demand_limited_by_shortage"
-        reason_text = "Спрос искажён дефицитом; активную стадию автоматически не понижаем."
-        manual_review_required = True
-    elif demand.state in {DemandState.NO_SALES, DemandState.INITIAL, DemandState.SPIKE} and (
-        previous_status in {AssortmentStatus.SALE, AssortmentStatus.WORKING}
-    ):
-        status = previous_status
-        reason_code = "unconfirmed_demand_keep_active_stage"
-        reason_text = (
-            "Товар уже достиг активной стадии; неподтверждённый спрос не возвращает "
-            "его в стадию первых продаж."
-        )
-        manual_review_required = demand.state is DemandState.SPIKE
-    else:
-        status = AssortmentStatus.SALES_START
-        reason_code = (
-            "demand_spike_unconfirmed" if demand.state is DemandState.SPIKE else "initial_demand"
-        )
-        reason_text = (
-            "Зафиксирован всплеск, но устойчивость роста ещё не подтверждена."
-            if demand.state is DemandState.SPIKE
-            else "Продажи начались, но спрос ещё недостаточно устойчив."
-        )
-        manual_review_required = demand.state is DemandState.SPIKE
-
-    decision = _with_target_fact_warnings(
-        _decision(
-            item,
-            status,
-            reason_code,
-            reason_text=reason_text,
-            auto_order_allowed=status in {AssortmentStatus.SALE, AssortmentStatus.WORKING},
-            manual_review_required=manual_review_required,
-            blockers=blockers,
-        ),
-        missing_order=missing_order_warning,
-        supplier_receipt_incomplete=supplier_receipt_warning,
-    )
-    return _with_demand(_with_failed_launch_candidate(decision, item), demand)
-
-
-def decide_target_assortment_status(
-    item: AssortmentLifecycleInput,
-    *,
-    demand_policy: DemandStatePolicy = DEFAULT_DEMAND_STATE_POLICY,
-) -> AssortmentLifecycleDecision:
-    """Compatibility alias for shadow/backtest callers of the accepted v2 policy."""
-
-    return decide_assortment_status(item, demand_policy=demand_policy)
-
-
-def _with_target_fact_warnings(
-    decision: AssortmentLifecycleDecision,
-    *,
-    missing_order: bool,
-    supplier_receipt_incomplete: bool,
-) -> AssortmentLifecycleDecision:
-    warning_codes: list[str] = []
-    warning_texts: list[str] = []
-    if missing_order:
-        warning_codes.append("first_supplier_order_fact_missing")
-        warning_texts.append("первый заказ поставщику в доступных фактах не найден")
-    if supplier_receipt_incomplete:
-        warning_codes.append("supplier_receipt_origin_incomplete")
-        warning_texts.append(
-            "физический приход подтверждён раньше первого обычного поступления поставщика"
-        )
-    if not warning_codes:
-        return decision
-    return replace(
-        decision,
-        reason_codes=(*decision.reason_codes, *warning_codes),
-        reason_text=f"{decision.reason_text} Предупреждение: {'; '.join(warning_texts)}.",
-        manual_review_required=True,
-        # Стадия рассчитывается по сильному факту, но поставочно-зависимые
-        # действия остаются закрыты до подтверждения происхождения товара.
-        auto_order_allowed=False,
-    )
-
-
-def _with_failed_launch_candidate(
-    decision: AssortmentLifecycleDecision,
-    item: AssortmentLifecycleInput,
-) -> AssortmentLifecycleDecision:
-    """Tag a launch that received a fair test but never developed demand.
-
-    The formula does not choose between «Не закупаем», «Допродаём» and
-    «Выводим».  It only stops automatic replenishment and sends the item to a
-    person.  This keeps the historical «Родился мёртвым» meaning without
-    turning a weak numerical signal into a destructive lifecycle transition.
-    """
-
-    if not _is_failed_launch_candidate(item):
-        return decision
-    first_stock_inflow_at = item.first_stock_inflow_at or (
-        min(item.receipt_dates) if item.receipt_dates else item.first_receipt_at
-    )
-    launch_age_days = (item.as_of - first_stock_inflow_at).days
-    lifetime_sales_qty = _to_optional_decimal(item.lifetime_sales_qty) or Decimal("0")
-    return replace(
-        decision,
-        reason_codes=(*decision.reason_codes, "dead_born_candidate"),
-        reason_text=(
-            f"{decision.reason_text} После физического прихода прошло "
-            f"{launch_age_days} дней, за всю историю продано "
-            f"{_format_qty(lifetime_sales_qty)} шт., товар был доступен покупателям, "
-            "а внешняя потребность не подтверждена. Это кандидат «Родился мёртвым»: "
-            "автозаказ остановлен, окончательное решение принимает человек."
-        ),
-        recommended_status=AssortmentStatus.DO_NOT_ORDER,
-        requires_human_approval=True,
-        manual_review_required=True,
-        auto_order_allowed=False,
-    )
-
-
-def decide_demand_state(
-    item: AssortmentLifecycleInput,
-    *,
-    policy: DemandStatePolicy = DEFAULT_DEMAND_STATE_POLICY,
-) -> DemandStateDecision:
-    """Classify demand independently from the assortment stage."""
-
-    sales = tuple(
-        _to_optional_decimal(value)
-        for value in (item.sales_qty_short, item.sales_qty_medium, item.sales_qty_long)
-    )
-    if any(value is None for value in sales):
-        return _demand_state_decision(
-            DemandState.NO_DATA,
-            "demand_windows_missing",
-            "Не переданы все обязательные окна продаж 30/90/180 дней.",
-        )
-    short, medium, long = (value or Decimal("0") for value in sales)
-    if short == medium == long == 0:
-        return _demand_state_decision(
-            DemandState.NO_SALES,
-            "sales_zero_confirmed",
-            "Во всех окнах подтверждено отсутствие продаж.",
-        )
-
-    rate_short = _soft_availability_rate(short, DEMAND_WINDOW_SHORT_DAYS, item.days_in_sale_short)
-    rate_medium = _soft_availability_rate(
-        medium, DEMAND_WINDOW_MEDIUM_DAYS, item.days_in_sale_medium
-    )
-    rate_long = _soft_availability_rate(long, DEMAND_WINDOW_LONG_DAYS, item.days_in_sale_long)
-    declining = (
-        rate_short * policy.decline_multiplier <= rate_medium
-        and rate_medium * policy.decline_multiplier <= rate_long
-    )
-    apparent_declining = (
-        short / DEMAND_WINDOW_SHORT_DAYS * policy.decline_multiplier
-        <= medium / DEMAND_WINDOW_MEDIUM_DAYS
-        and medium / DEMAND_WINDOW_MEDIUM_DAYS * policy.decline_multiplier
-        <= long / DEMAND_WINDOW_LONG_DAYS
-    )
-    confirmed_demand = long >= policy.confirmed_sales_qty_180
-    if (declining or apparent_declining) and confirmed_demand:
-        days_on_shelf = _to_optional_decimal(item.days_in_sale_medium)
-        if days_on_shelf is None or days_on_shelf < policy.decline_min_days_in_sale_90:
-            return _demand_state_decision(
-                DemandState.SHORTAGE_LIMITED,
-                "decline_without_proven_availability",
-                "Продажи снижаются, но достаточное наличие товара не доказано.",
-            )
-        if not declining:
-            return _demand_state_decision(
-                DemandState.STABLE,
-                "calendar_decline_explained_by_availability",
-                "Календарное падение объясняется периодами отсутствия; подтверждённого снижения спроса нет.",
-            )
-        return _demand_state_decision(
-            DemandState.DECLINING,
-            "confirmed_decline_with_availability",
-            "Продажи снижаются три окна подряд при доказанном наличии товара.",
-        )
-
-    accelerating = rate_short > 0 and rate_short >= rate_medium * policy.growth_multiplier
-    if accelerating:
-        distribution_complete = all(
-            value is not None
-            for value in (
-                item.sales_active_days_short,
-                item.sales_document_count_short,
-                item.sales_customer_count_short,
-                item.sales_point_count_short,
-                _to_optional_decimal(item.sales_max_day_share_short),
-            )
-        )
-        concentrated = not distribution_complete or any(
-            (value or 0) < policy.min_independent_sales
-            for value in (
-                item.sales_active_days_short,
-                item.sales_document_count_short,
-                item.sales_customer_count_short,
-                item.sales_point_count_short,
-            )
-        )
-        max_day_share = _to_optional_decimal(item.sales_max_day_share_short)
-        if max_day_share is not None and max_day_share > policy.max_single_day_share:
-            concentrated = True
-        previous_state = _normalize_demand_state(item.previous_demand_state)
-        held_days = (
-            (item.as_of - item.demand_state_since).days
-            if item.as_of is not None and item.demand_state_since is not None
-            else 0
-        )
-        sustained = (
-            previous_state in {DemandState.SPIKE, DemandState.GROWING}
-            and held_days >= policy.confirmation_days
-            and item.previous_demand_state_at is not None
-            and item.as_of is not None
-            and (item.as_of - item.previous_demand_state_at).days <= 1
-        )
-        if confirmed_demand and sustained and not concentrated:
-            return _demand_state_decision(
-                DemandState.GROWING,
-                "sustained_distributed_growth",
-                "Ускорение подтверждено по времени и распределено между независимыми продажами.",
-                state_since=item.demand_state_since,
-            )
-        codes = ["short_term_acceleration"]
-        if not distribution_complete:
-            codes.append("sales_distribution_missing")
-        elif concentrated:
-            codes.append("sales_concentrated")
-        if not sustained:
-            codes.append("growth_confirmation_pending")
-        return DemandStateDecision(
-            state=DemandState.SPIKE,
-            state_label=DEMAND_STATE_LABELS[DemandState.SPIKE],
-            reason_codes=tuple(codes),
-            reason_text="Краткосрочное ускорение есть, но устойчивый рост ещё не доказан.",
-            state_since=(
-                item.demand_state_since if previous_state is DemandState.SPIKE else item.as_of
-            ),
-        )
-
-    if not confirmed_demand:
-        return _demand_state_decision(
-            DemandState.INITIAL,
-            "demand_history_insufficient",
-            "Продажи есть, но подтверждённого объёма спроса пока недостаточно.",
-        )
-    return _demand_state_decision(
-        DemandState.STABLE,
-        "confirmed_demand_without_growth",
-        "Спрос подтверждён, устойчивого роста или падения сейчас нет.",
-    )
-
-
-def _demand_state_decision(
-    state: DemandState,
-    reason_code: str,
-    reason_text: str,
-    *,
-    state_since: date | None = None,
-) -> DemandStateDecision:
-    return DemandStateDecision(
-        state=state,
-        state_label=DEMAND_STATE_LABELS[state],
-        reason_codes=(reason_code,),
-        reason_text=reason_text,
-        state_since=state_since,
-    )
-
-
-def _with_demand(
-    decision: AssortmentLifecycleDecision,
-    demand: DemandStateDecision,
-) -> AssortmentLifecycleDecision:
-    return replace(
-        decision,
-        demand_state=demand.state,
-        demand_state_label=demand.state_label,
-        demand_reason_codes=demand.reason_codes,
-        demand_reason_text=demand.reason_text,
-        demand_state_since=demand.state_since,
-    )
-
-
-def _normalize_demand_state(value: DemandState | str | None) -> DemandState | None:
-    if value in (None, ""):
-        return None
-    if isinstance(value, DemandState):
-        return value
-    try:
-        return DemandState(str(value).strip())
-    except ValueError:
-        return None
 
 
 def _decide_by_events(item: AssortmentLifecycleInput) -> AssortmentLifecycleDecision:
@@ -1037,10 +495,10 @@ def _demand_data_available(item: AssortmentLifecycleInput) -> bool:
 
 
 def _demand_stage(item: AssortmentLifecycleInput) -> tuple[AssortmentStatus, str, str]:
-    """Legacy v1 stage after cargo, retained only as the comparison control.
+    """Ступень лестницы после первого карго — по динамике спроса, не по поставкам.
 
-    Историческая формула от 2026-08-02 определяла стадии спросом, а не числом
-    поступлений, но ещё не отделяла подтверждённый объём от устойчивого роста:
+    Решение пользователя 2026-08-02: «Растим» и «Поддерживаем» описывают товар,
+    а не работу закупщика, поэтому определять их числом поступлений неверно.
       * «Пошли продажи» -> «Растим»: 12 продаж за 180 дней;
       * «Растим» -> «Поддерживаем»: спад по трём окнам И товар был на полке;
       * «Поддерживаем» -> «Растим»: рост по двум окнам;
@@ -1295,41 +753,6 @@ def _is_dead_born_candidate(item: AssortmentLifecycleInput) -> bool:
     if moved:
         return False
     return (item.as_of - item.created_at).days >= DEAD_BORN_SILENCE_DAYS
-
-
-def _is_failed_launch_candidate(item: AssortmentLifecycleInput) -> bool:
-    """Whether a physically launched item failed to develop real demand."""
-
-    if item.as_of is None:
-        return False
-    first_stock_inflow_at = item.first_stock_inflow_at or (
-        min(item.receipt_dates) if item.receipt_dates else item.first_receipt_at
-    )
-    if first_stock_inflow_at is None:
-        return False
-    if (item.as_of - first_stock_inflow_at).days < FAILED_LAUNCH_REVIEW_DAYS:
-        return False
-    lifetime_sales_qty = _to_optional_decimal(item.lifetime_sales_qty)
-    if lifetime_sales_qty is None:
-        return False
-    if lifetime_sales_qty > FAILED_LAUNCH_MAX_LIFETIME_SALES_QTY:
-        return False
-    has_external_need = (
-        item.has_external_need_signal
-        if item.has_external_need_signal is not None
-        else item.has_need_signal
-    )
-    if has_external_need:
-        return False
-    days_on_shelf = _to_optional_decimal(item.days_in_sale_long)
-    if days_on_shelf is None or days_on_shelf <= 0:
-        return False
-    # При одной продаже защищаем товар, который почти сразу закончился: это
-    # может быть дефицит, а не провал. Для нулевой продажи сам факт положительного
-    # наличия уже доказывает, что товар хотя бы был предложен покупателям.
-    if lifetime_sales_qty > 0 and days_on_shelf < DECLINE_MIN_DAYS_IN_SALE:
-        return False
-    return True
 
 
 def classify_expensive_profile(item: ExpensiveProfileInput) -> ExpensiveProfileDecision:

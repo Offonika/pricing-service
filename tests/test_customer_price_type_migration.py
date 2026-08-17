@@ -46,18 +46,6 @@ def _load_review_batch_migration():
     return module
 
 
-def _load_reviews_v2_migration():
-    path = (
-        Path(__file__).resolve().parents[1]
-        / "alembic/versions/d4f6a8c0e2b3_customer_price_type_reviews_v2.py"
-    )
-    spec = importlib.util.spec_from_file_location("customer_price_type_reviews_v2_migration", path)
-    module = importlib.util.module_from_spec(spec)
-    assert spec and spec.loader
-    spec.loader.exec_module(module)
-    return module
-
-
 def test_migration_upgrade_and_downgrade_with_circular_foreign_keys(tmp_path) -> None:
     engine = create_engine(f"sqlite:///{tmp_path / 'migration.db'}")
     migration = _load_migration()
@@ -145,37 +133,5 @@ def test_review_batch_migration_upgrade_and_downgrade(tmp_path) -> None:
             }
             migration.downgrade()
             assert "customer_price_type_review_batch" not in inspect(connection).get_table_names()
-    finally:
-        engine.dispose()
-
-
-def test_reviews_v2_migration_upgrade_and_downgrade(tmp_path) -> None:
-    engine = create_engine(f"sqlite:///{tmp_path / 'reviews-v2-migration.db'}")
-    core = _load_migration()
-    reviews_v2 = _load_reviews_v2_migration()
-    try:
-        with engine.begin() as connection:
-            core.op = Operations(MigrationContext.configure(connection))
-            core.upgrade()
-            reviews_v2.op = Operations(MigrationContext.configure(connection))
-            reviews_v2.upgrade()
-
-            inspector = inspect(connection)
-            assert {
-                "customer_price_type_review",
-                "customer_price_type_external_action",
-                "customer_price_type_onec_contract_action",
-            } <= set(inspector.get_table_names())
-            assert {"review_kind", "snapshot_hash", "decision_mode"} <= {
-                item["name"] for item in inspector.get_columns("customer_price_type_review")
-            }
-            assert {"execution_allowed_at_decision", "status", "payload"} <= {
-                item["name"]
-                for item in inspector.get_columns("customer_price_type_external_action")
-            }
-
-            reviews_v2.downgrade()
-            assert "customer_price_type_review" not in inspect(connection).get_table_names()
-            core.downgrade()
     finally:
         engine.dispose()

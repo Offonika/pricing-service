@@ -1,10 +1,6 @@
 from __future__ import annotations
 
-import json
-import sys
-from dataclasses import asdict
 from datetime import date
-from pathlib import Path
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
@@ -17,19 +13,6 @@ from app.services.staffing import (
     build_staffing_period_summary,
     sync_staffing_data,
 )
-from app.workers import staffing as staffing_worker
-from tasks import sync_staffing as staffing_task
-
-
-def test_staffing_cron_template_stays_outside_active_release_until_integration() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    cron = (repo_root / "infra/cron/receivable_ledger_sync.cron").read_text(encoding="utf-8")
-    active_release = "/opt/MM/pricing-service-task43-current"
-    staffing_line = next(line for line in cron.splitlines() if "staffing_sync.sh" in line)
-
-    assert "/opt/MM/pricing-service/infra/cron/staffing_sync.sh" in staffing_line
-    assert f"REPO_DIR={active_release}" not in staffing_line
-    assert f"{active_release}/infra/cron/staffing_sync.sh" not in staffing_line
 
 
 def _staff_rows() -> list[StaffMemberRow]:
@@ -607,72 +590,6 @@ def test_sync_staffing_is_idempotent_and_builds_snapshots() -> None:
         assert snapshot_21.confirmed_count == 2
         assert snapshot_21.deficit_count == 1
         assert snapshot_21.deficit_role_counts == {"seller": 1}
-
-
-def test_sync_staffing_task_is_idempotent_with_json_inputs(
-    tmp_path: Path,
-    monkeypatch,
-    capsys,
-) -> None:
-    engine = create_engine(f"sqlite:///{tmp_path / 'staffing.db'}")
-    Base.metadata.create_all(engine)
-    monkeypatch.setattr(staffing_worker, "_get_app_engine", lambda: engine)
-
-    input_paths: list[Path] = []
-    for file_name, rows in (
-        ("staff.json", _staff_rows()),
-        ("shift-plan.json", _plan_rows()),
-        ("shift-fact.json", _fact_rows()),
-    ):
-        input_path = tmp_path / file_name
-        input_path.write_text(
-            json.dumps([asdict(row) for row in rows], ensure_ascii=False, default=str),
-            encoding="utf-8",
-        )
-        input_paths.append(input_path)
-
-    argv = [
-        "sync_staffing",
-        "--staff-file",
-        str(input_paths[0]),
-        "--plan-file",
-        str(input_paths[1]),
-        "--fact-file",
-        str(input_paths[2]),
-        "--snapshot-date",
-        "2026-03-20",
-        "--snapshot-date",
-        "2026-03-21",
-        "--snapshot-date",
-        "2026-03-22",
-    ]
-
-    try:
-        monkeypatch.setattr(sys, "argv", argv)
-        staffing_task.main()
-        first = json.loads(capsys.readouterr().out)
-
-        monkeypatch.setattr(sys, "argv", argv)
-        staffing_task.main()
-        second = json.loads(capsys.readouterr().out)
-
-        assert first["staff_members"] == {"processed": 5, "inserted": 5, "updated": 0}
-        assert first["shift_plans"] == {"processed": 18, "inserted": 18, "updated": 0}
-        assert first["shift_facts"] == {"processed": 15, "inserted": 15, "updated": 0}
-        assert first["snapshots"] == 6
-
-        assert second["staff_members"]["inserted"] == 0
-        assert second["shift_plans"]["inserted"] == 0
-        assert second["shift_facts"]["inserted"] == 0
-        assert second["snapshots"] == first["snapshots"]
-
-        with Session(engine) as session:
-            assert session.query(StaffMember).count() == 5
-            assert session.query(StoreShiftPlan).count() == 18
-            assert session.query(StoreShiftFact).count() == 15
-            assert session.query(StaffingSnapshot).count() == 6
-    finally:
-        engine.dispose()
 
 
 def test_staffing_period_summary_uses_snapshots_and_builds_forecast() -> None:

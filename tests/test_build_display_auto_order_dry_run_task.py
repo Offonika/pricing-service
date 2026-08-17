@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from datetime import date
 from decimal import Decimal
 
@@ -21,7 +20,6 @@ from tasks.build_display_auto_order_dry_run import (
     fetch_reserved_totals,
     fetch_sales_totals,
     fetch_stock_totals,
-    load_auto_order_items_from_facts,
     load_auto_order_policy,
     load_warehouse_policy,
     rounded_order_qty,
@@ -112,128 +110,37 @@ def test_sales_totals_query_includes_90_and_30_day_trend_windows() -> None:
     assert "window_short_from" in sales_sql
 
 
-def test_v2_representation_floor_is_shadow_gated_and_uses_reliable_incoming_once() -> None:
-    item = {
-        "nomenclature_code": "RB-FLOOR",
-        "name": "Display floor",
-        "status": "sale",
-        "status_label": "Растим",
-        "demand_state": "growing",
-        "cost_quartile": "Q1",
-        "minimum_representation_qty": 13,
-        "quality_raw": "Original",
-    }
-    facts = {
-        "stock": {"RB-FLOOR": {"sellable_stock_qty": Decimal("4")}},
-        "reserve": {},
-        "incoming": {
-            "RB-FLOOR": {
-                "incoming_qty": Decimal("8"),
-                "pipeline_cargo_handoff_qty": Decimal("3"),
-            }
-        },
-        "sales": {"RB-FLOOR": {"sales_qty_window": Decimal("6")}},
-        "returns": {},
-    }
-    legacy = build_dry_run_rows(
-        [item],
-        facts=facts,
-        source_errors={},
-        target_days=30,
-        sales_window_days=180,
-        lifecycle_model_version="v1",
-    )[0]
-    shadow = build_dry_run_rows(
-        [item],
-        facts=facts,
-        source_errors={},
-        target_days=30,
-        sales_window_days=180,
-        lifecycle_model_version="v2-shadow",
-    )[0]
-
-    assert legacy["representation_floor_applied"] == ""
-    assert shadow["target_stock_qty"] == "13"
-    assert shadow["recommended_order_qty_raw"] == "6"
-    assert shadow["recommended_order_qty"] == "6"
-    assert shadow["reliable_incoming_qty"] == "3"
-    assert shadow["representation_floor_applied"] == "yes"
-
-
-def test_fact_snapshot_loader_uses_persisted_legacy_and_computed_v2_stages(tmp_path) -> None:
-    path = tmp_path / "facts.json"
-    path.write_text(
-        json.dumps(
-            {
-                "items": [
-                    {
-                        "nomenclature_code": "RB-STAGE",
-                        "folder_path": "Дисплеи",
-                        "subject_1c": "Дисплей",
-                        "previous_status": "sale",
-                        "first_supplier_order_at": "2025-01-01",
-                        "first_receipt_at": "2025-01-10",
-                        "first_sale_at": "2025-01-15",
-                        "sales_qty_short": "5",
-                        "sales_qty_medium": "15",
-                        "sales_qty_long": "30",
-                        "future_ka_mapping_status": "ready",
-                        "demand_method_code": "available_days_average",
-                    }
-                ]
-            },
-            ensure_ascii=False,
-        ),
+def test_stock_totals_batches_more_than_sql_server_rpc_limit(tmp_path) -> None:
+    policy_path = tmp_path / "warehouse-policy.json"
+    policy_path.write_text(
+        '{"usable_stock_quality_names":["Новый"],"warehouses":'
+        '[{"warehouse_code":"SALE","sells_systematically":true}]}',
         encoding="utf-8",
     )
+    engine = _CaptureEngine()
 
-    legacy = load_auto_order_items_from_facts(
-        path,
-        folder="дисплеи",
-        lifecycle_model_version="v1",
-        include_sale_review_candidates=True,
-    )
-    target = load_auto_order_items_from_facts(
-        path,
-        folder="дисплеи",
-        lifecycle_model_version="v2-shadow",
-        include_sale_review_candidates=True,
+    fetch_stock_totals(
+        engine,
+        codes=[f"CODE-{index:04d}" for index in range(2336)],
+        policy=load_warehouse_policy(policy_path),
     )
 
-    assert legacy[0]["status"] == "sale"
-    assert target[0]["status"] == "working"
+    assert len(engine.statements) == 3
 
 
-def test_fact_snapshot_loader_and_dry_run_exclude_bitok(tmp_path) -> None:
-    path = tmp_path / "facts.json"
-    path.write_text(
-        json.dumps(
-            {
-                "items": [
-                    {
-                        "nomenclature_code": "BITOK",
-                        "name": "Дисплей (биток)",
-                        "folder_path": "Дисплеи",
-                        "future_ka_mapping_status": "ready",
-                        "demand_method_code": "available_days_average",
-                    }
-                ]
-            },
-            ensure_ascii=False,
-        ),
-        encoding="utf-8",
-    )
-
-    loaded = load_auto_order_items_from_facts(
-        path,
-        folder="дисплеи",
-        lifecycle_model_version="v2-shadow",
-        include_sale_review_candidates=True,
-    )
+def test_display_auto_order_excludes_bitok_before_quantity_calculation() -> None:
     rows = build_dry_run_rows(
         [
-            {"nomenclature_code": "BITOK", "name": "Дисплей (биток)"},
-            {"nomenclature_code": "OK", "name": "Дисплей обычный"},
+            {
+                "nomenclature_code": "KEEP",
+                "name": "Дисплей обычный",
+                "status_label": "Рабочий",
+            },
+            {
+                "nomenclature_code": "DROP",
+                "name": "Дисплей (БИТОК)",
+                "status_label": "Рабочий",
+            },
         ],
         facts={
             "stock": {},
@@ -243,63 +150,27 @@ def test_fact_snapshot_loader_and_dry_run_exclude_bitok(tmp_path) -> None:
             "returns": {},
         },
         source_errors={},
-        target_days=30,
+        target_days=14,
         sales_window_days=180,
     )
 
-    assert loaded == []
-    assert [row["nomenclature_code"] for row in rows] == ["OK"]
+    assert [row["nomenclature_code"] for row in rows] == ["KEEP"]
 
 
-def test_dry_run_summary_carries_scope_policy_audit() -> None:
-    summary = build_summary(
-        [],
-        run_id=None,
-        source_errors={},
-        scope_policy_audit={
-            "scope_policy_version": "display_scope_policy.v1",
-            "source_item_count": 2,
-            "included_item_count": 1,
-            "excluded_item_count": 1,
-            "excluded_row_count": 1,
-            "excluded_reason_counts": {"excluded_display_name_bitok": 1},
-            "exclusions": [],
-        },
-    )
-
-    assert summary["scope_policy"]["excluded_item_count"] == 1
-
-
-def test_v2_representation_floor_skips_spike_q3_and_unknown_cost() -> None:
-    base = {
-        "name": "Display",
-        "status": "sale",
-        "status_label": "Растим",
-        "minimum_representation_qty": 13,
-        "quality_raw": "Original",
+def test_display_auto_order_summary_carries_scope_policy_audit() -> None:
+    audit = {
+        "scope_policy_version": "display_scope_policy.v1",
+        "source_item_count": 2,
+        "included_item_count": 1,
+        "excluded_item_count": 1,
+        "excluded_row_count": 1,
+        "excluded_reason_counts": {"excluded_display_name_bitok": 1},
+        "exclusions": [],
     }
-    items = [
-        {**base, "nomenclature_code": "SPIKE", "demand_state": "spike", "cost_quartile": "Q1"},
-        {**base, "nomenclature_code": "Q3", "demand_state": "stable", "cost_quartile": "Q3"},
-        {**base, "nomenclature_code": "UNKNOWN", "demand_state": "stable", "cost_quartile": ""},
-    ]
-    rows = build_dry_run_rows(
-        items,
-        facts={
-            "stock": {},
-            "reserve": {},
-            "incoming": {},
-            "sales": {
-                code: {"sales_qty_window": Decimal("6")} for code in ("SPIKE", "Q3", "UNKNOWN")
-            },
-            "returns": {},
-        },
-        source_errors={},
-        target_days=30,
-        sales_window_days=180,
-        lifecycle_model_version="v2-shadow",
-    )
-    assert all(row["representation_floor_applied"] == "" for row in rows)
+
+    summary = build_summary([], run_id=1, source_errors={}, scope_policy_audit=audit)
+
+    assert summary["scope_policy"] == audit
 
 
 def test_display_auto_order_b2b_customer_demand_is_advisory_only() -> None:

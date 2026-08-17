@@ -35,7 +35,7 @@ depends_on:
   - docs/specs/README.md
 supersedes: []
 rollout_required: true
-updated_at: "2026-07-21"
+updated_at: "2026-08-17"
 ---
 
 # Назначение
@@ -91,6 +91,21 @@ Spec фиксирует вывод устаревшего источника и�
 - Станет: builder подтверждает ancestry от source commit активного релиза, switch
   требует точного expected-active и совпадения `required_base_commit`, запрещает
   legacy hash и удаление production API operations.
+- Решение от 2026-08-15: до продолжения DB/CLI/cron hardening привести
+  каноническую Git-историю в соответствие с активным production source.
+  Объединение выполнять только в отдельном clean worktree, сохраняя грязный
+  mutable `main` без изменений; публикация ветки и PR сама по себе не является
+  production cutover.
+- Уточнение от 2026-08-15: canonical `main` обязан иметь фактически активный
+  production source commit в своей ancestry. Patch-equivalent cherry-pick не
+  заменяет этот provenance gate; для уже перенесённого содержимого допустим
+  tree-preserving merge с активной production-цепочкой.
+- Решение от 2026-08-15: workspace control-plane предоставляет штатный `build`,
+  который валидирует clean source, собирает и повторно проверяет immutable
+  candidate, но не запускает migration, switch или smoke активного сервиса.
+  Версионированный source контроллера находится в
+  `/opt/MM/scripts/pricing_release/pricing_service_release_controller.py`;
+  установленный entrypoint остаётся `/usr/local/sbin/mm-pricing-service-release`.
 - Не меняется: внешние HTTP-маршруты, business rules, роли и production delivery.
 
 # Acceptance Criteria
@@ -265,20 +280,34 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
 
 # Rollout
 
-1. Создать отдельный clean worktree, внести и закоммитить изменения. Нельзя
+1. Приоритет №1 перед дальнейшим DB/CLI/cron hardening — объединить canonical
+   `main` с проверенной цепочкой активного production source в отдельной
+   интеграционной ветке и провести её через PR. До merge и отдельного cutover
+   production не меняется, грязный mutable checkout остаётся без изменений.
+   Фактически активный source commit должен быть предком merge-результата;
+   совпадения patch-id после cherry-pick недостаточно.
+   Production-only display-family цепочка `30d7d1f`, `5f25201`, `a643f62`,
+   `49b66ac`, `cdb5da6` переносится в canonical `main` только самостоятельным
+   PR после отдельного архитектурного и регрессионного аудита. Механическое
+   слияние без проверки запрещено. Merge PR и production cutover требуют
+   отдельных решений пользователя.
+2. Создать отдельный clean worktree, внести и закоммитить изменения. Нельзя
    использовать грязный параллельный checkout как source или mutable-root.
-2. Выполнить штатную полную сборку и cutover только через workspace control-plane:
+3. Для подготовки immutable-кандидата без cutover использовать только штатный
+   build-only режим workspace control-plane:
 
    ```bash
-   sudo /usr/local/sbin/mm-pricing-service-release deploy \
+   sudo /usr/local/sbin/mm-pricing-service-release build \
      --source-root /opt/MM/.worktrees/<clean-worktree> \
      --release-name <release-name>
    ```
 
    Контроллер сам читает production-базу из фактически активного manifest и
    передаёт builder обязательные `PRICING_SERVICE_RELEASE_REQUIRED_BASE_REF` и
-   `PRICING_SERVICE_MUTABLE_ROOT`.
-3. Для уже собранного immutable-кандидата сначала выполнить provenance preflight:
+   `PRICING_SERVICE_MUTABLE_ROOT`, повторно валидирует candidate и возвращает
+   `switched=false`.
+4. Для уже собранного immutable-кандидата выполнить provenance preflight и только
+   после отдельного подтверждения — guarded switch:
 
    ```bash
    sudo /usr/local/sbin/mm-pricing-service-release check \
@@ -290,23 +319,39 @@ project command -> delivery intent -> Bitrix24/Telegram -> delivery attempt resu
    В production нельзя напрямую вызывать low-level builder/switch из checkout,
    worktree или release. Controller закрепляет canonical paths, повторно сверяет
    active и передаёт switch обязательный `PRICING_SERVICE_EXPECTED_ACTIVE_RELEASE`.
-4. Controller до смены active-ссылки выполняет миграции кандидата через
+5. Штатный `deploy` оставлен только для отдельно подтверждённого единого цикла
+   build + cutover; он не используется для подготовки кандидата:
+
+   ```bash
+   sudo /usr/local/sbin/mm-pricing-service-release deploy \
+     --source-root /opt/MM/.worktrees/<clean-worktree> \
+     --release-name <release-name>
+   ```
+
+6. Controller до смены active-ссылки выполняет миграции кандидата через
    `alembic upgrade head`, затем требует точного совпадения database/code head.
    Любая ошибка миграции или отдельного validator останавливает cutover.
-5. Проверить health/OpenAPI/UI/API без Bitrix/Telegram side effects; marker
+7. Проверить health/OpenAPI/UI/API без Bitrix/Telegram side effects; marker
    `.release-verified` создаётся switch-скриптом только после успешного smoke.
-6. Наблюдать один ночной catalog sync и один management daily cycle. Известный
+8. Наблюдать один ночной catalog sync и один management daily cycle. Известный
    dashboard status `owner cash transfer control has a high unresolved issue`
    сравнивать с дорелизным baseline и не считать новой технической регрессией.
-7. При ошибке guarded rollback возвращает symlink на предыдущий verified release;
+9. При ошибке guarded rollback возвращает symlink на предыдущий verified release;
    additive migrations
    допускают запуск старого кода.
-8. Retention не выполнять до следующего критического планового цикла; после него
+10. Retention не выполнять до следующего критического планового цикла; после него
    оставить active + 3 verified releases и удалять остальные только через safe
    retention report.
 
 # Changelog
 
+- 2026-08-17 — для production-only display-family цепочки утверждены отдельный
+  архитектурный и регрессионный аудит и самостоятельный PR; механическое
+  слияние запрещено.
+- 2026-08-15 — утверждён штатный build-only режим для подготовки immutable
+  release candidate без production cutover; provenance требует ancestry от
+  фактически активного source commit, а не только patch-equivalence.
+- 2026-08-15 — Git/production reconciliation выбран архитектурным приоритетом №1.
 - 2026-07-22 — switch стал выполнять Alembic migration до cutover, повторно
   проверять database/code head и fail-closed обрабатывать каждый release-validator.
 - 2026-07-22 — после консолидации `main` две независимые additive Alembic-ветки

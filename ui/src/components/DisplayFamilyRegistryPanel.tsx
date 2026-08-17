@@ -92,7 +92,7 @@ export function DisplayFamilyRegistryPanel() {
               <div><dt>SKU</dt><dd>{summary.member_count}</dd></div>
               <div><dt>Несколько SKU</dt><dd>{summary.multi_sku_family_count}</dd></div>
               <div><dt>Singleton</dt><dd>{summary.singleton_family_count}</dd></div>
-              <div><dt>Matching-аудит</dt><dd>{summary.matching_review_member_count}</dd></div>
+              <div><dt>Конфликты с конкурентами</dt><dd>{summary.matching_review_member_count}</dd></div>
               <div><dt>Качество неизвестно</dt><dd>{summary.quality_unknown_member_count}</dd></div>
             </dl>
             <small>
@@ -118,7 +118,7 @@ export function DisplayFamilyRegistryPanel() {
         {[
           ["С предупреждениями", hasWarnings, setHasWarnings],
           ["Нужна ручная проверка", needsReview, setNeedsReview],
-          ["Есть evidence Matching", matchingReview, setMatchingReview],
+          ["Есть конфликт с конкурентом", matchingReview, setMatchingReview],
           ["Неизвестно качество", qualityUnknown, setQualityUnknown],
         ].map(([label, checked, setter]) => (
           <label className="compatibility-toggle" key={label as string}>
@@ -182,7 +182,7 @@ export function DisplayFamilyRegistryPanel() {
                 {family.is_singleton && <span className="compatibility-badge compatibility-badge--muted">singleton</span>}
                 {family.matching_review_member_count > 0 && (
                   <span className="compatibility-badge compatibility-badge--warn">
-                    Matching {family.matching_review_member_count}
+                    конкуренты {family.matching_review_member_count}
                   </span>
                 )}
                 {family.quality_unknown_member_count > 0 && (
@@ -243,11 +243,39 @@ export function DisplayFamilyRegistryPanel() {
                     <span className="compatibility-badge">{member.proposal_status}</span>
                     {member.matching_evidence.accepted_count ? (
                       <span className={`compatibility-badge ${member.matching_evidence.requires_review ? "compatibility-badge--warn" : "compatibility-badge--ok"}`}>
-                        Matching {member.matching_evidence.accepted_count}
+                        конкуренты {member.matching_evidence.accepted_count}
                       </span>
                     ) : null}
+                    {member.matching_evidence.requires_review && (
+                      <span className="compatibility-badge compatibility-badge--warn">
+                        конфликт evidence
+                      </span>
+                    )}
                     {member.requires_manual_review && <span className="compatibility-badge compatibility-badge--warn">evidence сохранён</span>}
                   </div>
+                  {(member.matching_evidence.matches?.length || 0) > 0 && (
+                    <details className="compatibility-details">
+                      <summary>
+                        Сопоставления конкурентов ({member.matching_evidence.matches?.length})
+                      </summary>
+                      <div className="display-family-registry__versions">
+                        {member.matching_evidence.matches?.map((match, index) => {
+                          const disagreements = match.property_disagreements || [];
+                          return (
+                            <span key={`${match.competitor || "competitor"}-${match.competitor_item_id || index}`}>
+                              <strong>{match.competitor || "Источник"}</strong>
+                              {` · ${match.competitor_name || `позиция ${match.competitor_item_id || "—"}`}`}
+                              {match.method ? ` · ${match.method}` : ""}
+                              {match.model_relation ? ` · модели: ${match.model_relation}` : ""}
+                              {disagreements.length > 0
+                                ? ` · расхождения: ${disagreements.map((item) => item.field || "свойство").join(", ")}`
+                                : ""}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    </details>
+                  )}
                   <small>{member.scope_reasons.join(" · ")}</small>
                 </article>
               ))}

@@ -128,6 +128,34 @@ export interface ProcurementLineSyncPayload {
   [key: string]: unknown;
 }
 
+export interface DisplayFamilyOrderRecommendation {
+  schema: string;
+  mode: string;
+  status: string;
+  registry_version_number?: number | null;
+  registry_inventory_checksum: string;
+  family_record_id?: number | null;
+  family_id: string;
+  family_label: string;
+  registry_member_count?: number | null;
+  calculation_member_count?: number | null;
+  segment_id: string;
+  quality_segment: string;
+  construction_segment: string;
+  baseline_order_qty: string;
+  allocated_order_qty: string;
+  family_pool_order_qty: string;
+  segment_pool_order_qty: string;
+  baseline_share_pct: string;
+  target_share_pct: string;
+  allocation_source: string;
+  confidence: string;
+  manual_approval_required: boolean;
+  registry_warning_codes: string[];
+  conflict_codes: string[];
+  reason_ru: string;
+}
+
 export interface ProcurementOrderFormationLine {
   id: number;
   line_number: number;
@@ -154,6 +182,7 @@ export interface ProcurementOrderFormationLine {
   procurement_profile?: string | null;
   manual_minimum?: string | null;
   payload?: ProcurementLineSyncPayload;
+  display_family_recommendation?: DisplayFamilyOrderRecommendation | null;
   removed: boolean;
   effective_assortment_status?: string | null;
   effective_assortment_status_label?: string | null;
@@ -361,25 +390,6 @@ export interface ProcurementLifecycleTransition {
   selectable: boolean;
   stale: boolean;
   created_at?: string | null;
-  demand_state?: string | null;
-  demand_state_label: string;
-  demand_reason_text: string;
-  first_receipt_at?: string | null;
-  last_receipt_at?: string | null;
-  first_stock_inflow_at?: string | null;
-  last_stock_inflow_at?: string | null;
-  history_age_days?: number | null;
-  first_sale_at?: string | null;
-  last_sale_at?: string | null;
-  sales_qty_short?: string | number | null;
-  sales_qty_medium?: string | number | null;
-  sales_qty_long?: string | number | null;
-  days_in_sale_short?: string | number | null;
-  days_in_sale_medium?: string | number | null;
-  days_in_sale_long?: string | number | null;
-  inventory_cost_per_unit?: string | number | null;
-  cost_quartile: string;
-  minimum_representation_qty?: number | null;
 }
 
 export interface ProcurementLifecycleTransitionList {

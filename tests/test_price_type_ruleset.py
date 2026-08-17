@@ -1,6 +1,6 @@
 """Поведенческие тесты контура «Типы цен»: правила, а не структура.
 
-Проверяют границы каждого уровня лестницы, состояние повышений,
+Проверяют границы каждого уровня лестницы, глобальную заморозку повышений,
 обязательность ключевых полей blueprint и обработку нулевого знаменателя в
 витрине возвратов — ровно те риски, которые пропускали структурные тесты
 (вывод независимой ревизии 2026-07-18).
@@ -83,10 +83,10 @@ def test_blueprint_rulebook_matches_ruleset() -> None:
         assert rulebook["levels"][key]["hold_last_month"] == level["hold_last_month"]
 
 
-def test_blueprint_upgrade_freeze_is_removed_with_new_ruleset() -> None:
+def test_blueprint_upgrade_freeze_present() -> None:
     freeze = [s for s in BLUEPRINT["stop_factors"] if s["key"] == "upgrade_freeze"]
-    assert freeze == []
-    assert RULESET["upgrades"]["frozen"] is False
+    assert freeze and freeze[0]["blocks"] == "upgrade"
+    assert RULESET["upgrades"]["frozen"] is True
 
 
 def test_blueprint_required_fields() -> None:

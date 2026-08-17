@@ -1,6 +1,0 @@
-# Isolated forward observer; this does not replace or edit the 09:20 production cron.
-# Installed as /etc/cron.d/mm-margin-flow-pipeline-observer.
-SHELL=/bin/bash
-PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-CRON_TZ=Europe/Moscow
-5 10 * * * root /opt/MM/pricing-service-observers/margin-flow-pipeline-v1/run.sh

@@ -1083,13 +1083,6 @@
       "working_confirmed_by_folder_responsible": true
     },
     {
-      "manual_approved_by": "chat_2026-07-31",
-      "manual_changed_at": "2026-07-31",
-      "manual_reason": "Подтверждённое ручное решение: выключить автозаказ, распродать текущий остаток до нуля и не удалять карточку из 1С. Длинная ревизия 163–164 мм для Samsung A035 Galaxy A03 имеет структурно низкий региональный спрос; возврат в активную закупку допускается только новым ручным решением.",
-      "manual_status": "do_not_order",
-      "nomenclature_code": "РБ000047407"
-    },
-    {
       "approval_rule": "working_confirmation_required",
       "approval_rule_ru": "нужно подтвердить, что товар стал рабочим",
       "approval_source": "display_working_confirmation_batch_v1",

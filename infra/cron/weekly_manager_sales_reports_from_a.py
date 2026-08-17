@@ -26,7 +26,6 @@ DEFAULT_LOCAL_SOURCE_URL = "http://127.0.0.1:18080"
 DEFAULT_LOCAL_ENV_FILE = "/opt/MM/pricing-service/.env"
 DEFAULT_STATE_PATH = "/home/deploy/.openclaw/workspace/.data/weekly-manager-sales/state.json"
 DEFAULT_ARTIFACT_DIR = "/home/deploy/.openclaw/workspace/.data/weekly-manager-sales/artifacts"
-TELEGRAM_CAPTION_MAX_UTF8_BYTES = 900
 
 
 def _load_env(path: str | None) -> dict[str, str]:
@@ -308,28 +307,6 @@ def _artifact_sha256(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-def _prepare_telegram_caption(
-    message: str,
-    *,
-    max_utf8_bytes: int = TELEGRAM_CAPTION_MAX_UTF8_BYTES,
-) -> str:
-    """Keep multipart captions below the effective Telegram UTF-8 limit."""
-    encoded = message.encode("utf-8")
-    if len(encoded) <= max_utf8_bytes:
-        return message
-
-    suffix = "\n…"
-    suffix_bytes = suffix.encode("utf-8")
-    if max_utf8_bytes <= len(suffix_bytes):
-        return suffix_bytes[:max_utf8_bytes].decode("utf-8", errors="ignore")
-
-    truncated = encoded[: max_utf8_bytes - len(suffix_bytes)].decode(
-        "utf-8",
-        errors="ignore",
-    )
-    return truncated.rstrip() + suffix
-
-
 def _has_prior_delivered_revision(
     state: dict[str, Any],
     *,
@@ -390,9 +367,8 @@ def _send_telegram_document(
     boundary = f"----weeklymanagersales{int(time.time() * 1000)}"
     file_bytes = report_path.read_bytes()
 
-    caption = _prepare_telegram_caption(message)
     parts = []
-    for name, value in (("chat_id", chat_id), ("caption", caption)):
+    for name, value in (("chat_id", chat_id), ("caption", message)):
         parts.append(f"--{boundary}\r\n".encode())
         parts.append(f'Content-Disposition: form-data; name="{name}"\r\n\r\n{value}\r\n'.encode())
 
@@ -414,18 +390,8 @@ def _send_telegram_document(
         headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         method="POST",
     )
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            response.read()
-    except urllib.error.HTTPError as error:
-        description = ""
-        try:
-            payload = json.loads(error.read().decode("utf-8") or "{}")
-            description = str(payload.get("description") or "").strip()
-        except (UnicodeDecodeError, ValueError):
-            description = ""
-        detail = f": {description}" if description else ""
-        raise RuntimeError(f"Telegram sendDocument HTTP {error.code}{detail}") from error
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        response.read()
 
 
 def sync_weekly_manager_sales_report(

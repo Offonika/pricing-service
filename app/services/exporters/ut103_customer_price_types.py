@@ -9,7 +9,6 @@ from pathlib import Path
 from xml.etree import ElementTree as ET
 
 CUSTOMER_PRICE_TYPE_UPDATES_SCHEMA = "customer_price_type_updates.v1"
-CUSTOMER_PRICE_TYPE_UPDATES_SCHEMA_V2 = "customer_price_type_updates.v2"
 DEFAULT_SOURCE = "pricing-service"
 DEFAULT_TARGET = "1c_ut_10_3"
 XML_ENCODING = "windows-1251"
@@ -18,23 +17,6 @@ VALID_MODES = frozenset({"dry_run", "apply"})
 APPROVED_DECISION = "approved_for_manual_1c_update"
 EXPECTED_CURRENT_PRICE_TYPE = "2.Бронзовый"
 TARGET_PRICE_TYPE = "Розница"
-STANDARD_PRICE_TYPES = (
-    "Розница",
-    "2.Бронзовый",
-    "3.Серебряный",
-    "4.Золотой",
-    "5.Платиновый",
-)
-V2_DIRECTION_KEYS = {
-    ("Розница", "2.Бронзовый"): "retail_to_bronze",
-    ("2.Бронзовый", "Розница"): "bronze_to_retail",
-    ("2.Бронзовый", "3.Серебряный"): "bronze_to_silver",
-    ("3.Серебряный", "2.Бронзовый"): "silver_to_bronze",
-    ("3.Серебряный", "4.Золотой"): "silver_to_gold",
-    ("4.Золотой", "3.Серебряный"): "gold_to_silver",
-    ("4.Золотой", "5.Платиновый"): "gold_to_platinum",
-    ("5.Платиновый", "4.Золотой"): "platinum_to_gold",
-}
 _COUNTERPARTY_REF_RE = re.compile(r"^0[xX]([0-9a-fA-F]{32})$")
 
 
@@ -48,11 +30,6 @@ class CustomerPriceTypeUpdateRow:
     target_price_type: str
     decision: str = APPROVED_DECISION
     reason: str = ""
-    decision_id: str = ""
-    contract_ref: str = ""
-    contract_guid: str = ""
-    snapshot_hash: str = ""
-    approved_at: str = ""
 
 
 @dataclass(frozen=True)
@@ -79,10 +56,7 @@ class CustomerPriceTypeItemResult:
     contract_name: str = ""
     current_price_type: str = ""
     target_price_type: str = ""
-    readback_price_type: str = ""
     found_contracts: str = ""
-    decision_id: str = ""
-    contract_ref: str = ""
 
 
 @dataclass(frozen=True)
@@ -95,10 +69,6 @@ class CustomerPriceTypeExchangeResult:
     errors: str
     item_results: tuple[CustomerPriceTypeItemResult, ...] = ()
     path: Path | None = None
-    schema: str = ""
-    all_ready: bool | None = None
-    applied_atomically: bool | None = None
-    requires_technical_review: bool | None = None
 
     @property
     def ok(self) -> bool:
@@ -123,7 +93,7 @@ def one_c_guid_from_counterparty_ref(counterparty_ref: str) -> str:
 
 
 def build_customer_price_type_updates_xml(message: CustomerPriceTypeUpdateMessage) -> bytes:
-    """Build a safe v1 or exact-contract v2 package for UT 10.3."""
+    """Build a safe customer_price_type_updates.v1 package for UT 10.3."""
 
     _validate_message(message)
 
@@ -146,14 +116,6 @@ def build_customer_price_type_updates_xml(message: CustomerPriceTypeUpdateMessag
         _add_text(item, "CounterpartyRef", row.counterparty_ref)
         _add_text(item, "CounterpartyGuid", row.counterparty_guid)
         _add_text(item, "CounterpartyName", row.counterparty_name)
-        if message.schema == CUSTOMER_PRICE_TYPE_UPDATES_SCHEMA_V2:
-            _add_text(item, "DecisionId", row.decision_id)
-            _add_text(item, "ContractRef", row.contract_ref)
-            _add_text(item, "ContractGuid", row.contract_guid)
-            _add_text(item, "SnapshotHash", row.snapshot_hash)
-            if message.mode == "apply":
-                _add_text(item, "ApprovedBy", message.approved_by)
-                _add_text(item, "ApprovedAt", row.approved_at)
         _add_text(item, "ExpectedCurrentPriceType", row.expected_current_price_type)
         _add_text(item, "TargetPriceType", row.target_price_type)
         _add_text(item, "Decision", row.decision)
@@ -198,7 +160,6 @@ def parse_customer_price_type_exchange_result(
         raise ValueError(f"unexpected root tag: {root.tag}")
     return CustomerPriceTypeExchangeResult(
         message_id=_node_text(root, "MessageId"),
-        schema=_node_text(root, "Schema"),
         status=_node_text(root, "Status"),
         processed_at=_node_text(root, "ProcessedAt"),
         loaded=_parse_int(_node_text(root, "Loaded"), "Loaded"),
@@ -208,13 +169,6 @@ def parse_customer_price_type_exchange_result(
             _parse_item_result(item) for item in root.findall("ItemResults/ItemResult")
         ),
         path=result_path,
-        all_ready=_optional_bool(_node_text(root, "AllReady"), "AllReady"),
-        applied_atomically=_optional_bool(
-            _node_text(root, "AppliedAtomically"), "AppliedAtomically"
-        ),
-        requires_technical_review=_optional_bool(
-            _node_text(root, "RequiresTechnicalReview"), "RequiresTechnicalReview"
-        ),
     )
 
 
@@ -233,13 +187,8 @@ def list_customer_price_type_exchange_results(
 def _validate_message(message: CustomerPriceTypeUpdateMessage) -> None:
     if not message.message_id.strip():
         raise ValueError("message_id is required")
-    if message.schema not in {
-        CUSTOMER_PRICE_TYPE_UPDATES_SCHEMA,
-        CUSTOMER_PRICE_TYPE_UPDATES_SCHEMA_V2,
-    }:
-        raise ValueError(
-            "schema must be customer_price_type_updates.v1 or " "customer_price_type_updates.v2"
-        )
+    if message.schema != CUSTOMER_PRICE_TYPE_UPDATES_SCHEMA:
+        raise ValueError(f"schema must be {CUSTOMER_PRICE_TYPE_UPDATES_SCHEMA}")
     if message.mode not in VALID_MODES:
         raise ValueError(f"mode must be one of: {', '.join(sorted(VALID_MODES))}")
     if not message.rows:
@@ -248,26 +197,16 @@ def _validate_message(message: CustomerPriceTypeUpdateMessage) -> None:
         raise ValueError("apply mode requires ApprovedBy in the message header")
 
     idempotency_keys: set[str] = set()
-    row_targets: set[tuple[str, str]] = set()
+    counterparty_refs: set[str] = set()
     for row in message.rows:
         idempotency_key = row.idempotency_key.strip()
-        target = (
-            row.counterparty_ref.strip().upper(),
-            (
-                row.contract_ref.strip().upper()
-                if message.schema == CUSTOMER_PRICE_TYPE_UPDATES_SCHEMA_V2
-                else ""
-            ),
-        )
+        counterparty_ref = row.counterparty_ref.strip().upper()
         if idempotency_key in idempotency_keys:
             raise ValueError(f"duplicate idempotency_key in message: {idempotency_key}")
-        if target in row_targets:
-            raise ValueError(
-                "duplicate counterparty/contract target in message: "
-                f"{row.counterparty_ref}/{row.contract_ref}"
-            )
+        if counterparty_ref in counterparty_refs:
+            raise ValueError(f"duplicate counterparty_ref in message: {row.counterparty_ref}")
         idempotency_keys.add(idempotency_key)
-        row_targets.add(target)
+        counterparty_refs.add(counterparty_ref)
 
 
 def _validate_row(row: CustomerPriceTypeUpdateRow, message: CustomerPriceTypeUpdateMessage) -> None:
@@ -280,24 +219,6 @@ def _validate_row(row: CustomerPriceTypeUpdateRow, message: CustomerPriceTypeUpd
         raise ValueError("counterparty_name is required for an auditable result")
     if row.decision != APPROVED_DECISION:
         raise ValueError(f"decision must be {APPROVED_DECISION}")
-    if message.schema == CUSTOMER_PRICE_TYPE_UPDATES_SCHEMA_V2:
-        if not row.decision_id.strip():
-            raise ValueError("decision_id is required for v2")
-        if not row.contract_ref.strip():
-            raise ValueError("contract_ref is required for v2")
-        normalized_contract_guid = one_c_guid_from_counterparty_ref(row.contract_ref)
-        if row.contract_guid.strip().lower() != normalized_contract_guid:
-            raise ValueError("contract_guid does not match contract_ref")
-        if not re.fullmatch(r"[0-9a-f]{64}", row.snapshot_hash):
-            raise ValueError("snapshot_hash must contain 64 lower-case hexadecimal characters")
-        if message.mode == "apply" and not row.approved_at.strip():
-            raise ValueError("approved_at is required for v2 apply")
-        if (
-            row.expected_current_price_type,
-            row.target_price_type,
-        ) not in V2_DIRECTION_KEYS:
-            raise ValueError("v2 supports only an adjacent standard price-type direction")
-        return
     if row.expected_current_price_type != EXPECTED_CURRENT_PRICE_TYPE:
         raise ValueError(f"expected_current_price_type must be {EXPECTED_CURRENT_PRICE_TYPE}")
     if row.target_price_type != TARGET_PRICE_TYPE:
@@ -316,10 +237,7 @@ def _parse_item_result(node: ET.Element) -> CustomerPriceTypeItemResult:
         contract_name=_node_text(node, "ContractName"),
         current_price_type=_node_text(node, "CurrentPriceType"),
         target_price_type=_node_text(node, "TargetPriceType"),
-        readback_price_type=_node_text(node, "ReadbackPriceType"),
         found_contracts=_node_text(node, "FoundContracts"),
-        decision_id=_node_text(node, "DecisionId"),
-        contract_ref=_node_text(node, "ContractRef"),
     )
 
 
@@ -350,14 +268,3 @@ def _parse_int(value: str, field_name: str) -> int:
         return int(normalized)
     except ValueError as error:
         raise ValueError(f"{field_name} must be integer, got: {value}") from error
-
-
-def _optional_bool(value: str, field_name: str) -> bool | None:
-    normalized = value.strip().casefold()
-    if not normalized:
-        return None
-    if normalized in {"true", "1", "yes"}:
-        return True
-    if normalized in {"false", "0", "no"}:
-        return False
-    raise ValueError(f"{field_name} must be boolean, got: {value}")

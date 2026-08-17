@@ -135,28 +135,22 @@ def test_all_level_boundaries(level) -> None:
     assert isolate.recommended_price_type == level.downgrade_to
 
 
-def test_standard_types_upgrade_one_step_and_special_variants_stay_blocked() -> None:
+def test_retail_and_variants_never_create_upgrade_case() -> None:
     retail = ENGINE.evaluate(_facts(price_type="Розница", monthly=("200000",) * 3))
     bronze = ENGINE.evaluate(_facts(price_type="2.Бронзовый", monthly=("120000",) * 3))
     cashless = ENGINE.evaluate(_facts(price_type="3.Серебряный бн", monthly=("120000",) * 3))
     usd = ENGINE.evaluate(_facts(price_type="4.Золотой USD", monthly=("400000",) * 3))
     key_account = ENGINE.evaluate(_facts(price_type="Key Account", monthly=("1",) * 3))
 
-    assert retail.recommendation == "upgrade_proposed"
-    assert retail.recommended_price_type == "2.Бронзовый"
-    assert retail.case_type == "upgrade_approval"
-    assert retail.action_required is True
-    assert bronze.recommendation == "upgrade_proposed"
-    assert bronze.recommended_price_type == "3.Серебряный"
-    assert bronze.action_required is True
+    assert retail.recommendation == "informational_upgrade_candidate"
+    assert retail.action_required is False
+    assert "upgrade_freeze" in retail.stop_factors
+    assert bronze.recommendation == "informational_upgrade_candidate"
+    assert bronze.action_required is False
     assert cashless.current_level == "silver"
     assert cashless.price_type_variant == "бн"
-    assert cashless.recommended_price_type == "3.Серебряный бн"
-    assert cashless.action_required is False
     assert usd.current_level == "gold"
     assert usd.price_type_variant == "usd"
-    assert usd.recommended_price_type == "4.Золотой USD"
-    assert usd.action_required is False
     assert key_account.current_level == "key_account"
     assert key_account.recommendation == "keep_current"
     assert key_account.action_required is False
@@ -727,7 +721,7 @@ def test_resolved_data_check_is_closed_or_reclassified_without_duplicate_case(
             ).all()
             assert profile.open_case_id == case.id
             assert case.case_type == "isolate"
-            assert case.stage == "ISOLATE_1M"
+            assert case.stage == "NEW"
             assert session.scalar(select(func_count(CustomerPriceTypeCase))) == 1
             assert events[-1].event_type == "case_reclassified"
     finally:

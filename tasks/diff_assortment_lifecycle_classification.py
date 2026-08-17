@@ -1,6 +1,6 @@
 """Diff-инструмент классификации статусов ассортимента.
 
-Строит per-SKU снимок legacy/v2-решения по одному и тому же
+Строит per-SKU снимок решения ``decide_assortment_status`` по одному и тому же
 входу и сравнивает два снимка по критичным для авто-заказа полям:
 ``status``, ``auto_order_allowed``, ``blockers``, ``manual_review_required``
 (и ``recommended_status`` для контекста).
@@ -28,15 +28,11 @@
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 from pathlib import Path
 from typing import Any
 
-from app.services.assortment_lifecycle import (
-    decide_legacy_assortment_status,
-    decide_target_assortment_status,
-)
+from app.services.assortment_lifecycle import decide_assortment_status
 from tasks.build_assortment_lifecycle_updates import (
     _fact_status_decision_from_record,
     _lifecycle_input_from_record,
@@ -45,18 +41,7 @@ from tasks.build_assortment_lifecycle_updates import (
 )
 
 # Поля снимка, по которым считаем расхождение (требование ревью контура).
-DIFF_FIELDS = (
-    "status",
-    "demand_state",
-    "auto_order_allowed",
-    "blockers",
-    "manual_review_required",
-    "first_receipt_at",
-    "last_receipt_at",
-    "history_age_days",
-    "cost_quartile",
-    "minimum_representation_qty",
-)
+DIFF_FIELDS = ("status", "auto_order_allowed", "blockers", "manual_review_required")
 
 
 def build_snapshot(
@@ -64,8 +49,6 @@ def build_snapshot(
     *,
     folder_filter: str = "",
     fact_overlay: bool = True,
-    target_model: bool = False,
-    use_previous_status: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Построить снимок ``{nomenclature_code: {status, auto_order_allowed, ...}}``."""
 
@@ -74,61 +57,17 @@ def build_snapshot(
         if folder_filter and not _matches_folder(record, folder_filter):
             continue
         lifecycle_input = _lifecycle_input_from_record(record)
-        decision = (
-            decide_target_assortment_status(lifecycle_input)
-            if target_model
-            else decide_legacy_assortment_status(lifecycle_input)
-        )
-        if fact_overlay and not target_model:
+        decision = decide_assortment_status(lifecycle_input)
+        if fact_overlay:
             decision = _fact_status_decision_from_record(record, decision)
-        status = decision.status.value
-        if use_previous_status:
-            previous_status = str(record.get("previous_status") or "").strip()
-            if previous_status:
-                status = previous_status
-            if previous_status and record.get("previous_classification_available"):
-                decision_auto_order_allowed = bool(record.get("previous_auto_order_allowed"))
-                decision_manual_review_required = bool(
-                    record.get("previous_manual_review_required")
-                )
-                decision_blockers = sorted(record.get("previous_blockers") or [])
-                decision_reason_codes = list(record.get("previous_reason_codes") or [])
-            else:
-                decision_auto_order_allowed = bool(decision.auto_order_allowed)
-                decision_manual_review_required = bool(decision.manual_review_required)
-                decision_blockers = sorted(decision.blockers)
-                decision_reason_codes = list(decision.reason_codes)
-        else:
-            decision_auto_order_allowed = bool(decision.auto_order_allowed)
-            decision_manual_review_required = bool(decision.manual_review_required)
-            decision_blockers = sorted(decision.blockers)
-            decision_reason_codes = list(decision.reason_codes)
         snapshot[decision.nomenclature_code] = {
-            "status": status,
-            "auto_order_allowed": decision_auto_order_allowed,
-            "blockers": decision_blockers,
-            "manual_review_required": decision_manual_review_required,
+            "status": decision.status.value,
+            "auto_order_allowed": bool(decision.auto_order_allowed),
+            "blockers": sorted(decision.blockers),
+            "manual_review_required": bool(decision.manual_review_required),
             "recommended_status": (
                 decision.recommended_status.value if decision.recommended_status else None
             ),
-            "demand_state": decision.demand_state.value if decision.demand_state else None,
-            "demand_state_label": decision.demand_state_label,
-            "demand_reason_codes": list(decision.demand_reason_codes),
-            "reason_codes": decision_reason_codes,
-            "first_receipt_at": record.get("first_receipt_at"),
-            "last_receipt_at": record.get("last_receipt_at"),
-            "history_age_days": record.get("history_age_days"),
-            "first_sale_at": record.get("first_sale_at"),
-            "last_sale_at": record.get("last_sale_at"),
-            "sales_qty_short": record.get("sales_qty_short"),
-            "sales_qty_medium": record.get("sales_qty_medium"),
-            "sales_qty_long": record.get("sales_qty_long"),
-            "days_in_sale_short": record.get("days_in_sale_short"),
-            "days_in_sale_medium": record.get("days_in_sale_medium"),
-            "days_in_sale_long": record.get("days_in_sale_long"),
-            "inventory_cost_per_unit": record.get("inventory_cost_per_unit"),
-            "cost_quartile": record.get("cost_quartile"),
-            "minimum_representation_qty": record.get("minimum_representation_qty"),
         }
     return snapshot
 
@@ -167,14 +106,7 @@ def diff_snapshots(
         }
         if not field_changes:
             continue
-        changed.append(
-            {
-                "nomenclature_code": code,
-                "changes": field_changes,
-                "before": b,
-                "after": a,
-            }
-        )
+        changed.append({"nomenclature_code": code, "changes": field_changes})
         if "status" in field_changes:
             key = f"{b.get('status')} -> {a.get('status')}"
             transition_counts[key] = transition_counts.get(key, 0) + 1
@@ -250,14 +182,12 @@ def _cmd_snapshot(args: argparse.Namespace) -> int:
         records,
         folder_filter=args.folder,
         fact_overlay=not args.no_fact_overlay,
-        target_model=args.target_model,
     )
     payload = {
         "_meta": {
             "input_json": str(args.input_json),
             "folder": args.folder,
             "fact_overlay": not args.no_fact_overlay,
-            "target_model": args.target_model,
             "count": len(snapshot),
         },
         "items": snapshot,
@@ -294,43 +224,6 @@ def _cmd_overlay_audit(args: argparse.Namespace) -> int:
     return 0
 
 
-def _cmd_target_audit(args: argparse.Namespace) -> int:
-    records = _load_records(args.input_json)
-    before = build_snapshot(
-        records,
-        folder_filter=args.folder,
-        fact_overlay=True,
-        use_previous_status=True,
-    )
-    after = build_snapshot(
-        records,
-        folder_filter=args.folder,
-        fact_overlay=False,
-        target_model=True,
-    )
-    diff = diff_snapshots(before, after)
-    diff["audit_rows"] = _build_target_audit_rows(before, after)
-    legacy_orders = _load_order_rows(args.legacy_order_json)
-    target_orders = _load_order_rows(args.target_order_json)
-    _attach_order_and_capital_diff(diff, legacy_orders, target_orders)
-    diff["audit_sections"] = _target_audit_sections(diff)
-    diff["_meta"] = {
-        "scope": args.folder,
-        "before_model": "current_persisted_stage",
-        "after_model": "v2_shadow",
-        "production_action": "none_read_only",
-    }
-    if args.output_json:
-        args.output_json.parent.mkdir(parents=True, exist_ok=True)
-        args.output_json.write_text(
-            json.dumps(diff, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-    if args.output_csv:
-        _write_target_audit_csv(args.output_csv, diff)
-    _print_diff(diff, as_json=args.json)
-    return 0
-
-
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest="command", required=True)
@@ -339,7 +232,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     snap.add_argument(
         "--input-json", type=Path, required=True, help="JSON список или {items:[...]}"
     )
-    snap.add_argument("--target-model", action="store_true", help="Build accepted v2 shadow")
     snap.add_argument("--folder", default="", help="Фильтр по папке, напр. дисплеи")
     snap.add_argument(
         "--no-fact-overlay",
@@ -348,18 +240,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     snap.add_argument("--output-json", type=Path, help="Куда записать снимок")
     snap.set_defaults(func=_cmd_snapshot)
-
-    audit_v2 = sub.add_parser(
-        "target-audit", help="Compare current v1 and accepted v2 shadow on one input"
-    )
-    audit_v2.add_argument("--input-json", type=Path, required=True)
-    audit_v2.add_argument("--folder", default="дисплеи")
-    audit_v2.add_argument("--output-json", type=Path)
-    audit_v2.add_argument("--output-csv", type=Path)
-    audit_v2.add_argument("--legacy-order-json", type=Path)
-    audit_v2.add_argument("--target-order-json", type=Path)
-    audit_v2.add_argument("--json", action="store_true")
-    audit_v2.set_defaults(func=_cmd_target_audit)
 
     dcmd = sub.add_parser("diff", help="Сравнить два снимка")
     dcmd.add_argument("--before", type=Path, required=True)
@@ -385,186 +265,6 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     audit.set_defaults(func=_cmd_overlay_audit)
 
     return parser.parse_args(argv)
-
-
-def _load_order_rows(path: Path | None) -> dict[str, dict[str, Any]]:
-    if path is None:
-        return {}
-    if path.suffix.casefold() == ".csv":
-        with path.open(encoding="utf-8-sig", newline="") as handle:
-            return {
-                str(item.get("nomenclature_code") or "").strip(): dict(item)
-                for item in csv.DictReader(handle)
-                if str(item.get("nomenclature_code") or "").strip()
-            }
-    payload = json.loads(path.read_text(encoding="utf-8-sig"))
-    items = payload.get("items") or payload.get("rows") if isinstance(payload, dict) else payload
-    if not isinstance(items, list):
-        raise SystemExit("Order audit JSON must be a list or contain items/rows")
-    return {
-        str(item.get("nomenclature_code") or "").strip(): dict(item)
-        for item in items
-        if isinstance(item, dict) and str(item.get("nomenclature_code") or "").strip()
-    }
-
-
-def _attach_order_and_capital_diff(
-    diff: dict[str, Any],
-    legacy_orders: dict[str, dict[str, Any]],
-    target_orders: dict[str, dict[str, Any]],
-) -> None:
-    order_delta = 0.0
-    capital_delta = 0.0
-    for item in diff.get("audit_rows", diff["changed"]):
-        code = item["nomenclature_code"]
-        before_order = legacy_orders.get(code, {})
-        after_order = target_orders.get(code, {})
-        before_qty = _number(before_order.get("recommended_order_qty"))
-        after_qty = _number(after_order.get("recommended_order_qty"))
-        cost = _number(
-            item["after"].get("inventory_cost_per_unit")
-            or after_order.get("inventory_cost_per_unit")
-            or before_order.get("inventory_cost_per_unit")
-        )
-        item["order_impact"] = {
-            "before_qty": before_qty,
-            "after_qty": after_qty,
-            "delta_qty": after_qty - before_qty,
-            "inventory_cost_per_unit": cost,
-            "capital_delta": (after_qty - before_qty) * cost,
-        }
-        order_delta += after_qty - before_qty
-        capital_delta += (after_qty - before_qty) * cost
-    diff["summary"]["recommended_order_delta_qty"] = order_delta
-    diff["summary"]["capital_delta"] = capital_delta
-    diff["summary"]["order_comparison_available"] = bool(legacy_orders and target_orders)
-
-
-def _target_audit_sections(diff: dict[str, Any]) -> dict[str, list[str]]:
-    rows = diff.get("audit_rows", diff["changed"])
-    unknown_fact_blockers = {
-        "demand_data_missing",
-        "first_supplier_order_fact_missing",
-        "first_receipt_fact_missing",
-        "sales_fact_missing",
-    }
-    return {
-        "exits_from_growing": [
-            item["nomenclature_code"]
-            for item in rows
-            if item["before"].get("status") == "sale" and item["after"].get("status") != "sale"
-        ],
-        "spikes": [
-            item["nomenclature_code"]
-            for item in rows
-            if item["after"].get("demand_state") == "spike"
-        ],
-        "unknown_facts": [
-            item["nomenclature_code"]
-            for item in rows
-            if item["after"].get("demand_state") == "no_data"
-            or unknown_fact_blockers.intersection(item["after"].get("blockers", []))
-        ],
-        "manual_statuses": [
-            item["nomenclature_code"]
-            for item in rows
-            if item["after"].get("status")
-            in {"matrix", "on_demand", "replace_candidate", "nonliquid", "do_not_order", "pension"}
-        ],
-    }
-
-
-def _build_target_audit_rows(
-    before: dict[str, dict[str, Any]],
-    after: dict[str, dict[str, Any]],
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for code in sorted(set(before) | set(after)):
-        legacy = before.get(code, {})
-        target = after.get(code, {})
-        rows.append(
-            {
-                "nomenclature_code": code,
-                "changed": any(legacy.get(field) != target.get(field) for field in DIFF_FIELDS),
-                "before": legacy,
-                "after": target,
-            }
-        )
-    return rows
-
-
-def _write_target_audit_csv(path: Path, diff: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    columns = (
-        "nomenclature_code",
-        "legacy_status",
-        "target_status",
-        "demand_state",
-        "first_receipt_at",
-        "last_receipt_at",
-        "history_age_days",
-        "first_sale_at",
-        "last_sale_at",
-        "sales_qty_30",
-        "sales_qty_90",
-        "sales_qty_180",
-        "days_in_sale_30",
-        "days_in_sale_90",
-        "days_in_sale_180",
-        "inventory_cost_per_unit",
-        "cost_quartile",
-        "minimum_representation_qty",
-        "legacy_order_qty",
-        "target_order_qty",
-        "order_delta_qty",
-        "capital_delta",
-        "reason_codes",
-        "demand_reason_codes",
-    )
-    with path.open("w", encoding="utf-8-sig", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns)
-        writer.writeheader()
-        for item in diff.get("audit_rows", diff["changed"]):
-            before = item["before"]
-            after = item["after"]
-            order = item.get("order_impact", {})
-            writer.writerow(
-                {
-                    "nomenclature_code": item["nomenclature_code"],
-                    "legacy_status": before.get("status"),
-                    "target_status": after.get("status"),
-                    "demand_state": after.get("demand_state"),
-                    "first_receipt_at": after.get("first_receipt_at"),
-                    "last_receipt_at": after.get("last_receipt_at"),
-                    "history_age_days": after.get("history_age_days"),
-                    "first_sale_at": after.get("first_sale_at"),
-                    "last_sale_at": after.get("last_sale_at"),
-                    "sales_qty_30": after.get("sales_qty_short"),
-                    "sales_qty_90": after.get("sales_qty_medium"),
-                    "sales_qty_180": after.get("sales_qty_long"),
-                    "days_in_sale_30": after.get("days_in_sale_short"),
-                    "days_in_sale_90": after.get("days_in_sale_medium"),
-                    "days_in_sale_180": after.get("days_in_sale_long"),
-                    "inventory_cost_per_unit": after.get("inventory_cost_per_unit"),
-                    "cost_quartile": after.get("cost_quartile"),
-                    "minimum_representation_qty": after.get("minimum_representation_qty"),
-                    "legacy_order_qty": order.get("before_qty"),
-                    "target_order_qty": order.get("after_qty"),
-                    "order_delta_qty": order.get("delta_qty"),
-                    "capital_delta": order.get("capital_delta"),
-                    "reason_codes": ",".join(after.get("reason_codes") or []),
-                    "demand_reason_codes": ",".join(after.get("demand_reason_codes") or []),
-                }
-            )
-
-
-def _number(value: Any) -> float:
-    if value in (None, ""):
-        return 0.0
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return 0.0
 
 
 def main(argv: list[str] | None = None) -> int:

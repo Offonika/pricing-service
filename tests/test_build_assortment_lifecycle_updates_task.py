@@ -186,6 +186,45 @@ def test_build_assortment_lifecycle_updates_display_folder_includes_laptop_matri
     assert summary["rows"] == 4
 
 
+def test_build_assortment_lifecycle_updates_excludes_bitok_before_statuses(
+    tmp_path: Path,
+) -> None:
+    input_path = tmp_path / "facts.json"
+    input_path.write_text(
+        json.dumps(
+            {
+                "items": [
+                    {
+                        "nomenclature_code": "DROP",
+                        "name": "Дисплей (биток)",
+                        "folder_path": "ОБЩИЙ КАТАЛОГ / дисплеи",
+                    }
+                ]
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "tasks.build_assortment_lifecycle_updates",
+            "--input-json",
+            str(input_path),
+            "--json",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    summary = json.loads(result.stdout)
+    assert summary["items"] == []
+    assert summary["rows"] == 0
+
+
 def test_build_assortment_lifecycle_updates_task_rejects_ut103_xml(
     tmp_path: Path,
 ) -> None:

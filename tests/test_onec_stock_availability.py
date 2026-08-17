@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
-from datetime import UTC, date, datetime
+from datetime import date
 from decimal import Decimal
 from pathlib import Path
 
@@ -11,7 +11,6 @@ from sqlalchemy import create_engine, insert, select
 
 from app.services.onec_stock_availability import (
     COVERAGE_TABLE,
-    CURRENT_STOCK_BY_CODE_SQL,
     DAY_DELTA_TABLE,
     INTERVAL_TABLE,
     MOVEMENT_SQL,
@@ -19,7 +18,6 @@ from app.services.onec_stock_availability import (
     SYNC_RUN_TABLE,
     attach_effective_availability_shadow_to_facts,
     build_availability_rows,
-    build_current_stock_snapshot,
     enforce_retention,
     metadata,
 )
@@ -270,52 +268,6 @@ def test_sql_reads_monthly_totals_and_active_movements_from_both_registers() -> 
     assert "_AccumRg7735" in movement_sql
     assert "_AccumRg7747" in movement_sql
     assert movement_sql.count("_Active = 0x01") == 2
-
-
-def test_current_stock_sql_reads_verified_current_totals_by_product_code() -> None:
-    current_sql = str(CURRENT_STOCK_BY_CODE_SQL)
-
-    assert "_AccumRgT7745" in current_sql
-    assert "_Reference62" in current_sql
-    assert "t._Period = :current_totals_period" in current_sql
-    assert "positive_quantity" in current_sql
-    assert "net_quantity" in current_sql
-
-
-def test_build_current_stock_snapshot_keeps_positive_and_net_quantities() -> None:
-    captured_at = datetime(2026, 8, 16, 9, tzinfo=UTC)
-    snapshot = build_current_stock_snapshot(
-        [
-            {
-                "product_code": "РБ0001",
-                "source_row_count": 3,
-                "positive_row_count": 2,
-                "positive_quantity": "5.000",
-                "net_quantity": "4.000",
-            },
-            {
-                "product_code": "РБ0002",
-                "source_row_count": 1,
-                "positive_row_count": 0,
-                "positive_quantity": "0",
-                "net_quantity": "-1",
-            },
-        ],
-        captured_at=captured_at,
-    )
-
-    assert snapshot.source_status == "ready"
-    assert snapshot.captured_at == captured_at
-    assert snapshot.source_row_count == 4
-    assert snapshot.product_code_count == 2
-    assert snapshot.positive_row_count == 2
-    assert snapshot.positive_product_code_count == 1
-    assert snapshot.total_positive_quantity == Decimal("5.000")
-    assert snapshot.total_net_quantity == Decimal("3.000")
-    assert snapshot.quantities_by_code == {
-        "РБ0001": Decimal("5.000"),
-        "РБ0002": Decimal("0.000"),
-    }
 
 
 def test_migration_upgrade_and_downgrade(tmp_path: Path) -> None:

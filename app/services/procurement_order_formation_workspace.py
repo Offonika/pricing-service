@@ -24,7 +24,7 @@ from app.models.procurement_order_formation import (
 )
 from app.services.assortment_lifecycle import (
     AssortmentLifecycleInput,
-    decide_legacy_assortment_status,
+    decide_assortment_status,
 )
 from app.services.assortment_lifecycle_classification_store import (
     ASSORTMENT_LIFECYCLE_CLASSIFICATION_TABLE,
@@ -65,21 +65,20 @@ DISPLAY_FOLDER = "дисплеи"
 DISPLAY_RESPONSIBLE_NAME = "Омар"
 LIFECYCLE_ORDER = ("fruit", "newborn", "new_item", "sales_start", "sale", "working")
 LIFECYCLE_LABELS = {
-    "fruit": "Рассматриваем",
-    "newborn": "Заказали",
-    "newborn_need": "Заказали + Добираем",
-    "new_item": "Завезли",
-    "sales_start": "Пошли продажи",
-    "sale": "Растим",
-    "working": "Поддерживаем",
-    "review": "На разборе",
+    "fruit": "Плод",
+    "newborn": "Новорожденный",
+    "newborn_need": "ДН / Добор новорождённого",
+    "new_item": "Новинка",
+    "sales_start": "СП / Старт продаж",
+    "sale": "ПРОДАЖА",
+    "working": "Рабочий",
+    "review": "Review / разбор",
 }
 MANUAL_STATUS_ORDER = (
     "matrix",
     "on_demand",
     "replace_candidate",
     "nonliquid",
-    "pension",
     "do_not_order",
     "review",
 )
@@ -87,8 +86,7 @@ MANUAL_STATUS_LABELS = {
     "matrix": "Матричный",
     "on_demand": "Под заказ",
     "replace_candidate": "Кандидат на замену",
-    "nonliquid": "Выводим",
-    "pension": "Допродаём",
+    "nonliquid": "Кандидат на неликвид",
     "do_not_order": "Не закупать",
     "review": "Review / разбор",
 }
@@ -445,10 +443,6 @@ def list_lifecycle_transitions(
             or _dashboard_status(str(row.get("status") or "")) == normalized_status
         ]
     else:
-        snapshots_by_code = {
-            str(row.get("nomenclature_code") or ""): row
-            for row in _snapshot_rows(db, folder=folder, run_id=latest_run_id or None)
-        }
         proposal_status = "stale" if readiness == "stale" else "pending"
         proposal_filters = [
             ProcurementLifecycleTransitionProposal.folder.ilike(f"%{folder}%"),
@@ -472,17 +466,7 @@ def list_lifecycle_transitions(
                 ProcurementLifecycleTransitionProposal.created_at,
             )
         ).all()
-        serialized = []
-        for proposal in proposals:
-            item = serialize_transition(proposal, latest_run_id=latest_run_id)
-            snapshot = snapshots_by_code.get(proposal.nomenclature_code)
-            if snapshot is not None:
-                item.update(_lifecycle_explanation_fields(snapshot))
-                item["facts"] = {
-                    **dict(item.get("facts") or {}),
-                    **_lifecycle_explanation_facts(snapshot),
-                }
-            serialized.append(item)
+        serialized = [serialize_transition(item, latest_run_id=latest_run_id) for item in proposals]
     if search_key:
         serialized = [
             item
@@ -1168,7 +1152,6 @@ def serialize_transition(
         "selectable": ready,
         "stale": stale,
         "created_at": proposal.created_at,
-        **_lifecycle_explanation_fields(dict(proposal.facts or {})),
     }
 
 
@@ -1302,7 +1285,6 @@ def _transition_candidate(
 ) -> dict[str, Any] | None:
     source = dict(row.get("source_record") or {})
     row_status = normalize_status(row.get("status")) or str(row.get("status") or "")
-    classification_model = str(row.get("classification_model") or "v1")
     manual_status = normalize_status(
         source.get("manual_status")
         or source.get("ManualStatus")
@@ -1314,25 +1296,7 @@ def _transition_candidate(
     target_status = normalize_status(row.get("recommended_status"))
     reason = str(row.get("reason_text") or "")
 
-    if classification_model == "v2-live" and manual_status is None:
-        current_status = (
-            normalize_status(source.get("previous_status"))
-            or normalize_status(row.get("legacy_status"))
-            or row_status
-        )
-        target_status = row_status if row_status != current_status else None
-
-    if classification_model == "v2-live" and (
-        bool(row.get("manual_review_required")) or bool(row.get("blockers"))
-    ):
-        action_kind = "review"
-        current_status = (
-            normalize_status(source.get("previous_status"))
-            or normalize_status(row.get("legacy_status"))
-            or row_status
-        )
-        target_status = None
-    elif row_status == "newborn_need":
+    if row_status == "newborn_need":
         action_kind = "review"
         current_status = "newborn"
         target_status = None
@@ -1358,11 +1322,7 @@ def _transition_candidate(
             return None
         if target_status not in LIFECYCLE_ORDER:
             return None
-    elif (
-        classification_model != "v2-live"
-        and current_status != "working"
-        and row_status != "newborn_need"
-    ):
+    elif current_status != "working" and row_status != "newborn_need":
         return None
 
     product_ref = str(row.get("product_ref") or "").strip() or None
@@ -1372,15 +1332,12 @@ def _transition_candidate(
         for item in list(row.get("blockers") or []) + list(row.get("export_blockers") or [])
         if str(item) not in {"ut103_export_blocked", "fact_status_decision_requires_1c_approval"}
     ]
-    if action_kind == "transition" and not product_guid and classification_model != "v2-live":
+    if action_kind == "transition" and not product_guid:
         blockers.append("catalog_guid_missing")
     facts = {
         "reason_codes": list(row.get("reason_codes") or []),
         "source": row.get("source"),
         "classified_at": _jsonable(row.get("classified_at")),
-        "classification_model": classification_model,
-        "demand_state": row.get("demand_state"),
-        "demand_reason_codes": list(row.get("demand_reason_codes") or []),
         "evidence": dict((source.get("fact_status_decision") or {}).get("evidence") or {}),
     }
     run_id = int(run["id"])
@@ -1418,20 +1375,6 @@ def _is_automatic_lifecycle_transition(
     row: Mapping[str, Any],
     candidate: Mapping[str, Any],
 ) -> bool:
-    if str(row.get("classification_model") or "") == "v2-live":
-        source = dict(row.get("source_record") or {})
-        manual_status = normalize_status(
-            source.get("manual_status")
-            or source.get("ManualStatus")
-            or source.get("current_status")
-            or source.get("assortment_status")
-        )
-        return (
-            manual_status is None
-            and candidate.get("action_kind") == "transition"
-            and candidate.get("target_status") in LIFECYCLE_ORDER
-            and not candidate.get("blockers")
-        )
     if candidate.get("current_status") != "fruit" or candidate.get("target_status") != "newborn":
         return False
     reason_codes = {str(item) for item in row.get("reason_codes") or []}
@@ -1450,7 +1393,7 @@ def _is_automatic_lifecycle_transition(
 
 def _fact_target_from_source(source: Mapping[str, Any], nomenclature_code: str) -> str | None:
     try:
-        decision = decide_legacy_assortment_status(
+        decision = decide_assortment_status(
             AssortmentLifecycleInput(
                 nomenclature_code=nomenclature_code,
                 created_at=_parse_date(source.get("created_at")),
@@ -1558,11 +1501,11 @@ def _serialize_snapshot_row(
         "action_kind": "view",
         "current_status": status_code,
         "current_status_label": _status_label(status_code),
-        "target_status": str(row.get("target_status") or "") or None,
-        "target_status_label": str(row.get("target_status_label") or "") or None,
+        "target_status": None,
+        "target_status_label": None,
         "proposal_status": "snapshot",
         "reason": str(row.get("reason_text") or ""),
-        "facts": _lifecycle_explanation_facts(row),
+        "facts": {"reason_codes": list(row.get("reason_codes") or [])},
         "blockers": list(row.get("blockers") or []),
         "risk_codes": list(row.get("reason_codes") or []),
         "run_id": run_id,
@@ -1575,39 +1518,6 @@ def _serialize_snapshot_row(
         "selectable": False,
         "stale": False,
         "created_at": row.get("classified_at"),
-        **_lifecycle_explanation_fields(row),
-    }
-
-
-def _lifecycle_explanation_fields(row: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "demand_state": row.get("demand_state"),
-        "demand_state_label": str(row.get("demand_state_label") or ""),
-        "demand_reason_text": str(row.get("demand_reason_text") or ""),
-        "first_receipt_at": row.get("first_receipt_at"),
-        "last_receipt_at": row.get("last_receipt_at"),
-        "first_stock_inflow_at": row.get("first_stock_inflow_at"),
-        "last_stock_inflow_at": row.get("last_stock_inflow_at"),
-        "history_age_days": row.get("history_age_days"),
-        "first_sale_at": row.get("first_sale_at"),
-        "last_sale_at": row.get("last_sale_at"),
-        "sales_qty_short": row.get("sales_qty_short"),
-        "sales_qty_medium": row.get("sales_qty_medium"),
-        "sales_qty_long": row.get("sales_qty_long"),
-        "days_in_sale_short": row.get("days_in_sale_short"),
-        "days_in_sale_medium": row.get("days_in_sale_medium"),
-        "days_in_sale_long": row.get("days_in_sale_long"),
-        "inventory_cost_per_unit": row.get("inventory_cost_per_unit"),
-        "cost_quartile": str(row.get("cost_quartile") or ""),
-        "minimum_representation_qty": row.get("minimum_representation_qty"),
-    }
-
-
-def _lifecycle_explanation_facts(row: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "reason_codes": list(row.get("reason_codes") or []),
-        "demand_reason_codes": list(row.get("demand_reason_codes") or []),
-        **_lifecycle_explanation_fields(row),
     }
 
 

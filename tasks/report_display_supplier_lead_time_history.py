@@ -331,9 +331,9 @@ def fetch_supplier_order_line_rows(
     supplier_ref_column = "_Fld2498RRef"
     responsible_ref_column = "_Fld2504RRef"
     expected_receipt_column = "_Fld2493"
-    quantity_column = supplier_mapping.line_quantity_column or "_Fld2520"
+    quantity_column = "_Fld2520"
     amount_column = "_Fld2526"
-    line_no_column = supplier_mapping.line_number_column or "_LineNo2516"
+    line_no_column = "_LineNo2516"
     query = _expanding_text(
         f"""
         SELECT
@@ -395,13 +395,8 @@ def fetch_receipt_line_rows(
     history_start: date,
     date_to: date,
 ) -> list[dict[str, Any]]:
-    line_no_column = receipt_mapping.line_number_column or "_LineNo4508"
-    quantity_column = receipt_mapping.line_quantity_column or "_Fld4514"
-    supplier_order_ref_sql = (
-        "CONVERT(varchar(34), " f"line.{_ident(receipt_mapping.line_supplier_order_column)}, 1)"
-        if receipt_mapping.line_supplier_order_column
-        else "CAST('' AS varchar(34))"
-    )
+    line_no_column = "_LineNo4508"
+    quantity_column = "_Fld4513"
     query = _expanding_text(
         f"""
         SELECT
@@ -410,7 +405,6 @@ def fetch_receipt_line_rows(
             NULLIF(LTRIM(RTRIM(product._Code)), N'') AS nomenclature_code,
             CONVERT(varchar(34), doc.{_ident(receipt_mapping.document_id_column)}, 1)
                 AS receipt_ref,
-            {supplier_order_ref_sql} AS supplier_order_ref,
             NULLIF(LTRIM(RTRIM(doc._Number)), N'') AS receipt_number,
             doc.{_ident(receipt_mapping.document_date_column)} AS receipt_at,
             line.{_ident(line_no_column)} AS line_no,

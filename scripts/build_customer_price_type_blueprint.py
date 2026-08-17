@@ -112,8 +112,8 @@ STAGE_SPECS = [
     },
     {
         "logical_key": "credit_check",
-        "code": "CREDIT_ECONOMICS_CHECK",
-        "name": "Проверка кредита и экономики",
+        "code": "CREDIT_CHECK",
+        "name": "Проверка платежей и кредита",
         "sort": 700,
         "semantics": None,
     },
@@ -1153,6 +1153,16 @@ STOP_FACTORS = [
             " and three_month_sales_total < threshold_lower"
         ),
     },
+    {
+        "key": "upgrade_freeze",
+        "blocks": "upgrade",
+        "when": (
+            "ГЛОБАЛЬНАЯ ЗАМОРОЗКА (ruleset upgrades.frozen=true, решение "
+            "2026-07-17/18): любые повышения уровня не выполняются; кандидаты "
+            "отображаются информационно, стадия manual_upgrade_approval "
+            "недостижима до отдельной команды о разморозке"
+        ),
+    },
     {"key": "credit_risk_high", "blocks": "upgrade", "when": "credit_discipline_grade in (D,E)"},
     {"key": "over_credit_limit", "blocks": "upgrade", "when": "over_limit_amount > 0"},
     {
@@ -1169,6 +1179,11 @@ STOP_FACTORS = [
         "key": "manager_action_not_logged",
         "blocks": "downgrade",
         "when": "stage == isolate_1m and manager_action_log_status != full",
+    },
+    {
+        "key": "retail_auto_upgrade_forbidden",
+        "blocks": "upgrade",
+        "when": "current_price_type == retail",
     },
     {
         "key": "key_account_zone",

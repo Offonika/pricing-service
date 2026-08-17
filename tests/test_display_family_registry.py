@@ -25,6 +25,7 @@ from app.services.display_family_registry import (
     display_family_registry_summary,
     get_active_display_family_detail,
     list_active_display_families,
+    load_active_display_family_member_contexts,
     load_approved_display_family_bundle,
     readback_display_family_registry_version,
     rollback_display_family_registry,
@@ -88,11 +89,17 @@ def _item(product_id: int, family_key: str, *, review: bool = False) -> dict:
     }
 
 
-def _bundle(tmp_path: Path, items: list[dict]) -> tuple[Path, ApprovedBundleContract]:
-    bundle = tmp_path / "accepted-bundle"
+def _bundle(
+    tmp_path: Path,
+    items: list[dict],
+    *,
+    bundle_name: str = "accepted-bundle",
+    checksum_char: str = "a",
+) -> tuple[Path, ApprovedBundleContract]:
+    bundle = tmp_path / bundle_name
     bundle.mkdir()
     family_count = len({item["proposed_family_id"] for item in items})
-    checksum = "a" * 64
+    checksum = checksum_char * 64
     inventory = {
         "schema": "display_family_inventory.test.v2",
         "as_of": "2026-08-16",
@@ -145,7 +152,11 @@ def _bundle(tmp_path: Path, items: list[dict]) -> tuple[Path, ApprovedBundleCont
 
 def _products(session: Session, count: int = 3) -> list[Product]:
     products = [
-        Product(article=f"DISPLAY-{index}", name=f"Дисплей тестовый {index}")
+        Product(
+            article=f"DISPLAY-{index}",
+            code_1c=f"CODE-{index}",
+            name=f"Дисплей тестовый {index}",
+        )
         for index in range(1, count + 1)
     ]
     session.add_all(products)
@@ -214,11 +225,90 @@ def test_bootstrap_is_atomic_idempotent_and_queryable(tmp_path: Path, db_session
     assert len(detail["members"]) == 2
     assert detail["events"][0]["reason"] == "accepted test evidence"
 
+    contexts = load_active_display_family_member_contexts(
+        db_session,
+        nomenclature_codes=["CODE-1", "CODE-2", "MISSING"],
+    )
+    assert set(contexts) == {"CODE-1", "CODE-2"}
+    assert contexts["CODE-1"].family_key == "display-family-test-shared"
+    assert contexts["CODE-1"].family_member_count == 2
+    assert contexts["CODE-2"].matching_evidence["requires_review"] is True
+
     db_session.commit()
     idempotent = apply_display_family_bootstrap(db_session, bundle, actor="second-run")
     assert idempotent["applied"] is False
     assert idempotent["idempotent"] is True
     assert len(db_session.scalars(select(DisplayFamilyRegistryVersion)).all()) == 1
+
+
+def test_successor_activation_is_atomic_and_preserves_rollback(
+    tmp_path: Path, db_session: Session
+) -> None:
+    products = _products(db_session)
+    first_path, first_contract = _bundle(
+        tmp_path,
+        [
+            _item(products[0].id, "display-family-shared"),
+            _item(products[1].id, "display-family-shared"),
+            _item(products[2].id, "display-family-excluded-later"),
+        ],
+        bundle_name="first-bundle",
+        checksum_char="a",
+    )
+    first_bundle = load_approved_display_family_bundle(first_path, contract=first_contract)
+    db_session.rollback()
+    apply_display_family_bootstrap(db_session, first_bundle, actor="test-user")
+    db_session.commit()
+
+    second_path, second_contract = _bundle(
+        tmp_path,
+        [
+            _item(products[0].id, "display-family-shared"),
+            _item(products[1].id, "display-family-shared"),
+        ],
+        bundle_name="second-bundle",
+        checksum_char="c",
+    )
+    second_bundle = load_approved_display_family_bundle(second_path, contract=second_contract)
+    plan = build_display_family_bootstrap_plan(db_session, second_bundle)
+
+    assert plan.ready is True
+    assert plan.action == "create_successor_active_version"
+    assert plan.version_number == 2
+    assert plan.replaces_version_number == 1
+    db_session.rollback()
+    result = apply_display_family_bootstrap(
+        db_session,
+        second_bundle,
+        actor="test-user",
+        reason="activate accepted scope policy",
+    )
+
+    assert result["readback"]["version_number"] == 2
+    assert result["readback"]["member_count"] == 2
+    versions = db_session.scalars(
+        select(DisplayFamilyRegistryVersion).order_by(DisplayFamilyRegistryVersion.version_number)
+    ).all()
+    assert [(version.version_number, version.status) for version in versions] == [
+        (1, "superseded"),
+        (2, "active"),
+    ]
+    assert len(db_session.scalars(select(DisplayFamilyMember)).all()) == 5
+    events = db_session.scalars(
+        select(DisplayFamilyDecisionEvent).order_by(DisplayFamilyDecisionEvent.id)
+    ).all()
+    assert [event.action for event in events] == ["bootstrap_activate", "successor_activate"]
+
+    db_session.commit()
+    rollback = rollback_display_family_registry(
+        db_session,
+        1,
+        actor="rollback-user",
+        reason="validated rollback",
+        effective_at=date(2026, 8, 16),
+    )
+    assert rollback["readback"]["version_number"] == 1
+    assert rollback["readback"]["member_count"] == 3
 
 
 def test_readback_detects_membership_drift(tmp_path: Path, db_session: Session) -> None:

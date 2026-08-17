@@ -19,20 +19,12 @@ from app.api.procurement_labels import (
 )
 from app.core.config import get_settings
 from app.domains.customer_price_types import CustomerPriceTypeAccessScope
-from app.domains.customer_price_types.advisories import (
-    build_customer_notification_draft,
-    build_order_return_lamp,
-)
 from app.infrastructure.customer_price_types import (
     SqlAlchemyCustomerPriceTypeRepository,
     review_batch_item_matches,
     review_batch_snapshot_status,
 )
 from app.schemas.customer_price_types import (
-    CustomerPriceTypeAdvisoryPreviewRequest,
-    CustomerPriceTypeAdvisoryPreviewResponse,
-    CustomerPriceTypeCancelChangeRequest,
-    CustomerPriceTypeCancelChangeResponse,
     CustomerPriceTypeCaseDetailResponse,
     CustomerPriceTypeCaseEventResponse,
     CustomerPriceTypeCaseItem,
@@ -54,12 +46,6 @@ from app.schemas.customer_price_types import (
     CustomerPriceTypeQualitySampleDetailResponse,
     CustomerPriceTypeQualitySampleListResponse,
     CustomerPriceTypeQualitySampleResponse,
-    CustomerPriceTypeReviewCardListResponse,
-    CustomerPriceTypeReviewCardResponse,
-    CustomerPriceTypeReviewCommand,
-    CustomerPriceTypeReviewKind,
-    CustomerPriceTypeReviewMetricsResponse,
-    CustomerPriceTypeReviewSaveResponse,
     CustomerPriceTypeRunResponse,
     CustomerPriceTypeSessionRequest,
     CustomerPriceTypeSessionResponse,
@@ -78,14 +64,8 @@ from app.services.bitrix_customer_price_types_auth import (
     resolve_customer_price_type_manager_owner_ref,
     verify_customer_price_type_session,
 )
-from app.services.customer_price_type_reviews import (
-    CustomerPriceTypeReviewConflict,
-    CustomerPriceTypeReviewNotFound,
-    CustomerPriceTypeReviewService,
-)
 from app.services.customer_price_types import (
     CustomerPriceTypeQualityConflict,
-    CustomerPriceTypeQualityFrozen,
     CustomerPriceTypeQualityService,
     CustomerPriceTypeReadService,
     customer_price_type_case_guidance,
@@ -132,48 +112,6 @@ def require_customer_price_type_access(
 
 
 Access = Annotated[CustomerPriceTypeAccessScope, Depends(require_customer_price_type_access)]
-
-
-@router.post(
-    "/advisories/preview",
-    response_model=CustomerPriceTypeAdvisoryPreviewResponse,
-)
-def preview_customer_price_type_advisories(
-    payload: CustomerPriceTypeAdvisoryPreviewRequest,
-    _access: Access,
-) -> CustomerPriceTypeAdvisoryPreviewResponse:
-    lamp = build_order_return_lamp(
-        character=payload.return_character,
-        period_mismatch=payload.period_mismatch,
-        behavior_group=payload.behavior_group,
-    )
-    notification = None
-    if payload.notification_event is not None:
-        notification = build_customer_notification_draft(
-            payload.notification_event,
-            current_level=payload.current_level,
-        )
-    return CustomerPriceTypeAdvisoryPreviewResponse(
-        order_lamp={
-            "key": lamp.key,
-            "severity": lamp.severity,
-            "title": lamp.title,
-            "manager_action": lamp.manager_action,
-            "visible": lamp.visible,
-            "blocks_fulfillment": lamp.blocks_fulfillment,
-        },
-        notification=(
-            {
-                "event": notification.event,
-                "text": notification.text,
-                "channel_candidates": list(notification.channel_candidates),
-                "approval_status": notification.approval_status,
-                "send_allowed": notification.send_allowed,
-            }
-            if notification is not None
-            else None
-        ),
-    )
 
 
 @router.post("/session", response_model=CustomerPriceTypeSessionResponse)
@@ -440,15 +378,12 @@ def _ensure_quality_read_access(access: CustomerPriceTypeAccessScope) -> None:
         raise HTTPException(status_code=403, detail="customer price-type quality access denied")
 
 
-def _profile_search_payload(profile, snapshot, sample, current_data_issue: bool) -> dict:
+def _profile_search_payload(profile, snapshot, sample) -> dict:
     is_data_issue = snapshot.case_type == "data_check" or bool(
-        current_data_issue
-        or (
-            sample is not None
-            and sample.status == "reviewed"
-            and sample.system_group != "data_check"
-            and sample.correct_group == "data_check"
-        )
+        sample is not None
+        and sample.status == "reviewed"
+        and sample.system_group != "data_check"
+        and sample.correct_group == "data_check"
     )
     change_proposed = (
         snapshot.recommended_price_type is not None
@@ -471,7 +406,7 @@ def _profile_search_payload(profile, snapshot, sample, current_data_issue: bool)
         "recommended_price_type": None if is_data_issue else snapshot.recommended_price_type,
         "result_state": state,
         "result_label": label,
-        "can_review": False,
+        "can_review": bool(sample is not None and sample.status == "pending" and not is_data_issue),
         "quality_sample_id": sample.id if sample is not None else None,
         "quality_sample_status": sample.status if sample is not None else None,
     }
@@ -497,178 +432,6 @@ def _data_issue_text(snapshot) -> str:
         if reason in _DATA_ISSUE_TEXTS:
             return _DATA_ISSUE_TEXTS[reason]
     return "Техническая причина не расшифрована."
-
-
-def _review_envelope(db: Session, snapshot_id: int) -> dict[str, Any]:
-    repository = SqlAlchemyCustomerPriceTypeRepository(db)
-    row = repository.get_review_card(
-        snapshot_id=snapshot_id,
-        access=internal_customer_price_type_scope(),
-    )
-    if row is None:
-        raise HTTPException(status_code=404, detail="Карточка проверки не найдена.")
-    snapshot = row[1]
-    run = repository.get_run(snapshot.run_id)
-    return {
-        "run_id": snapshot.run_id,
-        "snapshot_month": snapshot.snapshot_month,
-        "ruleset_version": snapshot.ruleset_version,
-        "source_status": run.status if run is not None else snapshot.source_status,
-    }
-
-
-@router.get(
-    "/reviews/cards",
-    response_model=CustomerPriceTypeReviewCardListResponse,
-)
-def list_customer_price_type_review_cards(
-    access: Access,
-    snapshot_month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
-    review_kind: CustomerPriceTypeReviewKind | None = None,
-    pending_only: bool = False,
-    search: str | None = Query(default=None, max_length=255),
-    limit: int = Query(default=50, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
-    db: Session = Depends(get_db),
-) -> CustomerPriceTypeReviewCardListResponse:
-    try:
-        return CustomerPriceTypeReviewCardListResponse.model_validate(
-            CustomerPriceTypeReviewService(db).list_cards(
-                snapshot_month=_month(snapshot_month),
-                access=access,
-                search=search,
-                review_kind=review_kind,
-                pending_only=pending_only,
-                limit=limit,
-                offset=offset,
-            )
-        )
-    except SQLAlchemyError as exc:
-        raise HTTPException(
-            status_code=503, detail="Хранилище проверок типов цен временно недоступно."
-        ) from exc
-
-
-@router.get(
-    "/reviews/cards/{snapshot_id}",
-    response_model=CustomerPriceTypeReviewCardResponse,
-)
-def get_customer_price_type_review_card(
-    snapshot_id: int,
-    access: Access,
-    db: Session = Depends(get_db),
-) -> CustomerPriceTypeReviewCardResponse:
-    try:
-        card = CustomerPriceTypeReviewService(db).get_card(snapshot_id=snapshot_id, access=access)
-        return CustomerPriceTypeReviewCardResponse(**_review_envelope(db, snapshot_id), card=card)
-    except CustomerPriceTypeReviewNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except SQLAlchemyError as exc:
-        raise HTTPException(
-            status_code=503, detail="Хранилище проверок типов цен временно недоступно."
-        ) from exc
-
-
-def _save_customer_price_type_review(
-    *,
-    snapshot_id: int,
-    review_kind: CustomerPriceTypeReviewKind,
-    payload: CustomerPriceTypeReviewCommand,
-    access: CustomerPriceTypeAccessScope,
-    db: Session,
-) -> CustomerPriceTypeReviewSaveResponse:
-    try:
-        result = CustomerPriceTypeReviewService(db).save(
-            snapshot_id=snapshot_id,
-            review_kind=review_kind,
-            result=payload.result,
-            corrected_value=payload.corrected_value,
-            comment=payload.comment,
-            expected_version=payload.expected_version,
-            snapshot_hash=payload.snapshot_hash,
-            access=access,
-        )
-        return CustomerPriceTypeReviewSaveResponse(
-            **_review_envelope(db, snapshot_id),
-            card=result.card,
-            saved_kind=result.saved_kind,
-        )
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except CustomerPriceTypeReviewNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except CustomerPriceTypeReviewConflict as exc:
-        db.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except ValueError as exc:
-        db.rollback()
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
-    except SQLAlchemyError as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=503, detail="Не удалось сохранить решение. Повторите попытку."
-        ) from exc
-
-
-@router.put(
-    "/reviews/cards/{snapshot_id}/price-type",
-    response_model=CustomerPriceTypeReviewSaveResponse,
-)
-def review_customer_price_type_dimension(
-    snapshot_id: int,
-    payload: CustomerPriceTypeReviewCommand,
-    access: Access,
-    db: Session = Depends(get_db),
-) -> CustomerPriceTypeReviewSaveResponse:
-    return _save_customer_price_type_review(
-        snapshot_id=snapshot_id,
-        review_kind="price_type",
-        payload=payload,
-        access=access,
-        db=db,
-    )
-
-
-@router.put(
-    "/reviews/cards/{snapshot_id}/client-action",
-    response_model=CustomerPriceTypeReviewSaveResponse,
-)
-def review_customer_client_action_dimension(
-    snapshot_id: int,
-    payload: CustomerPriceTypeReviewCommand,
-    access: Access,
-    db: Session = Depends(get_db),
-) -> CustomerPriceTypeReviewSaveResponse:
-    return _save_customer_price_type_review(
-        snapshot_id=snapshot_id,
-        review_kind="client_action",
-        payload=payload,
-        access=access,
-        db=db,
-    )
-
-
-@router.get(
-    "/reviews/metrics",
-    response_model=CustomerPriceTypeReviewMetricsResponse,
-)
-def get_customer_price_type_review_metrics(
-    access: Access,
-    snapshot_month: str | None = Query(default=None, pattern=r"^\d{4}-\d{2}$"),
-    db: Session = Depends(get_db),
-) -> CustomerPriceTypeReviewMetricsResponse:
-    try:
-        return CustomerPriceTypeReviewMetricsResponse.model_validate(
-            CustomerPriceTypeReviewService(db).metrics(
-                snapshot_month=_month(snapshot_month), access=access
-            )
-        )
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except SQLAlchemyError as exc:
-        raise HTTPException(
-            status_code=503, detail="Показатели проверок временно недоступны."
-        ) from exc
 
 
 @router.get("/summary", response_model=CustomerPriceTypeSummaryResponse)
@@ -826,46 +589,6 @@ def list_customer_price_type_cases(
         offset=offset,
         payload=[CustomerPriceTypeCaseItem.model_validate(_case_payload(*row)) for row in rows],
     )
-
-
-@router.post(
-    "/cases/{case_id}/cancel-change",
-    response_model=CustomerPriceTypeCancelChangeResponse,
-)
-def cancel_customer_price_type_change(
-    case_id: int,
-    payload: CustomerPriceTypeCancelChangeRequest,
-    access: Access,
-    db: Session = Depends(get_db),
-) -> CustomerPriceTypeCancelChangeResponse:
-    try:
-        action = CustomerPriceTypeReviewService(db).cancel_change(
-            case_id=case_id,
-            expected_version=payload.expected_version,
-            comment=payload.comment,
-            access=access,
-        )
-        return CustomerPriceTypeCancelChangeResponse(
-            case_id=case_id,
-            action_id=action.id,
-            status="cancelled",
-            cancelled_by=str(action.cancelled_by),
-            cancelled_at=action.cancelled_at,
-            comment=str(action.cancel_comment),
-            version=action.version,
-        )
-    except PermissionError as exc:
-        raise HTTPException(status_code=403, detail=str(exc)) from exc
-    except CustomerPriceTypeReviewNotFound as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
-    except CustomerPriceTypeReviewConflict as exc:
-        db.rollback()
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-    except SQLAlchemyError as exc:
-        db.rollback()
-        raise HTTPException(
-            status_code=503, detail="Не удалось отменить изменение. Повторите попытку."
-        ) from exc
 
 
 @router.get("/cases/{case_id}", response_model=CustomerPriceTypeCaseDetailResponse)
@@ -1114,8 +837,6 @@ def get_customer_price_type_run(
 @router.post(
     "/quality/samples/prepare",
     response_model=CustomerPriceTypeQualityPrepareResponse,
-    deprecated=True,
-    responses={410: {"description": "Историческая выборка заморожена"}},
 )
 def prepare_customer_price_type_quality_samples(
     payload: CustomerPriceTypeQualityPrepareRequest,
@@ -1129,8 +850,6 @@ def prepare_customer_price_type_quality_samples(
             access=access,
         )
         return CustomerPriceTypeQualityPrepareResponse.model_validate(result)
-    except CustomerPriceTypeQualityFrozen as exc:
-        raise HTTPException(status_code=410, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
@@ -1236,8 +955,6 @@ def get_customer_price_type_quality_sample(
 @router.put(
     "/quality/samples/{sample_id}",
     response_model=CustomerPriceTypeQualitySampleResponse,
-    deprecated=True,
-    responses={410: {"description": "Историческая разметка заморожена"}},
 )
 def review_customer_price_type_quality_sample(
     sample_id: int,
@@ -1257,8 +974,6 @@ def review_customer_price_type_quality_sample(
         if row is None:
             raise LookupError("quality sample not found")
         return CustomerPriceTypeQualitySampleResponse.model_validate(_quality_sample_payload(*row))
-    except CustomerPriceTypeQualityFrozen as exc:
-        raise HTTPException(status_code=410, detail=str(exc)) from exc
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:

@@ -1,14 +1,8 @@
 from __future__ import annotations
 
 from datetime import date
-from pathlib import Path
 
 from tasks.report_display_supplier_lead_time_history import (
-    DEFAULT_RECEIPT_MAPPING_JSON,
-    DEFAULT_SUPPLIER_ORDER_MAPPING_JSON,
-    RECEIPT_MAPPING_UNRESOLVED,
-    SUPPLIER_ORDER_MAPPING_UNRESOLVED,
-    _load_document_line_mapping,
     aggregate_lead_time_rows,
     build_lead_time_detail_rows,
     build_seasonality_summary,
@@ -16,39 +10,6 @@ from tasks.report_display_supplier_lead_time_history import (
     build_weekly_seasonality_rows,
     mark_lead_time_outliers,
 )
-
-
-def test_display_supplier_lead_time_cron_uses_active_release() -> None:
-    repo_root = Path(__file__).resolve().parents[1]
-    cron = (repo_root / "infra/cron/display_supplier_lead_time_refresh.cron").read_text(
-        encoding="utf-8"
-    )
-    active_release = "/opt/MM/pricing-service-task43-current"
-
-    assert f"REPO_DIR={active_release}" in cron
-    assert f"{active_release}/infra/cron/display_supplier_lead_time_refresh.sh" in cron
-    assert "/opt/MM/pricing-service/infra/cron/display_supplier_lead_time_refresh.sh" not in cron
-
-
-def test_display_receipt_mapping_uses_actual_line_quantity() -> None:
-    mapping = _load_document_line_mapping(
-        DEFAULT_RECEIPT_MAPPING_JSON,
-        error_code=RECEIPT_MAPPING_UNRESOLVED,
-    )
-
-    assert mapping.line_quantity_column == "_Fld4514"
-    assert mapping.line_number_column == "_LineNo4508"
-    assert mapping.line_supplier_order_column == "_Fld4525RRef"
-
-
-def test_display_supplier_order_mapping_carries_line_identity_and_quantity() -> None:
-    mapping = _load_document_line_mapping(
-        DEFAULT_SUPPLIER_ORDER_MAPPING_JSON,
-        error_code=SUPPLIER_ORDER_MAPPING_UNRESOLVED,
-    )
-
-    assert mapping.line_number_column == "_LineNo2516"
-    assert mapping.line_quantity_column == "_Fld2520"
 
 
 def test_display_supplier_lead_time_matches_nearest_receipt_after_cargo() -> None:

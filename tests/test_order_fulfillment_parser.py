@@ -42,15 +42,6 @@ def test_site_chat_parser_does_not_infer_pickup_from_absence_in_list() -> None:
     assert mentions == []
 
 
-def test_site_chat_parser_ignores_generated_order_reports() -> None:
-    mentions = service.parse_site_chat_text(
-        "MASTER-MOBILE.RU: контроль интернет-заказов\n"
-        "- заказ 219872 / сделка 12970: проверить, действительно ли заказ выдан"
-    )
-
-    assert mentions == []
-
-
 def test_courier_ocr_classifier_distinguishes_payment_state() -> None:
     pending = service.parse_courier_ocr_payload(
         {

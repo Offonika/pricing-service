@@ -63,7 +63,10 @@
     ]
   },
   "off_schedule_signal_policy": {
-    "description": "Внеплановый сигнал включается раньше планового графика, если сборка поставщика уходит выше нормы или есть риск опустошения склада.",
+    "description": "Внеплановый сигнал включается раньше планового графика, если сборка поставщика уходит выше нормы или есть риск дефицита.",
+    "stockout_guard_decision_date": "2026-08-17",
+    "stockout_guard_documentation_status": "accepted_code_pending",
+    "stockout_guard_implementation_note_ru": "Документация принята. Текущий код ещё ограничивает stockout_guard решением do_not_order; это ограничение отменено и должно быть снято отдельной кодовой задачей. Production этой фиксацией не меняется.",
     "baseline_source": "supplier_prepare_profile.recommended_supplier_prepare_days",
     "baseline_metric": "median_or_p75_by_confidence",
     "warning_over_baseline_pct": 30,
@@ -86,9 +89,32 @@
       },
       {
         "level": "stockout_guard",
-        "label_ru": "защита от опустошения склада",
-        "condition_ru": "дней свободного остатка меньше ожидаемого оставшегося срока поставки плюс 10 дней запаса",
-        "action_ru": "создать внеплановую Потребность на заказ или ручную задачу до обычного дня графика"
+        "label_ru": "защита от дефицита",
+        "decision_date": "2026-08-17",
+        "implementation_status": "accepted_code_pending",
+        "applies_to_status_codes": [
+          "sale",
+          "working"
+        ],
+        "applies_to_final_decisions": [
+          "order",
+          "do_not_order"
+        ],
+        "excluded_if_order_blocker": true,
+        "customer_commitment_source_ru": "только активные Заказы покупателей",
+        "ignored_1c_fields_ru": [
+          "Зарезервировано",
+          "Под заказ"
+        ],
+        "available_stock_formula": "max(0, sellable_stock_qty - active_customer_order_qty)",
+        "days_to_stockout_formula": "available_stock_qty / avg_daily_sales_qty",
+        "required_days_with_reliable_incoming_formula": "days_until_nearest_reliable_incoming + distribution_to_shelf_days + stockout_guard_days",
+        "required_days_without_reliable_incoming_formula": "full_new_supply_lead_time_days + distribution_to_shelf_days + stockout_guard_days",
+        "condition_ru": "сигнал срабатывает, если дней доступного остатка меньше индивидуального срока довоза с распределением и буфером 10 дней",
+        "action_if_order_ru": "не менять рассчитанное количество; поднять срочность и проверить ускоренный маршрут, перемещение, локальную закупку или подтвержденную замену",
+        "action_if_do_not_order_ru": "создать внеплановую Потребность на заказ или ручную задачу до обычного дня графика",
+        "action_ru": "показать срочный риск и выполнить действие по текущему решению order или do_not_order",
+        "cancelled_rule_ru": "ОТМЕНЕНО 2026-08-17: проверять stockout_guard только для решения do_not_order"
       }
     ]
   },
@@ -181,6 +207,29 @@
         "rounding_mode": "exact_need",
         "manual_review_above": "p75_qty"
       }
+    ]
+  },
+  "supported_analog_policy": {
+    "status": "approved",
+    "approved_at": "2026-07-11",
+    "implementation_status": "wired_in_dry_run",
+    "description": "Продающийся цветовой вариант того же дисплея и качества не обнуляем только потому, что в группе есть более ходовой цвет: сохраняем сетевой минимум для магазинов и сайта.",
+    "applies_to_statuses": [
+      "ПРОДАЖА",
+      "Рабочий"
+    ],
+    "active_store_count": 11,
+    "site_reserve_qty": 1,
+    "min_network_stock_qty": 12,
+    "min_recent_sales_pct_of_store_count": 10,
+    "max_days_since_last_sale": 180,
+    "rules": [
+      "вариант должен отличаться от основного только цветом и иметь то же качество; другие качества и поставщицкие версии не получают сетевой минимум",
+      "за 180 дней должно быть не меньше 10% от числа действующих магазинов, то есть минимум 2 чистые продажи",
+      "должна быть продажа в последние 180 дней",
+      "остаток Новый плюс товар в пути доводим до 12 штук: 11 магазинов плюс сайт",
+      "сначала выделяем потребность поддерживаемому аналогу, остаток общей потребности группы отдаем основному аналогу",
+      "после распределения применяется ценовое округление"
     ]
   },
   "auto_order_policy": {
